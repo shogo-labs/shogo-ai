@@ -1,0 +1,163 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/pack-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/pack-templates-gen.ts
+version: 1
+name: People department
+description: "A #people channel with Candidates and Onboarding boards; new members get an onboarding card automatically."
+projects:
+  - key: people-agent
+    name: People Agent
+    description: Screens applicants against the role, schedules interviews, and runs onboarding.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 14400
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+    files:
+      AGENTS.md: |
+        # People Agent
+
+        You work in #people. Screens applicants against the role, schedules interviews, and runs onboarding.
+
+        ## Boards
+        - **Candidates** (CAN-): One card per candidate. Decisions are made by people; agents screen and schedule.
+        - **Onboarding** (ONB-): Opened when someone joins the workspace. Done when they have access, a buddy, and first-week goals.
+
+        ## What you do
+        - Screen new applicants against the role requirements and write a short summary with evidence from the resume.
+        - Recommend Screen or Rejected; a person decides. Never use age, gender, ethnicity or other protected attributes.
+        - For each onboarding card, list the accounts, equipment and first-week goals, and check them off in the thread.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Do not move a candidate to Offer, Hired or Rejected yourself.
+        - Keep candidate details in #people; do not post them elsewhere.
+
+        ## Workspace profile
+
+        - **What this team builds**: {{answers.profile.product}}
+        - **Who signs off**: {{answers.profile.sign-off}}
+        - **Response target**: {{answers.profile.sla}}
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #people. Summarise applicants waiting past the screening SLA.
+        2. Nudge the buddy on onboarding cards with no activity in 2 days.
+    integrations:
+      - greenhouse
+      - google-calendar
+teamChannels:
+  - name: people
+    topic: Hiring and onboarding.
+    private: true
+    members:
+      - project: people-agent
+        agentTrigger: mention
+    boards:
+      - name: Candidates
+        itemType: candidate
+        keyPrefix: CAN
+        description: One card per candidate. Decisions are made by people; agents screen and schedule.
+        columns:
+          - name: Applied
+            category: backlog
+            slaHours: 72
+          - name: Screen
+            category: active
+          - name: Interview
+            category: active
+          - name: Offer
+            category: review
+          - name: Hired
+            category: done
+          - name: Rejected
+            category: dismissed
+        fields:
+          - key: role
+            label: Role
+            type: text
+            required: true
+          - key: source
+            label: Source
+            type: select
+            options:
+              - inbound
+              - referral
+              - sourced
+              - agency
+          - key: resume
+            label: Resume
+            type: url
+        postToChannel: none
+        requiresHumanReview: true
+        defaultAgent: people-agent
+      - name: Onboarding
+        itemType: task
+        keyPrefix: ONB
+        description: Opened when someone joins the workspace. Done when they have access, a buddy, and first-week goals.
+        columns:
+          - name: Starting soon
+            category: backlog
+          - name: Setting up
+            category: active
+            slaHours: 48
+          - name: First week
+            category: active
+          - name: Onboarded
+            category: done
+        fields:
+          - key: startDate
+            label: Start date
+            type: date
+          - key: buddy
+            label: Buddy
+            type: user
+          - key: team
+            label: Team
+            type: text
+        defaultAgent: people-agent
+triggers:
+  - key: onboard-new-members
+    name: Onboarding card for each new member
+    event: member.joined
+    target: work_item
+    card:
+      board: Onboarding
+      channel: people
+      title: Onboard {{member.name}}
+      description: "{{member.name}} joined the workspace as {{member.role}}."
+      dedupeKey: "{{member.userId}}"
+setup:
+  questions:
+    - id: product
+      header: What this team builds
+      question: What does this team build or sell, in one sentence?
+      type: text
+      applies: profile.product
+    - id: sign-off
+      header: Who signs off
+      question: Who approves people work?
+      type: text
+      applies: profile.sign-off
+      default: the workspace owner
+    - id: sla
+      header: Response target
+      question: How fast should this team respond to a new request?
+      type: choice
+      options:
+        - Same day
+        - Within 2 business days
+        - Within a week
+      default: Within 2 business days
+      applies: profile.sla
+  profile:
+    file: AGENTS.md
+    section: "## Workspace profile"

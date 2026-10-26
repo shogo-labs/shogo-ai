@@ -3,7 +3,7 @@
   "heartbeatEnabled": true,
   "model": {
     "provider": "custom",
-    "name": "hoshi-2-0"
+    "name": "auto"
   },
   "activeMode": "canvas"
 }

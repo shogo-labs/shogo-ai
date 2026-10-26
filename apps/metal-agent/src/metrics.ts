@@ -63,6 +63,12 @@ export const M = {
   tapCapacity: 'metal_tap_capacity',
   tapUsedPct: 'metal_tap_used_pct',
   gcStaleReclaimed: 'metal_gc_stale_reclaimed_total',
+  // Rootfs switch-over: pre-warmed snapshots made current at activation, and
+  // idle VMs on a superseded rootfs backed up and stopped instead of snapshotted.
+  stagedSnapshotsPromoted: 'metal_staged_snapshots_promoted_total',
+  suspendRetiredStale: 'metal_suspend_retired_stale_total',
+  // VMs moved off a superseded rootfs by the rollout rotation (pool.rotateStale).
+  rolloutRotated: 'metal_rollout_rotated_total',
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',
@@ -88,9 +94,20 @@ export const M = {
   // has mounted. Backups follow the guest; before that, a member missing from
   // the host's list was never backed up at all.
   workspaceMemberDrift: 'metal_workspace_member_drift_total',
-  // A project was exported from one live VM so another runtime opening it
-  // started from those files instead of an older backup (or the starter).
-  memberFlushedForOpen: 'metal_member_flushed_for_open_total',
+  // Single-runtime rule: a project is online only in its own runtime
+  // (pool.ownMemberIds). Each of these should read zero once the API and every
+  // VM from before the rule are gone.
+  //   `foreignMembersStripped`    — member ids dropped from an assign/resume env
+  //                                 (an API replica still sending the old lists).
+  //   `foreignMemberMountRefused` — a live mount of a foreign member (409).
+  //   `foreignMemberBackupSkipped`— a backup found a foreign member in a legacy
+  //                                 VM and left it to the drain.
+  //   `foreignMemberDrained`      — `{outcome="exported"|"conflict"|"empty"|"failed"}`
+  //                                 per member pool.drainForeignMembers took off.
+  foreignMembersStripped: 'metal_foreign_members_stripped_total',
+  foreignMemberMountRefused: 'metal_foreign_member_mount_refused_total',
+  foreignMemberBackupSkipped: 'metal_foreign_member_backup_skipped_total',
+  foreignMemberDrained: 'metal_foreign_member_drained_total',
   // Writable-state durability (database + uploads; see
   // pool.saveProjectDataToStore).
   //   `dataConflict`  — a conditional write's precondition failed, so the
@@ -188,16 +205,60 @@ export const M = {
   rescueDisk: 'metal_rescue_disk_extract_total',
   rescueFailed: 'metal_rescue_failed_quarantined_total',
   staleSnapshotSkipped: 'metal_stale_snapshot_skipped_total',
+  // Same events labelled `{reason="repo"|"member_data"|...}` (see StaleReason).
+  staleSnapshotSkippedByReason: 'metal_stale_snapshot_skipped_by_reason_total',
+  // Resumes that kept a snapshot whose writable-state archives had moved on,
+  // re-applying just those archives instead of cold-booting.
+  snapshotDriftRepaired: 'metal_snapshot_drift_repaired_total',
+  // Idle suspends labelled `{tier="relaxed"|"aggressive"|"static"}`, and VMs
+  // past the window left for a later pass by METAL_REAP_MAX_PER_PASS.
+  idleSuspendedByTier: 'metal_idle_suspended_by_tier_total',
+  idleReapDeferred: 'metal_idle_reap_deferred_total',
+  idleWindowMs: 'metal_idle_window_ms',
+  // Source backups taken mid-residency (pool.exportAllSource), separate from
+  // the one every suspend takes.
+  sourceBackupPeriodic: 'metal_source_backup_periodic_total',
+  sourceBackupPeriodicFailed: 'metal_source_backup_periodic_failed_total',
   // Host-mediated `.git` durability (see pool.saveRepoToStore).
   repoConflict: 'metal_repo_conflict_total',
   repoPromoted: 'metal_repo_unlinked_promoted_total',
   repoRefused: 'metal_repo_refused_untrusted_total',
   repoTooLarge: 'metal_repo_too_large_total',
+  repoBundleBytes: 'metal_repo_bundle_bytes_total',
+  repoBundleFull: 'metal_repo_bundle_full_total',
+  repoManifestConflict: 'metal_repo_manifest_conflict_total',
+  repoBundleCompactions: 'metal_repo_bundle_compactions_total',
+  repoBundlesGced: 'metal_repo_bundle_gc_deleted_total',
+  // Unmigrated projects kept on the tarball because the guest's LFS push failed.
+  repoBundleLfsFallback: 'metal_repo_bundle_lfs_fallback_total',
+  repoExportUnchanged: 'metal_repo_export_unchanged_total',
+  // Assign-time git history restore, `{outcome=}`: `foreground` (done before
+  // the open returned), `deferred` (open returned on the source's .git, the
+  // download finishing behind it), `none` (no durable repo), `failed`.
+  repoHydrate: 'metal_repo_hydrate_total',
+  // How each deferred restore ended, `{outcome=}`: `adopted`, `busy` (the
+  // workspace was in use by then, so it was left on the source's .git),
+  // `failed`, `abandoned` (the VM went away first).
+  repoHydrateDeferred: 'metal_repo_hydrate_deferred_total',
+  // Bytes and bundles the guest was asked to download, and the wall time of
+  // each restore (foreground or deferred) — divide by repoHydrate for averages.
+  repoHydrateBytes: 'metal_repo_hydrate_bytes_total',
+  repoHydrateBundles: 'metal_repo_hydrate_bundles_total',
+  repoHydrateMs: 'metal_repo_hydrate_ms_total',
   // Guest-side failures scraped from the per-VM serial console by serial-watcher.
   // These are the ONLY fleet-wide signal for in-guest breakage that survives a
   // guest too broken to ship its own telemetry (e.g. TLS failing on clock skew).
   guestErrorTotal: 'metal_guest_error_total',
   guestTlsClockSkew: 'metal_guest_tls_clock_skew_total',
+  // Guest wall-clock skew measured against the host on the first health check
+  // after a snapshot restore (see pool.probeGuestClockSkew). `guestClockSkewMs`
+  // is the worst absolute skew seen since the agent started — a restore should
+  // read a few ms, and anything in the thousands is a guest whose clock froze at
+  // snapshot time (the 2026-10-25 staging incident: 4h40m). The counter is the
+  // number of restores that came back more than GUEST_CLOCK_SKEW_ALERT_MS off,
+  // which the rehydrate clock sync then corrects.
+  guestClockSkewMs: 'metal_guest_clock_skew_ms',
+  guestClockSkewAfterRestore: 'metal_guest_clock_skew_after_restore_total',
   guestProviderError: 'metal_guest_provider_error_total',
   guestConnectionError: 'metal_guest_connection_error_total',
   guestInferenceRetry: 'metal_guest_inference_retry_total',

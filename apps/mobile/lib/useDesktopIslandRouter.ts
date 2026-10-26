@@ -13,11 +13,18 @@ export function useDesktopIslandRouter(): void {
 
   useEffect(() => {
     setDesktopIslandNavigator((navigation) => {
-      const params =
-        "sessionId" in navigation
-          ? { id: navigation.projectId, chatSessionId: navigation.sessionId }
-          : { id: navigation.projectId, newChat: "1", newChatNonce: String(Date.now()) }
       try {
+        if (navigation.kind === "workspace-agent") {
+          router.push({
+            pathname: "/(app)/agent",
+            params: navigation.sessionId ? { chatSessionId: navigation.sessionId } : {},
+          } as any)
+          return
+        }
+        const params =
+          "sessionId" in navigation
+            ? { id: navigation.projectId, chatSessionId: navigation.sessionId }
+            : { id: navigation.projectId, newChat: "1", newChatNonce: String(Date.now()) }
         router.push({ pathname: "/(app)/projects/[id]", params } as any)
       } catch {
         // ignore routing errors

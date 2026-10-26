@@ -74,6 +74,56 @@ describe("groupWorkParts", () => {
     }
   });
 
+  test("collapses read-only runtime tools and generic tools like team_chat_post into one work-group", () => {
+    const parts = [
+      tool("read_file", { path: "/a.ts" }),
+      tool("project_list"),
+      tool("team_chat_read", { channel: "general" }),
+      tool("web", { query: "latest release notes" }),
+      tool("impact_radius", { files: ["src/a.ts"] }),
+      tool("team_chat_post", { channel: "general", text: "done" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((part) => part.type)).toEqual(["work-group"]);
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toHaveLength(6);
+    }
+  });
+
+  test("generic tools fold into the surrounding work run instead of standing alone", () => {
+    const parts = [
+      tool("Read", { path: "/a.ts" }),
+      tool("Skill", { name: "a" }),
+      tool("Delete", { file_path: "/tmp/x" }),
+      tool("mcp__linear__list_issues", {}),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((part) => part.type)).toEqual(["work-group"]);
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toHaveLength(4);
+    }
+  });
+
+  test("repeated generic tools no longer collapse into a same-name tool-group", () => {
+    const parts = [
+      tool("team_chat_post", { channel: "a", text: "1" }),
+      tool("team_chat_post", { channel: "a", text: "2" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].type).toBe("work-group");
+  });
+
+  test("tools with a custom card (share_file) break a work run rather than joining it", () => {
+    const parts = [
+      tool("Read", { path: "/a.ts" }),
+      tool("share_file", { path: "/out.pdf" }),
+      tool("Read", { path: "/b.ts" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((part) => part.type)).toEqual(["work-group", "tool", "work-group"]);
+  });
+
   test("reasoning rides along transparently inside a work run", () => {
     const parts = [
       tool("Read", { path: "/a.ts" }),
@@ -164,8 +214,8 @@ describe("groupWorkParts", () => {
 
   test("repeated same-name non-work tool calls collapse into a tool-group", () => {
     const parts = [
-      tool("mcp__shogo__store_get", { model: "a" }),
-      tool("mcp__shogo__store_get", { model: "b" }),
+      tool("generate_video", { prompt: "a" }),
+      tool("generate_video", { prompt: "b" }),
     ];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(1);
@@ -175,19 +225,70 @@ describe("groupWorkParts", () => {
     }
   });
 
+  test("repeated share_file calls each keep their own download chip", () => {
+    const parts = [
+      tool("share_file", { path: "/a.pdf" }),
+      tool("share_file", { path: "/b.pdf" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((part) => part.type)).toEqual(["tool", "tool"]);
+  });
+
   test("a lone non-work tool call (below MIN_GROUP_SIZE) passes through as a single tool part", () => {
-    const parts = [tool("mcp__shogo__store_get", { model: "a" })];
+    const parts = [tool("share_file", { path: "/a.pdf" })];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(1);
     expect(grouped[0].type).toBe("tool");
   });
 
-  test("different-name non-work tools don't merge into the same tool-group", () => {
-    const parts = [tool("mcp__a__x", {}), tool("mcp__b__y", {})];
+  test("different-name custom-card tools don't merge into the same tool-group", () => {
+    const parts = [tool("share_file", {}), tool("generate_image", { prompt: "x" })];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(2);
     expect(grouped[0].type).toBe("tool");
     expect(grouped[1].type).toBe("tool");
+  });
+
+  test("MCP tool calls are work, including different servers in one run", () => {
+    const parts = [
+      tool("mcp__shogo__store_get", { model: "a" }),
+      tool("mcp__a__x", {}),
+      tool("mcp__b__y", {}),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].type).toBe("work-group");
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toHaveLength(3);
+    }
+  });
+
+  test("Composio and native github_* calls group with reasoning riding along", () => {
+    const parts = [
+      tool("github_merge_pr", { pr: 1324 }),
+      reasoning("needs the merge queue"),
+      tool("GITHUB_MERGE_A_PULL_REQUEST", {}),
+      reasoning("get the node id"),
+      tool("GITHUB_RUN_GRAPH_QL_QUERY", { query: "{ repository }" }),
+      reasoning("enqueue it"),
+      tool("GITHUB_RUN_GRAPH_QL_QUERY", { query: "mutation { enqueuePullRequest }" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].type).toBe("work-group");
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toHaveLength(7);
+    }
+  });
+
+  test("integration calls join the surrounding read/exec work run", () => {
+    const parts = [
+      tool("Read", { path: "/a.ts" }),
+      tool("GITHUB_RUN_GRAPH_QL_QUERY", {}),
+      tool("exec", { command: "bun test" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((p) => p.type)).toEqual(["work-group"]);
   });
 });
 

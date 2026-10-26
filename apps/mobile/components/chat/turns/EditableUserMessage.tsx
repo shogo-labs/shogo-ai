@@ -53,7 +53,7 @@ import * as Clipboard from "expo-clipboard"
 import * as Haptics from "expo-haptics"
 import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "@shogo/shared-ui/primitives"
-import { channelDispatchOf, extractTextContent } from "@shogo/shared-app/chat"
+import { channelDispatchOf, extractTextContent, taskNotificationOf } from "@shogo/shared-app/chat"
 import { MessageContent } from "./MessageContent"
 import {
   useMessageEditContext,
@@ -72,8 +72,12 @@ import {
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { AskUserAnswerCard } from "./AskUserAnswerCard"
+import { CanvasErrorCard } from "./CanvasErrorCard"
 import { ChannelDispatchCard } from "./ChannelDispatchCard"
+import { TaskNotificationRow } from "./TaskNotificationRow"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
+import { stripBuildBriefMarker } from "./buildBrief"
+import { parseCanvasErrorDebugPrompt } from "./canvasErrorPrompt"
 import type { AnsweredQuestion } from "./types"
 
 function showNativeUserMessageActions(opts: {
@@ -192,7 +196,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   const containerRef = useRef<View>(null)
 
   const originalText = useMemo(
-    () => stripAskUserAnswerMarker(extractTextContent(message)),
+    () => stripBuildBriefMarker(stripAskUserAnswerMarker(extractTextContent(message))),
     [message],
   )
   const originalFiles = useMemo(
@@ -493,6 +497,15 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   // check `node.contains(event.target)` against. ChatInput itself
   // is memoized and not forward-ref'd, so we can't get the same
   // handle from the component directly without an invasive change.
+  const taskNotification = taskNotificationOf(message)
+  if (taskNotification) {
+    return (
+      <View className={cn("w-full", className)}>
+        <TaskNotificationRow notification={taskNotification} />
+      </View>
+    )
+  }
+
   const dispatch = channelDispatchOf(message)
   if (dispatch) {
     return (
@@ -504,6 +517,23 @@ export const EditableUserMessage = memo(function EditableUserMessage({
       >
         <ChannelDispatchCard
           dispatch={dispatch}
+          variant={usesCompactBubble ? "bubble" : "row"}
+        />
+      </View>
+    )
+  }
+
+  const canvasError = parseCanvasErrorDebugPrompt(extractTextContent(message))
+  if (canvasError) {
+    return (
+      <View
+        className={cn(
+          usesCompactBubble ? "w-full items-end px-1" : "w-full",
+          className,
+        )}
+      >
+        <CanvasErrorCard
+          prompt={canvasError}
           variant={usesCompactBubble ? "bubble" : "row"}
         />
       </View>
@@ -531,11 +561,11 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           // an `px-3` text inset; the inline editor doesn't add
           // its own on top.
           flush
-          // The queue, interaction-mode and quick-actions surfaces
-          // belong to the bottom composer's lifecycle — exposing
-          // them from inside a historical edit would mean the user
-          // could queue a message from an edit-in-progress bubble,
-          // which is confusing. Keep them inert here.
+          // The queue and quick-actions surfaces belong to the bottom
+          // composer's lifecycle — exposing them from inside a
+          // historical edit would mean the user could queue a message
+          // from an edit-in-progress bubble, which is confusing. Keep
+          // them inert here.
           queuedMessages={[]}
           dimWhenDisabled={false}
         />

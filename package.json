@@ -2,7 +2,7 @@
   "name": "shogo-ai",
   "private": true,
   "license": "AGPL-3.0-or-later",
-  "packageManager": "bun@1.4.3",
+  "packageManager": "bun@1.4.4",
   "workspaces": [
     "packages/*",
     "packages/sdk/examples/*",
@@ -10,6 +10,9 @@
     "apps/mobile",
     "apps/shogo-ide"
   ],
+  "overrides": {
+    "react-native-css-interop": "0.2.2"
+  },
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || exit 0",
     "build": "bun run build:packages && bun run --cwd packages/agent-runtime build",
@@ -52,11 +55,16 @@
     "check:schema-parity": "bun scripts/check-schema-parity.ts",
     "check:publication": "bun scripts/check-publication-drift.ts",
     "check:migrations": "bun scripts/check-migrations.ts",
+    "check:migration-ids": "bun scripts/check-migration-derived-ids.ts",
     "check:heartbeat-writes": "bun scripts/check-heartbeat-config-writes.ts",
     "check:desktop-schema-drift": "bun scripts/check-desktop-schema-drift.ts",
     "check:multiregion": "bun scripts/check-multiregion-cron-locks.ts",
     "check:ci-bun-install-token": "bun scripts/check-ci-bun-install-token.ts",
     "check:e2e-quarantine": "bun scripts/check-e2e-quarantine.ts",
+    "check:higgsfield-docs": "bun scripts/check-higgsfield-docs.ts",
+    "sync:higgsfield-docs": "bun scripts/sync-higgsfield-docs.ts",
+    "derive:higgsfield-catalog": "bun scripts/derive-higgsfield-catalog.ts --write",
+    "generate:media-catalog": "bun scripts/generate-media-catalog.ts --write",
     "db:reset": "npx prisma migrate reset",
     "seed:marketplace": "bun scripts/seed-marketplace.ts",
     "docker:prod": "docker-compose up",
@@ -97,6 +105,8 @@
     "test:e2e:local": "npx playwright test --config e2e/local/playwright.config.ts",
     "test:e2e:local:ui": "npx playwright test --config e2e/local/playwright.config.ts --ui",
     "test:e2e:local:activity-goals": "npx playwright test --config e2e/local/playwright.config.ts e2e/local/activity-goals.test.ts",
+    "test:huddles": "bun scripts/test-huddles.ts",
+    "test:huddles:e2e": "bun scripts/test-huddles.ts --e2e",
     "test:e2e:local:nav-tabs": "npx playwright test --config e2e/local/playwright.config.ts e2e/local/team-nav-tabs.test.ts e2e/local/team-nav-tabs-phone.test.ts",
     "test:e2e:local:mobile-ux": "npx playwright test --config e2e/local/playwright.config.ts --project=iphone-15-pro --project=pixel-7 e2e/local/mobile-personal-walkthrough.test.ts",
     "test:e2e:staging": "npx playwright test --config e2e/playwright.config.ts",

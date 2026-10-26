@@ -17,26 +17,38 @@
  */
 
 import type { AgentEval, EvalResult } from './types'
-import { usedTool, neverUsedTool, toolCallCount, toolCallArgsContain, execCommandContains } from './eval-helpers'
+import {
+  usedTool,
+  neverUsedTool,
+  toolCallCount,
+  execCommandContains,
+  fileWrites,
+  readFileAnyRoute,
+  searchedAnyRoute,
+  wroteFileAnyRoute,
+} from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Validation helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * The first edited file was read (read_file, or exec cat/head/sed -n …)
+ * before the first edit. Reading via the shell counts here; only
+ * discipline-use-read-not-cat grades the choice of read tool.
+ */
 function readBeforeFirstEdit(r: EvalResult): boolean {
   const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
   if (editIdx === -1) return true
-  return r.toolCalls.slice(0, editIdx).some(
-    t => t.name === 'read_file' || t.name === 'search',
-  )
+  const path = String((r.toolCalls[editIdx].input as any).path ?? '')
+  return readFileAnyRoute(r, path, r.toolCalls.slice(0, editIdx))
 }
 
+/** Searched or read the codebase (search/read_file, or exec rg/grep/find/ls/cat) before the first edit. */
 function usedExplorationBeforeEdit(r: EvalResult): boolean {
   const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file' || t.name === 'write_file')
   if (editIdx === -1) return false
-  return r.toolCalls.slice(0, editIdx).some(
-    t => t.name === 'search' || t.name === 'read_file',
-  )
+  return searchedAnyRoute(r, r.toolCalls.slice(0, editIdx))
 }
 
 function ranTests(r: EvalResult): boolean {
@@ -73,12 +85,7 @@ function neverCreatedThrowawayFiles(r: EvalResult): boolean {
   const throwawayPatterns = [
     /debug/i, /reproduce/i, /scratch/i, /tmp_/i, /temp_/i, /check_/i, /verify_script/i,
   ]
-  return !r.toolCalls
-    .filter(t => t.name === 'write_file')
-    .some(t => {
-      const path = String((t.input as any).path ?? '')
-      return throwawayPatterns.some(p => p.test(path))
-    })
+  return !fileWrites(r).some(w => throwawayPatterns.some(p => p.test(w.path)))
 }
 
 function neverUsedExecCat(r: EvalResult): boolean {
@@ -430,7 +437,7 @@ const READ_DISCIPLINE_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'explored-before-editing',
-        description: 'Agent explored the codebase (search/read_file) before editing',
+        description: 'Agent explored the codebase (search/read_file or shell grep/cat) before editing',
         points: 3,
         phase: 'intention',
         validate: (r) => usedExplorationBeforeEdit(r),
@@ -447,7 +454,7 @@ const READ_DISCIPLINE_EVALS: AgentEval[] = [
         description: 'Agent edited auth.py',
         points: 3,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'edit_file', 'auth.py'),
+        validate: (r) => wroteFileAnyRoute(r, /(^|\/)auth\.py$/),
       },
       {
         id: 'no-throwaway-files',
@@ -476,15 +483,13 @@ const READ_DISCIPLINE_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'located-before-edit',
-        description: 'Agent located the function (search or read_file) before editing',
+        description: 'Agent located the function (search/read_file or shell grep/cat) before editing',
         points: 4,
         phase: 'intention',
         validate: (r) => {
           const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
           if (editIdx === -1) return false
-          return r.toolCalls.slice(0, editIdx).some(
-            t => t.name === 'search' || t.name === 'read_file',
-          )
+          return searchedAnyRoute(r, r.toolCalls.slice(0, editIdx))
         },
       },
       {
@@ -499,7 +504,7 @@ const READ_DISCIPLINE_EVALS: AgentEval[] = [
         description: 'Agent edited user.py',
         points: 3,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'edit_file', 'user.py'),
+        validate: (r) => wroteFileAnyRoute(r, /(^|\/)user\.py$/),
       },
       {
         id: 'minimal-edit',
@@ -554,7 +559,7 @@ def test_get_int_float_string(tmp_path):
         description: 'Agent edited config_parser.py',
         points: 3,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'edit_file', 'config_parser.py'),
+        validate: (r) => wroteFileAnyRoute(r, /(^|\/)config_parser\.py$/),
       },
       {
         id: 'ran-tests-after-edit',
@@ -611,7 +616,7 @@ def test_validate_without_load(tmp_path):
         description: 'Agent edited config_parser.py',
         points: 3,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'edit_file', 'config_parser.py'),
+        validate: (r) => wroteFileAnyRoute(r, /(^|\/)config_parser\.py$/),
       },
       {
         id: 'ran-tests',
@@ -719,7 +724,7 @@ const MINIMAL_CHANGE_EVALS: AgentEval[] = [
         description: 'Agent edited team.py',
         points: 3,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'edit_file', 'team.py'),
+        validate: (r) => wroteFileAnyRoute(r, /(^|\/)team\.py$/),
       },
       {
         id: 'used-edit-not-write',
@@ -810,10 +815,10 @@ const TOOL_EFFICIENCY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-search-or-read',
-        description: 'Agent used search or read_file to investigate',
+        description: 'Agent searched/read the code to investigate (any route)',
         points: 4,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'search') || usedTool(r, 'read_file'),
+        validate: (r) => searchedAnyRoute(r),
       },
       {
         id: 'no-throwaway-files',

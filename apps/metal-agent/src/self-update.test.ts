@@ -10,7 +10,20 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { dockerRuntimeImage, shouldRebuildRootfs, shouldUpdate, type DesiredAgent } from './self-update'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import {
+  SELF_ACTIVATE_AFTER_MS,
+  activateStagedImages,
+  dockerRuntimeImage,
+  rootfsActivationDecision,
+  shouldRebuildRootfs,
+  shouldUpdate,
+  stagedRootfsPath,
+  type DesiredAgent,
+  type StagedRootfs,
+} from './self-update'
 
 const rel = (over: Partial<DesiredAgent> = {}): DesiredAgent => ({
   version: 'v2',
@@ -86,6 +99,79 @@ describe('shouldRebuildRootfs', () => {
     expect(shouldRebuildRootfs(null, 'v1', true)).toBe(false)
     expect(shouldRebuildRootfs(undefined, 'v1', true)).toBe(false)
     expect(shouldRebuildRootfs(rebuildRel({ version: '' }), 'v1', true)).toBe(false)
+  })
+
+  test('a release already staged is not rebuilt again; a newer one rebuilds the staged image', () => {
+    expect(shouldRebuildRootfs(rebuildRel({ version: 'v2' }), 'v1', true, 'v2')).toBe(false)
+    expect(shouldRebuildRootfs(rebuildRel({ version: 'v3' }), 'v1', true, 'v2')).toBe(true)
+  })
+})
+
+describe('rootfsActivationDecision', () => {
+  const staged = (over: Partial<StagedRootfs> = {}): StagedRootfs => ({
+    version: 'v2',
+    identities: { standard: 'sz1-mt1' },
+    stagedAt: 1_000_000,
+    ...over,
+  })
+
+  test('activates on the control plane\'s word for exactly the staged version', () => {
+    expect(rootfsActivationDecision(staged(), 'v2', 1_000_001)).toBe('activate')
+  })
+
+  test('waits without a word, and refuses a word for any other version', () => {
+    expect(rootfsActivationDecision(staged(), null, 1_000_001)).toBe('wait')
+    expect(rootfsActivationDecision(staged(), 'v1', 1_000_001)).toBe('refuse')
+    expect(rootfsActivationDecision(null, 'v2', 1_000_001)).toBe('refuse')
+    expect(rootfsActivationDecision(null, undefined, 1_000_001)).toBe('wait')
+  })
+
+  test('switches on its own once staged long enough, so a release is never stranded', () => {
+    expect(rootfsActivationDecision(staged(), null, 1_000_000 + SELF_ACTIVATE_AFTER_MS - 1)).toBe('wait')
+    expect(rootfsActivationDecision(staged(), null, 1_000_000 + SELF_ACTIVATE_AFTER_MS)).toBe('self-activate')
+    expect(rootfsActivationDecision(staged(), 'v1', 1_000_000 + SELF_ACTIVATE_AFTER_MS)).toBe('self-activate')
+  })
+})
+
+describe('activateStagedImages', () => {
+  test('renames each staged image over its base, keeping size and mtime (the identity)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'activate-'))
+    try {
+      const base = join(dir, 'rootfs.ext4')
+      const docker = join(dir, 'docker.ext4')
+      writeFileSync(base, 'old')
+      writeFileSync(docker, 'old-docker')
+      writeFileSync(stagedRootfsPath(base), 'new image')
+      writeFileSync(stagedRootfsPath(docker), 'new docker image')
+      utimesSync(stagedRootfsPath(base), 1_700_000_000, 1_700_000_000)
+      const before = statSync(stagedRootfsPath(base))
+
+      activateStagedImages(base, docker)
+      expect(readFileSync(base, 'utf8')).toBe('new image')
+      expect(readFileSync(docker, 'utf8')).toBe('new docker image')
+      expect(existsSync(stagedRootfsPath(base))).toBe(false)
+      expect(existsSync(stagedRootfsPath(docker))).toBe(false)
+      const after = statSync(base)
+      expect(after.size).toBe(before.size)
+      expect(Math.round(after.mtimeMs)).toBe(Math.round(before.mtimeMs))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a docker class with nothing staged leaves its image alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'activate-'))
+    try {
+      const base = join(dir, 'rootfs.ext4')
+      const docker = join(dir, 'docker.ext4')
+      writeFileSync(docker, 'old-docker')
+      writeFileSync(stagedRootfsPath(base), 'new image')
+      activateStagedImages(base, docker)
+      expect(readFileSync(base, 'utf8')).toBe('new image')
+      expect(readFileSync(docker, 'utf8')).toBe('old-docker')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

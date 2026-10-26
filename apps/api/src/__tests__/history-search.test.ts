@@ -29,6 +29,7 @@ const allProjects = [
   { id: 'project-hidden', name: 'Hidden Builder Delegate', hidden: true },
 ]
 const projectFindManyCalls: any[] = []
+const chatFindManyCalls: any[] = []
 
 mock.module('../lib/prisma', () => ({
   prisma: {
@@ -45,8 +46,16 @@ mock.module('../lib/prisma', () => ({
       },
     },
     chatSession: {
-      findMany: async () => [chat],
+      findMany: async (args: any) => {
+        chatFindManyCalls.push(args)
+        return [chat]
+      },
       findFirst: async () => chat,
+    },
+    chatMessage: {
+      findMany: async () => [
+        { role: 'user', content: 'Use SQLite for history', createdAt: new Date('2026-09-15T10:00:00Z') },
+      ],
     },
     plan: { findMany: async () => [plan], findFirst: async () => plan },
     workspace: { findUnique: async () => ({ name: 'Acme', slug: 'acme', description: null }) },
@@ -60,6 +69,16 @@ describe('workspace history search', () => {
   test('searches chats and plans in one workspace', async () => {
     const result = await searchWorkspaceHistory({ workspaceId: 'workspace-1', userId: 'user-1', query: 'history' })
     expect(result.results.map((item) => item.kind)).toEqual(['chat', 'plan'])
+  })
+
+  test('limits workspace chats to the caller or chats with no owner', async () => {
+    chatFindManyCalls.length = 0
+    await searchWorkspaceHistory({ workspaceId: 'workspace-1', userId: 'user-1', query: 'history' })
+    const workspaceChat = chatFindManyCalls[0]?.where?.OR?.find((clause: any) => clause.contextType === 'workspace')
+    expect(workspaceChat).toMatchObject({
+      workspaceId: 'workspace-1',
+      OR: [{ createdByUserId: 'user-1' }, { createdByUserId: null }],
+    })
   })
 
   test('excludes hidden projects when resolving the workspace project scope', async () => {
@@ -77,9 +96,17 @@ describe('workspace history search', () => {
         { type: 'plan', planId: 'plan-1', label: '@plan:History' },
       ],
     }
-    expect(await enrichChatReferences(body, 'user-1', 'project-1', 'workspace-1')).toBe(true)
+    expect(await enrichChatReferences(body, 'user-1', 'workspace-1')).toBe(true)
     expect(body.references[0].transcript).toContain('SQLite')
     expect(body.references[1].content).toContain('# Search')
+  })
+
+  test('leaves chat references alone when there is no acting user', async () => {
+    const body = { references: [{ type: 'chat', id: 'other-tenant-chat' }] }
+    // No acting user → nothing can be validated, so enrichment refuses to touch
+    // the references and the route forwards none of them as context.
+    expect(await enrichChatReferences(body, undefined, 'workspace-1')).toBe(false)
+    expect(body.references).toHaveLength(1)
   })
 
   test('workspace reference summaries never list hidden project names', async () => {

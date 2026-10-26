@@ -45,6 +45,7 @@ import { Heading } from '@/components/ui/heading'
 import { Text as UIText } from '@/components/ui/text'
 import { Button, ButtonText } from '@/components/ui/button'
 import { API_URL } from '../../../lib/api'
+import { resolveAvatarUrl } from "../../../lib/chat-attachment-url"
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -123,7 +124,7 @@ function UserRow({
     >
       <View className="h-9 w-9 rounded-full bg-primary/10 items-center justify-center mr-3">
         {user.image ? (
-          <Image source={{ uri: user.image }} className="h-9 w-9 rounded-full" />
+          <Image source={{ uri: resolveAvatarUrl(user.image) ?? undefined }} className="h-9 w-9 rounded-full" />
         ) : (
           <Text className="text-xs font-medium text-primary">
             {(user.name || user.email).charAt(0).toUpperCase()}

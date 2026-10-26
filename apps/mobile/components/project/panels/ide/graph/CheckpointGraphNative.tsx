@@ -65,7 +65,7 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
     rollback,
     createCheckpoint,
     isMutating,
-    disabledForExternalMode: checkpointsDisabled,
+    disabledReason: checkpointsDisabledReason,
     refetch: refetchCheckpoints,
   } = useCheckpoints(projectId, { baseUrl: API_URL, headers: nativeHeaders })
 
@@ -132,7 +132,12 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
     }
   }, [rollbackTarget, rollback, graph, refetchCheckpoints])
 
-  const canCreate = !graph.disabledForExternalMode && !checkpointsDisabled
+  // One disabled state for both "Shogo doesn't manage this repo" cases:
+  // folder-linked (external mode) and a folder that is a checkout of someone
+  // else's repository. `useGitGraph`'s 409 only fires for external mode today.
+  const disabledReason: 'external' | 'foreign_repo' | null =
+    checkpointsDisabledReason ?? (graph.disabledForExternalMode ? 'external' : null)
+  const canCreate = !disabledReason
   const gWidth = graphWidth(maxLanes)
   const totalHeight = rows.length * rowHeight
 
@@ -225,15 +230,16 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
       )}
 
       {/* Content */}
-      {graph.disabledForExternalMode ? (
+      {disabledReason ? (
         <View className="flex-1 px-6 pt-10 items-center">
           <GitBranch size={28} className="text-muted-foreground mb-3" />
           <Text className="text-base font-semibold text-foreground mb-2 text-center">
-            Graph is off in folder mode
+            {disabledReason === 'foreign_repo' ? "Shogo doesn't manage this repo" : 'Graph is off in folder mode'}
           </Text>
           <Text className="text-sm text-muted-foreground text-center">
-            This project is linked to a folder on your machine. Use your own git client for history
-            on local folders.
+            {disabledReason === 'foreign_repo'
+              ? "This project's folder is a checkout of another git repository — Shogo won't commit into it. Use your own git."
+              : 'This project is linked to a folder on your machine. Use your own git client for history on local folders.'}
           </Text>
         </View>
       ) : graph.isLoading && graph.commits.length === 0 ? (

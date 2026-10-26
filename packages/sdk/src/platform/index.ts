@@ -58,6 +58,8 @@ export interface PlatformConfig {
     agentShell: boolean
     /** Independently controls the narrow/native Workspace Agent shell rollout. */
     mobileAgentShell: boolean
+    /** Channel boards, cards and My work. */
+    workBoards: boolean
   }
 }
 
@@ -71,6 +73,7 @@ export interface FeatureFlagOverrides {
   personalShell: boolean | null
   agentShell: boolean | null
   mobileAgentShell: boolean | null
+  workBoards: boolean | null
 }
 
 export interface EzModeVoiceProviderOverride {
@@ -85,6 +88,7 @@ export type FeatureFlagPatch = Partial<{
   personalShell: boolean | null
   agentShell: boolean | null
   mobileAgentShell: boolean | null
+  workBoards: boolean | null
 }>
 
 /** API keys come in two flavours:
@@ -486,14 +490,25 @@ export interface PublicModelInput {
   enabled?: boolean
 }
 
+export interface InstanceWorkspaceRegistration {
+  id: string
+  name: string
+  /** `connecting` until the first heartbeat lands — never claim connected before it. */
+  state: 'connected' | 'connecting'
+}
+
 export interface InstanceInfo {
   name: string
   hostname: string
   os: string
   arch: string
+  /** True when any tunnel is up (the primary one, or one of several workspaces). */
   tunnelConnected: boolean
   cloudUrl: string
+  /** The cloud workspace the primary device key was issued in. */
   workspaceName: string | null
+  /** Every cloud workspace this machine is registered in. Optional: older APIs omit it. */
+  workspaces?: InstanceWorkspaceRegistration[]
 }
 
 export interface AffiliateContentSettings {
@@ -1232,6 +1247,7 @@ export class PlatformApi {
       personalShell: null,
       agentShell: null,
       mobileAgentShell: null,
+      workBoards: null,
     }
   }
 
@@ -1251,6 +1267,7 @@ export class PlatformApi {
           personalShell: null,
           agentShell: null,
           mobileAgentShell: null,
+          workBoards: null,
         },
       }
     )

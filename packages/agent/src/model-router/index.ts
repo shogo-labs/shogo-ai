@@ -201,7 +201,7 @@ export function classifySpawnTask(input: SpawnClassificationInput): {
   }
 
   // Signal 5: High-precision tool detected in sub-agent's tool set
-  const hpTool = detectHighPrecisionTool(input.toolNames)
+  const hpTool = detectHighPrecisionTool(input)
   if (hpTool) {
     signals.highPrecisionTool = -0.50
     simplicityScore -= 0.50
@@ -239,10 +239,19 @@ export function classifySpawnTask(input: SpawnClassificationInput): {
 // High-precision tool detection
 // ---------------------------------------------------------------------------
 
-function detectHighPrecisionTool(toolNames?: string[]): string | undefined {
+/**
+ * explore always carries `exec` for read-only inspection (ls, rg, git log);
+ * counting it as high-precision would floor every exploration at standard+.
+ */
+const READ_ONLY_EXEC_AGENTS = new Set(['explore'])
+
+function detectHighPrecisionTool(input: SpawnClassificationInput): string | undefined {
+  const toolNames = input.toolNames
   if (!toolNames || toolNames.length === 0) return undefined
   const config = _config
+  const execIsReadOnly = READ_ONLY_EXEC_AGENTS.has(input.subagentType)
   for (const name of toolNames) {
+    if (name === 'exec' && execIsReadOnly) continue
     if (config.highPrecisionTools.includes(name)) return name
   }
   return undefined
@@ -269,7 +278,7 @@ export function selectModelForSpawn(
   const spawnId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
 
   const classification = classifySpawnTask(input)
-  const hpTool = detectHighPrecisionTool(input.toolNames)
+  const hpTool = detectHighPrecisionTool(input)
 
   // High-precision tools always force at least standard tier
   if (hpTool) {

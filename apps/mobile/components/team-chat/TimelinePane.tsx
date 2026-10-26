@@ -7,20 +7,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { useRouter } from 'expo-router'
 import { ChevronLeft, Upload, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
-import { mentionNames } from '../../lib/team-chat-state'
-import { ACTIVITY_CHANNEL_FILTERS, matchesActivityFilter, type ActivityChannelFilter } from '../../lib/activity-channel-filters'
-import { TIMELINE_SOFT_LIMIT, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
+import type { MentionTarget } from '../chat/file-links'
+import { mentionNames, newestReadableSeq } from '../../lib/team-chat-state'
+import { runningAgentReplies, typingLabel } from '../../lib/team-chat-typing'
+import { useComposerColumnStyle } from '../chat/composer/useComposerColumnStyle'
+import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
+import { TIMELINE_SOFT_LIMIT, useChannelDirectory, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
 import { threadCrumbs } from '../../lib/team-chat-nav'
+import { nonMemberMentionIds } from '../../lib/team-chat-mention-nudge'
+import { dismissMentionNudgeForever, getMentionNudgeDismissed } from '../../lib/mention-nudge-preference'
 import { Breadcrumb } from './SessionBreadcrumb'
+import { ActivityFilterPicker } from './ActivityFilterPicker'
 import { MessageList } from './MessageList'
+import { RunningAgentsDock } from './RunningAgentsDock'
 import { Composer, type ComposerHandle } from './Composer'
+import { MentionNudgeCard } from './MentionNudgeCard'
+import { EphemeralNotice } from './EphemeralNotice'
+import { AddToChannelConfirmHost, confirmsAddToChannel } from './AddToChannelConfirm'
+import { LinkPreviewConsentHost } from './LinkPreviewConsent'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
+import { MakeCardSheet } from '../boards/MakeCardSheet'
+import type { WorkItem } from '../../lib/work-boards-api'
 
 const api = teamChatApi()
 /** Pages of 200 to load back when jumping to an older message before opening it on its own. */
@@ -41,6 +55,8 @@ export interface TimelinePaneProps {
   onOpenThread?: (message: ChatMessage) => void
   onOpenSession?: (message: ChatMessage) => void
   onOpenProjectPane?: (projectId: string, name: string) => void
+  /** Open a person's profile — from their name, their photo, or a mention of them. */
+  onOpenProfile?: (userId: string) => void
   onClose?: () => void
   onJoin?: () => void
   /** Scroll to and emphasize this message (from a message link or search). */
@@ -49,6 +65,8 @@ export interface TimelinePaneProps {
   floating?: boolean
   /** Height of the floating header drawn over this pane. */
   topInset?: number
+  /** Open a card made from a message here. "Make a card" only shows when this is set. */
+  onOpenCard?: (item: WorkItem) => void
 }
 
 /** Files dropped anywhere on a web pane go to the composer. */
@@ -107,39 +125,66 @@ function confirmDelete(): Promise<boolean> {
   )
 }
 
-function typingLabel(names: string[]): string | null {
-  if (!names.length) return null
-  if (names.length === 1) return `${names[0]} is typing…`
-  if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`
-  return 'Several people are typing…'
-}
-
 export function TimelinePane(props: TimelinePaneProps) {
   const { workspaceId, conversation, threadRootId = null, me, mentionables, visible, floating = false, topInset = 0 } = props
+  const router = useRouter()
   const chrome = usePhoneChromeOverlay()
   const insets = useSafeAreaInsets()
+  /**
+   * What tapping a mention does. A person opens their profile through the
+   * host (`onOpenProfile`), an agent opens its own profile page, a `#channel`
+   * opens that channel in place, and the broadcast/group targets stay plain
+   * highlights — so a host that offers no profile gets exactly today's
+   * behaviour, except a channel reference still navigates.
+   */
+  const mentionPress = useMemo(() => {
+    const openProfile = props.onOpenProfile
+    return (target: MentionTarget) => {
+      if (target.kind === 'c') {
+        router.push({
+          pathname: '/(app)/c/[conversationId]',
+          params: { conversationId: target.id },
+        } as any)
+        return
+      }
+      if (!openProfile) return
+      if (target.kind === 'u') return openProfile(target.id)
+      if (target.kind === 'a') {
+        router.push({ pathname: '/(app)/agents/[key]', params: { key: target.id } } as any)
+      }
+    }
+  }, [props.onOpenProfile, router])
   const [threadHeaderHeight, setThreadHeaderHeight] = useState(0)
   const [footerHeight, setFooterHeight] = useState(0)
+  const [cardFrom, setCardFrom] = useState<ChatMessage | null>(null)
+  const [cardNotice, setCardNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (!cardNotice) return
+    const t = setTimeout(() => setCardNotice(null), 4000)
+    return () => clearTimeout(t)
+  }, [cardNotice])
+  const canMakeCards = !!props.onOpenCard && (conversation.kind === 'public' || conversation.kind === 'private') && conversation.canReply
   const showActivityFilters = conversation.kind === 'activity' && !threadRootId
   const channelList = useConversationList(showActivityFilters ? workspaceId : null)
-  const [activityFilter, setActivityFilter] = useState<ActivityChannelFilter>('all')
+  const channelDirectory = useChannelDirectory(workspaceId)
+  const [activityFilter, setActivityFilter] = useState<ActivityFilterState>(EMPTY_ACTIVITY_FILTER)
   const timeline = useConversationTimeline(workspaceId, conversation.id, threadRootId)
   const typing = useTypingUsers(workspaceId, conversation.id, threadRootId)
-  const names = useMemo(() => {
-    const base = mentionNames(mentionables)
-    if (!showActivityFilters) return base
-    return {
-      ...base,
-      conversations: new Map(channelList.list.map((c) => [c.id, c.slug ?? c.name ?? 'channel'])),
-    }
-  }, [mentionables, showActivityFilters, channelList.list])
-  const newestSeq = useMemo(() => {
-    for (let i = timeline.state.messages.length - 1; i >= 0; i--) {
-      const m = timeline.state.messages[i]!
-      if (!m.pending && !m.threadRootId) return m.seq
-    }
-    return 0
-  }, [timeline.state.messages])
+  // The typing row shares the composer's edges, so it lines up with the input box.
+  const typingColumnStyle = useComposerColumnStyle({ presentation: 'agent' })
+  // `#channel` references resolve against the channels this reader can see, so a
+  // private channel they are not in renders as `#privatechannel`, not a name.
+  const channelNames = useMemo(
+    () =>
+      new Map(
+        channelDirectory
+          .filter((c) => c.kind === 'public' || c.kind === 'private')
+          .map((c) => [c.id, c.slug ?? c.name ?? 'channel']),
+      ),
+    [channelDirectory],
+  )
+  const names = useMemo(() => mentionNames(mentionables, channelNames), [mentionables, channelNames])
+  const newestSeq = useMemo(() => newestReadableSeq(timeline.state.messages), [timeline.state.messages])
   // What was unread when the reader opened this conversation; messages arriving later aren't "new".
   const [unread, setUnread] = useState<{ afterSeq: number; upToSeq: number } | null>(() =>
     !threadRootId && conversation.joined && conversation.lastSeq > conversation.lastReadSeq
@@ -177,10 +222,21 @@ export function TimelinePane(props: TimelinePaneProps) {
     return found(timeline.getState().messages)
   }, [timeline.getState, timeline.loadOlder])
 
-  const filtering = showActivityFilters && activityFilter !== 'all'
+  const filtering = showActivityFilters && isActivityFilterActive(activityFilter)
   const visibleMessages = useMemo(
-    () => (filtering ? timeline.state.messages.filter((m) => matchesActivityFilter(m, activityFilter)) : timeline.state.messages),
+    () => (filtering ? timeline.state.messages.filter((m) => matchesActivityFilters(m, activityFilter)) : timeline.state.messages),
     [filtering, activityFilter, timeline.state.messages],
+  )
+  const agentOptions = useMemo(
+    () => (mentionables?.agents ?? []).map((agent) => ({ id: agent.key, label: agent.name })),
+    [mentionables],
+  )
+  const channelOptions = useMemo(
+    () => channelList.list
+      .filter((channel) => channel.kind === 'public')
+      .map((channel) => ({ id: channel.id, label: channel.name ?? channel.slug ?? 'channel' }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    [channelList.list],
   )
   const filterLoads = useRef(0)
   useEffect(() => {
@@ -195,7 +251,7 @@ export function TimelinePane(props: TimelinePaneProps) {
     void (async () => {
       while (!cancelled && filterLoads.current < SEEK_PAGES) {
         const current = timeline.getState()
-        const count = current.messages.filter((m) => matchesActivityFilter(m, activityFilter)).length
+        const count = current.messages.filter((m) => matchesActivityFilters(m, activityFilter)).length
         if (count >= ACTIVITY_FILTER_MIN || !current.hasMoreOlder) return
         filterLoads.current += 1
         await timeline.loadOlder(SEEK_PAGE_SIZE)
@@ -233,7 +289,7 @@ export function TimelinePane(props: TimelinePaneProps) {
   const composerRef = useRef<ComposerHandle>(null)
   const rootRef = useRef<View>(null)
 
-  const onReact = useCallback((m: ChatMessage, emoji: string) => void timeline.react(m.id, emoji).catch(() => {}), [timeline.react])
+  const onReact = useCallback((m: ChatMessage, emoji: string, on?: boolean) => void timeline.react(m.id, emoji, on).catch(() => {}), [timeline.react])
   const onEdit = useCallback((m: ChatMessage, text: string) => timeline.edit(m.id, text), [timeline.edit])
   const onDelete = useCallback(async (m: ChatMessage) => {
     if (await confirmDelete()) await timeline.remove(m.id).catch(() => {})
@@ -252,6 +308,44 @@ export function TimelinePane(props: TimelinePaneProps) {
   }, [timeline.state.messages, me])
 
   const isChannel = conversation.kind === 'public' || conversation.kind === 'private'
+
+  // Flags @-mentions of non-members in the composer, and offers to add
+  // anyone the sender just mentioned who isn't in the channel (never for
+  // DMs: there's no "member" concept to flag against).
+  const channelMemberIds = useMemo(
+    () => (isChannel ? new Set(conversation.members.flatMap((m) => (m.type === 'user' ? [m.userId] : []))) : null),
+    [isChannel, conversation.members],
+  )
+  const [mentionNudge, setMentionNudge] = useState<{ ids: string[]; busy: boolean; error: string | null; createdAt: string } | null>(null)
+  const [channelsAdded, setChannelsAdded] = useState<{ ids: string[]; createdAt: string } | null>(null)
+  useEffect(() => {
+    setMentionNudge(null)
+    setChannelsAdded(null)
+  }, [conversation.id, threadRootId])
+  const handleSend = useCallback(async (input: SendInput) => {
+    setMentionNudge(null)
+    setChannelsAdded(null)
+    const sent = await timeline.send(input)
+    if (!sent || !channelMemberIds || getMentionNudgeDismissed()) return
+    const ids = nonMemberMentionIds(input.text, channelMemberIds, me)
+    if (ids.length) setMentionNudge({ ids, busy: false, error: null, createdAt: new Date().toISOString() })
+  }, [timeline.send, channelMemberIds, me])
+  const addMentioned = useCallback(async () => {
+    if (!mentionNudge) return
+    const { ids } = mentionNudge
+    // Adding to a private channel hands over the whole history, files
+    // included — the warning Slack puts in front of it.
+    if (!(await confirmsAddToChannel(conversation.kind))) return
+    setMentionNudge((n) => (n ? { ...n, busy: true, error: null } : n))
+    try {
+      await api.addMembers(conversation.id, ids)
+      setMentionNudge(null)
+      setChannelsAdded({ ids, createdAt: new Date().toISOString() })
+    } catch (err) {
+      setMentionNudge((n) => (n ? { ...n, busy: false, error: err instanceof Error ? err.message : 'Could not add them' } : n))
+    }
+  }, [mentionNudge, conversation.id, conversation.kind])
+
   const placeholder = threadRootId
     ? 'Reply in thread…'
     : isChannel
@@ -267,7 +361,20 @@ export function TimelinePane(props: TimelinePaneProps) {
   const dragging = useFileDrop(rootRef, showComposer && canPostHere, (files) => composerRef.current?.addFiles(files))
 
   const crumbs = threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) })
-  const typingText = typingLabel(typing)
+  // Running agents are the dock's business; this line is only ever people.
+  const typingText = cardNotice ?? typingLabel(typing)
+  const runningReplies = useMemo(() => runningAgentReplies(timeline.state.messages), [timeline.state.messages])
+  const runningDock = (
+    <RunningAgentsDock
+      replies={runningReplies}
+      streaming={timeline.state.streaming}
+      onJump={setHighlight}
+      onStop={onStop}
+      onOpenSession={props.onOpenSession}
+      workspaceId={workspaceId}
+      floating={floating}
+    />
+  )
   const listInsets = floating
     ? { top: (showActivityFilters ? 0 : topInset) + threadHeaderHeight, bottom: footerHeight }
     : undefined
@@ -290,12 +397,14 @@ export function TimelinePane(props: TimelinePaneProps) {
       onReact={onReact}
       onEdit={onEdit}
       onDelete={onDelete}
-      onStopAgent={onStop}
       onRetry={timeline.retry}
       onDiscard={timeline.discard}
       onOpenSession={props.onOpenSession}
       onOpenProjectPane={props.onOpenProjectPane}
+      onOpenProfile={props.onOpenProfile}
+      onMentionPress={mentionPress}
       onMarkUnread={threadRootId || !conversation.joined ? undefined : onMarkUnread}
+      onMakeCard={canMakeCards ? setCardFrom : undefined}
       unreadAfterSeq={filtering ? null : unread?.afterSeq ?? null}
       unreadUpToSeq={unread?.upToSeq}
       unreadNotLoaded={filtering ? false : unreadNotLoaded}
@@ -313,39 +422,99 @@ export function TimelinePane(props: TimelinePaneProps) {
       style={floating && topInset ? { marginTop: topInset } : undefined}
       testID="activity-filters"
     >
+      <ActivityFilterPicker
+        label="Agent"
+        value={activityFilter.agentKeys}
+        options={agentOptions}
+        onChange={(agentKeys) => setActivityFilter((filter) => ({ ...filter, agentKeys }))}
+      />
+      <ActivityFilterPicker
+        label="Channel"
+        value={activityFilter.conversationIds}
+        options={channelOptions}
+        onChange={(conversationIds) => setActivityFilter((filter) => ({ ...filter, conversationIds }))}
+      />
       {ACTIVITY_CHANNEL_FILTERS.map(({ id, label }) => (
         <Pressable
           key={id}
           accessibilityRole="button"
-          aria-selected={activityFilter === id}
-          onPress={() => setActivityFilter(id)}
-          className={cn('rounded-full border px-3 py-1', activityFilter === id ? 'border-primary bg-primary/10' : 'border-border active:bg-accent/50')}
+          aria-selected={activityFilter.kind === id}
+          onPress={() => setActivityFilter((filter) => ({ ...filter, kind: id }))}
+          className={cn('rounded-full border px-3 py-1', activityFilter.kind === id ? 'border-primary bg-primary/10' : 'border-border active:bg-accent/50')}
         >
-          <Text className={cn('text-xs', activityFilter === id ? 'font-medium text-primary' : 'text-muted-foreground')}>{label}</Text>
+          <Text className={cn('text-xs', activityFilter.kind === id ? 'font-medium text-primary' : 'text-muted-foreground')}>{label}</Text>
         </Pressable>
       ))}
     </ScrollView>
   ) : null
-  const composer = (
-    <Composer
-      ref={composerRef}
+  const makeCardSheet = cardFrom ? (
+    <MakeCardSheet
       workspaceId={workspaceId}
       conversationId={conversation.id}
-      threadRootId={threadRootId}
-      placeholder={placeholder}
-      mentionables={mentionables}
-      me={me}
-      disabled={!canPostHere}
-      disabledReason={disabledReason}
-      onSend={timeline.send}
-      onEditLast={onEditLast}
+      message={cardFrom}
+      onClose={() => setCardFrom(null)}
+      onError={setCardNotice}
+      onCreated={(item) => {
+        setCardNotice(`Made ${item.key}`)
+        props.onOpenCard?.(item)
+      }}
     />
+  ) : null
+  const composer = (
+    <>
+      {mentionNudge && (
+        <MentionNudgeCard
+          ids={mentionNudge.ids}
+          names={names}
+          isPrivate={conversation.kind === 'private'}
+          workspaceId={workspaceId}
+          createdAt={mentionNudge.createdAt}
+          busy={mentionNudge.busy}
+          error={mentionNudge.error}
+          onMentionPress={mentionPress}
+          onAdd={() => void addMentioned()}
+          onDismiss={() => setMentionNudge(null)}
+          onDontShowAgain={() => {
+            void dismissMentionNudgeForever()
+            setMentionNudge(null)
+          }}
+        />
+      )}
+      {channelsAdded && (
+        <EphemeralNotice
+          testID="added-to-channel-notice"
+          text={`OK! ${channelsAdded.ids.map((id) => `<@u:${id}>`).join(', ')} ${channelsAdded.ids.length === 1 ? 'has' : 'have'} been added to this channel.`}
+          names={names}
+          createdAt={channelsAdded.createdAt}
+          workspaceId={workspaceId}
+          onMentionPress={mentionPress}
+        />
+      )}
+      <AddToChannelConfirmHost />
+      <LinkPreviewConsentHost />
+      <Composer
+        ref={composerRef}
+        workspaceId={workspaceId}
+        conversationId={conversation.id}
+        threadRootId={threadRootId}
+        placeholder={placeholder}
+        mentionables={mentionables}
+        me={me}
+        disabled={!canPostHere}
+        disabledReason={disabledReason}
+        onSend={handleSend}
+        onEditLast={onEditLast}
+        channelMemberIds={channelMemberIds}
+        channels={channelDirectory}
+      />
+    </>
   )
 
   if (floating) {
     return (
       <View className="flex-1" ref={rootRef}>
         {filterBar}
+        {makeCardSheet}
         <GlassBlurTarget>
           {timeline.error && !timeline.state.messages.length ? (
             <View className="flex-1 items-center justify-center gap-2 px-8">
@@ -388,10 +557,17 @@ export function TimelinePane(props: TimelinePaneProps) {
           style={{ marginTop: -footerHeight, paddingBottom: chrome.bottom }}
           testID="floating-composer"
         >
+          {runningReplies.length ? (
+            <View pointerEvents="box-none" className="mb-2" style={typingColumnStyle}>
+              {runningDock}
+            </View>
+          ) : null}
           {typingText ? (
-            <GlassChip className="mb-2 ml-4 self-start px-3 py-1">
-              <Text className="text-xs text-muted-foreground">{typingText}</Text>
-            </GlassChip>
+            <View pointerEvents="box-none" className="mb-2" style={typingColumnStyle}>
+              <GlassChip className="self-start px-3 py-1">
+                <Text className="text-xs text-muted-foreground">{typingText}</Text>
+              </GlassChip>
+            </View>
           ) : null}
           {!showComposer ? (
             <GlassChip className="mx-4 mb-3 flex-row items-center justify-between gap-2 py-1.5 pl-4 pr-1.5">
@@ -413,9 +589,9 @@ export function TimelinePane(props: TimelinePaneProps) {
   return (
     <View className="flex-1" ref={rootRef}>
       {threadRootId && (
-        <View className="flex-row items-center border-b border-border px-4 py-2.5">
+        <View className="flex-row items-center border-b border-border bg-background px-4 py-2.5">
           <Breadcrumb
-            className="flex-1 flex-row flex-wrap items-center gap-x-1"
+            className="min-w-0 flex-1 flex-row flex-wrap items-center gap-x-1"
             items={crumbs.map((c) => ({
               key: c.key,
               label: c.label,
@@ -430,6 +606,7 @@ export function TimelinePane(props: TimelinePaneProps) {
         </View>
       )}
       {filterBar}
+      {makeCardSheet}
       {timeline.error && !timeline.state.messages.length ? (
         <View className="flex-1 items-center justify-center gap-2 px-8">
           <Text className="text-center text-sm text-muted-foreground">{timeline.error}</Text>
@@ -440,7 +617,10 @@ export function TimelinePane(props: TimelinePaneProps) {
       ) : (
         list
       )}
-      <View className="h-5 justify-center px-4">
+      <View style={typingColumnStyle}>
+        {runningDock}
+      </View>
+      <View className="h-5 justify-center" style={typingColumnStyle}>
         {typingText && <Text className="text-xs text-muted-foreground">{typingText}</Text>}
       </View>
       {!showComposer ? (

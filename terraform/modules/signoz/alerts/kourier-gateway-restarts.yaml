@@ -1,0 +1,162 @@
+# SigNoz alert: Kourier gateway container restarts
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (dotted metric names, builder queries not PromQL, v2alpha1, real
+# channel).
+#
+# Why (SHO-173): on 2026-10-22 12:05Z a distributed scanner sent 13k-41k req/min
+# at dead `preview--<uuid>.shogo.ai` hosts. prod-US served all of it through a
+# single `3scale-kourier-gateway` pod whose liveness probe (`/ready`,
+# timeoutSeconds 1) stopped answering under the load, so kubelet SIGKILLed it —
+# six times in a row (restart #86 -> #91) — and every US request was a 502 until
+# it came back. Same shape 10-21 00:15Z (#82-84) and 10-18 20:26Z (#75-80): 91
+# restarts in 105 days, and none of it paged anyone.
+#
+# Nothing watched the ingress pods themselves. This rule does: it fires on a
+# *delta* (restarts in the last 10m), not on the absolute count, because the
+# counter is kept for the life of the pod and a long-lived gateway pod
+# legitimately accumulates dozens over months.
+#
+# Signal: `k8s.container.restarts` from the k8s_cluster receiver, which is what
+# the k8s-infra `otel-deployment` runs in these clusters (verified on the live
+# prod-US/prod-EU collector configmaps: `receivers.k8s_cluster`,
+# collection_interval 30s — the same receiver prod-node-count-low.yaml reads
+# `k8s.node.condition_ready` from). kube-state-metrics is NOT deployed here, so
+# `kube_pod_container_status_restarts_total` does not exist.
+#
+# Scope: every cluster except staging — `k8s.cluster.name` is `shogo-production`
+# (US), `shogo-production-eu` (EU) and `shogo-staging`. Staging is excluded
+# because deliberate `kubectl` restarts there are normal; a rollout does not
+# trip the delta anyway (new ReplicaSet = new pod names, each starting at 0).
+#
+# Threshold: 3+ restarts inside a 10m window is a crash-loop, not a blip. One
+# stray container restart (node pressure, a single SIGKILL that recovers) stays
+# quiet — with the PDB and the 2-replica floor from SHO-173, one restart no
+# longer means a region-wide outage, and paging on it would train the on-call to
+# ignore this rule.
+
+alert: KourierGatewayRestarts
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    queries:
+      # A/B are the same gauge reduced two ways over the evaluation window, all
+      # disabled: only the formula is evaluated. A - B is "how many times this
+      # container restarted in the last 10 minutes".
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: k8s.container.restarts
+              timeAggregation: max
+              spaceAggregation: max
+          filter:
+            expression: "k8s.namespace.name = 'kourier-system' and k8s.container.name = 'kourier-gateway' and k8s.cluster.name != 'shogo-staging'"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: attribute
+              fieldDataType: string
+            - name: k8s.pod.name
+              fieldContext: attribute
+              fieldDataType: string
+          stepInterval: 60s
+      - type: builder_query
+        spec:
+          name: B
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: k8s.container.restarts
+              timeAggregation: min
+              spaceAggregation: min
+          filter:
+            expression: "k8s.namespace.name = 'kourier-system' and k8s.container.name = 'kourier-gateway' and k8s.cluster.name != 'shogo-staging'"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: attribute
+              fieldDataType: string
+            - name: k8s.pod.name
+              fieldContext: attribute
+              fieldDataType: string
+          stepInterval: 60s
+      - type: builder_formula
+        spec:
+          name: F1
+          expression: A - B
+          legend: "{{k8s.pod.name}} restarts_10m"
+  selectedQueryName: F1
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: on_average
+        target: 2
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 10m
+    frequency: 1m
+labels:
+  severity: critical
+  team: platform
+  incident_class: ingress
+notificationSettings:
+  groupBy: [k8s.cluster.name, k8s.pod.name]
+  renotify:
+    enabled: true
+    interval: 1h
+    alertStates: [firing]
+annotations:
+  summary: "Kourier gateway is restarting repeatedly on {{k8s.cluster.name}} — that region's ingress is degraded"
+  description: |-
+    `3scale-kourier-gateway` on {{k8s.cluster.name}} restarted 3+ times in the
+    last 10 minutes (pod {{k8s.pod.name}}). Every API, studio and preview request
+    in that region goes through these pods, so this is the 2026-10-22 incident
+    pattern: a traffic flood or an OOM kills the gateway, and the region 502s at
+    Cloudflare until enough replicas come back.
+
+    Triage, in order:
+
+    1. How many replicas are actually serving, and on which nodes?
+       `kubectl --context oke-us -n kourier-system get pods -o wide`
+       `kubectl --context oke-us -n kourier-system get hpa`
+       Expect HPA min 2, both Ready, on different nodes. If only one is Ready the
+       next kill is a user-visible outage — fix that first.
+
+    2. Why did it die?
+       `kubectl --context oke-us -n kourier-system describe pod <pod> | tail -30`
+       - `Last State: ... Reason: OOMKilled` -> memory limit (2Gi) too low for
+         the route table; see terraform/modules/knative-oci `kourier_gateway_capacity`.
+       - `Reason: Error, Exit Code: 137` with no OOMKilled -> SIGKILLed for
+         failing the liveness probe. Check whether it was under load:
+         `kubectl --context oke-us -n kourier-system logs <pod> --previous | tail -50`
+         A busy-but-alive Envoy must never be killed for being busy: the probe is
+         `timeoutSeconds 5 / failureThreshold 6` (SHO-173). If live values are
+         still 1/3, the targeted terraform apply has not run yet.
+
+    3. Is it a flood?
+       SigNoz > Kourier access logs for the region, grouped by
+       `http.host`, last 15m. Random `preview--<uuid>.shogo.ai` hosts with a
+       404-NR storm mean the legacy preview scheme is being probed — the edge
+       `block_retired_preview_hosts` rule in terraform/environments/edge-global
+       is supposed to drop that at Cloudflare. If those hosts still reach
+       Kourier, check the rule is live:
+       `terraform -chdir=terraform/environments/edge-global state show \
+          cloudflare_ruleset.worker_m2m_bot_skip`
+
+    4. Edge state: Cloudflare > shogo.ai > Security > WAF > Custom rules shows
+       "Block the retired preview--<id>.shogo.ai host scheme". Cloudflare's own
+       health checks (`/api/health`, 60s interval, 2 retries) take up to a few
+       minutes to fail a pool over, so a short restart is survivable — a
+       repeating one is not.
+
+    Runbook: docs/runbooks/deploy-prod.md

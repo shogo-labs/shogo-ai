@@ -30,6 +30,7 @@ import {
   type LucideIcon,
 } from "lucide-react-native"
 import { TransportBadge } from "./TransportBadge"
+import { CodeText } from "./CodeText"
 
 const TRUNCATION_THRESHOLD = 500
 const MAX_DEPTH = 2
@@ -222,9 +223,9 @@ export function ToolCallDisplay({
                 nestedScrollEnabled
                 className="bg-black/5 dark:bg-white/5 rounded p-1.5 max-h-32"
               >
-                <Text className="text-[10px] font-mono text-foreground" selectable>
+                <CodeText className="text-[10px] font-mono text-foreground">
                   {JSON.stringify(args, null, 2)}
-                </Text>
+                </CodeText>
               </ScrollView>
             </View>
           )}
@@ -245,9 +246,9 @@ export function ToolCallDisplay({
               )}
 
               <ScrollView nestedScrollEnabled className="bg-black/5 dark:bg-white/5 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-foreground" selectable>
+                <CodeText className="text-[10px] font-mono text-foreground">
                   {showFullResult ? resultString : truncated.displayContent}
-                </Text>
+                </CodeText>
               </ScrollView>
 
               {truncated.isTruncated && (

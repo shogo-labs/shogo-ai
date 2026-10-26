@@ -57,6 +57,8 @@ const STACK_MARKERS: Record<string, string | null> = {
   // Hono/Prisma backend; `app.json` is the unambiguous client marker.
   'react-native': 'app.json',
   'python-data': 'requirements.txt',
+  // Remotion's config file: no other stack writes one.
+  'video-editor': 'remotion.config.ts',
   'docker-compose': 'docker-compose.yml',
   'unity-game': null, // Empty starter (Unity assets are managed by Unity).
   none: null, // Bare workspace by definition.

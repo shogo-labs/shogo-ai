@@ -159,6 +159,8 @@ export function slackIconUrl(url: string | null | undefined): string | null {
 
 /** Slack action ids for approval buttons; the interactions route matches on this prefix. */
 export const APPROVAL_ACTION_PREFIX = 'shogo_approval_'
+/** Slack action ids for question-card option buttons. */
+export const QUESTION_ACTION_PREFIX = 'shogo_question_'
 
 /**
  * Block Kit for a message with buttons. A message edited to have no buttons
@@ -175,7 +177,7 @@ export function slackBlocks(text: string, actions: OutboundMessage['actions']): 
       elements: actions.map((a) => ({
         type: 'button',
         text: { type: 'plain_text', text: a.label },
-        action_id: `${APPROVAL_ACTION_PREFIX}${a.id}`,
+        action_id: `${a.kind === 'question' ? QUESTION_ACTION_PREFIX : APPROVAL_ACTION_PREFIX}${a.id}`,
         value: a.value,
         ...(a.style ? { style: a.style } : {}),
       })),

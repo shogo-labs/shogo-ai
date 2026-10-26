@@ -316,7 +316,7 @@ test.describe("Streaming Relay Latency — E2E", () => {
     test.setTimeout(STREAM_TEST_TIMEOUT)
     streamConfig = { numChunks: 10, intervalMs: 100, chunkSize: 50 }
 
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     const metrics: any = await page.evaluate(

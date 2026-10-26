@@ -1,0 +1,15 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: engineering-problems
+name: Engineering Problems
+summary: Production errors grouped by fingerprint, investigated, and resolved (Interfere-style Problems).
+channel: engineering
+board:
+  name: Problems
+  itemType: problem
+  keyPrefix: PRB
+  description: Errors and regressions reported by monitoring. Repeats of the same fingerprint update the open card.
+  postToChannel: all

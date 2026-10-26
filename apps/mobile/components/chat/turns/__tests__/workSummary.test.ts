@@ -63,9 +63,33 @@ function toolWithId(
   }
 }
 
-const emptyCounts: WorkCounts = { editedFiles: 0, readFiles: 0, searches: 0, fetches: 0, commands: 0 }
+const emptyCounts: WorkCounts = {
+  editedFiles: 0,
+  readFiles: 0,
+  searches: 0,
+  fetches: 0,
+  lookups: 0,
+  commands: 0,
+  integrations: 0,
+  integrationToolkits: [],
+  generic: 0,
+  genericToolNames: [],
+}
 
 describe("tallyWork", () => {
+  test("counts integration/MCP calls with their distinct toolkits", () => {
+    const parts = [
+      tool("github_merge_pr"),
+      tool("GITHUB_RUN_GRAPH_QL_QUERY"),
+      tool("mcp__linear__list_issues"),
+    ]
+    const { counts } = tallyWork(parts)
+    expect(counts.integrations).toBe(3)
+    expect(counts.integrationToolkits).toEqual(["github", "linear"])
+    expect(counts.commands).toBe(0)
+    expect(counts.lookups).toBe(0)
+  })
+
   test("counts a write_file as an edited file with added lines from content", () => {
     const parts = [tool("write_file", { path: "/a.ts", content: "line1\nline2\nline3" })]
     const { counts, added, removed } = tallyWork(parts)
@@ -106,6 +130,19 @@ describe("tallyWork", () => {
     const parts = [tool("WebFetch", { url: "https://example.com" })]
     const { counts } = tallyWork(parts)
     expect(counts.fetches).toBe(1)
+  })
+
+  test("counts read-only runtime tools as lookups", () => {
+    const parts = [
+      tool("project_list"),
+      tool("team_chat_read", { channel: "general" }),
+      tool("impact_radius", { files: ["src/a.ts"] }),
+      tool("read_lints", { paths: ["src/a.ts"] }),
+    ]
+    const { counts } = tallyWork(parts)
+    expect(counts.lookups).toBe(4)
+    expect(counts.readFiles).toBe(0)
+    expect(counts.commands).toBe(0)
   })
 
   test("counts a generic shell command (exec) as commands", () => {
@@ -204,53 +241,233 @@ describe("classifyWorkKind", () => {
     expect(classifyWorkKind({ ...emptyCounts, readFiles: 1 })).toBe("explored")
     expect(classifyWorkKind({ ...emptyCounts, searches: 1 })).toBe("explored")
     expect(classifyWorkKind({ ...emptyCounts, fetches: 1 })).toBe("explored")
+    expect(classifyWorkKind({ ...emptyCounts, lookups: 1 })).toBe("explored")
   })
 
   test("ran when only commands (or nothing) is present", () => {
     expect(classifyWorkKind({ ...emptyCounts, commands: 3 })).toBe("ran")
     expect(classifyWorkKind(emptyCounts)).toBe("ran")
   })
+
+  test("used when only integration calls are present", () => {
+    expect(classifyWorkKind({ ...emptyCounts, integrations: 2, integrationToolkits: ["github"] })).toBe("used")
+  })
+
+  test("commands and explore/edit buckets take priority over used", () => {
+    const integ = { integrations: 2, integrationToolkits: ["github"] }
+    expect(classifyWorkKind({ ...emptyCounts, ...integ, commands: 1 })).toBe("ran")
+    expect(classifyWorkKind({ ...emptyCounts, ...integ, readFiles: 1 })).toBe("explored")
+    expect(classifyWorkKind({ ...emptyCounts, ...integ, editedFiles: 1 })).toBe("edited")
+  })
 })
 
 describe("buildWorkLabel", () => {
   test("edited + past tense: 'Edited N files, explored ..., ran N commands'", () => {
-    const counts: WorkCounts = { editedFiles: 11, readFiles: 0, searches: 3, fetches: 1, commands: 13 }
+    const counts: WorkCounts = {
+      ...emptyCounts,
+      editedFiles: 11,
+      readFiles: 0,
+      searches: 3,
+      fetches: 1,
+      lookups: 2,
+      commands: 13,
+    }
     expect(buildWorkLabel(counts, "edited", "past")).toBe(
-      "Edited 11 files, explored 3 searches, 1 fetch, ran 13 commands",
+      "Edited 11 files, explored 3 searches, 1 fetch, 2 lookups, ran 13 commands",
     )
   })
 
   test("edited + present tense uses 'Editing' but keeps trailing segments past tense", () => {
-    const counts: WorkCounts = { editedFiles: 32, readFiles: 0, searches: 1, fetches: 0, commands: 23 }
+    const counts: WorkCounts = {
+      ...emptyCounts,
+      editedFiles: 32,
+      readFiles: 0,
+      searches: 1,
+      fetches: 0,
+      lookups: 0,
+      commands: 23,
+    }
     expect(buildWorkLabel(counts, "edited", "present")).toBe(
       "Editing 32 files, explored 1 search, ran 23 commands",
     )
   })
 
   test("edited with singular file count uses singular noun", () => {
-    const counts: WorkCounts = { editedFiles: 1, readFiles: 0, searches: 0, fetches: 0, commands: 0 }
+    const counts: WorkCounts = {
+      ...emptyCounts,
+      editedFiles: 1,
+      readFiles: 0,
+      searches: 0,
+      fetches: 0,
+      lookups: 0,
+      commands: 0,
+    }
     expect(buildWorkLabel(counts, "edited", "past")).toBe("Edited 1 file")
   })
 
   test("explored + past tense: 'Explored N files, N searches, ran N commands'", () => {
-    const counts: WorkCounts = { editedFiles: 0, readFiles: 14, searches: 9, fetches: 0, commands: 4 }
+    const counts: WorkCounts = {
+      ...emptyCounts,
+      editedFiles: 0,
+      readFiles: 14,
+      searches: 9,
+      fetches: 0,
+      lookups: 0,
+      commands: 4,
+    }
     expect(buildWorkLabel(counts, "explored", "past")).toBe("Explored 14 files, 9 searches, ran 4 commands")
   })
 
   test("explored + present tense uses 'Exploring'", () => {
-    const counts: WorkCounts = { editedFiles: 0, readFiles: 2, searches: 0, fetches: 0, commands: 0 }
+    const counts: WorkCounts = {
+      ...emptyCounts,
+      editedFiles: 0,
+      readFiles: 2,
+      searches: 0,
+      fetches: 0,
+      lookups: 0,
+      commands: 0,
+    }
     expect(buildWorkLabel(counts, "explored", "present")).toBe("Exploring 2 files")
   })
 
   test("ran: 'Ran N commands' / 'Running N commands'", () => {
-    const counts: WorkCounts = { editedFiles: 0, readFiles: 0, searches: 0, fetches: 0, commands: 3 }
+    const counts: WorkCounts = {
+      ...emptyCounts,
+      editedFiles: 0,
+      readFiles: 0,
+      searches: 0,
+      fetches: 0,
+      lookups: 0,
+      commands: 3,
+    }
     expect(buildWorkLabel(counts, "ran", "past")).toBe("Ran 3 commands")
     expect(buildWorkLabel(counts, "ran", "present")).toBe("Running 3 commands")
   })
 
   test("ran with a single command uses singular noun", () => {
-    const counts: WorkCounts = { editedFiles: 0, readFiles: 0, searches: 0, fetches: 0, commands: 1 }
+    const counts: WorkCounts = {
+      ...emptyCounts,
+      editedFiles: 0,
+      readFiles: 0,
+      searches: 0,
+      fetches: 0,
+      lookups: 0,
+      commands: 1,
+    }
     expect(buildWorkLabel(counts, "ran", "past")).toBe("Ran 1 command")
+  })
+
+  test("lookup-only groups use the lookup label", () => {
+    const counts = { ...emptyCounts, lookups: 2 }
+    expect(buildWorkLabel(counts, "explored", "past")).toBe("Explored 2 lookups")
+  })
+
+  test("used + single toolkit: 'Used N GitHub tools' / 'Using …'", () => {
+    const counts = { ...emptyCounts, integrations: 3, integrationToolkits: ["github"] }
+    expect(buildWorkLabel(counts, "used", "past")).toBe("Used 3 GitHub tools")
+    expect(buildWorkLabel(counts, "used", "present")).toBe("Using 3 GitHub tools")
+  })
+
+  test("used with a single call uses singular noun", () => {
+    const counts = { ...emptyCounts, integrations: 1, integrationToolkits: ["googlecalendar"] }
+    expect(buildWorkLabel(counts, "used", "past")).toBe("Used 1 Google Calendar tool")
+  })
+
+  test("used + mixed toolkits falls back to 'integration tools'", () => {
+    const counts = { ...emptyCounts, integrations: 4, integrationToolkits: ["github", "linear"] }
+    expect(buildWorkLabel(counts, "used", "past")).toBe("Used 4 integration tools")
+  })
+
+  test("integration segment trails explored/ran segments", () => {
+    const integ = { integrations: 3, integrationToolkits: ["github"] }
+    expect(buildWorkLabel({ ...emptyCounts, ...integ, readFiles: 2, commands: 1 }, "explored", "past")).toBe(
+      "Explored 2 files, ran 1 command, used 3 GitHub tools",
+    )
+    expect(buildWorkLabel({ ...emptyCounts, ...integ, commands: 2 }, "ran", "past")).toBe(
+      "Ran 2 commands, used 3 GitHub tools",
+    )
+    expect(buildWorkLabel({ ...emptyCounts, ...integ, editedFiles: 1 }, "edited", "past")).toBe(
+      "Edited 1 file, used 3 GitHub tools",
+    )
+  })
+})
+
+describe("generic tools in work labels", () => {
+  test("tallyWork counts generic tools by distinct raw name", () => {
+    const { counts } = tallyWork([
+      tool("team_chat_post", { channel: "a", text: "1" }),
+      tool("team_chat_post", { channel: "a", text: "2" }),
+      tool("Skill", { name: "x" }),
+    ])
+    expect(counts.generic).toBe(3)
+    expect(counts.genericToolNames).toEqual(["Skill", "team_chat_post"])
+    expect(counts.commands).toBe(0)
+    expect(counts.integrations).toBe(0)
+  })
+
+  test("generic-only runs classify as 'used'", () => {
+    expect(classifyWorkKind({ ...emptyCounts, generic: 1, genericToolNames: ["team_chat_post"] })).toBe("used")
+  })
+
+  test("a lone generic tool reads as its name; repeats get an xN suffix", () => {
+    const single = { ...emptyCounts, generic: 1, genericToolNames: ["team_chat_post"] }
+    expect(buildWorkLabel(single, "used", "past")).toBe("Team chat post")
+    const repeated = { ...emptyCounts, generic: 3, genericToolNames: ["team_chat_post"] }
+    expect(buildWorkLabel(repeated, "used", "past")).toBe("Team chat post x3")
+  })
+
+  test("several distinct generic tools read as a count", () => {
+    const counts = { ...emptyCounts, generic: 4, genericToolNames: ["Skill", "team_chat_post"] }
+    expect(buildWorkLabel(counts, "used", "past")).toBe("Used 4 tools")
+    expect(buildWorkLabel(counts, "used", "present")).toBe("Using 4 tools")
+  })
+
+  test("generic tools trail integrations in a 'used' label", () => {
+    const integ = { integrations: 3, integrationToolkits: ["github"] }
+    expect(
+      buildWorkLabel({ ...emptyCounts, ...integ, generic: 1, genericToolNames: ["team_chat_post"] }, "used", "past"),
+    ).toBe("Used 3 GitHub tools, team chat post")
+    expect(
+      buildWorkLabel(
+        { ...emptyCounts, ...integ, generic: 4, genericToolNames: ["Skill", "team_chat_post"] },
+        "used",
+        "past",
+      ),
+    ).toBe("Used 3 GitHub tools, 4 other tools")
+  })
+
+  test("generic tools trail explored/ran segments", () => {
+    expect(
+      buildWorkLabel(
+        { ...emptyCounts, readFiles: 2, generic: 1, genericToolNames: ["team_chat_post"] },
+        "explored",
+        "past",
+      ),
+    ).toBe("Explored 2 files, team chat post")
+    expect(
+      buildWorkLabel(
+        { ...emptyCounts, readFiles: 2, generic: 4, genericToolNames: ["Skill", "team_chat_post"] },
+        "explored",
+        "past",
+      ),
+    ).toBe("Explored 2 files, used 4 tools")
+    expect(
+      buildWorkLabel(
+        { ...emptyCounts, commands: 2, generic: 1, genericToolNames: ["team_chat_post"] },
+        "ran",
+        "past",
+      ),
+    ).toBe("Ran 2 commands, team chat post")
+  })
+
+  test("end-to-end: a read followed by team_chat_post posts reads as one explored run", () => {
+    const summary = summarizeWork(
+      [tool("Read", { path: "/a.ts" }), tool("team_chat_post", { channel: "general", text: "done" })],
+      "past",
+    )
+    expect(summary.kind).toBe("explored")
+    expect(summary.label).toBe("Explored 1 file, team chat post")
   })
 })
 
@@ -266,6 +483,17 @@ describe("summarizeWork", () => {
     expect(summary.label).toContain("Edited 1 file")
     expect(summary.added).toBe(2)
     expect(summary.removed).toBe(1)
+  })
+
+  test("an integration-only run reads as 'Used N <Toolkit> tools'", () => {
+    const parts: MessagePart[] = [
+      tool("github_merge_pr"),
+      { type: "reasoning", id: nextId("r"), text: "merge queue", isStreaming: false },
+      tool("GITHUB_RUN_GRAPH_QL_QUERY"),
+    ]
+    const summary = summarizeWork(parts, "past")
+    expect(summary.kind).toBe("used")
+    expect(summary.label).toBe("Used 2 GitHub tools")
   })
 
   test("a pure read/search run without edits classifies as explored", () => {

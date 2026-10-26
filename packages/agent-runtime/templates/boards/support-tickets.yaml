@@ -1,0 +1,47 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: support-tickets
+name: Support Tickets
+summary: Customer tickets from new to solved, with a first-response SLA and a waiting-on-customer column.
+channel: support
+board:
+  name: Tickets
+  itemType: ticket
+  keyPrefix: SUP
+  description: Every customer request. Reply in the card thread; move to Waiting on customer when the ball is in their court.
+  columns:
+    - name: New
+      category: backlog
+      slaHours: 4
+    - name: Open
+      category: active
+      wipLimit: 15
+      slaHours: 24
+    - name: Waiting on customer
+      category: waiting
+    - name: Solved
+      category: done
+  fields:
+    - key: customer
+      label: Customer
+      type: text
+      required: true
+    - key: plan
+      label: Plan
+      type: select
+      options:
+        - free
+        - pro
+        - enterprise
+    - key: channel
+      label: Came in via
+      type: select
+      options:
+        - email
+        - chat
+        - phone
+        - social
+  postToChannel: done_only

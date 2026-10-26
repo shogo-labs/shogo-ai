@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-/** Labels and ordering for a personal workspace's side (non-primary) chats. */
+/** Labels and ordering for a user's personal workspace-agent chats. */
 
 export interface SideChatItem {
   id: string
@@ -8,6 +8,8 @@ export interface SideChatItem {
   inferredName?: string | null
   lastActiveAt?: string
   createdAt?: string
+  isPinned?: boolean
+  isArchived?: boolean
 }
 
 export function sideChatLabel(session: SideChatItem): string {
@@ -20,7 +22,9 @@ export function sideChatLabel(session: SideChatItem): string {
 
 const lastActive = (s: SideChatItem) => new Date(s.lastActiveAt || s.createdAt || 0).getTime()
 
-/** Most recently active first. */
+/** Pinned chats first, then most recently active. */
 export function sortSideChats<T extends SideChatItem>(sessions: T[]): T[] {
-  return [...sessions].sort((a, b) => lastActive(b) - lastActive(a))
+  return [...sessions].sort((a, b) =>
+    Number(!!b.isPinned) - Number(!!a.isPinned) || lastActive(b) - lastActive(a),
+  )
 }

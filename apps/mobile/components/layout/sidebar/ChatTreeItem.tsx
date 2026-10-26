@@ -37,6 +37,7 @@ function sessionActivityLabel(session: any): string | null {
   const value =
     session.activity ??
     session.lastMessageAt ??
+    session.lastActiveAt ??
     session.updatedAt ??
     session.createdAt ??
     null;
@@ -275,7 +276,13 @@ export function ChatTreeItem({
                   : "gap-1 px-1 py-1.5"
               ),
           rowClassName,
-          active ? "bg-primary/10" : "hover:bg-accent/50 active:bg-accent/50"
+          workspacePane
+            ? active
+              ? "bg-sidebar-accent"
+              : "hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60"
+            : active
+              ? "bg-primary/10"
+              : "hover:bg-accent/50 active:bg-accent/50"
         )}
         {...(Platform.OS === "web"
           ? ({ onContextMenu: handleContextMenu } as any)
@@ -289,16 +296,19 @@ export function ChatTreeItem({
                 className="text-primary animate-spin"
                 accessibilityLabel="Chat running"
               />
-            ) : (
+            ) : isCompleted ? (
               <View
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  isCompleted ? "bg-primary" : "bg-muted-foreground/70"
-                )}
-                accessibilityLabel={
-                  isCompleted ? "Chat has new activity" : undefined
-                }
+                className="h-1.5 w-1.5 rounded-full bg-primary"
+                accessibilityLabel="Chat has new activity"
               />
+            ) : session.isPinned ? (
+              <Pin
+                size={11}
+                className="text-muted-foreground"
+                accessibilityLabel="Pinned"
+              />
+            ) : (
+              <View className="h-1.5 w-1.5 rounded-full bg-muted-foreground/70" />
             )}
           </View>
         ) : isStreaming ? (
@@ -312,10 +322,13 @@ export function ChatTreeItem({
             className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
             accessibilityLabel="Chat has new activity"
           />
-        ) : session.isPinned && !comfortable ? (
+        ) : session.isPinned ? (
+          // Same pin in every density: a pinned chat has to be findable on a
+          // phone row, not just in the compact desktop tree.
           <Pin
-            size={comfortable ? density.icon.sm : 10}
+            size={comfortable ? density.icon.sm : 11}
             className="text-muted-foreground shrink-0"
+            accessibilityLabel="Pinned"
           />
         ) : null}
         <Text
@@ -323,8 +336,12 @@ export function ChatTreeItem({
             textClassName ?? (comfortable ? density.text.body : "text-xs"),
             "flex-1",
             active
-              ? "text-foreground"
-              : inactiveTextClassName ?? "text-muted-foreground"
+              ? workspacePane
+                ? "font-semibold text-sidebar-accent-foreground"
+                : "text-foreground"
+              : workspacePane
+                ? inactiveTextClassName ?? "text-sidebar-foreground/80"
+                : inactiveTextClassName ?? "text-muted-foreground"
           )}
           numberOfLines={1}
         >
@@ -334,11 +351,13 @@ export function ChatTreeItem({
           state. The one overflow menu replaces the previously exposed actions.
           Gated on web (hover-only), not on comfortable density — a touch-only
           narrow web viewport still gets no functional hover affordance here
-          either way, same as before this density fix. */}
+          either way, same as before this density fix.
+          The slot keeps a fixed size: the label stays in flow and the menu
+          overlays it, so hover only changes opacity, never the row's size. */}
         {Platform.OS === "web" && workspacePane && (
-          <View className="ml-auto flex flex-row items-center gap-0.5 shrink-0">
+          <View className="relative ml-auto h-4 min-w-4 shrink-0 flex-row items-center justify-end">
             {activityLabel ? (
-              <Text className="mr-1 text-[11px] text-muted-foreground group-hover:hidden">
+              <Text className="mr-1 text-[11px] text-muted-foreground group-hover:opacity-0">
                 {activityLabel}
               </Text>
             ) : null}
@@ -351,7 +370,7 @@ export function ChatTreeItem({
                   y: event.clientY ?? event.pageY ?? 0,
                 });
               }}
-              className="hidden p-0.5 group-hover:flex"
+              className="absolute right-0 h-4 w-4 items-center justify-center opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
               accessibilityLabel={`Manage ${label}`}
             >
               <MoreHorizontal size={14} className="text-muted-foreground" />

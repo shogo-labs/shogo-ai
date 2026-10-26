@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { clearDynamicModels, registerDynamicModels, rememberProviderHint } from '@shogo/model-catalog'
 
 // --- Module mocks (set up BEFORE importing the SUT) ------------------------
 
@@ -50,6 +51,7 @@ import {
   resolveSubagentModel,
   runSubagent,
   runSubagentsParallel,
+  BUILTIN_SUBAGENT_TYPES,
 } from '../subagent'
 
 afterEach(() => {
@@ -61,7 +63,7 @@ afterEach(() => {
 describe('getBuiltinSubagentConfig', () => {
   const cases = [
     'explore', 'general-purpose', 'code-reviewer', 'browser',
-    'browser_qa', 'channel', 'media', 'devops',
+    'browser_qa', 'channel', 'media',
   ] as const
 
   for (const name of cases) {
@@ -77,17 +79,29 @@ describe('getBuiltinSubagentConfig', () => {
     expect(getBuiltinSubagentConfig('mystery', {} as any, [])).toBeNull()
   })
 
-  it('explore is haiku + 5 turns + readonly tool set', () => {
+  it('devops is no longer a built-in type (SHO-184)', () => {
+    expect(getBuiltinSubagentConfig('devops', {} as any, [])).toBeNull()
+  })
+
+  it('BUILTIN_SUBAGENT_TYPES matches the switch exactly', () => {
+    for (const name of BUILTIN_SUBAGENT_TYPES) {
+      expect(getBuiltinSubagentConfig(name, {} as any, [])).not.toBeNull()
+    }
+    expect([...BUILTIN_SUBAGENT_TYPES].sort()).toEqual([...cases].sort())
+  })
+
+  it('explore is auto + 100 turns + readonly tool set', () => {
     const cfg = getBuiltinSubagentConfig('explore', {} as any, [])!
-    expect(cfg.model).toBe('claude-haiku-4-5')
-    expect(cfg.maxTurns).toBe(5)
+    expect(cfg.model).toBe('auto')
+    expect(cfg.maxTurns).toBe(100)
     expect(cfg.toolNames).toContain('read_file')
     expect(cfg.disallowedTools).toContain('task')
   })
 
-  it('browser_qa uses an OpenAI provider', () => {
+  it('browser_qa routes through Auto rather than a pinned model', () => {
     const cfg = getBuiltinSubagentConfig('browser_qa', {} as any, [])!
-    expect(cfg.provider).toBe('openai')
+    expect(cfg.model).toBe('auto')
+    expect(cfg.provider).toBeUndefined()
   })
 })
 
@@ -177,12 +191,19 @@ describe('resolveModelTier', () => {
     expect(resolveModelTier('default', 'parent-model')).toBe('parent-model')
   })
 
-  it('returns the fast tier model', () => {
-    expect(resolveModelTier('fast', 'parent-model')).toBe('claude-haiku-4-5')
+  it('maps fast to the economy Auto tier from the admin override', () => {
+    expect(resolveModelTier('fast', 'parent-model', { economy: { id: 'economy-model' } })).toBe('economy-model')
   })
 
-  it('returns the capable tier model', () => {
-    expect(resolveModelTier('capable', 'parent-model')).toBe('claude-sonnet-4-6')
+  it('maps capable to the premium Auto tier from the admin override', () => {
+    expect(resolveModelTier('capable', 'parent-model', { premium: { id: 'premium-model' } })).toBe('premium-model')
+  })
+
+  it('falls back to the package Auto tier map when no override is set', () => {
+    const fast = resolveModelTier('fast', 'parent-model')
+    expect(fast).toBeTruthy()
+    expect(fast).not.toBe('parent-model')
+    expect(fast).not.toBe('auto')
   })
 
   it('falls back to parent for unrecognized tiers', () => {
@@ -381,6 +402,36 @@ describe('resolveSubagentModel', () => {
     expect(r.experimentVariant).toBe('B')
     expect(r.model).toBe('sonnet')
   })
+
+  describe('with DB-defined (UUID) models', () => {
+    const OPUS_UUID = '8947628a-1415-4b3a-90c3-63f8a85c16b7'
+    afterEach(() => clearDynamicModels())
+
+    it('resolves a provider-less override for a registered Anthropic UUID to anthropic', async () => {
+      registerDynamicModels([{ id: OPUS_UUID, provider: 'anthropic', apiModel: 'claude-opus-5-5' }])
+      fetchImpl = async () => new Response(JSON.stringify({
+        override: { model: OPUS_UUID, provider: null, source: 'workspace' },
+        experiment: null,
+      }), { status: 200 })
+      const r = await resolveSubagentModel('explore', 'w1', null, undefined, undefined, 'haiku', 'custom')
+      expect(r.provider).toBe('anthropic')
+    })
+
+    it('resolves an experiment UUID learned from a chat provider hint to anthropic', async () => {
+      rememberProviderHint(OPUS_UUID, 'anthropic')
+      fetchImpl = async () => new Response(JSON.stringify({
+        override: null,
+        experiment: { experimentId: 'e1', model: OPUS_UUID, variant: 'A' },
+      }), { status: 200 })
+      const r = await resolveSubagentModel('explore', 'w1', null, undefined, undefined, 'haiku', 'custom', 'bkt')
+      expect(r.provider).toBe('anthropic')
+    })
+
+    it('still resolves an unregistered UUID to custom', async () => {
+      const r = await resolveSubagentModel('explore', null, null, OPUS_UUID, undefined, 'haiku', 'anthropic')
+      expect(r.provider).toBe('custom')
+    })
+  })
 })
 
 // --- runSubagent — core paths ---------------------------------------------
@@ -400,6 +451,50 @@ function makeCtx(over: Partial<any> = {}): any {
     ...over,
   }
 }
+
+describe('runSubagent — a failed run carries its cause', () => {
+  it('keeps the loop error with the empty response instead of dropping it', async () => {
+    runAgentLoopImpl = async () => ({
+      text: '',
+      toolCalls: [],
+      iterations: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      newMessages: [],
+      effectiveModelId: 'parent-model',
+      error: new Error('provider 400: bad tool schema'),
+    })
+    const cfg = { name: 'browser_qa', description: 'check it', systemPrompt: 's' } as any
+
+    const result = await runSubagent(cfg, 'check the page', makeCtx(), [])
+
+    expect(result.responseEmpty).toBe(true)
+    expect(result.error?.message).toBe('provider 400: bad tool schema')
+  })
+
+  it('a thrown run reports its message as the error', async () => {
+    runAgentLoopImpl = async () => {
+      throw new Error('browser tool missing')
+    }
+    const cfg = { name: 'browser_qa', description: 'check it', systemPrompt: 's' } as any
+
+    const result = await runSubagent(cfg, 'check the page', makeCtx(), [])
+
+    expect(result.error?.message).toBe('browser tool missing')
+    expect(result.responseText).toContain('browser tool missing')
+  })
+
+  it('a successful run carries no error', async () => {
+    runAgentLoopImpl = async () => ({
+      text: 'all good', toolCalls: [], iterations: 1, inputTokens: 1, outputTokens: 1,
+      cacheReadTokens: 0, cacheWriteTokens: 0, newMessages: [], effectiveModelId: 'parent-model',
+    })
+    const cfg = { name: 'explore', description: 'look', systemPrompt: 's' } as any
+    expect((await runSubagent(cfg, 'p', makeCtx(), [])).error).toBeUndefined()
+  })
+})
 
 describe('runSubagent — success paths', () => {
   beforeEach(() => {
@@ -431,6 +526,40 @@ describe('runSubagent — success paths', () => {
     expect(result.iterations).toBe(2)
     expect(result.responseEmpty).toBe(false)
     expect(events).toEqual(['start', 'model', 'end'])
+  })
+
+  it('routes explore through auto even when the parent is not in auto mode', async () => {
+    let observed: any = {}
+    runAgentLoopImpl = async (opts: any) => {
+      observed = opts
+      return { text: 'ok', toolCalls: [], iterations: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, newMessages: [], effectiveModelId: opts.model }
+    }
+    const writes: any[] = []
+    const ctx = makeCtx({
+      uiWriter: { write: (e: any) => writes.push(e) },
+      autoTierOverride: {
+        economy: { id: 'tier-economy' },
+        standard: { id: 'tier-standard' },
+        premium: { id: 'tier-premium', provider: 'anthropic' },
+      },
+    })
+    const cfg = getBuiltinSubagentConfig('explore', ctx, [])!
+    await runSubagent(cfg, 'find where auth is handled', ctx, [])
+    expect(['tier-economy', 'tier-standard', 'tier-premium']).toContain(observed.model)
+    expect(observed.maxIterations).toBe(100)
+    expect(writes.some(e => e.type === 'data-routing-decision')).toBe(true)
+  })
+
+  it('an explicit model_tier still wins over explore auto routing', async () => {
+    let observed: any = {}
+    runAgentLoopImpl = async (opts: any) => {
+      observed = opts
+      return { text: 'ok', toolCalls: [], iterations: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, newMessages: [], effectiveModelId: opts.model }
+    }
+    const cfg = { ...getBuiltinSubagentConfig('explore', makeCtx(), [])!, modelTier: 'capable' as const }
+    await runSubagent(cfg, 'p', makeCtx(), [])
+    expect(observed.model).not.toBe('auto')
+    expect(observed.model).toBe(resolveModelTier('capable', 'parent-model'))
   })
 
   it('reuses the parent provider hint when inheriting a DB-defined (UUID) model', async () => {
@@ -623,6 +752,26 @@ describe('runSubagent — success paths', () => {
     await runSubagent(cfg, 'p', ctx, allTools)
     expect(calledMock).toBe(true)
     expect(observed.find(t => t.name === 'read_file')).toBeDefined()
+  })
+
+  it('awaits async mocks and handles their passthrough', async () => {
+    const ctx = makeCtx({
+      toolMockFns: new Map<string, (p: any) => Promise<unknown>>([
+        ['exec', async (p) => (p.command === 'gh pr list' ? { prs: [] } : '__passthrough')],
+      ]),
+    })
+    const results: any[] = []
+    runAgentLoopImpl = async (opts: any) => {
+      const tool = opts.tools.find((t: any) => t.name === 'exec')
+      results.push(await tool.execute('tc1', { command: 'gh pr list' }))
+      results.push(await tool.execute('tc2', { command: 'ls' }))
+      return { text: 'ok', toolCalls: [], iterations: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, newMessages: [], effectiveModelId: 'm' }
+    }
+    const allTools = [{ name: 'exec', execute: async () => 'real' } as any]
+    const cfg = { name: 'c', description: 'd', systemPrompt: 's', toolNames: ['exec'] } as any
+    await runSubagent(cfg, 'p', ctx, allTools)
+    expect(results[0].details).toEqual({ prs: [] })
+    expect(results[1]).toBe('real')
   })
 })
 

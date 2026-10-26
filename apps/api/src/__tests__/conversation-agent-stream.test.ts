@@ -47,6 +47,42 @@ describe('readAgentStream', () => {
     expect(failedTurn.failed).toBe(true)
   })
 
+  test('keeps connect requests, one per provider, so the thread can show a connect card', async () => {
+    const summary = await readAgentStream(chunkedResponse([
+      frame({ type: 'data-integration-auth-required', data: { provider: 'github', connectUrl: 'https://studio.test/old' } }),
+      frame({ type: 'data-integration-auth-required', data: { provider: 'github', connectUrl: 'https://studio.test/new', message: 'connect first' } }),
+      frame({ type: 'data-integration-auth-required', data: { provider: 'composio:linear' } }),
+      frame({ type: 'finish' }),
+    ]), () => {})
+    expect(summary.connect).toEqual([{ provider: 'github', connectUrl: 'https://studio.test/new', message: 'connect first' }])
+    expect((await readAgentStream(chunkedResponse([frame({ type: 'finish' })]), () => {})).connect).toBeUndefined()
+  })
+
+  test('every frame counts as activity, including the turn heartbeat', async () => {
+    let activity = 0
+    await readAgentStream(chunkedResponse([
+      frame({ type: 'data-turn-seq', data: { turnId: 't', seq: 1 }, transient: true }),
+      frame({ type: 'data-task-wait', data: { taskIds: ['t_1'], active: true }, transient: true }),
+      frame({ type: 'finish' }),
+    ]), () => {}, undefined, () => { activity++ })
+    expect(activity).toBe(3)
+  })
+
+  test('the frame that opens a tool already reports it, and heartbeats stay heartbeats', async () => {
+    const seen: Array<{ kind: string; tool: string | null }> = []
+    await readAgentStream(chunkedResponse([
+      // A run that goes straight into a long wait: the opening frame is the
+      // only chance to notice the tool, since `wait` sends nothing until it returns.
+      frame({ type: 'tool-input-start', toolCallId: 'c1', toolName: 'wait' }),
+      frame({ type: 'tool-output-available', toolCallId: 'c1' }),
+      frame({ type: 'data-turn-seq', data: { turnId: 't', seq: 2 }, transient: true }),
+      frame({ type: 'finish' }),
+    ]), () => {}, undefined, (f) => seen.push({ ...f }))
+
+    expect(seen[0]).toEqual({ kind: 'content', tool: 'wait' })
+    expect(seen[2]).toEqual({ kind: 'heartbeat', tool: null })
+  })
+
   test('non-2xx responses surface the server error', async () => {
     const res = new Response(JSON.stringify({ error: { message: 'Project not found' } }), { status: 404 })
     expect(await readAgentStream(res, () => {})).toMatchObject({ failed: true, error: 'Project not found' })

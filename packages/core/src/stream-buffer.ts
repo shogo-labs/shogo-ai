@@ -26,6 +26,13 @@ export { compactSseFrames, encodeTurnSeqFrame, TURN_SEQ_EVENT_TYPE } from './str
 const CLEANUP_INTERVAL_MS = 60_000
 const MAX_BUFFER_AGE_MS = 30 * 60_000
 const COMPLETED_GRACE_MS = 30_000
+/**
+ * How long a finished turn's reply stays readable after its buffer is gone.
+ * Deliberately much longer than the buffer's 30 s completed grace: a caller
+ * that lost the stream (API restart, slow poll, dropped proxy body) still has
+ * to be able to read the reply instead of re-running the turn.
+ */
+const TURN_REPLY_TTL_MS = 60 * 60_000
 
 export type TurnStatus = 'active' | 'completed' | 'aborted' | 'failed'
 
@@ -103,8 +110,16 @@ export interface TurnSnapshot {
   lastEventAt: number
 }
 
+/** The reply a pipeline turn finished with, kept past its buffer's lifetime. */
+export interface TurnReply {
+  turnId: string
+  reply: string
+  completedAt: number
+}
+
 export class StreamBufferStore {
   private buffers = new Map<string, StreamBuffer>()
+  private replies = new Map<string, TurnReply>()
   private cleanupTimer: ReturnType<typeof setInterval> | null = null
 
   constructor() {
@@ -230,6 +245,47 @@ export class StreamBufferStore {
   }
 
   /**
+   * Keep the reply a turn finished with, so it can still be read after the
+   * buffer is evicted (30 s grace) — e.g. by the API's call follower, or by a
+   * reconciliation pass long after the stream is gone. Keyed by the same
+   * session key as the buffer.
+   */
+  recordTurnReply(key: string, reply: string): void {
+    const trimmed = reply?.trim()
+    if (!trimmed) return
+    const now = Date.now()
+    this.pruneReplies(now)
+    this.replies.set(key, {
+      turnId: this.buffers.get(key)?.turnId ?? '',
+      reply,
+      completedAt: now,
+    })
+  }
+
+  /**
+   * The terminal reply for a session, or null when none was recorded or it
+   * expired. A reply belonging to an older turn of a session that has since
+   * started a new one is never returned.
+   */
+  turnReply(key: string): TurnReply | null {
+    const entry = this.replies.get(key)
+    if (!entry) return null
+    if (Date.now() - entry.completedAt > TURN_REPLY_TTL_MS) {
+      this.replies.delete(key)
+      return null
+    }
+    const current = this.buffers.get(key)
+    if (current && entry.turnId && current.turnId !== entry.turnId) return null
+    return entry
+  }
+
+  private pruneReplies(now: number): void {
+    for (const [key, entry] of this.replies) {
+      if (now - entry.completedAt > TURN_REPLY_TTL_MS) this.replies.delete(key)
+    }
+  }
+
+  /**
    * Create a ReadableStream that first replays all buffered chunks past
    * `opts.fromSeq` (default: 0 → replay everything), then subscribes for
    * any further live chunks until the stream completes.
@@ -349,6 +405,7 @@ export class StreamBufferStore {
 
   cleanup(): void {
     const now = Date.now()
+    this.pruneReplies(now)
     for (const [key, buf] of this.buffers) {
       if (buf.status !== 'active' && buf.completedAt && now - buf.completedAt > COMPLETED_GRACE_MS) {
         this.buffers.delete(key)
@@ -368,6 +425,7 @@ export class StreamBufferStore {
       this.completeBuffer(buf, 'disposed')
     }
     this.buffers.clear()
+    this.replies.clear()
   }
 
   private completeBuffer(buf: StreamBuffer, reason?: string): void {

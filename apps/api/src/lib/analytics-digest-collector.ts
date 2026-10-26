@@ -246,8 +246,15 @@ export function mergeAnalyses(results: ChunkAnalysis[]): ChunkAnalysis {
   return merged
 }
 
-export async function generateDigest(prisma: PrismaClient) {
-  const now = new Date()
+/**
+ * `asOf` regenerates the digest a past scheduled run would have produced: the
+ * row is dated from `asOf`, conversations cover the 24h before it, and the
+ * signup cohorts end at it. Per-user follow-on counts (projects, messages,
+ * spend) and template stats are still read as of now.
+ */
+export async function generateDigest(prisma: PrismaClient, options: { asOf?: Date } = {}) {
+  const asOf = options.asOf
+  const now = asOf ?? new Date()
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000)
   const dateOnly = new Date(now.toISOString().split('T')[0])
   // Region that produced this digest, folded into the `analytics_digests`
@@ -269,11 +276,11 @@ export async function generateDigest(prisma: PrismaClient) {
   )
 
   const [funnel, activityResult, templates, sourceData, convos] = await Promise.all([
-    getUserFunnel('30d', true),
-    getUserActivityTable('30d', { page: 1, limit: 100, excludeInternal: true }),
+    getUserFunnel('30d', true, asOf),
+    getUserActivityTable('30d', { page: 1, limit: 100, excludeInternal: true, asOf }),
     getTemplateEngagement(true),
-    getSourceBreakdown('30d', true),
-    getChatConversations(since, true),
+    getSourceBreakdown('30d', true, asOf),
+    getChatConversations(since, true, asOf),
   ])
 
   const totalSpendUsd = activityResult.users.reduce((s, u) => s + u.spendUsd, 0)

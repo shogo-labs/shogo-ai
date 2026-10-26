@@ -41,6 +41,8 @@ export interface CredentialPolicy {
   sharedUserId: string | null
   /** Who stands in for runs with no usable person (the `delegate` step). */
   delegateUserId: string | null
+  /** True when the project never saved a policy for this provider. */
+  isDefault?: boolean
 }
 
 /** The chain a v1 policy (mode + single fallback) behaves as. */
@@ -70,6 +72,24 @@ export const DEFAULT_POLICY: Omit<CredentialPolicy, 'provider'> = {
   fallback: 'ask',
   sharedUserId: null,
   delegateUserId: null,
+}
+
+/**
+ * GitHub acts as the person who asked when they've allowed this agent (see
+ * workspace grants), else as the project's connection.
+ */
+const GITHUB_DEFAULT_POLICY: Omit<CredentialPolicy, 'provider'> = {
+  ...DEFAULT_POLICY,
+  writeChain: ['requester', 'shared'],
+  readChain: ['requester', 'shared'],
+  writeMode: 'requester',
+  readMode: 'requester',
+  fallback: 'shared',
+}
+
+/** What a project that never saved a policy for `provider` gets. */
+export function defaultPolicy(provider: string): Omit<CredentialPolicy, 'provider'> {
+  return provider === 'github' ? GITHUB_DEFAULT_POLICY : DEFAULT_POLICY
 }
 
 /** A stored personal connection, decrypted. */

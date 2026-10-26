@@ -67,7 +67,6 @@ import {
   chatActivityEvents,
 } from "../../../../lib/chat-session-events";
 import { deliverPendingDesktopIslandNewChat } from "../../../../lib/desktop-island";
-import { projectSidebarEvents } from "../../../../lib/project-sidebar-events";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
@@ -76,7 +75,14 @@ import {
   usePlatformConfig,
 } from "../../../../lib/platform-config";
 import { resolveChatScope } from "../../../../lib/chat-scope";
+import { useProjectChatTabs } from "../../../../lib/project-chat-tabs";
+import {
+  hasChatUrlOneShotParams,
+  isChatSessionOfProject,
+  useProjectChatUrlMirror,
+} from "../../../../lib/project-chat-url";
 import { stripAskUserAnswerMarker } from "../../../../components/chat/turns/askUserAnswers";
+import { buildCanvasErrorDebugPrompt } from "../../../../components/chat/turns/canvasErrorPrompt";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
 import {
   isPhoneLayout,
@@ -97,17 +103,14 @@ import {
   latchApiGate,
 } from "../../../../lib/preview-gate";
 import { ChatPanel } from "../../../../components/chat/ChatPanel";
+import { TaskThreadPaneHost } from "../../../../components/chat/task/TaskThreadPaneHost";
 import { PlanStreamProvider } from "../../../../components/chat/PlanStreamContext";
 import {
   ChatBridgeProvider,
   useChatBridge,
 } from "../../../../components/voice-mode/ChatBridgeContext";
 import { EzModeChatPanel } from "../../../../components/voice-mode/EzModeChatPanel";
-import type { InteractionMode } from "../../../../components/chat/ChatInput";
-import {
-  DEFAULT_MODEL_PRO,
-  DEFAULT_MODEL_FREE,
-} from "../../../../components/chat/ChatInput";
+import { DEFAULT_MODEL } from "../../../../components/chat/ChatInput";
 import {
   loadModelPreference,
   saveModelPreference,
@@ -242,100 +245,6 @@ const CHAT_PANEL_WIDTH_STORAGE_KEY = "shogo:chatPanelWidth";
 const CANVAS_ERROR_DEDUP_MS = 10_000;
 /** How many recent runtime log entries to attach to a debug-with-EZ-Mode prompt. */
 const CANVAS_ERROR_LOG_TAIL = 30;
-/** Cap any single error / log line so the seed prompt stays bounded. */
-const CANVAS_ERROR_MAX_LINE = 1200;
-
-/**
- * Build the seed message that gets auto-sent into a fresh chat when the
- * user clicks "Debug" on a `[canvas-error]` toast.
- *
- * The prompt deliberately includes everything the agent would otherwise
- * have to hunt down: the iframe's current page, the phase (compile vs
- * runtime), the full error string, the breadcrumb of recent user actions
- * (clicks / navigations / form submits) leading up to the crash, and the
- * tail of the runtime log buffer (build output / console lines).
- *
- * The surface label is only included when the canvas actually exposes a
- * Shogo surface — workspace canvases (Vite/Expo apps with their own
- * router) don't, and the page route is the meaningful identifier there.
- */
-function buildCanvasErrorDebugPrompt(args: {
-  phase: "compile" | "runtime";
-  error: string;
-  /** Iframe `pathname + search + hash` at the moment of the error. */
-  route?: string;
-  /** Recent user-interaction breadcrumb from `canvas-bridge.js`, oldest first. */
-  recentActions?: ReadonlyArray<{
-    ts: number;
-    kind: string;
-    target?: string;
-    route?: string;
-  }>;
-  recentLogs: ReadonlyArray<{
-    source: string;
-    level: string;
-    text: string;
-    ts: number;
-  }>;
-}): string {
-  const { phase, error, route, recentActions, recentLogs } = args;
-  const truncate = (s: string, n: number) =>
-    s.length <= n ? s : `${s.slice(0, n - 1)}…`;
-  const phaseLabel = phase === "compile" ? "compile-time" : "runtime";
-  const pageLabel = route ? ` (page \`${route}\`)` : "";
-
-  const lines: string[] = [];
-  lines.push(
-    `🐞 The canvas just hit a ${phaseLabel} error${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`
-  );
-  lines.push("");
-  lines.push("**Error**");
-  lines.push("```");
-  lines.push(truncate(error, CANVAS_ERROR_MAX_LINE));
-  lines.push("```");
-
-  if (recentActions && recentActions.length > 0) {
-    lines.push("");
-    lines.push(
-      `**Recent user actions** (last ${recentActions.length}, oldest first — most recent immediately before the error)`
-    );
-    lines.push("```");
-    for (const a of recentActions) {
-      const ts = Number.isFinite(a.ts)
-        ? new Date(a.ts).toISOString().slice(11, 23)
-        : "--:--:--.---";
-      const target = a.target ? ` ${a.target}` : "";
-      const onPage = a.route && a.route !== route ? ` @ ${a.route}` : "";
-      lines.push(
-        truncate(`${ts} ${a.kind}${target}${onPage}`, CANVAS_ERROR_MAX_LINE)
-      );
-    }
-    lines.push("```");
-  }
-
-  if (recentLogs.length > 0) {
-    lines.push("");
-    lines.push(
-      `**Recent runtime logs** (last ${recentLogs.length}, oldest first)`
-    );
-    lines.push("```");
-    for (const e of recentLogs) {
-      const ts = new Date(e.ts).toISOString().slice(11, 23);
-      lines.push(
-        `${ts} [${e.source}] ${
-          e.level !== "info" ? `${e.level.toUpperCase()} ` : ""
-        }${truncate(e.text, CANVAS_ERROR_MAX_LINE)}`
-      );
-    }
-    lines.push("```");
-  }
-
-  lines.push("");
-  lines.push(
-    "Read the relevant files, identify the offending change, and either propose a fix or apply it directly. Keep the change minimal and explain what went wrong."
-  );
-  return lines.join("\n");
-}
 
 export default observer(function ProjectLayout() {
   csMark("project:layout:render");
@@ -355,7 +264,6 @@ export default observer(function ProjectLayout() {
      */
     chatScope?: string;
     initialMessage?: string;
-    initialInteractionMode?: string;
     appTemplateName?: string;
     showIntegrations?: string;
     /** When '1', enter EZ Mode immediately on mount (homepage mic flow). */
@@ -468,15 +376,6 @@ export default observer(function ProjectLayout() {
   const [capturedChatScope] = useState<"project" | "workspace">(() =>
     params.chatScope === "workspace" ? "workspace" : "project"
   );
-  const [capturedInitialInteractionMode] = useState<
-    InteractionMode | undefined
-  >(() => {
-    const raw = params.initialInteractionMode;
-    const m = Array.isArray(raw) ? raw[0] : raw;
-    if (m === "agent" || m === "plan" || m === "ask")
-      return m as InteractionMode;
-    return undefined;
-  });
   const [capturedInitialFiles] = useState(() => consumePendingFiles());
   // APP_MODE_DISABLED: capturedAppTemplateName removed
   const [capturedShowIntegrations] = useState(
@@ -487,6 +386,12 @@ export default observer(function ProjectLayout() {
   const [capturedAutoStartVoice] = useState(
     () => params.autoStartVoice === "1"
   );
+  // A pending sidebar "+ new chat" arrival owns session creation and must not
+  // be raced by the pinned/last-chat selection effects. Captured once: the
+  // chat-URL mirror drops `newChat` from the address bar as soon as the new
+  // chat has an id, and reading the live param would flip this back to false
+  // mid-arrival.
+  const [capturedNewChatArrival] = useState(() => params.newChat === "1");
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
@@ -505,6 +410,23 @@ export default observer(function ProjectLayout() {
   const [chatSessionId, setChatSessionId] = useState<string | null>(
     () => params.chatSessionId ?? null
   );
+
+  // Mirror the open chat into `?chatSessionId=` so the address bar names it —
+  // copying, reloading or sharing the URL lands on that exact chat. One write
+  // point for every `setChatSessionId` call in this screen; `setParams`
+  // replaces the current history entry, so switching chats never stacks Back
+  // entries. `deepLinkedChatSessionId` is the id the viewer actually asked
+  // for: ids this screen mirrored itself are our own state echoed back, so the
+  // selection guards below must not read them as a deep link.
+  const { deepLinkedChatSessionId } = useProjectChatUrlMirror({
+    chatSessionId,
+    currentParam: params.chatSessionId,
+    chatScope: capturedChatScope,
+    initialPropsSessionId,
+    oneShotPresent: hasChatUrlOneShotParams(params),
+    enabled: Platform.OS === "web" && !isIdeChatEmbed,
+    setParams: (next) => router.setParams(next as any),
+  });
 
   // Coordinates pinned-session resolution and avoids remount races. Off in
   // cloud builds, where the project-pinned session endpoints are not mounted.
@@ -659,6 +581,10 @@ export default observer(function ProjectLayout() {
       heartbeatToolsEnabled:
         (projectSettings.heartbeatToolsEnabled ?? projectSettings.heartbeatEnabled) !== false,
       imageGenEnabled: projectSettings.imageGenEnabled !== false,
+      // Opt-in: video is billed per second.
+      videoGenEnabled: projectSettings.videoGenEnabled === true,
+      // Opt-in: each 3D task is billed.
+      threeDGenEnabled: projectSettings.threeDGenEnabled === true,
       memoryEnabled: projectSettings.memoryEnabled !== false,
       quickActionsEnabled: projectSettings.quickActionsEnabled !== false,
       sdkGuideEnabled: projectSettings.sdkGuideEnabled !== false,
@@ -669,6 +595,12 @@ export default observer(function ProjectLayout() {
       socialMediaEnabled: projectSettings.socialMediaEnabled === true,
       socialInstagramEnabled: projectSettings.socialInstagramEnabled !== false,
       socialTiktokEnabled: projectSettings.socialTiktokEnabled !== false,
+      teamChatEnabled: projectSettings.teamChatEnabled !== false,
+      boardsEnabled: projectSettings.boardsEnabled !== false,
+      workTriggersEnabled: projectSettings.workTriggersEnabled !== false,
+      boardAdminEnabled: projectSettings.boardAdminEnabled === true,
+      companyOpsEnabled: projectSettings.companyOpsEnabled === true,
+      problemsEnabled: projectSettings.problemsEnabled === true,
     }),
     [projectSettings]
   );
@@ -1177,10 +1109,15 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     if (!workspaceRuntimeEnabled || !projectId) return;
     if (chatSessionId) return;
-    if (params.chatSessionId) return;
+    // The viewer named a chat in the URL — that is what should render, not a
+    // replay of last time. Latch so a later re-run can't resurrect the cache.
+    if (deepLinkedChatSessionId) {
+      lastSessionCacheAppliedRef.current = true;
+      return;
+    }
     // A pending "+ new chat" arrival owns session creation on this arrival —
     // don't race it with a stale cached session id.
-    if (params.newChat === "1") return;
+    if (capturedNewChatArrival) return;
     if (lastSessionCacheAppliedRef.current) return;
     lastSessionCacheAppliedRef.current = true;
     let cancelled = false;
@@ -1200,8 +1137,8 @@ export default observer(function ProjectLayout() {
     workspaceRuntimeEnabled,
     projectId,
     chatSessionId,
-    params.chatSessionId,
-    params.newChat,
+    deepLinkedChatSessionId,
+    capturedNewChatArrival,
   ]);
 
   // Make the pinned workspace session the project's canonical chat (flag-on
@@ -1216,15 +1153,27 @@ export default observer(function ProjectLayout() {
   // open-tabs list and ChatPanel renders it in 'workspace' scope.
   useEffect(() => {
     if (!workspaceRuntimeEnabled || !pinnedWorkspaceSessionId) return;
-    if (params.chatSessionId) return;
+    if (deepLinkedChatSessionId) {
+      // The URL names a chat: never promote the pinned session over it, and
+      // latch so a late resolve can't clobber it afterwards either. The
+      // deep-link validation effect clears the latch if that id turns out not
+      // to be a chat of this project / not loadable.
+      pinnedSessionAppliedRef.current = true;
+      return;
+    }
     // A pending "+ new chat" arrival creates its own session — don't promote
     // the pinned session over it (it may resolve after the create and clobber
     // the fresh chat).
-    if (params.newChat === "1") return;
+    if (capturedNewChatArrival) return;
     if (pinnedSessionAppliedRef.current) return;
     pinnedSessionAppliedRef.current = true;
     setChatSessionId(pinnedWorkspaceSessionId);
-  }, [workspaceRuntimeEnabled, pinnedWorkspaceSessionId, params.chatSessionId, params.newChat]);
+  }, [
+    workspaceRuntimeEnabled,
+    pinnedWorkspaceSessionId,
+    deepLinkedChatSessionId,
+    capturedNewChatArrival,
+  ]);
 
   // APP_MODE_DISABLED: app template copy effect removed
 
@@ -1232,9 +1181,7 @@ export default observer(function ProjectLayout() {
   const hasAdvancedModelAccess = features.billing
     ? billingData.hasAdvancedModelAccess
     : true;
-  const [selectedModel, setSelectedModel] = useState<string>(() =>
-    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
-  );
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL);
   // Gate stale-selection reconciliation until the persisted preference has
   // loaded — otherwise the reconciler fires against the initial slug default
   // (not a catalog UUID id), resets to Auto, and persists that, wiping the
@@ -1265,9 +1212,7 @@ export default observer(function ProjectLayout() {
     let cancelled = false;
     loadModelPreference(projectId).then((stored) => {
       if (cancelled) return;
-      const next =
-        stored ??
-        (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE);
+      const next = stored ?? DEFAULT_MODEL;
       globalModelPrefRef.current = next;
       setSelectedModel(next);
       setModelPrefLoaded(true);
@@ -1301,7 +1246,7 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true;
     };
-  }, [hasAdvancedModelAccess, projectId, agentUrl, visibleModels]);
+  }, [projectId, agentUrl, visibleModels]);
 
   const handleModelChange = useCallback(
     async (modelId: string) => {
@@ -1345,10 +1290,7 @@ export default observer(function ProjectLayout() {
   // back to the last-used global choice.
   const handleResolveSessionModel = useCallback(
     (modelId: string | null) => {
-      const next =
-        modelId ??
-        globalModelPrefRef.current ??
-        (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE);
+      const next = modelId ?? globalModelPrefRef.current ?? DEFAULT_MODEL;
       if (selectedModelRef.current === next) return;
       setSelectedModel(next);
       if (!agentUrl) return;
@@ -1376,7 +1318,7 @@ export default observer(function ProjectLayout() {
         sessionModelSyncedRef.current = null;
       });
     },
-    [agentUrl, projectId, hasAdvancedModelAccess]
+    [agentUrl, projectId]
   );
 
   // Reset a pre-UUID stored selection (an old slug that's now only a server
@@ -1385,7 +1327,7 @@ export default observer(function ProjectLayout() {
   // and re-synced to the runtime.
   useReconcileStaleModelSelection(
     selectedModel,
-    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    DEFAULT_MODEL,
     handleModelChange,
     modelPrefLoaded
   );
@@ -1531,7 +1473,19 @@ export default observer(function ProjectLayout() {
   }, [projectId, chatSessionId]);
 
   // ─── Open chat tabs state ───────────────────────────────
-  const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([]);
+  // Under the always-on workspace runtime, a project has exactly one chat:
+  // its anchor-pinned workspace session. Restoring previously-open
+  // project-scoped tabs here would (a) mount hidden sibling ChatPanels on the
+  // legacy single-project runtime and (b) make `openChatTabIds` non-empty
+  // before the pinned session resolves, defeating the loading gate. So when
+  // the flag is on and we're not following an explicit deep-link, skip the
+  // restore entirely and let the pinned-session promotion seed the sole tab.
+  const { openChatTabIds, setOpenChatTabIds, tabsHydration } = useProjectChatTabs({
+    projectId,
+    chatSessionId,
+    skipRestore: workspaceRuntimeEnabled && !deepLinkedChatSessionId,
+    nativePhone,
+  });
   /** Web: pending delete confirmation (AlertDialog); native uses Alert.alert */
   const [deleteChatConfirmSessionId, setDeleteChatConfirmSessionId] = useState<
     string | null
@@ -1544,90 +1498,6 @@ export default observer(function ProjectLayout() {
   const [debugInitMessages, setDebugInitMessages] = useState<
     Record<string, string>
   >({});
-  /**
-   * Tri-state hydration status for the open-tabs list:
-   * - 'loading': haven't read AsyncStorage yet
-   * - 'restored-with-tabs': storage had a non-empty list, restored it
-   * - 'restored-empty': storage had an explicit `[]` (user previously closed everything)
-   * - 'fresh': no storage key — first visit to this project, OK to auto-create
-   * Distinguishing 'restored-empty' from 'fresh' is what prevents the auto-select
-   * effect from resurrecting a tab the user just closed.
-   */
-  type TabsHydration =
-    | "loading"
-    | "restored-with-tabs"
-    | "restored-empty"
-    | "fresh";
-  const [tabsHydration, setTabsHydration] = useState<TabsHydration>("loading");
-  const openTabsRestoredRef = useRef(false);
-
-  // Restore open tabs from AsyncStorage on mount
-  useEffect(() => {
-    if (!projectId || openTabsRestoredRef.current) return;
-    // Under the always-on workspace runtime, a project has exactly one chat:
-    // its anchor-pinned workspace session. Restoring previously-open
-    // project-scoped tabs here would (a) mount hidden sibling ChatPanels on the
-    // legacy single-project runtime and (b) make `openChatTabIds` non-empty
-    // before the pinned session resolves, defeating the loading gate. So when
-    // the flag is on and we're not following an explicit deep-link, skip the
-    // restore entirely and let the pinned-session promotion seed the sole tab.
-    if (workspaceRuntimeEnabled && !params.chatSessionId) {
-      openTabsRestoredRef.current = true;
-      setTabsHydration("fresh");
-      return;
-    }
-    AsyncStorage.getItem(`shogo:chatTabs:${projectId}`)
-      .then((raw) => {
-        if (raw === null) {
-          openTabsRestoredRef.current = true;
-          setTabsHydration("fresh");
-          return;
-        }
-        try {
-          const ids = JSON.parse(raw);
-          if (Array.isArray(ids)) {
-            if (ids.length > 0) {
-              setOpenChatTabIds(ids);
-              openTabsRestoredRef.current = true;
-              setTabsHydration("restored-with-tabs");
-              return;
-            }
-            openTabsRestoredRef.current = true;
-            setTabsHydration(nativePhone ? "fresh" : "restored-empty");
-            return;
-          }
-        } catch {
-          /* ignore malformed data */
-        }
-        // Malformed payload — treat as fresh so we still auto-create.
-        openTabsRestoredRef.current = true;
-        setTabsHydration("fresh");
-      })
-      .catch(() => {
-        openTabsRestoredRef.current = true;
-        setTabsHydration("fresh");
-      });
-  }, [projectId, phoneLayout, nativePhone]);
-
-  // Persist open tabs to AsyncStorage on every change, including `[]`.
-  // Storing the explicit empty array is what lets the next mount distinguish
-  // "user closed everything" from "first-ever visit".
-  useEffect(() => {
-    if (!projectId || tabsHydration === "loading") return;
-    AsyncStorage.setItem(
-      `shogo:chatTabs:${projectId}`,
-      JSON.stringify(openChatTabIds)
-    ).catch(() => {});
-  }, [projectId, openChatTabIds, tabsHydration]);
-
-  // Ensure the active session is always in the open tabs list
-  useEffect(() => {
-    if (!chatSessionId) return;
-    setOpenChatTabIds((prev) => {
-      if (prev.includes(chatSessionId)) return prev;
-      return [...prev, chatSessionId];
-    });
-  }, [chatSessionId]);
 
   // Apply a deep-linked chat session whenever the `chatSessionId` param
   // changes — e.g. selecting a chat in a project that isn't open yet. The
@@ -1636,8 +1506,8 @@ export default observer(function ProjectLayout() {
   // projects, so without this the new param would be ignored and the project
   // would show its default chat instead of the one the user clicked. We key
   // off the param alone (not `chatSessionId`) so an in-place switch via the
-  // event bus — which changes `chatSessionId` without touching the URL —
-  // doesn't get reverted to the stale deep-link.
+  // event bus — which changes `chatSessionId` and mirrors it into the URL —
+  // doesn't get reverted to a stale deep-link.
   useEffect(() => {
     const incoming = Array.isArray(params.chatSessionId)
       ? params.chatSessionId[0]
@@ -1748,7 +1618,7 @@ export default observer(function ProjectLayout() {
       // A pending sidebar "+ new chat" request owns session creation on this
       // arrival (handled by the one-shot newChat effect) — don't also
       // auto-select an existing chat or we'd land on the wrong one.
-      if (params.newChat === "1") return;
+      if (capturedNewChatArrival) return;
       // Under the always-on workspace runtime, the project-pinned workspace
       // session owns active-session selection (see the pinned-session
       // promotion effect). Auto-selecting / auto-creating a *project-scoped*
@@ -1815,7 +1685,7 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, store, chatSessionId, actions, tabsHydration, params.newChat, refreshProjectChatSessions]);
+  }, [projectId, store, chatSessionId, actions, tabsHydration, capturedNewChatArrival, refreshProjectChatSessions]);
 
   // After a 'restored-with-tabs' hydration, choose which restored tab is
   // active. Prefer the persisted `lastChatSession` if it's still in the list,
@@ -2784,6 +2654,53 @@ export default observer(function ProjectLayout() {
     );
   }, [isIdeChatEmbed, chatSessions, chatSessionId]);
 
+  // A link that names a chat this viewer can't open — deleted, another
+  // project's chat, no access — must land on the project's normal chat with
+  // the URL corrected, not on a blank panel stuck on a dead id. Each incoming
+  // id is checked once against the session it resolves to: `contextId` is the
+  // project for both project-scoped and workspace-scoped project chats.
+  const validatedDeepLinkIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const incoming = deepLinkedChatSessionId;
+    const collection = store?.chatSessionCollection;
+    if (!incoming || !projectId || !collection) return;
+    const key = `${projectId}:${incoming}`;
+    if (validatedDeepLinkIdsRef.current.has(key)) return;
+    validatedDeepLinkIdsRef.current.add(key);
+
+    const fallBackToProjectChat = () => {
+      // Let the pinned/default promotion own selection again.
+      pinnedSessionAppliedRef.current = false;
+      setOpenChatTabIds((prev) =>
+        prev.includes(incoming) ? prev.filter((id) => id !== incoming) : prev
+      );
+      setChatSessionId((current) => (current === incoming ? null : current));
+    };
+    const belongsHere = (session: any) =>
+      isChatSessionOfProject(session, {
+        projectId,
+        allowCrossProject: capturedChatScope === "workspace",
+      });
+
+    const cached: any = collection.get?.(incoming);
+    if (cached) {
+      if (!belongsHere(cached)) fallBackToProjectChat();
+      return;
+    }
+    void collection
+      .loadById(incoming)
+      .then((session: any) => {
+        if (!belongsHere(session)) fallBackToProjectChat();
+      })
+      .catch(() => fallBackToProjectChat());
+  }, [
+    deepLinkedChatSessionId,
+    projectId,
+    store,
+    setOpenChatTabIds,
+    capturedChatScope,
+  ]);
+
   const handleCreateNewSession = useCallback(async () => {
     if (!projectId) return;
     try {
@@ -3568,7 +3485,7 @@ export default observer(function ProjectLayout() {
   // legacy empty-chat list.
   const workspaceChatLoading =
     workspaceRuntimeEnabled &&
-    !params.chatSessionId &&
+    !deepLinkedChatSessionId &&
     !pinnedResolveFailed &&
     openChatTabIds.length === 0;
 
@@ -3654,9 +3571,6 @@ export default observer(function ProjectLayout() {
                   isInitialSession
                     ? capturedInitialMessage
                     : debugSeed ?? undefined
-                }
-                initialInteractionMode={
-                  isInitialSession ? capturedInitialInteractionMode : undefined
                 }
                 initialFiles={
                   isInitialSession ? capturedInitialFiles : undefined
@@ -3857,10 +3771,13 @@ export default observer(function ProjectLayout() {
       !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench
         : undefined,
-    onOpenSidebar:
-      Platform.OS !== "web"
-        ? () => projectSidebarEvents.requestOpenProject(projectId!)
-        : undefined,
+    // Back is the same handler on every platform: a narrow web viewport renders
+    // this same phone header, and an arrow that does nothing is worse than no
+    // arrow. Wide web and desktop never render it.
+    onBack: () => {
+      if (router.canGoBack()) router.back();
+      else router.replace("/(app)/home" as any);
+    },
     idePrimarySideBarPosition,
     onIdePrimarySideBarPositionChange: setIdePrimarySideBarPosition,
     ideEmbed: isIdeChatEmbed,
@@ -4054,7 +3971,7 @@ export default observer(function ProjectLayout() {
                         ? "Hide chat history"
                         : "Show chat history"
                     }
-                    accessibilityState={{ expanded: ideChatHistoryOpen }}
+                    aria-expanded={ideChatHistoryOpen}
                   >
                     <History size={18} className="text-muted-foreground" />
                   </Pressable>
@@ -4448,6 +4365,10 @@ export default observer(function ProjectLayout() {
                   </View>
                 );
               })()}
+
+              {/* The thread a pressed background task runs in: a pane beside the
+                  canvas (wide) or a sheet (phone). The chat column stays put. */}
+              <TaskThreadPaneHost />
 
               {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
               <View

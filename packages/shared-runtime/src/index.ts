@@ -11,6 +11,7 @@ export {
 } from './s3-sync'
 
 export {
+  CAPABILITY_INFO,
   CAPABILITY_KEYS,
   mergeCapabilitySettingsIntoConfig,
   normalizeCapabilitySettings,
@@ -19,15 +20,25 @@ export {
 } from './capability-settings'
 
 export {
+  CO_AUTHOR_TRAILER_KEY,
   DEFAULT_SHOGO_AGENT_EMAIL,
   DEFAULT_SHOGO_AGENT_NAME,
   SHOGO_PR_FOOTER_MARKER,
+  agentIdentityFromConfig,
   getShogoAgentEmail,
   getShogoAgentName,
+  inspectAgentAttribution,
+  isCanonicalShogoAgentIdentity,
+  isShogoAgentEmail,
+  isShogoAgentIdentity,
+  normalizeAgentAttribution,
   shogoCoAuthorTrailer,
   shogoPrFooter,
   withShogoCommitTrailer,
   withShogoPrFooter,
+  type AgentIdentity,
+  type AttributionReport,
+  type NormalizeAttributionOptions,
 } from './agent-attribution'
 
 export {
@@ -40,10 +51,14 @@ export {
   GitWorkspaceSync,
   createGitSyncFromEnv,
   resolveCloudSyncMode,
+  unindexablePath,
   type GitWorkspaceSyncConfig,
   type SpawnGitFn,
+  type SyncParkInfo,
   type CloudSyncMode,
 } from './git-sync'
+
+export { isWindowsReservedPath, findReservedPaths } from './git-reserved-names'
 
 export {
   applyGitSafeDirectoryEnv,
@@ -123,8 +138,43 @@ export {
   lfsRemoteConfigFromEnv,
   migrateOffloadedAssetsToLfs,
   DEFAULT_LFS_EXTENSIONS,
+  DEFAULT_LFS_BUDGET_GB,
+  lfsBudgetBytes,
+  lfsOverBudget,
+  pruneLfsBudget,
   type LfsRemoteConfig,
 } from './lfs'
+
+export {
+  isShogoRuntimeState,
+  toPosixPath,
+  directorySizeBytes,
+  resolveGitDir,
+  evictStaleGitLock,
+  isRepoIdle,
+  isRepairInProgress,
+  acquireRepairLock,
+  buildShogoExcludeBlock,
+  ensureShogoExcludes,
+  untrackShogoStatePaths,
+  prepareCheckpointRepo,
+  stripShogoLfsRules,
+  SHOGO_MEMORY_HISTORY_PREFIX,
+  SHOGO_EXCLUDE_HEADER,
+  SHOGO_EXCLUDE_FOOTER,
+  SHOGO_EXCLUDE_LINES,
+  type UntrackResult,
+} from './shogo-state-paths'
+
+export {
+  repairCheckpointRepo,
+  readRepairMarker,
+  repairedBytes,
+  filterExportStream,
+  parseMarks,
+  type RepairOptions,
+  type RepairResult,
+} from './checkpoint-repo-repair'
 
 export {
   initializePostgresBackup,

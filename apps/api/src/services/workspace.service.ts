@@ -8,6 +8,10 @@
 import { prisma, type Prisma } from '../lib/prisma';
 import { customAlphabet } from 'nanoid';
 import { homeRegionForNewWorkspace } from '../lib/region';
+import {
+  encodeWorkspaceSettingsForWrite,
+  parseWorkspaceSettings,
+} from '../lib/workspace-settings';
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6);
 
@@ -186,6 +190,93 @@ export async function createDefaultTeamWorkspace(
 }
 
 /**
+ * Create a local (desktop) workspace the user asks for from the picker.
+ *
+ * Cloud has a bespoke `workspace.routes.ts` → `workspaceHooks` pipeline with a
+ * plan/seat/billing gate and one-free-workspace-of-each-kind limit. Local mode
+ * has no billing at all (the plan is unlimited — Russell, 2026-10-19), and its
+ * shell branches on `kind`, so the seeded `personal` workspace stays the single
+ * companion space and every workspace created here is `kind: 'team'`.
+ *
+ * Written directly through Prisma rather than the generated create route so the
+ * workspace, its owner `Member` and its `WorkspaceAgentProfile` land in one
+ * transaction. The client used to create the owner member a second time after
+ * the create call returned; local has no `member.hooks` to reject the duplicate
+ * (`already_member`), so a workspace created that way ended up with two owner
+ * rows. One transaction, one owner.
+ */
+export async function createLocalWorkspace(
+  userId: string,
+  name: string
+): Promise<CreatePersonalWorkspaceResult> {
+  const baseSlug =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 40) || 'workspace';
+
+  const result = await prisma.$transaction(async (tx) => {
+    // `slug` is unique and NOT NULL, and a name-derived slug is never safe to
+    // assume free (two "Client Work" workspaces are ordinary), so always append
+    // a random suffix and retry on the vanishingly unlikely collision.
+    let slug = `${baseSlug}-${nanoid()}`;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const clash = await tx.workspace.findUnique({ where: { slug }, select: { id: true } });
+      if (!clash) break;
+      slug = `${baseSlug}-${nanoid()}`;
+    }
+
+    const workspace = await tx.workspace.create({
+      data: {
+        name,
+        slug,
+        // Always `team`: `kind` drives the whole shell, and the seeded
+        // `personal` workspace is the single companion space (Decision 1).
+        kind: 'team',
+        ...workspaceHomeRegionField(),
+      },
+    });
+
+    const member = await tx.member.create({
+      data: {
+        userId,
+        role: 'owner',
+        workspaceId: workspace.id,
+        isBillingAdmin: true,
+      },
+    });
+
+    const existingProfile = await tx.workspaceAgentProfile.findUnique({
+      where: { workspaceId: workspace.id },
+      select: { id: true },
+    });
+    if (!existingProfile) {
+      await tx.workspaceAgentProfile.create({
+        data: { workspaceId: workspace.id, name: 'Shogo' },
+      });
+    }
+
+    return { workspace, member };
+  }, { maxWait: 15_000, timeout: 30_000 });
+
+  return {
+    workspace: {
+      id: result.workspace.id,
+      name: result.workspace.name,
+      slug: result.workspace.slug,
+    },
+    member: {
+      id: result.member.id,
+      userId: result.member.userId,
+      role: result.member.role,
+      workspaceId: result.member.workspaceId!,
+    },
+  };
+}
+
+
+/**
  * Get all workspaces for a user (via membership)
  */
 export async function getWorkspacesForUser(userId: string) {
@@ -239,10 +330,21 @@ export async function updateWorkspace(
   workspaceId: string,
   data: Prisma.WorkspaceUpdateInput
 ) {
-  return prisma.workspace.update({
+  const workspace = await prisma.workspace.update({
     where: { id: workspaceId },
     data,
   });
+
+  // One workspace = one brand, so a rename is also the Zernio profile's name.
+  // Fire-and-forget: a provider hiccup must never fail a workspace rename.
+  if (typeof data.name === 'string' && data.name.trim()) {
+    const { renameProfile } = await import('./social/profiles.service');
+    void renameProfile(workspaceId, data.name.trim()).catch((err: unknown) => {
+      console.warn('[Social] Could not rename the Zernio profile:', err);
+    });
+  }
+
+  return workspace;
 }
 
 /**
@@ -417,4 +519,78 @@ export async function loadWorkspaceContext(
     getWorkspaceKind(workspaceId),
   ]);
   return { hasAccess, kind };
+}
+
+// ---------------------------------------------------------------------------
+// Workspace config (the workspace agent's own settings)
+// ---------------------------------------------------------------------------
+
+export type WorkspaceConfigErrorCode = 'not_found' | 'bad_request'
+
+export class WorkspaceConfigError extends Error {
+  readonly code: WorkspaceConfigErrorCode;
+  constructor(code: WorkspaceConfigErrorCode, message: string) {
+    super(message);
+    this.name = 'WorkspaceConfigError';
+    this.code = code;
+  }
+}
+
+export interface WorkspaceConfigSnapshot {
+  id: string;
+  name: string;
+  kind: string;
+  /** The parsed `Workspace.settings` object (never a raw JSON string scalar). */
+  settings: Record<string, unknown>;
+}
+
+export interface ConfigureWorkspaceInput {
+  /** Shallow-merged over the existing `Workspace.settings`. */
+  settings?: Record<string, unknown>;
+}
+
+/**
+ * Read the workspace agent's own settings. This is NOT a project's config: a
+ * workspace runtime serves both surfaces, and the workspace agent's capability
+ * toggles belong to the workspace, not to the anchor project.
+ */
+export async function readWorkspaceConfig(workspaceId: string): Promise<WorkspaceConfigSnapshot> {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { id: true, name: true, kind: true, settings: true },
+  });
+  if (!workspace) throw new WorkspaceConfigError('not_found', `Workspace ${workspaceId} not found`);
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    kind: normalizeWorkspaceKind(workspace.kind),
+    settings: parseWorkspaceSettings(workspace.settings) ?? {},
+  };
+}
+
+/**
+ * Shallow-merge a settings patch into `Workspace.settings`. Keys the patch does
+ * not mention are preserved, so one capability toggle never drops the
+ * workspace's other settings.
+ */
+export async function configureWorkspace(
+  workspaceId: string,
+  patch: ConfigureWorkspaceInput,
+): Promise<WorkspaceConfigSnapshot> {
+  const existing = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { id: true, settings: true },
+  });
+  if (!existing) throw new WorkspaceConfigError('not_found', `Workspace ${workspaceId} not found`);
+
+  if (patch.settings) {
+    const current = parseWorkspaceSettings(existing.settings) ?? {};
+    // Same encoding rule as `Project.settings`: a bare object on Postgres, the
+    // pre-stringified form on SQLite (see `lib/project-settings.ts`).
+    const data: Record<string, unknown> = {
+      settings: encodeWorkspaceSettingsForWrite({ ...current, ...patch.settings }),
+    };
+    await prisma.workspace.update({ where: { id: workspaceId }, data: data as any });
+  }
+  return readWorkspaceConfig(workspaceId);
 }

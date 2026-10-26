@@ -423,6 +423,19 @@ const XCUT_DELEGATION_JUDGMENT_SIMPLE: AgentEval = {
 // 6. Delegation judgment — parallel research
 // ---------------------------------------------------------------------------
 
+const COMPETITOR_PROFILES: Array<[string, string]> = [
+  ['alphatech', 'AlphaTech — workflow automation platform for mid-market ops teams. Products: AlphaFlow (no-code automations), AlphaInsights (analytics add-on). Pricing: Starter $29/user/mo, Business $79/user/mo, Enterprise custom. Recent news: launched an AI copilot for AlphaFlow and opened a London office.'],
+  ['betacorp', 'BetaCorp — customer data platform. Products: BetaCDP, BetaJourneys (lifecycle messaging). Pricing: usage-based from $500/mo for 10k profiles; Enterprise annual contracts. Recent news: acquired a small reverse-ETL startup; announced SOC 2 Type II.'],
+  ['gammaio', 'GammaIO — developer API gateway and observability. Products: Gamma Gateway, Gamma Trace. Pricing: free tier (1M requests), Pro $199/mo, Enterprise custom. Recent news: raised a $40M Series B; released OpenTelemetry-native tracing.'],
+  ['deltalabs', 'DeltaLabs — ML experiment tracking and model registry. Products: Delta Tracker, Delta Registry. Pricing: free for individuals, Team $49/seat/mo, Enterprise custom. Recent news: partnership with a major cloud provider; new LLM evaluation suite.'],
+  ['epsilonai', 'EpsilonAI — AI support agent for e-commerce. Products: Epsilon Agent, Epsilon Voice. Pricing: $0.90 per resolved conversation; Growth plan $1,200/mo. Recent news: launched voice support in beta; reported 3x revenue growth year over year.'],
+]
+
+const COMPETITOR_WEB_PATTERNS: Array<{ match: Record<string, string>; response: unknown }> = COMPETITOR_PROFILES.flatMap(([key, text]) => {
+  const response = { content: `<html><body><h1>${text.split(' — ')[0]}</h1><p>${text}</p></body></html>`, status: 200 }
+  return [{ match: { query: key } as Record<string, string>, response }, { match: { url: key } as Record<string, string>, response }]
+})
+
 const XCUT_DELEGATION_JUDGMENT_COMPLEX: AgentEval = {
   id: 'xcut-delegation-judgment-complex',
   name: 'Cross-cutting: parallel competitive intel across five companies',
@@ -430,7 +443,17 @@ const XCUT_DELEGATION_JUDGMENT_COMPLEX: AgentEval = {
   level: 4,
   input:
     'I need competitive intelligence on 5 companies: AlphaTech, BetaCorp, GammaIO, DeltaLabs, and EpsilonAI. Research their products, pricing, and recent news. Do all 5 at the same time.',
-  toolMocks: CROSS_CUTTING_MOCKS satisfies ToolMockMap,
+  toolMocks: {
+    ...CROSS_CUTTING_MOCKS,
+    web: {
+      type: 'pattern',
+      patterns: [
+        ...COMPETITOR_WEB_PATTERNS,
+        ...((CROSS_CUTTING_MOCKS.web as Extract<ToolMockMap[string], { type: 'pattern' }>).patterns),
+      ],
+      default: (CROSS_CUTTING_MOCKS.web as Extract<ToolMockMap[string], { type: 'pattern' }>).default,
+    },
+  } satisfies ToolMockMap,
   maxScore: 14,
   validationCriteria: [
     {

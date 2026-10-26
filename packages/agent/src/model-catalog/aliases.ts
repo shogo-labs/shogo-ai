@@ -13,10 +13,11 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'claude-sonnet': 'claude-sonnet-5',
   'claude-fable': 'claude-fable-5-1',
   'fable': 'claude-fable-5-1',
-  'claude-haiku': 'claude-haiku-4-5-20251001',
-  'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
+  'claude-haiku': 'claude-haiku-5-5',
+  'claude-haiku-5-5': 'claude-haiku-5-5',
 
   // Legacy Anthropic aliases
+  'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
   'claude-sonnet-4-5': 'claude-sonnet-4-5-20250929',
   'claude-opus-4-5': 'claude-opus-4-5-20251101',
   'claude-opus-4-1': 'claude-opus-4-1-20250805',
@@ -27,7 +28,7 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'claude-opus-4': 'claude-opus-4-20250514',
 
   // Eval shorthand aliases
-  'haiku': 'claude-haiku-4-5-20251001',
+  'haiku': 'claude-haiku-5-5',
   'sonnet': 'claude-sonnet-5',
   'opus': 'claude-opus-5-5',
   'opus-5': 'claude-opus-5',

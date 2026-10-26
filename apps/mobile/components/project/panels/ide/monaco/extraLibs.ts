@@ -7,19 +7,23 @@
  * produced by `apps/mobile/scripts/bundle-monaco-types.mjs`. The generated
  * file is committed so production builds need no network access.
  *
+ * That file is ~1.1 MB, so it is imported dynamically: a static import would
+ * put it in whichever chunk holds the editor, and the editor is reachable
+ * from views in the initial bundle (chat attachments, file viewers).
+ *
  * Idempotent: subsequent `setupExtraLibs(monaco)` calls are no-ops thanks
  * to the module-scoped `loaded` flag. Safe to call from every editor mount.
  */
 import type { OnMount } from "@monaco-editor/react";
-import { EXTRA_LIBS } from "./extraLibs.generated";
 
 type MonacoNs = Parameters<OnMount>[1];
 
 let loaded = false;
 
-export function setupExtraLibs(monaco: MonacoNs, opts: { defer?: boolean } = {}): void {
+export async function setupExtraLibs(monaco: MonacoNs, opts: { defer?: boolean } = {}): Promise<void> {
   if (loaded) return;
   loaded = true;
+  const { EXTRA_LIBS } = await import("./extraLibs.generated");
   const ts = monaco.languages.typescript;
   const add = (lib: { path: string; content: string }) => {
     if (typeof lib.content !== "string" || lib.content.length === 0) return;

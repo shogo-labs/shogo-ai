@@ -6,6 +6,7 @@
  *   - agent    a workspace-agent turn, run as the subscription owner
  *   - project  the project's agent (mode `agent`) or its code hooks (mode `hook`)
  *   - webhook  a signed HTTPS POST of the event envelope
+ *   - work_item  a card on a board (a problem report on problem boards), deduped by `dedupeKey`
  *
  * Failures are `DeliveryError`s: `retry` is retried with backoff, `forbidden`
  * and `gone` disable the subscription immediately.
@@ -30,6 +31,7 @@ import {
   type RuntimeManager,
 } from '../jobs/agent-turn-runner'
 import { hasWorkspaceAccess } from './workspace.service'
+import { readPath, renderTemplate } from './work-board-defaults'
 import { eventRequesterTicket, resolveEventPerson, type EventActor, type EventPerson } from './event-identity'
 
 const db = prisma as any
@@ -64,6 +66,7 @@ export interface DeliverySubscription {
   notifyConversationId: string | null
   webhookUrl: string | null
   webhookSecret: string | null
+  workItemTarget?: unknown
   chatSessionId: string | null
   actsAs?: string | null
   trustActorEmail?: boolean | null
@@ -307,6 +310,89 @@ async function deliverToWebhook(ctx: DeliveryContext): Promise<DeliveryResult> {
   throw new DeliveryError(`The receiver answered HTTP ${res.status}`, 'retry', res.status)
 }
 
+interface StoredWorkItemTarget {
+  boardId: string
+  columnId?: string | null
+  mapping: Record<string, unknown> & { fields?: Record<string, string> }
+  dedupeKey?: string | null
+}
+
+/** A bare path keeps the payload value's type (numbers stay numbers); templates render to text. */
+function mappedValue(template: unknown, payload: unknown): unknown {
+  if (typeof template !== 'string' || !template) return undefined
+  const value = template.includes('{{') ? renderTemplate(template, payload) : readPath(payload, template)
+  return value === '' ? undefined : value
+}
+
+function mappedText(template: unknown, payload: unknown, max: number): string | undefined {
+  const value = mappedValue(template, payload)
+  if (value === undefined || value === null) return undefined
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  return text.trim() ? text.trim().slice(0, max) : undefined
+}
+
+async function deliverToWorkItem(ctx: DeliveryContext): Promise<DeliveryResult> {
+  const sub = ctx.subscription
+  const userId = await requireOwner(sub)
+  const target = sub.workItemTarget as StoredWorkItemTarget | null | undefined
+  if (!target?.boardId) throw new DeliveryError('No board is set for this trigger', 'gone')
+  const { getBoardRow, intakeWorkItem, reportProblem } = await import('./work-boards.service')
+  let board: any
+  try {
+    board = await getBoardRow(sub.workspaceId, target.boardId)
+  } catch {
+    throw new DeliveryError('The board for this trigger no longer exists', 'gone', 404)
+  }
+  if (board.archivedAt) throw new DeliveryError(`${board.name} is archived`, 'gone')
+
+  const payload = ctx.envelope.payload
+  const m = target.mapping ?? {}
+  const title = mappedText(m.title, payload, 300) ?? `${sub.name}: ${ctx.envelope.type}`
+  const dedupe = target.dedupeKey ? mappedText(target.dedupeKey, payload, 400) : undefined
+  const fingerprint = dedupe ? `${sub.id}:${dedupe}` : null
+  const actor = { userId }
+  try {
+    if (board.itemType === 'problem') {
+      const result = await reportProblem(board, {
+        title,
+        fingerprint: fingerprint ?? `${sub.id}:${title}`,
+        message: mappedText(m.message ?? m.description, payload, 10_000) ?? null,
+        stack: mappedText(m.stack, payload, 50_000) ?? null,
+        environment: mappedText(m.environment, payload, 100) ?? null,
+        release: mappedText(m.release, payload, 100) ?? null,
+        url: mappedText(m.url, payload, 2000) ?? null,
+        externalRef: mappedText(m.externalRef, payload, 500) ?? null,
+        eventSubscriptionId: sub.id,
+        context: { eventId: ctx.envelope.id, eventType: ctx.envelope.type },
+      }, actor)
+      return { summary: `${result.item.key}: ${result.outcome === 'new' ? 'new problem' : result.outcome} (${result.occurrences} occurrence${result.occurrences === 1 ? '' : 's'}).` }
+    }
+    const fields: Record<string, unknown> = {}
+    for (const [key, t] of Object.entries(m.fields ?? {})) {
+      const value = mappedValue(t, payload)
+      if (value !== undefined) fields[key] = value
+    }
+    const result = await intakeWorkItem(board, {
+      title,
+      description: mappedText(m.description, payload, 20_000) ?? `From trigger "${sub.name}" (${ctx.envelope.type}).`,
+      column: target.columnId ?? undefined,
+      priority: mappedText(m.priority, payload, 20)?.toLowerCase(),
+      externalRef: mappedText(m.externalRef, payload, 500) ?? null,
+      dueAt: mappedText(m.dueAt, payload, 100) ?? null,
+      fields,
+      source: 'trigger',
+      eventSubscriptionId: sub.id,
+      fingerprint,
+    }, actor)
+    return { summary: result.created ? `Created ${result.item.key}.` : `${result.item.key} is already open; recorded a repeat.` }
+  } catch (error: any) {
+    if (error?.status === 403) throw new DeliveryError(error.message, 'forbidden', 403)
+    if (error?.status === 404) throw new DeliveryError(error.message, 'gone', 404)
+    if (error?.status === 400) throw new DeliveryError(error.message, 'gone', 400)
+    throw error
+  }
+}
+
 export async function deliverEvent(ctx: DeliveryContext): Promise<DeliveryResult> {
   const sub = ctx.subscription
   switch (sub.target) {
@@ -319,6 +405,8 @@ export async function deliverEvent(ctx: DeliveryContext): Promise<DeliveryResult
     }
     case 'webhook':
       return deliverToWebhook(ctx)
+    case 'work_item':
+      return deliverToWorkItem(ctx)
     default:
       throw new DeliveryError(`Unknown target ${sub.target}`, 'gone')
   }

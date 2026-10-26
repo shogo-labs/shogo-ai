@@ -109,6 +109,97 @@ export function getToolNamespace(name: string): string | null {
   return null
 }
 
+const COMPOSIO_SLUG_PATTERN = /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/
+const NATIVE_INTEGRATION_PREFIXES = ["github_"]
+
+const TOOLKIT_DISPLAY_NAMES: Record<string, string> = {
+  github: "GitHub",
+  gitlab: "GitLab",
+  googlecalendar: "Google Calendar",
+  googledrive: "Google Drive",
+  googledocs: "Google Docs",
+  googlesheets: "Google Sheets",
+  gmail: "Gmail",
+  hubspot: "HubSpot",
+  linkedin: "LinkedIn",
+  youtube: "YouTube",
+  clickup: "ClickUp",
+}
+
+/**
+ * Third-party integration tool calls: MCP (`mcp__server__tool`), Composio
+ * slugs (`GITHUB_RUN_GRAPH_QL_QUERY`), and native integration gateway tools
+ * (`github_merge_pr`).
+ */
+export function isIntegrationTool(name: string): boolean {
+  return getIntegrationToolkit(name) !== null
+}
+
+/** Raw lowercase toolkit id for an integration tool, or null if it isn't one. */
+export function getIntegrationToolkit(name: string): string | null {
+  if (name.startsWith("mcp__")) return getToolNamespace(name)?.toLowerCase() ?? null
+  if (COMPOSIO_SLUG_PATTERN.test(name)) return name.split("_")[0].toLowerCase()
+  for (const prefix of NATIVE_INTEGRATION_PREFIXES) {
+    if (name.startsWith(prefix)) return prefix.slice(0, -1)
+  }
+  return null
+}
+
+export function formatToolkitName(toolkit: string): string {
+  const known = TOOLKIT_DISPLAY_NAMES[toolkit.toLowerCase()]
+  if (known) return known
+  return toolkit
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ")
+}
+
+/** "Team chat post" from "team chat post" — only the first letter is capitalized. */
+function sentenceCase(text: string): string {
+  const joined = text.trim().split(/\s+/).filter(Boolean).join(" ").toLowerCase()
+  return joined.charAt(0).toUpperCase() + joined.slice(1)
+}
+
+/** Split snake_case / kebab-case / camelCase identifiers into space-separated words. */
+function toWords(identifier: string): string {
+  return identifier
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .join(" ")
+}
+
+/**
+ * Readable label for a tool with no bespoke summary:
+ *   team_chat_post            -> "Team chat post"
+ *   teamChatPost              -> "Team chat post"
+ *   mcp__linear__list_issues  -> "Linear: List issues"
+ *   GITHUB_CREATE_ISSUE       -> "GitHub: Create issue"
+ *   github_merge_pr           -> "GitHub: Merge pr"
+ */
+export function humanizeToolName(name: string): string {
+  if (name.startsWith("mcp__")) {
+    const [server = "", ...action] = name.slice("mcp__".length).split("__")
+    const serverLabel = formatToolkitName(server)
+    const actionLabel = sentenceCase(toWords(action.join(" ")))
+    if (!serverLabel) return sentenceCase(toWords(name))
+    return actionLabel ? `${serverLabel}: ${actionLabel}` : serverLabel
+  }
+
+  const toolkit = getIntegrationToolkit(name)
+  if (toolkit) {
+    const rest = COMPOSIO_SLUG_PATTERN.test(name)
+      ? name.slice(name.indexOf("_") + 1)
+      : name.slice(toolkit.length + 1)
+    const actionLabel = sentenceCase(toWords(rest))
+    const toolkitLabel = formatToolkitName(toolkit)
+    return actionLabel ? `${toolkitLabel}: ${actionLabel}` : toolkitLabel
+  }
+
+  return sentenceCase(toWords(name))
+}
+
 export const GRADIENT_CONFIG = {
   maxItems: 5,
   opacities: [1, 0.85, 0.7, 0.55, 0.4] as const,

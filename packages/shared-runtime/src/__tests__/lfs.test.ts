@@ -18,6 +18,7 @@ import {
   buildLfsEndpointUrl,
   buildManagedAttributesBlock,
   writeManagedGitAttributes,
+  lfsConfigArgs,
 } from '../lfs'
 
 const OID = 'a'.repeat(64)
@@ -55,6 +56,23 @@ describe('buildLfsEndpointUrl', () => {
     expect(buildLfsEndpointUrl('https://api.shogo.ai/', 'p1')).toBe(
       'https://api.shogo.ai/api/projects/p1/git/info/lfs',
     )
+  })
+})
+
+describe('lfsConfigArgs', () => {
+  it('scopes the bearer to the API origin so presigned transfers never carry it', () => {
+    const args = lfsConfigArgs({
+      workspaceDir: '/w',
+      cloudApiUrl: 'https://studio.example.test/',
+      runtimeAuthSecret: 'tok',
+      projectId: 'p1',
+    })
+    expect(args).toEqual([
+      '-c', 'lfs.url=https://studio.example.test/api/projects/p1/git/info/lfs',
+      '-c', 'http.https://studio.example.test/.extraHeader=Authorization: Bearer tok',
+      '-c', 'lfs.locksverify=false',
+    ])
+    expect(args.some((a) => a.startsWith('http.extraHeader='))).toBe(false)
   })
 })
 

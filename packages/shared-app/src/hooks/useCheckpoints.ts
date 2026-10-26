@@ -77,13 +77,15 @@ export interface CheckpointsState {
   /** Error state */
   error: Error | null
   /**
-   * True when the API returned 409 `checkpoints_disabled_in_external_mode`.
-   * Folder-linked (workingMode='external') projects don't have Shogo-managed
-   * git, so the panel should hide the create/rollback affordances and show a
-   * "use your own git" banner. Distinct from `error` so we don't render a
-   * destructive-looking failure state for an expected configuration.
+   * True when the API returned either checkpoint-disabled 409: external
+   * (`workingMode='external'`) or a folder that is a checkout of someone
+   * else's repo (`checkpoints_disabled_foreign_repo`). Shogo doesn't manage
+   * git here, so the panel hides create/rollback and shows a "use your own
+   * git" banner. Use {@link disabledReason} to pick the wording.
    */
   disabledForExternalMode: boolean
+  /** Why checkpoints are off, or null when they're available. */
+  disabledReason: 'external' | 'foreign_repo' | null
   /** Create a new checkpoint */
   createCheckpoint: (options: {
     message: string
@@ -131,7 +133,7 @@ export function useCheckpoints(projectId: string | undefined, options?: UseCheck
   const [isLoading, setIsLoading] = useState(false)
   const [isMutating, setIsMutating] = useState(false)
   const [error, setError] = useState<Error | null>(null)
-  const [disabledForExternalMode, setDisabledForExternalMode] = useState(false)
+  const [disabledReason, setDisabledReason] = useState<'external' | 'foreign_repo' | null>(null)
   const [refetchCounter, setRefetchCounter] = useState(0)
 
   // Fetch checkpoints
@@ -163,7 +165,7 @@ export function useCheckpoints(projectId: string | undefined, options?: UseCheck
         if (cancelled) return
 
         if (checkpointsRes.ok) {
-          setDisabledForExternalMode(false)
+          setDisabledReason(null)
           const data: any = await checkpointsRes.json()
           const mappedCheckpoints = (data.checkpoints || []).map((cp: any) => ({
             ...cp,
@@ -171,9 +173,10 @@ export function useCheckpoints(projectId: string | undefined, options?: UseCheck
           }))
           setCheckpoints(mappedCheckpoints)
         } else if (checkpointsRes.status === 409) {
-          // Folder-linked project — Shogo intentionally doesn't manage git
-          // here. Parse the typed error so the UI can render the "use your
-          // own git" banner instead of a generic failure state.
+          // Shogo intentionally doesn't manage git here — either a
+          // folder-linked project or a folder that is a checkout of someone
+          // else's repo. Parse the typed error so the UI renders one "use
+          // your own git" banner instead of a generic failure state.
           let code: string | undefined
           try {
             const body: any = await checkpointsRes.json()
@@ -182,14 +185,17 @@ export function useCheckpoints(projectId: string | undefined, options?: UseCheck
             // ignore — body parse failure falls through to the generic case
           }
           if (code === 'checkpoints_disabled_in_external_mode') {
-            setDisabledForExternalMode(true)
+            setDisabledReason('external')
+            setCheckpoints([])
+          } else if (code === 'checkpoints_disabled_foreign_repo') {
+            setDisabledReason('foreign_repo')
             setCheckpoints([])
           } else {
             setCheckpoints([])
           }
         } else {
           // Checkpoints endpoint may not exist if no git repo yet
-          setDisabledForExternalMode(false)
+          setDisabledReason(null)
           setCheckpoints([])
         }
 
@@ -339,7 +345,8 @@ export function useCheckpoints(projectId: string | undefined, options?: UseCheck
     isLoading,
     isMutating,
     error,
-    disabledForExternalMode,
+    disabledForExternalMode: disabledReason !== null,
+    disabledReason,
     createCheckpoint,
     rollback,
     getDiff,

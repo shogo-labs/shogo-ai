@@ -25,8 +25,24 @@
  * Track: --track preview-url
  */
 
-import type { AgentEval, EvalResult } from './types'
-import { usedTool } from './eval-helpers'
+import type { AgentEval, EvalResult, ValidationCriterion } from './types'
+import { usedTool, execCommands, fileWrites } from './eval-helpers'
+
+/**
+ * The localhost/public-URL criteria only make sense when the worker has a
+ * public preview URL (EVAL_PUBLIC_PREVIEW_URL → PUBLIC_PREVIEW_URL). Without
+ * one, localhost is the only link that exists, so those criteria are dropped
+ * (and maxScore shrinks) rather than failing or passing for free.
+ */
+const HAS_PUBLIC_PREVIEW_URL = !!(process.env.EVAL_PUBLIC_PREVIEW_URL || process.env.PUBLIC_PREVIEW_URL)
+
+function publicUrlOnly(criteria: ValidationCriterion[]): ValidationCriterion[] {
+  return HAS_PUBLIC_PREVIEW_URL ? criteria : []
+}
+
+function withMaxScore(ev: Omit<AgentEval, 'maxScore'>): AgentEval {
+  return { ...ev, maxScore: ev.validationCriteria.reduce((sum, c) => sum + c.points, 0) }
+}
 
 /** True if the response tells the user to hard-refresh / clear their cache. */
 function gaveHardRefreshAdvice(r: EvalResult): boolean {
@@ -43,20 +59,17 @@ function sharedPublicPreviewUrl(r: EvalResult): boolean {
   return /https:\/\/[a-z0-9.-]*preview[a-z0-9.-]*/i.test(r.responseText)
 }
 
-/** True if the agent fetched/opened a URL (web or browser) before answering — test-before-share. */
+/** True if the agent fetched/opened a URL (web, browser, or curl/wget) before answering — test-before-share. */
 function testedUrlBeforeSharing(r: EvalResult): boolean {
   return r.toolCalls.some(t =>
     (t.name === 'web' || t.name === 'browser') &&
     /https?:\/\//i.test(JSON.stringify(t.input)),
-  )
+  ) || execCommands(r).some(c => /\b(curl|wget|http)\b[^\n]*https?:\/\//i.test(c))
 }
 
-/** True if the agent actually created/served a page (wrote an .html file or edited the app). */
+/** True if the agent actually created/served a page (wrote an .html file or edited the app), any route. */
 function builtSomethingToServe(r: EvalResult): boolean {
-  return r.toolCalls.some(t =>
-    (t.name === 'write_file' || t.name === 'edit_file') &&
-    /\.(html|tsx|jsx)$/i.test(String((t.input as any).path ?? '')),
-  )
+  return fileWrites(r).some(w => /\.(html|tsx|jsx)$/i.test(w.path))
 }
 
 /** True if the agent dismissed a reachability complaint with "works on my end". */
@@ -74,8 +87,34 @@ function pushedLocalExport(r: EvalResult): boolean {
   return /\b(download|export|\.zip\b|run (it )?locally|npm (run|install)|git clone|unzip)\b/i.test(r.responseText)
 }
 
+const NEVER_LOCALHOST_WHEN_ASKED: AgentEval = {
+  // Companion to `preview-url-share-working-link`. Here the user explicitly
+  // INVITES a localhost link — from a cloud pod the agent must still refuse
+  // (it's unreachable for the user). Only meaningful when a public preview
+  // URL exists, so it's only registered then (see PREVIEW_URL_EVALS).
+  id: 'preview-url-never-localhost-when-asked',
+  name: 'Never hand the user a localhost / bare-port link, even when asked directly',
+  category: 'code-agent',
+  level: 2,
+  initialMode: 'app',
+  useRuntimeTemplate: true,
+  tags: ['expect-preview-reachable'],
+  input: 'Just give me a URL to open the app in my browser — a localhost link is totally fine for me.',
+  validationCriteria: [
+    {
+      id: 'no-localhost-url',
+      description: 'Did NOT hand the user a localhost / 127.0.0.1 / bare-port URL',
+      points: 6,
+      phase: 'execution',
+      validate: (r) => !sharedLocalhostUrl(r),
+    },
+  ],
+  antiPatterns: ['Handed back a localhost link from a cloud pod'],
+  maxScore: 6,
+}
+
 export const PREVIEW_URL_EVALS: AgentEval[] = [
-  {
+  withMaxScore({
     id: 'preview-url-share-working-link',
     name: 'Share a working public preview URL (not localhost)',
     category: 'code-agent',
@@ -96,23 +135,25 @@ export const PREVIEW_URL_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => builtSomethingToServe(r),
       },
-      {
-        id: 'no-localhost-url',
-        description: 'Agent did NOT hand the user a localhost / loopback URL',
-        points: 4,
-        phase: 'execution',
-        validate: (r) => !sharedLocalhostUrl(r),
-      },
-      {
-        id: 'shared-public-preview-url',
-        description: 'Agent returned the public https preview URL',
-        points: 4,
-        phase: 'execution',
-        validate: (r) => sharedPublicPreviewUrl(r),
-      },
+      ...publicUrlOnly([
+        {
+          id: 'no-localhost-url',
+          description: 'Agent did NOT hand the user a localhost / loopback URL',
+          points: 4,
+          phase: 'execution',
+          validate: (r) => !sharedLocalhostUrl(r),
+        },
+        {
+          id: 'shared-public-preview-url',
+          description: 'Agent returned the public https preview URL',
+          points: 4,
+          phase: 'execution',
+          validate: (r) => sharedPublicPreviewUrl(r),
+        },
+      ]),
       {
         id: 'tested-before-sharing',
-        description: 'Agent fetched/opened the URL (web/browser) before sharing it',
+        description: 'Agent fetched/opened the URL (web/browser/curl) before sharing it',
         points: 4,
         phase: 'execution',
         validate: (r) => testedUrlBeforeSharing(r),
@@ -122,10 +163,9 @@ export const PREVIEW_URL_EVALS: AgentEval[] = [
       'Shared a localhost URL from a cloud pod',
       'Tool loop or repeated identical calls',
     ],
-    maxScore: 15,
-  },
+  }),
 
-  {
+  withMaxScore({
     id: 'preview-url-cant-be-reached-diagnose',
     name: '"Can\'t be reached" → re-verify public URL, not "works on my end"',
     category: 'code-agent',
@@ -152,27 +192,28 @@ export const PREVIEW_URL_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => !claimedWorksOnMyEnd(r),
       },
-      {
-        id: 'no-localhost',
-        description: 'Did not respond with a localhost URL',
-        points: 3,
-        phase: 'execution',
-        validate: (r) => !sharedLocalhostUrl(r),
-      },
-      {
-        id: 'shared-public-url',
-        description: 'Re-shared a public https preview URL',
-        points: 3,
-        phase: 'execution',
-        validate: (r) => sharedPublicPreviewUrl(r),
-      },
+      ...publicUrlOnly([
+        {
+          id: 'no-localhost',
+          description: 'Did not respond with a localhost URL',
+          points: 3,
+          phase: 'execution',
+          validate: (r) => !sharedLocalhostUrl(r),
+        },
+        {
+          id: 'shared-public-url',
+          description: 'Re-shared a public https preview URL',
+          points: 3,
+          phase: 'execution',
+          validate: (r) => sharedPublicPreviewUrl(r),
+        },
+      ]),
     ],
     antiPatterns: [
       'Replied "works on my end" without re-checking the public URL',
       'Handed back a localhost link',
     ],
-    maxScore: 15,
-  },
+  }),
 
   {
     id: 'preview-url-route-to-publish',
@@ -204,32 +245,6 @@ export const PREVIEW_URL_EVALS: AgentEval[] = [
     maxScore: 12,
   },
 
-  {
-    // Companion to `preview-url-share-working-link`, which only asserts
-    // no-localhost when a PUBLIC url exists. Here the user explicitly INVITES a
-    // localhost link — the agent must still refuse to hand out a cloud pod's
-    // localhost (it's unreachable for the user), regardless of whether a public
-    // URL is configured.
-    id: 'preview-url-never-localhost-when-asked',
-    name: 'Never hand the user a localhost / bare-port link, even when asked directly',
-    category: 'code-agent',
-    level: 2,
-    initialMode: 'app',
-    useRuntimeTemplate: true,
-    tags: ['expect-preview-reachable'],
-    input: 'Just give me a URL to open the app in my browser — a localhost link is totally fine for me.',
-    validationCriteria: [
-      {
-        id: 'no-localhost-url',
-        description: 'Did NOT hand the user a localhost / 127.0.0.1 / bare-port URL',
-        points: 6,
-        phase: 'execution',
-        validate: (r) => !sharedLocalhostUrl(r),
-      },
-    ],
-    antiPatterns: ['Handed back a localhost link from a cloud pod'],
-    maxScore: 6,
-  },
 
   {
     // "Host/share this" should actually DEPLOY via the publish tool and return
@@ -396,4 +411,5 @@ export const PREVIEW_URL_EVALS: AgentEval[] = [
     ],
     maxScore: 14,
   },
+  ...(HAS_PUBLIC_PREVIEW_URL ? [NEVER_LOCALHOST_WHEN_ASKED] : []),
 ]

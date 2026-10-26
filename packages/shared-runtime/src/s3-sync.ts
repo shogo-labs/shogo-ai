@@ -474,6 +474,7 @@ export class S3Sync {
         '.expo',
         '.metro-cache',
         '.expo-shared',
+        'chat-files',
       ],
       syncInterval: config.syncInterval ?? 30000, // 30 seconds default
       watchEnabled: config.watchEnabled ?? true,
@@ -1094,6 +1095,7 @@ export class S3Sync {
       '.metro-cache',
       '.expo-shared',
       '.tmp',
+      'chat-files',
     ])
     if (filesToInclude.length === 0) return null
     await tar.create(
@@ -1214,6 +1216,7 @@ export class S3Sync {
       '.metro-cache',
       '.expo-shared',
       '.tmp',
+      'chat-files',
     ])
 
     if (filesToInclude.length === 0) {
@@ -1786,15 +1789,24 @@ export class S3Sync {
     return count
   }
 
+  /**
+   * Non-glob patterns match whole path segments only: `chat-files` excludes
+   * `chat-files/` and `a/chat-files/x`, but not the source file
+   * `src/chat-files.ts`. Dropping a tracked file here makes it show up as
+   * deleted after the next restore.
+   */
   private shouldExclude(path: string): boolean {
+    const p = path.replace(/\\/g, '/')
     for (const pattern of this.config.exclude) {
       if (pattern.startsWith('*')) {
-        const ext = pattern.slice(1)
-        if (path.endsWith(ext)) return true
-      } else {
-        if (path === pattern || path.includes(`/${pattern}/`) || path.includes(`/${pattern}`) || path.startsWith(`${pattern}/`) || path.startsWith(pattern)) {
-          return true
-        }
+        if (p.endsWith(pattern.slice(1))) return true
+      } else if (
+        p === pattern ||
+        p.startsWith(`${pattern}/`) ||
+        p.endsWith(`/${pattern}`) ||
+        p.includes(`/${pattern}/`)
+      ) {
+        return true
       }
     }
     return false

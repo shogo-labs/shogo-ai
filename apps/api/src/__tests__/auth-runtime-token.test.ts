@@ -70,6 +70,7 @@ afterAll(() => _setRbacModeForTests(null))
 const { deriveRuntimeToken, RUNTIME_TOKEN_V1_PREFIX } = await import(
   '../lib/runtime-token'
 )
+const { deriveWorkspaceRuntimeToken } = await import('../lib/workspace-runtime-token')
 const {
   apiKeyOrSession,
   authMiddleware,
@@ -418,6 +419,80 @@ describe('authMiddleware — runtime-token path', () => {
     await authMiddleware(c, async () => {})
     expect(stored.auth?.via).toBeUndefined()
     expect(stored.auth?.isAuthenticated).toBe(false)
+  })
+
+  describe('workspace token on the LFS routes', () => {
+    const lfsUrl = (projectId: string, op = 'batch') =>
+      `http://localhost/api/projects/${projectId}/git/info/lfs/objects/${op}`
+
+    test('authenticates as the path project when it is in the token workspace', async () => {
+      mockPrisma.project.findUnique.mockImplementation(() =>
+        Promise.resolve(projectWithOwners({ workspaceId: 'ws_lfs', workspaceOwnerUserId: 'user_ws_owner' })),
+      )
+      for (const op of ['batch', 'verify']) {
+        const { c, stored, calledNext } = makeCtx({
+          headers: { authorization: `Bearer ${deriveWorkspaceRuntimeToken('ws_lfs')}` },
+          url: lfsUrl('proj_lfs', op),
+          method: 'POST',
+        })
+        await authMiddleware(c, async () => { calledNext.called = true })
+        expect(calledNext.called).toBe(true)
+        expect(stored.auth).toEqual({
+          userId: 'user_ws_owner',
+          workspaceId: 'ws_lfs',
+          projectId: 'proj_lfs',
+          isAuthenticated: true,
+          via: 'runtimeToken',
+        })
+      }
+    })
+
+    test('a project in another workspace is refused', async () => {
+      mockPrisma.project.findUnique.mockImplementation(() =>
+        Promise.resolve(projectWithOwners({ workspaceId: 'ws_other', workspaceOwnerUserId: 'user_other' })),
+      )
+      const { c, stored } = makeCtx({
+        headers: { 'x-runtime-token': deriveWorkspaceRuntimeToken('ws_lfs') },
+        url: lfsUrl('proj_elsewhere'),
+        method: 'POST',
+      })
+      await authMiddleware(c, async () => {})
+      expect(stored.auth?.via).toBeUndefined()
+      expect(stored.auth?.isAuthenticated).toBe(false)
+    })
+
+    test('other project routes still refuse a workspace token', async () => {
+      mockPrisma.project.findUnique.mockImplementation(() =>
+        Promise.resolve(projectWithOwners({ workspaceId: 'ws_lfs', workspaceOwnerUserId: 'user_ws_owner' })),
+      )
+      for (const url of [
+        'http://localhost/api/projects/proj_lfs/git/git-receive-pack',
+        'http://localhost/api/projects/proj_lfs/git/info/lfs/objects/batch/extra',
+        'http://localhost/api/projects/proj_lfs/chat',
+      ]) {
+        const { c, stored } = makeCtx({
+          headers: { 'x-runtime-token': deriveWorkspaceRuntimeToken('ws_lfs') },
+          url,
+          method: 'POST',
+        })
+        await authMiddleware(c, async () => {})
+        expect(stored.auth?.via).toBeUndefined()
+      }
+      expect(mockPrisma.project.findUnique).not.toHaveBeenCalled()
+    })
+
+    test('a tampered workspace token is refused', async () => {
+      const good = deriveWorkspaceRuntimeToken('ws_lfs')
+      const bad = good.slice(0, -1) + (good.endsWith('0') ? '1' : '0')
+      const { c, stored } = makeCtx({
+        headers: { 'x-runtime-token': bad },
+        url: lfsUrl('proj_lfs'),
+        method: 'POST',
+      })
+      await authMiddleware(c, async () => {})
+      expect(stored.auth?.via).toBeUndefined()
+      expect(mockPrisma.project.findUnique).not.toHaveBeenCalled()
+    })
   })
 
   test('falls through to session path when no runtime token present', async () => {

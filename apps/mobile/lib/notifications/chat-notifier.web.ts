@@ -12,10 +12,34 @@ import type {
   ChannelNotificationPayload,
   ChatNotificationClickData,
   ChatNotificationPayload,
+  NotificationPermissionState,
 } from './chat-notifier'
+import { alertTagFor, alertTitleFor, type ChatAlertReason } from './alert-title'
+import { readDeviceAlertPrefs, type DockBounce } from './device-alert-prefs'
+
+/** Reasons that ask for attention. Replies and mentions get the same nudge as a DM. */
+const ATTENTION_REASONS = new Set<string>(['dm', 'mention', 'broadcast', 'thread'])
+
+/**
+ * Desktop only: bounces the dock icon (macOS) or flashes the taskbar button
+ * (Windows) when a message arrives while the window is in the background.
+ * The main process checks focus again before it asks for attention.
+ */
+export async function requestAttention(reason: ChatAlertReason | null | undefined): Promise<void> {
+  const desktop = getDesktop()
+  if (!desktop?.requestAttention) return
+  if (!reason || !ATTENTION_REASONS.has(reason)) return
+  const prefs = readDeviceAlertPrefs()
+  try {
+    await desktop.requestAttention({ dockBounce: prefs.dockBounce, flashTaskbar: prefs.flashTaskbar })
+  } catch {
+    // Best-effort: a missing attention request is not an error.
+  }
+}
 
 type ShogoDesktopBridge = {
   isDesktop?: boolean
+  requestAttention?: (args: { dockBounce: DockBounce; flashTaskbar: boolean }) => Promise<{ ok: boolean; attention?: boolean }>
   showChatNotification?: (args: {
     title: string
     body: string
@@ -52,22 +76,44 @@ export async function isUserInactive(): Promise<boolean> {
   }
 }
 
-let permissionCache: NotificationPermission | null = null
+function toState(permission: NotificationPermission): NotificationPermissionState {
+  if (permission === 'granted') return 'granted'
+  if (permission === 'denied') return 'denied'
+  return 'prompt'
+}
 
+/**
+ * Only reports whether alerts can show. It never asks: browsers ignore or
+ * hide a permission prompt that isn't triggered by a click, so asking is
+ * left to `requestNotificationPermissionFromGesture`.
+ */
 export async function ensureNotificationPermission(): Promise<boolean> {
   // On desktop, the OS handles permissions; Electron's Notification API
   // doesn't require a browser-style permission prompt.
   if (getDesktop()) return true
   if (typeof window === 'undefined' || typeof Notification === 'undefined') return false
-  if (permissionCache === null) permissionCache = Notification.permission
-  if (permissionCache === 'granted') return true
-  if (permissionCache === 'denied') return false
+  return Notification.permission === 'granted'
+}
+
+export function subscribeNotificationPermissionGranted(_listener: () => void): () => void {
+  return () => {}
+}
+
+export async function getNotificationPermissionState(): Promise<NotificationPermissionState> {
+  if (getDesktop()) return 'granted'
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return 'unsupported'
+  return toState(Notification.permission)
+}
+
+export async function requestNotificationPermissionFromGesture(): Promise<NotificationPermissionState> {
+  if (getDesktop()) return 'granted'
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return 'unsupported'
+  if (Notification.permission !== 'default') return toState(Notification.permission)
   try {
-    permissionCache = await Notification.requestPermission()
+    return toState(await Notification.requestPermission())
   } catch {
-    return false
+    return toState(Notification.permission)
   }
-  return permissionCache === 'granted'
 }
 
 export function setActiveChatNotificationContext(
@@ -143,7 +189,16 @@ export async function notifyChannelMessage(p: ChannelNotificationPayload): Promi
   if (typeof window === 'undefined' || typeof Notification === 'undefined') return
   if (!getDesktop() && Notification.permission !== 'granted') return
   try {
-    const n = new Notification(p.title, { body: p.body, tag: `channel:${p.conversationId}` })
+    // Same tag for a thread, with `renotify`: each new reply re-alerts and
+    // replaces the previous banner instead of being dropped as a duplicate.
+    // `renotify` is in every browser but missing from the DOM typings, hence the widened type.
+    const options: NotificationOptions & { renotify: boolean } = {
+      body: p.body,
+      tag: alertTagFor(p),
+      renotify: true,
+      silent: p.silent === true,
+    }
+    const n = new Notification(alertTitleFor(p.reason, p.title), options)
     n.onclick = () => {
       try {
         window.focus()

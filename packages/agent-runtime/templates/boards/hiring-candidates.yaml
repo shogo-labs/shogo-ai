@@ -1,0 +1,46 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: hiring-candidates
+name: Hiring Candidates
+summary: Candidates per role from applied to hired, with a screening SLA.
+channel: people
+board:
+  name: Candidates
+  itemType: candidate
+  keyPrefix: CAN
+  description: One card per candidate. Decisions are made by people; agents screen and schedule.
+  columns:
+    - name: Applied
+      category: backlog
+      slaHours: 72
+    - name: Screen
+      category: active
+    - name: Interview
+      category: active
+    - name: Offer
+      category: review
+    - name: Hired
+      category: done
+    - name: Rejected
+      category: dismissed
+  fields:
+    - key: role
+      label: Role
+      type: text
+      required: true
+    - key: source
+      label: Source
+      type: select
+      options:
+        - inbound
+        - referral
+        - sourced
+        - agency
+    - key: resume
+      label: Resume
+      type: url
+  postToChannel: none
+  requiresHumanReview: true

@@ -37,6 +37,13 @@ These are **non-secret** configuration values.
 | `ALLOWED_ORIGINS` | https://studio.staging.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai |
 | `EXPO_PUBLIC_API_URL` | https://studio.staging.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai |
 
+`ALLOWED_ORIGINS` and `EXPO_PUBLIC_API_URL` are no longer read by
+`deploy.yml`: images are built once on staging and promoted unchanged to
+production, so they can't bake per-environment values. The studio calls the
+API on its own origin, and its environment-specific settings are ksvc env
+vars in `k8s/overlays/*/web-service.yaml` (see
+`docs/runbooks/deploy-prod.md`).
+
 ## Secrets (per environment)
 
 ### OCI Credentials (unique per region if using separate API keys, or shared)

@@ -29,11 +29,16 @@ import * as githubService from '../services/github.service';
 import { runtimeGitHubWorkspace, type GitHubWorkspace } from '../services/github-workspace';
 import { createAuthorizeUrl, handleAuthorizeCallback } from '../services/github-authorize';
 import { getFrontendUrl } from '../lib/cloud-urls';
-import { grantAccess } from '../services/integration-credentials';
+import { grantAccess, hasActiveGrant } from '../services/integration-credentials';
 import { isPersonalConnectState, verifyPersonalConnectState } from '../services/integration-credentials/connect-state';
 import { ensureDefaultCredentialProviders, githubAdapter } from '../services/integration-credentials/defaults';
 import { resumeAfterConnect } from '../services/integration-credentials/resume';
 import { connectedPage, connectFailedPage } from './integration-credentials';
+import {
+  handlePullRequestWebhook,
+  handleCheckRunWebhook,
+  handleWorkflowRunWebhook,
+} from '../services/work-item-pr.service';
 
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
@@ -441,7 +446,9 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
         const adapter = githubAdapter();
         if (!adapter) throw new Error('GitHub is not available on this server');
         const { login } = await adapter.completeConnect({ userId: personal.userId, code });
-        if (personal.projectId) await grantAccess(personal.userId, personal.projectId, 'github');
+        if (personal.projectId && !(await hasActiveGrant(personal.userId, personal.projectId, 'github'))) {
+          await grantAccess(personal.userId, personal.projectId, 'github');
+        }
         const resumed = await resumeAfterConnect({ userId: personal.userId, resume: personal.resume, label: 'GitHub', login })
           .catch((err) => {
             console.error('[GitHub] Resume after connect failed:', err?.message ?? err);
@@ -744,6 +751,20 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
 
         case 'pull_request_review_comment':
           await githubService.handlePullRequestReviewCommentWebhook(c, data);
+          break;
+
+        // Cards that know their PR: keep a linked card's checks, armed state
+        // and column in step with the PR. Targeted updates, no polling loop.
+        case 'pull_request':
+          await handlePullRequestWebhook(data);
+          break;
+
+        case 'check_run':
+          await handleCheckRunWebhook(data);
+          break;
+
+        case 'workflow_run':
+          await handleWorkflowRunWebhook(data);
           break;
 
         case 'ping':

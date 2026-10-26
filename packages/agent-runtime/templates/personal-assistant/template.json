@@ -20,7 +20,7 @@
     "heartbeatInterval": 1800,
     "heartbeatEnabled": true,
     "modelProvider": "anthropic",
-    "modelName": "claude-sonnet-4-5",
+    "modelName": "auto",
     "quietHours": {
       "start": "22:00",
       "end": "07:00",

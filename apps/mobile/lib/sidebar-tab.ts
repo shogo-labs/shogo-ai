@@ -25,11 +25,14 @@ const strip = (pathname: string) => pathname.replace(/^\/\(app\)/, '').replace(/
 export function tabForPathname(pathname: string, conversations: TabConversation[] = []): SidebarTabId | null {
   const path = strip(pathname)
   if (path === '/') return 'home'
+  // The pre-landing home moved to an explicit route; it belongs to the same
+  // sidebar tab the landing used to be.
+  if (path === '/home') return 'home'
   const chat = path.match(/^\/c(?:\/([^/?]+))?\/?$/)
   if (chat) {
     const segment = chat[1] ? decodeURIComponent(chat[1]) : null
     if (!segment) return 'channels' // browse channels
-    if (segment === 'inbox') return 'activity'
+    if (segment === 'inbox' || segment === 'questions') return 'activity'
     if (segment === 'later') return 'home'
     if (segment === 'dms' || segment === 'new') return 'dms'
     if (segment === 'search' || segment === 'settings') return 'channels'
@@ -54,7 +57,7 @@ export function isMainChatPath(pathname: string): boolean {
   return path === '/' || path === '/index'
 }
 
-const CHAT_PAGES = new Set(['inbox', 'later', 'dms', 'new', 'search', 'settings'])
+const CHAT_PAGES = new Set(['inbox', 'questions', 'later', 'dms', 'new', 'search', 'settings'])
 
 /** A single team chat conversation (channel or DM), not one of the chat pages. */
 export function isConversationPath(pathname: string): boolean {

@@ -61,9 +61,15 @@ async function save(next: Stored): Promise<void> {
   await localDb.localConfig.upsert({ where: { key: CONFIG_KEY }, update: { value }, create: { key: CONFIG_KEY, value } })
 }
 
-export async function listCloudWorkspaces(): Promise<{ user: CloudUser | null; workspaces: CloudWorkspaceEntry[]; reachable: boolean }> {
+export async function listCloudWorkspaces(): Promise<{
+  user: CloudUser | null
+  workspaces: CloudWorkspaceEntry[]
+  reachable: boolean
+  /** False when the user kept just one workspace selected at sign-in. */
+  enabled: boolean
+}> {
   const stored = await load()
-  return { user: stored.user, workspaces: stored.workspaces, reachable }
+  return { user: stored.user, workspaces: stored.workspaces, reachable, enabled: stored.enabled }
 }
 
 export async function cloudWorkspaceKey(workspaceId: string): Promise<string | null> {
@@ -150,8 +156,20 @@ export function syncCloudWorkspaces(): Promise<void> {
         if (resolved) next.push({ id: workspace.id, name: workspace.name, slug: workspace.slug ?? null, kind, key: resolved })
       }
       const user = stored.user ?? (await keyInfoUser())
+      const changed = !sameKeySet(stored.workspaces, next)
       await save({ ...stored, enabled: true, user, workspaces: next, syncedAt: new Date().toISOString() })
       reachable = true
+      // A workspace joined (or left) since this process started has no tunnel
+      // yet: the fan-out is built at boot, so without this the machine only
+      // registers in it after an app restart. Loaded lazily — the tunnel module
+      // reads this one, and a static import would close the loop.
+      if (changed) {
+        void import('../lib/instance-tunnel')
+          .then((m) => m.syncWorkspaceTunnels())
+          .catch((err: any) =>
+            console.warn('[CloudWorkspaces] tunnel sync failed:', err?.message ?? err),
+          )
+      }
     } catch {
       reachable = false
     }
@@ -159,6 +177,16 @@ export function syncCloudWorkspaces(): Promise<void> {
     inflight = null
   })
   return inflight
+}
+
+/**
+ * Does this sync change what the tunnels were built from? True when a workspace
+ * was added, removed, or handed a new device key.
+ */
+function sameKeySet(a: CloudWorkspaceEntry[], b: CloudWorkspaceEntry[]): boolean {
+  if (a.length !== b.length) return false
+  const byId = new Map(a.map((w) => [w.id, w.key]))
+  return b.every((w) => byId.get(w.id) === w.key)
 }
 
 export function startCloudWorkspaceSync(): void {

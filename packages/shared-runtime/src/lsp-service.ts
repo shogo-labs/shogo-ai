@@ -17,8 +17,9 @@ let spawn: typeof bunSpawn = bunSpawn
 export function _setSpawnForTesting(impl: typeof bunSpawn | null): void {
   spawn = impl ?? bunSpawn
 }
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
-import { join, dirname, resolve } from 'path'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, unlinkSync } from 'fs'
+import { join, dirname, resolve, sep } from 'path'
+import { fileURLToPath } from 'url'
 
 const IS_WINDOWS = process.platform === 'win32'
 const WIN_BIN_EXTENSIONS = ['.exe', '.cmd']
@@ -705,6 +706,7 @@ export class TSLanguageServer {
   }
 
   getDiagnostics(uri?: string): Map<string, LSPDiagnostic[]> {
+    this.dropDiagnosticsForDeletedFiles()
     if (uri) {
       const diags = this.diagnosticsByUri.get(uri)
       const result = new Map<string, LSPDiagnostic[]>()
@@ -712,6 +714,23 @@ export class TSLanguageServer {
       return result
     }
     return new Map(this.diagnosticsByUri)
+  }
+
+  /**
+   * tsserver publishes diagnostics for files it never opened (project-wide
+   * checks), and nothing retracts them when such a file is deleted.
+   */
+  private dropDiagnosticsForDeletedFiles(): void {
+    if (this.diagnosticsByUri.size === 0) return
+    const roots = [this.projectDir]
+    try { roots.push(realpathSync(this.projectDir)) } catch { /* project dir gone */ }
+    for (const uri of this.diagnosticsByUri.keys()) {
+      if (!uri.startsWith('file://')) continue
+      let path: string
+      try { path = fileURLToPath(uri) } catch { continue }
+      if (!roots.some((root) => path.startsWith(root + sep))) continue
+      if (!existsSync(path)) this.diagnosticsByUri.delete(uri)
+    }
   }
 
   // -------------------------------------------------------------------------

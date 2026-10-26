@@ -17,12 +17,55 @@
  * route new projects here until the next successful heartbeat.
  */
 
+import { readFileSync } from 'fs'
 import { config } from './config'
+import { currentIdleWindow, setIdleDirective, type IdleDirective } from './idle-policy'
 import { metrics } from './metrics'
 import type { MetalWarmPool } from './pool'
-import { getRootfsRevision, getRootfsSha, maybeRebuildRootfs, maybeSelfUpdate, type DesiredAgent } from './self-update'
+import {
+  getRootfsRevision,
+  getRootfsSha,
+  getStagedRootfs,
+  maybeActivateRootfs,
+  maybeRebuildRootfs,
+  maybeSelfUpdate,
+  type DesiredAgent,
+  type RootfsHooks,
+} from './self-update'
 
-function payload(pool: MetalWarmPool) {
+/** The staged rootfs as the control plane sees it (drives pre-warm and activation). */
+function stagedRootfsReport(pool: MetalWarmPool) {
+  const staged = getStagedRootfs()
+  if (!staged) return undefined
+  return {
+    version: staged.version,
+    identities: staged.identities,
+    stagedAt: staged.stagedAt,
+    // False when this host can't boot on the staged image (pinned identity):
+    // the control plane then activates it without a pre-warm.
+    prewarm: pool.stagedRootfs('standard')?.identity === staged.identities.standard,
+    stagedSnapshots: pool.capacity().stagedCount,
+  }
+}
+
+/** MemTotal / MemAvailable from /proc/meminfo, in MiB. Undefined off Linux. */
+export function hostMemory(meminfo?: string): { totalMiB: number; availableMiB: number } | undefined {
+  let text = meminfo
+  if (text === undefined) {
+    try {
+      text = readFileSync('/proc/meminfo', 'utf8')
+    } catch {
+      return undefined
+    }
+  }
+  const kb = (field: string) => Number(new RegExp(`^${field}:\\s+(\\d+) kB`, 'm').exec(text!)?.[1])
+  const total = kb('MemTotal')
+  const available = kb('MemAvailable')
+  if (!(total > 0) || !(available >= 0)) return undefined
+  return { totalMiB: Math.round(total / 1024), availableMiB: Math.round(available / 1024) }
+}
+
+function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
   const s = pool.status()
   const cap = pool.capacity()
   return {
@@ -44,6 +87,10 @@ function payload(pool: MetalWarmPool) {
     // release asked for the rebuild, not what the pull returned; the release
     // gate (scripts/ci/metal-rootfs-gate.sh) reads this one.
     rootfsRevision: getRootfsRevision() ?? undefined,
+    stagedRootfs: stagedRootfsReport(pool),
+    // Sent once, by the shutting-down process: the control port is about to
+    // drop for a few seconds, so callers retry instead of failing an open.
+    ...(opts.restarting ? { restarting: true } : {}),
     capacity: { poolSize: config.poolSize, memMiB: config.memMiB, vcpus: config.vcpus },
     // Per-VM-class capacity (Phase 1 docker project class). `classes` is the
     // ONLY place a host declares it can run a non-standard class — the control
@@ -71,6 +118,10 @@ function payload(pool: MetalWarmPool) {
       // /assign here fails. The GC reclaims leaked devices, so a number far
       // above available+assigned+suspended means the leak is outrunning it.
       taps: pool.tapUsage(),
+      // Host RAM, so warm-up work is gated on real headroom rather than on a
+      // VM count (idle VMs are small; a count cap held a staging pre-warm back
+      // for its whole window).
+      mem: hostMemory(),
     },
     // NVMe cache scalars so the control plane can route disk- and cache-aware
     // (Phase 2) without shipping per-project cache manifests in the heartbeat.
@@ -82,6 +133,8 @@ function payload(pool: MetalWarmPool) {
       localCount: cap.localCount,
     },
     metrics: metrics.snapshot().counters,
+    // Only meaningful when the reaper runs; the control plane's hysteresis reads `directiveTier`.
+    idle: config.idleSuspendMs > 0 ? currentIdleWindow(s.assigned.length) : undefined,
     ts: Date.now(),
   }
 }
@@ -90,9 +143,16 @@ interface RegisterResponse {
   ok?: boolean
   /** Version this host should be running (pull-based deploy). */
   desired?: DesiredAgent | null
+  /** Idle-suspend window for this host (see idle-policy.ts). */
+  idleSuspend?: IdleDirective | null
+  /** Staged rootfs version the control plane says to switch to now (see self-update.ts). */
+  activateRootfs?: string | null
 }
 
-async function announce(pool: MetalWarmPool): Promise<RegisterResponse | null> {
+async function announce(
+  pool: MetalWarmPool,
+  opts: { restarting?: boolean; timeoutMs?: number } = {},
+): Promise<RegisterResponse | null> {
   const url = `${config.controlPlaneUrl.replace(/\/$/, '')}/api/internal/metal/register`
   try {
     const res = await fetch(url, {
@@ -101,8 +161,8 @@ async function announce(pool: MetalWarmPool): Promise<RegisterResponse | null> {
         'Content-Type': 'application/json',
         ...(config.registerToken ? { Authorization: `Bearer ${config.registerToken}` } : {}),
       },
-      body: JSON.stringify(payload(pool)),
-      signal: AbortSignal.timeout(5000),
+      body: JSON.stringify(payload(pool, opts)),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
     })
     if (!res.ok) {
       console.warn(`[metal-agent] register ${res.status}: ${await res.text().catch(() => '')}`)
@@ -121,7 +181,11 @@ async function announce(pool: MetalWarmPool): Promise<RegisterResponse | null> {
  * Best-effort and fire-and-forget: a failure just means the registry converges
  * a little later. No-op when no control plane is configured.
  */
-export function reportPlacement(event: 'suspended' | 'evicted' | 'cold', projectId: string): void {
+export function reportPlacement(
+  event: 'suspended' | 'evicted' | 'cold',
+  projectId: string,
+  opts: { refresh?: 'stale-rootfs' | 'stale-rootfs-always-on' } = {},
+): void {
   if (!config.controlPlaneUrl) return
   const url = `${config.controlPlaneUrl.replace(/\/$/, '')}/api/internal/metal/placement`
   void fetch(url, {
@@ -130,9 +194,30 @@ export function reportPlacement(event: 'suspended' | 'evicted' | 'cold', project
       'Content-Type': 'application/json',
       ...(config.registerToken ? { Authorization: `Bearer ${config.registerToken}` } : {}),
     },
-    body: JSON.stringify({ hostId: config.hostId, projectId, event }),
+    // `refresh`: the VM was retired off a superseded rootfs, so the control
+    // plane should re-warm it on the current one (and leave an always-on one
+    // running).
+    body: JSON.stringify({ hostId: config.hostId, projectId, event, ...(opts.refresh ? { refresh: opts.refresh } : {}) }),
     signal: AbortSignal.timeout(3000),
   }).catch(() => {})
+}
+
+/**
+ * Final heartbeat from a process about to exit for a restart, so the control
+ * plane rides out the few seconds the control port is down. Bounded: a slow
+ * control plane must not hold up the shutdown.
+ */
+export async function announceRestarting(pool: MetalWarmPool): Promise<void> {
+  if (!config.controlPlaneUrl) return
+  await announce(pool, { restarting: true, timeoutMs: 1500 })
+}
+
+export function rootfsHooks(pool: MetalWarmPool): RootfsHooks {
+  const list = (ids: { standard: string; docker?: string }) => [ids.standard, ...(ids.docker ? [ids.docker] : [])]
+  return {
+    onStaged: (ids) => void pool.dropStagedSnapshots(list(ids)),
+    promote: (ids) => pool.promoteStagedSnapshots(list(ids)),
+  }
 }
 
 /**
@@ -148,10 +233,16 @@ export function startRegistration(pool: MetalWarmPool): () => void {
     `[metal-agent] registering with control plane ${config.controlPlaneUrl} as host=${config.hostId} meshIp=${config.meshIp} arch=${process.arch}`,
   )
   let stopped = false
+  const hooks = rootfsHooks(pool)
   const tick = async () => {
     if (stopped) return
     const res = await announce(pool)
     if (res) console.log(`[metal-agent] registered (heartbeat every ${config.registerIntervalMs}ms)`)
+    if (res?.idleSuspend) setIdleDirective(res.idleSuspend)
+    // A staged rootfs switches on the control plane's word, or on our own once
+    // it has waited too long. Checked even when the heartbeat failed, so a host
+    // cut off from the control plane still converges.
+    if (await maybeActivateRootfs(res?.activateRootfs, hooks)) return
     // Pull-based deploy: converge to the version the control plane wants. Applies
     // only on a real change; a graceful restart follows (live microVMs survive).
     if (res?.desired) {
@@ -159,7 +250,7 @@ export function startRegistration(pool: MetalWarmPool): () => void {
       // No code-version change, but the release may still ask for a rootfs rebuild
       // (a same-version rebuild-flagged release — the runtime-image workflow_run
       // path). Decoupled from the version gate so that signal isn't dropped.
-      if (!updated) await maybeRebuildRootfs(res.desired)
+      if (!updated) await maybeRebuildRootfs(res.desired, hooks)
     }
   }
   void tick()

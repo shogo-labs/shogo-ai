@@ -11,7 +11,69 @@ import {
   getToolCategory,
   getToolKeyArg,
   getToolNamespace,
+  isIntegrationTool,
+  getIntegrationToolkit,
+  formatToolkitName,
+  humanizeToolName,
 } from "../types"
+
+describe("humanizeToolName", () => {
+  test("snake_case built-in and runtime tools become sentence case", () => {
+    expect(humanizeToolName("team_chat_post")).toBe("Team chat post")
+    expect(humanizeToolName("custom_tool")).toBe("Custom tool")
+    expect(humanizeToolName("Skill")).toBe("Skill")
+  })
+
+  test("camelCase names split into words", () => {
+    expect(humanizeToolName("teamChatPost")).toBe("Team chat post")
+  })
+
+  test("MCP tools read as 'Server: Action'", () => {
+    expect(humanizeToolName("mcp__linear__list_issues")).toBe("Linear: List issues")
+    expect(humanizeToolName("mcp__chrome-devtools__click")).toBe("Chrome Devtools: Click")
+    expect(humanizeToolName("mcp__linear")).toBe("Linear")
+  })
+
+  test("Composio slugs and native github_* tools use the brand toolkit name", () => {
+    expect(humanizeToolName("GITHUB_CREATE_ISSUE")).toBe("GitHub: Create issue")
+    expect(humanizeToolName("github_merge_pr")).toBe("GitHub: Merge pr")
+  })
+})
+
+describe("isIntegrationTool / getIntegrationToolkit", () => {
+  test("MCP tools use the server segment as the toolkit", () => {
+    expect(isIntegrationTool("mcp__shogo__store_get")).toBe(true)
+    expect(getIntegrationToolkit("mcp__Linear__list_issues")).toBe("linear")
+  })
+
+  test("Composio slugs use the first segment as the toolkit", () => {
+    expect(isIntegrationTool("GITHUB_RUN_GRAPH_QL_QUERY")).toBe(true)
+    expect(getIntegrationToolkit("GOOGLECALENDAR_CREATE_EVENT")).toBe("googlecalendar")
+  })
+
+  test("native github_* gateway tools", () => {
+    expect(getIntegrationToolkit("github_merge_pr")).toBe("github")
+    expect(getIntegrationToolkit("github_create_pr")).toBe("github")
+  })
+
+  test("built-in tools are not integrations", () => {
+    for (const name of ["Read", "exec", "Bash", "WebSearch", "team_chat_post", "Skill", "TodoWrite", "mcp__", "LOUD"]) {
+      expect(isIntegrationTool(name)).toBe(false)
+    }
+  })
+})
+
+describe("formatToolkitName", () => {
+  test("known toolkits use their brand casing", () => {
+    expect(formatToolkitName("github")).toBe("GitHub")
+    expect(formatToolkitName("googlecalendar")).toBe("Google Calendar")
+  })
+
+  test("unknown toolkits fall back to title case", () => {
+    expect(formatToolkitName("linear")).toBe("Linear")
+    expect(formatToolkitName("chrome-devtools")).toBe("Chrome Devtools")
+  })
+})
 
 describe("getToolCategory", () => {
   test("mcp prefix", () => {

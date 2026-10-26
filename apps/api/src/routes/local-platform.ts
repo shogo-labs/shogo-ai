@@ -42,6 +42,7 @@ export function localPlatformRoutes(): Hono {
             : 'elevenlabs',
         phoneChannel: false,
         personalShell: true,
+        workBoards: true,
       },
     })
   })

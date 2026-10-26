@@ -2,7 +2,16 @@ export type ProjectStatus = "draft" | "scripting" | "generating" | "review" | "a
 
 export type AssetType = "video" | "image";
 
-export type VideoModel = "seedance-2.0" | "sora-2" | "veo-3.1" | "kling-3.0" | "nano-banana";
+export type VideoModel =
+  | "hf-soul-v2"
+  | "hf-ideogram-4"
+  | "hf-hailuo-2.3"
+  | "hf-kling-2.5-pro"
+  | "hf-wan-2.6"
+  | "hf-ltx-2.5-fast"
+  | "hf-genjutsu-motion-transfer"
+  | "hf-genjutsu-object-swap"
+  | "hf-genjutsu-restyle";
 
 export type QAStatus = "clean" | "needs-review" | "failed" | "pending";
 

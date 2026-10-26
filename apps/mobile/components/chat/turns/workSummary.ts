@@ -5,13 +5,14 @@
  *
  * Pure label/stats module for `WorkGroup` and the "Worked for X"
  * header. Tallies a run of work-tool parts into buckets (files
- * edited, files read, searches, fetches, commands), classifies the
- * run's `kind`, and builds the Cursor-style one-line label:
+ * edited, files read, searches, fetches, lookups, commands), classifies
+ * the run's `kind`, and builds the Cursor-style one-line label:
  *
- *   Explored 14 files, 9 searches, ran 4 commands
- *   Edited 11 files, explored 3 searches, 1 fetch, ran 13 commands
+ *   Explored 14 files, 9 searches, 4 lookups, ran 4 commands
+ *   Edited 11 files, explored 3 searches, 1 fetch, 2 lookups, ran 13 commands
  *   Editing 32 files, explored 1 search, ran 23 commands   (present tense)
  *   Ran 3 commands
+ *   Used 3 GitHub tools
  *
  * The leading verb reflects `tense` ("Edited"/"Editing"); the
  * trailing "explored …" / "ran …" segments are always past tense —
@@ -21,12 +22,18 @@
  * Pure module — no React imports. Safe to unit-test directly.
  */
 
-import { getToolSummary } from "../tools/summary"
+import { getToolSummary, LOOKUP_TOOL_NAMES } from "../tools/summary"
 import { computeLineDiff } from "./diff-utils"
 import type { GroupedMessagePart, MessagePart } from "./types"
-import type { ToolCallData } from "../tools/types"
+import {
+  formatToolkitName,
+  getIntegrationToolkit,
+  humanizeToolName,
+  type ToolCallData,
+} from "../tools/types"
+import { isGenericTool } from "./turnShaping"
 
-export type WorkKind = "edited" | "explored" | "ran"
+export type WorkKind = "edited" | "explored" | "ran" | "used"
 export type WorkTense = "present" | "past"
 
 export interface WorkCounts {
@@ -35,7 +42,16 @@ export interface WorkCounts {
   readFiles: number
   searches: number
   fetches: number
+  lookups: number
   commands: number
+  /** Integration/MCP tool calls (Composio, `mcp__*`, native `github_*`). */
+  integrations: number
+  /** Distinct raw toolkit ids behind `integrations`, sorted. */
+  integrationToolkits: string[]
+  /** Generic tool calls with no dedicated card (e.g. `team_chat_post`). */
+  generic: number
+  /** Distinct raw tool names behind `generic`, sorted. */
+  genericToolNames: string[]
 }
 
 export interface WorkSummary {
@@ -135,8 +151,21 @@ export function tallyWork(
   added: number
   removed: number
 } {
-  const counts: WorkCounts = { editedFiles: 0, readFiles: 0, searches: 0, fetches: 0, commands: 0 }
+  const counts: WorkCounts = {
+    editedFiles: 0,
+    readFiles: 0,
+    searches: 0,
+    fetches: 0,
+    lookups: 0,
+    commands: 0,
+    integrations: 0,
+    integrationToolkits: [],
+    generic: 0,
+    genericToolNames: [],
+  }
   const editedPaths = new Set<string>()
+  const toolkits = new Set<string>()
+  const genericNames = new Set<string>()
   let added = 0
   let removed = 0
 
@@ -160,6 +189,24 @@ export function tallyWork(
         added += diffCounts.added
         removed += diffCounts.removed
       }
+      continue
+    }
+
+    const toolkit = getIntegrationToolkit(tool.toolName)
+    if (toolkit) {
+      counts.integrations++
+      toolkits.add(toolkit)
+      continue
+    }
+
+    if (LOOKUP_TOOL_NAMES.has(tool.toolName)) {
+      counts.lookups++
+      continue
+    }
+
+    if (isGenericTool(tool)) {
+      counts.generic++
+      genericNames.add(tool.toolName)
       continue
     }
 
@@ -189,17 +236,58 @@ export function tallyWork(
   }
 
   counts.editedFiles = editedPaths.size
+  counts.integrationToolkits = [...toolkits].sort()
+  counts.genericToolNames = [...genericNames].sort()
   return { counts, added, removed }
 }
 
 export function classifyWorkKind(counts: WorkCounts): WorkKind {
   if (counts.editedFiles > 0) return "edited"
-  if (counts.readFiles > 0 || counts.searches > 0 || counts.fetches > 0) return "explored"
+  if (
+    counts.readFiles > 0 ||
+    counts.searches > 0 ||
+    counts.fetches > 0 ||
+    counts.lookups > 0
+  ) {
+    return "explored"
+  }
+  if ((counts.integrations > 0 || counts.generic > 0) && counts.commands === 0) {
+    return "used"
+  }
   return "ran"
 }
 
 function pluralize(n: number, singular: string, plural: string = `${singular}s`): string {
   return `${n} ${n === 1 ? singular : plural}`
+}
+
+/** `3 GitHub tools` for a single toolkit, `4 integration tools` when mixed. */
+function integrationBucket(counts: WorkCounts): string {
+  const toolkit =
+    counts.integrationToolkits.length === 1 ? formatToolkitName(counts.integrationToolkits[0]) : "integration"
+  return pluralize(counts.integrations, `${toolkit} tool`)
+}
+
+/** "team chat post" mid-label; a leading "Team chat post" and "GitHub: ..." stay as written. */
+function lowerLeadingWord(label: string): string {
+  return /^[A-Z][a-z]+(\s|$)/.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label
+}
+
+/** Readable name of the one generic tool in the run, with `xN` when it ran more than once. */
+function genericNameLabel(counts: WorkCounts, leading: boolean): string {
+  const label = humanizeToolName(counts.genericToolNames[0])
+  const cased = leading ? label : lowerLeadingWord(label)
+  return counts.generic > 1 ? `${cased} x${counts.generic}` : cased
+}
+
+/**
+ * Trailing generic segment for edited/explored/ran labels:
+ * "team chat post" for one tool, "used 4 tools" for several.
+ */
+function genericTrailing(counts: WorkCounts): string | null {
+  if (counts.generic === 0) return null
+  if (counts.genericToolNames.length === 1) return genericNameLabel(counts, false)
+  return `used ${pluralize(counts.generic, "tool")}`
 }
 
 /**
@@ -220,8 +308,12 @@ export function buildWorkLabel(counts: WorkCounts, kind: WorkKind, tense: WorkTe
     const exploreParts: string[] = []
     if (counts.searches > 0) exploreParts.push(pluralize(counts.searches, "search", "searches"))
     if (counts.fetches > 0) exploreParts.push(pluralize(counts.fetches, "fetch", "fetches"))
+    if (counts.lookups > 0) exploreParts.push(pluralize(counts.lookups, "lookup"))
     if (exploreParts.length > 0) segs.push(`explored ${exploreParts.join(", ")}`)
     if (counts.commands > 0) segs.push(`ran ${pluralize(counts.commands, "command")}`)
+    if (counts.integrations > 0) segs.push(`used ${integrationBucket(counts)}`)
+    const generic = genericTrailing(counts)
+    if (generic) segs.push(generic)
     return segs.join(", ")
   }
 
@@ -231,14 +323,41 @@ export function buildWorkLabel(counts: WorkCounts, kind: WorkKind, tense: WorkTe
     if (counts.readFiles > 0) exploreParts.push(pluralize(counts.readFiles, "file"))
     if (counts.searches > 0) exploreParts.push(pluralize(counts.searches, "search", "searches"))
     if (counts.fetches > 0) exploreParts.push(pluralize(counts.fetches, "fetch", "fetches"))
+    if (counts.lookups > 0) exploreParts.push(pluralize(counts.lookups, "lookup"))
     const bucket = exploreParts.length > 0 ? exploreParts.join(", ") : pluralize(0, "file")
     const segs: string[] = [`${lead} ${bucket}`]
     if (counts.commands > 0) segs.push(`ran ${pluralize(counts.commands, "command")}`)
+    if (counts.integrations > 0) segs.push(`used ${integrationBucket(counts)}`)
+    const generic = genericTrailing(counts)
+    if (generic) segs.push(generic)
     return segs.join(", ")
   }
 
+  if (kind === "used") {
+    const lead = past ? "Used" : "Using"
+    // A lone generic tool with no integrations reads as just its name:
+    // "Team chat post x3".
+    if (counts.integrations === 0 && counts.genericToolNames.length === 1) {
+      return genericNameLabel(counts, true)
+    }
+    const segs: string[] = []
+    if (counts.integrations > 0) segs.push(integrationBucket(counts))
+    if (counts.generic > 0) {
+      if (counts.genericToolNames.length === 1) {
+        segs.push(genericNameLabel(counts, false))
+      } else {
+        segs.push(pluralize(counts.generic, counts.integrations > 0 ? "other tool" : "tool"))
+      }
+    }
+    return `${lead} ${segs.join(", ")}`
+  }
+
   const lead = past ? "Ran" : "Running"
-  return `${lead} ${pluralize(counts.commands, "command")}`
+  const segs: string[] = [`${lead} ${pluralize(counts.commands, "command")}`]
+  if (counts.integrations > 0) segs.push(`used ${integrationBucket(counts)}`)
+  const generic = genericTrailing(counts)
+  if (generic) segs.push(generic)
+  return segs.join(", ")
 }
 
 export function summarizeWork(items: ReadonlyArray<MessagePart>, tense: WorkTense): WorkSummary {

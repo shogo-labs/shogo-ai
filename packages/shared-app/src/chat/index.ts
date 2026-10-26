@@ -9,8 +9,12 @@ export {
   getToolCategory,
   ERROR_CODE_MESSAGES,
   channelDispatchOf,
+  projectCallOf,
+  taskNotificationOf,
+  parseTaskUpdates,
+  parseUsageLimitError,
 } from './message-helpers'
-export type { ChannelDispatch } from './message-helpers'
+export type { ChannelDispatch, ProjectCallPrompt, TaskNotification, TaskUpdateLine, UsageLimitCode } from './message-helpers'
 
 export {
   buildChatStreamErrorReport,
@@ -28,9 +32,16 @@ export {
   useChatTransportConfig,
   buildChatApiUrl,
   buildChatTurnUrl,
+  buildChatTasksUrl,
   type ChatTransportOptions,
   type ChatTransportConfig,
 } from './useChatTransport'
+
+export {
+  trimLegacyInlineAttachments,
+  LEGACY_INLINE_IMAGE_KEEP_BYTES,
+  LEGACY_INLINE_IMAGE_KEEP_COUNT,
+} from './trim-history-attachments'
 
 export {
   createAutoResumingFetch,

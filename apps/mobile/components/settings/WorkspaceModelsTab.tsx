@@ -29,6 +29,7 @@ import { createHttpClient } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePermissions } from '../../hooks/usePermissions'
 import { invalidateVisibleModelsCache } from '../../lib/visible-models'
+import { AgentDefaultModelCard } from './AgentDefaultModelCard'
 import {
   Text,
   useAccountSheetIcons,
@@ -186,118 +187,121 @@ export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
   }
 
   return (
-    <View className="bg-card border border-border rounded-xl">
-      <View className="px-5 py-4 border-b border-border">
-        <View className="flex-row items-center gap-2.5">
-          <Boxes size={16} className="text-foreground" />
-          <Text className="text-base font-semibold text-foreground">Models</Text>
-        </View>
-        <Text className="text-xs text-muted-foreground mt-1">
-          Choose which models your team can see and use. You can only enable models your
-          plan administrator has made available. {selectedCount} of {candidates.length} enabled
-          {allowAll ? ' (all)' : ''}.
-        </Text>
-        {!canManage && (
-          <View className="flex-row items-center gap-1.5 mt-2">
-            <Lock size={12} className="text-muted-foreground" />
-            <Text className="text-[11px] text-muted-foreground">
-              Only workspace owners and admins can change this.
-            </Text>
+    <View className="gap-6">
+      <AgentDefaultModelCard workspaceId={workspaceId} />
+      <View className="bg-card border border-border rounded-xl">
+        <View className="px-5 py-4 border-b border-border">
+          <View className="flex-row items-center gap-2.5">
+            <Boxes size={16} className="text-foreground" />
+            <Text className="text-base font-semibold text-foreground">Models</Text>
           </View>
-        )}
-      </View>
-
-      {/* Allow all toggle */}
-      <Pressable
-        onPress={() => setAllowAll(!allowAll)}
-        disabled={!canManage}
-        className={cn(
-          'px-5 py-4 border-b border-border flex-row items-center justify-between',
-          !canManage && 'opacity-60',
-        )}
-      >
-        <View className="flex-1 mr-3">
-          <Text className="text-sm font-medium text-foreground">Allow all available models</Text>
-          <Text className="text-[11px] text-muted-foreground mt-0.5">
-            New models added by your administrator are shown automatically.
+          <Text className="text-xs text-muted-foreground mt-1">
+            Choose which models your team can see and use. You can only enable models your
+            plan administrator has made available. {selectedCount} of {candidates.length} enabled
+            {allowAll ? ' (all)' : ''}.
           </Text>
+          {!canManage && (
+            <View className="flex-row items-center gap-1.5 mt-2">
+              <Lock size={12} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">
+                Only workspace owners and admins can change this.
+              </Text>
+            </View>
+          )}
         </View>
-        <View
+
+        {/* Allow all toggle */}
+        <Pressable
+          onPress={() => setAllowAll(!allowAll)}
+          disabled={!canManage}
           className={cn(
-            'w-5 h-5 rounded-md border items-center justify-center',
-            allowAll ? 'border-primary bg-primary' : 'border-border bg-background',
+            'px-5 py-4 border-b border-border flex-row items-center justify-between',
+            !canManage && 'opacity-60',
           )}
         >
-          {allowAll && <Check size={13} color="#fff" />}
-        </View>
-      </Pressable>
-
-      <View className="px-5 py-4 gap-4">
-        {error && <Text className="text-xs text-red-500">{error}</Text>}
-
-        {candidates.length === 0 && (
-          <Text className="text-xs text-muted-foreground">
-            No models are available on this platform yet.
-          </Text>
-        )}
-
-        {groups.map((group) => (
-          <View key={group.label} className="gap-1.5">
-            <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              {group.label}
+          <View className="flex-1 mr-3">
+            <Text className="text-sm font-medium text-foreground">Allow all available models</Text>
+            <Text className="text-[11px] text-muted-foreground mt-0.5">
+              New models added by your administrator are shown automatically.
             </Text>
-            {group.models.map((m) => {
-              const checked = isChecked(m.id)
-              return (
-                <Pressable
-                  key={m.id}
-                  onPress={() => toggleModel(m.id)}
-                  disabled={!canManage || allowAll}
-                  className={cn(
-                    'px-3 py-2.5 rounded-lg border flex-row items-center gap-3',
-                    checked ? 'border-primary/50 bg-primary/5' : 'border-border bg-background',
-                    (!canManage || allowAll) && 'opacity-60',
-                  )}
-                >
-                  <View
+          </View>
+          <View
+            className={cn(
+              'w-5 h-5 rounded-md border items-center justify-center',
+              allowAll ? 'border-primary bg-primary' : 'border-border bg-background',
+            )}
+          >
+            {allowAll && <Check size={13} color="#fff" />}
+          </View>
+        </Pressable>
+
+        <View className="px-5 py-4 gap-4">
+          {error && <Text className="text-xs text-red-500">{error}</Text>}
+
+          {candidates.length === 0 && (
+            <Text className="text-xs text-muted-foreground">
+              No models are available on this platform yet.
+            </Text>
+          )}
+
+          {groups.map((group) => (
+            <View key={group.label} className="gap-1.5">
+              <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {group.label}
+              </Text>
+              {group.models.map((m) => {
+                const checked = isChecked(m.id)
+                return (
+                  <Pressable
+                    key={m.id}
+                    onPress={() => toggleModel(m.id)}
+                    disabled={!canManage || allowAll}
                     className={cn(
-                      'w-5 h-5 rounded-md border items-center justify-center',
-                      checked ? 'border-primary bg-primary' : 'border-border bg-background',
+                      'px-3 py-2.5 rounded-lg border flex-row items-center gap-3',
+                      checked ? 'border-primary/50 bg-primary/5' : 'border-border bg-background',
+                      (!canManage || allowAll) && 'opacity-60',
                     )}
                   >
-                    {checked && <Check size={13} color="#fff" />}
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-sm text-foreground">{m.displayName}</Text>
-                    <Text className="text-[11px] text-muted-foreground mt-0.5" numberOfLines={1}>
-                      {m.id}{m.tier ? ` · ${m.tier}` : ''}
-                    </Text>
-                  </View>
-                </Pressable>
-              )
-            })}
-          </View>
-        ))}
-      </View>
-
-      {canManage && (
-        <View className="px-5 py-3 border-t border-border flex-row items-center justify-end gap-3">
-          {savedAt > 0 && !saving && (
-            <Text className="text-[11px] text-green-600">Saved</Text>
-          )}
-          <Pressable
-            onPress={save}
-            disabled={saving}
-            className={cn('items-center px-4 py-2.5 rounded-md', saving ? 'bg-muted' : 'bg-primary')}
-          >
-            {saving ? (
-              <ActivityIndicator size="small" />
-            ) : (
-              <Text className="text-sm font-medium text-primary-foreground">Save changes</Text>
-            )}
-          </Pressable>
+                    <View
+                      className={cn(
+                        'w-5 h-5 rounded-md border items-center justify-center',
+                        checked ? 'border-primary bg-primary' : 'border-border bg-background',
+                      )}
+                    >
+                      {checked && <Check size={13} color="#fff" />}
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-sm text-foreground">{m.displayName}</Text>
+                      <Text className="text-[11px] text-muted-foreground mt-0.5" numberOfLines={1}>
+                        {m.id}{m.tier ? ` · ${m.tier}` : ''}
+                      </Text>
+                    </View>
+                  </Pressable>
+                )
+              })}
+            </View>
+          ))}
         </View>
-      )}
+
+        {canManage && (
+          <View className="px-5 py-3 border-t border-border flex-row items-center justify-end gap-3">
+            {savedAt > 0 && !saving && (
+              <Text className="text-[11px] text-green-600">Saved</Text>
+            )}
+            <Pressable
+              onPress={save}
+              disabled={saving}
+              className={cn('items-center px-4 py-2.5 rounded-md', saving ? 'bg-muted' : 'bg-primary')}
+            >
+              {saving ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <Text className="text-sm font-medium text-primary-foreground">Save changes</Text>
+              )}
+            </Pressable>
+          </View>
+        )}
+      </View>
     </View>
   )
 })

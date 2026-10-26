@@ -11,6 +11,8 @@ export const SURFACE_COLORS = {
     containerHigh: '#F4F4F5',
     containerHighest: '#E4E4E7',
     onSurface: '#0A0A0A',
+    /** Matches `--muted-foreground`; input placeholders and hint text. */
+    onSurfaceMuted: '#71717A',
   },
   dark: {
     surface: '#121212',
@@ -20,5 +22,6 @@ export const SURFACE_COLORS = {
     containerHigh: '#2A2A2A',
     containerHighest: '#333333',
     onSurface: '#DEDEDE',
+    onSurfaceMuted: '#A1A1AA',
   },
 } as const

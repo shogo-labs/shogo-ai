@@ -36,6 +36,8 @@ export interface ResolvePodUrlOpts {
   openAttemptId?: string
   /** System boot (rollout re-warm); see ResolveWorkspaceRuntimeOpts.background. */
   background?: boolean
+  /** Metal switch-over pre-warm; see ResolveWorkspaceRuntimeOpts.rootfs. */
+  rootfs?: 'staged'
   _k8sResolver?: (projectId: string) => Promise<string>
   _isKubernetes?: () => boolean
   /** @deprecated Host warm pools are not part of the workspace topology. */
@@ -102,6 +104,7 @@ async function resolveAnchoredProject(
     _hostStartProject: opts._hostStartProject,
     openAttemptId: opts.openAttemptId,
     background: opts.background,
+    rootfs: opts.rootfs,
     _spawnLease: spawnLease,
   })
 

@@ -11,6 +11,14 @@ interface PrismaState {
   workspaceThrow: Error | null
   upsertThrow: Error | null
   recalcThrowForWorkspaceId: string | null
+  /** `_max.lastCalculatedAt` for the freshness gate; null = empty table. */
+  lastCalculatedAtMax: Date | null
+  /** Query counters — the freshness gate must cost zero of these. */
+  workspaceFindManyCalls: number
+  projectFindManyCalls: number
+  aggregateCalls: number
+  workspaceFindManyArgs: any[]
+  aggregateArgs: any[]
 }
 
 const ps: PrismaState = {
@@ -21,6 +29,12 @@ const ps: PrismaState = {
   workspaceThrow: null,
   upsertThrow: null,
   recalcThrowForWorkspaceId: null,
+  lastCalculatedAtMax: null,
+  workspaceFindManyCalls: 0,
+  projectFindManyCalls: 0,
+  aggregateCalls: 0,
+  workspaceFindManyArgs: [],
+  aggregateArgs: [],
 }
 
 mock.module('@shogo/shared-runtime', () => ({
@@ -36,12 +50,24 @@ mock.module('../../lib/prisma', () => ({
         if (ps.workspaceThrow) throw ps.workspaceThrow
         return ps.workspace
       },
-      findMany: async (_args: any) => ps.workspaces,
+      findMany: async (args: any) => {
+        ps.workspaceFindManyCalls++
+        ps.workspaceFindManyArgs.push(args)
+        return ps.workspaces
+      },
     },
     project: {
-      findMany: async (_args: any) => ps.projects,
+      findMany: async (_args: any) => {
+        ps.projectFindManyCalls++
+        return ps.projects
+      },
     },
     storageUsage: {
+      aggregate: async (args: any) => {
+        ps.aggregateCalls++
+        ps.aggregateArgs.push(args)
+        return { _max: { lastCalculatedAt: ps.lastCalculatedAtMax } }
+      },
       upsert: async (args: any) => {
         if (ps.upsertThrow) throw ps.upsertThrow
         ps.upsertCalls.push(args)
@@ -51,22 +77,49 @@ mock.module('../../lib/prisma', () => ({
   },
 }))
 
+// Mirrors the local-mode branch of the real helper: run the body and report
+// `acquired: true`, unless a test asks for the lock to be held elsewhere.
+const lockState = { heldElsewhere: false }
+
+mock.module('../../lib/global-job-lock', () => ({
+  withGlobalJobLock: async (
+    _jobName: string,
+    body: () => Promise<any>,
+    _opts?: unknown,
+  ) => {
+    if (lockState.heldElsewhere) {
+      return { acquired: false, skipped: true, reason: 'lock_not_acquired' }
+    }
+    return { acquired: true, result: await body() }
+  },
+}))
+
 interface S3State {
   byPrefix: Map<string, Array<{ size: number }>>
   errorByPrefix: Map<string, Error>
+  listCalls: number
 }
 
-const s3: S3State = { byPrefix: new Map(), errorByPrefix: new Map() }
+const s3: S3State = { byPrefix: new Map(), errorByPrefix: new Map(), listCalls: 0 }
 
 mock.module('../../lib/s3', () => ({
   listAllObjectsInS3: async (prefix: string, _bucket: string) => {
+    s3.listCalls++
     const err = s3.errorByPrefix.get(prefix)
     if (err) throw err
     return s3.byPrefix.get(prefix) ?? []
   },
 }))
 
+const regionState: { home: any } = { home: null }
+const realRegion = await import('../../lib/region')
+mock.module('../../lib/region', () => ({
+  ...realRegion,
+  homeRegionWorkspaceWhere: () => regionState.home,
+}))
+
 const {
+  STORAGE_RECALC_MIN_GAP_MS,
   calculateWorkspaceStorageUsage,
   getStorageUsage,
   isOverStorageLimit,
@@ -84,8 +137,17 @@ beforeEach(() => {
   ps.workspaceThrow = null
   ps.upsertThrow = null
   ps.recalcThrowForWorkspaceId = null
+  ps.lastCalculatedAtMax = null
+  ps.workspaceFindManyCalls = 0
+  ps.projectFindManyCalls = 0
+  ps.aggregateCalls = 0
+  ps.workspaceFindManyArgs = []
+  ps.aggregateArgs = []
+  regionState.home = null
   s3.byPrefix = new Map()
   s3.errorByPrefix = new Map()
+  s3.listCalls = 0
+  lockState.heldElsewhere = false
   logSpy = mock(() => {})
   errorSpy = mock(() => {})
   console.log = logSpy as any
@@ -285,5 +347,107 @@ describe('recalculateAllStorageUsage', () => {
     // start + end log lines should still fire.
     const logged = (logSpy.mock.calls.flat() ?? []).join(' ')
     expect(logged).toContain('Recalculation complete')
+  })
+})
+
+// ─── Freshness gate (PERF-1) ───────────────────────────────────────────────
+//
+// Every pod schedules this pass (boot + 6h) and the advisory lock only stops
+// *overlapping* passes, so staggered restarts produced ~61 sweeps/day against
+// 4 intended. The gate skips the sweep when `max(storage_usage.lastCalculatedAt)`
+// shows one finished within STORAGE_RECALC_MIN_GAP_MS.
+
+describe('recalculateAllStorageUsage freshness gate', () => {
+  it('skips the whole sweep when a pass finished 1h ago', async () => {
+    ps.workspaces = [{ id: 'ws-1' }, { id: 'ws-2' }]
+    ps.projects = [{ id: 'p1', name: 'a' }]
+    ps.lastCalculatedAtMax = new Date(Date.now() - 60 * 60 * 1000)
+
+    const out = await recalculateAllStorageUsage()
+
+    expect(out.status).toBe('fresh')
+    expect(out.workspaces).toBeUndefined()
+    // No workspace scan, no project scan, no S3 LIST, no upsert.
+    expect(ps.workspaceFindManyCalls).toBe(0)
+    expect(ps.projectFindManyCalls).toBe(0)
+    expect(s3.listCalls).toBe(0)
+    expect(ps.upsertCalls).toHaveLength(0)
+    // It does read the max — that query is the whole point.
+    expect(ps.aggregateCalls).toBe(1)
+    const logged = (logSpy.mock.calls.flat() ?? []).join(' ')
+    expect(logged).toContain('Skipping recalculation: last pass finished 60m ago')
+  })
+
+  it('runs when the last pass finished 6h ago', async () => {
+    ps.workspaces = [{ id: 'ws-1' }, { id: 'ws-2' }]
+    ps.projects = []
+    ps.lastCalculatedAtMax = new Date(Date.now() - 6 * 60 * 60 * 1000)
+
+    const out = await recalculateAllStorageUsage()
+
+    expect(out).toEqual({ status: 'ran', workspaces: 2 })
+    expect(ps.upsertCalls).toHaveLength(2)
+    expect(ps.upsertCalls.map((c) => c.where.workspaceId).sort()).toEqual(['ws-1', 'ws-2'])
+  })
+
+  it('runs when the storage_usage table is empty (null max)', async () => {
+    ps.workspaces = [{ id: 'ws-1' }]
+    ps.projects = []
+    ps.lastCalculatedAtMax = null
+
+    const out = await recalculateAllStorageUsage()
+
+    expect(out).toEqual({ status: 'ran', workspaces: 1 })
+    expect(ps.upsertCalls).toHaveLength(1)
+  })
+
+  it('runs when the last pass is exactly STORAGE_RECALC_MIN_GAP_MS old', async () => {
+    ps.workspaces = [{ id: 'ws-1' }]
+    ps.projects = []
+    ps.lastCalculatedAtMax = new Date(Date.now() - STORAGE_RECALC_MIN_GAP_MS)
+
+    const out = await recalculateAllStorageUsage()
+
+    expect(out).toEqual({ status: 'ran', workspaces: 1 })
+    expect(ps.upsertCalls).toHaveLength(1)
+  })
+
+  it('reports locked and scans nothing when another pod holds the lock', async () => {
+    ps.workspaces = [{ id: 'ws-1' }]
+    lockState.heldElsewhere = true
+
+    const out = await recalculateAllStorageUsage()
+
+    expect(out).toEqual({ status: 'locked' })
+    expect(ps.aggregateCalls).toBe(0)
+    expect(ps.workspaceFindManyCalls).toBe(0)
+    expect(ps.projectFindManyCalls).toBe(0)
+    expect(s3.listCalls).toBe(0)
+    expect(ps.upsertCalls).toHaveLength(0)
+  })
+})
+
+describe('recalculateAllStorageUsage home-region partition (PERF-8)', () => {
+  it('single-region: sweeps every workspace with no filter', async () => {
+    ps.workspaces = [{ id: 'ws-1' }]
+    await recalculateAllStorageUsage()
+    expect(ps.workspaceFindManyArgs[0].where).toBeUndefined()
+    expect(ps.aggregateArgs[0].where).toBeUndefined()
+  })
+
+  it('multi-region: sweeps and judges freshness on this region’s home workspaces only', async () => {
+    regionState.home = { homeRegion: 'eu-frankfurt-1' }
+    ps.workspaces = [{ id: 'ws-eu' }]
+    const out = await recalculateAllStorageUsage()
+    expect(out).toEqual({ status: 'ran', workspaces: 1 })
+    expect(ps.workspaceFindManyArgs[0].where).toEqual({ homeRegion: 'eu-frankfurt-1' })
+    expect(ps.aggregateArgs[0].where).toEqual({ workspace: { homeRegion: 'eu-frankfurt-1' } })
+  })
+
+  it('primary region also owns legacy rows with no homeRegion', async () => {
+    regionState.home = { OR: [{ homeRegion: 'us-ashburn-1' }, { homeRegion: null }] }
+    ps.workspaces = []
+    await recalculateAllStorageUsage()
+    expect(ps.workspaceFindManyArgs[0].where).toEqual(regionState.home)
   })
 })

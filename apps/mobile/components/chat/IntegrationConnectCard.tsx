@@ -14,7 +14,10 @@ export interface IntegrationAuthRequest {
 const POLL_MS = 3_000
 const POLL_FOR_MS = 10 * 60_000
 
-const KNOWN_LABELS: Record<string, string> = { github: "GitHub" }
+const KNOWN_LABELS: Record<string, string> = { github: "GitHub", github_app: "GitHub" }
+
+/** Connects the project rather than the person's own account, so `/api/me/integrations` never shows it. */
+const PROJECT_LEVEL = new Set(["github_app"])
 
 /** "github" -> "GitHub", "composio:google_calendar" -> "Google Calendar", "mcp:linear" -> "Linear". */
 export function integrationLabel(provider: string): string {
@@ -39,15 +42,24 @@ function linkProjectId(connectUrl: string): string | null {
 
 interface MyIntegrations {
   connections?: Array<{ provider: string }>
-  grants?: Array<{ provider: string; projectId: string; revokedAt?: string | null }>
 }
 
+interface AgentAccess {
+  connected?: boolean
+  allowed?: boolean
+}
+
+/** Connected, and (for a link from an agent) that agent acts as me, whether by its own or a workspace-wide consent. */
 async function isConnected(provider: string, projectId: string | null): Promise<boolean> {
-  const { data: body } = await createHttpClient().get<MyIntegrations>("/api/me/integrations")
-  const connected = (body?.connections ?? []).some((c) => c.provider === provider)
-  const granted =
-    !projectId || (body?.grants ?? []).some((g) => g.provider === provider && g.projectId === projectId && !g.revokedAt)
-  return connected && granted
+  const http = createHttpClient()
+  if (projectId) {
+    const { data } = await http.get<AgentAccess>(
+      `/api/me/integrations/${encodeURIComponent(provider)}/access?projectId=${encodeURIComponent(projectId)}`,
+    )
+    return !!data?.connected && !!data?.allowed
+  }
+  const { data: body } = await http.get<MyIntegrations>("/api/me/integrations")
+  return (body?.connections ?? []).some((c) => c.provider === provider)
 }
 
 /**
@@ -76,7 +88,7 @@ export function IntegrationConnectCard({
   }
 
   useEffect(() => {
-    if (!opened || !API_URL) return
+    if (!opened || !API_URL || PROJECT_LEVEL.has(request.provider)) return
     const projectId = linkProjectId(request.connectUrl)
     const stopAt = Date.now() + POLL_FOR_MS
     let cancelled = false
@@ -99,7 +111,9 @@ export function IntegrationConnectCard({
   return (
     <View className="gap-2">
       <Text className="text-sm text-foreground">
-        {`This agent acts as you on ${label}. Connect your ${label} account and it will carry on.`}
+        {PROJECT_LEVEL.has(request.provider)
+          ? request.message || `Connect ${label} to this project and the agent will carry on.`
+          : `This agent acts as you on ${label}. Connect your ${label} account and it will carry on.`}
       </Text>
       <View className="flex-row flex-wrap gap-2">
         <Pressable
@@ -124,7 +138,7 @@ export function IntegrationConnectCard({
           </Pressable>
         ) : null}
       </View>
-      {opened ? (
+      {opened && !PROJECT_LEVEL.has(request.provider) ? (
         <Text className="text-xs text-muted-foreground">Waiting for you to finish connecting…</Text>
       ) : null}
     </View>

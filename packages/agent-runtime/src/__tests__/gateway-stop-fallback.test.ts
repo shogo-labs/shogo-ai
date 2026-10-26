@@ -34,9 +34,9 @@ describe('empty-turn fallback wiring', () => {
     expect(stopCheck).toBeLessThan(fallback)
   })
 
-  test('the zero-token "issue processing your message" error is skipped for a stop', () => {
+  test('the zero-token "issue processing your message" error is skipped for a stop and a usage limit', () => {
     expect(source).toMatch(
-      /result\.outputTokens === 0 && result\.toolCalls\.length === 0 && !isHeartbeat && !isUserStoppedTurn\(result\)/,
+      /result\.outputTokens === 0 && result\.toolCalls\.length === 0 && !result\.usageLimit && !isHeartbeat && !isUserStoppedTurn\(result\)/,
     )
   })
 })

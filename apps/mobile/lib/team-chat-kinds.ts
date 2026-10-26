@@ -6,7 +6,7 @@
  * place, and how runs of routine status posts collapse into one row.
  * Mirrors the API's `conversation-message-kind`.
  */
-import type { ChatMessage } from './team-chat-api'
+import type { ChatMessage, PollBlock, QuestionBlock } from './team-chat-api'
 
 export type MessageKind = 'status' | 'result' | 'decision' | 'alert'
 export type CardStatus = 'working' | 'blocked' | 'done' | 'failed'
@@ -35,6 +35,33 @@ export function statusCardOf(message: Pick<ChatMessage, 'blocks'>): StatusCard |
   return blocks.card
 }
 
+/** A board card's post in a channel; see the API's `workItemBlock()`. */
+export interface WorkItemBlock {
+  id: string
+  key: string
+  /** The full card title, not the clipped one in `card.title`. */
+  title: string
+  boardId?: string
+  boardName?: string | null
+  column?: { name: string; category: string } | null
+  priority?: string
+  assignee?: { kind: 'user' | 'agent'; name: string } | null
+  dueAt?: string | null
+  path?: string
+  note?: string
+}
+
+/**
+ * The board card a message is about, if it carries one. Author-agnostic: board
+ * posts come from `system`. Blocks posted before cards carried a title have no
+ * `title` and are left to the plain-text fallback.
+ */
+export function workItemOf(message: Pick<ChatMessage, 'blocks'>): WorkItemBlock | null {
+  const block = (message.blocks as { workItem?: WorkItemBlock } | null)?.workItem
+  if (!block || typeof block.id !== 'string' || typeof block.key !== 'string' || typeof block.title !== 'string') return null
+  return block
+}
+
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired'
 
 /** An action an agent is waiting for a person to approve. */
@@ -52,6 +79,72 @@ export function approvalOf(message: Pick<ChatMessage, 'blocks'>): ApprovalCard |
   const blocks = message.blocks as { type?: unknown; approval?: ApprovalCard } | null
   if (blocks?.type !== 'approval_request' || !blocks.approval || typeof blocks.approval.requestId !== 'string') return null
   return blocks.approval
+}
+
+export type QuestionInteraction = 'choice' | 'confirm' | 'text' | 'person' | 'secret'
+export type QuestionStatus = 'open' | 'answered' | 'superseded' | 'dismissed'
+
+export interface QuestionOption {
+  label: string
+  description?: string
+}
+
+/** Something an agent needs a person to answer, shown as a card on its message. */
+export interface Question {
+  id: string
+  to: { userIds: string[]; anyone?: boolean; via: 'mention' | 'run' | 'thread' | 'channel' }
+  header: string
+  prompt: string
+  interaction: QuestionInteraction
+  options?: QuestionOption[]
+  multiSelect?: boolean
+  hint?: 'number' | 'url'
+  secretName?: string
+  status: QuestionStatus
+  answer?: { text: string; by: { userId: string; name: string }; at: string; relayedAt?: string }
+  closedReason?: string
+  closedAt?: string
+  source: 'agent' | 'inferred'
+  askCount?: number
+  lastAskedAt?: string
+}
+
+/** A later message asking again for a question that is still open on an earlier one. */
+export interface QuestionRef {
+  messageId: string
+  questionId: string
+  header: string
+  prompt: string
+}
+
+const INTERACTIONS: readonly string[] = ['choice', 'confirm', 'text', 'person', 'secret']
+
+export const CONFIRM_OPTIONS: QuestionOption[] = [{ label: 'Approve' }, { label: 'Not yet' }, { label: 'Discuss' }]
+
+export function questionsOf(message: Pick<ChatMessage, 'blocks'>): Question[] {
+  const list = (message.blocks as { questions?: unknown } | null)?.questions
+  if (!Array.isArray(list)) return []
+  return list.filter(
+    (q): q is Question =>
+      !!q && typeof q === 'object' && typeof (q as Question).id === 'string' && typeof (q as Question).prompt === 'string' && INTERACTIONS.includes((q as Question).interaction),
+  )
+}
+
+export function questionRefsOf(message: Pick<ChatMessage, 'blocks'>): QuestionRef[] {
+  const list = (message.blocks as { questionRefs?: unknown } | null)?.questionRefs
+  if (!Array.isArray(list)) return []
+  return list.filter((r): r is QuestionRef => !!r && typeof (r as QuestionRef).messageId === 'string' && typeof (r as QuestionRef).questionId === 'string')
+}
+
+/** The buttons a choice or confirm question offers. */
+export function questionOptions(q: Question): QuestionOption[] {
+  if (q.interaction === 'confirm') return q.options?.length ? q.options : CONFIRM_OPTIONS
+  return q.interaction === 'choice' ? q.options ?? [] : []
+}
+
+/** Whether `userId` is asked: named on it, or anyone may answer. */
+export function isAskedOf(q: Question, userId: string | null): boolean {
+  return !!q.to.anyone || (!!userId && q.to.userIds.includes(userId))
 }
 
 export type StepState = 'done' | 'current' | 'pending'
@@ -129,7 +222,51 @@ export interface AgentWork {
   toolCalls: number
 }
 
+/** An account the agent needs someone to connect before it can carry on. */
+export interface ConnectRequest {
+  provider: string
+  connectUrl: string
+  message?: string
+}
+
+export function connectRequestsOf(message: Pick<ChatMessage, 'blocks'>): ConnectRequest[] {
+  const list = (message.blocks as { connect?: unknown } | null)?.connect
+  if (!Array.isArray(list)) return []
+  return list.filter(
+    (c): c is ConnectRequest =>
+      !!c && typeof c === 'object' && typeof (c as ConnectRequest).provider === 'string' && /^https?:\/\//i.test(String((c as ConnectRequest).connectUrl)),
+  )
+}
+
 export function workOf(message: Pick<ChatMessage, 'blocks'>): AgentWork | null {
   const work = (message.blocks as { work?: AgentWork } | null)?.work
   return work && typeof work.chatMessageId === 'string' && typeof work.startedAt === 'number' ? work : null
+}
+
+// ─── Polls and Q&A (posted in a huddle's thread) ─────────────────────────────
+
+/** The poll a message carries, if it is one. */
+export function pollOf(message: Pick<ChatMessage, 'blocks'>): PollBlock | null {
+  const block = (message.blocks as { poll?: PollBlock } | null)?.poll
+  if (!block || typeof block.question !== 'string' || !Array.isArray(block.options)) return null
+  return { ...block, tally: block.tally ?? {}, voters: block.voters ?? {} }
+}
+
+/** The audience question a message carries, if it is one. */
+export function audienceQuestionOf(message: Pick<ChatMessage, 'blocks'>): QuestionBlock | null {
+  const block = (message.blocks as { question?: QuestionBlock } | null)?.question
+  if (!block || typeof block !== 'object' || typeof block.answered !== 'boolean') return null
+  return { ...block, upvotes: block.upvotes ?? 0, upvoters: block.upvoters ?? [] }
+}
+
+/** Questions first by upvotes, answered ones last. */
+export function sortQuestions<T extends { id: string; blocks: Record<string, unknown> | null; createdAt: string }>(messages: T[]): T[] {
+  const score = (m: T) => audienceQuestionOf(m)?.upvotes ?? 0
+  const answered = (m: T) => (audienceQuestionOf(m)?.answered ? 1 : 0)
+  return [...messages].sort((a, b) => answered(a) - answered(b) || score(b) - score(a) || a.createdAt.localeCompare(b.createdAt))
+}
+
+/** Total votes cast, counting each person once. */
+export function pollVoterCount(poll: PollBlock): number {
+  return new Set(Object.values(poll.voters).flat()).size
 }

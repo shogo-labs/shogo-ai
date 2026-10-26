@@ -66,6 +66,13 @@ export class TeamChatConnection {
 
   start(): void {
     this.stopped = false
+    // No socket URL means the transport is SSE only (a machine workspace relayed
+    // over an HTTP tunnel). Go straight to it instead of burning two socket
+    // failures first, which would leave typing and presence off for seconds.
+    if (!this.deps.urls.ws) {
+      this.startFallback()
+      return
+    }
     this.connectSocket()
   }
 

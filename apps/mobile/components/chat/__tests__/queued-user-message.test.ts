@@ -3,7 +3,12 @@
 
 import { describe, expect, test } from "bun:test"
 import type { UIMessage } from "ai"
-import { appendQueuedUserMessage, queuedRowToUserMessage } from "../queued-user-message"
+import {
+  appendQueuedUserMessage,
+  appendQueuedUserMessages,
+  canAttachQueuedTurn,
+  queuedRowToUserMessage,
+} from "../queued-user-message"
 import { groupMessagesIntoTurns } from "../turns/useTurnGrouping"
 
 const assistant = (id: string, text: string): UIMessage => ({ id, role: "assistant", parts: [{ type: "text", text }] }) as UIMessage
@@ -35,6 +40,53 @@ describe("appendQueuedUserMessage", () => {
     const once = appendQueuedUserMessage(base, queued)
     expect(once.map((m) => m.id)).toEqual(["u1", "a1", "q1"])
     expect(appendQueuedUserMessage(once, queued)).toBe(once)
+  })
+})
+
+describe("appendQueuedUserMessages", () => {
+  test("appends the messages the server has not saved yet, in send order", () => {
+    const messages = [user("u1", "lead"), assistant("a1", "reply")]
+    const pending = [user("q1", "first queued"), user("q2", "second queued")]
+    expect(appendQueuedUserMessages(messages, pending).map((m) => m.id)).toEqual([
+      "u1",
+      "a1",
+      "q1",
+      "q2",
+    ])
+  })
+
+  test("keeps the queued bubbles a history reload dropped, and skips ones history saved", () => {
+    // The reload replaces the transcript with what the server has: the head of
+    // the queue has been saved (q1), the rest have not.
+    const reloaded = [user("u1", "lead"), assistant("a1", "reply"), user("q1", "first queued")]
+    const rows = [user("q1", "first queued"), user("q2", "second queued")]
+    expect(appendQueuedUserMessages(reloaded, rows).map((m) => m.id)).toEqual([
+      "u1",
+      "a1",
+      "q1",
+      "q2",
+    ])
+  })
+
+  test("is a no-op with nothing pending", () => {
+    const messages = [user("u1", "lead")]
+    expect(appendQueuedUserMessages(messages, [])).toBe(messages)
+  })
+})
+
+describe("canAttachQueuedTurn", () => {
+  test("attaches when the queued message is the last thing on screen", () => {
+    const messages = [user("u1", "lead"), assistant("a1", "reply"), user("q1", "queued")]
+    expect(canAttachQueuedTurn(messages, user("q1", "queued"))).toBe(true)
+  })
+
+  test("reloads when something landed after it", () => {
+    const messages = [user("q1", "queued"), assistant("a1", "reply")]
+    expect(canAttachQueuedTurn(messages, user("q1", "queued"))).toBe(false)
+  })
+
+  test("reloads when it is not on screen at all", () => {
+    expect(canAttachQueuedTurn([user("u1", "lead")], user("q1", "queued"))).toBe(false)
   })
 })
 

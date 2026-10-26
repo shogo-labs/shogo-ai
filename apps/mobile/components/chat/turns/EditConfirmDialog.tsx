@@ -358,7 +358,7 @@ export function EditConfirmDialogHost() {
             <Pressable
               onPress={() => setRevertFiles((v) => !v)}
               accessibilityRole="checkbox"
-              accessibilityState={{ checked: revertFiles }}
+              aria-checked={revertFiles}
               accessibilityLabel="Also revert project files to the checkpoint before this message"
               className="mt-4 flex-row items-start gap-2"
             >
@@ -397,7 +397,7 @@ export function EditConfirmDialogHost() {
             <Pressable
               onPress={() => setDontAsk((v) => !v)}
               accessibilityRole="checkbox"
-              accessibilityState={{ checked: dontAsk }}
+              aria-checked={dontAsk}
               accessibilityLabel="Don't ask again for this action"
               className="mt-4 flex-row items-center gap-2"
             >

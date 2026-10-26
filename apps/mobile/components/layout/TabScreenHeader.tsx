@@ -27,6 +27,8 @@ import { ProfileMenu } from './ProfileMenu'
 
 export interface TabScreenHeaderProps {
   title: string
+  /** Left-most control. Home puts the workspace avatar (the sidebar's only button) here. */
+  leading?: ReactNode
   /** Extra controls left of the avatar. */
   actions?: ReactNode
   /** Replaces the title, e.g. a workspace switcher. */
@@ -80,7 +82,7 @@ export function TabScreenScrollView({ onScroll, ...props }: ScrollViewProps) {
   )
 }
 
-export function TabScreenHeader({ title, actions, titleSlot }: TabScreenHeaderProps) {
+export function TabScreenHeader({ title, leading, actions, titleSlot }: TabScreenHeaderProps) {
   const insets = useSafeAreaInsets()
   const binding = useContext(ScrollContext)
   const style = binding
@@ -94,13 +96,16 @@ export function TabScreenHeader({ title, actions, titleSlot }: TabScreenHeaderPr
     : undefined
   return (
     <View className="flex-row items-center justify-between px-4 pb-2" style={{ paddingTop: insets.top + 8 }} testID="tab-screen-header">
-      <Animated.View className="min-w-0 flex-1 pr-3" style={style as any}>
-        {titleSlot ?? (
-          <Text className="text-[28px] font-bold leading-9 text-foreground" accessibilityRole="header" numberOfLines={1}>
-            {title}
-          </Text>
-        )}
-      </Animated.View>
+      <View className="min-w-0 flex-1 flex-row items-center gap-2">
+        {leading}
+        <Animated.View className="min-w-0 flex-1 pr-3" style={style as any}>
+          {titleSlot ?? (
+            <Text className="text-[28px] font-bold leading-9 text-foreground" accessibilityRole="header" numberOfLines={1}>
+              {title}
+            </Text>
+          )}
+        </Animated.View>
+      </View>
       <View className="flex-row items-center gap-2">
         {actions}
         <ProfileMenu placement="bottom right" size="md" />

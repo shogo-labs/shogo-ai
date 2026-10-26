@@ -85,6 +85,10 @@
  *     DEEPSEEK_API_KEY=sk-... OPENROUTER_API_KEY=sk-or-... \
  *     bun scripts/seed-db-models.ts
  *
+ * Seed a subset (comma-separated keys from `SEEDERS`), e.g. to roll out one
+ * model without refreshing every other row:
+ *   bun scripts/seed-db-models.ts --only=haiku-5-5
+ *
  * Note: the MiMo staging key shared during development MUST be rotated and set
  * via env / admin UI; do not hardcode it here.
  */
@@ -273,6 +277,39 @@ async function seedSonnet46(): Promise<void> {
     omit(common, ['enabled']),
   )
   console.log('[seed-db-models] Upserted Sonnet 4.6 (apiModel=claude-sonnet-4-6)')
+}
+
+async function seedHaiku55(): Promise<void> {
+  const common = {
+    displayName: 'Claude Haiku 5.5',
+    shortDisplayName: 'Haiku 5.5',
+    tier: 'economy',
+    family: 'haiku',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    // Takes over the shared `haiku`/`claude-haiku` aliases from Haiku 4.5
+    // (see aliases.ts) — same last-write-wins handoff as every prior Haiku release.
+    aliases: ['claude-haiku-5-5', 'claude-haiku', 'haiku'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // Anthropic-published rates (platform.claude.com/docs/en/models/haiku-5-5/overview,
+    // launched 2026-10-07). Values are for prompts ≤100k tokens; above 100k
+    // all buckets step up 5x (see MODEL_DOLLAR_COSTS['claude-haiku-5-5']).
+    // cacheWritePerMillion is the 5-minute cache-write rate.
+    inputPerMillion: 0.10,
+    cachedInputPerMillion: 0.01,
+    cacheWritePerMillion: 0.125,
+    outputPerMillion: 0.50,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'anthropic', apiModel: 'claude-haiku-5-5' },
+    { providerId: null, sortOrder: 0, ...common },
+    omit(common, ['enabled']),
+  )
+  console.log('[seed-db-models] Upserted Haiku 5.5 (apiModel=claude-haiku-5-5)')
 }
 
 async function seedFable51(): Promise<void> {
@@ -727,22 +764,41 @@ async function seedGptLive1(): Promise<void> {
   console.log('[seed-db-models] Upserted GPT-Live 1')
 }
 
-export async function main(): Promise<void> {
-  await seedOpus48()
-  await seedOpus55()
-  await seedOpus5()
-  await seedSonnet5()
-  await seedFable51()
-  await seedSonnet46()
-  await seedMimo()
-  await seedDeepSeek()
-  await seedGptLive1()
-  await seedGptAstra()
-  await seedGptSol6()
-  await seedGptLuna6()
-  await seedGptSol56()
-  await seedGptLuna56()
-  await seedGptTerra()
+export const SEEDERS: Array<[string, () => Promise<void>]> = [
+  ['opus-4-8', seedOpus48],
+  ['opus-5-5', seedOpus55],
+  ['opus-5', seedOpus5],
+  ['sonnet-5', seedSonnet5],
+  ['fable-5-1', seedFable51],
+  ['sonnet-4-6', seedSonnet46],
+  ['haiku-5-5', seedHaiku55],
+  ['mimo', seedMimo],
+  ['hoshi-2-0', seedDeepSeek],
+  ['gpt-live-1', seedGptLive1],
+  ['gpt-6-astra', seedGptAstra],
+  ['gpt-6-sol', seedGptSol6],
+  ['gpt-6-luna', seedGptLuna6],
+  ['gpt-5.6-sol', seedGptSol56],
+  ['gpt-5.6-luna', seedGptLuna56],
+  ['gpt-5.6-terra', seedGptTerra],
+]
+
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const onlyArg = argv.find((arg) => arg.startsWith('--only='))?.slice('--only='.length)
+  const only = onlyArg !== undefined
+    ? new Set(onlyArg.split(',').map((name) => name.trim()).filter(Boolean))
+    : null
+  if (only) {
+    const unknown = [...only].filter((name) => !SEEDERS.some(([key]) => key === name))
+    if (unknown.length || only.size === 0) {
+      throw new Error(
+        `Unknown seeder(s): ${unknown.join(', ') || '(none given)'}. Valid: ${SEEDERS.map(([key]) => key).join(', ')}`,
+      )
+    }
+  }
+  for (const [name, seed] of SEEDERS) {
+    if (!only || only.has(name)) await seed()
+  }
   console.log('[seed-db-models] Done.')
 }
 

@@ -21,7 +21,7 @@ import {
   StyleSheet,
   useWindowDimensions,
 } from "react-native";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { Redirect, useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { observer } from "mobx-react-lite";
 import {
@@ -38,13 +38,11 @@ import {
   Search as SearchIcon,
   UserPlus as UserPlusIcon,
   Mail as MailIcon,
-  BarChart3 as BarChart3Icon,
   MessageSquare as MessageSquareIcon,
   Zap as ZapIcon,
   CreditCard as CreditCardIcon,
   Cloud as CloudIcon,
   Server as ServerIcon,
-  Coins as CoinsIcon,
   Plug as PlugIcon,
   Download as DownloadIcon,
   Monitor as MonitorIcon,
@@ -62,6 +60,7 @@ import {
   useAccountSheetIcons,
 } from "../../components/settings/account-sheet-chrome";
 import { AppearanceTab } from "../../components/settings/AppearanceTab";
+import { ChatPreferencesTab } from "../../components/settings/ChatPreferencesTab";
 import { CreateWorkspaceModal } from "../../components/layout/sidebar/CreateWorkspaceModal";
 import { useAuth } from "../../contexts/auth";
 import {
@@ -75,20 +74,23 @@ import {
 } from "../../contexts/domain";
 import { useDomainActions } from "@shogo/shared-app/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation";
 import { usePermissions } from "../../hooks/usePermissions";
-import {
-  resolveActiveWorkspaceId,
-  setActiveWorkspaceId,
-} from "../../lib/workspace-store";
+import { setActiveWorkspaceId } from "../../lib/workspace-store";
 import {
   api,
   API_URL,
-  isInvitationExpired,
   type WorkspaceChildrenResponse,
+  type WorkspaceDeletionPreview,
   type MemberInsight,
   type MemberInsightsData,
 } from "../../lib/api";
+import { useUsageLogCsvUrl } from "../../lib/usage-log-csv";
+import {
+  workspaceDeleteErrorMessage,
+  workspaceErrorMessage,
+} from "../../lib/workspace-errors";
 import { useBillingData } from "@shogo/shared-app/hooks";
 import {
   formatUsd,
@@ -98,41 +100,25 @@ import {
 } from "../../lib/billing-config";
 import { usePlatformConfig } from "../../lib/platform-config";
 import { openWebAppSession } from "../../lib/openWebAppSession";
+import {
+  canManageMemberRow,
+  roleOptionsFor,
+} from "../../lib/workspace-member-role";
 import { usePostHogSafe } from "../../contexts/posthog";
 import { EVENTS, trackEvent } from "../../lib/analytics";
-import { useCloudBillingSummary } from "../../hooks/useCloudBillingSummary";
 import { SecuritySettingsPanel } from "../../components/security/SecuritySettingsPanel";
 import { ComputerAndFilesPanel } from "../../components/settings/ComputerAndFilesPanel";
 import { ComputeTab } from "../../components/settings/ComputeTab";
 import { LocalCloudBillingTab } from "../../components/settings/LocalCloudBillingTab";
 import { UpdatesTab } from "../../components/settings/UpdatesTab";
+import { EnvironmentVersionTrigger } from "../../components/settings/EnvironmentPicker";
 import { IntegrationsTab } from "../../components/settings/IntegrationsTab";
 import { AutomationsTab } from "../../components/settings/AutomationsTab";
+import { WorkspaceExportView } from "../../components/settings/WorkspaceExportView";
 import { WorkspaceModelsTab } from "../../components/settings/WorkspaceModelsTab";
 import { RemoteControlTab } from "../../components/settings/RemoteControlTab";
-import {
-  type AnalyticsPeriod,
-  type UsageSummaryData,
-  type UsageLogData,
-  type ChatAnalyticsData,
-  type UsageBreakdownData,
-  type SpendGroupBy,
-  type SpendMetric,
-  PeriodSelector,
-  StatCard,
-  UsageTableSection,
-  ChatAnalyticsSection,
-  UsageBreakdownSection,
-  UsageTimeseriesChart,
-} from "../../components/analytics/SharedAnalytics";
-import { DateRangePills } from "../../components/analytics/DateRangePills";
-import { UsageLeaderboard } from "../../components/analytics/UsageLeaderboard";
-import { BillingProgressCard } from "../../components/billing/BillingProgressCard";
 import { SetSpendLimitDialog } from "../../components/billing/SetSpendLimitDialog";
-import { CostAnalyticsTab } from "../../components/analytics/CostAnalyticsTab";
 import { MemberUsageDetail } from "../../components/settings/MemberUsageDetail";
-import { WorkspaceActivitySection } from "../../components/analytics/WorkspaceActivitySection";
-import { useVisibleModels } from "../../lib/visible-models";
 import {
   isNativePhoneIntegrationsLayout,
   WEB_WIDE_MIN_WIDTH,
@@ -152,6 +138,12 @@ import {
 } from "../../lib/settings-tabs";
 import { leaveSettings } from "../../lib/settings-back";
 import {
+  isDesktopShell,
+  isPhoneSettingsSurface,
+  phoneSettingsTarget,
+  resolveRequestedWorkspaceId,
+} from "../../lib/phone-settings-route";
+import {
   useToast,
   Toast,
   ToastTitle,
@@ -169,6 +161,8 @@ import {
   cn,
 } from "@shogo/shared-ui/primitives";
 import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from "../../lib/notifications/preferences";
+import { useNotificationPermission } from "../../lib/notifications/useNotificationPermission";
+import type { NotificationPermissionState } from "../../lib/notifications/chat-notifier";
 import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
 
@@ -188,13 +182,11 @@ const SETTINGS_ICON_MAP = {
   Search: SearchIcon,
   UserPlus: UserPlusIcon,
   Mail: MailIcon,
-  BarChart3: BarChart3Icon,
   MessageSquare: MessageSquareIcon,
   Zap: ZapIcon,
   CreditCard: CreditCardIcon,
   Cloud: CloudIcon,
   Server: ServerIcon,
-  Coins: CoinsIcon,
   Plug: PlugIcon,
   Download: DownloadIcon,
   Monitor: MonitorIcon,
@@ -210,6 +202,7 @@ function useSettingsIcons() {
 const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   workspace: "Building2",
   people: "Users",
+  chat: "MessageSquare",
   models: "Boxes",
   integrations: "Plug",
   automations: "Zap",
@@ -219,8 +212,6 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   "computer-files": "Laptop",
   billing: "CreditCard",
   compute: "Server",
-  analytics: "BarChart3",
-  costs: "Coins",
   appearance: "Paintbrush",
   updates: "RefreshCw",
 };
@@ -239,10 +230,7 @@ const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === "ios";
 // Cloud), while a cloud-connected desktop install still needs the Updates
 // tab since it's the Electron auto-updater's home regardless of which
 // backend the app talks to. See `desktopOnly` in lib/settings-tabs.ts.
-const IS_DESKTOP_CLIENT =
-  Platform.OS === "web" &&
-  typeof window !== "undefined" &&
-  !!(window as any).shogoDesktop?.isDesktop;
+const IS_DESKTOP_CLIENT = isDesktopShell();
 
 interface NavItem {
   id: TabId;
@@ -253,6 +241,7 @@ interface NavItem {
 const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "people",
+  "chat",
   "models",
   "integrations",
   "automations",
@@ -261,13 +250,13 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "appearance",
   ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? ["compute" as TabId] : []),
   "billing",
-  "analytics",
-  "costs",
   ...(IS_DESKTOP_CLIENT ? ["updates" as TabId] : []),
 ]);
 
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
+  "chat",
+  "models",
   "integrations",
   "automations",
   "remote-control",
@@ -276,8 +265,6 @@ const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "security",
   ...(IS_DESKTOP_CLIENT ? ["computer-files" as TabId] : []),
   "billing",
-  "analytics",
-  "costs",
   ...(IS_DESKTOP_CLIENT ? ["updates" as TabId] : []),
 ]);
 
@@ -286,17 +273,23 @@ function TabBar({
   onTabChange,
   showBilling = true,
   localMode = false,
+  teamChat = false,
 }: {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
   showBilling?: boolean;
   localMode?: boolean;
+  /** Chat preferences only exist in a team workspace. */
+  teamChat?: boolean;
 }) {
   const icons = useSettingsIcons();
-  const items = showBilling && !localMode ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS;
+  const items = (showBilling && !localMode ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS).filter(
+    (item) => item.id !== "chat" || teamChat,
+  );
   return (
     <ScrollView
       horizontal
+      testID="settings-legacy-tab-bar"
       showsHorizontalScrollIndicator={false}
       className="border-b border-border/70 bg-card"
       contentContainerClassName="gap-1 px-4 py-1"
@@ -348,19 +341,21 @@ interface SidebarSection {
 function SettingsSidebar({
   activeTab,
   onTabChange,
-  workspaceName,
   userName,
   onExit,
   showBilling = true,
   localMode = false,
+  teamChat = false,
 }: {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
-  workspaceName: string;
   userName: string;
-  onExit: () => void;
+  /** Omitted when the app sidebar is on screen: it already provides navigation and the workspace switcher. */
+  onExit?: () => void;
   showBilling?: boolean;
   localMode?: boolean;
+  /** Chat preferences only exist in a team workspace. */
+  teamChat?: boolean;
 }) {
   const { ArrowLeft } = useSettingsIcons();
   const tabItem = (id: TabId): SidebarItem => ({
@@ -369,9 +364,9 @@ function SettingsSidebar({
   });
 
   const workspaceItems: SidebarItem[] = [
-    ...(!(localMode || !showBilling)
-      ? [tabItem("people"), tabItem("models")]
-      : []),
+    ...(!(localMode || !showBilling) ? [tabItem("people")] : []),
+    ...(teamChat ? [tabItem("chat")] : []),
+    tabItem("models"),
     tabItem("integrations"),
     tabItem("automations"),
     tabItem("remote-control"),
@@ -379,10 +374,8 @@ function SettingsSidebar({
       ? [
           ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [tabItem("compute")] : []),
           tabItem("billing"),
-          tabItem("analytics"),
-          tabItem("costs"),
         ]
-      : [tabItem("billing"), tabItem("analytics"), tabItem("costs")]),
+      : [tabItem("billing")]),
   ];
 
   const sections: SidebarSection[] = [
@@ -412,19 +405,23 @@ function SettingsSidebar({
       contentContainerClassName="px-3 pb-5 pt-5"
       showsVerticalScrollIndicator={false}
     >
-      <Pressable
-        onPress={onExit}
-        className="mb-5 flex-row items-center gap-1.5 self-start rounded-lg px-2 py-1.5 active:bg-muted"
-      >
-        <ArrowLeft size={14} className="text-muted-foreground" />
-        <Text className="text-sm text-muted-foreground">Go back</Text>
-      </Pressable>
-      <WorkspaceAccountActions
-        onSelectTab={onTabChange}
-        showActions={false}
-        showSignOut={false}
-        variant="sidebar"
-      />
+      {onExit ? (
+        <>
+          <Pressable
+            onPress={onExit}
+            className="mb-5 flex-row items-center gap-1.5 self-start rounded-lg px-2 py-1.5 active:bg-muted"
+          >
+            <ArrowLeft size={14} className="text-muted-foreground" />
+            <Text className="text-sm text-muted-foreground">Go back</Text>
+          </Pressable>
+          <WorkspaceAccountActions
+            onSelectTab={onTabChange}
+            showActions={false}
+            showSignOut={false}
+            variant="sidebar"
+          />
+        </>
+      ) : null}
 
       {sections.map((section, sectionIdx) => (
         <View key={section.id} className={sectionIdx > 0 ? "mt-6" : ""}>
@@ -471,11 +468,13 @@ function SettingsSidebar({
           </View>
         </View>
       ))}
-      <WorkspaceAccountActions
-        onSelectTab={onTabChange}
-        showWorkspace={false}
-        variant="sidebar"
-      />
+      {onExit ? (
+        <WorkspaceAccountActions
+          onSelectTab={onTabChange}
+          showWorkspace={false}
+          variant="sidebar"
+        />
+      ) : null}
     </ScrollView>
   );
 }
@@ -483,6 +482,14 @@ function SettingsSidebar({
 // ============================================================================
 // WORKSPACE SETTINGS TAB
 // ============================================================================
+
+/** Human byte size for the delete dialog's "what disappears" list. */
+function formatBytes(bytes: number): string {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** exp).toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
+}
 
 const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const { X } = useSettingsIcons();
@@ -497,6 +504,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const members = useMemberCollection();
   const http = useDomainHttp();
   const currentWorkspace = useActiveWorkspace();
+  const toast = useToast();
 
   const [name, setName] = useState(currentWorkspace?.name || "");
   const [trainingDataEnabled, setTrainingDataEnabled] = useState(
@@ -515,6 +523,10 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deletePreview, setDeletePreview] = useState<WorkspaceDeletionPreview | null>(null);
+  const [deletePreviewError, setDeletePreviewError] = useState<string | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const originalName = currentWorkspace?.name || "";
   const hasChanges = name !== originalName;
@@ -575,15 +587,80 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
     }
   };
 
+  const openDeleteDialog = async () => {
+    const workspaceId = currentWorkspace?.id;
+    setDeleteConfirmText("");
+    setDeleteError(null);
+    setDeletePreview(null);
+    setDeletePreviewError(null);
+    setIsDeleteDialogOpen(true);
+    if (!workspaceId || !http) return;
+    setIsLoadingPreview(true);
+    try {
+      setDeletePreview(await api.getWorkspaceDeletionPreview(http, workspaceId));
+    } catch (error: any) {
+      setDeletePreviewError(
+        workspaceDeleteErrorMessage(error, "Could not list this workspace's files.")
+      );
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
   const handleDeleteWorkspace = async () => {
     if (!currentWorkspace?.id || !isDeleteConfirmed) return;
     setIsDeleting(true);
+    setDeleteError(null);
     try {
-      await actions.deleteWorkspace(currentWorkspace.id);
+      const workspaceId = currentWorkspace.id;
+      // Local mode wipes the files too, so it goes through the dedicated route
+      // (which reports what it removed); the cloud path keeps the collection's
+      // optimistic delete.
+      let result: { removedDirs: string[]; warnings: string[] } = {
+        removedDirs: [],
+        warnings: [],
+      };
+      if (localMode && http) {
+        result = await api.deleteWorkspace(http, workspaceId);
+      } else {
+        await actions.deleteWorkspace(workspaceId);
+      }
       setIsDeleteDialogOpen(false);
+      await workspaces.loadAll();
+      const remaining = (Array.isArray(workspaces.all) ? workspaces.all : []).filter(
+        (ws: any) => ws.id !== workspaceId
+      );
+      if (remaining.length > 0) setActiveWorkspaceId(remaining[0].id);
+      // A delete takes the workspace's runtime with it, so the shell has to move
+      // to a workspace that still exists — same destination as the cloud path.
+      // The file report can't live on this screen (it unmounts), so it goes out
+      // as a toast that survives the navigation.
+      if (localMode && result.removedDirs.length + result.warnings.length > 0) {
+        const removed = result.removedDirs.length;
+        const hasWarnings = result.warnings.length > 0;
+        toast.show({
+          placement: "top",
+          duration: 6000,
+          render: ({ id }: { id: string }) => (
+            <Toast nativeID={id} variant="solid" action={hasWarnings ? "warning" : "success"}>
+              <ToastTitle>
+                {hasWarnings ? "Workspace deleted with warnings" : "Workspace deleted"}
+              </ToastTitle>
+              <ToastDescription>
+                {`${removed} ${removed === 1 ? "directory" : "directories"} removed` +
+                  (result.removedDirs[0] ? ` (${result.removedDirs[0]})` : "") +
+                  (hasWarnings ? ` — ${result.warnings[0]}` : "")}
+              </ToastDescription>
+            </Toast>
+          ),
+        });
+      }
       router.replace("/(app)");
     } catch (error) {
       console.error("Failed to delete workspace:", error);
+      setDeleteError(
+        workspaceDeleteErrorMessage(error, "Could not delete the workspace.")
+      );
     } finally {
       setIsDeleting(false);
     }
@@ -735,8 +812,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               )}
             </View>
             <Switch
-              value={trainingDataEnabled}
-              onValueChange={handleTrainingDataChange}
+              checked={trainingDataEnabled}
+              onCheckedChange={(enabled) => void handleTrainingDataChange(enabled)}
               disabled={!canManageWorkspace}
             />
           </View>
@@ -744,66 +821,69 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
       </Card>
 
       {!localMode && (
-        <>
-          {/* Leave workspace */}
-          <Card>
-            <CardContent className="p-0">
-              <View className="px-6 py-5 flex-row items-center justify-between">
-                <View className="flex-1 mr-4">
-                  <Text className="text-base font-semibold text-foreground">
-                    Leave workspace
-                  </Text>
-                  <Text className="text-sm text-muted-foreground mt-0.5">
-                    Leave this workspace. You will lose access to its projects
-                    and data.
-                  </Text>
-                </View>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={
-                    wsAll.length <= 1 ||
-                    (isOwner &&
-                      !workspaceMembers.some(
-                        (m: any) => m.role === "owner" && m.userId !== user?.id
-                      ))
-                  }
-                  onPress={() => setIsLeaveDialogOpen(true)}
-                >
+        <Card>
+          <CardContent className="p-0">
+            <View className="px-6 py-5 flex-row items-center justify-between">
+              <View className="flex-1 mr-4">
+                <Text className="text-base font-semibold text-foreground">
                   Leave workspace
-                </Button>
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-0.5">
+                  Leave this workspace. You will lose access to its projects
+                  and data.
+                </Text>
               </View>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  wsAll.length <= 1 ||
+                  (isOwner &&
+                    !workspaceMembers.some(
+                      (m: any) => m.role === "owner" && m.userId !== user?.id
+                    ))
+                }
+                onPress={() => setIsLeaveDialogOpen(true)}
+              >
+                Leave workspace
+              </Button>
+            </View>
+          </CardContent>
+        </Card>
+      )}
 
-              {canDeleteWorkspace && (
-                <>
-                  <Separator />
-                  <View className="px-6 py-5 flex-row items-center justify-between">
-                    <View className="flex-1 mr-4">
-                      <Text className="text-base font-semibold text-destructive">
-                        Delete workspace
-                      </Text>
-                      <Text className="text-sm text-muted-foreground mt-0.5">
-                        {canDelete
-                          ? "Permanently delete this workspace and all its data."
-                          : isPersonalWorkspace
-                          ? "Your personal workspace cannot be deleted."
-                          : "You cannot delete your only workspace."}
-                      </Text>
-                    </View>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      disabled={!canDelete}
-                      onPress={() => setIsDeleteDialogOpen(true)}
-                    >
-                      Delete
-                    </Button>
-                  </View>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </>
+      {/* Also shown in local mode: a desktop user can now have several
+          workspaces, and deleting one is the only way back out. */}
+      {canDeleteWorkspace && (
+        <Card>
+          <CardContent className="p-0">
+            <View className="px-6 py-5 flex-row items-center justify-between">
+              <View className="flex-1 mr-4">
+                <Text className="text-base font-semibold text-destructive">
+                  Delete workspace
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-0.5">
+                  {canDelete
+                    ? localMode
+                      ? "Permanently delete this workspace, its projects and their files."
+                      : "Permanently delete this workspace and all its data."
+                    : isPersonalWorkspace
+                    ? "Your personal workspace cannot be deleted."
+                    : "You cannot delete your only workspace."}
+                </Text>
+              </View>
+              <Button
+                variant="destructive"
+                size="sm"
+                accessibilityLabel="Delete workspace"
+                disabled={!canDelete}
+                onPress={() => void openDeleteDialog()}
+              >
+                Delete
+              </Button>
+            </View>
+          </CardContent>
+        </Card>
       )}
 
       {/* Leave Workspace Confirmation Modal */}
@@ -943,8 +1023,52 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
             </View>
             <Text className="text-sm text-muted-foreground">
               This action cannot be undone. This will permanently delete the
-              workspace "{currentWorkspace?.name}".
+              workspace "{currentWorkspace?.name}"
+              {localMode ? " and the project files listed below." : "."}
             </Text>
+            {isLoadingPreview && (
+              <Text className="text-xs text-muted-foreground">
+                Checking what will be removed…
+              </Text>
+            )}
+            {deletePreviewError && (
+              <Text className="text-xs text-destructive">{deletePreviewError}</Text>
+            )}
+            {deletePreview && (
+              <View className="gap-1">
+                {deletePreview.projects.map((project) => (
+                  <View key={project.id} className="flex-row items-start justify-between gap-2">
+                    <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={2}>
+                      {project.path ?? project.folderPath ?? project.name}
+                    </Text>
+                    <Text className="text-xs text-muted-foreground">
+                      {project.folderLinked
+                        ? "your folder, kept"
+                        : project.sizeBytes === null
+                        ? ""
+                        : formatBytes(project.sizeBytes)}
+                    </Text>
+                  </View>
+                ))}
+                {deletePreview.removedDirs.length > 0 && (
+                  <Text className="text-xs text-muted-foreground">
+                    {deletePreview.removedDirs.length}{" "}
+                    {deletePreview.removedDirs.length === 1 ? "directory" : "directories"}
+                    {deletePreview.totalBytes !== null
+                      ? `, ${formatBytes(deletePreview.totalBytes)}`
+                      : ""}
+                    {" · "}
+                    {deletePreview.channelCount} channels, {deletePreview.boardCount} boards,{" "}
+                    {deletePreview.chatCount} chats
+                  </Text>
+                )}
+                {deletePreview.projects.some((project) => project.folderLinked) && (
+                  <Text className="text-xs text-muted-foreground">
+                    Folder-linked projects keep their own files on disk.
+                  </Text>
+                )}
+              </View>
+            )}
             <Text className="text-sm text-muted-foreground">
               Please type "{deleteConfirmRequired}" to confirm.
             </Text>
@@ -953,6 +1077,9 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               onChangeText={setDeleteConfirmText}
               placeholder={`Type "${deleteConfirmRequired}" to confirm`}
             />
+            {deleteError && (
+              <Text className="text-sm text-destructive">{deleteError}</Text>
+            )}
             <View className="flex-row gap-2 justify-end">
               <Button
                 variant="outline"
@@ -968,6 +1095,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               <Button
                 variant="destructive"
                 size="sm"
+                accessibilityLabel="Confirm delete workspace"
                 onPress={handleDeleteWorkspace}
                 disabled={!isDeleteConfirmed || isDeleting}
               >
@@ -985,20 +1113,70 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 // ACCOUNT TAB
 // ============================================================================
 
+function notificationPermissionCopy(
+  state: NotificationPermissionState | null
+): { status: string; action: "request" | "settings" | null } {
+  switch (state) {
+    case "granted":
+      return { status: "On for this device.", action: null };
+    case "prompt":
+      return {
+        status: "Not turned on yet. Shogo can't show any alerts on this device.",
+        action: "request",
+      };
+    case "denied":
+      return Platform.OS === "web"
+        ? {
+            status:
+              "Blocked by your browser. Allow notifications for this site in the browser's site settings.",
+            action: null,
+          }
+        : {
+            status: "Turned off in Settings. Shogo can't show any alerts on this device.",
+            action: "settings",
+          };
+    case "unsupported":
+      return { status: "This browser or device can't show notifications.", action: null };
+    default:
+      return { status: "Checking…", action: null };
+  }
+}
+
 function NotificationsCard() {
   const [notifyOnTurn, setNotifyOnTurn] = useNotifyOnTurnCompletePref();
   const [requireBiometric, setRequireBiometric] = useRequireBiometricApproval();
+  const permission = useNotificationPermission();
+  const copy = notificationPermissionCopy(permission.state);
   return (
     <Card>
       <CardContent className="p-0">
         <View className="px-6 py-5 flex-row items-center justify-between">
           <View className="flex-1 mr-4">
             <Text className="text-sm font-semibold text-foreground">
+              Notifications on this device
+            </Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              {copy.status}
+            </Text>
+          </View>
+          {copy.action === "request" ? (
+            <Button size="sm" onPress={() => void permission.request()}>
+              Turn on
+            </Button>
+          ) : copy.action === "settings" ? (
+            <Button size="sm" variant="outline" onPress={permission.openSettings}>
+              Open Settings
+            </Button>
+          ) : null}
+        </View>
+        <View className="px-6 py-5 flex-row items-center justify-between border-t border-border">
+          <View className="flex-1 mr-4">
+            <Text className="text-sm font-semibold text-foreground">
               Notify when a reply is ready
             </Text>
             <Text className="text-sm text-muted-foreground mt-0.5">
-              Send a system notification when a chat turn finishes while Shogo
-              isn't in the foreground. Applies on desktop, web, and mobile.
+              Send a system notification when a chat turn finishes and you
+              aren't looking at that chat. Applies on desktop, web, and mobile.
             </Text>
           </View>
           <Switch
@@ -1041,8 +1219,8 @@ function DualPlanCard() {
               Generate summaries for plans
             </Text>
             <Text className="text-sm text-muted-foreground mt-0.5">
-              When on, every plan you generate also gets a stakeholder summary
-              alongside the technical body. You can flip between the Technical
+              When on, every plan the agent writes also gets a stakeholder
+              summary alongside the technical body. You can flip between the Technical
               and Summary views from any plan, and generate summaries on demand
               for older plans.
             </Text>
@@ -1414,11 +1592,6 @@ const PeopleTab = observer(function PeopleTab() {
   const [userMap, setUserMap] = useState<
     Record<string, { name: string; email: string }>
   >({});
-  const [receivedInvites, setReceivedInvites] = useState<any[]>([]);
-  const [processingInvite, setProcessingInvite] = useState<{
-    id: string;
-    action: "accept" | "decline";
-  } | null>(null);
 
   const [resolvedWs, setResolvedWs] = useState<{
     id: string;
@@ -1491,16 +1664,6 @@ const PeopleTab = observer(function PeopleTab() {
         } catch {
           setMemberInsights({ rows: [], total: 0 });
         }
-
-        if (user?.email) {
-          try {
-            const rawPending = await api.getReceivedInvitations(
-              http,
-              user.email
-            );
-            setReceivedInvites(Array.isArray(rawPending) ? rawPending : []);
-          } catch {}
-        }
       }
     } catch {}
     setIsLoading(false);
@@ -1510,7 +1673,6 @@ const PeopleTab = observer(function PeopleTab() {
     invitations,
     http,
     currentWorkspace?.id,
-    user?.email,
     memberUsagePeriod,
   ]);
 
@@ -1635,12 +1797,17 @@ const PeopleTab = observer(function PeopleTab() {
     }
   };
 
-  const { can } = usePermissions({ workspaceId: currentWorkspace?.id });
+  const { can, workspaceRole } = usePermissions({
+    workspaceId: currentWorkspace?.id,
+  });
   const canManageMembers = can("workspace.members:manage");
-  const canManageOwners = can("workspace.owners:manage");
+  const isOwner = workspaceRole === "owner";
   const canViewMemberAnalytics = can("workspace.analytics:read");
-  const canManageMember = (member: { role?: string }) =>
-    canManageMembers && (member.role !== "owner" || canManageOwners);
+  const canManageMember = (member: { role?: string; userId?: string }) =>
+    canManageMemberRow(
+      { canManageMembers, isOwner, isSelf: member.userId === user?.id },
+      member.role
+    );
 
   const projects = useProjectCollection();
   const projectGuests = useMemo(() => {
@@ -1722,7 +1889,23 @@ const PeopleTab = observer(function PeopleTab() {
       await actions.updateMemberRole(memberId, newRole, user?.id || "");
       setMenuState(null);
       await loadPeopleData();
-    } catch {}
+    } catch (err) {
+      setMenuState(null);
+      toast.show({
+        placement: "top",
+        duration: 5000,
+        render: ({ id }: { id: string }) => (
+          <Toast nativeID={id} variant="outline" action="error">
+            <ToastTitle>Could not change the role</ToastTitle>
+            <ToastDescription>
+              {err instanceof Error && err.message
+                ? err.message
+                : "Please try again."}
+            </ToastDescription>
+          </Toast>
+        ),
+      });
+    }
   };
 
   const handleRemoveMember = useCallback(
@@ -1912,7 +2095,7 @@ const PeopleTab = observer(function PeopleTab() {
       {filteredMembers.map((member: any) => {
         const isCurrentUser = member.userId === user?.id;
         const canSeeInsight = canViewMemberAnalytics || isCurrentUser;
-        const canEditMember = canManageMember(member) && !isCurrentUser;
+        const canEditMember = canManageMember(member);
         const insight = memberInsightMap.get(member.userId);
         const avatarColor = ROLE_COLORS[member.role] || "bg-primary";
         const resolved = userMap[member.userId];
@@ -2207,9 +2390,12 @@ const PeopleTab = observer(function PeopleTab() {
     (m: any) => m.role !== "viewer"
   ).length;
 
+  // Same host as the usage numbers on screen, machine included (SHO-108/SHO-91).
+  const exportCsvUrl = useUsageLogCsvUrl(currentWorkspace?.id, { period: "30d" });
+
   const handleExportMembersCsv = () => {
     if (!currentWorkspace?.id) return;
-    const url = api.getUsageLogCsvUrl(currentWorkspace.id, { period: "30d" });
+    const url = exportCsvUrl;
     if (typeof window !== "undefined") {
       window.open(url, "_blank", "noopener");
     } else {
@@ -2497,147 +2683,6 @@ const PeopleTab = observer(function PeopleTab() {
 
       {subTab === "invitations" && (
         <View className="gap-4">
-          {/* Received invitations */}
-          <View>
-            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">
-              Received
-            </Text>
-            {receivedInvites.length === 0 ? (
-              <Card>
-                <CardContent className="py-6 items-center">
-                  <Text className="text-sm text-muted-foreground">
-                    No invitations
-                  </Text>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <CardContent className="p-0">
-                  {receivedInvites.map((inv: any) => {
-                    const expired = isInvitationExpired(inv);
-                    const isAccepting =
-                      processingInvite?.id === inv.id &&
-                      processingInvite?.action === "accept";
-                    const isDeclining =
-                      processingInvite?.id === inv.id &&
-                      processingInvite?.action === "decline";
-                    return (
-                      <View key={inv.id} className="p-4 border-b border-border">
-                        <View className="flex-row items-center justify-between mb-1">
-                          <Text className="text-base font-semibold text-foreground">
-                            {inv.workspace?.name ||
-                              inv.workspaceName ||
-                              "Workspace"}
-                          </Text>
-                          <View className="flex-row items-center gap-2">
-                            {expired && (
-                              <View className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/40">
-                                <Text className="text-xs text-amber-700 dark:text-amber-300">
-                                  Expired
-                                </Text>
-                              </View>
-                            )}
-                            <View className="px-2 py-0.5 rounded bg-muted">
-                              <Text className="text-xs text-muted-foreground capitalize">
-                                {ROLE_DISPLAY[inv.role] || inv.role}
-                              </Text>
-                            </View>
-                          </View>
-                        </View>
-                        <Text className="text-sm text-muted-foreground mb-3">
-                          {expired
-                            ? "This invitation has expired. You can dismiss it or ask for a new invite."
-                            : "You've been invited to join this workspace"}
-                        </Text>
-                        <View className="flex-row gap-2">
-                          <Pressable
-                            disabled={
-                              expired || processingInvite?.id === inv.id
-                            }
-                            onPress={async () => {
-                              setProcessingInvite({
-                                id: inv.id,
-                                action: "accept",
-                              });
-                              try {
-                                await actions.acceptInvitation(
-                                  inv.id,
-                                  user?.id || "",
-                                  {
-                                    workspaceId: inv.workspaceId,
-                                    role: inv.role,
-                                    projectId: inv.projectId,
-                                  }
-                                );
-                                setReceivedInvites((prev) =>
-                                  prev.filter((i: any) => i.id !== inv.id)
-                                );
-                              } catch {}
-                              loadPeopleData();
-                              invitationEvents.emit();
-                              setProcessingInvite(null);
-                            }}
-                            className={cn(
-                              "flex-1 h-10 rounded-lg items-center justify-center",
-                              expired ? "bg-muted" : "bg-primary",
-                              (expired || processingInvite?.id === inv.id) &&
-                                "opacity-50"
-                            )}
-                          >
-                            {isAccepting ? (
-                              <ActivityIndicator size="small" color="white" />
-                            ) : (
-                              <Text
-                                className={cn(
-                                  "text-sm font-medium",
-                                  expired
-                                    ? "text-muted-foreground"
-                                    : "text-primary-foreground"
-                                )}
-                              >
-                                {expired ? "Expired" : "Accept"}
-                              </Text>
-                            )}
-                          </Pressable>
-                          <Pressable
-                            disabled={processingInvite?.id === inv.id}
-                            onPress={async () => {
-                              setProcessingInvite({
-                                id: inv.id,
-                                action: "decline",
-                              });
-                              try {
-                                await actions.declineInvitation(inv.id);
-                                setReceivedInvites((prev) =>
-                                  prev.filter((i: any) => i.id !== inv.id)
-                                );
-                              } catch {}
-                              loadPeopleData();
-                              invitationEvents.emit();
-                              setProcessingInvite(null);
-                            }}
-                            className={cn(
-                              "flex-1 h-10 border border-border rounded-lg items-center justify-center",
-                              processingInvite?.id === inv.id && "opacity-50"
-                            )}
-                          >
-                            {isDeclining ? (
-                              <ActivityIndicator size="small" />
-                            ) : (
-                              <Text className="text-sm font-medium text-foreground">
-                                {expired ? "Dismiss" : "Decline"}
-                              </Text>
-                            )}
-                          </Pressable>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </CardContent>
-              </Card>
-            )}
-          </View>
-
           {/* Sent invitations */}
           <View>
             <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">
@@ -2873,10 +2918,7 @@ const PeopleTab = observer(function PeopleTab() {
                 <Text className="text-base font-semibold text-foreground mb-1">
                   Select role
                 </Text>
-                {(canManageOwners
-                  ? (["owner", "admin", "member", "viewer"] as const)
-                  : (["admin", "member", "viewer"] as const)
-                ).map((r) => {
+                {roleOptionsFor({ isOwner }).map((r) => {
                   const activeMember = workspaceMembers.find(
                     (m: any) => m.id === menuState?.memberId
                   );
@@ -3730,7 +3772,7 @@ function BillingTab() {
             <Button
               variant="outline"
               onPress={() =>
-                router.push("/(app)/settings?tab=analytics" as any)
+                router.push("/(app)/analytics" as any)
               }
               className="flex-1"
             >
@@ -3816,425 +3858,6 @@ function BillingTab() {
 }
 
 // ============================================================================
-// WORKSPACE ANALYTICS TAB
-// ============================================================================
-
-interface SpendTimeseriesPayload {
-  days: { date: string; byModel: Record<string, number>; total: number }[];
-  totals: {
-    totalSpendUsd: number;
-    totalIncludedUsd: number;
-    totalOnDemandUsd: number;
-    uniqueModels: number;
-  };
-  models: string[];
-  groupBy: "model" | "user" | "source";
-  metric: "spend" | "tokens" | "requests";
-}
-
-function fmtUsd(n: number): string {
-  if (n === 0) return "$0.00";
-  if (n < 0.01) return `$${n.toFixed(4)}`;
-  if (n < 1000) return `$${n.toFixed(2)}`;
-  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-}
-
-function WorkspaceAnalyticsTab() {
-  const { Coins, CreditCard, Download, Zap } = useSettingsIcons();
-  const http = useDomainHttp();
-  const router = useRouter();
-  const workspace = useActiveWorkspace();
-  const workspaceId = workspace?.id;
-  const { localMode } = usePlatformConfig();
-  const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } =
-    useBillingData(workspaceId);
-  const cloudBilling = useCloudBillingSummary(localMode);
-  // Warm the visible-models metadata cache so chart series can be labeled with
-  // model display names (e.g. "Hoshi 1.0") rather than raw ids (mimo-v2.5).
-  useVisibleModels();
-
-  const planId = subscription?.planId?.toLowerCase() ?? "";
-  const isBusinessOrHigher =
-    localMode ||
-    planId.startsWith("business") ||
-    planId.startsWith("enterprise");
-
-  const [period, setPeriod] = useState<AnalyticsPeriod>("7d");
-  const [logPage, setLogPage] = useState(1);
-  const [groupBy, setGroupBy] = useState<SpendGroupBy>("model");
-  const [metric, setMetric] = useState<SpendMetric>("spend");
-  const [spendLimitOpen, setSpendLimitOpen] = useState(false);
-
-  const [usageSummary, setUsageSummary] = useState<{
-    data: UsageSummaryData | null;
-    loading: boolean;
-  }>({ data: null, loading: true });
-  const [usageLog, setUsageLog] = useState<{
-    data: UsageLogData | null;
-    loading: boolean;
-  }>({ data: null, loading: true });
-  const [spend, setSpend] = useState<{
-    data: SpendTimeseriesPayload | null;
-    loading: boolean;
-  }>({ data: null, loading: true });
-  const [usage, setUsage] = useState<{
-    data: UsageBreakdownData | null;
-    loading: boolean;
-  }>({ data: null, loading: true });
-  const [chatStats, setChatStats] = useState<{
-    data: ChatAnalyticsData | null;
-    loading: boolean;
-  }>({ data: null, loading: true });
-
-  const loadAll = useCallback(async () => {
-    if (!workspaceId) return;
-    const p = { period };
-
-    setUsageSummary((s) => ({ ...s, loading: true }));
-    setUsageLog((s) => ({ ...s, loading: true }));
-    setSpend((s) => ({ ...s, loading: true }));
-
-    const basicFetches = [
-      api
-        .getWorkspaceAnalytics<UsageSummaryData>(
-          http,
-          workspaceId,
-          "usage-summary",
-          p
-        )
-        .catch(() => null),
-      api
-        .getWorkspaceAnalytics<UsageLogData>(http, workspaceId, "usage-log", {
-          ...p,
-          page: String(logPage),
-          limit: "50",
-        })
-        .catch(() => null),
-      api
-        .getWorkspaceAnalytics<SpendTimeseriesPayload>(
-          http,
-          workspaceId,
-          "spend-timeseries",
-          { ...p, groupBy, metric }
-        )
-        .catch(() => null),
-    ] as const;
-
-    if (isBusinessOrHigher) {
-      setUsage((s) => ({ ...s, loading: true }));
-      setChatStats((s) => ({ ...s, loading: true }));
-
-      const [uSum, uLog, sp, us, ch] = await Promise.all([
-        ...basicFetches,
-        api
-          .getWorkspaceAnalytics<UsageBreakdownData>(
-            http,
-            workspaceId,
-            "usage",
-            p
-          )
-          .catch(() => null),
-        api
-          .getWorkspaceAnalytics<ChatAnalyticsData>(
-            http,
-            workspaceId,
-            "chat",
-            p
-          )
-          .catch(() => null),
-      ]);
-
-      setUsageSummary({ data: uSum, loading: false });
-      setUsageLog({ data: uLog, loading: false });
-      setSpend({ data: sp, loading: false });
-      setUsage({ data: us, loading: false });
-      setChatStats({ data: ch, loading: false });
-    } else {
-      const [uSum, uLog, sp] = await Promise.all(basicFetches);
-      setUsageSummary({ data: uSum, loading: false });
-      setUsageLog({ data: uLog, loading: false });
-      setSpend({ data: sp, loading: false });
-    }
-  }, [http, workspaceId, period, logPage, groupBy, metric, isBusinessOrHigher]);
-
-  useEffect(() => {
-    loadAll();
-  }, [loadAll]);
-
-  if (!workspaceId) {
-    return (
-      <View className="py-12 items-center">
-        <Text className="text-sm text-muted-foreground">
-          No workspace selected
-        </Text>
-      </View>
-    );
-  }
-
-  // ─── Progress card data ──────────────────────────────────
-  // Coupled window display: weekly-at-100% forces the 5-hour card to 100% too.
-  // In local mode usage is metered against the linked Shogo Cloud workspace,
-  // so read windows from the cloud billing summary, not the local plan.
-  const cloudPlan = cloudBilling.summary?.plan;
-  const displayWindows = localMode
-    ? (cloudPlan?.usageWindows as typeof usageWindows)
-    : usageWindows;
-  const analyticsWindowDisplays = getWindowDisplays(displayWindows);
-  const onDemandUsed = localMode
-    ? cloudPlan?.overageAccumulatedUsd ?? 0
-    : effectiveBalance?.overageAccumulatedUsd ?? 0;
-  const onDemandLimit = localMode
-    ? cloudPlan?.overageHardLimitUsd ?? null
-    : effectiveBalance?.overageHardLimitUsd ?? null;
-  const onDemandPct =
-    onDemandLimit && onDemandLimit > 0
-      ? Math.min(100, (onDemandUsed / onDemandLimit) * 100)
-      : onDemandUsed > 0
-      ? Math.min(100, (onDemandUsed / 1000) * 100)
-      : 0;
-
-  // ─── Summary cards ───────────────────────────────────────
-  const totalSpend = spend.data?.totals.totalSpendUsd ?? 0;
-  const includedSpend = spend.data?.totals.totalIncludedUsd ?? 0;
-  const onDemandSpend = spend.data?.totals.totalOnDemandUsd ?? 0;
-
-  const csvUrl = api.getUsageLogCsvUrl(workspaceId, { period });
-  const handleExportCsv = () => {
-    if (typeof window !== "undefined") {
-      window.open(csvUrl, "_blank", "noopener");
-    } else {
-      Linking.openURL(csvUrl);
-    }
-  };
-
-  return (
-    <View className="gap-4">
-      <View>
-        <Text className="text-lg font-bold text-foreground mb-1">Usage</Text>
-        <Text className="text-xs text-muted-foreground">
-          {localMode
-            ? "Token usage and agent activity for this workspace"
-            : "Usage metrics and spend for this workspace"}
-        </Text>
-      </View>
-
-      {/* Who is doing what: team table + dashboard for admins, own stats for members */}
-      {workspaceId ? (
-        <WorkspaceActivitySection
-          workspaceId={workspaceId}
-          isBusinessOrHigher={isBusinessOrHigher}
-        />
-      ) : null}
-
-      {/* Progress cards */}
-      <View className="flex-row flex-wrap gap-3">
-        {(["fiveHour", "weekly"] as const).map((key) => {
-          const w = displayWindows?.[key];
-          const label = key === "fiveHour" ? "5-hour usage" : "Weekly usage";
-          const { pct, uncapped, countdown } = analyticsWindowDisplays[key];
-          return (
-            <BillingProgressCard
-              key={key}
-              title={label}
-              current={!w ? "—" : uncapped ? "Unlimited" : `${pct}%`}
-              total={null}
-              percent={uncapped ? 0 : pct}
-              tone={
-                pct >= 100 ? "destructive" : pct >= 90 ? "warning" : "primary"
-              }
-              helper={
-                uncapped
-                  ? "Unlimited — no usage window"
-                  : countdown
-                  ? pct >= 100
-                    ? `Limit reached — resets in ${countdown}`
-                    : `Resets in ${countdown}`
-                  : "Window not started"
-              }
-            />
-          );
-        })}
-        <BillingProgressCard
-          title="On-Demand Usage (Team)"
-          current={fmtUsd(onDemandUsed)}
-          total={onDemandLimit != null ? fmtUsd(onDemandLimit) : null}
-          percent={onDemandPct}
-          tone={onDemandPct > 80 ? "warning" : "primary"}
-          helper="Pay for extra usage beyond your plan limits."
-          subHelper={
-            onDemandLimit != null
-              ? `${fmtUsd(onDemandLimit)} team spend cap`
-              : "No spend cap set"
-          }
-          {...(Platform.OS !== "ios" &&
-          (!localMode ||
-            (cloudBilling.summary?.signedIn === true &&
-              cloudBilling.summary.plan?.paidTier === true))
-            ? {
-                actionLabel: "Set Limit",
-                onActionPress: () => setSpendLimitOpen(true),
-              }
-            : {})}
-        />
-      </View>
-
-      {/* Date range pills */}
-      <View className="flex-row items-center justify-between flex-wrap gap-3">
-        <DateRangePills value={period} onChange={setPeriod} />
-      </View>
-
-      {/* Summary cards */}
-      <View className="flex-row flex-wrap gap-2">
-        <StatCard label="Total spend" value={fmtUsd(totalSpend)} icon={Coins} />
-        <StatCard
-          label="Included"
-          value={fmtUsd(includedSpend)}
-          icon={CreditCard}
-        />
-        <StatCard label="On-demand" value={fmtUsd(onDemandSpend)} icon={Zap} />
-      </View>
-
-      {/* Team Usage chart */}
-      <UsageTimeseriesChart
-        data={spend.data}
-        loading={spend.loading}
-        groupBy={groupBy}
-        metric={metric}
-        onGroupByChange={setGroupBy}
-        onMetricChange={setMetric}
-        isLocalMode={localMode}
-        title="Team Usage"
-        subtitle="Team usage per day across this billing period"
-        groupByOptions={["model", "user", "source"]}
-        showTotals={false}
-      />
-
-      {/* Event log + CSV export */}
-      <View className="gap-2">
-        <View className="flex-row items-center justify-end">
-          <Pressable
-            onPress={handleExportCsv}
-            className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background active:bg-muted"
-          >
-            <Download size={14} className="text-foreground" />
-            <Text className="text-xs font-medium text-foreground">
-              Export CSV
-            </Text>
-          </Pressable>
-        </View>
-        <UsageTableSection
-          summaryData={usageSummary.data}
-          logData={usageLog.data}
-          summaryLoading={usageSummary.loading}
-          logLoading={usageLog.loading}
-          onLogPageChange={setLogPage}
-          logPage={logPage}
-          isLocalMode={localMode}
-        />
-      </View>
-
-      {/* Leaderboard (Image 2) */}
-      <UsageLeaderboard
-        data={usageSummary.data}
-        loading={usageSummary.loading}
-      />
-
-      {isBusinessOrHigher && (
-        <>
-          <ChatAnalyticsSection
-            data={chatStats.data}
-            loading={chatStats.loading}
-          />
-          <UsageBreakdownSection data={usage.data} loading={usage.loading} />
-        </>
-      )}
-
-      {Platform.OS !== "ios" && (
-        <SetSpendLimitDialog
-          visible={spendLimitOpen}
-          onClose={() => setSpendLimitOpen(false)}
-          workspaceId={workspaceId}
-          currentLimitUsd={onDemandLimit}
-          accumulatedUsageUsd={onDemandUsed}
-          onSave={localMode ? cloudBilling.setSpendingLimit : undefined}
-          onSaved={() => {
-            if (localMode) {
-              void cloudBilling.refresh();
-            } else {
-              refetchUsageWallet();
-            }
-          }}
-        />
-      )}
-    </View>
-  );
-}
-
-// ============================================================================
-// COST OPTIMIZER TAB
-// ============================================================================
-
-function WorkspaceCostTab() {
-  const http = useDomainHttp();
-  const workspace = useActiveWorkspace();
-  const workspaceId = workspace?.id;
-
-  const fetchCostAnalytics = useCallback(
-    <T,>(endpoint: string, params?: Record<string, string>) =>
-      api.getWorkspaceCostAnalytics<T>(http, workspaceId!, endpoint, params),
-    [http, workspaceId]
-  );
-
-  const postCostAnalytics = useCallback(
-    <T,>(endpoint: string, body: Record<string, unknown>) =>
-      api.postWorkspaceCostAnalytics<T>(http, workspaceId!, endpoint, body),
-    [http, workspaceId]
-  );
-
-  const fetchSubagentOverrides = useCallback(
-    () => api.listSubagentOverrides(http, workspaceId!),
-    [http, workspaceId]
-  );
-
-  const putSubagentOverride = useCallback(
-    (body: {
-      agentType: string;
-      model: string;
-      provider?: string | null;
-      projectId?: string | null;
-    }) => api.upsertSubagentOverride(http, workspaceId!, body),
-    [http, workspaceId]
-  );
-
-  const deleteSubagentOverride = useCallback(
-    (agentType: string, projectId?: string | null) =>
-      api.deleteSubagentOverride(http, workspaceId!, agentType, projectId),
-    [http, workspaceId]
-  );
-
-  if (!workspaceId) {
-    return (
-      <View className="py-12 items-center">
-        <Text className="text-sm text-muted-foreground">
-          No workspace selected
-        </Text>
-      </View>
-    );
-  }
-
-  return (
-    <CostAnalyticsTab
-      workspaceId={workspaceId}
-      fetchCostAnalytics={fetchCostAnalytics}
-      postCostAnalytics={postCostAnalytics}
-      fetchSubagentOverrides={fetchSubagentOverrides}
-      putSubagentOverride={putSubagentOverride}
-      deleteSubagentOverride={deleteSubagentOverride}
-    />
-  );
-}
-
-// ============================================================================
 // MAIN SETTINGS PAGE
 // ============================================================================
 
@@ -4284,31 +3907,32 @@ export function WorkspaceAccountActions({
   );
 
   const createWorkspace = useCallback(() => {
-    if (pooledWorkspaceParent) {
+    // Local mode: no billing gate, so the name modal always (never the paid
+    // `/(app)/new-workspace` checkout page).
+    if (pooledWorkspaceParent || localMode || !hasTeamWorkspace) {
       setCreateWorkspaceOpen(true);
-    } else if (hasTeamWorkspace) {
-      router.push("/(app)/new-workspace" as any);
       return;
-    } else {
-      setCreateWorkspaceOpen(true);
     }
-  }, [hasTeamWorkspace, pooledWorkspaceParent, router]);
+    router.push("/(app)/new-workspace" as any);
+  }, [hasTeamWorkspace, localMode, pooledWorkspaceParent, router]);
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
       if (pooledWorkspaceParent) return createPooledWorkspace(name);
-      if (!user?.id) return;
+      if (!user?.id) return false;
       try {
         const created = await actions.createWorkspace(name, undefined, user.id);
         if (created?.id) {
           trackEvent(posthog, EVENTS.WORKSPACE_CREATED);
           setActiveWorkspaceId(created.id);
           await workspaces.loadAll();
-          projects.clear();
-          await projects.loadAll({ workspaceId: created.id });
+          // Same path as switching to an existing workspace: rebind the shell to
+          // the new workspace's data and runtime, don't just highlight it.
+          scheduleWorkspaceSwitch(created.id, projects, reloadAfterWorkspaceSwitch);
         }
       } catch (err) {
         console.warn("Failed to create workspace:", err);
+        return workspaceErrorMessage(err);
       }
     },
     [
@@ -4349,7 +3973,7 @@ export function WorkspaceAccountActions({
                 <Pressable
                   key={workspace.id}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: isCurrent }}
+                  aria-selected={isCurrent}
                   accessibilityLabel={`Switch to ${
                     workspace.name || "workspace"
                   }`}
@@ -4542,6 +4166,9 @@ export function WorkspaceAccountActions({
           <Text className="text-sm font-medium text-destructive">Sign out</Text>
         </Pressable>
       ) : null}
+      {showSignOut ? (
+        <EnvironmentVersionTrigger className={cn(sidebar ? "mt-4 px-2.5 py-1" : "py-1")} />
+      ) : null}
       <CreateWorkspaceModal
         visible={createWorkspaceOpen}
         onClose={() => setCreateWorkspaceOpen(false)}
@@ -4557,19 +4184,23 @@ export const SettingsContent = observer(function SettingsContent({
   localMode = false,
   onSelectTab,
   onClose,
+  section,
 }: {
   activeTab: TabId;
   localMode?: boolean;
   onSelectTab?: (tab: TabId) => void;
   /** Set when Settings is shown in a sheet that must close before navigating away. */
   onClose?: () => void;
+  /** `?section=` deep link inside a tab, e.g. `agent-concurrency` on Chat. */
+  section?: string;
 }) {
   const isLocal = localMode;
   return (
     <>
       {activeTab === "workspace" && <WorkspaceSettingsTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
-      {activeTab === "models" && !isLocal && <WorkspaceModelsTab />}
+      {activeTab === "chat" && <ChatPreferencesTab highlightSection={section} />}
+      {activeTab === "models" && <WorkspaceModelsTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
       {activeTab === "automations" && (
         <AutomationsTab
@@ -4577,6 +4208,7 @@ export const SettingsContent = observer(function SettingsContent({
           onLeaveSettings={onClose}
         />
       )}
+      {activeTab === "data" && <WorkspaceExportView />}
       {activeTab === "remote-control" && <RemoteControlTab />}
       {activeTab === "account" && <AccountTab />}
       {activeTab === "appearance" && <AppearanceTab />}
@@ -4589,8 +4221,6 @@ export const SettingsContent = observer(function SettingsContent({
         !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
       {activeTab === "billing" &&
         (isLocal ? <LocalCloudBillingTab /> : <BillingTab />)}
-      {activeTab === "analytics" && <WorkspaceAnalyticsTab />}
-      {activeTab === "costs" && <WorkspaceCostTab />}
       {activeTab === "updates" && <UpdatesTab />}
     </>
   );
@@ -4603,47 +4233,75 @@ export default observer(function SettingsPage({
 }) {
   const { ExternalLink, ArrowLeft } = useSettingsIcons();
   const router = useRouter();
-  const params = useLocalSearchParams<{ tab?: string; workspace?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; workspace?: string; section?: string }>();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const isWide = width >= SETTINGS_WIDE_BREAKPOINT;
+  // Phone (native handset or web ≤767px) has its own Settings surface: the
+  // Account screen with `NativeAccountSettingsSheet`. This page stays the
+  // wide/tablet one and redirects below — the single insert point for every
+  // `/settings?tab=…` deep link, so no caller changes.
+  const isPhoneSurface = isPhoneSettingsSurface(width, height);
+  // Mirrors `showSidebar` in `(app)/_layout.tsx`: wide web renders the app
+  // sidebar beside this page, so the page drops its own exit and switcher.
+  const inAppShell = !onClose && Platform.OS === "web" && isWide;
   const isNativePhone = isNativePhoneIntegrationsLayout(width, height);
   const { user } = useAuth();
   const workspaces = useWorkspaceCollection();
-  const currentWorkspace = useActiveWorkspace();
   const { features, localMode } = usePlatformConfig();
+  const teamChat = useWorkspaceExperience().kind === "team";
+  const phoneTarget = phoneSettingsTarget(
+    params as Record<string, string | string[] | undefined>,
+    {
+      localMode: localMode || !features.billing,
+      showBilling: features.billing,
+      platform: Platform.OS,
+      isDesktop: IS_DESKTOP_CLIENT,
+      teamChat,
+    },
+  );
 
   const [activeTab, setActiveTab] = useState<TabId>(() => {
     const requested = params.tab as TabId;
     return ALL_TAB_IDS.includes(requested) ? requested : "workspace";
   });
 
+  // Usage and Cost Optimizer now live on the Analytics screen; keep old links working.
   useEffect(() => {
-    const requestedWorkspace = params.workspace;
-    const ownWorkspaceIds =
-      workspaces?.all?.map((workspace: any) => workspace.id) ?? [];
-    if (!requestedWorkspace || ownWorkspaceIds.length === 0) return;
-    const resolvedWorkspace = resolveActiveWorkspaceId(
-      ownWorkspaceIds,
-      requestedWorkspace,
-      { listLoaded: true },
-    );
-    if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace);
-  }, [params.workspace, workspaces?.all, workspaces?.isLoading]);
+    // The phone redirect already targets Analytics — never navigate twice.
+    if (isPhoneSurface) return;
+    if (params.tab === "analytics" || params.tab === "costs") {
+      router.replace({
+        pathname: "/(app)/analytics",
+        params: { view: params.tab === "costs" ? "costs" : "usage" },
+      } as any);
+    }
+  }, [isPhoneSurface, params.tab, router]);
 
   useEffect(() => {
+    if (isPhoneSurface) return;
+    const ownWorkspaceIds =
+      workspaces?.all?.map((workspace: any) => workspace.id) ?? [];
+    const resolvedWorkspace = resolveRequestedWorkspaceId(
+      params.workspace,
+      ownWorkspaceIds,
+    );
+    if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace);
+  }, [isPhoneSurface, params.workspace, workspaces?.all, workspaces?.isLoading]);
+
+  useEffect(() => {
+    if (isPhoneSurface) return;
     const isLocal = localMode || !features.billing;
     if (activeTab === "people" && isLocal) setActiveTab("workspace");
-    if (activeTab === "models" && isLocal) setActiveTab("workspace");
+    if (activeTab === "chat" && !teamChat) setActiveTab("workspace");
     if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
       setActiveTab("workspace");
     if (activeTab === "updates" && !IS_DESKTOP_CLIENT)
       setActiveTab("workspace");
     if (activeTab === "computer-files" && (!IS_DESKTOP_CLIENT || !isLocal))
       setActiveTab("workspace");
-  }, [activeTab, features.billing, localMode]);
+  }, [activeTab, features.billing, localMode, teamChat]);
 
-  const workspaceName = currentWorkspace?.name || "";
   const userName = user?.name || "";
   const activeTabLabel = settingsTab(activeTab).label;
   const exitSettings = () => {
@@ -4653,6 +4311,12 @@ export default observer(function SettingsPage({
     }
     leaveSettings(router, isNativePhone);
   };
+
+  // Phone lands on the Account screen with the mapped tab's sheet open. The
+  // wide branch below (and the tablet page) is unchanged.
+  if (isPhoneSurface) {
+    return <Redirect href={phoneTarget as any} />;
+  }
 
   if (isWide) {
     return (
@@ -4664,11 +4328,11 @@ export default observer(function SettingsPage({
           <SettingsSidebar
             activeTab={activeTab}
             onTabChange={setActiveTab}
-            workspaceName={workspaceName}
             userName={userName}
-            onExit={exitSettings}
+            onExit={inAppShell ? undefined : exitSettings}
             showBilling={features.billing}
             localMode={localMode}
+            teamChat={teamChat}
           />
         </View>
         <ScrollView
@@ -4701,6 +4365,7 @@ export default observer(function SettingsPage({
               activeTab={activeTab}
               localMode={localMode || !features.billing}
               onSelectTab={setActiveTab}
+              section={typeof params.section === "string" ? params.section : undefined}
             />
           </View>
         </ScrollView>
@@ -4709,7 +4374,11 @@ export default observer(function SettingsPage({
   }
 
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+    <View
+      testID="settings-legacy-page"
+      className="flex-1 bg-background"
+      style={{ paddingTop: insets.top }}
+    >
       <View className="flex-row items-center gap-3 border-b border-border/70 bg-card px-4 py-3">
         <Pressable
           accessibilityRole="button"
@@ -4735,6 +4404,7 @@ export default observer(function SettingsPage({
           onTabChange={setActiveTab}
           showBilling={features.billing}
           localMode={localMode || !features.billing}
+          teamChat={teamChat}
         />
       </View>
 
@@ -4751,6 +4421,7 @@ export default observer(function SettingsPage({
             activeTab={activeTab}
             localMode={localMode || !features.billing}
             onSelectTab={setActiveTab}
+            section={typeof params.section === "string" ? params.section : undefined}
           />
         </View>
       </ScrollView>

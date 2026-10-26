@@ -73,6 +73,39 @@ export function chatColumn({
   }
 }
 
+export interface ComposerColumnOptions {
+  presentation?: ChatColumnPresentation
+  /** Phone chrome (native handset or narrow web viewport). */
+  phone?: boolean
+  /** The composer uses the prominent (glass pill) phone layout. */
+  prominent?: boolean
+  /** The composer is flush to its container (no gutter of its own). */
+  flush?: boolean
+  /** An ancestor already applies the chat column. */
+  insideChatColumn?: boolean
+}
+
+/**
+ * Horizontal placement of a composer. Rows that sit above a composer (the
+ * typing indicator) apply the same style so their edges match the input box.
+ */
+export function composerColumnStyle({
+  presentation = "studio",
+  phone = false,
+  prominent = false,
+  flush = false,
+  insideChatColumn = false,
+}: ComposerColumnOptions): {
+  paddingHorizontal: number
+  width?: number | "100%"
+  maxWidth?: number
+  alignSelf?: "center"
+} | undefined {
+  if (flush || insideChatColumn) return undefined
+  if (prominent) return chatColumnStyle({ presentation, phone: true })
+  return { paddingHorizontal: chatColumn({ presentation, phone }).gutter }
+}
+
 /**
  * Layout style for a surface that IS the column. Applied via `style` (not
  * `className`) so NativeWind css-interop can never drop it.

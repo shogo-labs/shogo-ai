@@ -7,7 +7,7 @@
  * project-filter state. Leaf UI and tree components live alongside it.
  */
 
-import { useState, useCallback, useEffect, useRef, type ReactNode } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   View,
   Text,
@@ -40,7 +40,6 @@ import {
   LayoutGrid,
   Activity,
   Target,
-  MessagesSquare,
   Search,
   ChevronDown,
   ChevronLeft,
@@ -59,6 +58,14 @@ import { cn } from "@shogo/shared-ui/primitives";
 import type { PrimaryNavId, SidebarTabId } from "@shogo/shared-app";
 import { CommandPalette, useCommandPalette } from "../CommandPalette";
 import { useActiveInstance } from "../../../contexts/active-instance";
+import { useWorkspaceInView } from "../../../hooks/useWorkspaceInView";
+import { useMachineWorkspaces } from "../../../hooks/useMachineWorkspaces";
+import {
+  buildWorkspaceEntries,
+  currentWorkspaceKey,
+  machineInstanceForEntry,
+  type WorkspaceEntry,
+} from "../../../lib/workspace-entries";
 import { ShogoWordmark } from "../../branding/ShogoWordmark";
 import { useAuth } from "../../../contexts/auth";
 import {
@@ -115,20 +122,23 @@ import { DmsPanel } from "../../team-chat/panels/DmsPanel";
 import { AgentsPanel } from "../../team-chat/panels/AgentsPanel";
 import { ActivityFeed } from "../../activity/ActivityFeed";
 import { WideSidebar } from "./WideSidebar";
-import { PersonalChatsPanel } from "./PersonalChatsPanel";
 import { HomePanel, MorePanel } from "./TabPanels";
-import { TAB_META } from "./IconRail";
 import {
   MENU_ITEM_RADIO_ROLE,
   PROJECT_SCOPE_OPTIONS,
   PROJECT_SORT_OPTIONS,
 } from "./ProjectFilterSheet";
-import { AccountMenu, type AccountMenuProps } from "./AccountMenu";
+import { AccountMenu, WorkspaceHeaderButton, type AccountMenuProps } from "./AccountMenu";
 import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
+import {
+  GetStartedChecklist,
+  useGettingStarted,
+} from "../../onboarding/GetStartedChecklist";
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
 import { useWorkspacePlans } from "../../../hooks/useWorkspacePlans";
 import { usePooledWorkspaceCreation } from "../../../hooks/usePooledWorkspaceCreation";
+import { workspaceErrorMessage } from "../../../lib/workspace-errors";
 
 // Cap the projects list; pinned + the open project always show, the rest
 // collapse behind a "More" toggle.
@@ -192,6 +202,7 @@ export const AppSidebar = observer(function AppSidebar({
   const workspaces = useWorkspaceCollection();
   const actions = useDomainActions();
   const http = useDomainHttp();
+  const gettingStarted = useGettingStarted();
 
   const [pendingInvites, setPendingInvites] = useState<any[]>([]);
   const [processingInvite, setProcessingInvite] = useState<{
@@ -610,7 +621,25 @@ export const AppSidebar = observer(function AppSidebar({
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
   const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } =
     useCommandPalette();
-  const { instance: activeRemoteInstance } = useActiveInstance();
+  const {
+    instance: activeRemoteInstance,
+    setInstance: setActiveInstance,
+    clearInstance,
+  } = useActiveInstance();
+  // The workspaces of every paired computer, listed with the cloud's own rows —
+  // one list, no group (SHO-108).
+  const { machines: machineWorkspaces } = useMachineWorkspaces();
+  // The machine workspace in view, if any — its name and live presence feed
+  // the "Connected to …" strip below. Undefined for a legacy remote-control
+  // instance, which keeps the plain "Controlling:" strip.
+  const activeMachine =
+    activeRemoteInstance?.source === "machine"
+      ? machineWorkspaces.find((m) => m.id === activeRemoteInstance.instanceId)
+      : undefined;
+  const workspaceInView = useWorkspaceInView()
+  const activeMachineWorkspace = activeMachine?.workspaces.find(
+    (w) => w.id === activeRemoteInstance?.localWorkspaceId,
+  );
 
   let allWorkspaces: any[];
   try {
@@ -690,6 +719,23 @@ export const AppSidebar = observer(function AppSidebar({
     if (isNativeDrawer) closeNativeDrawer();
   }, [closeNativeDrawer, isNativeDrawer]);
 
+  /**
+   * Every workspace the switcher lists, whoever hosts it (SHO-108): the cloud's
+   * rows in the server's order, then each paired computer's own rows. Built
+   * once here so the rail tile, the panel header, the account popover and the
+   * phone sheet all read the same list and agree on which row is checked.
+   */
+  const workspaceEntries = useMemo(
+    () => buildWorkspaceEntries({ workspaces: allWorkspaces, machines: machineWorkspaces }),
+    [allWorkspaces, machineWorkspaces],
+  );
+  const activeWorkspaceKey = currentWorkspaceKey({
+    entries: workspaceEntries,
+    currentWorkspaceId: currentWorkspace?.id,
+    activeInstance: activeRemoteInstance,
+  });
+
+  /** Joining a workspace from a pending invitation. */
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
       trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED);
@@ -699,21 +745,65 @@ export const AppSidebar = observer(function AppSidebar({
     [projects, posthog],
   );
 
+  /**
+   * One switch path for both hosts.
+   *
+   * A cloud row switches the selected workspace. A machine row makes that
+   * computer's own workspace the one in view: the desktop is the source of
+   * truth for its projects, chats and tool-call logs, so the domain store is
+   * pointed at that machine's relay. Both then take the *same* landing path a
+   * workspace switch always takes — `reloadAfterWorkspaceSwitch` resets the
+   * route to the workspace agent and refreshes the collections — so a machine
+   * workspace lands exactly where a cloud one does instead of being special-
+   * cased into the projects view.
+   */
+  const handleSelectWorkspaceEntry = useCallback(
+    (entry: WorkspaceEntry) => {
+      const machine = machineInstanceForEntry(entry, currentWorkspace?.id);
+      if (machine) {
+        setActiveInstance(machine);
+        trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED);
+        reloadAfterWorkspaceSwitch();
+        return;
+      }
+
+      // Back to a cloud workspace: drop the machine overlay first, so the store
+      // is not left pointing at a host the user just left.
+      if (activeRemoteInstance?.source === "machine") clearInstance();
+      if (entry.id === currentWorkspace?.id) {
+        reloadAfterWorkspaceSwitch();
+        return;
+      }
+      handleSwitchWorkspace(entry.id);
+    },
+    [
+      activeRemoteInstance,
+      clearInstance,
+      currentWorkspace?.id,
+      handleSwitchWorkspace,
+      posthog,
+      setActiveInstance,
+    ],
+  );
+
   const handleCreateWorkspace = useCallback(() => {
-    if (pooledWorkspaceParent) {
+    // Local mode has no billing and no plan limit: every "Create new
+    // workspace" entry opens the name modal directly. `hasTeamWorkspace` is
+    // always true locally (bootstrap seeds one), so falling through to the
+    // cloud branch sent desktop users to `/(app)/new-workspace`, the paid
+    // checkout page whose `/api/billing/workspace-checkout` 404s locally.
+    if (pooledWorkspaceParent || localMode || !hasTeamWorkspace) {
       setCreateWorkspaceOpen(true);
-      if (!isWide) closeNativeDrawer();
-    } else if (hasTeamWorkspace) {
-      router.push("/(app)/new-workspace" as any);
       if (!isWide) closeNativeDrawer();
     } else {
-      setCreateWorkspaceOpen(true);
+      router.push("/(app)/new-workspace" as any);
       if (!isWide) closeNativeDrawer();
     }
   }, [
     closeNativeDrawer,
     hasTeamWorkspace,
     isWide,
+    localMode,
     pooledWorkspaceParent,
     router,
   ]);
@@ -721,7 +811,7 @@ export const AppSidebar = observer(function AppSidebar({
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
       if (pooledWorkspaceParent) return createPooledWorkspace(name);
-      if (!user?.id) return;
+      if (!user?.id) return false;
       try {
         const newWorkspace = await actions.createWorkspace(
           name,
@@ -733,11 +823,19 @@ export const AppSidebar = observer(function AppSidebar({
           setSelectedWorkspaceId(newWorkspace.id);
           setActiveWorkspaceId(newWorkspace.id);
           await workspaces.loadAll();
-          projects.clear();
-          await projects.loadAll({ workspaceId: newWorkspace.id });
+          // Activating a new workspace goes through the same path as switching
+          // to an existing one: the shell has to rebind to that workspace's
+          // data *and* its runtime (`ws:<id>`), not just highlight a new row.
+          scheduleWorkspaceSwitch(
+            newWorkspace.id,
+            projects,
+            reloadAfterWorkspaceSwitch,
+          );
         }
       } catch (e) {
         console.warn("Failed to create workspace:", e);
+        // Keep the modal open with the server's reason (`invalid_name`, …).
+        return workspaceErrorMessage(e);
       }
     },
     [
@@ -843,6 +941,10 @@ export const AppSidebar = observer(function AppSidebar({
 
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";
+  // `/(app)/home` is the pre-landing home (phone feed / wide builder); `/`
+  // itself is the workspace agent chat.
+  const isExplicitHome =
+    pathname === "/home" || pathname === "/(app)/home";
   const isMeetingsPage =
     pathname.startsWith("/meetings") || pathname.startsWith("/(app)/meetings");
   const isMarketplacePage =
@@ -905,18 +1007,20 @@ export const AppSidebar = observer(function AppSidebar({
                     ? "Collapse pinned projects"
                     : "Expand pinned projects"
                 }
-                accessibilityState={{ expanded: pinnedExpanded }}
+                aria-expanded={pinnedExpanded}
                 className={cn(
-                  "flex-row items-center rounded-md px-1 active:bg-accent/50",
+                  "flex-row items-center rounded-lg px-1",
                   isNativeDrawer
-                    ? `${drawerDensity.rowMin} gap-2.5 py-2`
-                    : "gap-1.5 py-1",
+                    ? `${drawerDensity.rowMin} gap-2.5 py-2 active:bg-accent/50`
+                    : "mt-3 gap-1.5 py-1 hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60",
                 )}
               >
                 <Text
                   className={cn(
-                    "flex-1 font-semibold uppercase tracking-wider text-muted-foreground",
-                    drawerDensity.text.label,
+                    "flex-1 text-muted-foreground",
+                    isNativeDrawer
+                      ? `font-semibold uppercase tracking-wider ${drawerDensity.text.label}`
+                      : "text-[13px] font-medium text-sidebar-muted-foreground",
                   )}
                 >
                   Pinned
@@ -958,16 +1062,20 @@ export const AppSidebar = observer(function AppSidebar({
                   accessibilityLabel={
                     projectsExpanded ? "Collapse projects" : "Expand projects"
                   }
-                  accessibilityState={{ expanded: projectsExpanded }}
+                  aria-expanded={projectsExpanded}
                   className={cn(
-                    "min-w-0 flex-1 flex-row items-center rounded-md active:bg-accent/50",
-                    isNativeDrawer ? `${drawerDensity.rowMin} py-2` : "py-1",
+                    "min-w-0 flex-1 flex-row items-center rounded-lg",
+                    isNativeDrawer
+                      ? `${drawerDensity.rowMin} py-2 active:bg-accent/50`
+                      : "mt-3 py-1 hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60",
                   )}
                 >
                   <Text
                     className={cn(
-                      "flex-1 font-semibold uppercase tracking-wider text-muted-foreground",
-                      drawerDensity.text.label,
+                      "flex-1 text-muted-foreground",
+                      isNativeDrawer
+                        ? `font-semibold uppercase tracking-wider ${drawerDensity.text.label}`
+                        : "text-[13px] font-medium text-sidebar-muted-foreground",
                     )}
                   >
                     Projects
@@ -985,7 +1093,7 @@ export const AppSidebar = observer(function AppSidebar({
                       {...triggerProps}
                       role="button"
                       accessibilityLabel="Filter and sort projects"
-                      accessibilityState={{ expanded: filterMenuOpen }}
+                      aria-expanded={filterMenuOpen}
                       className="h-6 w-6 items-center justify-center rounded-md active:bg-muted"
                     >
                       <SlidersHorizontal
@@ -1015,9 +1123,7 @@ export const AppSidebar = observer(function AppSidebar({
                               updateProjectFilter({ sort: opt.value })
                             }
                             role={MENU_ITEM_RADIO_ROLE}
-                            accessibilityState={{
-                              checked: projectFilter.sort === opt.value,
-                            }}
+                            aria-checked={projectFilter.sort === opt.value}
                             className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                           >
                             <Text
@@ -1052,9 +1158,7 @@ export const AppSidebar = observer(function AppSidebar({
                               updateProjectFilter({ scope: opt.value })
                             }
                             role={MENU_ITEM_RADIO_ROLE}
-                            accessibilityState={{
-                              checked: projectFilter.scope === opt.value,
-                            }}
+                            aria-checked={projectFilter.scope === opt.value}
                             className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
                           >
                             <Text
@@ -1144,15 +1248,18 @@ export const AppSidebar = observer(function AppSidebar({
                       // *text*, not their icon column, instead of adding an
                       // icon of its own just to fill the slot.
                       style={{
-                        paddingLeft:
-                          (isNativeDrawer ? drawerDensity.icon.md : 12) + 10,
+                        paddingLeft: isNativeDrawer
+                          ? drawerDensity.icon.md + 10
+                          : 28,
                         paddingRight: 8,
                       }}
                     >
                       <Text
                         className={cn(
-                          "text-muted-foreground flex-1",
-                          drawerDensity.text.body,
+                          "flex-1",
+                          isNativeDrawer
+                            ? `text-muted-foreground ${drawerDensity.text.body}`
+                            : "text-xs text-sidebar-muted-foreground",
                         )}
                       >
                         {showAllProjects
@@ -1187,8 +1294,7 @@ export const AppSidebar = observer(function AppSidebar({
         return <MorePanel onNavPress={onNavPress} />;
       case "home":
       default:
-        if (experience.kind === "personal") return <PersonalChatsPanel onNavPress={onNavPress} />;
-        return <HomePanel onNavPress={onNavPress} isHomeRoute={/\/agent\/?$/.test(pathname)} />;
+        return <HomePanel onNavPress={onNavPress} />;
     }
   };
 
@@ -1204,8 +1310,11 @@ export const AppSidebar = observer(function AppSidebar({
     isSuperAdmin={hasAdminAccess}
     isWide={isWide}
     collapsed={collapsed}
-    workspaces={allWorkspaces}
+    entries={workspaceEntries}
+    currentKey={activeWorkspaceKey}
+    onSelectEntry={handleSelectWorkspaceEntry}
     currentWorkspace={currentWorkspace}
+    identityWorkspace={workspaceInView ?? currentWorkspace}
     billingData={billingData}
     workspacePlan={workspacePlan}
     allPlans={allPlans}
@@ -1246,8 +1355,31 @@ export const AppSidebar = observer(function AppSidebar({
       {isNativeDrawer && <View style={{ height: drawerTopInset }} />}
       {/* ── Panel header (wide): the tab's name, search, hide panel ── */}
       {tab !== null && (
-        <View className="h-12 flex-row items-center justify-between border-b border-border px-3">
-          <Text className="text-sm font-semibold text-foreground">{TAB_META[tab].label}</Text>
+        <View className="h-14 flex-row items-center justify-between px-3">
+          <WorkspaceHeaderButton
+            user={user}
+            onSignOut={handleSignOut}
+            onNavigate={(href) => {
+              router.push(href as any);
+              onNavPress();
+            }}
+            isSuperAdmin={hasAdminAccess}
+            isWide={isWide}
+            entries={workspaceEntries}
+            currentKey={activeWorkspaceKey}
+            onSelectEntry={handleSelectWorkspaceEntry}
+            currentWorkspace={currentWorkspace}
+            identityWorkspace={workspaceInView ?? currentWorkspace}
+            billingData={billingData}
+            workspacePlan={workspacePlan}
+            allPlans={allPlans}
+            showBilling={features.billing}
+            onSwitchWorkspace={handleSwitchWorkspace}
+            onCreateWorkspace={handleCreateWorkspace}
+            hasPersonalWorkspace={hasPersonalWorkspace}
+            onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
+            localMode={localMode}
+          />
           <View className="flex-row items-center gap-1">
             {tab === "projects" && (
               <Pressable
@@ -1255,14 +1387,14 @@ export const AppSidebar = observer(function AppSidebar({
                 accessibilityLabel="New project"
                 className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
               >
-                <Plus size={14} className="text-muted-foreground" />
+                <Plus size={16} className="text-muted-foreground" />
               </Pressable>
             )}
             <Pressable onPress={handleSearchPress} accessibilityLabel="Search" className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
-              <Search size={14} className="text-muted-foreground" />
+              <Search size={16} className="text-muted-foreground" />
             </Pressable>
             <Pressable onPress={onHidePanel} accessibilityLabel="Hide panel" className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
-              <PanelLeftClose size={12} className="text-muted-foreground" />
+              <PanelLeftClose size={16} className="text-muted-foreground" />
             </Pressable>
           </View>
         </View>
@@ -1343,21 +1475,21 @@ export const AppSidebar = observer(function AppSidebar({
               )}
               numberOfLines={1}
             >
-              Controlling: {activeRemoteInstance.name}
+              {activeMachine
+                ? `Connected to ${activeRemoteInstance.name}${
+                    activeMachineWorkspace ? ` · ${activeMachineWorkspace.name}` : ""
+                  } · ${activeMachine.status}`
+                : `Controlling: ${activeRemoteInstance.name}`}
             </Text>
           </View>
         </View>
       )}
 
       {/* ── Main Navigation (scrollable) ── */}
-      {(tab === "activity" || tab === "home") && experience.kind === "team" ? (
-        // The feed owns its scrolling and filters; Home is the same feed under a short header.
+      {tab === "activity" && experience.kind === "team" ? (
+        // The feed owns its scrolling and filters.
         <View className="flex-1">
-          {tab === "home" ? (
-            <HomePanel onNavPress={onNavPress} isHomeRoute={/\/agent\/?$/.test(pathname)} />
-          ) : (
-            <ActivityFeed compact />
-          )}
+          <ActivityFeed compact />
         </View>
       ) : (
       <ScrollView
@@ -1422,16 +1554,6 @@ export const AppSidebar = observer(function AppSidebar({
               onPress={handleSearchPress}
             />
           )}
-          {experience.showSideChatsNav && (
-            <NavItem
-              icon={MessagesSquare}
-              label="Side chats"
-              href="/(app)/side-chats"
-              active={pathname.includes("/side-chats")}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
-            />
-          )}
         </View>
 
         {/* The drawer keeps one scrolling list: channels, DMs, then agents. */}
@@ -1455,6 +1577,12 @@ export const AppSidebar = observer(function AppSidebar({
         className={isNativeDrawer ? undefined : "border-t border-border"}
         style={{ paddingBottom: drawerFooterInset }}
       >
+        {gettingStarted.visible && !collapsed && (
+          <View className={cn("px-2", isNativeDrawer ? "pt-3" : "pt-2")}>
+            <GetStartedChecklist state={gettingStarted} compact />
+          </View>
+        )}
+
         {/* Upgrade to Pro CTA */}
         {((features.billing && !isPaidPlan) || showLocalUpgrade) && !collapsed && (
           <View className={cn("px-2", isNativeDrawer ? "pt-3" : "pt-2")}>
@@ -1674,8 +1802,8 @@ export const AppSidebar = observer(function AppSidebar({
               <NavItem
                 icon={Home}
                 label="Home"
-                href="/(app)"
-                active={isHomePage}
+                href="/(app)/home"
+                active={isExplicitHome}
                 collapsed={false}
                 onNavPress={onNavPress}
               />

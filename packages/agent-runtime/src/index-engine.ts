@@ -108,7 +108,7 @@ export const CODE_SKIP_DIRS = new Set([
   'venv', '.venv', 'env', '.env', '.cache',
   '.next', '.nuxt', '.svelte-kit', '.turbo',
   'target', 'out', 'coverage', '.coverage',
-  '.swe-bench',
+  '.swe-bench', 'chat-files',
 ])
 
 export const CODE_SKIP_FILE_PATTERNS = [/\.pyc$/, /\.pyo$/, /\.so$/, /\.dylib$/, /\.wasm$/, /\.min\.js$/, /\.map$/]

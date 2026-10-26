@@ -60,6 +60,9 @@ mock.module('@shogo/model-catalog', () => ({
   calculateDollarCost: () => 0,
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
+  AUTO_MODEL_ID: 'auto',
+  isAutoModel: (id: string) => id === 'auto',
+  inferProviderFromModel: (_id: string, fallback: string) => fallback,
 }))
 
 mock.module('../services/cost-analytics.service', () => ({
@@ -439,6 +442,33 @@ describe('trackUsageFromStream — processLine branches', () => {
     expect(parts.some((p: any) => p.type === 'data-turn-timing')).toBe(false)
   })
 
+  test('persists a data-context-summarized part so the divider survives a reload (SHO-96)', async () => {
+    chatSessionFixture = { id: 's-compact' }
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"working on it"}\n',
+      'data: {"type":"data-context-summarized","data":{"trigger":"auto","tokensBefore":412000,"tokensAfter":38000,"messagesBefore":44,"messagesAfter":6,"summaryChars":900,"contextWindowTokens":1000000}}\n',
+      'data: {"type":"text-delta","delta":" — done"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-compact' }, { id: 'p-1', workspaceId: 'w-1' })
+    const parts = JSON.parse(prismaCalls.chatMessageCreate[0].data.parts)
+    const divider = parts.find((p: any) => p.type === 'data-context-summarized')
+    expect(divider).toBeDefined()
+    expect(divider.data).toEqual({
+      trigger: 'auto',
+      tokensBefore: 412000,
+      tokensAfter: 38000,
+      messagesBefore: 44,
+      messagesAfter: 6,
+      summaryChars: 900,
+      contextWindowTokens: 1000000,
+    })
+    // Exactly one row/divider per compaction, in stream order between the text.
+    expect(parts.filter((p: any) => p.type === 'data-context-summarized')).toHaveLength(1)
+    const types = parts.map((p: any) => p.type)
+    expect(types.indexOf('data-context-summarized')).toBeGreaterThan(types.indexOf('text'))
+  })
+
   test('ignores [DONE], event:, id:, retry:, blank lines, and garbage non-JSON', async () => {
     const stream = streamFromChunks([
       '\n',
@@ -559,7 +589,7 @@ describe('trackUsageFromStream — processLine branches', () => {
       'data: {"type":"text-delta","delta":"a"}\n',
       'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
     ])
-    await expect(trackUsageFromStream(stream, { chatSessionId: 's-err' }, { id: 'p-1', workspaceId: 'w-1' })).resolves.toBeUndefined()
+    await expect(trackUsageFromStream(stream, { chatSessionId: 's-err' }, { id: 'p-1', workspaceId: 'w-1' })).resolves.toMatchObject({ outcome: 'complete' })
   })
 
   test('tool-call log error is caught (does not throw)', async () => {
@@ -570,7 +600,7 @@ describe('trackUsageFromStream — processLine branches', () => {
       'data: {"type":"tool-output-available","toolCallId":"t1","output":{}}\n',
       'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
     ])
-    await expect(trackUsageFromStream(stream, { chatSessionId: 's-log' }, { id: 'p-1', workspaceId: 'w-1' })).resolves.toBeUndefined()
+    await expect(trackUsageFromStream(stream, { chatSessionId: 's-log' }, { id: 'p-1', workspaceId: 'w-1' })).resolves.toMatchObject({ outcome: 'complete' })
   })
 
   test('filters out empty/whitespace text and reasoning parts', async () => {

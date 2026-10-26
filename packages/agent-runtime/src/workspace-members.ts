@@ -22,6 +22,7 @@ import {
 } from 'node:fs'
 import { join, resolve } from 'node:path'
 import {
+  copyToProjectAvailable,
   isWorkspaceRuntimeMode,
   workspaceAttachedProjectIds,
   workspaceAvailableProjectsManifest,
@@ -32,6 +33,7 @@ import {
 } from './workspace-runtime-mode'
 import { updateWorkspaceFolders } from './trust-resolver'
 import { isHostMediatedDurability } from './host-durability'
+import { isMetalRuntime, remoteProjectsGuidance } from './remote-tools'
 import { createS3SyncForProject, type S3Sync } from '@shogo/shared-runtime'
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
@@ -107,14 +109,24 @@ function writeManifest(): void {
     const mounted = [...state.members.values()]
     const mountedIds = new Set(mounted.map((m) => m.id))
     const available = state.available.filter((p) => !mountedIds.has(p.id))
+    const metal = isMetalRuntime()
     const lines = [
       '# Workspace',
       '',
       `This is a multi-project workspace runtime (workspace \`${state.workspaceId}\`).`,
-      'You are a meta-agent. Keep the runtime empty until a request requires',
-      'project files or commands, then use `mount_project` for the smallest',
-      'relevant project. Use `unmount_project` when a project is no longer',
-      'needed. Mounted projects are sibling folders under this directory.',
+      ...(metal
+        ? [
+            'You are a meta-agent.',
+            'To build an app or site, call `project_create` with a short brief and then `project_call` to build it in that project; never scaffold `package.json`, `src/` or `prisma/` in this root.',
+            remoteProjectsGuidance({ copyToProject: copyToProjectAvailable() }),
+          ]
+        : [
+            'You are a meta-agent. Keep the runtime empty until a request requires',
+            'project files or commands, then use `mount_project` for the smallest',
+            'relevant project. Use `unmount_project` when a project is no longer',
+            'needed. Mounted projects are sibling folders under this directory.',
+            'To build an app or site, call `project_create` with a short brief and then `project_call` to build it in that project; never scaffold `package.json`, `src/` or `prisma/` in this root.',
+          ]),
       '',
       ...renderCurrentProjectSection(
         mountedIds.has(process.env.WORKSPACE_ANCHOR_PROJECT_ID ?? '') ? process.env.WORKSPACE_ANCHOR_PROJECT_ID : undefined,
@@ -158,8 +170,10 @@ function writeManifest(): void {
     }
     lines.push(
       '',
-      'Answer workspace/catalog questions without mounting. Mount before reading, editing, testing, or running commands in a project.',
-      'Tell the user which project you mounted when doing project work. Never guess between similarly plausible projects: inspect the catalog and ask one concise clarification when the request does not identify a project clearly.',
+      metal
+        ? 'Answer workspace/catalog questions from the catalog. Pass `project` to the file and shell tools before reading, editing, testing, or running commands in a project.'
+        : 'Answer workspace/catalog questions without mounting. Mount before reading, editing, testing, or running commands in a project.',
+      `Tell the user which project you ${metal ? 'worked in' : 'mounted'} when doing project work. Never guess between similarly plausible projects: inspect the catalog and ask one concise clarification when the request does not identify a project clearly.`,
       '',
     )
     mkdirSync(state.workspaceDir, { recursive: true })

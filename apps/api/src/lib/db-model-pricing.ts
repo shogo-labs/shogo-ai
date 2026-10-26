@@ -36,3 +36,17 @@ export function setDbModelPricingProvider(fn: DbModelPricingProvider): void {
 export function getDbModelPricing(id: string): DbModelPricing | undefined {
   return provider ? provider(id) : undefined
 }
+
+type DbModelBillingModelProvider = (id: string) => string | undefined
+
+let billingModelProvider: DbModelBillingModelProvider | null = null
+
+/** Registered by the model registry once it loads. */
+export function setDbModelBillingModelProvider(fn: DbModelBillingModelProvider): void {
+  billingModelProvider = fn
+}
+
+/** Billing bucket for a DB-defined model id, or undefined if none. */
+export function getDbModelBillingModel(id: string): string | undefined {
+  return billingModelProvider ? billingModelProvider(id) : undefined
+}

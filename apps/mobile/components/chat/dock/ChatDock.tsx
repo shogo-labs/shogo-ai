@@ -73,6 +73,8 @@ import {
 } from "../../../lib/native-phone-layout"
 import { CappedContentScroll } from "./CappedContentScroll"
 import { DockPanel } from "./DockPanel"
+import { MachineWorkspaceBanner } from "../../instance/MachineWorkspaceBanner"
+import { useActiveInstance } from "../../../contexts/active-instance"
 
 const MAX_STATUS_HEIGHT = 420
 const MAX_STATUS_HEIGHT_RATIO = 0.45
@@ -138,6 +140,9 @@ export function ChatDock({
 }: ChatDockProps) {
   const store = useChatDockStore()
   useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion)
+  // The banner names the machine the way the person named it ("Studio Mac"),
+  // not a generic "Your Mac".
+  const { instance } = useActiveInstance()
   const colorScheme = useColorScheme()
 
   const statusPanels = store.getPanels("status")
@@ -249,6 +254,10 @@ export function ChatDock({
 
   const body: ReactNode = (
     <>
+      {/* A machine workspace's own state, above the composer of whichever chat
+          is open: it renders nothing unless its Mac is asleep or waking
+          (SHO-185 AC4). */}
+      <MachineWorkspaceBanner machineName={instance?.name} />
       {statusZone}
       {blockingPanels.length > 0 && (
         <View className={BLOCKING_ZONE_CARD_CLASS}>{blockingContent}</View>

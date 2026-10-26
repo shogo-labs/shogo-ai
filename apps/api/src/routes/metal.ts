@@ -17,13 +17,45 @@
 
 import { Hono } from 'hono'
 import { resolveDesiredForHost, setFleetChannelRelease, type AgentRelease } from '../lib/metal-agent-release'
-import { getMetalPlacementRegistry } from '../lib/metal-placement-registry'
+import { getMetalPlacementRegistry, type StagedRootfsReport } from '../lib/metal-placement-registry'
+import { activateRootfsFor, enqueueRefresh } from '../lib/metal-rewarm'
 import {
   registerMetalHost,
   getMetalWarmPoolController,
+  metalIdleDirectiveFor,
   workspaceRuntimeKey,
   type MetalHostRegistration,
 } from '../lib/metal-warm-pool-controller'
+
+function parseTier(v: unknown): 'relaxed' | 'aggressive' | undefined {
+  return v === 'aggressive' || v === 'relaxed' ? v : undefined
+}
+
+function parseHostIdle(raw: any): MetalHostRegistration['idle'] {
+  if (!raw || typeof raw !== 'object') return undefined
+  const tier = parseTier(raw.tier)
+  if (!tier) return undefined
+  return {
+    tier,
+    idleMs: Number(raw.idleMs ?? 0),
+    reason: String(raw.reason ?? 'unknown'),
+    directiveTier: parseTier(raw.directiveTier),
+  }
+}
+
+function parseStagedRootfs(raw: any): StagedRootfsReport | undefined {
+  if (!raw || typeof raw !== 'object' || !raw.version || !raw.identities?.standard) return undefined
+  return {
+    version: String(raw.version),
+    identities: {
+      standard: String(raw.identities.standard),
+      ...(raw.identities.docker ? { docker: String(raw.identities.docker) } : {}),
+    },
+    stagedAt: raw.stagedAt != null ? Number(raw.stagedAt) : undefined,
+    prewarm: raw.prewarm != null ? Boolean(raw.prewarm) : undefined,
+    stagedSnapshots: raw.stagedSnapshots != null ? Number(raw.stagedSnapshots) : undefined,
+  }
+}
 
 function expectedToken(): string | undefined {
   return process.env.METAL_REGISTER_TOKEN || process.env.SHOGO_INTERNAL_SECRET
@@ -106,6 +138,10 @@ export function metalRoutes(): Hono {
           body.load?.taps && typeof body.load.taps === 'object'
             ? { inUse: Number(body.load.taps.inUse ?? 0), capacity: Number(body.load.taps.capacity ?? 0) }
             : undefined,
+        mem:
+          body.load?.mem && typeof body.load.mem === 'object' && Number(body.load.mem.totalMiB) > 0
+            ? { totalMiB: Number(body.load.mem.totalMiB), availableMiB: Number(body.load.mem.availableMiB ?? 0) }
+            : undefined,
       },
       disk: body.disk
         ? {
@@ -117,7 +153,21 @@ export function metalRoutes(): Hono {
           }
         : undefined,
       metrics: body.metrics && typeof body.metrics === 'object' ? body.metrics : undefined,
+      idle: parseHostIdle(body.idle),
+      stagedRootfs: parseStagedRootfs(body.stagedRootfs),
+      restarting: body.restarting === true ? true : undefined,
     })
+
+    // Idle-suspend window for this host, from its region's utilization. Absent on
+    // a registry/compute failure, which the host treats like a stale directive.
+    let idleSuspend = null
+    try {
+      // Hysteresis keys off the last tier WE handed out, not the host's effective
+      // one: a host forced aggressive by its own guard must not hold the region there.
+      idleSuspend = await metalIdleDirectiveFor(String(body.region ?? 'unknown'), parseHostIdle(body.idle)?.directiveTier)
+    } catch (err) {
+      console.warn(`[metal] idle directive failed for ${body.hostId}:`, (err as any)?.message ?? err)
+    }
 
     // Pull-based deploy: tell the host which agent version it should be running.
     // Best-effort — a DB blip must never break the liveness heartbeat, so the
@@ -129,7 +179,16 @@ export function metalRoutes(): Hono {
       console.warn(`[metal] resolveDesiredForHost failed for ${body.hostId}:`, (err as any)?.message ?? err)
     }
 
-    return c.json({ ok: true, desired })
+    // Switch-over: once the region's pre-warm finishes, a host holding that
+    // staged rootfs is told to activate it.
+    let activateRootfs: string | undefined
+    try {
+      activateRootfs = await activateRootfsFor(String(body.region ?? 'unknown'), parseStagedRootfs(body.stagedRootfs)?.version)
+    } catch (err) {
+      console.warn(`[metal] activateRootfsFor failed for ${body.hostId}:`, (err as any)?.message ?? err)
+    }
+
+    return c.json({ ok: true, desired, idleSuspend, ...(activateRootfs ? { activateRootfs } : {}) })
   })
 
   // POST /api/internal/metal/release — publish a node-agent release to a
@@ -166,7 +225,7 @@ export function metalRoutes(): Hono {
     if (!authOk(c.req.header('authorization'))) {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
-    let body: { hostId?: string; projectId?: string; event?: string }
+    let body: { hostId?: string; projectId?: string; event?: string; refresh?: string }
     try {
       body = await c.req.json()
     } catch {
@@ -189,6 +248,15 @@ export function metalRoutes(): Hono {
       await registry
         .clearPlacement(String(body.projectId), body.hostId ? String(body.hostId) : undefined)
         .catch(() => {})
+      // A VM retired off a superseded rootfs: re-warm it on the current one
+      // (an always-on one is booted again right away and left running).
+      const refresh = body.refresh === 'stale-rootfs' || body.refresh === 'stale-rootfs-always-on' ? body.refresh : null
+      if (refresh && String(body.projectId).startsWith('ws:')) {
+        await enqueueRefresh(String(body.projectId), {
+          hostId: body.hostId ? String(body.hostId) : undefined,
+          reason: refresh,
+        }).catch((err) => console.warn(`[metal/placement] enqueueRefresh ${body.projectId} failed:`, err?.message ?? err))
+      }
     }
     return c.json({ ok: true })
   })
@@ -255,6 +323,29 @@ export function metalE2eRoutes(): Hono {
     } catch (err: any) {
       console.error('[e2e-bootstrap] runtime-fault failed', err)
       return c.json({ ok: false, error: 'fault_failed', message: err?.message ?? 'unknown' }, 500)
+    }
+  })
+
+  // GET /api/internal/e2e/runtime-holders?projectId= — which runtimes on the
+  // fleet currently hold the project as a mounted member.
+  app.get('/runtime-holders', async (c) => {
+    const prod = process.env.NODE_ENV === 'production'
+    const enabled = !prod || process.env.SHOGO_E2E_BOOTSTRAP_ENABLED === '1'
+    if (!enabled) {
+      return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
+    }
+    const expected = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+    if (!expected || c.req.header('x-e2e-bootstrap-secret') !== expected) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    const projectId = c.req.query('projectId')?.trim()
+    if (!projectId) return c.json({ ok: false, error: 'projectId_required' }, 400)
+    try {
+      const holders = await getMetalWarmPoolController().memberHolders(projectId)
+      return c.json({ projectId, holders })
+    } catch (err: any) {
+      console.error('[e2e-bootstrap] runtime-holders failed', err)
+      return c.json({ ok: false, error: 'holders_failed', message: err?.message ?? 'unknown' }, 500)
     }
   })
 

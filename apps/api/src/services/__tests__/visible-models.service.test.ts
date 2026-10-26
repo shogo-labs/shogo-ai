@@ -9,7 +9,7 @@
  *   bun test apps/api/src/services/__tests__/visible-models.service.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 
 // ─── Mutable mock data ──────────────────────────────────────────────────────
 
@@ -120,6 +120,79 @@ describe('isModelProviderConfigured', () => {
     expect(isModelProviderConfigured('anthropic')).toBe(true)
     expect(isModelProviderConfigured('openai')).toBe(false)
   })
+
+  // SHO-145: a desktop signed in to Shogo Cloud forwards its LLM traffic
+  // upstream and holds no local provider key, so gating on a local key hid
+  // every model the plan allows and left the runtime offering Hoshi only.
+  describe('cloud-forwarding desktop', () => {
+    const savedEnv = {
+      SHOGO_LOCAL_MODE: process.env.SHOGO_LOCAL_MODE,
+      SHOGO_API_KEY: process.env.SHOGO_API_KEY,
+      AI_MODE: process.env.AI_MODE,
+    }
+    afterEach(() => {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    })
+
+    test('every forwarded provider counts as configured with no local key', () => {
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      process.env.SHOGO_API_KEY = 'shogo_sk_test'
+      delete process.env.AI_MODE
+      CONFIGURED_PROVIDERS = new Set()
+
+      expect(isModelProviderConfigured('anthropic')).toBe(true)
+      expect(isModelProviderConfigured('openai')).toBe(true)
+      expect(isModelProviderConfigured('google')).toBe(true)
+      expect(isModelProviderConfigured('openrouter')).toBe(true)
+    })
+
+    test('a forwarded model is listed even when its provider has no local key', async () => {
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      process.env.SHOGO_API_KEY = 'shogo_sk_test'
+      delete process.env.AI_MODE
+      CONFIGURED_PROVIDERS = new Set()
+      MODEL_DEFS = [
+        dbModel({ id: 'opus-uuid', apiModel: 'claude-opus-5-5', displayName: 'Opus 5.5', shortDisplayName: 'Opus 5.5', provider: 'anthropic', tier: 'premium' }),
+      ]
+      await primeModelRegistry()
+
+      // Explicit allowlist branch — the one `project_configure` reads.
+      expect((await resolveVisibleCatalogModels(['opus-uuid'])).map((m) => m.id)).toEqual(['opus-uuid'])
+      expect((await resolveVisibleCatalogModels(null)).map((m) => m.id)).toEqual(['opus-uuid'])
+    })
+
+    test('AI_MODE=api-keys keeps the local-key gate', () => {
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      process.env.SHOGO_API_KEY = 'shogo_sk_test'
+      process.env.AI_MODE = 'api-keys'
+      CONFIGURED_PROVIDERS = new Set(['anthropic'])
+
+      expect(isModelProviderConfigured('anthropic')).toBe(true)
+      expect(isModelProviderConfigured('openai')).toBe(false)
+    })
+
+    test('AI_MODE=local-llm keeps the local-key gate', () => {
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      process.env.SHOGO_API_KEY = 'shogo_sk_test'
+      process.env.AI_MODE = 'local-llm'
+      CONFIGURED_PROVIDERS = new Set()
+
+      expect(isModelProviderConfigured('anthropic')).toBe(false)
+    })
+
+    test('a cloud-authed desktop that is not forwarding is gated locally', () => {
+      // No SHOGO_API_KEY → the cloud cannot answer for this instance.
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      delete process.env.SHOGO_API_KEY
+      delete process.env.AI_MODE
+      CONFIGURED_PROVIDERS = new Set()
+
+      expect(isModelProviderConfigured('anthropic')).toBe(false)
+    })
+  })
 })
 
 describe('resolveVisibleCatalogModels — unseeded DB (first-run fallback)', () => {
@@ -131,9 +204,11 @@ describe('resolveVisibleCatalogModels — unseeded DB (first-run fallback)', () 
     expect(ids).toContain('claude-opus-5-5')
     expect(ids).toContain('claude-sonnet-5')
     expect(ids).toContain('gpt-6-luna')
+    expect(ids).toContain('claude-haiku-5-5')
     // Legacy catalog entries are a routing-only fallback, not listed.
     expect(ids).not.toContain('claude-3-haiku-20240307')
     expect(ids).not.toContain('claude-opus-5')
+    expect(ids).not.toContain('claude-haiku-4-5-20251001')
     expect(ids).not.toContain('gpt-4o-mini')
     expect(ids).not.toContain('gpt-5.4-nano')
     expect(ids).not.toContain('gpt-5.6-luna')
@@ -246,13 +321,13 @@ describe('resolveVisibleModelsForWorkspace', () => {
     ALLOWED_IDS = null
     const resolved = await resolveVisibleModelsForWorkspace('ws-1')
     expect(resolved.catalogModels.length).toBeGreaterThan(1)
-    expect(resolved.catalogModels.some((m) => m.id === 'claude-haiku-4-5-20251001')).toBe(true)
+    expect(resolved.catalogModels.some((m) => m.id === 'claude-haiku-5-5')).toBe(true)
   })
 
   test('narrows the platform set to the workspace allowlist', async () => {
-    ALLOWED_IDS = new Set(['claude-haiku-4-5-20251001'])
+    ALLOWED_IDS = new Set(['claude-haiku-5-5'])
     const resolved = await resolveVisibleModelsForWorkspace('ws-1')
-    expect(resolved.catalogModels.map((m) => m.id)).toEqual(['claude-haiku-4-5-20251001'])
+    expect(resolved.catalogModels.map((m) => m.id)).toEqual(['claude-haiku-5-5'])
   })
 
   test('an empty allowlist hides every model', async () => {

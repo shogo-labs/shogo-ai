@@ -15,6 +15,7 @@ import { Terminal, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } f
 import type { ToolCallData } from "../tools/types"
 import { parseShellCommand, sepLabel } from "../tools/summary"
 import { CredentialChip } from "./CredentialChip"
+import { CodeText } from "../CodeText"
 
 const MAX_OUTPUT_LINES = 30
 const MAX_OUTPUT_CHARS = 3000
@@ -197,9 +198,9 @@ function ExecWidgetImpl({
               Command
             </Text>
             <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-24">
-              <Text className="text-[10px] font-mono text-foreground" selectable>
+              <CodeText className="text-[10px] font-mono text-foreground">
                 {command}
-              </Text>
+              </CodeText>
             </ScrollView>
           </View>
 
@@ -217,15 +218,14 @@ function ExecWidgetImpl({
                 )}
               </View>
               <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-48">
-                <Text
+                <CodeText
                   className={cn(
                     "text-[10px] font-mono",
                     stderr && !stdout ? "text-red-500" : "text-foreground"
                   )}
-                  selectable
                 >
                   {showFull ? output : truncatedOutput}
-                </Text>
+                </CodeText>
               </ScrollView>
               {truncated && (
                 <Pressable onPress={() => setShowFull(!showFull)}>
@@ -248,9 +248,9 @@ function ExecWidgetImpl({
           {/* Error without output */}
           {tool.state === "error" && !hasOutput && tool.error && (
             <View className="bg-red-500/10 rounded p-1.5">
-              <Text className="text-[10px] font-mono text-red-600 dark:text-red-400" selectable>
+              <CodeText className="text-[10px] font-mono text-red-600 dark:text-red-400">
                 {tool.error}
-              </Text>
+              </CodeText>
             </View>
           )}
         </View>

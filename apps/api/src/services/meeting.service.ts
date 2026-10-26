@@ -84,7 +84,12 @@ export interface TranscriptSegment {
   start: number
   end: number
   text: string
+  /** Display name of whoever said it. */
   speaker?: string
+  /** Their user id (or `guest_…`): what a handover compares, so two people with one name never merge. */
+  speakerId?: string
+  /** The dedupe key this line was stored under (`c:…` from a client, `lk:…` from the fallback). */
+  itemId?: string
 }
 
 export interface ParsedTranscript {
@@ -431,20 +436,51 @@ async function finalPassUsesCloud(options: TranscribeMeetingOptions): Promise<bo
   return !isLocalTranscriptionAvailable(model)
 }
 
+/** Promote a draft's live transcript to the final one, dropping the capture bookkeeping. */
+async function promoteLiveTranscript(
+  meetingId: string,
+  live: StoredTranscript,
+  extra: { duration?: number | null } = {},
+) {
+  const speakers = new Set(live.segments.map((s) => s.speaker).filter(Boolean) as string[])
+  const updated = await db.meeting.update({
+    where: { id: meetingId },
+    data: {
+      status: 'ready',
+      ...(extra.duration ? { duration: Math.round(extra.duration) } : {}),
+      transcript: writeTranscript({
+        text: live.text,
+        segments: live.segments,
+        language: live.language ?? 'en',
+        numSpeakers: speakers.size,
+      }),
+    },
+  })
+  if (updated.projectId) writeTranscriptToProject(updated.projectId, updated)
+  return updated
+}
+
 /** Promote the live transcript to the final one. False when it doesn't cover every acknowledged chunk. */
 async function finishFromLiveTranscript(meetingId: string, liveChunks: number): Promise<boolean> {
   const row = await db.meeting.findUnique({ where: { id: meetingId }, select: { transcript: true } })
   const live = readTranscript(row?.transcript)
   if (!live?.live) return false
   if ((live.liveSeqs?.length ?? 0) < liveChunks) return false
-  const updated = await db.meeting.update({
-    where: { id: meetingId },
-    data: {
-      status: 'ready',
-      transcript: writeTranscript({ text: live.text, segments: live.segments, language: live.language ?? 'en', numSpeakers: 0 }),
-    },
-  })
-  if (updated.projectId) writeTranscriptToProject(updated.projectId, updated)
+  await promoteLiveTranscript(meetingId, live)
+  return true
+}
+
+/**
+ * Finish a draft whose live transcript already covers the whole call, with no
+ * second transcription pass. Used by huddle notes, where every final came from
+ * the participants' own streams.
+ */
+export async function finalizeLiveTranscript(meetingId: string, durationSeconds?: number): Promise<boolean> {
+  const row = await db.meeting.findUnique({ where: { id: meetingId }, select: { status: true, transcript: true } })
+  if (!row || row.status !== 'recording') return false
+  const live = readTranscript(row.transcript)
+  if (!live) return false
+  await promoteLiveTranscript(meetingId, live, { duration: durationSeconds })
   return true
 }
 
@@ -619,6 +655,16 @@ export interface LiveChunkInput {
   start: number
   /** Monotonic chunk number, so a retried upload isn't appended twice. */
   seq: number
+  /** Who is speaking. Set for huddle notes, where several people share one draft. */
+  speaker?: string
+  /** Their user id (or `guest_…`), stored on the segment so a handover can compare people. */
+  speakerId?: string
+  /**
+   * Dedupe key that is unique across everyone streaming into this draft. Huddle
+   * chunk uploads use `<speakerId>:chunk-<seq>`, because plain `seq` numbers
+   * collide between people.
+   */
+  itemKey?: string
 }
 
 export type LiveChunkResult =
@@ -668,7 +714,7 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
   }
   const meeting = await db.meeting.findUnique({
     where: { id: meetingId },
-    select: { status: true, workspaceId: true, userId: true },
+    select: { status: true, workspaceId: true, userId: true, recordingId: true },
   })
   if (!meeting || meeting.status !== 'recording') return { ok: false, reason: 'not_recording' }
 
@@ -691,8 +737,17 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
 
   const text = result.text.trim()
   const chunkDuration = Math.max(0, getWavDurationFromBuffer(input.audio))
+  const speaker = input.speaker?.trim().slice(0, 80) || undefined
+  const speakerId = input.speakerId?.trim().slice(0, 80) || undefined
   const segment: TranscriptSegment | null = text
-    ? { start: input.start, end: input.start + chunkDuration, text }
+    ? {
+        start: input.start,
+        end: input.start + chunkDuration,
+        text,
+        ...(speaker ? { speaker } : {}),
+        ...(speakerId ? { speakerId } : {}),
+        ...(input.itemKey ? { itemId: input.itemKey } : {}),
+      }
     : null
 
   // Chunks can land out of order (or on different API pods): merge with an
@@ -705,7 +760,9 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
     if (!row || row.status !== 'recording') return { ok: false, reason: 'not_recording' }
     const current = readTranscript(row.transcript) ?? { text: '', segments: [] }
     const seqs = current.liveSeqs ?? []
-    if (seqs.includes(input.seq)) {
+    const items = current.liveItems ?? []
+    // A huddle's chunk numbers collide between people, so those carry an itemKey instead.
+    if (input.itemKey ? items.includes(input.itemKey) : seqs.includes(input.seq)) {
       return { ok: true, segment: null, transcript: { text: current.text, segments: current.segments, language: current.language } }
     }
     const segments = segment
@@ -716,8 +773,8 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
       segments,
       language: result.language || current.language || 'en',
       live: true,
-      liveSeqs: [...seqs, input.seq],
-      liveItems: current.liveItems,
+      liveSeqs: input.itemKey ? seqs : [...seqs, input.seq],
+      liveItems: input.itemKey ? [...items, input.itemKey] : current.liveItems,
       liveStatus: { state: 'ok', at: new Date().toISOString() },
     }
     const updated = await db.meeting.updateMany({
@@ -725,8 +782,9 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
       data: { transcript: writeTranscript(next) },
     })
     if (updated.count === 1) {
-      if (segment) publishMeetingLive(meetingId, { type: 'final', itemId: `chunk-${input.seq}`, segment })
+      if (segment) publishMeetingLive(meetingId, { type: 'final', itemId: input.itemKey ?? `chunk-${input.seq}`, segment })
       if (current.liveStatus?.state === 'error') publishMeetingLive(meetingId, { type: 'status', state: 'ok' })
+      if (segment) notifyHuddleFinalStored({ meetingId, recordingId: meeting.recordingId, itemId: input.itemKey ?? `chunk-${input.seq}`, segment, speaker, speakerId })
       return { ok: true, segment, transcript: { text: next.text, segments, language: next.language } }
     }
     // Heartbeats and note saves touch the row too: back off briefly, then merge again.
@@ -744,21 +802,36 @@ export type StreamFinalResult = { ok: true; stored: boolean; finals: number } | 
 /**
  * Store one finished segment from the streaming transcriber in the draft.
  * Idempotent per `itemId`, so a replayed or duplicated final isn't added twice.
+ *
+ * A huddle has several people streaming into one draft at once, so it asks
+ * for more optimistic-merge retries: giving up on a final would lose speech.
  */
 export async function appendStreamFinal(
   meetingId: string,
-  input: { itemId: string; segment: TranscriptSegment; language?: string },
+  input: { itemId: string; segment: TranscriptSegment; language?: string; speaker?: string; speakerId?: string },
+  options: { attempts?: number } = {},
 ): Promise<StreamFinalResult> {
-  for (let attempt = 0; attempt < 8; attempt++) {
+  const speaker = input.speaker?.trim().slice(0, 80) || undefined
+  const speakerId = input.speakerId?.trim().slice(0, 80) || undefined
+  // The item id travels with the line: a handover's de-duplication needs to
+  // know which path wrote it, after the live bookkeeping is gone.
+  const segment: TranscriptSegment = {
+    ...input.segment,
+    ...(speaker ? { speaker } : {}),
+    ...(speakerId ? { speakerId } : {}),
+    itemId: input.itemId,
+  }
+  const attempts = Math.max(1, options.attempts ?? 8)
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const row = await db.meeting.findUnique({
       where: { id: meetingId },
-      select: { status: true, transcript: true, updatedAt: true },
+      select: { status: true, transcript: true, updatedAt: true, recordingId: true },
     })
     if (!row || row.status !== 'recording') return { ok: false, reason: 'not_recording' }
     const current = readTranscript(row.transcript) ?? { text: '', segments: [] }
     const items = current.liveItems ?? []
     if (items.includes(input.itemId)) return { ok: true, stored: false, finals: items.length }
-    const segments = [...current.segments, input.segment].sort((a, b) => a.start - b.start)
+    const segments = [...current.segments, segment].sort((a, b) => a.start - b.start)
     const next: StoredTranscript = {
       text: segments.map((s) => s.text).join(' '),
       segments,
@@ -772,7 +845,10 @@ export async function appendStreamFinal(
       where: { id: meetingId, status: 'recording', updatedAt: row.updatedAt },
       data: { transcript: writeTranscript(next) },
     })
-    if (updated.count === 1) return { ok: true, stored: true, finals: next.liveItems!.length }
+    if (updated.count === 1) {
+      notifyHuddleFinalStored({ meetingId, recordingId: row.recordingId, itemId: input.itemId, segment, speaker, speakerId })
+      return { ok: true, stored: true, finals: next.liveItems!.length }
+    }
     await new Promise((resolve) => setTimeout(resolve, 20 + Math.random() * 60 * (attempt + 1)))
   }
   return { ok: false, reason: 'busy' }
@@ -927,6 +1003,134 @@ export const RECORDING_HEARTBEAT_MS = 60 * 1000
 /** A draft that hasn't heard from its recorder for this long was abandoned. */
 export const RECORDING_DRAFT_STALE_MS = 10 * 60 * 1000
 
+/**
+ * Huddle notes share one Meeting row per huddle, keyed by this recording id.
+ * `(workspaceId, recordingId)` is already unique, so `Meeting` needs no column
+ * of its own for it.
+ */
+export const HUDDLE_RECORDING_PREFIX = 'huddle:'
+export function huddleRecordingId(huddleId: string): string {
+  return `${HUDDLE_RECORDING_PREFIX}${huddleId}`
+}
+export function huddleIdFromRecordingId(recordingId: string | null | undefined): string | null {
+  if (!recordingId?.startsWith(HUDDLE_RECORDING_PREFIX)) return null
+  return recordingId.slice(HUDDLE_RECORDING_PREFIX.length) || null
+}
+
+/**
+ * A final landed in a huddle's draft, so it is also a candidate for the spoken
+ * "hey Shogo" wake. Only fires when the write **stored** a new line: the live
+ * bookkeeping already rejects a replayed item, which is what makes "one wake per
+ * line" hold without the wake service trusting a caller.
+ *
+ * Lazy import, because the wake service reads the transcript back through this
+ * module. Fire-and-forget: a wake never fails the write that triggered it.
+ */
+function notifyHuddleFinalStored(input: {
+  meetingId: string
+  recordingId: string | null | undefined
+  itemId: string
+  segment: TranscriptSegment
+  speaker?: string
+  speakerId?: string
+}): void {
+  const huddleId = huddleIdFromRecordingId(input.recordingId)
+  if (!huddleId) return
+  void import('./huddle-wake.service')
+    .then(({ onHuddleFinalStored }) =>
+      onHuddleFinalStored({
+        meetingId: input.meetingId,
+        huddleId,
+        itemId: input.itemId,
+        segment: input.segment,
+        speaker: input.speaker,
+        speakerId: input.speakerId,
+      }),
+    )
+    .catch((err: Error) => console.warn(`[HuddleWake] hook failed for ${huddleId}: ${err.message}`))
+}
+
+/**
+ * The shared draft a huddle's participants stream into. Created on the first
+ * write, whichever pod and whichever participant gets there first.
+ *
+ * The title deliberately looks like a recorder's default (`<x> call - <when>`),
+ * so `enhanceMeeting` replaces it with the model's own title once the summary
+ * is written; until then it names the call for anyone who opens it early.
+ */
+export async function upsertHuddleDraft(input: {
+  huddleId: string
+  workspaceId: string
+  userId: string | null
+  label?: string | null
+}) {
+  const recordingId = huddleRecordingId(input.huddleId)
+  const existing = await findRecordingDraft(input.workspaceId, recordingId)
+  if (existing) return existing
+  const label = input.label?.trim().slice(0, 160)
+  const title = label ? `Huddle call - ${label}` : defaultMeetingTitle(new Date(), 'Huddle')
+  try {
+    return await db.meeting.create({
+      data: {
+        recordingId,
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        status: 'recording',
+        source: 'huddle',
+        title,
+      },
+    })
+  } catch (err: any) {
+    if (err?.code !== 'P2002') throw err
+    const created = await findRecordingDraft(input.workspaceId, recordingId)
+    if (!created) throw err
+    return created
+  }
+}
+
+/**
+ * The huddle draft for a live call, with the label its title and summary use.
+ * Called by the stream session, so whoever opens the first stream creates it.
+ */
+export async function ensureHuddleNotesDraft(huddleId: string) {
+  const huddle = await db.huddle.findUnique({
+    where: { id: huddleId },
+    include: {
+      conversation: { select: { kind: true, name: true } },
+      participants: { where: { leftAt: null }, select: { userId: true } },
+    },
+  })
+  if (!huddle) throw new Error('The huddle for these notes no longer exists')
+  return upsertHuddleDraft({
+    huddleId,
+    workspaceId: huddle.workspaceId,
+    userId: huddle.startedById,
+    label: await huddleDraftLabel(huddle),
+  })
+}
+
+/** `#design` for a channel call, `with Ana and Ben` for a DM. */
+async function huddleDraftLabel(huddle: any): Promise<string | null> {
+  const kind: string | undefined = huddle.conversation?.kind
+  if (kind && kind !== 'dm' && kind !== 'group_dm') {
+    return huddle.conversation?.name ? `#${huddle.conversation.name}` : null
+  }
+  const ids: string[] = Array.from(
+    new Set<string>((huddle.participants ?? []).map((p: any) => p.userId as string)),
+  )
+  const people = ids.filter((id) => !id.startsWith('guest_'))
+  const users: Array<{ id: string; name: string | null; email: string | null }> = people.length
+    ? await db.user.findMany({ where: { id: { in: people } }, select: { id: true, name: true, email: true } })
+    : []
+  const names = users
+    .map((u) => u.name || u.email)
+    .filter((n): n is string => !!n)
+    .slice(0, 4)
+  if (!names.length) return null
+  const and = (list: string[]): string => (list.length <= 1 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`)
+  return `with ${and(names)}`
+}
+
 /** A draft the sweeper closed. Its recorder may still upload, which finishes it normally. */
 export function isInterruptedDraft(meeting: { recordingId?: string | null; transcript?: string | null } | null): boolean {
   return !!meeting?.recordingId && readTranscript(meeting.transcript)?.interrupted === true
@@ -936,11 +1140,19 @@ export function isInterruptedDraft(meeting: { recordingId?: string | null; trans
  * Close drafts whose recorder went away (tab closed, app crashed). Drafts
  * with a live transcript or notes become ready meetings; empty ones are
  * deleted.
+ *
+ * Huddle drafts are never closed here: their recorder is a room full of
+ * people, and a long silent screen-share must not end the notes. They are
+ * finished by `sweepOrphanedHuddleDrafts` once the huddle itself has ended.
  */
 export async function sweepStaleRecordingDrafts(now = new Date()): Promise<number> {
   const cutoff = new Date(now.getTime() - RECORDING_DRAFT_STALE_MS)
   const stale = await db.meeting.findMany({
-    where: { status: 'recording', updatedAt: { lt: cutoff } },
+    where: {
+      status: 'recording',
+      updatedAt: { lt: cutoff },
+      NOT: { recordingId: { startsWith: HUDDLE_RECORDING_PREFIX } },
+    },
     select: { id: true, transcript: true, notes: true, updatedAt: true },
     take: 100,
   })
@@ -1025,10 +1237,56 @@ export async function sweepStuckMeetings(now = new Date()): Promise<number> {
 }
 
 let sweeper: ReturnType<typeof setInterval> | null = null
+
+/**
+ * How a huddle's notes get finished after the call ends. Registered by
+ * `huddle.service` at load, so this module never has to import it (the huddle
+ * service imports the meeting pipeline, not the other way round).
+ */
+export type HuddleDraftFinisher = (huddleId: string) => Promise<void>
+let huddleDraftFinisher: HuddleDraftFinisher | null = null
+export function registerHuddleDraftFinisher(finisher: HuddleDraftFinisher | null): void {
+  huddleDraftFinisher = finisher
+}
+
+/** A huddle that ended longer ago than this should already have posted its notes. */
+export const HUDDLE_DRAFT_ORPHAN_MS = 2 * 60 * 1000
+
+/**
+ * Finish huddle notes for calls that ended but whose draft is still
+ * `recording`, e.g. because the pod that ended the huddle went away before it
+ * could finalize. Safe to run anywhere: the finisher claims the summary before
+ * posting, so two pods never post twice.
+ */
+export async function sweepOrphanedHuddleDrafts(now = new Date()): Promise<number> {
+  const finish = huddleDraftFinisher
+  if (!finish) return 0
+  const cutoff = new Date(now.getTime() - HUDDLE_DRAFT_ORPHAN_MS)
+  const drafts = await db.meeting.findMany({
+    where: { status: 'recording', recordingId: { startsWith: HUDDLE_RECORDING_PREFIX } },
+    select: { recordingId: true },
+    take: 100,
+  })
+  let swept = 0
+  for (const draft of drafts) {
+    const huddleId = huddleIdFromRecordingId(draft.recordingId)
+    if (!huddleId) continue
+    const huddle = await db.huddle.findUnique({ where: { id: huddleId }, select: { endedAt: true } })
+    if (!huddle?.endedAt || huddle.endedAt > cutoff) continue
+    await finish(huddleId).catch((err) => {
+      console.warn(`[Meetings] Finishing huddle notes for ${huddleId} failed:`, err?.message ?? err)
+    })
+    swept++
+  }
+  if (swept) console.log(`[Meetings] Finished ${swept} huddle draft(s) left open by a restart`)
+  return swept
+}
+
 export function startRecordingDraftSweeper(): void {
   if (sweeper) return
   const run = () => {
     void sweepStaleRecordingDrafts().catch((err) => console.warn('[Meetings] Draft sweep failed:', err?.message ?? err))
+    void sweepOrphanedHuddleDrafts().catch((err) => console.warn('[Meetings] Huddle draft sweep failed:', err?.message ?? err))
     void sweepStuckMeetings().catch((err) => console.warn('[Meetings] Stuck meeting sweep failed:', err?.message ?? err))
   }
   run()

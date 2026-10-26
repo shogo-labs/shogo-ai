@@ -13,9 +13,13 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { MarkdownText } from "./MarkdownText"
 import { analyzeContent } from "./long-text-utils"
 import { LongTextPreviewCard } from "./LongTextPreviewCard"
-import { channelDispatchOf } from "@shogo/shared-app/chat"
+import { channelDispatchOf, extractTextContent, taskNotificationOf } from "@shogo/shared-app/chat"
+import { CanvasErrorCard } from "./turns/CanvasErrorCard"
 import { ChannelDispatchCard } from "./turns/ChannelDispatchCard"
+import { TaskNotificationRow } from "./turns/TaskNotificationRow"
 import { stripAskUserAnswerMarker } from "./turns/askUserAnswers"
+import { stripBuildBriefMarker } from "./turns/buildBrief"
+import { parseCanvasErrorDebugPrompt } from "./turns/canvasErrorPrompt"
 
 export interface ChatMessageProps {
   message: {
@@ -33,14 +37,29 @@ export function ChatMessage({
 }: ChatMessageProps) {
   const isUser = message.role === "user"
   const content = isUser
-    ? stripAskUserAnswerMarker(message.content)
+    ? stripBuildBriefMarker(stripAskUserAnswerMarker(message.content))
     : message.content
   const isLongText = isUser && content ? analyzeContent(content).isLong : false
+  const taskNotification = isUser ? taskNotificationOf(message) : null
+  if (taskNotification) {
+    return <TaskNotificationRow notification={taskNotification} />
+  }
   const dispatch = isUser ? channelDispatchOf(message) : null
   if (dispatch) {
     return (
       <View className="flex-row w-full justify-start">
         <ChannelDispatchCard dispatch={dispatch} />
+      </View>
+    )
+  }
+
+  const canvasError = isUser
+    ? parseCanvasErrorDebugPrompt(extractTextContent(message) || content)
+    : null
+  if (canvasError) {
+    return (
+      <View className="flex-row w-full justify-end">
+        <CanvasErrorCard prompt={canvasError} variant="bubble" />
       </View>
     )
   }

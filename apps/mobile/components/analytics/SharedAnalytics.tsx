@@ -100,6 +100,8 @@ export interface UsageSummaryEntry {
   totalBilledUsd: number
   totalRawUsd: number
   avgDurationMs: number
+  /** Desktop requests recorded without rates for their model (cost 0, not a guess). */
+  unpricedRequests?: number
 }
 
 export interface UsageSummaryData {
@@ -111,6 +113,7 @@ export interface UsageSummaryData {
     totalTokens: number
     totalBilledUsd: number
     totalRawUsd: number
+    unpricedRequests?: number
     totalToolCalls: number
     uniqueUsers: number
     uniqueModels: number
@@ -187,6 +190,12 @@ export function formatDollarCost(cost: number | null | undefined): string {
   if (cost === 0) return '$0.00'
   if (cost < 0.01) return `$${cost.toFixed(4)}`
   return `$${cost.toFixed(2)}`
+}
+
+/** "Unknown" when no request had rates, "$X+" when some didn't. */
+export function formatPartialCost(cost: number | null | undefined, unpriced = 0, requests = 0): string {
+  if (unpriced > 0 && unpriced >= requests) return 'Unknown'
+  return unpriced > 0 ? `${formatDollarCost(cost)}+` : formatDollarCost(cost)
 }
 
 type AnalyticsModelFamily = ModelFamily | 'o-series'
@@ -516,7 +525,7 @@ export function UsageSummaryView({
           <View className="min-w-[46%] flex-1 rounded-xl border border-border/50 bg-muted/40 p-3">
             <Text className="mb-1 text-sm text-muted-foreground">{costLabel}</Text>
             <Text className="text-xl font-bold text-foreground" numberOfLines={1}>
-              {formatDollarCost(isLocalMode ? data.totals?.totalRawUsd : data.totals?.totalBilledUsd)}
+              {formatPartialCost(isLocalMode ? data.totals?.totalRawUsd : data.totals?.totalBilledUsd, data.totals?.unpricedRequests, data.totals?.totalRequests)}
             </Text>
           </View>
         </View>
@@ -589,7 +598,7 @@ export function UsageSummaryView({
                     {formatNumber(entry.totalTokens)} tokens
                   </Text>
                   <Text className="shrink-0 font-mono text-base font-medium text-foreground" numberOfLines={1}>
-                    {formatDollarCost(isLocalMode ? entry.totalRawUsd : entry.totalBilledUsd)}
+                    {formatPartialCost(isLocalMode ? entry.totalRawUsd : entry.totalBilledUsd, entry.unpricedRequests, entry.requestCount)}
                   </Text>
                 </View>
               </View>
@@ -626,7 +635,7 @@ export function UsageSummaryView({
         <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
           <Text className="text-[10px] text-muted-foreground mb-0.5">{isLocalMode ? 'Raw $' : 'Billed $'}</Text>
           <Text className="text-base font-bold text-foreground">
-            {formatDollarCost(isLocalMode ? data.totals?.totalRawUsd : data.totals?.totalBilledUsd)}
+            {formatPartialCost(isLocalMode ? data.totals?.totalRawUsd : data.totals?.totalBilledUsd, data.totals?.unpricedRequests, data.totals?.totalRequests)}
           </Text>
         </View>
       </View>
@@ -699,7 +708,7 @@ export function UsageSummaryView({
                 {formatNumber(entry.totalTokens)}
               </Text>
               <Text className="w-14 text-right text-[10px] font-mono text-foreground">
-                {formatDollarCost(isLocalMode ? entry.totalRawUsd : entry.totalBilledUsd)}
+                {formatPartialCost(isLocalMode ? entry.totalRawUsd : entry.totalBilledUsd, entry.unpricedRequests, entry.requestCount)}
               </Text>
             </View>
           ))}

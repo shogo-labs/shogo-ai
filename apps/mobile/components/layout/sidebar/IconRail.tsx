@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The desktop icon rail: one button per tab, each with its label under it
- * and a badge when something needs you. The selected tab drives the list
- * panel beside it; tapping it again hides or shows that panel.
+ * The desktop icon rail: one button per tab, with a badge when something
+ * needs you. The selected tab drives the list panel beside it; tapping it
+ * again hides or shows that panel. The name appears in a tooltip on hover.
  */
 import { createElement, useState } from 'react'
 import { Platform, Pressable, Text, View } from 'react-native'
@@ -35,10 +35,16 @@ export function badgeText(count: number): string {
 export function Badge({ count }: { count: number }) {
   if (count <= 0) return null
   return (
-    <View testID="rail-badge" className="absolute -right-1 -top-1 min-w-[16px] items-center rounded-full bg-destructive px-1">
+    <View testID="rail-badge" className="absolute -right-1.5 -top-1.5 min-w-[16px] items-center rounded-full border-2 border-sidebar bg-destructive px-1">
       <Text className="text-[10px] font-semibold leading-4 text-white">{badgeText(count)}</Text>
     </View>
   )
+}
+
+/** A small dot with no number: something unread that the user chose not to count. */
+export function DotBadge({ visible }: { visible: boolean }) {
+  if (!visible) return null
+  return <View testID="rail-dot" className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-sidebar bg-destructive" />
 }
 
 /**
@@ -87,6 +93,8 @@ export interface IconRailProps {
   tabs: SidebarTabId[]
   active: SidebarTabId
   badges: Partial<Record<SidebarTabId, number>>
+  /** Tabs with unread activity that is shown as a dot, used when the count is zero. */
+  dots?: Partial<Record<SidebarTabId, boolean>>
   onSelect: (tab: SidebarTabId) => void
   showAdmin?: boolean
   /** The workspace tile that opens the workspace menu. Falls back to the logo. */
@@ -97,10 +105,10 @@ export interface IconRailProps {
   onSearch?: () => void
 }
 
-export function IconRail({ tabs, active, badges, onSelect, showAdmin, switcher, invites, onSearch }: IconRailProps) {
+export function IconRail({ tabs, active, badges, dots, onSelect, showAdmin, switcher, invites, onSearch }: IconRailProps) {
   const router = useRouter()
   return (
-    <View role="navigation" accessibilityLabel="Workspace tabs" className="relative z-20 w-14 shrink-0 items-center border-r border-border bg-muted/50 pb-3 pt-3">
+    <View role="navigation" accessibilityLabel="Workspace tabs" className="relative z-20 w-16 shrink-0 items-center bg-sidebar pb-3 pt-3">
       {switcher ? (
         <View className="mb-3 h-10 items-center justify-center">
           <RailTooltip label="Workspaces and account">{switcher}</RailTooltip>
@@ -120,57 +128,59 @@ export function IconRail({ tabs, active, badges, onSelect, showAdmin, switcher, 
           const { label, icon: Icon } = TAB_META[id]
           const selected = id === active
           const count = badges[id] ?? 0
+          const dot = count === 0 && !!dots?.[id]
           return (
             <RailTooltip key={id} label={label}>
               <Pressable
                 accessibilityRole="tab"
-                accessibilityLabel={count ? `${label}, ${count} unread` : label}
+                accessibilityLabel={count ? `${label}, ${count} unread` : dot ? `${label}, unread` : label}
                 aria-selected={selected}
                 onPress={() => onSelect(id)}
-                className={cn('h-10 w-10 items-center justify-center rounded-xl', selected ? 'bg-accent' : 'web:hover:bg-accent/60')}
+                className={cn('h-11 w-11 items-center justify-center rounded-xl', selected ? 'bg-sidebar-accent' : 'web:hover:bg-sidebar-accent/60')}
               >
-                <Icon size={20} className={selected ? 'text-foreground' : 'text-muted-foreground'} />
+                <Icon size={22} className={selected ? 'text-sidebar-accent-foreground' : 'text-sidebar-foreground/70'} />
                 <Badge count={count} />
+                <DotBadge visible={dot} />
               </Pressable>
             </RailTooltip>
           )
         })}
       </View>
 
-      <View className="mt-auto items-center gap-3">
+      <View className="mt-auto w-full items-center gap-3">
         {invites && invites.count > 0 && (
           <RailTooltip label="Workspace invitations">
-            <Pressable accessibilityRole="button" accessibilityLabel={`Workspace invitations, ${invites.count} waiting`} onPress={invites.onPress} className="h-9 w-9 items-center justify-center rounded-xl active:bg-accent">
-              <Mail size={18} className="text-muted-foreground" />
+            <Pressable accessibilityRole="button" accessibilityLabel={`Workspace invitations, ${invites.count} waiting`} onPress={invites.onPress} className="h-9 w-9 items-center justify-center rounded-xl active:bg-sidebar-accent">
+              <Mail size={18} className="text-sidebar-foreground/70" />
               <Badge count={invites.count} />
             </Pressable>
           </RailTooltip>
         )}
         {onSearch && (
           <RailTooltip label="Search">
-            <Pressable accessibilityRole="button" accessibilityLabel="Search" onPress={onSearch} className="h-9 w-9 items-center justify-center rounded-xl active:bg-accent">
-              <Search size={18} className="text-muted-foreground" />
+            <Pressable accessibilityRole="button" accessibilityLabel="Search" onPress={onSearch} className="h-9 w-9 items-center justify-center rounded-xl active:bg-sidebar-accent">
+              <Search size={18} className="text-sidebar-foreground/70" />
             </Pressable>
           </RailTooltip>
         )}
         {showAdmin && (
           <RailTooltip label="Admin">
-            <Pressable accessibilityRole="link" accessibilityLabel="Admin" onPress={() => router.push('/(admin)' as any)} className="h-9 w-9 items-center justify-center rounded-xl active:bg-accent">
-              <Shield size={18} className="text-muted-foreground" />
+            <Pressable accessibilityRole="link" accessibilityLabel="Admin" onPress={() => router.push('/(admin)' as any)} className="h-10 w-10 items-center justify-center rounded-xl active:bg-sidebar-accent">
+              <Shield size={18} className="text-sidebar-foreground/70" />
             </Pressable>
           </RailTooltip>
         )}
         <RailTooltip label="Create">
           <CreateMenu placement="right bottom">
             {({ open, ...props }) => (
-              <Pressable {...props} accessibilityRole="button" accessibilityLabel="Create" aria-expanded={open} className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80">
-                <Plus size={18} className="text-primary-foreground" />
+              <Pressable {...props} accessibilityRole="button" accessibilityLabel="Create" aria-expanded={open} className="group h-10 w-10 items-center justify-center rounded-full bg-sidebar-accent web:hover:bg-primary active:opacity-80">
+                <Plus size={18} className="text-sidebar-accent-foreground web:group-hover:text-primary-foreground" />
               </Pressable>
             )}
           </CreateMenu>
         </RailTooltip>
         <RailTooltip label="Profile and settings">
-          <ProfileMenu placement="right bottom" />
+          <ProfileMenu placement="right bottom" badgeRingClassName="border-sidebar" />
         </RailTooltip>
       </View>
     </View>

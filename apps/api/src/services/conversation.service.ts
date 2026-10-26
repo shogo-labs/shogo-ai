@@ -10,10 +10,18 @@
 import { prisma } from '../lib/prisma'
 import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
-import { flattenMarkdownBlocks, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
+import { deleteConversationFile, previewForAttachments } from '../lib/conversation-files'
+import { flattenMarkdownBlocks, loadNamesForTexts, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
+import { addedMembersNoticeText, membershipChannelLabel } from './conversation-membership-notice'
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
+import { publicBlocks } from './conversation-message-kind'
+import { publicPreview } from './conversation-file-preview'
 import { normalizeBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
+import { normalizeCapabilitySettings } from '@shogo/shared-runtime/capability-settings'
+import { parseProjectSettings } from '../lib/project-settings'
+import { unreadInboxSnapshot } from './chat-inbox'
+import { cancelDelayedPushes } from './push-delay-queue'
 
 const db = prisma as any
 
@@ -37,7 +45,12 @@ export type ConversationKind = 'public' | 'private' | 'dm' | 'group_dm' | 'activ
 export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'viewer'
 
 export class ConversationError extends Error {
-  constructor(public status: 400 | 403 | 404 | 409 | 502, public code: string, message: string) {
+  constructor(
+    public status: 400 | 403 | 404 | 409 | 502,
+    public code: string,
+    message: string,
+    public details?: Record<string, unknown>,
+  ) {
     super(message)
   }
 }
@@ -125,8 +138,22 @@ export async function conversationAudience(conversation: { id: string; kind: str
   return members.map((m: any) => m.userId).filter(Boolean)
 }
 
-async function publish(conversation: { id: string; kind: string; workspaceId: string }, event: Record<string, unknown>) {
-  const audience = await conversationAudience(conversation)
+/**
+ * People allowed to see one `#activity` line about a private conversation
+ * (`blocks.visibleTo`); null when the line is open to the whole workspace.
+ */
+export function messageVisibleTo(row: { blocks?: unknown } | null | undefined): string[] | null {
+  const list = (row?.blocks as { visibleTo?: unknown } | null | undefined)?.visibleTo
+  return Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : null
+}
+
+export function canSeeMessage(row: { blocks?: unknown }, userId: string): boolean {
+  const visibleTo = messageVisibleTo(row)
+  return !visibleTo || visibleTo.includes(userId)
+}
+
+async function publish(conversation: { id: string; kind: string; workspaceId: string }, event: Record<string, unknown>, row?: { blocks?: unknown }) {
+  const audience = messageVisibleTo(row) ?? (await conversationAudience(conversation))
   publishConversationEvent(conversation.workspaceId, { conversationId: conversation.id, ...event } as any, audience)
 }
 
@@ -138,7 +165,10 @@ export const MESSAGE_INCLUDE = {
   authorUser: { select: USER_SELECT },
   reactions: { select: { emoji: true, userId: true } },
   attachments: {
-    select: { id: true, name: true, mimeType: true, size: true, width: true, height: true, storageKey: true },
+    select: {
+      id: true, name: true, mimeType: true, size: true, width: true, height: true,
+      durationMs: true, peaks: true, storageKey: true, previewData: true,
+    },
   },
   pin: { select: { pinnedById: true, createdAt: true } },
 }
@@ -183,7 +213,7 @@ export function serializeMessage(row: any) {
     authorUserId: row.authorUserId ?? null,
     authorAgent: row.authorAgentRef ?? null,
     text: deleted ? '' : row.text,
-    blocks: deleted ? null : row.blocks ?? null,
+    blocks: deleted ? null : publicBlocks(row.blocks) ?? null,
     clientMsgId: row.clientMsgId ?? null,
     agentSessionId: row.agentSessionId ?? null,
     agentStatus: row.agentStatus ?? null,
@@ -193,6 +223,8 @@ export function serializeMessage(row: any) {
       : (row.attachments ?? []).map((a: any) => ({
           id: a.id, name: a.name, mimeType: a.mimeType, size: a.size,
           width: a.width ?? null, height: a.height ?? null, url: attachmentUrl(a),
+          durationMs: a.durationMs ?? null, peaks: a.peaks ?? null,
+          preview: publicPreview(a.previewData),
         })),
     pinned: !deleted && row.pin ? { byId: row.pin.pinnedById, at: row.pin.createdAt } : null,
     editedAt: row.editedAt ?? null,
@@ -202,6 +234,23 @@ export function serializeMessage(row: any) {
 }
 
 export type SerializedMessage = ReturnType<typeof serializeMessage>
+
+/**
+ * Re-send a message after something it carries was filled in later. Used when a
+ * shared file's text extraction finishes after the message went out: the first
+ * `message.created` had no preview, so the client receives it here and patches
+ * the attachment in place.
+ */
+export async function refreshAttachmentPreview(messageId: string): Promise<void> {
+  const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include: MESSAGE_INCLUDE })
+  if (!row) return
+  const conversation = await db.conversation.findUnique({
+    where: { id: row.conversationId },
+    select: { id: true, kind: true, workspaceId: true },
+  })
+  if (!conversation) return
+  await publish(conversation, { type: 'message.updated', message: serializeMessage(row) })
+}
 
 export function serializeConversation(row: any, extra: Record<string, unknown> = {}) {
   return {
@@ -379,36 +428,87 @@ async function participantNames(workspaceId: string, conversationIds: string[], 
     : null
   const byConversation = new Map<string, any[]>()
   for (const r of rows) {
-    if (r.memberType === 'user' && r.userId === viewerId) continue
     const list = byConversation.get(r.conversationId) ?? []
     list.push(r.memberType === 'agent'
       ? { type: 'agent', projectId: r.projectId ?? null, name: r.projectId ? projectNames.get(r.projectId) ?? 'Agent' : workspaceAgentName }
-      : { type: 'user', id: r.user?.id ?? r.userId, name: r.user?.name || r.user?.email || 'Unknown', image: r.user?.image ?? null })
+      : {
+          type: 'user',
+          id: r.user?.id ?? r.userId,
+          name: r.user?.name || r.user?.email || 'Unknown',
+          image: r.user?.image ?? null,
+          ...(r.userId === viewerId ? { self: true } : {}),
+        })
     byConversation.set(r.conversationId, list)
+  }
+  // You are not one of the people in your own direct message — except in a
+  // note-to-self, where you are the only one and the row still needs a name
+  // and a face. Drop the viewer only when someone else is left to name it.
+  for (const [conversationId, list] of byConversation) {
+    if (list.length < 2) continue
+    const others = list.filter((p: any) => !(p.type === 'user' && p.self))
+    if (others.length) byConversation.set(conversationId, others)
   }
   return { byConversation, orphanedDirectIds }
 }
 
-export async function listConversationsForUser(workspaceId: string, userId: string) {
-  const [general] = await ensureDefaultConversations(workspaceId)
-  const memberships = await db.conversationMember.findMany({
-    where: { userId, conversation: { workspaceId } },
-  })
-  if (general && !memberships.some((m: any) => m.conversationId === general.id)) {
-    const joined = await ensureGeneralMembership(general, userId)
-    if (joined) memberships.push(joined)
+export interface ListConversationsOptions {
+  /**
+   * Catch-up instead of a full list: only the conversations the reader can see
+   * that changed at or after this instant, plus their own membership rows. The
+   * client merges them into what it already has.
+   */
+  since?: Date
+}
+
+export async function listConversationsForUser(
+  workspaceId: string,
+  userId: string,
+  options: ListConversationsOptions = {},
+) {
+  const loadMemberships = () =>
+    db.conversationMember.findMany({ where: { userId, conversation: { workspaceId } } })
+  const loadConversations = () =>
+    db.conversation.findMany({
+      where: {
+        workspaceId,
+        OR: [
+          { kind: { in: ['public', 'activity'] } },
+          { id: { in: memberships.map((m: any) => m.conversationId) } },
+        ],
+      },
+      orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'asc' }],
+    })
+
+  let memberships = await loadMemberships()
+  let conversations = await loadConversations()
+  const general = conversations.find(
+    (c: any) => c.kind === 'public' && c.slug === DEFAULT_CHANNEL_SLUG,
+  )
+  // #general, #activity, the note-to-self DM and joining #general are set-up
+  // writes, not list reads: a steady-state call does the two reads above and
+  // nothing else. Only a workspace or account that is genuinely missing one of
+  // them pays for the write (and re-reads, so the new row is in the result).
+  const needsSetup =
+    !general ||
+    !conversations.some((c: any) => c.kind === 'activity') ||
+    !conversations.some((c: any) => c.dmKey === `u:${userId}`) ||
+    !memberships.some((m: any) => m.conversationId === general.id)
+  if (needsSetup) {
+    const [createdGeneral] = await ensureDefaultConversations(workspaceId)
+    // Gives every existing member their note-to-self, so the workspace creator
+    // and older accounts need no separate backfill.
+    await ensureSelfConversation(workspaceId, userId)
+    const target = general ?? createdGeneral
+    if (target && !memberships.some((m: any) => m.conversationId === target.id)) {
+      await ensureGeneralMembership(target, userId)
+    }
+    memberships = await loadMemberships()
+    conversations = await loadConversations()
+  }
+  if (options.since) {
+    conversations = await conversationsChangedSince(conversations, memberships, options.since)
   }
   const membershipByConv = new Map<string, any>(memberships.map((m: any) => [m.conversationId, m]))
-  const conversations = await db.conversation.findMany({
-    where: {
-      workspaceId,
-      OR: [
-        { kind: { in: ['public', 'activity'] } },
-        { id: { in: memberships.map((m: any) => m.conversationId) } },
-      ],
-    },
-    orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'asc' }],
-  })
 
   const directIds = conversations.filter((c: any) => c.kind === 'dm' || c.kind === 'group_dm').map((c: any) => c.id)
   const { byConversation: participants, orphanedDirectIds } = await participantNames(workspaceId, directIds, userId)
@@ -423,11 +523,18 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
   }
   const mentionCounts = await unreadMentionCounts(userId, memberships)
   const unread = await unreadCounts(userId, conversations, membershipByConv)
-  const lastMessages = await lastMessagePreviews(directIds)
+  const lastMessages = await lastMessagePreviews(
+    directIds,
+    workspaceId,
+    new Set(conversations.map((c: any) => c.id)),
+  )
+  const docs = await docUpdatedAts(conversations.map((c: any) => c.id))
 
   return conversations.map((c: any) => {
     const m = membershipByConv.get(c.id)
     return serializeConversation(c, {
+      hasDoc: docs.has(c.id),
+      docUpdatedAt: docs.get(c.id) ?? null,
       joined: !!m,
       starred: !!m?.starred,
       muted: !!m?.muted,
@@ -451,11 +558,38 @@ export interface LastMessage {
 }
 
 /**
+ * The subset of a full conversation list that changed at or after `since`:
+ * the conversation row itself (a new message bumps `lastSeq`/`lastMessageAt`),
+ * the reader's own membership (a read, a star, a mute), or its doc.
+ */
+async function conversationsChangedSince(
+  conversations: any[],
+  memberships: any[],
+  since: Date,
+): Promise<any[]> {
+  if (!conversations.length) return conversations
+  const touched = new Set<string>()
+  for (const c of conversations) if (c.updatedAt >= since) touched.add(c.id)
+  for (const m of memberships) if (m.updatedAt && m.updatedAt >= since) touched.add(m.conversationId)
+  const docs = await db.conversationDoc.findMany({
+    where: { conversationId: { in: conversations.map((c: any) => c.id) }, updatedAt: { gte: since } },
+    select: { conversationId: true },
+  })
+  for (const doc of docs) touched.add(doc.conversationId)
+  return conversations.filter((c: any) => touched.has(c.id))
+}
+
+/**
  * The newest top-level message of each conversation, for the DM list's second
  * line. One grouped query finds the newest seq per conversation, one more
  * reads those rows, so cost does not grow with message history.
  */
-export async function lastMessagePreviews(conversationIds: string[]): Promise<Map<string, LastMessage>> {
+export async function lastMessagePreviews(
+  conversationIds: string[],
+  workspaceId: string,
+  /** The reader's own channels, so a `#` reference is only named if they can see it. */
+  visibleConversationIds?: Set<string>,
+): Promise<Map<string, LastMessage>> {
   const out = new Map<string, LastMessage>()
   if (!conversationIds.length) return out
   const latest = await db.conversationMessage.groupBy({
@@ -466,14 +600,31 @@ export async function lastMessagePreviews(conversationIds: string[]): Promise<Ma
   if (!latest.length) return out
   const rows = await db.conversationMessage.findMany({
     where: { OR: latest.map((l: any) => ({ conversationId: l.conversationId, seq: l._max.seq })), deletedAt: null },
-    select: { conversationId: true, text: true, authorUserId: true, authorType: true, createdAt: true },
+    select: {
+      conversationId: true, text: true, authorUserId: true, authorType: true, createdAt: true,
+      attachments: { select: { mimeType: true, name: true, durationMs: true } },
+    },
   })
+  const names = {
+    ...(await loadNamesForTexts(db, workspaceId, rows.map((r: any) => r.text ?? ''), visibleConversationIds)),
+    workspaceAgentName: await agentDisplayName(workspaceId, null),
+  }
   for (const row of rows as any[]) {
-    const preview = flattenMarkdownBlocks(renderMentionsAsText(row.text ?? '')).slice(0, LAST_MESSAGE_PREVIEW_CHARS)
+    const text = flattenMarkdownBlocks(renderMentionsAsText(row.text ?? '', names)).slice(0, LAST_MESSAGE_PREVIEW_CHARS)
+    const preview = text || previewForAttachments(row.attachments)
     out.set(row.conversationId, { preview, authorId: row.authorUserId ?? null, authorType: row.authorType, createdAt: row.createdAt })
   }
   return out
 }
+
+/**
+ * A message is "in the channel view" when it's top-level, or a thread reply also sent to the
+ * channel. Every unread-shaped count must use this same rule. A thread-only reply still bumps
+ * `Conversation.lastSeq`, but the reader's `lastReadSeq` can only advance to the newest message
+ * the channel view actually shows — so any count that included a thread-only reply could never
+ * be cleared, and the badge would return on the next list refresh.
+ */
+const inChannelView = () => ({ OR: [{ threadRootId: null }, { alsoSentToChannel: true }] })
 
 /** Unread messages in the channel view: thread replies only count when also sent to the channel. */
 async function unreadCounts(userId: string, conversations: any[], membershipByConv: Map<string, any>) {
@@ -488,7 +639,7 @@ async function unreadCounts(userId: string, conversations: any[], membershipByCo
     where: {
       OR: behind.map((c: any) => ({ conversationId: c.id, seq: { gt: membershipByConv.get(c.id).lastReadSeq } })),
       AND: [
-        { OR: [{ threadRootId: null }, { alsoSentToChannel: true }] },
+        inChannelView(),
         { OR: [{ authorUserId: null }, { authorUserId: { not: userId } }] },
       ],
       deletedAt: null,
@@ -510,7 +661,14 @@ async function unreadMentionCounts(userId: string, memberships: any[]): Promise<
     where: {
       targetUserId: userId,
       ...(oldest ? { createdAt: { gte: oldest } } : {}),
-      message: { conversationId: { in: memberships.map((m: any) => m.conversationId) }, deletedAt: null },
+      message: {
+        conversationId: { in: memberships.map((m: any) => m.conversationId) },
+        deletedAt: null,
+        // Same rule as `unreadCounts`: a mention only badges the channel when the message is in
+        // the channel view. A thread-only mention is delivered through the inbox (`kind: 'thread'`)
+        // and a push instead — badging the channel for it strands a badge reading can't clear.
+        ...inChannelView(),
+      },
     },
     select: { message: { select: { conversationId: true, seq: true } } },
     orderBy: { createdAt: 'desc' },
@@ -524,10 +682,23 @@ async function unreadMentionCounts(userId: string, memberships: any[]): Promise<
   return counts
 }
 
+/** Channel doc `updatedAt` by conversation id, for `hasDoc` / `docUpdatedAt` on conversation payloads. */
+async function docUpdatedAts(conversationIds: string[]): Promise<Map<string, Date>> {
+  if (!conversationIds.length) return new Map()
+  const rows = await db.conversationDoc.findMany({
+    where: { conversationId: { in: conversationIds } },
+    select: { conversationId: true, updatedAt: true },
+  })
+  return new Map(rows.map((r: any) => [r.conversationId, r.updatedAt]))
+}
+
 export async function getConversationForUser(conversationId: string, userId: string) {
   const access = await loadAccess(conversationId, userId)
   const members = await listMembers(access.conversation.workspaceId, conversationId)
+  const docs = await docUpdatedAts([conversationId])
   return serializeConversation(access.conversation, {
+    hasDoc: docs.has(conversationId),
+    docUpdatedAt: docs.get(conversationId) ?? null,
     joined: !!access.membership,
     starred: !!access.membership?.starred,
     muted: !!access.membership?.muted,
@@ -536,6 +707,8 @@ export async function getConversationForUser(conversationId: string, userId: str
     canPost: canPost(access),
     canReply: canPost(access, { threadReply: true }),
     canManage: canManage(access),
+    canDelete: deleteBlocker(access) === null,
+    systemManaged: !!access.conversation.systemManagedBy,
     members,
   })
 }
@@ -681,6 +854,121 @@ export async function leaveConversation(conversationId: string, userId: string) 
   publishConversationEvent(access.conversation.workspaceId, { type: 'member.left', conversationId, userId }, audience)
 }
 
+/**
+ * Why `access` can't delete this conversation, or null when it can. Only
+ * channels; #general is permanent; a mirrored channel belongs to its provider;
+ * and a channel an agent system declares would come back on its next apply.
+ */
+export function deleteBlocker(access: ConversationAccess): ConversationError | null {
+  const conv = access.conversation
+  if (conv.kind !== 'public' && conv.kind !== 'private') return new ConversationError(400, 'invalid', 'Only channels can be deleted')
+  if (conv.slug === DEFAULT_CHANNEL_SLUG) return new ConversationError(400, 'invalid', '#general cannot be deleted')
+  if (conv.provider && conv.provider !== 'shogo') {
+    return new ConversationError(400, 'invalid', 'This channel mirrors another chat app; delete it there')
+  }
+  if (!canManage(access)) return new ConversationError(403, 'forbidden', 'Only channel owners and workspace admins can do that')
+  if (conv.systemManagedBy) {
+    return new ConversationError(
+      409,
+      'system_managed',
+      `#${conv.name} is declared by an agent system. Remove it from teamChannels in shogo-system.yaml and run system_apply, then delete it.`,
+      { managedBy: conv.systemManagedBy },
+    )
+  }
+  return null
+}
+
+async function systemManagedError(conv: any): Promise<ConversationError> {
+  const managedBy: string = conv.systemManagedBy
+  const project = await db.project.findUnique({ where: { id: managedBy }, select: { name: true } }).catch(() => null)
+  const owner = project ? `the agent system in "${project.name}"` : 'an agent system'
+  return new ConversationError(
+    409,
+    'system_managed',
+    `#${conv.name} is declared by ${owner}. Remove it from teamChannels in that shogo-system.yaml and run system_apply, then delete it.`,
+    { managedBy, projectName: project?.name ?? null },
+  )
+}
+
+/**
+ * Permanently delete a channel and everything in it: messages, threads,
+ * files, pins, drafts, scheduled posts, huddles and its doc all cascade.
+ * References without a foreign key go in the same transaction — schedules,
+ * triggers and tasks that posted results here stop posting instead of failing,
+ * and the channel's reminders and inbox items are removed. Stored file bytes
+ * are deleted afterwards, best effort.
+ */
+export async function deleteConversation(conversationId: string, userId: string): Promise<void> {
+  const access = await loadAccess(conversationId, userId)
+  const blocker = deleteBlocker(access)
+  if (blocker?.code === 'system_managed') throw await systemManagedError(access.conversation)
+  if (blocker) throw blocker
+  const conv = access.conversation
+  const audience = await conversationAudience(conv)
+  const files = await db.conversationAttachment.findMany({ where: { conversationId }, select: { storageKey: true } })
+  const unlinkNotify = { notifyConversationId: null, notifyThreadRootId: null }
+  await db.$transaction([
+    db.agentSchedule.updateMany({ where: { notifyConversationId: conversationId }, data: unlinkNotify }),
+    db.eventSubscription.updateMany({ where: { notifyConversationId: conversationId }, data: unlinkNotify }),
+    db.agentTask.updateMany({ where: { notifyConversationId: conversationId }, data: { notifyConversationId: null } }),
+    db.integrationCredentialApproval.updateMany({ where: { conversationId }, data: { conversationId: null, messageId: null } }),
+    db.chatReminder.deleteMany({ where: { conversationId } }),
+    db.chatInboxItem.deleteMany({ where: { conversationId } }),
+    db.conversation.delete({ where: { id: conversationId } }),
+  ])
+  console.info(`[conversations] user ${userId} deleted #${conv.name} (${conversationId}) in workspace ${conv.workspaceId}`)
+  publishConversationEvent(conv.workspaceId, { type: 'conversation.deleted', conversationId }, audience)
+  const results = await Promise.allSettled(files.map((f: { storageKey: string }) => deleteConversationFile(f.storageKey)))
+  const failed = results.filter((r) => r.status === 'rejected').length
+  if (failed) console.warn(`[conversations] ${failed} of ${files.length} stored file(s) of deleted ${conversationId} could not be removed`)
+}
+
+/** Display names for user ids, in the order given, falling back to the email. */
+async function displayNamesFor(userIds: string[]): Promise<string[]> {
+  const users = await db.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, name: true, email: true },
+  })
+  const byId = new Map<string, string>(users.map((u: any) => [u.id, u.name || u.email || 'Someone']))
+  return userIds.map((id) => byId.get(id) ?? 'Someone')
+}
+
+/**
+ * Posts the "who added whom" line and catches the new members' read position up
+ * past it, so being added doesn't arrive as unread. Best-effort on purpose — a
+ * failed notice must never fail the add itself.
+ */
+async function postMembershipNotice(
+  conversationId: string,
+  addedIds: string[],
+  actorName: string | null,
+  addedById: string | null,
+): Promise<void> {
+  try {
+    const conv = await db.conversation.findUnique({
+      where: { id: conversationId },
+      select: { id: true, kind: true, name: true },
+    })
+    if (!conv) return
+    const names = await displayNamesFor(addedIds)
+    const result = await postMessage({
+      conversationId,
+      authorType: 'system',
+      text: addedMembersNoticeText(names, actorName, membershipChannelLabel(conv.kind, conv.name ?? 'channel')),
+      blocks: { type: 'membership', addedUserIds: addedIds, addedById },
+    })
+    const seq = Number((result.row as { seq?: number } | undefined)?.seq ?? 0)
+    if (seq > 0) {
+      await db.conversationMember.updateMany({
+        where: { conversationId, userId: { in: addedIds }, lastReadSeq: { lt: seq } },
+        data: { lastReadSeq: seq, lastReadAt: new Date() },
+      })
+    }
+  } catch (err) {
+    console.error('[conversations] membership notice failed:', (err as Error).message)
+  }
+}
+
 export async function addUserMembers(conversationId: string, actorId: string, userIds: string[]) {
   const access = await loadAccess(conversationId, actorId)
   const conv = access.conversation
@@ -695,10 +983,16 @@ export async function addUserMembers(conversationId: string, actorId: string, us
   const added: string[] = []
   for (const uid of valid) {
     if (have.has(uid)) continue
-    await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId: uid } })
+    // Caught up as of the add: being added grants the history, it shouldn't
+    // land as a wall of unread badges.
+    await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId: uid, lastReadSeq: conv.lastSeq } })
     added.push(uid)
   }
-  if (added.length) await publish(conv, { type: 'member.joined', userIds: added })
+  if (added.length) {
+    await publish(conv, { type: 'member.joined', userIds: added })
+    const actorName = (await displayNamesFor([actorId]))[0] ?? null
+    await postMembershipNotice(conversationId, added, actorName, actorId)
+  }
   return added
 }
 
@@ -707,7 +1001,11 @@ export async function addUserMembers(conversationId: string, actorId: string, us
  * with the agent as a member; the caller resolves visibility). Accepts user
  * ids or emails. Returns the user ids that were newly added.
  */
-export async function addUserMembersAsAgent(conversation: { id: string; kind: string; workspaceId: string; archivedAt?: Date | null }, users: string[]) {
+export async function addUserMembersAsAgent(
+  conversation: { id: string; kind: string; workspaceId: string; archivedAt?: Date | null },
+  users: string[],
+  actor: { projectId?: string | null } = {},
+) {
   if (conversation.kind !== 'public' && conversation.kind !== 'private') {
     throw new ConversationError(400, 'invalid', 'People can only be added to channels')
   }
@@ -731,10 +1029,15 @@ export async function addUserMembersAsAgent(conversation: { id: string; kind: st
   const added: string[] = []
   for (const uid of valid) {
     if (have.has(uid)) continue
-    await db.conversationMember.create({ data: { conversationId: conversation.id, memberType: 'user', userId: uid } })
+    const conv = await db.conversation.findUnique({ where: { id: conversation.id }, select: { lastSeq: true } })
+    await db.conversationMember.create({ data: { conversationId: conversation.id, memberType: 'user', userId: uid, lastReadSeq: conv?.lastSeq ?? 0 } })
     added.push(uid)
   }
-  if (added.length) await publish(conversation, { type: 'member.joined', userIds: added })
+  if (added.length) {
+    await publish(conversation, { type: 'member.joined', userIds: added })
+    const actorName = await agentDisplayName(conversation.workspaceId, actor.projectId ?? null)
+    await postMembershipNotice(conversation.id, added, actorName, null)
+  }
   return added
 }
 
@@ -778,11 +1081,38 @@ export async function openDirectConversation(workspaceId: string, userId: string
   const participants = [...new Set([userId, ...others])].sort()
   const dmKey = `u:${participants.join(',')}`
   const kind = participants.length <= 2 ? 'dm' : 'group_dm'
-  return findOrCreateDirect(workspaceId, dmKey, kind, userId, async (conversationId) => {
-    for (const uid of participants) {
-      await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId: uid } })
-    }
+  const conversation = await findOrCreateDirect(workspaceId, dmKey, kind, userId, async (conversationId) => {
+    for (const uid of participants) await ensureUserMember(conversationId, uid)
   })
+  // Someone else may have asked for the same group a moment ago (a call adding
+  // people has everyone ask at once) and be returned it before its members
+  // were written, and a person who left an earlier group with these people
+  // would otherwise be locked out of it. The key is exactly these people, so
+  // everyone in it belongs in it.
+  const added = await ensureUserMembers(conversation.id, participants)
+  if (added.length) {
+    await publish(conversation, { type: 'conversation.created', conversation: serializeConversation(conversation) })
+  }
+  return conversation
+}
+
+/** Add one person to a conversation unless they already are (safe to race). */
+async function ensureUserMember(conversationId: string, userId: string): Promise<boolean> {
+  const existing = await db.conversationMember.findFirst({ where: { conversationId, userId } })
+  if (existing) return false
+  try {
+    await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId } })
+    return true
+  } catch (err: any) {
+    if (err?.code === 'P2002') return false
+    throw err
+  }
+}
+
+async function ensureUserMembers(conversationId: string, userIds: string[]): Promise<string[]> {
+  const added: string[] = []
+  for (const uid of userIds) if (await ensureUserMember(conversationId, uid)) added.push(uid)
+  return added
 }
 
 export async function openAgentConversation(workspaceId: string, userId: string, target: AgentTarget) {
@@ -795,6 +1125,21 @@ export async function openAgentConversation(workspaceId: string, userId: string,
     await db.conversationMember.create({
       data: { conversationId, memberType: 'agent', projectId: target.projectId, agentTrigger: 'all' },
     })
+  })
+}
+
+/**
+ * Everyone has a direct message with themselves — the scratchpad Slack calls
+ * "You", for notes you don't want to send anyone. Idempotent and keyed on
+ * `u:<userId>`, so provisioning twice costs one indexed lookup.
+ */
+export async function ensureSelfConversation(workspaceId: string, userId: string) {
+  const dmKey = `u:${userId}`
+  const existing = await db.conversation.findFirst({ where: { workspaceId, dmKey } })
+  if (existing) return existing
+  if (!(await getWorkspaceRole(workspaceId, userId))) return null
+  return findOrCreateDirect(workspaceId, dmKey, 'dm', userId, async (conversationId) => {
+    await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId } })
   })
 }
 
@@ -938,6 +1283,35 @@ export interface PostMessageResult {
   conversation: any
   mentions: ParsedMention[]
   duplicate: boolean
+  /** `mention_warnings` for tool results: plain `@Name`s that could not be resolved. */
+  mentionWarnings?: string[]
+}
+
+/**
+ * Plain `@Name` resolution for the insert point. `postMessage` is the one place
+ * a message row is written — every route, service, script and approval post
+ * lands there — so it is the one place this policy lives, and the mention rows
+ * derived from its result are what `afterMessagePosted` wakes agents from.
+ * Mirrored external channels keep their own text; system notices stay quiet.
+ */
+async function resolveForInsert(
+  input: PostMessageInput,
+  conversation: { workspaceId: string; provider?: string | null },
+  text: string,
+): Promise<{ text: string; warnings: string[] }> {
+  if (conversation.provider !== 'shogo' || input.authorType === 'system' || !text.includes('@')) {
+    return { text, warnings: [] }
+  }
+  try {
+    // Lazy: `conversation-directory` imports this module for the agent display helpers.
+    const { resolveFriendlyMentions, mentionWarnings } = await import('./conversation-directory')
+    const resolved = await resolveFriendlyMentions(conversation.workspaceId, text, input.authorAgentRef?.projectId ?? null)
+    return { text: resolved.text, warnings: mentionWarnings(resolved.ambiguous) }
+  } catch (err) {
+    // A lookup failure must never lose the message: post it as written.
+    console.warn('[Conversations] mention resolution failed:', (err as Error).message)
+    return { text, warnings: [] }
+  }
 }
 
 /** Add a user mention for each member of every mentioned group (members get notified as if mentioned). */
@@ -1005,9 +1379,11 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     data: { lastSeq: { increment: 1 }, lastMessageAt: now },
     select: { lastSeq: true },
   })
+  const resolved = await resolveForInsert(input, conversation, text)
+  const storedText = resolved.text
   const mentions = input.authorType === 'system' && !input.systemMentions
     ? []
-    : await expandGroupMentions(conversation.workspaceId, parseMentions(text))
+    : await expandGroupMentions(conversation.workspaceId, parseMentions(storedText))
 
   const id = crypto.randomUUID()
   const row = await db.conversationMessage.create({
@@ -1022,7 +1398,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
       authorUserId: input.authorUserId ?? null,
       authorAgentRef: input.authorAgentRef ?? undefined,
       botId: input.botId ?? null,
-      text,
+      text: storedText,
       blocks: input.blocks ?? undefined,
       clientMsgId: input.clientMsgId ?? null,
       agentStatus: input.agentStatus ?? null,
@@ -1043,12 +1419,17 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     },
   })
 
-  if (attachmentIds.length && input.authorUserId) {
+  const uploader = input.authorUserId
+    ? { uploaderUserId: input.authorUserId }
+    : input.authorType === 'agent' && input.authorAgentRef
+      ? { uploaderAgentRef: input.authorAgentRef.projectId ? `project:${input.authorAgentRef.projectId}` : 'workspace' }
+      : null
+  if (attachmentIds.length && uploader) {
     await db.conversationAttachment.updateMany({
       where: {
         id: { in: attachmentIds },
         conversationId: conversation.id,
-        uploaderUserId: input.authorUserId,
+        ...uploader,
         messageId: null,
       },
       data: { messageId: row.id },
@@ -1064,7 +1445,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
 
   const full = await db.conversationMessage.findUnique({ where: { id: row.id }, include: MESSAGE_INCLUDE })
   const message = serializeMessage(full)
-  await publish(conversation, { type: 'message.created', message })
+  await publish(conversation, { type: 'message.created', message }, full)
 
   if (root) {
     const updatedRoot = await db.conversationMessage.update({
@@ -1075,7 +1456,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     await publish(conversation, { type: 'message.updated', message: serializeMessage(updatedRoot) })
   }
 
-  return { message, row: full, conversation, mentions, duplicate: false }
+  return { message, row: full, conversation, mentions, duplicate: false, mentionWarnings: resolved.warnings }
 }
 
 type TextSettledHook = (row: any) => void
@@ -1119,7 +1500,7 @@ export async function updateMessageInternal(
   const row = await db.conversationMessage.update({ where: { id: messageId }, data, include: MESSAGE_INCLUDE })
   const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
   const message = serializeMessage(row)
-  if (conversation) await publish(conversation, moved ? { type: 'message.created', message, moved: true } : { type: 'message.updated', message })
+  if (conversation) await publish(conversation, moved ? { type: 'message.created', message, moved: true } : { type: 'message.updated', message }, row)
   if ('text' in data && !row.deletedAt && row.agentStatus !== 'running') {
     for (const hook of textSettledHooks) hook(row)
   }
@@ -1177,8 +1558,10 @@ export interface ListMessagesOptions {
 }
 
 export async function listMessages(conversationId: string, userId: string, opts: ListMessagesOptions = {}) {
-  await loadAccess(conversationId, userId)
-  return listMessagesUnchecked(conversationId, opts)
+  const { conversation } = await loadAccess(conversationId, userId)
+  const result = await listMessagesUnchecked(conversationId, opts)
+  if (conversation.kind !== 'activity') return result
+  return { ...result, messages: result.messages.filter((m: { blocks?: unknown }) => canSeeMessage(m, userId)) }
 }
 
 export async function listMessagesUnchecked(conversationId: string, opts: ListMessagesOptions = {}) {
@@ -1226,8 +1609,16 @@ export async function listMessagesUnchecked(conversationId: string, opts: ListMe
 export async function getMessage(messageId: string, userId: string) {
   const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include: MESSAGE_INCLUDE })
   if (!row) throw new ConversationError(404, 'not_found', 'Message not found')
-  await loadAccess(row.conversationId, userId)
-  return serializeMessage(row)
+  const access = await loadAccess(row.conversationId, userId)
+  if (!canSeeMessage(row, userId)) throw new ConversationError(404, 'not_found', 'Message not found')
+  // A quote names where the message came from, and this is the only place the
+  // reader's access to that channel has already been checked. Name and kind
+  // only: a topic is not needed to label a reference.
+  const { conversation } = access
+  return {
+    ...serializeMessage(row),
+    conversation: { id: conversation.id, name: conversation.name ?? null, kind: conversation.kind },
+  }
 }
 
 export interface ReactionAddedEvent {
@@ -1272,25 +1663,42 @@ export async function setReaction(messageId: string, userId: string, emoji: stri
   return summary
 }
 
-/** Set the read position. An explicit `seq` may move it backwards ("mark unread"). */
-export async function markRead(conversationId: string, userId: string, seq?: number) {
+/**
+ * Set the read position for a conversation member.
+ *
+ * `seq` is clamped to the conversation's current `lastSeq`. An explicit `seq`
+ * normally moves the marker to exactly that value — including backwards,
+ * which is how "mark as unread" works.
+ *
+ * `advance: true` is for the "I'm reading, keep my position up to date" caller
+ * (`useMarkReadWhileVisible`). It never moves the marker backwards: two such
+ * requests can race over the network and arrive out of order, and without
+ * this the one carrying the smaller `seq` would silently undo progress the
+ * other already recorded, resurrecting a badge the user had already cleared.
+ */
+export async function markRead(conversationId: string, userId: string, seq?: number, opts?: { advance?: boolean }) {
   const access = await loadAccess(conversationId, userId)
   if (!access.membership) return { lastReadSeq: 0 }
   const lastSeq = access.conversation.lastSeq
   const target = seq !== undefined && Number.isFinite(seq)
     ? Math.min(Math.max(0, Math.floor(seq)), lastSeq)
     : lastSeq
+  if (opts?.advance && target <= access.membership.lastReadSeq) {
+    return { lastReadSeq: access.membership.lastReadSeq, unreadCount: access.membership.lastReadSeq >= lastSeq ? 0 : undefined }
+  }
   const updated = await db.conversationMember.update({
     where: { id: access.membership.id },
     data: { lastReadSeq: target, lastReadAt: new Date() },
   })
+  // Reading the conversation makes its held phone pushes unnecessary.
+  cancelDelayedPushes(userId, conversationId)
   const unreadCount = target >= lastSeq ? 0 : await db.conversationMessage.count({
     where: {
       conversationId,
       seq: { gt: target },
       deletedAt: null,
       AND: [
-        { OR: [{ threadRootId: null }, { alsoSentToChannel: true }] },
+        inChannelView(),
         { OR: [{ authorUserId: null }, { authorUserId: { not: userId } }] },
       ],
     },
@@ -1304,8 +1712,8 @@ export async function markRead(conversationId: string, userId: string, seq?: num
       data: { readAt: new Date() },
     })
     if (count) {
-      const unread = await db.chatInboxItem.count({ where: { workspaceId: access.conversation.workspaceId, userId, readAt: null } })
-      publishConversationEvent(access.conversation.workspaceId, { type: 'inbox.read', unread }, [userId])
+      const snapshot = await unreadInboxSnapshot(access.conversation.workspaceId, userId)
+      publishConversationEvent(access.conversation.workspaceId, { type: 'inbox.read', ...snapshot }, [userId])
     }
   }
   return { lastReadSeq: updated.lastReadSeq, unreadCount }
@@ -1322,7 +1730,7 @@ export async function listMentionables(workspaceId: string, userId: string) {
     }),
     db.project.findMany({
       where: { AND: [{ workspaceId }, readable] },
-      select: { id: true, name: true, description: true, buddyLook: true },
+      select: { id: true, name: true, description: true, buddyLook: true, settings: true },
       orderBy: { updatedAt: 'desc' },
       take: 200,
     }),
@@ -1338,10 +1746,41 @@ export async function listMentionables(workspaceId: string, userId: string) {
   return {
     people,
     agents: [
-      { key: 'ws', projectId: null, name: profile?.name || 'Shogo', description: 'Workspace agent', image: profile?.avatarUrl ?? null, buddyLook: storedAgentBuddyLook(profile?.buddyLook) },
+      { key: 'ws', projectId: null, name: profile?.name || 'Shogo', description: 'Workspace agent', image: profile?.avatarUrl ?? null, buddyLook: storedAgentBuddyLook(profile?.buddyLook), boards: true },
       ...projects.map((p: any) => ({
         key: `p:${p.id}`, projectId: p.id, name: p.name, description: p.description ?? null, image: null, buddyLook: storedAgentBuddyLook(p.buddyLook),
+        /** Whether the agent can work cards (its Boards capability). */
+        boards: normalizeCapabilitySettings(parseProjectSettings(p.settings)).boardsEnabled,
       })),
     ],
   }
 }
+
+// ─── Declined link previews ─────────────────────────────────────────────────
+//
+// When somebody shares a link out of a closed conversation, they are asked
+// whether a preview of it should be attached. A refusal is stored here — the
+// URLs only, never a copy of what they point at — so the card is withheld for
+// every reader without the linked content ever touching this message.
+
+/** A message can carry a handful of links; a hostile one cannot carry a page. */
+const PREVIEW_MAX_OPT_OUTS = 20
+
+/**
+ * URLs whose author declined a preview. Anything that is not a plain http(s)
+ * URL is dropped rather than stored, so a malformed payload cannot grow the
+ * block without bound.
+ */
+export function normalizeLinkPreviewOptOuts(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const url = item.trim()
+    if (!url || url.length > 2048 || !/^https?:\/\//i.test(url)) continue
+    if (!out.includes(url)) out.push(url)
+    if (out.length >= PREVIEW_MAX_OPT_OUTS) break
+  }
+  return out
+}
+

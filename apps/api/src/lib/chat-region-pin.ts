@@ -67,6 +67,19 @@ async function resolveProjectHomeRegion(
   }
 }
 
+async function resolveWorkspaceHomeRegion(workspaceId: string): Promise<string | null> {
+  try {
+    const ws = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { homeRegion: true },
+    })
+    return ws?.homeRegion ?? null
+  } catch (err: any) {
+    console.warn(`[ChatRegionPin] home-region lookup failed for workspace ${workspaceId}:`, err?.message || err)
+    return null
+  }
+}
+
 /** Retryable 503 the P0 client treats as terminal-with-Retry (never a resume loop). */
 function homeRegionUnavailable(c: Context, homeRegion: string): Response {
   console.warn(
@@ -111,6 +124,23 @@ export async function pinChatToHomeRegion(
   knownWorkspaceId?: string,
   opts: { onForeignHome?: (homeRegion: string) => void; onLocalHome?: () => void } = {},
 ): Promise<Response | null> {
+  return pinToHomeRegion(c, () => resolveProjectHomeRegion(projectId, knownWorkspaceId), opts)
+}
+
+/**
+ * `pinChatToHomeRegion` for workspace-scoped routes that resolve the
+ * workspace runtime (`/api/workspaces/:workspaceId/chat`, sessions, runtime,
+ * agent-proxy).
+ */
+export async function pinWorkspaceToHomeRegion(c: Context, workspaceId: string): Promise<Response | null> {
+  return pinToHomeRegion(c, () => resolveWorkspaceHomeRegion(workspaceId), {})
+}
+
+async function pinToHomeRegion(
+  c: Context,
+  lookupHomeRegion: () => Promise<string | null>,
+  opts: { onForeignHome?: (homeRegion: string) => void; onLocalHome?: () => void },
+): Promise<Response | null> {
   // Single-region / local / desktop: nothing to pin.
   if (!RAW_REGION_ID) return null
   // No peers configured → single-region deployment. There is nowhere to proxy
@@ -123,7 +153,7 @@ export async function pinChatToHomeRegion(
   // Already proxied here from a sibling region — handle locally, never re-proxy.
   if (isProxiedRequest(c)) return null
 
-  const homeRegion = await resolveProjectHomeRegion(projectId, knownWorkspaceId)
+  const homeRegion = await lookupHomeRegion()
   // Unknown home region (missing project, lookup error, or legacy null row):
   // fall through to local handling. The local handler validates access and
   // will 404/serve as appropriate — we don't want to fail closed on an
@@ -164,6 +194,28 @@ export function pinProjectRoutesToHomeRegion(opts: { skip?: (path: string) => bo
   return async (c: Context, next: Next) => {
     if (opts.skip?.(new URL(c.req.url).pathname)) return next()
     const pinned = await pinChatToHomeRegion(c, c.req.param('projectId')!, c.get('workspaceId'))
+    return pinned ?? next()
+  }
+}
+
+/**
+ * Route prefixes of `routes/workspace-chat.ts`, relative to its `/api` mount.
+ * Each may resolve the workspace runtime, so each is pinned to the home region.
+ */
+export const WORKSPACE_RUNTIME_ROUTE_PATTERNS = [
+  '/workspaces/:workspaceId/agent-proxy/*',
+  '/workspaces/:workspaceId/sessions',
+  '/workspaces/:workspaceId/sessions/*',
+  '/workspaces/:workspaceId/runtime',
+  '/workspaces/:workspaceId/runtime/*',
+  '/workspaces/:workspaceId/chat',
+  '/workspaces/:workspaceId/chat/*',
+] as const
+
+/** Middleware form of `pinWorkspaceToHomeRegion` for `/workspaces/:workspaceId/...` routes. */
+export function pinWorkspaceRoutesToHomeRegion() {
+  return async (c: Context, next: Next) => {
+    const pinned = await pinWorkspaceToHomeRegion(c, c.req.param('workspaceId')!)
     return pinned ?? next()
   }
 }

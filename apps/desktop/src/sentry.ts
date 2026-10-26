@@ -143,3 +143,27 @@ export function setSentryDeviceTag(deviceId: string): void {
     // don't want a telemetry hiccup to take down the app.
   }
 }
+
+/**
+ * SHO-60: one breadcrumb per local-API supervisor event (`spawn`, `exit`,
+ * `restart_attempt`, `restarted`, `gave_up`, a watchdog trip, a manual retry).
+ * Without it a Sentry error arrives with no clue that the API had been
+ * restarting underneath it. Costs nothing while
+ * `MAIN_PROCESS_SENTRY_DISABLED` is set — it becomes useful the day that is
+ * lifted, and the same events are on disk either way (`api-crash-log.ts`).
+ */
+export function addLocalApiBreadcrumb(
+  event: string,
+  data: Record<string, unknown> = {},
+): void {
+  try {
+    Sentry.addBreadcrumb({
+      category: 'local-api',
+      level: event === 'gave_up' ? 'error' : 'info',
+      message: `local-api:${event}`,
+      data,
+    })
+  } catch {
+    // Telemetry must never be the reason the supervisor throws.
+  }
+}

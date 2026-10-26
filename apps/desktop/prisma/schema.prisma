@@ -139,6 +139,8 @@ model WorkspaceAgentProfile {
   personality     String?
   statusText      String?
   statusUpdatedAt DateTime?
+  // Model used when the agent is tagged in a channel or thread; null = Auto. Set by workspace admins.
+  defaultModel    String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -313,6 +315,11 @@ model ProjectCheckpoint {
   commitSha     String
   commitMessage String
   branch        String   @default("main")
+  // "branch" = a real commit on `branch` (local-only projects, historical
+  // rows); "ref" = a commit pinned only by `refName` under
+  // refs/shogo/checkpoints/** so the user's branch never gains an AI commit.
+  mode          String   @default("branch")
+  refName       String?
   includesDb    Boolean  @default(false)
   filesChanged  Int      @default(0)
   additions     Int      @default(0)
@@ -620,6 +627,9 @@ model ChatSession {
   inferredName        String
   contextType         String
   contextId           String?
+  // Owner of a personal workspace-agent chat. Null for project chats and
+  // chats created before ownership existed.
+  createdByUserId     String?
   isPrimary           Boolean  @default(false)
   phase               String?
   claudeCodeSessionId String?
@@ -642,6 +652,7 @@ model ChatSession {
 
   @@index([contextType, contextId])
   @@index([activeTurnHeartbeatAt])
+  @@index([createdByUserId])
   @@map("chat_sessions")
 }
 

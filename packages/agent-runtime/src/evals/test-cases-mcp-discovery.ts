@@ -24,7 +24,7 @@
  *    that the agent uses the installed tools effectively.
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, EvalResult } from './types'
 import {
   MCP_LIST_INSTALLED_MOCKS,
   INTEGRATIONS_SEARCH_BASIC_MOCKS,
@@ -42,7 +42,21 @@ import {
   toolCallCount,
   responseContains,
   toolCallsJson,
+  execCommands,
+  wroteFileAnyRoute,
+  writtenContent,
 } from './eval-helpers'
+
+const isMemoryPath = (p: string) => /(^|\/)MEMORY\.md$/i.test(p) || /(^|\/)memory\//i.test(p)
+
+/** Index of the first PR fetch: GitHub MCP tool or `gh pr list` / `gh pr status`. */
+function prFetchIndex(r: EvalResult): number {
+  return r.toolCalls.findIndex(t =>
+    t.name === 'mcp_github_list_pull_requests' ||
+    ((t.name === 'exec' || t.name === 'terminal_exec') &&
+      execCommands(r, [t]).some(c => /(^|[\s;&|(])gh\s+(pr\s+(list|status)|search\s+prs)\b/.test(c))),
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Test Cases
@@ -348,9 +362,9 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     category: 'mcp-discovery',
     level: 3,
     conversationHistory: [
-      { role: 'user', content: 'I need to check something in my Postgres database. Can you help me with that?' },
+      { role: 'user', content: 'I need to check something in my MongoDB database. Can you help me with that?' },
     ],
-    input: 'Sure, the connection string is postgres://admin:secret@localhost:5432/myapp. Go ahead and get that set up.',
+    input: 'Sure, the connection string is mongodb://admin:secret@localhost:27017/myapp. Go ahead and get that set up.',
     maxScore: 100,
     toolMocks: MCP_SELF_EXTEND_DATABASE_MOCKS,
     validationCriteria: [
@@ -363,19 +377,19 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
       },
       {
         id: 'installed-mcp-server',
-        description: 'Used connect to add the postgres server',
+        description: 'Used connect to add the MongoDB server',
         points: 25,
         phase: 'intention',
         validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'passed-connection-config',
-        description: 'Passed connection string or config during install',
+        description: 'Passed the connection string to connect (MDB_MCP_CONNECTION_STRING)',
         points: 20,
         phase: 'execution',
         validate: (r) => {
           const json = toolCallsJson(r)
-          return json.includes('postgres://') || json.includes('5432') || json.includes('myapp') || json.includes('connection')
+          return r.toolCalls.some(t => t.name === 'connect' && JSON.stringify(t.input).includes('mongodb://admin:secret@localhost:27017/myapp'))
         },
       },
       {
@@ -385,7 +399,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => {
           const text = r.responseText.toLowerCase()
-          return text.includes('install') || text.includes('set up') || text.includes('postgres') || text.includes('database') || text.includes('connect')
+          return text.includes('install') || text.includes('set up') || text.includes('mongo') || text.includes('database') || text.includes('connect')
         },
       },
       {
@@ -420,10 +434,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-github-tool',
-        description: 'Used a GitHub tool to fetch PRs',
+        description: 'Fetched the PRs (GitHub MCP tool or `gh pr list`)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_github_list_pull_requests'),
+        validate: (r) => prFetchIndex(r) >= 0,
       },
       {
         id: 'used-slack-tool',
@@ -450,7 +464,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const ghIdx = r.toolCalls.findIndex(t => t.name === 'mcp_github_list_pull_requests')
+          const ghIdx = prFetchIndex(r)
           const slackIdx = r.toolCalls.findIndex(t => t.name === 'mcp_slack_send_message')
           return ghIdx >= 0 && slackIdx > ghIdx
         },
@@ -504,10 +518,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-memory',
-        description: 'Used write_file to record the new role to memory',
+        description: 'Recorded the new role in memory (MEMORY.md or memory/, write or edit)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteFileAnyRoute(r, isMemoryPath),
       },
       {
         id: 'memory-mentions-role',
@@ -515,10 +529,8 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const memCall = r.toolCalls.find(t => t.name === 'write_file')
-          if (!memCall) return false
-          const json = JSON.stringify(memCall.input).toLowerCase()
-          return json.includes('linear') || json.includes('project management') || json.includes('project manager')
+          const text = writtenContent(r, isMemoryPath).toLowerCase()
+          return text.includes('linear') || text.includes('project management') || text.includes('project manager')
         },
       },
       {

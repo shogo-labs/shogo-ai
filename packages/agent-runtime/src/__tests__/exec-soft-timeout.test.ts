@@ -106,10 +106,10 @@ describe('exec soft-timeout', () => {
     const sleepCmd = PLATFORM === 'win32' ? 'sleep 3' : 'sleep 3'
     const result = await callTool(ctx, 'exec', { command: sleepCmd, timeout: 200 })
     expect(result.status).toBe('running')
-    expect(result.run_id).toMatch(/^cmd_/)
+    expect(result.run_id).toMatch(/^t_/)
     expect(typeof result.pid).toBe('number')
-    expect(result.hint).toContain('exec_wait')
-    expect(result.hint).toContain(String(result.pid))
+    expect(result.hint).toContain('wait')
+    expect(result.task_id).toBe(result.run_id)
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0)
     // Registry has the entry.
     expect(registry.get(result.run_id)).toBeDefined()
@@ -191,7 +191,7 @@ describe('exec soft-timeout', () => {
 })
 
 describe('CommandRegistry', () => {
-  test('register assigns a unique cmd_-prefixed id and tracks completion', async () => {
+  test('register assigns a unique t_-prefixed id and tracks completion', async () => {
     const reg = new CommandRegistry()
     const handle = sandboxExecAsync({
       command: 'echo done',
@@ -199,7 +199,7 @@ describe('CommandRegistry', () => {
       sandboxConfig: { enabled: false },
     })
     const entry = reg.register('echo done', handle)
-    expect(entry.runId).toMatch(/^cmd_[0-9a-f]{8}$/)
+    expect(entry.runId).toMatch(/^t_[0-9a-f]{8}$/)
     expect(reg.get(entry.runId)).toBe(entry)
 
     const final = await handle.done

@@ -156,6 +156,29 @@ export const ALWAYS_ON_SLOTS_PER_SEAT: Record<PlanId, number | null> = {
   enterprise: null,
 }
 
+/**
+ * Agent replies that may be *working at once* in a workspace, by plan.
+ *
+ * This is an admission rule for new runs, not a cap on how many runs exist: a
+ * run that is only blocked in `wait` (or any other open tool) gives its slot
+ * back, so a busy workspace keeps admitting tagged agents (see
+ * `agent-reply-slots.ts`). A workspace admin may lower it; the plan value is
+ * the ceiling in the cloud.
+ */
+export const AGENT_REPLY_CONCURRENCY: Record<PlanId, number> = {
+  free: 2,
+  basic: 4,
+  pro: 8,
+  business: 12,
+  enterprise: 24,
+}
+
+/**
+ * Desktop's default, and its ceiling: local mode has no plan, so an admin may
+ * set anything from 1 to this, and 24 is what a fresh workspace gets.
+ */
+export const LOCAL_AGENT_REPLY_CONCURRENCY = 24
+
 /** Plans whose always-on slot allowance scales with the paid seat count. */
 const PER_SEAT_ALWAYS_ON_PLANS: ReadonlySet<PlanId> = new Set<PlanId>(['pro', 'business'])
 
@@ -346,3 +369,40 @@ export type VoiceRateKey = keyof typeof VOICE_RAW_USD
 export const PLAN_VOICE_RATE_OVERRIDES: Partial<
   Record<PlanId, Partial<typeof VOICE_RAW_USD>>
 > = {}
+
+/**
+ * Signup promo credit (see `services/signup-credit.service.ts`).
+ *
+ * New cloud signups receive `SIGNUP_CREDIT_TOTAL_USD` of promo credit on
+ * their team workspace, released in two stages:
+ *   - `SIGNUP_CREDIT_INITIAL_USD` at signup (low-risk, email not yet verified)
+ *   - the remainder once the email is verified
+ * Credit expires `SIGNUP_CREDIT_TTL_DAYS` after the first grant. It is spent
+ * after the rolling windows and before metered overage, and only while it has
+ * not expired.
+ */
+export const SIGNUP_CREDIT_TOTAL_USD = 10
+export const SIGNUP_CREDIT_INITIAL_USD = 2
+export const SIGNUP_CREDIT_VERIFIED_USD = SIGNUP_CREDIT_TOTAL_USD - SIGNUP_CREDIT_INITIAL_USD
+export const SIGNUP_CREDIT_TTL_DAYS = 30
+
+/**
+ * Free trial on paid plans. Stripe Checkout collects a card up front and bills
+ * it when the trial ends. Only one trial per user, workspace and card.
+ */
+export const TRIAL_PERIOD_DAYS = 7
+export const TRIAL_ELIGIBLE_PLANS: readonly PlanId[] = ['basic', 'pro', 'business']
+
+/**
+ * Promo credit that can still be spent at `now`. Zero once the credit has
+ * expired or when there is no expiry, so a stray balance without an expiry
+ * never becomes spendable.
+ */
+export function promoCreditAvailableUsd(
+  wallet: { promoCreditUsd: number; promoCreditExpiresAt: Date | string | null } | null | undefined,
+  now: Date = new Date(),
+): number {
+  if (!wallet?.promoCreditExpiresAt) return 0
+  if (new Date(wallet.promoCreditExpiresAt).getTime() <= now.getTime()) return 0
+  return Math.max(0, wallet.promoCreditUsd)
+}

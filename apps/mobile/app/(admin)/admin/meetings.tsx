@@ -1,0 +1,605 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * Admin Meetings Settings - Recording behavior, auto-detection, transcription + diarization config.
+ * Only shown in local mode.
+ */
+
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  useWindowDimensions,
+} from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import {
+  Radio,
+  Languages,
+  Check,
+  CheckCircle,
+  AlertTriangle,
+  Users,
+  SlidersHorizontal,
+} from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
+import { createHttpClient } from '../../../lib/api'
+
+interface MeetingConfig {
+  enabled: boolean
+  autoDetect: boolean
+  autoRecord: boolean
+  autoRecordConfirmCount: number
+  gracePeriodSeconds: number
+  autoStopSeconds: number
+  whisperModel: string
+  useCloudTranscription: boolean
+  diarizationEnabled: boolean
+}
+
+interface TranscriptionStatus {
+  localAvailable: boolean
+  cloudAvailable: boolean
+  binaryInstalled: boolean
+  installedModels: string[]
+  diarizationAvailable: boolean
+  install?: {
+    state: 'idle' | 'installing' | 'ready' | 'failed'
+    model?: string
+    error?: string
+    startedAt?: number
+  }
+}
+
+const WHISPER_MODELS = [
+  { value: 'tiny.en', label: 'Tiny (English)', desc: '~39 MB, fastest' },
+  { value: 'base.en', label: 'Base (English)', desc: '~75 MB, recommended' },
+  { value: 'small.en', label: 'Small (English)', desc: '~244 MB, better accuracy' },
+  { value: 'tiny', label: 'Tiny (Multilingual)', desc: '~39 MB' },
+  { value: 'base', label: 'Base (Multilingual)', desc: '~75 MB' },
+  { value: 'small', label: 'Small (Multilingual)', desc: '~244 MB' },
+]
+
+/** Mirrors DESKTOP_MEETING_KEYS in apps/desktop/src/meeting-config.ts. */
+const DESKTOP_MEETING_KEYS = [
+  'enabled',
+  'autoDetect',
+  'autoRecord',
+  'autoRecordConfirmCount',
+  'gracePeriodSeconds',
+  'autoStopSeconds',
+] as const satisfies readonly (keyof MeetingConfig)[]
+
+interface MeetingDesktopBridge {
+  getMeetingConfig?: () => Promise<unknown>
+  setMeetingConfig?: (patch: Partial<MeetingConfig>) => Promise<unknown>
+}
+
+function getMeetingDesktopBridge(): MeetingDesktopBridge | null {
+  if (typeof window === 'undefined') return null
+  return (window as unknown as { shogoDesktop?: MeetingDesktopBridge }).shogoDesktop ?? null
+}
+
+function pickMeetingFields(source: object, keep: (key: string) => boolean): Partial<MeetingConfig> {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => keep(key))) as Partial<MeetingConfig>
+}
+
+const isDesktopKey = (key: string) => (DESKTOP_MEETING_KEYS as readonly string[]).includes(key)
+
+/**
+ * The desktop's copy of the fields it owns, or null when the bridge doesn't
+ * own them (plain web, or the IDE embed's stub bridge).
+ */
+function desktopOwnedFields(value: unknown): Partial<MeetingConfig> | null {
+  if (!value || typeof value !== 'object' || typeof (value as { enabled?: unknown }).enabled !== 'boolean') return null
+  return pickMeetingFields(value, isDesktopKey)
+}
+
+export default function AdminMeetingsPage() {
+  const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
+  const isWide = width >= 900
+  const pagePadding = isWide ? 32 : 16
+  const [config, setConfig] = useState<MeetingConfig | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [transcriptionStatus, setTranscriptionStatus] = useState<TranscriptionStatus | null>(null)
+  const [installing, setInstalling] = useState(false)
+  const [installError, setInstallError] = useState<string | null>(null)
+
+  const http = useMemo(() => createHttpClient(), [])
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const { data } = await http.get<TranscriptionStatus>(
+        `/api/local/meetings/transcription-status?model=${encodeURIComponent(config?.whisperModel || 'base.en')}`,
+      )
+      setTranscriptionStatus(data)
+    } catch {}
+  }, [http, config?.whisperModel])
+
+  // Transcription status loads once the config says which model to check.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data } = await http.get<MeetingConfig>('/api/local/meetings/config')
+        const owned = desktopOwnedFields(
+          await getMeetingDesktopBridge()?.getMeetingConfig?.().catch(() => null),
+        )
+        if (!cancelled) setConfig(owned ? { ...data, ...owned } : data)
+      } catch {
+        // Leaves `config` null, which renders the unavailable state.
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [http])
+
+  useEffect(() => {
+    if (transcriptionStatus?.install?.state !== 'installing') return
+    const timer = setInterval(() => { void fetchStatus() }, 1_500)
+    return () => clearInterval(timer)
+  }, [fetchStatus, transcriptionStatus?.install?.state])
+
+  useEffect(() => {
+    if (config?.whisperModel) void fetchStatus()
+  }, [config?.whisperModel, fetchStatus])
+
+  const installSherpa = useCallback(async () => {
+    setInstalling(true)
+    setInstallError(null)
+    try {
+      const res = await http.request<{ ok?: boolean; error?: string }>(
+        '/api/local/meetings/install-sherpa',
+        { method: 'POST', body: { model: config?.whisperModel || 'base.en' } },
+      )
+      if (res.data.error) {
+        setInstallError(res.data.error)
+      }
+      await fetchStatus()
+    } catch (err: any) {
+      setInstallError(err?.message || 'Install failed')
+    }
+    setInstalling(false)
+  }, [http, fetchStatus, config?.whisperModel])
+
+  // On desktop the app owns the detection fields: it saves them and mirrors
+  // them to the API. Everything else goes to the API directly.
+  const updateConfig = useCallback(async (patch: Partial<MeetingConfig>) => {
+    if (!config) return
+    const previous = config
+    setConfig({ ...config, ...patch })
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const desktop = getMeetingDesktopBridge()
+      const desktopPatch = pickMeetingFields(patch, isDesktopKey)
+      let owned: Partial<MeetingConfig> | null = null
+      if (desktop?.setMeetingConfig && Object.keys(desktopPatch).length > 0) {
+        owned = desktopOwnedFields(await desktop.setMeetingConfig(desktopPatch))
+      }
+      const apiPatch = owned ? pickMeetingFields(patch, (key) => !isDesktopKey(key)) : patch
+      let next: MeetingConfig = { ...previous, ...patch }
+      if (Object.keys(apiPatch).length > 0) {
+        const response = await http.request<MeetingConfig>('/api/local/meetings/config', { method: 'PUT', body: apiPatch })
+        if (response.data) next = response.data
+      }
+      setConfig(owned ? { ...next, ...owned } : next)
+    } catch (err: any) {
+      setConfig(previous)
+      setSaveError(err?.message ? `Couldn't save meeting settings: ${err.message}` : "Couldn't save meeting settings.")
+    } finally {
+      setSaving(false)
+    }
+  }, [http, config])
+
+  if (loading) {
+    return (
+      <View className="flex-1 bg-background px-4 items-center justify-center">
+        <View className="w-full max-w-md rounded-2xl border border-border bg-card p-5 items-center">
+          <View className="h-10 w-10 rounded-xl bg-primary/10 items-center justify-center">
+            <ActivityIndicator size="small" />
+          </View>
+          <Text className="text-sm font-semibold text-foreground mt-3">Loading meeting controls</Text>
+          <Text className="text-xs text-muted-foreground mt-1 text-center">
+            Checking recording and transcription capabilities.
+          </Text>
+        </View>
+      </View>
+    )
+  }
+
+  if (!config) {
+    return (
+      <ScrollView
+        className="flex-1 bg-background"
+        contentContainerStyle={{
+          paddingTop: Math.max(insets.top, 12) + 12,
+          paddingHorizontal: pagePadding,
+          paddingBottom: Math.max(insets.bottom, 16) + 32,
+          width: '100%',
+        }}
+      >
+        <View className="max-w-2xl w-full self-center gap-4">
+          <ContextHeader isWide={isWide} saving={false} />
+          <View className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex-row items-center gap-3">
+            <AlertTriangle size={18} className="text-amber-500" />
+            <View className="flex-1">
+              <Text className="text-sm font-medium text-foreground">Meeting controls are unavailable</Text>
+              <Text className="text-xs text-muted-foreground mt-1">
+                The local meeting service did not return its configuration. Check that the service is running, then reopen this page.
+              </Text>
+            </View>
+          </View>
+          <View className="rounded-xl bg-muted/50 p-3">
+            <Text className="text-xs text-muted-foreground">
+              No settings were changed while the configuration was unavailable.
+            </Text>
+          </View>
+        </View>
+      </ScrollView>
+    )
+  }
+
+  return (
+    <ScrollView
+      className="flex-1 bg-background"
+      contentContainerStyle={{
+        paddingTop: Math.max(insets.top, 12) + 12,
+        paddingHorizontal: pagePadding,
+        paddingBottom: Math.max(insets.bottom, 16) + 32,
+        width: '100%',
+      }}
+    >
+      <View className="max-w-2xl w-full self-center gap-6">
+        {/* Header */}
+        <ContextHeader isWide={isWide} saving={saving} />
+
+        {saveError && (
+          <View className="bg-destructive/10 rounded-lg p-3 flex-row items-center gap-2">
+            <AlertTriangle size={14} className="text-destructive" />
+            <Text className="text-xs text-destructive flex-1">{saveError}</Text>
+          </View>
+        )}
+
+        <SectionCard
+          icon={SlidersHorizontal}
+          title="Meetings & transcription"
+          description="Meeting detection and on-device transcripts are enabled by default."
+        >
+          <ToggleRow
+            label="Enable meetings & transcription"
+            description="Turn this off to stop meeting detection, recording prompts, and transcription."
+            value={config.enabled}
+            onToggle={(v) => updateConfig({ enabled: v })}
+          />
+        </SectionCard>
+
+        {/* Status */}
+        {transcriptionStatus && (
+          <View className="gap-3">
+            <SectionLabel title="Service readiness" detail="Local and cloud capabilities" />
+            <View className="flex-row gap-3 flex-wrap rounded-2xl border border-border bg-card p-3">
+              <View className={cn(
+                'flex-1 flex-row items-center gap-2 rounded-lg p-3 min-w-[140px]',
+                transcriptionStatus.localAvailable ? 'bg-green-500/10' : 'bg-amber-500/10'
+              )}>
+                {transcriptionStatus.localAvailable ? (
+                  <CheckCircle size={14} className="text-green-500" />
+                ) : (
+                  <AlertTriangle size={14} className="text-amber-500" />
+                )}
+                <Text className="text-xs text-foreground flex-1">
+                  {transcriptionStatus.localAvailable
+                    ? 'Transcription ready'
+                    : transcriptionStatus.binaryInstalled
+                      ? 'Binary installed, no model'
+                      : 'sherpa-onnx not installed'}
+                </Text>
+              </View>
+              <View className={cn(
+                'flex-1 flex-row items-center gap-2 rounded-lg p-3 min-w-[140px]',
+                transcriptionStatus.diarizationAvailable ? 'bg-green-500/10' : 'bg-muted'
+              )}>
+                {transcriptionStatus.diarizationAvailable ? (
+                  <CheckCircle size={14} className="text-green-500" />
+                ) : (
+                  <View className="h-2 w-2 rounded-full bg-muted-foreground" />
+                )}
+                <Text className="text-xs text-foreground">
+                  {transcriptionStatus.diarizationAvailable
+                    ? 'Speaker diarization ready'
+                    : 'Diarization not installed'}
+                </Text>
+              </View>
+              <View className={cn(
+                'flex-1 flex-row items-center gap-2 rounded-lg p-3 min-w-[140px]',
+                transcriptionStatus.cloudAvailable ? 'bg-green-500/10' : 'bg-muted'
+              )}>
+                {transcriptionStatus.cloudAvailable ? (
+                  <CheckCircle size={14} className="text-green-500" />
+                ) : (
+                  <View className="h-2 w-2 rounded-full bg-muted-foreground" />
+                )}
+                <Text className="text-xs text-foreground">
+                  {transcriptionStatus.cloudAvailable
+                    ? 'Cloud fallback ready'
+                    : 'No cloud API key'}
+                </Text>
+              </View>
+            </View>
+
+            {(installing || transcriptionStatus.install?.state === 'installing') && (
+              <View className="rounded-lg bg-primary/10 p-3 flex-row items-center gap-2">
+                <ActivityIndicator size="small" />
+                <Text className="text-xs text-foreground flex-1">
+                  Setting up on-device transcription in the background...
+                </Text>
+              </View>
+            )}
+
+            {transcriptionStatus.install?.state === 'ready' && transcriptionStatus.localAvailable && (
+              <View className="rounded-lg bg-green-500/10 p-3 flex-row items-center gap-2">
+                <CheckCircle size={14} className="text-green-500" />
+                <Text className="text-xs text-foreground flex-1">
+                  On-device transcription is ready.
+                </Text>
+              </View>
+            )}
+
+            {transcriptionStatus.install?.state === 'failed' && (
+              <View className="bg-destructive/10 rounded-lg p-3 flex-row items-center gap-2">
+                <AlertTriangle size={14} className="text-destructive" />
+                <Text className="text-xs text-destructive flex-1">
+                  {transcriptionStatus.install.error || installError || 'Automatic setup failed.'}
+                </Text>
+                <Pressable onPress={installSherpa} disabled={installing || !config.enabled}>
+                  <Text className="text-xs font-semibold text-destructive">Retry</Text>
+                </Pressable>
+              </View>
+            )}
+
+            {installError && transcriptionStatus.install?.state !== 'failed' && (
+              <Text className="text-xs text-destructive">{installError}</Text>
+            )}
+          </View>
+        )}
+
+        {/* Recording */}
+        <View
+          style={{ pointerEvents: config.enabled ? 'auto' : 'none' }}
+          className={cn('gap-6', !config.enabled && 'opacity-50')}
+        >
+          <SectionCard
+            icon={Radio}
+            title="Recording"
+            description="Control how meeting recording starts and stops"
+          >
+            <View className="gap-5">
+              <ToggleRow
+                label="Auto-detect meetings"
+                description="Monitor activity to detect when you join a meeting"
+                value={config.autoDetect}
+                onToggle={(v) => updateConfig({ autoDetect: v })}
+              />
+
+              <View className="border-t border-border" />
+
+              <ToggleRow
+                label="Auto-record"
+                description="Optional: start recording automatically when a meeting is detected (no confirmation prompt)"
+                value={config.autoRecord}
+                onToggle={(v) => updateConfig({ autoRecord: v })}
+                disabled={!config.autoDetect}
+              />
+
+            </View>
+          </SectionCard>
+
+          {/* Transcription */}
+          <SectionCard
+            icon={Languages}
+            title="Transcription"
+            description="Choose how audio is transcribed to text"
+          >
+            <View className="gap-5">
+              <View className="gap-1.5">
+                <Text className="text-sm font-medium text-foreground">Whisper model</Text>
+                <Text className="text-xs text-muted-foreground">
+                  Larger models are more accurate but slower. The selected model is downloaded automatically when needed.
+                </Text>
+                <View className="gap-1.5 mt-1.5">
+                  {WHISPER_MODELS.map((model) => {
+                    const isSelected = config.whisperModel === model.value
+                    const isInstalled = transcriptionStatus?.installedModels?.includes(model.value)
+                    return (
+                      <Pressable
+                        key={model.value}
+                        onPress={() => updateConfig({ whisperModel: model.value })}
+                        className={cn(
+                          'flex-row items-center px-4 py-3 rounded-lg border',
+                          isSelected
+                            ? 'border-primary bg-primary/5'
+                            : 'border-border bg-background'
+                        )}
+                      >
+                        <View className="flex-1">
+                          <View className="flex-row items-center gap-2">
+                            <Text className={cn(
+                              'text-sm',
+                              isSelected ? 'text-primary font-medium' : 'text-foreground'
+                            )}>
+                              {model.label}
+                            </Text>
+                            {isInstalled && (
+                              <View className="bg-green-500/10 rounded px-1.5 py-0.5">
+                                <Text className="text-[10px] text-green-600 font-medium">installed</Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text className="text-xs text-muted-foreground">{model.desc}</Text>
+                        </View>
+                        {isSelected && <Check size={16} className="text-primary" />}
+                      </Pressable>
+                    )
+                  })}
+                </View>
+              </View>
+
+              <View className="border-t border-border" />
+
+              <ToggleRow
+                label="Cloud transcription fallback"
+                description="Use OpenAI Whisper API if local transcription fails (requires API key)"
+                value={config.useCloudTranscription}
+                onToggle={(v) => updateConfig({ useCloudTranscription: v })}
+              />
+            </View>
+          </SectionCard>
+
+          {/* Diarization */}
+          <SectionCard
+            icon={Users}
+            title="Speaker Diarization"
+            description="Identify who is speaking in the meeting"
+          >
+            <View className="gap-5">
+              <ToggleRow
+                label="Enable speaker diarization"
+                description="Identify and label different speakers in the transcript. Uses Pyannote segmentation + NeMo embedding models."
+                value={config.diarizationEnabled}
+                onToggle={(v) => updateConfig({ diarizationEnabled: v })}
+              />
+
+              {config.diarizationEnabled && transcriptionStatus && !transcriptionStatus.diarizationAvailable && (
+                <View className="bg-amber-500/10 rounded-lg p-3 flex-row items-center gap-2">
+                  <AlertTriangle size={14} className="text-amber-500" />
+                  <Text className="text-xs text-foreground flex-1">
+                    Diarization models are still being set up. They will download automatically in the background.
+                  </Text>
+                </View>
+              )}
+
+              {config.diarizationEnabled && transcriptionStatus?.diarizationAvailable && (
+                <View className="bg-green-500/10 rounded-lg p-3">
+                  <Text className="text-xs text-foreground">
+                    Speakers will be identified after each meeting recording. Diarization runs in parallel with transcription for minimal additional processing time.
+                  </Text>
+                </View>
+              )}
+            </View>
+          </SectionCard>
+        </View>
+      </View>
+    </ScrollView>
+  )
+}
+
+// =============================================================================
+// Shared Components
+// =============================================================================
+
+function SectionCard({
+  icon: Icon,
+  title,
+  description,
+  children,
+}: {
+  icon: any
+  title: string
+  description: string
+  children: React.ReactNode
+}) {
+  return (
+    <View className="bg-card border border-border rounded-2xl overflow-hidden">
+      <View className="px-5 py-4 border-b border-border">
+        <View className="flex-row items-center gap-2.5 mb-1">
+          <Icon size={16} className="text-foreground" />
+          <Text className="text-base font-semibold text-foreground">{title}</Text>
+        </View>
+        <Text className="text-xs text-muted-foreground">{description}</Text>
+      </View>
+      <View className="px-5 py-4">{children}</View>
+    </View>
+  )
+}
+
+function ContextHeader({ isWide, saving }: { isWide: boolean; saving: boolean }) {
+  return (
+    <View className="rounded-2xl border border-border bg-card p-4">
+      <View className="flex-row items-center gap-3">
+        <View className="h-9 w-9 rounded-xl bg-primary/10 items-center justify-center">
+          <SlidersHorizontal size={17} className="text-primary" />
+        </View>
+        <View className="flex-1">
+          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>Meetings</Text>
+          <Text className="text-xs text-muted-foreground mt-0.5">
+            Recording, transcription, and speaker recognition for local meetings.
+          </Text>
+        </View>
+        {saving ? (
+          <View className="flex-row items-center gap-1.5 rounded-full bg-muted px-2.5 py-1.5">
+            <ActivityIndicator size="small" />
+            <Text className="text-[11px] text-muted-foreground">Saving</Text>
+          </View>
+        ) : (
+          <View className="rounded-full bg-muted px-2.5 py-1.5">
+            <Text className="text-[11px] text-muted-foreground">Local only</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  )
+}
+
+function SectionLabel({ title, detail }: { title: string; detail: string }) {
+  return (
+    <View className="flex-row items-baseline justify-between px-1">
+      <Text className="text-sm font-semibold text-foreground">{title}</Text>
+      <Text className="text-[11px] text-muted-foreground">{detail}</Text>
+    </View>
+  )
+}
+
+function ToggleRow({
+  label,
+  description,
+  value,
+  onToggle,
+  disabled = false,
+}: {
+  label: string
+  description: string
+  value: boolean
+  onToggle: (v: boolean) => void
+  disabled?: boolean
+}) {
+  return (
+    <Pressable
+      onPress={() => !disabled && onToggle(!value)}
+      className={cn('flex-row items-center gap-3', disabled && 'opacity-50')}
+      disabled={disabled}
+    >
+      <View className="flex-1 gap-0.5">
+        <Text className="text-sm font-medium text-foreground">{label}</Text>
+        <Text className="text-xs text-muted-foreground">{description}</Text>
+      </View>
+      <View className={cn(
+        'h-6 w-10 rounded-full justify-center px-0.5',
+        value ? 'bg-primary' : 'bg-muted'
+      )}>
+        <View className={cn(
+          'h-5 w-5 rounded-full bg-white shadow-sm',
+          value ? 'self-end' : 'self-start'
+        )} />
+      </View>
+    </Pressable>
+  )
+}

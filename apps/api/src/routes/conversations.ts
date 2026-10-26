@@ -16,6 +16,10 @@ import {
   MAX_CONVERSATION_FILE_BYTES,
   buildConversationFileKey,
   conversationFileUrl,
+  loadConversationFileBytes,
+  parseAttachmentDurationMs,
+  parseAttachmentPeaks,
+  parseByteRange,
   putConversationFile,
   readConversationFile,
   verifyAttachmentToken,
@@ -28,6 +32,7 @@ import {
   agentDisplayName,
   addUserMembers,
   createChannel,
+  deleteConversation,
   deleteMessage,
   editMessage,
   getConversationForUser,
@@ -45,32 +50,51 @@ import {
   postMessage,
   removeMember,
   requirePost,
+  normalizeLinkPreviewOptOuts,
   serializeConversation,
   setAttachmentUrlBuilder,
   setReaction,
   updateConversation,
   updateMembership,
 } from '../services/conversation.service'
+import { getArchiveForAgent, getDocForAgent, listArchivesForAgent, updateDocAsAgent } from '../services/conversation-doc.service'
 import { afterMessagePosted } from '../services/conversation-pipeline'
 import { AgentMessageError, postAgentMessage, updateAgentMessage } from '../services/chat-providers/outbound'
-import { blocksForKind, cardToMarkdown, normalizeCard, normalizeKind } from '../services/conversation-message-kind'
+import { blocksForKind, cardToMarkdown, normalizeCard, normalizeKind, normalizeQuestionDrafts, questionsOf, questionsToMarkdown } from '../services/conversation-message-kind'
+import { answerQuestion, attachQuestions, dismissQuestion, listQuestions, readQuestionSecret } from '../services/conversation-questions'
+import { registerQuestionDesigner } from '../services/conversation-question-designer'
 import { listInstallations } from '../services/chat-providers/installations'
 import { CHAT_RATE_LIMITS, takeRateLimit } from '../lib/chat-limits'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp, registerConversationActivity } from '../services/conversation-activity'
-import { respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
+import { agentPostTargets, respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
+import { agentReplySlotState, drainAgentReplyWaiters, slotSnapshot } from '../services/agent-reply-slots'
+import { invalidateAgentReplyCapacity, resolveAgentReplyCapacity } from '../services/agent-reply-capacity'
+import { createReplyTasks } from '../services/background-tasks.service'
 import { decideApproval, listPendingApprovals } from '../services/conversation-approvals'
 import { liveActivityApprovalAnswered } from '../services/approval-live-activity'
 import { loadWorkLog } from '../services/agent-work-log'
 import { chainForAgentPost, rootChain, setThreadOwner } from '../services/conversation-agent-chain'
-import { loadAgentCard, loadTeamDirectory, resolveFriendlyMentions, setAgentBuddyLook } from '../services/conversation-directory'
-import { listTeamChannels, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
+import { loadAgentCard, loadTeamDirectory, loadUserCard, setAgentBuddyLook } from '../services/conversation-directory'
+import { listTeamChannels, syncTeamChannelOwnership, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
+import { huddleUserIds } from '../services/huddle.service'
 import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
 import { searchMessages } from '../services/conversation-search'
 import { askWorkspace, semanticSearch } from '../services/conversation-semantic'
 import { canExtract, extractAndStoreAttachmentText } from '../services/conversation-file-text'
+import { publicPreview } from '../services/conversation-file-preview'
+import { attachmentIdsFrom, readAgentUpload, storeAgentAttachment } from '../services/agent-attachments'
+import { loadVisibleFile, type FilePrincipal } from '../services/conversation-file-access'
+import { readFileText, searchFiles } from '../services/conversation-file-index'
+import {
+  listFileConversations,
+  listFiles,
+  parseFileKind,
+  serializeFileForAgent,
+  serializeFileForUser,
+} from '../services/conversation-files.service'
 import { registerConversationNotifications } from '../services/conversation-notifications'
 import { registerConversationUnfurls } from '../services/conversation-unfurl'
 import { listStatuses } from '../services/chat-settings'
@@ -78,6 +102,7 @@ import { listGroups } from '../services/chat-customization'
 import { mountConversationExtras } from './conversation-extras'
 import { mountHuddleRoutes } from './huddles'
 import { agentChatEnabled, assertNativeChat, getWorkspaceChatConfig, setWorkspaceChatConfig } from '../services/chat-mode'
+import { REQUESTER_TICKET_HEADER, verifyRequesterTicketInWorkspace } from '../lib/requester-ticket'
 import type { ConversationSocketData } from '../realtime/conversation-socket'
 
 const db = prisma as any
@@ -90,7 +115,7 @@ export interface ConversationRoutesConfig {
 
 function errorResponse(c: any, err: unknown) {
   if (err instanceof ConversationError) {
-    return c.json({ error: { code: err.code, message: err.message } }, err.status)
+    return c.json({ error: { code: err.code, message: err.message, ...err.details } }, err.status)
   }
   throw err
 }
@@ -129,6 +154,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   registerConversationNotifications()
   registerConversationUnfurls()
   registerConversationActivity()
+  registerQuestionDesigner()
 
   async function requireUser(c: any): Promise<string | Response> {
     const userId = await config.resolveUserId(c)
@@ -193,14 +219,99 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   })
 
   mountConversationExtras(router, { requireUser, requireWorkspace, errorResponse, readJson })
-  mountHuddleRoutes(router, { requireUser, requireWorkspace, errorResponse })
+  mountHuddleRoutes(router, { optionalUser: (c) => config.resolveUserId(c), requireUser, requireWorkspace, errorResponse })
+
+  /**
+   * How many agent replies may work at once, and how busy the queue is now. The
+   * banner and the Chat settings stepper read this; the same route serves
+   * desktop and cloud, so neither surface can drift.
+   */
+  router.get('/workspaces/:workspaceId/agent-capacity', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    try {
+      const [capacity, snapshot, canManage] = await Promise.all([
+        resolveAgentReplyCapacity(auth.workspaceId),
+        slotSnapshot(auth.workspaceId),
+        userCan(auth.userId, 'workspace.settings:manage', auth.workspaceId),
+      ])
+      return c.json({
+        ...capacity,
+        running: snapshot.running,
+        parked: snapshot.parked,
+        queued: snapshot.queued,
+        canManage,
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Set how many agent replies may work at once (`null` = the maximum). An admin
+   * may lower it; only local mode allows raising it past the default, and the
+   * plan is the ceiling in the cloud.
+   */
+  router.put('/workspaces/:workspaceId/agent-capacity', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    if (!(await userCan(auth.userId, 'workspace.settings:manage', auth.workspaceId))) {
+      return c.json({ error: { code: 'forbidden', message: 'Only workspace admins can change how many agents work at once' } }, 403)
+    }
+    const body = await readJson(c)
+    const raw = body.agentReplyConcurrency
+    if (!(raw === null || (typeof raw === 'number' && Number.isInteger(raw)))) {
+      return c.json({ error: { code: 'invalid', message: 'agentReplyConcurrency must be a whole number or null' } }, 400)
+    }
+    const { max, source, planId } = await resolveAgentReplyCapacity(auth.workspaceId)
+    if (raw !== null && (raw < 1 || raw > max)) {
+      const planName = planId.charAt(0).toUpperCase() + planId.slice(1)
+      return c.json({
+        error: {
+          code: 'above_max',
+          message: source === 'local'
+            ? `Choose between 1 and ${max} agents at once.`
+            : `Your ${planName} plan allows at most ${max} agents working at once. Upgrade to raise it.`,
+        },
+      }, 400)
+    }
+    try {
+      await db.workspace.update({ where: { id: auth.workspaceId }, data: { agentReplyConcurrency: raw } })
+      invalidateAgentReplyCapacity(auth.workspaceId)
+      // A raised limit should start the replies that were waiting on it, not
+      // wait for the next run to release a slot.
+      await drainAgentReplyWaiters(auth.workspaceId).catch(() => {})
+      const [capacity, snapshot] = await Promise.all([
+        resolveAgentReplyCapacity(auth.workspaceId),
+        slotSnapshot(auth.workspaceId),
+      ])
+      return c.json({
+        ...capacity,
+        configured: raw,
+        running: snapshot.running,
+        parked: snapshot.parked,
+        queued: snapshot.queued,
+        canManage: true,
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
 
   // ─── Workspace-level ─────────────────────────────────────────────────────
 
   router.get('/workspaces/:workspaceId/conversations', async (c) => {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
-    return c.json({ conversations: await listConversationsForUser(auth.workspaceId, auth.userId) })
+    // `since` is the reconnect/foreground catch-up: only what changed, merged
+    // into the list the client already has, instead of a full re-download.
+    const sinceRaw = c.req.query('since')
+    const parsed = sinceRaw ? new Date(sinceRaw) : null
+    const since = parsed && !Number.isNaN(parsed.getTime()) ? parsed : undefined
+    return c.json({
+      conversations: await listConversationsForUser(auth.workspaceId, auth.userId, { since }),
+      syncedAt: new Date().toISOString(),
+    })
   })
 
   /** Approvals agents are waiting on that this person can answer (viewers see none). */
@@ -210,6 +321,32 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if ((await getWorkspaceRole(auth.workspaceId, auth.userId)) === 'viewer') return c.json({ approvals: [] })
     try {
       return c.json({ approvals: await listPendingApprovals(auth.workspaceId, auth.userId) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Questions agents asked in channels this person can read. `scope=mine` (default) is the ones for
+   * them; `status` is open (default), answered, or all. Open lists also carry pending approvals, so the
+   * inbox shows everything waiting on this person in one place.
+   */
+  router.get('/workspaces/:workspaceId/questions', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const status = c.req.query('status')
+    const scope = c.req.query('scope') === 'all' ? 'all' : 'mine'
+    try {
+      const result = await listQuestions(auth.workspaceId, auth.userId, {
+        status: status === 'answered' || status === 'all' ? status : 'open',
+        scope,
+      })
+      const role = await getWorkspaceRole(auth.workspaceId, auth.userId)
+      // Approvals are best-effort here so a failure never hides the questions.
+      const approvals = status === 'answered' || role === 'viewer'
+        ? []
+        : await listPendingApprovals(auth.workspaceId, auth.userId).catch(() => [])
+      return c.json({ questions: result.items, openCount: result.openCount, approvals })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -275,6 +412,17 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     return c.json({ card })
   })
 
+  /** Profile card for a person: identity, status and local time. */
+  router.get('/workspaces/:workspaceId/user-card', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const userId = c.req.query('userId')?.trim()
+    if (!userId) return c.json({ error: { code: 'invalid_request', message: 'userId is required' } }, 400)
+    const card = await loadUserCard(auth.workspaceId, userId, auth.userId)
+    if (!card) return c.json({ error: { code: 'not_found', message: 'Person not found' } }, 404)
+    return c.json({ card })
+  })
+
   /**
    * Change an agent's Shogo buddy look. `:key` is `ws` (the workspace agent) or a project id;
    * `{ look: null }` goes back to the look generated from the agent's id.
@@ -295,7 +443,11 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
     const ids = (c.req.query('userIds') ?? '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 500)
-    return c.json({ presence: await getPresence(auth.workspaceId, ids) })
+    const [presence, inHuddle] = await Promise.all([
+      getPresence(auth.workspaceId, ids),
+      huddleUserIds(auth.workspaceId, ids),
+    ])
+    return c.json({ presence, huddle: [...inHuddle] })
   })
 
   router.get('/workspaces/:workspaceId/conversations/search', async (c) => {
@@ -427,6 +579,17 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     }
   })
 
+  router.delete('/conversations/:conversationId', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      await deleteConversation(c.req.param('conversationId'), userId)
+      return c.json({ ok: true })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
   router.post('/conversations/:conversationId/join', async (c) => {
     const userId = await requireUser(c)
     if (userId instanceof Response) return userId
@@ -536,6 +699,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const body = await readJson(c)
     try {
       const threadRootId = typeof body.threadRootId === 'string' ? body.threadRootId : null
+      const linkPreviewsOff = normalizeLinkPreviewOptOuts(body.linkPreviewsOff)
       const access = await requirePost(c.req.param('conversationId'), userId, { threadReply: !!threadRootId })
       if (!access.membership && (access.conversation.kind === 'public' || access.conversation.kind === 'activity')) {
         await joinConversation(access.conversation.id, userId)
@@ -549,6 +713,10 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         alsoSentToChannel: body.alsoSentToChannel === true && access.conversation.kind !== 'activity',
         clientMsgId: typeof body.clientMsgId === 'string' ? body.clientMsgId.slice(0, 100) : null,
         attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
+        // The sender declined a preview for some of this message's links (they
+        // point into a closed conversation). Storing the refusal — never the
+        // preview — is what keeps the decision, and only the decision, here.
+        blocks: linkPreviewsOff.length ? { linkPreviewsOff } : undefined,
       })
       void afterMessagePosted(result, { actorUserId: userId, origin: 'app' })
       return c.json({ message: result.message }, result.duplicate ? 200 : 201)
@@ -562,7 +730,12 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if (userId instanceof Response) return userId
     const body = await readJson(c)
     try {
-      return c.json(await markRead(c.req.param('conversationId'), userId, typeof body.seq === 'number' ? body.seq : undefined))
+      return c.json(await markRead(
+        c.req.param('conversationId'),
+        userId,
+        typeof body.seq === 'number' ? body.seq : undefined,
+        { advance: body.advance === true },
+      ))
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -608,6 +781,8 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
           size: file.size,
           width: width ?? null,
           height: height ?? null,
+          durationMs: parseAttachmentDurationMs(form?.get('durationMs')),
+          peaks: parseAttachmentPeaks(form?.get('peaks')),
         },
       })
       if (canExtract(mimeType, name, file.size)) {
@@ -617,8 +792,30 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         attachment: {
           id: row.id, name: row.name, mimeType: row.mimeType, size: row.size,
           width: row.width, height: row.height, url: conversationFileUrl(row),
+          durationMs: row.durationMs, peaks: row.peaks,
+          // Extraction has not run yet, so this is null on a fresh upload; the
+          // message (or a later `message.updated`) carries the real preview.
+          preview: publicPreview(row.previewData),
         },
       }, 201)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  router.get('/conversations/:conversationId/files', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      const access = await loadAccess(c.req.param('conversationId'), userId)
+      const { files, nextCursor } = await listFiles({ kind: 'user', userId }, access.conversation.workspaceId, {
+        conversationId: access.conversation.id,
+        q: c.req.query('q') || undefined,
+        kind: parseFileKind(c.req.query('kind')),
+        cursor: c.req.query('cursor') || undefined,
+        limit: numberParam(c.req.query('limit')),
+      })
+      return c.json({ files: files.map(serializeFileForUser), nextCursor })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -721,6 +918,46 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     }
   })
 
+  /**
+   * Answer a question an agent asked. The answer goes to the thread as this
+   * person, together with their other answers on the card (`relay: 'held'`
+   * until they've closed the rest or gone idle).
+   */
+  router.post('/conversation-messages/:messageId/questions/:questionId/answer', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    const limited = await rateLimited(c, `msg:${userId}`, CHAT_RATE_LIMITS.message)
+    if (limited) return limited
+    const body = await readJson(c)
+    try {
+      const result = await answerQuestion({
+        messageId: c.req.param('messageId'),
+        questionId: c.req.param('questionId'),
+        userId,
+        answer: typeof body.answer === 'string' ? body.answer : undefined,
+        secret: typeof body.secret === 'string' ? body.secret : undefined,
+      })
+      const { secretCipher: _secret, ...question } = result.question
+      return c.json({ message: result.message, question, relay: result.relay, reply: result.reply?.message ?? null })
+    } catch (err) {
+      if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      return errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversation-messages/:messageId/questions/:questionId/dismiss', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      const result = await dismissQuestion({ messageId: c.req.param('messageId'), questionId: c.req.param('questionId'), userId })
+      const { secretCipher: _secret, ...question } = result.question
+      return c.json({ message: result.message, question })
+    } catch (err) {
+      if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      return errorResponse(c, err)
+    }
+  })
+
   /** What an agent did before its final message, trimmed for the channel (see agent-work-log). */
   router.get('/conversation-messages/:messageId/work', async (c) => {
     const userId = await requireUser(c)
@@ -734,6 +971,69 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       const log = await loadWorkLog(row)
       if (!log) return c.json({ error: { code: 'not_found', message: 'No work log for this message' } }, 404)
       return c.json(log)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  // ─── Files (viewer) ──────────────────────────────────────────────────────
+  //
+  // The file viewer asks what a file is before it renders anything, and asks
+  // for its text when the file is one it can show. Both go through the same
+  // visibility rules as the Files list instead of trusting the capability URL,
+  // so a file from a deleted message, another workspace, or a channel the
+  // reader isn't in is a plain 404 — an id can't be probed by watching which
+  // error comes back. Neither route ever redirects: the S3 redirect on the
+  // capability URL is for downloading, and a viewer must not land in a tab.
+
+  router.get('/conversation-files/:attachmentId/meta', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      const principal: FilePrincipal = { kind: 'user', userId }
+      const { attachment, conversation } = await loadVisibleFile(principal, null, c.req.param('attachmentId'))
+      return c.json({
+        file: {
+          id: attachment.id,
+          conversationId: attachment.conversationId,
+          messageId: attachment.messageId,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          width: attachment.width ?? null,
+          height: attachment.height ?? null,
+          durationMs: attachment.durationMs ?? null,
+          peaks: attachment.peaks ?? null,
+          preview: publicPreview(attachment.previewData),
+          createdAt: attachment.createdAt,
+          url: conversationFileUrl(attachment),
+          // Text the server already holds, or could produce on demand — the
+          // viewer only asks the text route for a file it can actually read.
+          hasText:
+            !!attachment.extractedText ||
+            canExtract(attachment.mimeType, attachment.name, attachment.size),
+        },
+        conversation: { id: conversation.id, name: conversation.name ?? null, kind: conversation.kind },
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  router.get('/conversation-files/:attachmentId/text', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      const principal: FilePrincipal = { kind: 'user', userId }
+      const { conversation } = await loadVisibleFile(principal, null, c.req.param('attachmentId'))
+      const text = await readFileText(principal, conversation.workspaceId, c.req.param('attachmentId'), {
+        offset: numberParam(c.req.query('offset')),
+        limit: numberParam(c.req.query('limit')),
+        // `?raw=1` is the file as written, for a client that renders it (a
+        // pasted markdown plan). The default is the tidied search text.
+        raw: c.req.query('raw') === '1',
+      })
+      return c.json(text)
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -756,15 +1056,45 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     }
     if (!allowed) return c.json({ error: { code: 'forbidden', message: 'No access to this file' } }, 403)
     try {
-      const file = await readConversationFile(row.storageKey)
+      // `?dl=1` is the download action on an attachment card. Pictures, video,
+      // audio and PDFs are served `inline` so they can be previewed in place,
+      // so following one of those links would open the file rather than save
+      // it — this is what makes the card's download actually download.
+      const download = c.req.query('dl') === '1'
+      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined)
       if (file.kind === 'redirect') return c.redirect(file.url, 302)
-      const inline = /^(image|video|audio)\//.test(row.mimeType) || row.mimeType === 'application/pdf'
-      return new Response(file.bytes as any, {
+      const inline = !download && (/^(image|video|audio)\//.test(row.mimeType) || row.mimeType === 'application/pdf')
+      const disposition = `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`
+      const baseHeaders = {
+        'Content-Type': row.mimeType,
+        'Content-Disposition': disposition,
+        'Cache-Control': 'private, max-age=300',
+        'Accept-Ranges': 'bytes',
+      }
+      // Served locally the whole file is in memory, so a range is a slice of
+      // it. Cloud mode redirects to S3 above, which handles ranges itself.
+      const bytes = file.bytes as Uint8Array
+      const range = parseByteRange(c.req.header('range'), bytes.byteLength)
+      if (range.kind === 'unsatisfiable') {
+        return new Response(null, {
+          status: 416,
+          headers: { ...baseHeaders, 'Content-Range': `bytes */${bytes.byteLength}` },
+        })
+      }
+      if (range.kind === 'range') {
+        return new Response(bytes.slice(range.start, range.end + 1) as any, {
+          status: 206,
+          headers: {
+            ...baseHeaders,
+            'Content-Length': String(range.end - range.start + 1),
+            'Content-Range': `bytes ${range.start}-${range.end}/${bytes.byteLength}`,
+          },
+        })
+      }
+      return new Response(bytes as any, {
         headers: {
-          'Content-Type': row.mimeType,
-          'Content-Length': String(file.bytes.byteLength),
-          'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`,
-          'Cache-Control': 'private, max-age=300',
+          ...baseHeaders,
+          'Content-Length': String(bytes.byteLength),
         },
       })
     } catch {
@@ -793,7 +1123,23 @@ export function textContains(q: string) {
   return isLocalMode() ? { contains: q } : { contains: q, mode: 'insensitive' as const }
 }
 
+/**
+ * The conversation an agent names: a channel name (with or without `#`), a
+ * conversation id, or `@person` (an email or user id) for its DM with them.
+ * Null when it doesn't exist or the agent can't see it.
+ */
 export async function resolveAgentConversation(workspaceId: string, channel: string, projectId: string | null) {
+  if (channel.startsWith('@')) {
+    const who = channel.slice(1).trim()
+    if (!who) return null
+    const member = await db.member.findFirst({
+      where: { workspaceId, projectId: null, OR: [{ userId: who }, { user: { email: who.toLowerCase() } }] },
+      select: { userId: true },
+    })
+    if (!member) return null
+    return db.conversation.findFirst({ where: { workspaceId, dmKey: `a:${member.userId}:${projectId ?? 'ws'}` } })
+  }
+  channel = channel.replace(/^#/, '')
   const byId = await db.conversation.findUnique({ where: { id: channel } }).catch(() => null)
   const conversation = byId && byId.workspaceId === workspaceId
     ? byId
@@ -805,6 +1151,11 @@ export async function resolveAgentConversation(workspaceId: string, channel: str
     select: { id: true },
   })
   return member ? conversation : null
+}
+
+const AGENT_MESSAGE_INCLUDE = {
+  authorUser: { select: { name: true, email: true } },
+  attachments: { select: { id: true, name: true, mimeType: true, size: true } },
 }
 
 async function renderForAgent(rows: any[]) {
@@ -825,11 +1176,16 @@ async function renderForAgent(rows: any[]) {
       ? `${r.authorUser?.name || r.authorUser?.email || 'Someone'} (<@u:${r.authorUserId}>)`
       : r.authorType === 'agent' ? `${r.authorAgentRef?.name ?? 'Agent'} (agent)` : r.authorType,
     authorType: r.authorType,
-    text: renderMentionsAsText(r.text, names),
+    text: [renderMentionsAsText(r.text, names), questionsToMarkdown(questionsOf(r.blocks), names)].filter(Boolean).join('\n\n'),
     threadRootId: r.threadRootId ?? null,
     replyCount: r.replyCount ?? 0,
+    files: (r.attachments ?? []).map((a: any) => ({ id: a.id, name: a.name, mimeType: a.mimeType, size: a.size })),
     createdAt: r.createdAt,
   }))
+}
+
+function docUrl(conversationId: string): string {
+  return `${getFrontendUrl()}/c/${encodeURIComponent(conversationId)}?doc=1`
 }
 
 export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono {
@@ -876,17 +1232,38 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     return c.json(await listTeamChannels(auth.workspaceId))
   })
 
+  /**
+   * The project whose manifest a team-channel write comes from (`system`,
+   * sent by `system_apply`). Runtimes that predate it send none, and their
+   * channels stay unmarked rather than marked under a key nothing releases.
+   */
+  const systemKey = (raw: unknown) => (typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 200) : undefined)
+
   router.put(`${base}/team-channels/:name`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
     const body = await readJson(c)
     try {
-      const result = await upsertTeamChannel(auth.workspaceId, { ...body, name: c.req.param('name') })
+      const onBehalfOfUserId = typeof body.onBehalfOfUserId === 'string' && body.onBehalfOfUserId.trim() ? body.onBehalfOfUserId.trim() : undefined
+      const result = await upsertTeamChannel(auth.workspaceId, { ...body, name: c.req.param('name'), onBehalfOfUserId }, systemKey(body.system))
       return c.json(result, result.created ? 201 : 200)
     } catch (err) {
       if (err instanceof TeamChannelError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
       return errorResponse(c, err)
     }
+  })
+
+  /** `system_apply` sends every channel its manifest declares: those are protected, the rest it had declared are released. */
+  router.post(`${base}/team-channels/ownership`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    const system = systemKey(body.system)
+    const declared = Array.isArray(body.declared) ? body.declared.filter((n: unknown): n is string => typeof n === 'string') : null
+    if (!system || !declared) {
+      return c.json({ error: { code: 'invalid', message: 'system and a declared list of channel names are required' } }, 400)
+    }
+    return c.json(await syncTeamChannelOwnership(auth.workspaceId, system, declared))
   })
 
   /** Chain for an agent's tool post: joins the reply it's running in, and inherits the thread's run id. */
@@ -949,6 +1326,101 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     return c.json({ results: rendered.map((r, i) => ({ ...r, channel: rows[i].conversation?.name ?? null })) })
   })
 
+  // ─── Files ───────────────────────────────────────────────────────────────
+  // Visibility is decided by conversation-file-access, the same rules the Files pane uses.
+
+  const FILE_NOT_VISIBLE = { error: { code: 'not_found', message: 'Conversation not found or not visible to this agent' } }
+
+  /** The agent principal, and the conversation id it named (null when none was named, undefined when it can't see it). */
+  async function fileScope(c: any, auth: AgentChannelAuthContext) {
+    const projectId = await agentIdentity(auth, c.req.query('projectId'))
+    const principal: FilePrincipal = { kind: 'agent', projectId }
+    const ref = c.req.query('conversation')?.trim()
+    if (!ref) return { principal, conversationId: null as string | null }
+    const conversation = await resolveAgentConversation(auth.workspaceId, ref, projectId)
+    return { principal, conversationId: conversation?.id as string | undefined }
+  }
+
+  router.get(`${base}/files`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const { principal, conversationId } = await fileScope(c, auth)
+    if (conversationId === undefined) return c.json(FILE_NOT_VISIBLE, 404)
+    const conversations = await listFileConversations(principal, auth.workspaceId)
+    const folders = new Map<string, string>(conversations.map((conv: any) => [conv.id, conv.folder]))
+    const { files, nextCursor } = await listFiles(principal, auth.workspaceId, {
+      conversationId: conversationId ?? undefined,
+      q: c.req.query('q') || undefined,
+      kind: parseFileKind(c.req.query('kind')),
+      cursor: c.req.query('cursor') || undefined,
+      limit: numberParam(c.req.query('limit')),
+    })
+    return c.json({ conversations, files: files.map((f: any) => serializeFileForAgent(f, folders)), nextCursor })
+  })
+
+  router.get(`${base}/files/search`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const { principal, conversationId } = await fileScope(c, auth)
+    if (conversationId === undefined) return c.json(FILE_NOT_VISIBLE, 404)
+    const q = (c.req.query('q') ?? '').trim()
+    if (!q) return c.json({ results: [], semantic: false })
+    const [{ results, semantic }, conversations] = await Promise.all([
+      searchFiles(principal, auth.workspaceId, q, { conversationId: conversationId ?? undefined, limit: numberParam(c.req.query('limit')) }),
+      listFileConversations(principal, auth.workspaceId),
+    ])
+    const byId = new Map(conversations.map((conv: any) => [conv.id, conv]))
+    return c.json({
+      semantic,
+      results: results.map((r) => {
+        const conv: any = byId.get(r.conversationId)
+        return { ...r, conversation: conv ? { id: conv.id, kind: conv.kind, name: conv.name } : null, folder: conv?.folder ?? r.conversationId }
+      }),
+    })
+  })
+
+  router.get(`${base}/files/:fileId/text`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const { principal } = await fileScope(c, auth)
+    try {
+      const text = await readFileText(principal, auth.workspaceId, c.req.param('fileId'), {
+        offset: numberParam(c.req.query('offset')),
+        limit: numberParam(c.req.query('limit')),
+      })
+      return c.json(text)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  router.get(`${base}/files/:fileId/content`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const { principal } = await fileScope(c, auth)
+    try {
+      const { attachment, conversation } = await loadVisibleFile(principal, auth.workspaceId, c.req.param('fileId'))
+      const [bytes, conversations] = await Promise.all([
+        loadConversationFileBytes(attachment.storageKey),
+        listFileConversations(principal, auth.workspaceId),
+      ])
+      const folder = conversations.find((conv: any) => conv.id === conversation.id)?.folder
+      return new Response(bytes as any, {
+        headers: {
+          'Content-Type': attachment.mimeType,
+          'Content-Length': String(bytes.byteLength),
+          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(attachment.name)}`,
+          'X-File-Name': encodeURIComponent(attachment.name),
+          'X-File-Folder': encodeURIComponent(folder ?? conversation.id),
+          'Cache-Control': 'private, no-store',
+        },
+      })
+    } catch (err) {
+      if (err instanceof ConversationError) return errorResponse(c, err)
+      return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+    }
+  })
+
   router.get(`${base}/:channel/messages`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
@@ -961,13 +1433,13 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     const rows = threadRootId
       ? await db.conversationMessage.findMany({
           where: { conversationId: conversation.id, OR: [{ id: threadRootId }, { threadRootId }], deletedAt: null },
-          include: { authorUser: { select: { name: true, email: true } } },
+          include: AGENT_MESSAGE_INCLUDE,
           orderBy: { seq: 'asc' },
           take: limit,
         })
       : (await db.conversationMessage.findMany({
           where: { conversationId: conversation.id, threadRootId: null, deletedAt: null },
-          include: { authorUser: { select: { name: true, email: true } } },
+          include: AGENT_MESSAGE_INCLUDE,
           orderBy: { seq: 'desc' },
           take: limit,
         })).reverse()
@@ -975,6 +1447,87 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       channel: { id: conversation.id, kind: conversation.kind, name: conversation.name, topic: conversation.topic, lastMessageAt: conversation.lastMessageAt },
       messages: await renderForAgent(rows),
     })
+  })
+
+  router.get(`${base}/:channel/doc`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const projectId = await agentIdentity(auth, c.req.query('projectId'))
+    const conversation = await resolveAgentConversation(auth.workspaceId, c.req.param('channel'), projectId)
+    if (!conversation) return c.json({ error: { code: 'not_found', message: 'Channel not found or not visible to this agent' } }, 404)
+    if (await isolatedIn(conversation.id, projectId)) return c.json(ISOLATED_ERROR, 403)
+    try {
+      const archiveId = c.req.query('archive_id')
+      if (archiveId) {
+        return c.json({ channel: { id: conversation.id, name: conversation.name }, archive: await getArchiveForAgent(conversation, archiveId) })
+      }
+      const doc = await getDocForAgent(conversation)
+      const wantArchives = c.req.query('include_archive') === '1' || c.req.query('include_archive') === 'true'
+      const archives = wantArchives ? await listArchivesForAgent(conversation) : undefined
+      return c.json({
+        channel: { id: conversation.id, name: conversation.name },
+        doc,
+        url: docUrl(conversation.id),
+        ...(archives ? { archives } : {}),
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Write to a channel doc as an agent. `archive_section` moves one section into
+   * the doc's archive (see SHO-62); every response carries the doc's budget.
+   */
+  router.put(`${base}/:channel/doc`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    const projectId = await agentIdentity(auth, body.projectId)
+    const limited = await rateLimited(c, `agent:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.agentPost)
+    if (limited) return limited
+    const conversation = await resolveAgentConversation(auth.workspaceId, c.req.param('channel'), projectId)
+    if (!conversation) return c.json({ error: { code: 'not_found', message: 'Channel not found or not visible to this agent' } }, 404)
+    if (await isolatedIn(conversation.id, projectId)) return c.json(ISOLATED_ERROR, 403)
+    const mode = ['append', 'patch_section', 'archive_section'].includes(body.mode) ? body.mode : 'replace'
+    try {
+      const { doc, archive } = await updateDocAsAgent(conversation, projectId, {
+        mode,
+        content: body.content,
+        title: typeof body.title === 'string' ? body.title : undefined,
+        section: typeof body.section === 'string' ? body.section : undefined,
+        baseVersion: Number.isInteger(body.baseVersion) ? body.baseVersion : undefined,
+        force: body.force === true,
+      })
+      return c.json({ doc, url: docUrl(conversation.id), ...(archive ? { archive } : {}) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /** An agent uploads a file to attach to its next post (`attachmentIds`) or to link from markdown. */
+  router.post(`${base}/:channel/attachments`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    try {
+      const { file, form } = await readAgentUpload(c)
+      const projectId = await agentIdentity(auth, form.get('projectId'))
+      const limited = await rateLimited(c, `agent:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.agentPost)
+      if (limited) return limited
+      const conversation = await resolveAgentConversation(auth.workspaceId, c.req.param('channel'), projectId)
+      if (!conversation || conversation.kind === 'activity' || conversation.archivedAt) {
+        return c.json({ error: { code: 'not_found', message: 'Channel not found or not open to agent posts' } }, 404)
+      }
+      const attachment = await storeAgentAttachment({
+        workspaceId: auth.workspaceId,
+        conversationId: conversation.id,
+        agentRef: projectId ? `project:${projectId}` : 'workspace',
+        file,
+      })
+      return c.json({ attachment }, 201)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
   })
 
   router.post(`${base}/:channel/messages`, async (c) => {
@@ -995,21 +1548,34 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       if (body.card !== undefined && body.card !== null && !card) {
         return c.json({ error: { code: 'invalid_card', message: 'A status card needs a title' } }, 400)
       }
+      const questions = normalizeQuestionDrafts(body.questions)
       // A card is routine by default; agents mark it a decision or alert when it needs a person.
-      const kind = normalizeKind(body.kind) ?? (card ? 'status' : null)
+      const kind = normalizeKind(body.kind) ?? (questions.length ? 'decision' : card ? 'status' : null)
       const note = String(body.text ?? '')
+      const blocks = blocksForKind({ kind, card })
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: await resolveFriendlyMentions(auth.workspaceId, card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note, projectId),
+        // Plain `@Name` is resolved at the insert point (`conversation.service.postMessage`).
+        text: card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note,
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         threadRootId,
         agentChain,
-        blocks: blocksForKind({ kind, card }),
+        // The designer leaves alone a message whose agent asked its own questions.
+        blocks: questions.length ? { ...blocks, questionScan: 'explicit' } : blocks,
+        attachmentIds: attachmentIdsFrom(body.attachmentIds),
       })
       const rootId = result.row.threadRootId ?? result.row.id
       if (!result.duplicate && (body.owner === true || (!result.row.threadRootId && body.owner !== false))) {
         await setThreadOwner(rootId, { projectId }, agentChain?.runId)
       }
+      if (!result.duplicate && questions.length) {
+        await attachQuestions({ messageId: result.row.id, drafts: questions, source: 'agent' })
+          .catch((err) => console.warn('[AgentChannels] questions failed:', (err as Error).message))
+      }
+      // Created before dispatch, so a fast reply cannot finish ahead of its task.
+      const tasks = body.trackReplies === true && typeof body.sessionId === 'string' && !result.duplicate
+        ? await trackedReplies(auth.workspaceId, body.sessionId, result, { conversationId: conversation.id, threadRootId: rootId })
+        : []
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
       return c.json({
         message: {
@@ -1018,12 +1584,36 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
           threadRootId: rootId,
           runId: agentChain?.runId ?? null,
           url: `${getFrontendUrl()}/c/${encodeURIComponent(conversation.id)}?thread=${encodeURIComponent(rootId)}`,
+          ...(tasks.length ? { tasks } : {}),
         },
+        ...(result.mentionWarnings?.length ? { mention_warnings: result.mentionWarnings } : {}),
       }, 201)
     } catch (err) {
       return errorResponse(c, err)
     }
   })
+
+  /** Background tasks for the agents a post hands work to, so the poster can wait for their replies. */
+  async function trackedReplies(
+    workspaceId: string,
+    chatSessionId: string,
+    result: any,
+    where: { conversationId: string; threadRootId: string },
+  ) {
+    try {
+      const targets = await agentPostTargets(result)
+      if (!targets.length) return []
+      const agents = await Promise.all(targets.map(async (t) => ({ projectId: t.projectId, name: await agentDisplayName(workspaceId, t.projectId) })))
+      return await createReplyTasks(chatSessionId, result.row.id, agents, {
+        conversationId: where.conversationId,
+        threadRootId: where.threadRootId,
+        workspaceId,
+      })
+    } catch (err) {
+      console.warn('[AgentChannels] reply tracking failed:', (err as Error).message)
+      return []
+    }
+  }
 
   /** An agent edits one of its own messages in place: its text, kind, or status card. */
   router.patch(`${base}/messages/:messageId`, async (c) => {
@@ -1037,16 +1627,49 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (body.card !== undefined && body.card !== null && !card) {
       return c.json({ error: { code: 'invalid_card', message: 'A status card needs a title' } }, 400)
     }
+    const questions = normalizeQuestionDrafts(body.questions)
     try {
-      const { message } = await updateAgentMessage({
-        messageId: c.req.param('messageId'),
-        workspaceId: auth.workspaceId,
-        projectId,
-        text: typeof body.text === 'string' ? await resolveFriendlyMentions(auth.workspaceId, body.text, projectId) : undefined,
-        kind: normalizeKind(body.kind),
-        card,
-      })
+      // An edit never goes through `postMessage`, so `updateAgentMessage` resolves plain `@Name` for it.
+      const text = typeof body.text === 'string' ? body.text : undefined
+      let message: any
+      if (text !== undefined || card || normalizeKind(body.kind)) {
+        ;({ message } = await updateAgentMessage({
+          messageId: c.req.param('messageId'),
+          workspaceId: auth.workspaceId,
+          projectId,
+          text,
+          kind: normalizeKind(body.kind),
+          card,
+        }))
+      }
+      if (questions.length) {
+        const row = await db.conversationMessage.findUnique({ where: { id: c.req.param('messageId') } })
+        const own = row && row.workspaceId === auth.workspaceId && row.authorType === 'agent' && (row.authorAgentRef?.projectId ?? null) === projectId
+        if (!own) return c.json({ error: { code: 'forbidden', message: 'Agents can only add questions to their own messages' } }, 403)
+        await attachQuestions({ messageId: row.id, drafts: questions, source: 'agent' })
+        message ??= row
+      }
+      if (!message) return c.json({ error: { code: 'empty', message: 'Pass text, card, kind or questions to change' } }, 400)
       return c.json({ message: { id: message.id, conversationId: message.conversationId } })
+    } catch (err) {
+      if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      return errorResponse(c, err)
+    }
+  })
+
+  /** The value a person entered for one of this agent's `secret` questions. */
+  router.get(`${base}/messages/:messageId/questions/:questionId/secret`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const projectId = await agentIdentity(auth, c.req.query('projectId'))
+    try {
+      const secret = await readQuestionSecret({
+        workspaceId: auth.workspaceId,
+        messageId: c.req.param('messageId'),
+        questionId: c.req.param('questionId'),
+        projectId,
+      })
+      return c.json(secret)
     } catch (err) {
       if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
       return errorResponse(c, err)
@@ -1064,7 +1687,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (!conversation) return c.json({ error: { code: 'not_found', message: 'Channel not found or not visible to this agent' } }, 404)
     try {
       const { addUserMembersAsAgent } = await import('../services/conversation.service')
-      const added = await addUserMembersAsAgent(conversation, users.slice(0, 50))
+      const added = await addUserMembersAsAgent(conversation, users.slice(0, 50), { projectId })
       return c.json({ added, channel: { id: conversation.id, name: conversation.name } })
     } catch (err) {
       return errorResponse(c, err)
@@ -1108,7 +1731,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       }
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? ''), projectId),
+        // Plain `@Name` is resolved at the insert point (`conversation.service.postMessage`).
+        text: String(body.text ?? ''),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         agentChain: await postChain(auth.workspaceId, projectId, body, null),
         ...(onBehalfOf ? { blocks: { onBehalfOf } } : {}),
@@ -1124,6 +1748,206 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     } catch (err) {
       return errorResponse(c, err)
     }
+  })
+
+  // ─── Running agents ──────────────────────────────────────────────────────
+  // The workspace agent sees and stops agent runs for the person who asked,
+  // with exactly the rights that person has over the Stop button.
+
+  /** The person behind the call, or a 403 when the caller is not the workspace agent or carries no signed requester. */
+  async function stopRequester(c: any, auth: AgentChannelAuthContext, claimedProjectId: unknown): Promise<string | Response> {
+    const projectCaller = typeof auth.projectId === 'string'
+      || (auth.projectId === undefined && typeof claimedProjectId === 'string' && !!claimedProjectId)
+    if (projectCaller) {
+      return c.json({ error: { code: 'workspace_agent_only', message: 'Only the workspace agent can see and stop other agents' } }, 403)
+    }
+    const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), auth.workspaceId).catch(() => null)
+    if (!ticket) {
+      return c.json({ error: { code: 'requester_required', message: 'A signed requester is required to see or stop agents' } }, 403)
+    }
+    return ticket.userId
+  }
+
+  type Access = Awaited<ReturnType<typeof loadAccess>>
+
+  async function accessOrNull(conversationId: string, userId: string, cache: Map<string, Access | null>): Promise<Access | null> {
+    if (!cache.has(conversationId)) cache.set(conversationId, await loadAccess(conversationId, userId).catch(() => null))
+    return cache.get(conversationId) ?? null
+  }
+
+  /** A channel (name or id) the requester can read. */
+  async function requesterConversation(workspaceId: string, ref: string, userId: string, cache: Map<string, Access | null>) {
+    const key = ref.replace(/^#/, '')
+    const byId = await db.conversation.findUnique({ where: { id: key } }).catch(() => null)
+    const conversation = byId && byId.workspaceId === workspaceId
+      ? byId
+      : await db.conversation.findFirst({ where: { workspaceId, slug: key.toLowerCase() } })
+    if (!conversation) return null
+    const access = await accessOrNull(conversation.id, userId, cache)
+    return access ? { conversation, access } : null
+  }
+
+  const RUN_NOT_VISIBLE = { error: { code: 'not_found', message: 'Channel not found or not visible to the person who asked' } }
+  const inThread = (threadRootId: string) => ({ OR: [{ threadRootId }, { id: threadRootId }] })
+  const optionalString = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
+
+  /**
+   * One run, as `GET running-agents`, `agent_runs_list` and the agent tools see
+   * it. `state` says whether it is working, parked on a tool, or still in line.
+   */
+  async function runView(row: any, access: Access) {
+    const queuedAt = (row.blocks as { queued?: { since?: string } } | null | undefined)?.queued?.since ?? null
+    const slot = await agentReplySlotState(row.workspaceId, row.id).catch(() => null)
+    const waiting = slot?.state === 'waiting'
+    const queued = !!queuedAt || slot?.state === 'queued'
+    return {
+      messageId: row.id,
+      agent: row.authorAgentRef?.name ?? 'Agent',
+      projectId: row.authorAgentRef?.projectId ?? null,
+      channel: { id: row.conversationId, name: row.conversation?.name ?? null, kind: row.conversation?.kind ?? null },
+      threadRootId: row.threadRootId ?? null,
+      startedAt: row.createdAt,
+      preview: String(row.text ?? '').trim().slice(-200),
+      canStop: access.role !== 'viewer',
+      state: queued ? 'queued' : waiting ? 'waiting' : 'running',
+      position: queued ? slot?.position ?? null : null,
+      queuedAt: queuedAt ?? (queued ? row.createdAt : null),
+    }
+  }
+
+  router.get(`${base}/running-agents`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const userId = await stopRequester(c, auth, c.req.query('projectId'))
+    if (userId instanceof Response) return userId
+    const cache = new Map<string, Access | null>()
+    const channel = optionalString(c.req.query('channel'))
+    const threadRootId = optionalString(c.req.query('threadRootId'))
+    const sessionId = optionalString(c.req.query('sessionId'))
+    let conversationId: string | undefined
+    if (channel) {
+      const target = await requesterConversation(auth.workspaceId, channel, userId, cache)
+      if (!target) return c.json(RUN_NOT_VISIBLE, 404)
+      conversationId = target.conversation.id
+    }
+    const rows = await db.conversationMessage.findMany({
+      where: {
+        workspaceId: auth.workspaceId,
+        authorType: 'agent',
+        agentStatus: 'running',
+        deletedAt: null,
+        ...(conversationId ? { conversationId } : {}),
+        ...(threadRootId ? inThread(threadRootId) : {}),
+      },
+      include: { conversation: { select: { name: true, kind: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    })
+    const runs = []
+    for (const row of rows) {
+      if (sessionId && row.agentSessionId === sessionId) continue
+      const access = await accessOrNull(row.conversationId, userId, cache)
+      if (access) runs.push(await runView(row, access))
+      if (runs.length >= 50) break
+    }
+    // The pause is part of the answer: a wake that finds nothing to do still
+    // needs to know why nothing starts (SHO-118).
+    const { readWorkspacePause } = await import('../services/workspace-pause.service')
+    return c.json({ runs, paused: await readWorkspacePause(auth.workspaceId) })
+  })
+
+  /** Stop one agent reply (`messageId`), every agent in a thread (`channel` + `threadRootId`), or every lane in the workspace (`scope: 'workspace'`,  which also pauses automatic starts until `resume: true`). */
+  router.post(`${base}/running-agents/stop`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    const userId = await stopRequester(c, auth, body.projectId)
+    if (userId instanceof Response) return userId
+    const cache = new Map<string, Access | null>()
+    const messageId = optionalString(body.messageId)
+    const channel = optionalString(body.channel)
+    const threadRootId = optionalString(body.threadRootId)
+    const sessionId = optionalString(body.sessionId)
+    const scope = optionalString(body.scope)
+    const resume = body.resume === true
+    const include = { conversation: { select: { name: true, kind: true } } }
+
+    if (scope === 'workspace') {
+      const { readWorkspacePause, setWorkspacePause, resumeWorkspaceAgents } = await import('../services/workspace-pause.service')
+      if (resume) {
+        await resumeWorkspaceAgents(auth.workspaceId)
+        return c.json({ paused: null, stopped: [], skipped: [], resumed: true })
+      }
+      await setWorkspacePause(auth.workspaceId, {
+        at: new Date().toISOString(),
+        by: userId,
+        ...(optionalString(body.reason) ? { reason: optionalString(body.reason)! } : {}),
+      })
+      const running = await db.conversationMessage.findMany({
+        where: { workspaceId: auth.workspaceId, authorType: 'agent', agentStatus: 'running', deletedAt: null },
+        include,
+        take: 200,
+      })
+      const stopped: Awaited<ReturnType<typeof runView>>[] = []
+      const skipped: Array<{ messageId: string; reason: 'not_running' | 'self' | 'not_visible' }> = []
+      for (const row of running) {
+        const access = await accessOrNull(row.conversationId, userId, cache)
+        if (!access) {
+          skipped.push({ messageId: row.id, reason: 'not_visible' })
+          continue
+        }
+        if (access.role === 'viewer') {
+          skipped.push({ messageId: row.id, reason: 'not_visible' })
+          continue
+        }
+        if (sessionId && row.agentSessionId === sessionId) {
+          skipped.push({ messageId: row.id, reason: 'self' })
+          continue
+        }
+        await stopAgentReply(row, userId)
+        stopped.push(await runView(row, access))
+      }
+      return c.json({ paused: await readWorkspacePause(auth.workspaceId), stopped, skipped, resumed: false })
+    }
+
+    let rows: any[]
+    if (messageId) {
+      const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include })
+      const access = row && row.workspaceId === auth.workspaceId && row.authorType === 'agent'
+        ? await accessOrNull(row.conversationId, userId, cache)
+        : null
+      if (!access) return c.json({ error: { code: 'not_found', message: 'Agent reply not found' } }, 404)
+      if (access.role === 'viewer') return c.json({ error: { code: 'forbidden', message: 'Viewers cannot stop agents' } }, 403)
+      rows = [row]
+    } else if (channel && threadRootId) {
+      const target = await requesterConversation(auth.workspaceId, channel, userId, cache)
+      if (!target) return c.json(RUN_NOT_VISIBLE, 404)
+      if (target.access.role === 'viewer') return c.json({ error: { code: 'forbidden', message: 'Viewers cannot stop agents' } }, 403)
+      rows = await db.conversationMessage.findMany({
+        where: { conversationId: target.conversation.id, authorType: 'agent', agentStatus: 'running', deletedAt: null, ...inThread(threadRootId) },
+        include,
+        take: 50,
+      })
+    } else {
+      return c.json({ error: { code: 'invalid_input', message: 'Pass messageId, or channel and threadRootId' } }, 400)
+    }
+    const stopped: Awaited<ReturnType<typeof runView>>[] = []
+    const skipped: Array<{ messageId: string; reason: 'not_running' | 'self' }> = []
+    for (const row of rows) {
+      if (row.agentStatus !== 'running') {
+        skipped.push({ messageId: row.id, reason: 'not_running' })
+        continue
+      }
+      if (sessionId && row.agentSessionId === sessionId) {
+        skipped.push({ messageId: row.id, reason: 'self' })
+        continue
+      }
+      const access = await accessOrNull(row.conversationId, userId, cache)
+      if (!access) continue
+      await stopAgentReply(row, userId)
+      stopped.push(await runView(row, access))
+    }
+    return c.json({ stopped, skipped })
   })
 
   return router

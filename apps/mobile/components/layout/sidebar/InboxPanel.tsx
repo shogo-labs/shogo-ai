@@ -65,7 +65,7 @@ function InboxContent({
         </View>
       ) : (
         <ScrollView className="max-h-[300px]">
-          <Text className="px-4 pb-1.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <Text className="px-4 pb-1.5 pt-1 text-[13px] font-medium text-sidebar-muted-foreground">
             Invitations
           </Text>
           {pendingInvites.map((invite: any) => {

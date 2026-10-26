@@ -3,11 +3,9 @@
 /**
  * Request body for a chat turn. Shared by `ChatPanel` and the desktop island
  * so a turn started from either surface reaches the runtime with the same
- * model, interaction mode, and confirmed-plan handling.
+ * model and confirmed-plan handling.
  */
 import type { PlanData } from "../components/chat/PlanCard"
-
-export type ChatSendInteractionMode = "agent" | "plan" | "ask"
 
 /**
  * Client-generated turn idempotency id, forwarded as `X-Client-Turn-Id`
@@ -49,11 +47,10 @@ export interface ChatSendBodyInput {
   featureId?: string | null
   phase?: string | null
   agentMode: string
-  interactionMode: ChatSendInteractionMode
   dualPlan?: boolean
   clientTurnId?: string
   viewer?: unknown
-  /** A plan the user just confirmed. Forces agent mode for this turn. */
+  /** A plan the user just confirmed; the turn executes it. */
   confirmedPlan?: PlanData | null
   ideContext?: unknown
   references?: readonly unknown[]
@@ -72,7 +69,6 @@ export function buildChatSendBody(input: ChatSendBodyInput): Record<string, unkn
     projectId: input.projectId,
     focusedProjectId: input.focusedProjectId,
     agentMode: input.agentMode,
-    interactionMode: input.interactionMode,
     dualPlan: input.dualPlan,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(input.clientTurnId !== undefined ? { clientTurnId: input.clientTurnId } : {}),
@@ -80,7 +76,6 @@ export function buildChatSendBody(input: ChatSendBodyInput): Record<string, unkn
   }
   if (input.confirmedPlan) {
     body.confirmedPlan = normalizePlanData(input.confirmedPlan)
-    body.interactionMode = "agent"
   }
   if (input.ideContext) body.ideContext = input.ideContext
   if (input.references && input.references.length > 0) body.references = input.references

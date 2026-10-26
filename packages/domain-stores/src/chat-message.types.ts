@@ -18,6 +18,7 @@ export interface ChatMessageType {
   createdAt: Date
   agent: string
   model?: string
+  authorUserId?: string
 }
 
 export interface ChatMessageCreateInput {
@@ -28,6 +29,7 @@ export interface ChatMessageCreateInput {
   parts?: string
   agent?: string
   model?: string
+  authorUserId?: string
 }
 
 export interface ChatMessageUpdateInput {
@@ -38,4 +40,5 @@ export interface ChatMessageUpdateInput {
   parts?: string
   agent?: string
   model?: string
+  authorUserId?: string
 }

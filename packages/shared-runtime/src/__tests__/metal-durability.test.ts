@@ -247,6 +247,25 @@ describe('a stale durable repo never rewinds newer source', () => {
     }
   })
 
+  test("keepPaths ['.'] succeeds when .gitignore already ignores .shogo/local (2026-10 adopt failures)", async () => {
+    const repo = await durableRepoAt({ 'src/App.tsx': 'v1\n', '.gitignore': '.shogo/local\nchat-files\n' })
+    const ws = await freshGuest({
+      'src/App.tsx': 'v2\n',
+      '.gitignore': '.shogo/local\nchat-files\n',
+      '.shogo/local/state.json': '{}\n',
+      'chat-files/a.txt': 'x\n',
+    })
+    try {
+      const res = await adoptHydratedRepo(ws, stageDurableRepo(repo.archive, ws), { logger: NOOP, keepPaths: ['.'] })
+      expect(res.keptPaths).toEqual(['.'])
+      expect(git(ws, 'show', 'HEAD:src/App.tsx')).toBe('v2')
+      expect(git(ws, 'ls-files', '.shogo/local', 'chat-files')).toBe('')
+    } finally {
+      for (const d of [ws, repo.dir]) rmSync(d, { recursive: true, force: true })
+      rmSync(repo.archive, { force: true })
+    }
+  })
+
   test('a workspace runtime keeps only the members whose source is newer', async () => {
     const repo = await durableRepoAt({ 'm1/App.tsx': 'm1 v1\n', 'm2/App.tsx': 'm2 v3\n', 'README.md': 'root\n' })
     const ws = await freshGuest({ 'm1/App.tsx': 'm1 v2\n', 'm2/App.tsx': 'm2 v2 (older than the repo)\n', 'README.md': 'root\n' })

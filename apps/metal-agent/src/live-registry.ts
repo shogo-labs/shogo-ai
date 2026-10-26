@@ -117,6 +117,8 @@ export interface LiveVmEntry {
   homeUntrustedReason?: string
   /** Per-member writable-state lineage for workspace runtimes. See AssignedVm.memberData. */
   memberData?: Record<string, MemberDataState>
+  /** Mounted member ids for a workspace runtime. See AssignedVm.workspaceMemberIds. */
+  workspaceMemberIds?: string[]
   /**
    * ETag of the durable `.git` archive this VM's repo descends from. Same
    * adopt-on-restart role as `dataParentEtag`.

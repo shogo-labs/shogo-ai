@@ -14,6 +14,7 @@ import { resolve, join } from 'path'
 import { tmpdir } from 'os'
 import { encodeSecurityPolicy } from '../permission-engine'
 import { MODEL_ALIASES, inferProviderFromModel as catalogInferProvider } from '@shogo/model-catalog'
+import type { EvalWorkerEnv } from './workspace-runtime-env'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,6 +98,8 @@ export interface WorkerSetupOptions {
   promptProfile?: string
   evalLabel?: string
   mocks?: Record<string, unknown>
+  /** Company simulation seed, installed with the mocks. */
+  sim?: unknown
   verbose?: boolean
 }
 
@@ -107,7 +110,9 @@ export interface WorkerSetupOptions {
 export const MODEL_MAP: Record<string, string> = { ...MODEL_ALIASES }
 
 export const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  haiku: { input: 0.0000008, output: 0.000004, cacheRead: 0.00000008, cacheWrite: 0.000001 },
+  // `haiku` resolves to Haiku 5.5 — keep in sync with MODEL_DOLLAR_COSTS.
+  haiku: { input: 0.0000001, output: 0.0000005, cacheRead: 0.00000001, cacheWrite: 0.000000125 },
+  'claude-haiku-5-5': { input: 0.0000001, output: 0.0000005, cacheRead: 0.00000001, cacheWrite: 0.000000125 },
   sonnet: { input: 0.000003, output: 0.000015, cacheRead: 0.0000003, cacheWrite: 0.00000375 },
   opus: { input: 0.000005, output: 0.000025, cacheRead: 0.0000005, cacheWrite: 0.00000625 },
   'gpt-5.4-mini': { input: 0.0000011, output: 0.0000044, cacheRead: 0.00000011, cacheWrite: 0.00000138 },
@@ -237,6 +242,36 @@ export async function ensureDockerImage(
 // Worker lifecycle
 // ---------------------------------------------------------------------------
 
+/**
+ * Render the `-e` flags for one `docker run`.
+ *
+ * `baseEnv` is what the worker gets by default; `workspaceEnv` (SHO-195) is the
+ * per-eval delta and may replace or remove base keys.
+ *
+ * `PROJECT_ID` is special: `entrypoint.sh` and the shared server framework
+ * exit 1 without it, so a delta that removes it must not leave the container
+ * without one. When the delta does not set it, the base value is restored —
+ * a plain single-project eval boots as its own runtime instead of dying on
+ * start, which is what happens when the identity strip is applied to every
+ * eval but only workspace evals put a `PROJECT_ID` back.
+ */
+export function buildDockerEnvFlags(
+  baseEnv: Array<[string, string]>,
+  workspaceEnv?: EvalWorkerEnv,
+): string[] {
+  const kept = baseEnv.filter(([key]) => !workspaceEnv?.unset.includes(key))
+  const flags = kept.map(([key, value]) => `-e ${key}=${value}`)
+  const set = workspaceEnv?.set ?? {}
+  if (!('PROJECT_ID' in set) && !kept.some(([key]) => key === 'PROJECT_ID')) {
+    const base = baseEnv.find(([key]) => key === 'PROJECT_ID')
+    if (base) flags.push(`-e ${base[0]}=${base[1]}`)
+  }
+  for (const [key, value] of Object.entries(set)) {
+    flags.push(`-e ${key}=${value}`)
+  }
+  return flags
+}
+
 export async function startDockerWorker(
   id: number,
   config: DockerWorkerConfig,
@@ -245,6 +280,13 @@ export async function startDockerWorker(
     imageOverride?: string
     extraVolumeMounts?: string[]
     containerWorkspaceDir?: string
+    /**
+     * Workspace-runtime env for the eval this worker is about to run
+     * (SHO-195). `set` replaces/adds `-e` flags; `unset` removes the base ones
+     * so the eval genuinely boots as a workspace runtime (no `PROJECT_ID` from
+     * the container name, no inherited identity).
+     */
+    workspaceEnv?: EvalWorkerEnv
   },
 ): Promise<DockerWorker> {
   const hostPort = config.baseHostPort + id
@@ -277,15 +319,20 @@ export async function startDockerWorker(
   }
 
   const wsDir = opts?.containerWorkspaceDir || '/app/workspace'
-  const envFlags = [
-    `-e NODE_ENV=development`,
-    `-e PORT=${config.containerAgentPort}`,
-    `-e WORKSPACE_DIR=${wsDir}`,
-    `-e AGENT_DIR=${wsDir}`,
-    `-e PROJECT_DIR=${wsDir}`,
-    `-e PROJECT_ID=${containerName}`,
-    `-e AGENT_MODEL=${config.model}`,
-    `-e SECURITY_POLICY=${encodeSecurityPolicy({ mode: 'full_autonomy' })}`,
+  // (key, value) pairs rather than a pre-rendered string list, so an eval's
+  // workspace env can replace or remove a base flag instead of racing it
+  // (SHO-195). Docker keeps the last `-e` for a key, `-e KEY=` would leave an
+  // empty-but-set var, so the removal has to happen here.
+  const baseEnv: Array<[string, string]> = [
+    ['NODE_ENV', 'development'],
+    ['PORT', String(config.containerAgentPort)],
+    ['WORKING_MODE', 'managed'],
+    ['WORKSPACE_DIR', wsDir],
+    ['AGENT_DIR', wsDir],
+    ['PROJECT_DIR', wsDir],
+    ['PROJECT_ID', containerName],
+    ['AGENT_MODEL', config.model],
+    ['SECURITY_POLICY', encodeSecurityPolicy({ mode: 'full_autonomy' })],
   ]
 
   if (config.extraPortMappings) {
@@ -295,16 +342,19 @@ export async function startDockerWorker(
       // to override its default — match the published port so the
       // host's runtime checks reach the API server. Keep the legacy
       // SKILL_SERVER_PORT alias for any rolled-back binaries.
-      envFlags.push(`-e API_SERVER_PORT=${m.container}`)
-      envFlags.push(`-e SKILL_SERVER_PORT=${m.container}`)
+      baseEnv.push(['API_SERVER_PORT', String(m.container)])
+      baseEnv.push(['SKILL_SERVER_PORT', String(m.container)])
     }
   }
 
   if (config.envOverrides) {
     for (const [k, v] of Object.entries(config.envOverrides)) {
-      envFlags.push(`-e ${k}=${v}`)
+      baseEnv.push([k, v])
     }
   }
+
+  const workspaceEnv = opts?.workspaceEnv
+  const envFlags = buildDockerEnvFlags(baseEnv, workspaceEnv)
 
   const networkFlags: string[] = []
   if (config.extraNetworks?.length) {
@@ -503,7 +553,7 @@ export async function configureWorkerForTask(
     }
   }
 
-  if (opts.mocks) {
+  if (opts.mocks || opts.sim) {
     if (opts.verbose) console.log(`      [setup] Installing tool mocks...`)
     try {
       // Belt-and-suspenders isolation between evals: explicitly DELETE any
@@ -517,7 +567,7 @@ export async function configureWorkerForTask(
       await fetch(`${base}/agent/tool-mocks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mocks: opts.mocks }),
+        body: JSON.stringify({ mocks: opts.mocks ?? {}, ...(opts.sim ? { sim: opts.sim, defaults: { delayMs: 0 } } : {}) }),
       })
     } catch (e: any) {
       console.warn(`      [setup] Mock install failed: ${e.message}`)

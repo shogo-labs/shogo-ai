@@ -41,6 +41,8 @@ import { api, type AppConsentRequest } from '../../../lib/api'
 import {
   AgentTile,
   AppConsentSheet,
+  PackInstallSheet,
+  type PackPreviewResponse,
   type AppConsent,
   type AgentTileListing,
   CreatorChip,
@@ -246,6 +248,32 @@ export default observer(function MarketplaceDetailScreen() {
   const [consentOpen, setConsentOpen] = useState(false)
   const [consentError, setConsentError] = useState<string | null>(null)
   const [missingToolkits, setMissingToolkits] = useState<string[]>([])
+  const [packPreview, setPackPreview] = useState<PackPreviewResponse | null>(null)
+  const [packOpen, setPackOpen] = useState(false)
+  const [packLoading, setPackLoading] = useState(false)
+  const [packError, setPackError] = useState<string | null>(null)
+  const [packAnswers, setPackAnswers] = useState<Record<string, unknown> | null>(null)
+
+  // The preview is a dry run of the real apply, so re-running it with the
+  // person's answers is what makes the plan say `Review time 18:00` instead of
+  // "the default 07:00 is used". Advisory: a failure leaves the last plan.
+  const refreshPackPreview = useCallback(
+    async (answers: Record<string, unknown>) => {
+      if (!listing?.id || !activeWorkspace?.id) return
+      try {
+        const next = await http.post<PackPreviewResponse>(`/api/marketplace/listings/${listing.id}/install-preview`, {
+          workspaceId: activeWorkspace.id,
+          answers,
+        })
+        if (next.data?.plan) {
+          setPackPreview((prev) => (prev ? { ...prev, plan: next.data!.plan, conflicts: next.data!.conflicts } : next.data))
+        }
+      } catch {
+        // Advisory only.
+      }
+    },
+    [listing?.id, activeWorkspace?.id, http],
+  )
 
   const [userInstall, setUserInstall] = useState<UserInstall | null>(null)
   const [showReviewForm, setShowReviewForm] = useState(false)
@@ -342,8 +370,9 @@ export default observer(function MarketplaceDetailScreen() {
     }
   }, [listing, loadUserInstall, loadRelated])
 
-  const install = useCallback(async (consent?: AppConsent) => {
+  const install = useCallback(async (consent?: AppConsent, answersOverride?: Record<string, unknown>) => {
     if (!activeWorkspace?.id) return
+    const answers = answersOverride ?? packAnswers
     try {
       setInstalling(true)
       setConsentError(null)
@@ -351,12 +380,14 @@ export default observer(function MarketplaceDetailScreen() {
       const res = await http.post<InstallResponse>(`/api/marketplace/${slug}/install`, {
         workspaceId: activeWorkspace.id,
         ...(consent ? { consent } : {}),
+        ...(answers && Object.keys(answers).length ? { answers } : {}),
       })
       const data = res.data
       setConsentOpen(false)
       if (data.checkoutUrl) {
         await Linking.openURL(data.checkoutUrl)
       } else if (data.projectId) {
+        setPackOpen(false)
         router.push(`/(app)/projects/${data.projectId}` as any)
       } else if (data.error) {
         Alert.alert('Install Failed', data.error)
@@ -378,12 +409,36 @@ export default observer(function MarketplaceDetailScreen() {
     } finally {
       setInstalling(false)
     }
-  }, [activeWorkspace?.id, http, slug, router])
+  }, [activeWorkspace?.id, http, slug, router, packAnswers])
 
   const handleInstall = useCallback(async () => {
     if (!listing || !user?.id || !activeWorkspace?.id) {
       Alert.alert('Sign In Required', 'You need to be signed in to install agents.')
       return
+    }
+    // A listing that ships a pack asks its questions before anything is
+    // created. The dry run supplies the questions and the plan; a listing
+    // without a pack returns no questions and installs as it always did.
+    setPackLoading(true)
+    setPackError(null)
+    try {
+      const preview = await http.post<PackPreviewResponse>('/api/marketplace/listings/' + listing.id + '/install-preview', {
+        workspaceId: activeWorkspace.id,
+      })
+      if ((preview.data?.questions?.length ?? 0) > 0) {
+        const already = (preview.data?.conflicts ?? []).find((line) => line.startsWith('Already installed'))
+        if (already) {
+          Alert.alert('Already installed', already)
+          return
+        }
+        setPackPreview(preview.data)
+        setPackOpen(true)
+        return
+      }
+    } catch {
+      // A preview is advisory: if it fails, fall through to the normal install.
+    } finally {
+      setPackLoading(false)
     }
     const consent = slug ? await api.getMarketplaceConsent(http, slug).catch(() => null) : null
     if (consent) {
@@ -1182,6 +1237,21 @@ export default observer(function MarketplaceDetailScreen() {
         }}
         onAccept={(consent) => install(consent)}
         onCancel={() => setConsentOpen(false)}
+      />
+      <PackInstallSheet
+        visible={packOpen}
+        packName={listing?.title ?? 'this agent'}
+        preview={packPreview}
+        loading={packLoading}
+        installing={installing}
+        error={packError}
+        onCancel={() => setPackOpen(false)}
+        onAnswersChange={(answers) => void refreshPackPreview(answers)}
+        onInstall={(answers) => {
+          setPackAnswers(answers)
+          setPackOpen(false)
+          void install(undefined, answers)
+        }}
       />
       <Modal
         visible={lightboxIndex != null}

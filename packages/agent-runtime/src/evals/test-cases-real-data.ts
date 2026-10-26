@@ -15,7 +15,7 @@
  * - User explicitly asks for fake data → sample data is acceptable
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, EvalResult } from './types'
 import {
   REAL_DATA_GITHUB_ISSUES_MOCKS,
   REAL_DATA_UPLOADED_CSV_MOCKS,
@@ -29,7 +29,31 @@ import {
   delegatedTo,
   responseContains,
   usedGhCli,
+  execCommands,
+  fileWrites,
+  isCanvasSourcePath,
+  readFileAnyRoute,
+  searchedAnyRoute,
+  wroteCanvasSource,
+  writtenContent,
 } from './eval-helpers'
+
+/** Response plus everything written to canvas source / seed files, lower-cased. */
+function shownText(r: EvalResult): string {
+  return `${r.responseText}\n${fileWrites(r).map(w => w.content).join('\n')}`.toLowerCase()
+}
+
+/** Wrote something (code or seed) and it contains at least one of `terms`. */
+function writesContain(r: EvalResult, ...terms: string[]): boolean {
+  const text = fileWrites(r).map(w => w.content).join('\n').toLowerCase()
+  return text.length > 0 && terms.some(t => text.includes(t))
+}
+
+/** Exercised the app's API (web tool or curl against /api/…). */
+function hitApi(r: EvalResult): boolean {
+  return r.toolCalls.some(t => t.name === 'web' && JSON.stringify(t.input).includes('/api/')) ||
+    execCommands(r).some(c => /\bcurl\b/.test(c) && c.includes('/api/'))
+}
 
 // ---------------------------------------------------------------------------
 // Test Cases
@@ -48,6 +72,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     level: 2,
     input: 'Build me a dashboard showing my GitHub issues. I want to see open bugs, their assignees, and labels.',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: REAL_DATA_GITHUB_ISSUES_MOCKS,
     validationCriteria: [
       {
@@ -66,22 +91,17 @@ export const REAL_DATA_EVALS: AgentEval[] = [
       },
       {
         id: 'response-has-real-data',
-        description: 'Response contains data from the real GitHub integration (mock issue titles)',
+        description: 'Response or dashboard code contains the real gh issue data',
         points: 20,
         phase: 'execution',
-        validate: (r) =>
-          responseContains(r, 'login') ||
-          responseContains(r, 'rate limiter') ||
-          responseContains(r, 'dark mode') ||
-          responseContains(r, 'memory leak') ||
-          responseContains(r, 'typescript'),
+        validate: (r) => ['login', 'rate limit', 'dark mode', 'memory leak', 'typescript', 'websocket', 'safari'].some(t => shownText(r).includes(t)),
       },
       {
         id: 'built-canvas',
         description: 'Built a canvas UI to display the data',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteCanvasSource(r),
       },
       {
         id: 'reasonable-tool-count',
@@ -108,6 +128,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     level: 2,
     input: 'Build me an expense tracker dashboard from the data I uploaded.',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: REAL_DATA_UPLOADED_CSV_MOCKS,
     workspaceFiles: {
       'files/expenses.csv': 'date,description,amount,category\n2026-02-01,AWS hosting,342.50,Infrastructure\n2026-02-03,Figma subscription,15.00,Design\n2026-02-05,Team lunch,187.30,Team\n2026-02-08,Google Workspace,72.00,Software\n2026-02-10,Conference tickets,499.00,Events\n2026-02-14,Office supplies,63.25,Office\n2026-02-18,Uber for client meeting,28.40,Travel\n2026-02-20,Slack subscription,12.50,Software\n2026-02-22,Catering for demo day,215.00,Team\n2026-02-25,Domain renewal,14.99,Infrastructure',
@@ -115,47 +136,39 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'listed-files',
-        description: 'Used exec or read_file to discover uploaded files',
+        description: 'Looked for the uploaded files (ls/find/search/read)',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'exec') || usedTool(r, 'read_file'),
+        validate: (r) => searchedAnyRoute(r),
       },
       {
         id: 'read-csv-file',
-        description: 'Used read_file or search to access the CSV data',
+        description: 'Read the CSV (read_file, shell, or search)',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
+        validate: (r) => readFileAnyRoute(r, 'files/expenses.csv') || usedTool(r, 'search') || execCommands(r).some(c => c.includes('expenses.csv')),
       },
       {
         id: 'response-has-real-expenses',
         description: 'Response or canvas contains real data from the CSV (e.g. AWS hosting, Figma)',
         points: 20,
         phase: 'execution',
-        validate: (r) =>
-          responseContains(r, 'aws') ||
-          responseContains(r, 'figma') ||
-          responseContains(r, '342') ||
-          responseContains(r, 'conference'),
+        validate: (r) => ['aws', 'figma', '342', 'conference'].some(t => shownText(r).includes(t)),
       },
       {
         id: 'built-canvas',
         description: 'Built a canvas UI to display the expense data',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteCanvasSource(r),
       },
       {
         id: 'seeded-real-data',
         description: 'Written code contains data from the CSV (not fabricated)',
         points: 20,
         phase: 'execution',
-        validate: (r) => {
-          const seedCalls = r.toolCalls.filter(t => t.name === 'write_file' || t.name === 'web')
-          if (seedCalls.length === 0) return true
-          const json = JSON.stringify(seedCalls.map(t => t.input)).toLowerCase()
-          return json.includes('aws') || json.includes('figma') || json.includes('342') || json.includes('conference')
-        },
+        validate: (r) => writesContain(r, 'aws', 'figma', '342', 'conference') ||
+          (wroteCanvasSource(r) && /expenses\.csv/.test(writtenContent(r, isCanvasSourcePath))),
       },
       {
         id: 'reasonable-tool-count',
@@ -183,6 +196,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     level: 3,
     input: 'Pull my expense data from Google Sheets and build me a nice expense tracking dashboard with charts.',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: REAL_DATA_GOOGLE_SHEETS_MOCKS,
     validationCriteria: [
       {
@@ -208,34 +222,25 @@ export const REAL_DATA_EVALS: AgentEval[] = [
       },
       {
         id: 'response-has-real-data',
-        description: 'Response contains data from the Google Sheets integration',
+        description: 'Response or dashboard code contains the Google Sheets data',
         points: 15,
         phase: 'execution',
-        validate: (r) =>
-          responseContains(r, 'aws') ||
-          responseContains(r, 'figma') ||
-          responseContains(r, '342') ||
-          responseContains(r, 'zoom') ||
-          responseContains(r, 'flight'),
+        validate: (r) => ['aws', 'figma', '342', 'zoom', 'flight'].some(t => shownText(r).includes(t)),
       },
       {
         id: 'built-canvas',
         description: 'Built a canvas UI for the expense dashboard',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteCanvasSource(r),
       },
       {
         id: 'no-fabricated-seed',
         description: 'Did not seed fabricated expense data (used real data from Sheets)',
         points: 10,
         phase: 'execution',
-        validate: (r) => {
-          const seedCalls = r.toolCalls.filter(t => t.name === 'write_file' || t.name === 'web')
-          if (seedCalls.length === 0) return true
-          const json = JSON.stringify(seedCalls.map(t => t.input)).toLowerCase()
-          return json.includes('aws') || json.includes('figma') || json.includes('zoom') || json.includes('flight')
-        },
+        validate: (r) => writesContain(r, 'aws', 'figma', 'zoom', 'flight') ||
+          r.toolCalls.some(t => t.name === 'web' && /aws|figma|zoom|flight/i.test(JSON.stringify(t.input))),
       },
       {
         id: 'reasonable-tool-count',
@@ -263,6 +268,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     level: 1,
     input: 'Build me a simple todo app where I can add, complete, and delete tasks.',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: GENERIC_CRUD_NO_REAL_DATA_MOCKS,
     validationCriteria: [
       {
@@ -270,35 +276,38 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Created a canvas surface',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteCanvasSource(r),
       },
       {
         id: 'defined-schema',
-        description: 'Defined the Task model',
+        description: 'Defined the Task model (Prisma model or a Task type in code)',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => /model\s+(task|todo)\b|(interface|type)\s+(task|todo)\b/i.test(fileWrites(r).map(w => w.content).join('\n')),
       },
       {
         id: 'seeded-sample-data',
         description: 'Populated sample tasks (acceptable for generic CRUD)',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'web') || usedTool(r, 'write_file'),
+        validate: (r) => hitApi(r) || (fileWrites(r).map(w => w.content).join('\n').match(/\btitle\s*[:=]/gi)?.length ?? 0) >= 2,
       },
       {
         id: 'built-ui',
-        description: 'Built the UI components',
+        description: 'Built UI with add, complete, and delete',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file') || usedTool(r, 'edit_file'),
+        validate: (r) => {
+          const code = writtenContent(r, isCanvasSourcePath).toLowerCase()
+          return /add|create/.test(code) && /complete|done|toggle/.test(code) && /delete|remove/.test(code)
+        },
       },
       {
         id: 'tested-actions',
-        description: 'Tested at least one action with canvas_trigger_action',
+        description: 'Exercised at least one action against the API (web/curl)',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action') || usedTool(r, 'write_file'),
+        validate: (r) => hitApi(r),
       },
       {
         id: 'reasonable-tool-count',
@@ -322,6 +331,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     level: 1,
     input: 'Build me an employee directory dashboard. Use some fake data for now.',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: GENERIC_CRUD_NO_REAL_DATA_MOCKS,
     validationCriteria: [
       {
@@ -329,14 +339,14 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Created a canvas surface',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteCanvasSource(r),
       },
       {
         id: 'seeded-data',
         description: 'Seeded sample data as explicitly requested',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => hitApi(r) || /@[a-z0-9-]+\.[a-z]{2,}/i.test(fileWrites(r).map(w => w.content).join('\n')) || /\bname\s*[:=]/i.test(fileWrites(r).map(w => w.content).join('\n')),
       },
       {
         id: 'did-not-search-mcp',
@@ -350,7 +360,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Built the UI components',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file') || usedTool(r, 'edit_file'),
+        validate: (r) => wroteCanvasSource(r),
       },
       {
         id: 'has-multiple-records',
@@ -358,10 +368,10 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const seedCalls = r.toolCalls.filter(t => t.name === 'write_file')
-          if (seedCalls.length === 0) return false
-          const json = JSON.stringify(seedCalls.map(t => t.input))
-          return json.match(/"records"\s*:\s*\[/g) !== null || seedCalls.length >= 1
+          const text = `${fileWrites(r).map(w => w.content).join('\n')}\n${JSON.stringify(r.toolCalls.filter(t => t.name === 'web' || t.name === 'exec').map(t => t.input))}`
+          const emails = new Set(text.match(/[a-z0-9._-]+@[a-z0-9-]+\.[a-z]{2,}/gi) ?? [])
+          const names = text.match(/\bname\s*[:=]\s*\\?['"`][^'"`]{3,}/gi) ?? []
+          return emails.size >= 3 || names.length >= 3
         },
       },
       {
@@ -388,6 +398,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     level: 2,
     input: 'Show my GitHub issues as a kanban board organized by label.',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: REAL_DATA_GITHUB_ISSUES_MOCKS,
     validationCriteria: [
       {
@@ -409,18 +420,14 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Built a canvas UI (kanban board)',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteCanvasSource(r),
       },
       {
         id: 'response-has-real-issues',
-        description: 'Response contains data from the GitHub integration',
+        description: 'Response or board code contains the real gh issue data',
         points: 10,
         phase: 'execution',
-        validate: (r) =>
-          responseContains(r, 'login') ||
-          responseContains(r, 'rate limiter') ||
-          responseContains(r, 'dark mode') ||
-          responseContains(r, 'memory leak'),
+        validate: (r) => ['login', 'rate limit', 'dark mode', 'memory leak', 'websocket', 'safari'].some(t => shownText(r).includes(t)),
       },
       {
         id: 'reasonable-tool-count',
@@ -447,22 +454,8 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     level: 2,
     input: 'I uploaded my sales data. Build me a dashboard with revenue metrics and a chart.',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: {
-      read_file: {
-        type: 'pattern',
-        description: 'Read the contents of a file.',
-        paramKeys: ['path'],
-        patterns: [
-          {
-            match: { path: 'sales' },
-            response: {
-              content: 'month,product,revenue,units\nJan,Widget Pro,45200,120\nJan,Cloud Suite,128900,45\nFeb,Widget Pro,52100,138\nFeb,Cloud Suite,135400,48\nMar,Widget Pro,48700,125\nMar,Cloud Suite,142300,52',
-              path: 'files/sales-q1.csv',
-            },
-          },
-        ],
-        default: { content: '', path: 'unknown' },
-      },
       search: {
         type: 'static',
         description: 'Search across indexed files.',
@@ -480,35 +473,31 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'accessed-files',
-        description: 'Used exec, read_file, or search to access uploaded data',
+        description: 'Looked for the uploaded data (ls/find/search/read)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'exec') || usedTool(r, 'read_file') || usedTool(r, 'search'),
+        validate: (r) => searchedAnyRoute(r),
       },
       {
         id: 'read-the-file',
-        description: 'Read the actual CSV file content',
+        description: 'Read the actual CSV file content (read_file or shell)',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
+        validate: (r) => readFileAnyRoute(r, 'files/sales-q1.csv') || execCommands(r).some(c => c.includes('sales-q1.csv')),
       },
       {
         id: 'response-has-real-data',
         description: 'Response or canvas contains real data from the CSV (Widget Pro, Cloud Suite)',
         points: 20,
         phase: 'execution',
-        validate: (r) =>
-          responseContains(r, 'widget') ||
-          responseContains(r, 'cloud suite') ||
-          responseContains(r, '45200') ||
-          responseContains(r, '128900'),
+        validate: (r) => ['widget', 'cloud suite', '45200', '45,200', '128900', '128,900'].some(t => shownText(r).includes(t)),
       },
       {
         id: 'built-canvas',
         description: 'Built a canvas dashboard',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteCanvasSource(r),
       },
       {
         id: 'used-chart',
@@ -516,8 +505,8 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls.map(t => t.input)).toLowerCase()
-          return json.includes('chart') || json.includes('metric')
+          const code = writtenContent(r, isCanvasSourcePath).toLowerCase()
+          return /chart|recharts|<svg|barchart|linechart/.test(code) && /widget|cloud suite|sales-q1|revenue/.test(code)
         },
       },
       {

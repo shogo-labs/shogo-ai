@@ -97,8 +97,19 @@ export async function runDigestPass(now = new Date()): Promise<number> {
     if (homeIds) where.workspaceId = { in: Array.from(homeIds) }
   }
   const rows = await db.chatUserSettings.findMany({ where, take: 5000 })
+  // A machine workspace's chat is the desktop's (SHO-185): the copy must not
+  // email digests for messages the cloud did not receive.
+  const machineWorkspaceIds = new Set(
+    (
+      await db.workspace.findMany({
+        where: { machineInstanceId: { not: null } },
+        select: { id: true },
+      })
+    ).map((w: { id: string }) => w.id),
+  )
   let sent = 0
   for (const row of rows) {
+    if (machineWorkspaceIds.has(row.workspaceId)) continue
     if (!isDigestDue(row, now)) continue
     if (!nativeChatEnabled(await getWorkspaceChatConfig(row.workspaceId))) continue
     try {
@@ -123,6 +134,10 @@ export async function runDigestPass(now = new Date()): Promise<number> {
         countLabel: countLabel(digest.total),
         summary,
         channelsUrl: `${base}/c/inbox`,
+        // `/c/settings` is a redirect to Settings → Chat. Keep using it: a bare
+        // `/settings?tab=chat` resolves to the admin console on web and bounces
+        // to `/projects`, so it cannot be an email link (see
+        // e2e/local/phone-settings-account-sheet.test.ts's note).
         settingsUrl: `${base}/c/settings`,
       })
       if (result.success) sent++

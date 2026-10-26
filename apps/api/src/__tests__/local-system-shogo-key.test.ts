@@ -20,6 +20,14 @@ mock.module('../lib/federated-upstream', () => ({
   _resetAgentModelDefaultsCache: () => {},
   _resetUpstreamCredentialCache: () => {},
 }))
+const startTunnelMock = mock(() => {})
+const stopTunnelMock = mock(() => {})
+let tunnelConnected = false
+mock.module('../lib/instance-tunnel', () => ({
+  startInstanceTunnel: startTunnelMock,
+  stopInstanceTunnel: stopTunnelMock,
+  isTunnelConnected: () => tunnelConnected,
+}))
 
 const { localSystemRoutes } = await import('../routes/local-system')
 const { isCloudKeyRejected, markCloudKeyRejected, recordHeartbeat, getHeartbeatStatus, resetCloudKeyState } =
@@ -48,6 +56,9 @@ beforeEach(() => {
   console.warn = () => {}
   markCloudKeyRejected('previous key revoked')
   recordHeartbeat(false, 'HTTP 401')
+  startTunnelMock.mockClear()
+  stopTunnelMock.mockClear()
+  tunnelConnected = false
 })
 
 afterEach(() => {
@@ -74,5 +85,36 @@ describe('PUT /api/local/shogo-key', () => {
     const res = await putKey('shogo_sk_bad')
     expect(res.status).toBe(400)
     expect(isCloudKeyRejected()).toBe(true)
+    await Bun.sleep(0)
+    expect(startTunnelMock).not.toHaveBeenCalled()
+  })
+
+  test('restarts the instance tunnel with the new key', async () => {
+    globalThis.fetch = (async () => Response.json({ valid: true, workspace: { id: 'ws1' }, user: { id: 'u1' } })) as typeof fetch
+
+    await putKey('shogo_sk_new')
+    await Bun.sleep(0)
+    expect(stopTunnelMock).toHaveBeenCalledTimes(1)
+    expect(startTunnelMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('DELETE /api/local/shogo-key', () => {
+  test('stops the instance tunnel', async () => {
+    await buildApp().fetch(new Request('http://x/api/local/shogo-key', { method: 'DELETE' }))
+    await Bun.sleep(0)
+    expect(stopTunnelMock).toHaveBeenCalledTimes(1)
+    expect(startTunnelMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /api/local/instance-info', () => {
+  test('reports the live tunnel state', async () => {
+    const get = async () =>
+      (await buildApp().fetch(new Request('http://x/api/local/instance-info'))).json() as Promise<any>
+
+    expect((await get()).tunnelConnected).toBe(false)
+    tunnelConnected = true
+    expect((await get()).tunnelConnected).toBe(true)
   })
 })

@@ -215,12 +215,36 @@ describe("ChatInput integration — chat and plan mentions", () => {
     // it) would no longer be in the DOM afterward.
     expect(screen.getByText("History Search")).toBeTruthy()
     fireEvent.click(screen.getByText("SQLite decision"))
-    expect(input.value).toContain("@chat:chat-1")
+    // A chat tag reads like the chat it names; the `<@c:ID>` wire form is
+    // swapped in on submit (covered by lib/__tests__/chat-mention-text.test.ts).
+    expect(input.value).toContain("@SQLite decision")
+    expect(input.value).not.toContain("chat:chat-1")
   })
 })
 
 // `flush` opts out of the phone-prominent composer (the mocked window is
 // phone-sized), which is the layout that renders the Advanced controls trigger.
+describe("ChatInput integration — attachment upload progress", () => {
+  test("shows the percentage while an attachment uploads", () => {
+    render(
+      <ChatInput
+        onSubmit={mock(() => {})}
+        isPro
+        uploadStatus={{ name: "bundle.zip", fraction: 0.42 }}
+      />,
+    )
+
+    expect(screen.getByTestId("chat-upload-status")).toBeTruthy()
+    expect(screen.getByText("Uploading bundle.zip")).toBeTruthy()
+    expect(screen.getByText("42%")).toBeTruthy()
+  })
+
+  test("renders nothing when no upload is running", () => {
+    render(<ChatInput onSubmit={mock(() => {})} isPro />)
+    expect(screen.queryByTestId("chat-upload-status")).toBeNull()
+  })
+})
+
 describe("ChatInput integration — agent advanced controls", () => {
   test("hides the Advanced controls trigger when the agent composer has no controls to show", () => {
     render(
@@ -229,7 +253,7 @@ describe("ChatInput integration — agent advanced controls", () => {
         isPro
         flush
         presentation="agent"
-        composer={{ showModelPicker: false, showInteractionModes: false }}
+        composer={{ showModelPicker: false }}
         quickActions={[]}
       />,
     )
@@ -244,7 +268,7 @@ describe("ChatInput integration — agent advanced controls", () => {
         isPro
         flush
         presentation="agent"
-        composer={{ showModelPicker: true, showInteractionModes: false }}
+        composer={{ showModelPicker: true }}
         quickActions={[]}
       />,
     )

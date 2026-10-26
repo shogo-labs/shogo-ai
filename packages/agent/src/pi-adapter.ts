@@ -30,7 +30,15 @@ import {
   getProviders,
 } from '@mariozechner/pi-ai'
 import type { AgentMessage, StreamFn } from '@mariozechner/pi-agent-core'
-import { getMaxOutputTokens, OPENROUTER_MODEL_PREFIX, stripOpenRouterPrefix } from './model-catalog'
+import {
+  getDynamicModel,
+  getMaxOutputTokens,
+  isAnthropicBacked,
+  OPENROUTER_MODEL_PREFIX,
+  stripOpenRouterPrefix,
+} from './model-catalog'
+
+const DEFAULT_CONTEXT_WINDOW = 200_000
 
 // ---------------------------------------------------------------------------
 // Model Resolution
@@ -77,6 +85,16 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
   // text-only). Tag the pi model's provider as 'openai' so the proxy token
   // and base URL injected by configureAIProxy (OPENAI_API_KEY /
   // OPENAI_BASE_URL) are used for auth and routing.
+  const dynamic = getDynamicModel(modelId)
+  const contextWindow = dynamic?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
+
+  // A 'custom' id the API registry knows is Anthropic-backed (e.g. Opus 5.5
+  // addressed by UUID) goes through the native Anthropic path, where pi-ai
+  // places prompt-cache breakpoints. The proxy maps the id to its apiModel.
+  if (provider === 'custom' && isAnthropicBacked(dynamic)) {
+    return resolveModel('anthropic', modelId)
+  }
+
   if (provider === 'custom') {
     const baseUrl = resolveBaseUrl('openai') ?? getDefaultBaseUrl('openai')
     const deepSeek = isDeepSeekModel(modelId)
@@ -89,18 +107,21 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
       reasoning: true,
       input: ['text', 'image'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 200000,
+      contextWindow,
       maxTokens: getMaxOutputTokens(modelId),
-      ...(deepSeek
-        ? {
-            compat: {
+      // Anthropic-style cache markers survive the proxy's chat-completions →
+      // Anthropic conversion, and the proxy drops them for other upstreams.
+      compat: {
+        cacheControlFormat: 'anthropic',
+        ...(deepSeek
+          ? {
               thinkingFormat: 'deepseek',
               requiresReasoningContentOnAssistantMessages: true,
               supportsStore: false,
               supportsDeveloperRole: false,
-            },
-          }
-        : {}),
+            }
+          : {}),
+      },
     } as Model<Api>
   }
 
@@ -139,7 +160,7 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
       reasoning: true,
       input: ['text', 'image'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 200000,
+      contextWindow,
       maxTokens: catalogMax,
     } as Model<Api>
   } else {
@@ -303,13 +324,83 @@ export function sumUsage(messages: Message[]): {
 // ---------------------------------------------------------------------------
 
 /**
- * Default message converter: keeps only LLM-compatible messages.
+ * Default message converter: keeps only LLM-compatible messages, with tool
+ * results re-paired to their tool calls (see `repairToolResultPairing`).
  */
 export function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
-  return messages.filter(
+  const llm = messages.filter(
     (m): m is Message =>
       m.role === 'user' || m.role === 'assistant' || m.role === 'toolResult'
   )
+  const repaired = repairToolResultPairing(llm)
+  if (repaired.moved > 0 || repaired.dropped > 0) {
+    console.warn(
+      `[pi-adapter] Repaired tool-result pairing: moved=${repaired.moved} dropped=${repaired.dropped}`,
+    )
+  }
+  return repaired.messages
+}
+
+/**
+ * Providers require every tool result to directly follow the assistant
+ * message that made the call (OpenAI-compatible APIs reject a stray one with
+ * "role 'tool' must be a response to a preceding message with 'tool_calls'").
+ * A stopped turn's in-flight tools can append their results after the next
+ * turn's messages, so history is not guaranteed to be in that shape.
+ *
+ * Moves each tool result to just after the most recent earlier assistant
+ * message that called it and drops results with no such call. Errored and
+ * aborted assistant messages don't count as callers: pi-ai drops them before
+ * sending. Missing results are left for pi-ai, which fills them in. Returns
+ * the input array unchanged when nothing needed repair.
+ */
+export function repairToolResultPairing(messages: Message[]): {
+  messages: Message[]
+  moved: number
+  dropped: number
+} {
+  type Group = { assistant: AssistantMessage; results: ToolResultMessage[] }
+  const items: Array<Message | Group> = []
+  const pending = new Map<string, Group[]>()
+  let dropped = 0
+
+  for (const msg of messages) {
+    if (msg.role === 'toolResult') {
+      const group = pending.get(msg.toolCallId)?.pop()
+      if (group) group.results.push(msg)
+      else dropped++
+      continue
+    }
+    if (msg.role !== 'assistant' || msg.stopReason === 'error' || msg.stopReason === 'aborted') {
+      items.push(msg)
+      continue
+    }
+    const group: Group = { assistant: msg, results: [] }
+    items.push(group)
+    for (const block of msg.content) {
+      if (block.type !== 'toolCall') continue
+      const stack = pending.get(block.id) ?? []
+      stack.push(group)
+      pending.set(block.id, stack)
+    }
+  }
+
+  const out: Message[] = []
+  for (const item of items) {
+    if ('assistant' in item) out.push(item.assistant, ...item.results)
+    else out.push(item)
+  }
+  if (dropped === 0 && out.every((m, i) => m === messages[i])) {
+    return { messages, moved: 0, dropped: 0 }
+  }
+  const index = new Map<Message, number>(messages.map((m, i) => [m, i]))
+  let moved = 0
+  for (let i = 1; i < out.length; i++) {
+    if (out[i].role !== 'toolResult') continue
+    const prev = messages[index.get(out[i])! - 1]
+    if (prev !== out[i - 1] && prev?.role !== 'toolResult') moved++
+  }
+  return { messages: out, moved, dropped }
 }
 
 // ---------------------------------------------------------------------------

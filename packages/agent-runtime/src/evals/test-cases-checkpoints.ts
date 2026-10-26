@@ -19,7 +19,7 @@
 
 import type { AgentEval, EvalResult, ToolCallRecord } from './types'
 import type { ToolMockMap } from './tool-mocks'
-import { usedTool } from './eval-helpers'
+import { usedTool, readFileAnyRoute } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -198,10 +198,10 @@ const RESUME_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'read-existing-first',
-        description: 'Agent read the existing App.tsx before changing it',
+        description: 'Agent read the existing App.tsx before changing it (read_file or shell)',
         points: 5,
         phase: 'execution',
-        validate: (r) => wroteFilePath(r, 'read_file', 'App.tsx'),
+        validate: (r) => readFileAnyRoute(r, 'src/App.tsx'),
       },
       {
         id: 'edited-not-overwrote',

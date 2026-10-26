@@ -13,7 +13,9 @@
     "pretest:coverage": "bun scripts/ensure-prisma-generated.ts",
     "test:coverage": "bun --no-env-file ../../scripts/run-tests-isolated.ts . --coverage",
     "stripe:sync-copy": "bun --env-file=../../.env.local scripts/update-stripe-product-copy.ts",
-    "stripe:migrate-tiers": "bun --env-file=../../.env.local scripts/migrate-tier-subscriptions.ts"
+    "stripe:migrate-tiers": "bun --env-file=../../.env.local scripts/migrate-tier-subscriptions.ts",
+    "worker:huddle-notes": "bun run src/workers/huddle-notes-agent.ts",
+    "smoke:huddle-notes": "bun run scripts/smoke-huddle-notes.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.37",
@@ -24,6 +26,9 @@
     "@better-auth/expo": "^1.4.19",
     "@composio/core": "^0.10.0",
     "@kubernetes/client-node": "^1.4.0",
+    "@livekit/agents": "^1.9.3",
+    "@livekit/agents-plugin-livekit": "^1.9.3",
+    "@livekit/rtc-node": "^1.2.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/api-logs": "^0.213.0",
     "@opentelemetry/exporter-logs-otlp-http": "^0.213.0",

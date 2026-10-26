@@ -6,14 +6,29 @@
 #   - push tag v*      → production (US → EU)
 #   - workflow_dispatch → manual deploy to staging or production
 #
+# Build once, promote: images are built only for staging (push to main).
+# Production ships the exact digests staging built and passed e2e on for the
+# tagged commit; it never rebuilds. Images must therefore stay
+# environment-agnostic (per-env studio config is injected at container start,
+# see apps/mobile/docker/shogo-runtime-env.sh).
+#
 # Pipeline stages:
 #   1. Setup - Determine environment from trigger
-#   2. Detect Changes - Skip image builds when code hasn't changed
+#   2. Detect Changes - Skip image builds when code hasn't changed; production
+#      switches to promote mode
 #   3. Build Runtime Base - Rebuild base image when templates/deps change
-#   4. Build & Push - Build Docker images and push to US OCIR
-#   5. Replicate Images - Copy changed images to EU OCIR (production)
-#   6. Deploy US - Primary region (runs migrations)
-#   7. Deploy EU - Secondary region (skip migrations)
+#   4. Build & Push - Build Docker images and push to US OCIR (staging, or a
+#      production `force_rebuild_production` dispatch)
+#   5. Promote - Re-tag staging-<sha> as production-<sha> (production)
+#   6. Replicate Images - Copy images to EU OCIR (production)
+#   7. Staging rollout - Deploy + critical-path e2e (deploy-staging.yml),
+#      the only serialized part of a staging run
+#   8. Deploy US - Primary region (runs migrations)
+#   9. Deploy EU - Secondary region
+#  10. Metal - Promote the staging multi-arch guest image when the rootfs gate
+#      says the fleet needs it, then publish the metal-agent stable release
+#
+# Rollback without rebuilding: .github/workflows/rollback-production.yml.
 # =============================================================================
 
 name: Build, Test, and Deploy
@@ -48,9 +63,22 @@ on:
         required: false
         default: false
         type: boolean
+      force_rebuild_production:
+        description: 'Production only, escape hatch: rebuild images from source instead of promoting the staging-built images for this commit.'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Production only: plan the deploy of this commit (images, manifests, migrations, metal) without changing anything.'
+        required: false
+        default: false
+        type: boolean
 
+# Production runs are serialized per ref here. Staging runs get a group of
+# their own so builds for successive commits overlap; the staging-rollout job
+# holds the lock that keeps deploy + e2e for one commit together.
 concurrency:
-  group: deploy-v2-${{ github.ref_name }}-${{ inputs.environment || (github.ref_type == 'tag' && 'production' || 'staging') }}
+  group: ${{ (inputs.environment || (github.ref_type == 'tag' && 'production' || 'staging')) == 'production' && format('deploy-v2-{0}-production{1}', github.ref_name, inputs.dry_run && '-dry-run' || '') || format('deploy-v2-staging-build-{0}', github.run_id) }}
   cancel-in-progress: false
 
 # =============================================================================
@@ -69,63 +97,28 @@ jobs:
     name: CI Gate
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    permissions:
+      actions: read
+      contents: read
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+      # The decision lives in scripts/ci/wait-for-ci.ts so it can be unit
+      # tested (scripts/__tests__/wait-for-ci.test.ts). Both the merge-queue
+      # run (which tested this exact commit on the queue's ref) and the push
+      # run are re-read on every poll: a commit can arrive here while its
+      # merge-queue run is still finishing.
       - name: Wait for CI to pass for this commit
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
-        run: |
-          deadline=$((SECONDS + 1800))
-          while (( SECONDS < deadline )); do
-            run="$(
-              gh api \
-                "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=20" |
-              jq -r --arg sha "$SHA" '
-                [.workflow_runs[]
-                  | select(.head_sha == $sha and (.event == "push" or .event == "workflow_dispatch"))]
-                | sort_by(.run_number)
-                | last
-                | if . == null
-                  then ""
-                  else [.id, .status, (.conclusion // "")] | @tsv
-                  end
-              '
-            )"
-
-            if [[ -z "$run" ]]; then
-              echo "CI run for ${SHA} has not started yet; retrying..."
-              sleep 15
-              continue
-            fi
-
-            read -r run_id status conclusion <<< "$run"
-            echo "CI run ${run_id}: status=${status}, conclusion=${conclusion}"
-
-            if [[ "$status" == "completed" ]]; then
-              if [[ "$conclusion" == "success" ]]; then
-                echo "CI passed for ${SHA}."
-                exit 0
-              fi
-              # Non-blocking jobs (local E2E) can fail the run while the
-              # required aggregate job passes; gate on that job like merges do.
-              required="$(
-                gh api "repos/${REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" --paginate |
-                jq -r '.jobs[] | select(.name == "Lint, Typecheck, Test") | .conclusion' | tail -1
-              )"
-              if [[ "$required" == "success" ]]; then
-                echo "CI ${run_id} concluded ${conclusion}, but required job 'Lint, Typecheck, Test' passed."
-                exit 0
-              fi
-              echo "::error::CI ${run_id} finished with conclusion=${conclusion} (required job: ${required:-missing})."
-              exit 1
-            fi
-
-            sleep 15
-          done
-
-          echo "::error::Timed out waiting for CI to pass for ${SHA}."
-          exit 1
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: bun scripts/ci/wait-for-ci.ts
 
   # ===========================================================================
   # Stage 0: Setup - Determine Environment
@@ -138,6 +131,7 @@ jobs:
       environment: ${{ steps.set-env.outputs.environment }}
       is_production: ${{ steps.set-env.outputs.is_production }}
       build_only: ${{ steps.set-env.outputs.build_only }}
+      dry_run: ${{ steps.set-env.outputs.dry_run }}
       app_version: ${{ steps.resolve-version.outputs.version }}
     steps:
       - name: Determine environment from trigger
@@ -160,10 +154,22 @@ jobs:
           fi
 
           BUILD_ONLY="${{ github.event.inputs.build_only || 'false' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            if [[ "$IS_PROD" != "true" ]]; then
+              echo "::error::dry_run plans a production deploy; choose environment=production"; exit 1
+            fi
+            if [[ "$BUILD_ONLY" == "true" || "${{ github.event.inputs.force_rebuild_production }}" == "true" ]]; then
+              echo "::error::dry_run can't be combined with build_only or force_rebuild_production (both build images)"; exit 1
+            fi
+          fi
 
-          echo "environment=$ENV" >> $GITHUB_OUTPUT
-          echo "is_production=$IS_PROD" >> $GITHUB_OUTPUT
-          echo "build_only=$BUILD_ONLY" >> $GITHUB_OUTPUT
+          {
+            echo "environment=$ENV"
+            echo "is_production=$IS_PROD"
+            echo "build_only=$BUILD_ONLY"
+            echo "dry_run=$DRY_RUN"
+          } >> "$GITHUB_OUTPUT"
           echo "Deploying to: $ENV (is_production=$IS_PROD, build_only=$BUILD_ONLY)"
 
       - name: Checkout release tags
@@ -192,6 +198,7 @@ jobs:
     outputs:
       environment: ${{ needs.setup.outputs.environment }}
       is_production: ${{ needs.setup.outputs.is_production }}
+      dry_run: ${{ needs.setup.outputs.dry_run }}
       app_version: ${{ needs.setup.outputs.app_version }}
       ocir_registry: ${{ steps.registry.outputs.ocir_registry }}
       oke_cluster_ocid: ${{ vars.OKE_CLUSTER_OCID }}
@@ -229,6 +236,7 @@ jobs:
       runtime_base_changed: ${{ steps.set-matrix.outputs.runtime_base_changed }}
       docs_changed: ${{ steps.set-matrix.outputs.docs_changed }}
       base_tag: ${{ steps.set-matrix.outputs.base_tag }}
+      promote: ${{ steps.set-matrix.outputs.promote }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -249,7 +257,30 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           IS_TAG_PUSH: ${{ github.ref_type == 'tag' }}
           CURRENT_TAG: ${{ github.ref_name }}
+          IS_PRODUCTION: ${{ needs.setup.outputs.is_production }}
+          FORCE_REBUILD_PRODUCTION: ${{ github.event.inputs.force_rebuild_production || 'false' }}
         run: |
+          # Production promotes the images staging already built and tested
+          # for this commit (promote-images) instead of rebuilding them. Every
+          # service gets the release tag; resolve-release-images.sh skips the
+          # runtime roll per cluster when its digest is unchanged.
+          if [ "$IS_PRODUCTION" = "true" ] && [ "$FORCE_REBUILD_PRODUCTION" != "true" ]; then
+            echo "Production deploy -- promoting staging images for ${{ github.sha }}, no builds"
+            {
+              echo "promote=true"
+              echo "has_changes=false"
+              echo 'matrix={"include":[]}'
+              echo "api_changed=true"
+              echo "web_changed=true"
+              echo "docs_changed=true"
+              echo "runtime_changed=true"
+              echo "runtime_base_changed=false"
+              echo "base_tag="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "promote=false" >> "$GITHUB_OUTPUT"
+
           FORCE_ALL="${{ github.event_name == 'workflow_dispatch' }}"
           FORCE_PROD="${{ github.ref_type == 'tag' }}"
 
@@ -612,23 +643,25 @@ jobs:
           platforms: linux/arm64
           push: true
           provenance: false
+          # Staging builds run concurrently across commits, so staging's
+          # `-latest` is moved by the locked rollout (deploy-staging.yml).
           tags: |
-            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-latest
+            ${{ steps.tag-prefix.outputs.prefix == 'production' && format('{0}/shogo/{1}:production-latest', needs.resolve-config.outputs.ocir_registry, matrix.image_name) || '' }}
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-${{ github.sha }}
+          # Images must stay environment-agnostic: production promotes the
+          # staging-built digests unchanged (see promote-images). Per-env web
+          # config (app env, GA4, FB Pixel) is injected at container start via
+          # the studio ksvc env, so never add an environment-specific arg here.
           build-args: |
             ${{ matrix.build_args != '' && format('WORKSPACE_DEPS={0}/shogo/shogo-workspace-deps:{1}', needs.resolve-config.outputs.ocir_registry, github.sha) || '' }}
-            ${{ matrix.build_args == 'api' && format('ALLOWED_ORIGINS={0}', vars.ALLOWED_ORIGINS) || '' }}
             ${{ matrix.build_args == 'api' && format('BUILD_HASH={0}', github.sha) || '' }}
-            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_BUILD_HASH={0}', github.sha) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_APP_VERSION={0}', needs.resolve-config.outputs.app_version) || '' }}
-            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_APP_ENV={0}_web', needs.resolve-config.outputs.environment) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_SENTRY_DSN_WEB={0}', secrets.EXPO_PUBLIC_SENTRY_DSN_WEB) || '' }}
             ${{ matrix.build_args == 'web' && format('SENTRY_AUTH_TOKEN={0}', secrets.SENTRY_AUTH_TOKEN) || '' }}
             ${{ matrix.build_args == 'web' && 'SENTRY_ORG=shogo-ai' || '' }}
             ${{ matrix.build_args == 'web' && 'SENTRY_PROJECT=javascript-react' || '' }}
-            ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('GA4_MEASUREMENT_ID={0}', secrets.GA4_MEASUREMENT_ID) || '' }}
-            ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('FB_PIXEL_ID={0}', secrets.FB_PIXEL_ID) || '' }}
+            ${{ matrix.build_args == 'web' && 'REQUIRE_SENTRY_UPLOAD=true' || '' }}
             ${{ matrix.build_args == 'runtime' && format('BASE_IMAGE={0}/shogo/shogo-runtime-base:{1}', needs.resolve-config.outputs.ocir_registry, needs.detect-changes.outputs.base_tag) || '' }}
             ${{ matrix.build_args == 'runtime' && format('SHOGO_RUNTIME_REVISION={0}', github.sha) || '' }}
           # Durable in-region OCIR registry cache (see build-base-image). One
@@ -679,14 +712,13 @@ jobs:
             --file apps/mobile/Dockerfile \
             --platform linux/arm64 \
             --build-arg WORKSPACE_DEPS="${OCIR_REGISTRY}/shogo/shogo-workspace-deps:${{ github.sha }}" \
-            --build-arg EXPO_PUBLIC_API_URL="${{ vars.EXPO_PUBLIC_API_URL }}" \
             --build-arg EXPO_PUBLIC_BUILD_HASH="${{ github.sha }}" \
             --build-arg EXPO_PUBLIC_APP_VERSION="${{ needs.resolve-config.outputs.app_version }}" \
-            --build-arg EXPO_PUBLIC_APP_ENV="${{ needs.resolve-config.outputs.environment }}_web" \
             --build-arg EXPO_PUBLIC_SENTRY_DSN_WEB="${{ secrets.EXPO_PUBLIC_SENTRY_DSN_WEB }}" \
             --build-arg SENTRY_AUTH_TOKEN="${{ secrets.SENTRY_AUTH_TOKEN }}" \
             --build-arg SENTRY_ORG=shogo-ai \
             --build-arg SENTRY_PROJECT=javascript-react \
+            --build-arg REQUIRE_SENTRY_UPLOAD=true \
             --cache-from type=registry,ref="${OCIR_REGISTRY}/shogo/buildcache:web" \
             --output type=local,dest=./web-assets \
             .
@@ -707,20 +739,107 @@ jobs:
             --cache-control "public, max-age=31536000, immutable"
 
   # ===========================================================================
+  # Stage 2.2: Promote staging images to production (production only)
+  # ===========================================================================
+  # Production does not rebuild: it ships the exact digests staging built and
+  # ran its critical-path e2e against for this commit; this re-tags them as
+  # `production-<sha>` (+ `production-latest`) in the shared US registry.
+  #
+  # `staging-<sha>` is written by the staging *rollout*
+  # (deploy-staging.yml's "Complete staging release tag set"), minutes after
+  # the commit's builds — the repos a rollout carries forward get their tag
+  # only then. A release tag pushed while that rollout is in flight used to
+  # fail here 1.5 s before the tags appeared (v2.3.7, run 39567961829), so the
+  # job now waits on the tag set itself (scripts/ci/wait-for-staging-images.ts)
+  # instead of assuming it. It stays safe to run alongside staging-e2e-gate:
+  # nothing deploys until deploy-us, which waits on the gate.
+  # `force_rebuild_production` skips this and builds instead.
+  promote-images:
+    name: Promote staging images
+    runs-on: ubuntu-latest
+    needs: [resolve-config, detect-changes]
+    if: needs.detect-changes.outputs.promote == 'true' && needs.resolve-config.outputs.dry_run != 'true'
+    environment: production-us
+    # 75 > IMAGE_GATE_TIMEOUT_MS (60) so the gate's own timeout message wins.
+    timeout-minutes: 75
+    permissions:
+      actions: read
+      contents: read
+    env:
+      OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+      SRC_TAG: staging-${{ github.sha }}
+      DST_TAG: production-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Wait for the staging tag set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: bun scripts/ci/wait-for-staging-images.ts
+
+      - name: Re-tag staging-${{ github.sha }} as production-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          REPOS="shogo-api shogo-web shogo-docs shogo-runtime"
+          # Belt-and-braces: 'Wait for the staging tag set' already blocked on
+          # these tags, so this must never fire. If it does, the gate has a bug.
+          MISSING=""
+          for repo in $REPOS; do
+            if ! docker buildx imagetools inspect "${OCIR_REGISTRY}/shogo/${repo}:${SRC_TAG}" >/dev/null 2>&1; then
+              MISSING="$MISSING $repo"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::No ${SRC_TAG} image for:${MISSING} even after waiting for this commit's staging rollout (see the 'Wait for the staging tag set' step). That step is the gate; reaching this line means it has a bug. Re-run with force_rebuild_production=true to rebuild these images."
+            exit 1
+          fi
+          {
+            echo "## Promoted images"
+            echo ""
+            echo "| Image | Digest |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for repo in $REPOS; do
+            docker buildx imagetools create --prefer-index=false \
+              --tag "${OCIR_REGISTRY}/shogo/${repo}:${DST_TAG}" \
+              --tag "${OCIR_REGISTRY}/shogo/${repo}:production-latest" \
+              "${OCIR_REGISTRY}/shogo/${repo}:${SRC_TAG}"
+            DIGEST=$(docker buildx imagetools inspect "${OCIR_REGISTRY}/shogo/${repo}:${DST_TAG}" --format '{{json .Manifest}}' | jq -r .digest)
+            echo "${repo}: ${SRC_TAG} -> ${DST_TAG} (${DIGEST})"
+            echo "| \`${repo}\` | \`${DIGEST}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  # ===========================================================================
   # Stage 2.5: Replicate Images to Secondary Regions (production only)
   # Uses skopeo to copy images from US OCIR to EU OCIR.
   # ===========================================================================
   replicate-images:
     name: Replicate to ${{ matrix.target_region.region }}
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes, build-base-image, build-and-push]
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push, promote-images]
     if: |
       always() &&
       needs.resolve-config.outputs.is_production == 'true' &&
+      needs.resolve-config.outputs.dry_run != 'true' &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
-      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
+      (needs.promote-images.result == 'success' || needs.promote-images.result == 'skipped')
 
     strategy:
       fail-fast: false
@@ -790,10 +909,14 @@ jobs:
   # For staging: single deploy.
   # ===========================================================================
 
-  # --- Staging deploy (single region) ---
-  deploy-staging:
-    name: Deploy to OKE (staging)
-    runs-on: ubuntu-latest
+  # --- Staging deploy (single region) + critical-path e2e ---
+  # The only part of a staging run that is serialized. A newer run waiting
+  # here replaces (cancels) any older one still waiting, so staging rolls
+  # forward to the newest built commit. Its images are already built, but a
+  # cancelled commit gets no staging tag set or e2e status, so it can't be
+  # promoted to production.
+  staging-rollout:
+    name: Staging rollout
     needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push]
     if: |
       always() &&
@@ -803,21 +926,94 @@ jobs:
       needs.detect-changes.result == 'success' &&
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
-    environment: ${{ needs.resolve-config.outputs.environment }}
+    concurrency:
+      group: deploy-v2-staging-rollout
+      cancel-in-progress: false
+    # A called workflow's jobs may only request scopes this job grants. The
+    # e2e-critical / e2e-critical-retry jobs in deploy-staging.yml (and the
+    # `classify` job they nest from e2e-hosted.yml) open a platform issue when a
+    # red run is an environment defect (SHO-136), so without `issues: write`
+    # here GitHub rejects the whole call and the deploy run dies at startup
+    # with zero jobs.
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+      issues: write
+    uses: ./.github/workflows/deploy-staging.yml
+    with:
+      environment: ${{ needs.resolve-config.outputs.environment }}
+      namespace_system: ${{ needs.resolve-config.outputs.namespace_system }}
+      namespace_workspaces: ${{ needs.resolve-config.outputs.namespace_workspaces }}
+      domain: ${{ needs.resolve-config.outputs.domain }}
+      docs_domain: ${{ needs.resolve-config.outputs.docs_domain }}
+      app_version: ${{ needs.resolve-config.outputs.app_version }}
+      ocir_registry: ${{ needs.resolve-config.outputs.ocir_registry }}
+      oke_cluster_ocid: ${{ needs.resolve-config.outputs.oke_cluster_ocid }}
+      node_pool_ocid: ${{ needs.resolve-config.outputs.node_pool_ocid }}
+      api_changed: ${{ needs.detect-changes.outputs.api_changed }}
+      web_changed: ${{ needs.detect-changes.outputs.web_changed }}
+      docs_changed: ${{ needs.detect-changes.outputs.docs_changed }}
+      runtime_changed: ${{ needs.detect-changes.outputs.runtime_changed }}
+    secrets: inherit
 
+  # --- Production: require a green staging critical-path e2e on this SHA ---
+  # A v* tag normally points at a main commit whose staging rollout (deploy +
+  # critical-path e2e) may still be running, so wait for it. Fail fast if
+  # no main deploy for this SHA exists (e.g. it was superseded in the deploy
+  # queue): deploy that commit to staging first or tag a commit that was.
+  # A tag whose staging run died (red, cancelled, or left its status `pending`)
+  # cannot fix itself: run `gh run rerun <staging run id> --failed`, then
+  # re-run this tag's run. Waiting on a dead run only burns the gate timeout.
+  staging-e2e-gate:
+    name: Staging e2e gate
+    runs-on: ubuntu-latest
+    needs: [setup]
+    if: needs.setup.outputs.is_production == 'true' && needs.setup.outputs.build_only != 'true' && needs.setup.outputs.dry_run != 'true'
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+      - name: Wait for e2e/staging-critical to pass for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          SKIP: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_staging_e2e_gate == 'true' }}
+        run: bun scripts/ci/wait-for-staging-e2e.ts
+
+  # ===========================================================================
+  # Dry run (workflow_dispatch environment=production dry_run=true)
+  # Every job above that changes something is off, so is everything below
+  # (deploy-us / deploy-eu, and through them the metal jobs). These plan what
+  # a real deploy of this commit would do and fail on anything that would
+  # make it fail: missing staging images, manifests the API server rejects,
+  # a disk-starved cluster, a stuck migration, a red staging e2e.
+  # ===========================================================================
+  plan-region:
+    name: Dry run plan (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    needs: [setup, resolve-config]
+    if: needs.setup.outputs.dry_run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [production-us, production-eu]
+    environment: ${{ matrix.environment }}
+    timeout-minutes: 20
     env:
       OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
       OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
       OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
       OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
       OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-      ENVIRONMENT: ${{ needs.resolve-config.outputs.environment }}
-      NS_SYSTEM: ${{ needs.resolve-config.outputs.namespace_system }}
-      NS_WORKSPACES: ${{ needs.resolve-config.outputs.namespace_workspaces }}
-      DOMAIN: ${{ needs.resolve-config.outputs.domain }}
-      DOCS_DOMAIN: ${{ needs.resolve-config.outputs.docs_domain }}
-      IMAGE_TAG: ${{ needs.resolve-config.outputs.environment }}-${{ github.sha }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -829,584 +1025,152 @@ jobs:
         run: |
           mkdir -p ~/.kube
           oci ce cluster create-kubeconfig \
-            --cluster-id ${{ needs.resolve-config.outputs.oke_cluster_ocid }} \
-            --region ${{ vars.OCI_REGION }} \
+            --cluster-id "${{ vars.OKE_CLUSTER_OCID }}" \
+            --region "${{ vars.OCI_REGION }}" \
             --token-version 2.0.0 \
             --kube-endpoint PUBLIC_ENDPOINT
           kubectl get nodes > /dev/null
 
-      - name: Create namespaces if not exist
-        run: |
-          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Create or update API secrets
-        run: |
-          SECRET_ARGS=(
-            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
-          )
-          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
-          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
-          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_CONNECT_WEBHOOK_SECRET="${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
-          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
-          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
-          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}"); fi
-          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}"); fi
-          if [ -n "${{ secrets.GOOGLE_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}"); fi
-          if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"); fi
-          if [ -n "${{ secrets.SERPER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SERPER_API_KEY="${{ secrets.SERPER_API_KEY }}"); fi
-          if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}"); fi
-          if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
-          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
-          if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
-          if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
-          if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
-          if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
-          if [ -n "${{ secrets.LOOPS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LOOPS_API_KEY="${{ secrets.LOOPS_API_KEY }}"); fi
-          if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
-          if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
-          if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.LIVEKIT_URL }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_URL="${{ secrets.LIVEKIT_URL }}"); fi
-          if [ -n "${{ secrets.LIVEKIT_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}"); fi
-          if [ -n "${{ secrets.LIVEKIT_API_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"); fi
-          if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
-          if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
-          # Shared secret with shogo-website/functions/r/[code].ts for
-          # the affiliate click-tracking internal call. See
-          # docs/affiliate-mlm-rollout.md.
-          if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
-          # AES-256-GCM master key for encrypting model-provider API keys at
-          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
-          # all regions that share the primary DB so encrypted ModelProvider
-          # rows decrypt everywhere. See docs/github-environments-setup.md.
-          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
-
-          kubectl create secret generic api-secrets \
-            --namespace=${{ env.NS_SYSTEM }} \
-            "${SECRET_ARGS[@]}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          kubectl create secret generic anthropic-credentials \
-            --namespace=${{ env.NS_WORKSPACES }} \
-            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
-            kubectl create secret generic preview-secrets \
-              --namespace=${{ env.NS_WORKSPACES }} \
-              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-          fi
-
-          if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
-            kubectl create secret generic signoz-credentials \
-              --namespace=${{ env.NS_SYSTEM }} \
-              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-            kubectl create secret generic signoz-credentials \
-              --namespace=${{ env.NS_WORKSPACES }} \
-              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-          fi
-
-          # Kourier TLS secret for Knative HTTPS termination (Cloudflare origin cert)
-          if [ -n "${{ secrets.KOURIER_TLS_CERT }}" ] && [ -n "${{ secrets.KOURIER_TLS_KEY }}" ]; then
-            kubectl create namespace kourier-system 2>/dev/null || true
-            kubectl create secret tls kourier-tls \
-              --namespace=kourier-system \
-              --cert=<(echo "${{ secrets.KOURIER_TLS_CERT }}") \
-              --key=<(echo "${{ secrets.KOURIER_TLS_KEY }}") \
-              --dry-run=client -o yaml | kubectl apply -f -
-          fi
-
-      - name: Save current Knative service images
-        id: save-images
-        run: |
-          get_image() {
-            kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""
-          }
-          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-          echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-
-      # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
-      # manifests / patch ksvcs into a disk-starved cluster. A node above the
-      # disk threshold (or already under DiskPressure) cannot bring up a new
-      # revision — the kubelet evicts/GCs instead — so the rollout would only
-      # fail 10 minutes later with ProgressDeadlineExceeded. Fail fast with an
-      # actionable message instead.
-      - name: Check node disk headroom (pre-rollout gate)
-        run: .github/scripts/check-node-disk-headroom.sh 80
-
-      # pgvector must exist before the api pods start: their entrypoint runs
-      # `prisma migrate deploy` as `shogo`, which can't create untrusted
-      # extensions. This has to precede `Apply Kubernetes manifests`, whose
-      # ksvc points at the mutable `:<env>-latest` tag and so can start the
-      # new image right away. See k8s/cnpg/ensure-extensions.sql.
-      - name: Ensure Postgres extensions
-        run: |
-          set -euo pipefail
-          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
-            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
-            -o jsonpath='{.items[0].metadata.name}')
-          if [ -z "$PRIMARY" ]; then
-            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
-            exit 1
-          fi
-          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo -v ON_ERROR_STOP=1 < k8s/cnpg/ensure-extensions.sql \
-            || { echo "::error::Could not install Postgres extensions on staging"; exit 1; }
-
-      - name: Apply Kubernetes manifests
-        run: |
-          # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
-          # image-prepuller's RUNTIME_IMAGE_PLACEHOLDER substitution. The
-          # overlay ships the placeholder token, never a real (or
-          # `:<env>-bootstrap`) value, so `kubectl apply` itself can never stamp
-          # a non-existent runtime image onto the api ksvc and then rely on a
-          # later imperative patch to undo it. That undo-gap bricked India on
-          # 2026-05-27 when a mid-deploy abort left the placeholder live. We
-          # resolve the immutable :<env>-<sha> tag here with the same logic as
-          # the later "Resolve runtime image" step; sync-api-env.sh re-verifies
-          # it downstream as defense-in-depth.
-          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
-          PREV_TAG=$(kubectl get configmap shogo-runtime-version -n "${{ env.NS_SYSTEM }}" -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
-          if [ "${{ needs.detect-changes.outputs.runtime_changed }}" = "true" ]; then
-            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
-          elif [ -n "$PREV_TAG" ]; then
-            RUNTIME_TAG="$PREV_TAG"
-          else
-            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
-          fi
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${RUNTIME_TAG}"
-          echo "Rendering manifests with RUNTIME_IMAGE=${RUNTIME_IMAGE}"
-          kubectl kustomize "k8s/overlays/${{ env.ENVIRONMENT }}/" \
-            | sed "s|RUNTIME_IMAGE_PLACEHOLDER|${RUNTIME_IMAGE}|g" \
-            | kubectl apply -f -
-          # Node-level inotify quota bump — DaemonSet lives in kube-system,
-          # outside the kustomize overlay (kustomize blocks reaching into
-          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
-          # for context.
-          kubectl apply -f k8s/base/inotify-tuner.yaml
-
-      - name: Ensure docs DomainMapping
-        run: |
-          if [ -n "${{ env.DOCS_DOMAIN }}" ]; then
-            kubectl apply -f - <<'EOF' || true
-          apiVersion: serving.knative.dev/v1beta1
-          kind: DomainMapping
-          metadata:
-            name: ${{ env.DOCS_DOMAIN }}
-            namespace: ${{ env.NS_SYSTEM }}
-          spec:
-            ref:
-              name: docs
-              kind: Service
-              apiVersion: serving.knative.dev/v1
-          EOF
-          fi
-
-      - name: Ensure Kourier TLS configuration
-        run: |
-          kubectl set env deployment/net-kourier-controller -n knative-serving \
-            CERTS_SECRET_NAMESPACE=kourier-system \
-            CERTS_SECRET_NAME=kourier-tls || true
-
-      - name: Ensure Kourier connection draining and stream timeouts
-        run: |
-          kubectl patch configmap config-kourier -n knative-serving --type merge \
-            -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
-
-      - name: Ensure Knative max revision timeout for long-running agent turns
-        run: |
-          kubectl patch configmap config-defaults -n knative-serving --type merge \
-            -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
-
-      # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
-      # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
-      # with retain-since-create-time at the old 48h default, every superseded
-      # revision kept its image referenced (un-reclaimable by the kubelet) for
-      # two days. Stacked images pushed India's nodes past the kubelet
-      # DiskPressure threshold and aborted the deploy at the pre-rollout disk
-      # gate. Enforcing tightened GC on EVERY deploy (instead of the previous
-      # apply-once / manual k8s/knative/config-gc.yaml, which silently drifts)
-      # lets the kubelet reclaim unreferenced images within hours. Keep these
-      # values in sync with k8s/knative/config-gc.yaml.
-      - name: Ensure Knative revision GC bounds runtime-image accumulation
-        run: |
-          kubectl patch configmap config-gc -n knative-serving --type merge \
-            -p '{"data":{"max-non-active-revisions":"2","retain-since-create-time":"6h","retain-since-last-active-time":"30m","min-non-active-revisions":"1"}}' || true
-
-      # Knative docs: when raising max-revision-timeout-seconds, the
-      # activator's terminationGracePeriodSeconds should be at least as
-      # long, so in-flight requests aren't disrupted on activator drain.
-      # We're also taking the activator out of the request path for
-      # project pods (target-burst-capacity=0), so this is mostly
-      # belt-and-suspenders.
-      - name: Ensure Knative activator drain window matches max revision timeout
-        run: |
-          kubectl patch deployment activator -n knative-serving --type merge \
-            -p '{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":3600}}}}' || true
-
-      - name: Ensure OCI LB idle timeout for SSE streaming
-        run: |
-          kubectl annotate svc kourier -n kourier-system \
-            service.beta.kubernetes.io/oci-load-balancer-connection-idle-timeout="1800" \
-            --overwrite || true
-
-      - name: Verify configured node pool matches running nodes
+      - name: Plan
         env:
-          NODE_POOL_OCID: ${{ needs.resolve-config.outputs.node_pool_ocid }}
+          SHA: ${{ github.sha }}
+          ENVIRONMENT: ${{ matrix.environment }}
+          NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
+          REGION_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          US_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+          REGISTRY_USERNAME: ${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.OCI_AUTH_TOKEN }}
+          APP_VERSION: ${{ needs.resolve-config.outputs.app_version }}
+          GA4_MEASUREMENT_ID: ${{ secrets.GA4_MEASUREMENT_ID }}
+          FB_PIXEL_ID: ${{ secrets.FB_PIXEL_ID }}
+          CP_URL: ${{ vars.METAL_CONTROL_PLANE_URL }}
+          METAL_REGISTER_TOKEN: ${{ secrets.METAL_REGISTER_TOKEN }}
+          INSECURE_TLS: ${{ vars.METAL_RELEASE_INSECURE_TLS }}
+          FLEET_OUT: fleet/${{ matrix.environment }}.json
         run: |
-          if [ -z "$NODE_POOL_OCID" ]; then
-            echo "NODE_POOL_OCID not set, skipping verification"
-            exit 0
-          fi
-          # OKE node displayName is `oke-<cluster-hash>-<nodepool-hash>-<svchash>-N`.
-          # Cross-check that the configured NODE_POOL_OCID's hash appears in
-          # at least one node's displayName. If not, the cluster-autoscaler
-          # would silently sit inert (the staging incident on 2026-05-04).
-          POOL_HASH=$(echo "$NODE_POOL_OCID" | rev | cut -c1-11 | rev)
-          NODE_NAMES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.labels.displayName}{"\n"}{end}' 2>/dev/null || true)
-          if [ -z "$NODE_NAMES" ]; then
-            echo "::warning::Could not list nodes for pool verification — skipping"
-            exit 0
-          fi
-          if ! echo "$NODE_NAMES" | grep -q "$POOL_HASH"; then
-            echo "::error::Configured NODE_POOL_OCID (.../${POOL_HASH}) does not match any running node displayName."
-            echo "::error::Running nodes:"
-            echo "$NODE_NAMES" | sed 's/^/  /'
-            echo "::error::This means the cluster-autoscaler would silently fail to scale up. Update the GitHub Actions"
-            echo "::error::variable NODE_POOL_OCID for environment ${{ env.ENVIRONMENT }} to the correct node-pool OCID."
-            exit 1
-          fi
-          echo "Node pool OCID matches running nodes (hash=$POOL_HASH)"
+          mkdir -p fleet
+          .github/scripts/plan-production-deploy.sh
 
-      - name: Deploy Cluster Autoscaler
-        env:
-          NODE_POOL_OCID: ${{ needs.resolve-config.outputs.node_pool_ocid }}
-        run: |
-          if [ -z "$NODE_POOL_OCID" ]; then
-            echo "NODE_POOL_OCID not set, skipping"
-          else
-            # Standing-headroom floor: see the production "Deploy Cluster
-            # Autoscaler" step. MIN>=2 default prevents the old scale-to-1
-            # regression; keep vars in sync with terraform system_pool_min/max.
-            NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '2' }}"
-            NODE_POOL_MAX="${{ vars.NODE_POOL_MAX || '10' }}"
-            sed -e "s|NODE_POOL_MIN_PLACEHOLDER|$NODE_POOL_MIN|g" \
-                -e "s|NODE_POOL_MAX_PLACEHOLDER|$NODE_POOL_MAX|g" \
-                -e "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" \
-                k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
-            # Force a reload so a stale OCID rolls out immediately, not next pod restart
-            kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
-            kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
-            kubectl get pods -n kube-system -l app=cluster-autoscaler
-          fi
+      - name: Upload metal fleet reading
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: fleet-${{ matrix.environment }}
+          path: fleet/
+          if-no-files-found: ignore
+          retention-days: 1
 
-      - name: Resolve runtime image to immutable tag
-        id: runtime-tag
-        env:
-          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
-          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
-        run: |
-          # Maintain a ConfigMap `shogo-runtime-version` recording the
-          # last-known-good runtime image SHA tag. If runtime was rebuilt
-          # this deploy, write the current github.sha; otherwise carry forward
-          # whatever is already there. This becomes the immutable RUNTIME_IMAGE
-          # used by the warm-pool controller for newly minted ksvc, replacing
-          # the old `:${env}-latest` tag that was vulnerable to OCIR cleanup.
-          PREV=$(kubectl get configmap shogo-runtime-version -n ${{ env.NS_SYSTEM }} \
-                  -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
-          if [ "$RUNTIME_CHANGED" = "true" ]; then
-            NEW_TAG="${{ env.IMAGE_TAG }}"
-            echo "Runtime was rebuilt this deploy — pinning to $NEW_TAG"
-          elif [ -n "$PREV" ]; then
-            NEW_TAG="$PREV"
-            echo "Runtime unchanged — keeping previously pinned $NEW_TAG"
-          else
-            # Bootstrap: no prior pin and runtime unchanged. Fall back to
-            # the current SHA tag (the build pipeline always pushes one).
-            NEW_TAG="${{ env.IMAGE_TAG }}"
-            echo "Bootstrap: no prior runtime pin — using $NEW_TAG"
-          fi
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${NEW_TAG}"
-          kubectl create configmap shogo-runtime-version \
-            --namespace=${{ env.NS_SYSTEM }} \
-            --from-literal=image_tag="$NEW_TAG" \
-            --from-literal=image="$RUNTIME_IMAGE" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          echo "image=$RUNTIME_IMAGE" >> $GITHUB_OUTPUT
-          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
-
-      - name: Deploy Image Prepuller DaemonSet
-        env:
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-        run: |
-          sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
-              -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
-              k8s/base/image-prepuller.yaml | kubectl apply -f -
-          kubectl get daemonset image-prepuller -n ${{ env.NS_SYSTEM }}
-
-      # Hard gate (run 26865807851, 2026-06-02): block until the
-      # image-prepuller DaemonSet has finished pulling the runtime image
-      # onto every node BEFORE patching the api/warm-pool revisions onto
-      # it. Without this the revisions race the pull and lose. No-op when
-      # the runtime tag is unchanged. See
-      # .github/scripts/wait-runtime-prepulled.sh.
-      - name: Wait for runtime image prepull (gate)
-        run: |
-          .github/scripts/wait-runtime-prepulled.sh "${{ env.NS_SYSTEM }}"
-
-      # See the matching production step for context — a 5-minute
-      # CronJob that catches the 2026-05-27 incident classes (placeholder
-      # env leak, BackOff warm-pool pod, zero-Ready ksvcs) and fails the
-      # K8s job to fire the existing alerting hook. Same monitor, same
-      # base manifest, sed-substituted to the staging namespaces.
-      - name: Deploy warm-pool monitor
-        run: |
-          sed -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
-              -e "s|value: shogo-staging-system|value: ${{ env.NS_SYSTEM }}|g" \
-              -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
-              k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
-
-      - name: Deploy Knative services
-        env:
-          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
-          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
-          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
-          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
-          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
-          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
-          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
-        run: |
-          patch_ksvc() {
-            local name=$1 ns=$2 image_name=$3 changed=$4 prev=$5
-            if [ "$changed" = "true" ]; then
-              echo "Deploying $name -> ${{ env.IMAGE_TAG }}"
-              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${OCIR_REGISTRY}/shogo/${image_name}:${{ env.IMAGE_TAG }}\"}
-              ]" || echo "$name not found"
-            elif [ -n "$prev" ]; then
-              echo "Restoring $name -> $prev"
-              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
-              ]" || true
-            fi
-          }
-
-          patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
-          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
-          patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
-
-      # Retire stale studio revisions. The `studio-direct` Service (see
-      # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio revision by
-      # `serving.knative.dev/service=studio`, and each revision keeps a warm pod
-      # (min-scale + studio-direct feeding its queue-proxy keeps the autoscaler
-      # from scaling it to zero). So without this, old revisions keep serving —
-      # historically 404ing hashed assets ~half the time, and even with the
-      # shared-asset CDN they still serve stale HTML. Once the new revision is
-      # Ready, delete every other studio revision so studio-direct converges to
-      # a single serving build. Guarded so a bad rollout (latest not Ready)
-      # never deletes the only working revision.
-      - name: Retire stale studio revisions
-        if: needs.detect-changes.outputs.web_changed == 'true'
-        run: |
-          set -euo pipefail
-          NS="${{ env.NS_SYSTEM }}"
-          echo "Waiting for studio ksvc to be Ready..."
-          kubectl wait --for=condition=Ready ksvc/studio -n "$NS" --timeout=300s
-          LATEST=$(kubectl get ksvc studio -n "$NS" -o jsonpath='{.status.latestReadyRevisionName}')
-          if [ -z "$LATEST" ]; then
-            echo "ERROR: studio has no latestReadyRevisionName; refusing to GC revisions." >&2
-            exit 1
-          fi
-          echo "Keeping latest-ready studio revision: $LATEST"
-          STALE=$(kubectl get revisions -n "$NS" -l serving.knative.dev/service=studio \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -v "^${LATEST}$" || true)
-          if [ -z "$STALE" ]; then
-            echo "No stale studio revisions to delete."
-          else
-            echo "Deleting stale studio revisions:"; echo "$STALE"
-            echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS"
-          fi
-
-      - name: Sync API environment variables
-        env:
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-        # The previous inline implementation here used `python3 -c ...
-        # 2>/dev/null) || IDX="-1"` which silently swallowed every
-        # failure mode (kubectl flake, json parse error, missing env
-        # var) and continued the deploy with the kustomize overlay
-        # placeholder still in place. See `.github/scripts/sync-api-env.sh`
-        # for the full postmortem. The script `set -euo pipefail`s,
-        # ADDs missing env vars instead of skipping, and verifies the
-        # post-patch value via a fresh `kubectl get`.
-        run: |
-          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" BETTER_AUTH_URL "https://${{ env.DOMAIN }}"
-          # RUNTIME_IMAGE is what the warm-pool controller bakes into newly
-          # minted agent ksvc. Pin it to the immutable :${env}-<sha> tag
-          # resolved by the runtime-tag step. The 2026-05-04 staging
-          # incident covered why the mutable `:${env}-latest` tag is
-          # unsafe here; the 2026-05-27 production incident covered why
-          # silent-skip-on-error is even worse.
-          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" RUNTIME_IMAGE "$RUNTIME_IMAGE"
-
-      - name: Wait for rollout
-        run: |
-          # `kubectl wait --for=condition=ready ksvc/...` is NOT sufficient
-          # on its own: a Knative Service's Ready condition stays True even
-          # while its latest revision crashloops, because Knative keeps
-          # traffic on the previously-Ready revision. The staging API was
-          # stuck in exactly this state for ~6 weeks (api-00271 served
-          # traffic while api-00272..00282 silently crashlooped) before
-          # this gate was tightened. We must additionally check that the
-          # controller has observed our patch (observedGeneration ==
-          # metadata.generation) and that the latest created revision IS
-          # the latest Ready one.
-          wait_ksvc_ready() {
-            local name=$1 ns=$2 timeout_sec=${3:-600}
-            local target_gen lcre lread obs ready elapsed=0
-            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
-            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
-            while [ "$elapsed" -lt "$timeout_sec" ]; do
-              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
-              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
-              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
-              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
-              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
-                echo "ksvc/$name rolled out to $lcre"
-                return 0
-              fi
-              sleep 10
-              elapsed=$((elapsed + 10))
-            done
-            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
-            echo "::group::revision describe"
-            kubectl describe revision "$lcre" -n "$ns" || true
-            echo "::endgroup::"
-            echo "::group::revision logs"
-            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
-            echo "::endgroup::"
-            return 1
-          }
-          for s in studio api docs; do
-            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
-          done
-
-      # (removed) Knative warm-pool health gate: the project/warm-pool Knative
-      # substrate is vestigial under metal-only prod — its ksvcs churn between
-      # RevisionMissing/OutOfDate and were failing the deploy even though the
-      # api ksvc itself rolled out healthy. Metal is authoritative for project
-      # runtimes now, so this gate no longer reflects serving health.
-
-      # Prevent the multi-reconciler race that amplified the 2026-05-27
-      # US incident: an obsolete api-* revision kept pods alive (min-scale=2)
-      # and its warm-pool controller fought the new revision's controller,
-      # each tearing down the other's warm pods. GC obsolete revisions so
-      # only the latest controller is reconciling.
-      - name: Garbage-collect old api revisions
-        run: |
-          .github/scripts/gc-old-api-revisions.sh "${{ env.NS_SYSTEM }}"
-
-      - name: Restart image prepuller
-        if: needs.detect-changes.outputs.runtime_changed == 'true'
-        run: |
-          if ! kubectl get daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} &>/dev/null; then exit 0; fi
-          STUCK=$(kubectl get pods -n ${{ env.NS_SYSTEM }} -l app.kubernetes.io/name=image-prepuller --field-selector=status.phase!=Running -o name 2>/dev/null || true)
-          if [ -n "$STUCK" ]; then
-            echo "$STUCK" | xargs -r kubectl delete -n ${{ env.NS_SYSTEM }} --force --grace-period=0 2>/dev/null || true
-            sleep 5
-          fi
-          kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }}
-          kubectl rollout status daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} --timeout=300s || echo "Prepuller rollout timeout"
-
-      - name: Post-deploy health check
-        run: |
-          echo "Waiting 30s for revisions to propagate..."
-          sleep 30
-          HEALTHY=false
-          for i in $(seq 1 20); do
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "https://${{ env.DOMAIN }}/api/health" 2>/dev/null) || STATUS="000"
-            if [ "$STATUS" = "200" ]; then
-              echo "API healthy (attempt $i)"
-              HEALTHY=true
-              break
-            fi
-            echo "API not ready (HTTP $STATUS), retrying... ($i/20)"
-            sleep 10
-          done
-          if [ "$HEALTHY" != "true" ]; then
-            echo "::error::API health check did not return 200 after 20 attempts"
-            exit 1
-          fi
-
-  # --- Staging: critical-path e2e against what was just deployed ---
-  # deploy.yml's concurrency group holds the next staging deploy until this
-  # run finishes, so staging is guaranteed to be serving github.sha here.
-  # Publishes the e2e/staging-critical commit status read by
-  # staging-e2e-gate below. To retry a flaky failure, re-run this job
-  # before anything newer lands on main.
-  staging-e2e-critical:
-    name: Staging critical-path e2e
-    needs: [deploy-staging]
-    if: needs.deploy-staging.result == 'success'
+  plan-release:
+    name: Dry run plan (release)
+    runs-on: ubuntu-latest
+    needs: [setup, resolve-config, plan-region]
+    if: always() && needs.setup.outputs.dry_run == 'true' && needs.resolve-config.result == 'success'
+    environment: production-us
+    timeout-minutes: 15
     permissions:
       contents: read
-      statuses: write
-    uses: ./.github/workflows/e2e-hosted.yml
-    with:
-      target: staging
-      suite: critical
-      report_status: true
-    secrets: inherit
-
-  # --- Production: require a green staging critical-path e2e on this SHA ---
-  # A v* tag normally points at a main commit whose staging deploy (and
-  # staging-e2e-critical) may still be running, so wait for it. Fail fast if
-  # no main deploy for this SHA exists (e.g. it was superseded in the deploy
-  # queue): deploy that commit to staging first or tag a commit that was.
-  staging-e2e-gate:
-    name: Staging e2e gate
-    runs-on: ubuntu-latest
-    needs: [setup]
-    if: needs.setup.outputs.is_production == 'true' && needs.setup.outputs.build_only != 'true'
-    timeout-minutes: 120
-    permissions:
       actions: read
       statuses: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # Full history: the rootfs gate diffs this commit against the fleet's.
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          sparse-checkout: scripts/ci
+          fetch-depth: 0
+
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
-      - name: Wait for e2e/staging-critical to pass for this commit
+          bun-version: '1.4.4'
+
+      - name: Download metal fleet readings
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fleet-*
+          path: fleet
+          merge-multiple: true
+
+      - name: Staging e2e status for this commit
+        id: e2e
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
-          SKIP: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_staging_e2e_gate == 'true' }}
+          GATE_TIMEOUT_MS: '300000'
+          GATE_POLL_MS: '15000'
         run: bun scripts/ci/wait-for-staging-e2e.ts
+
+      - name: Metal rootfs gate
+        id: gate
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/metal-rootfs-gate.sh decide "$SHA" fleet/production-us.json fleet/production-eu.json | tee -a "$GITHUB_OUTPUT"
+
+      # Runs even when the gate says no rebuild, to show which image a
+      # rebuild would use.
+      - name: Metal runtime image (dry run)
+        id: image
+        env:
+          SHA: ${{ github.sha }}
+          REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          DRY_RUN: 'true'
+          OCI_NS: ${{ vars.OCI_TENANCY_NAMESPACE }}
+          OCI_USERNAME: ${{ secrets.OCI_USERNAME }}
+          OCI_AUTH_TOKEN: ${{ secrets.OCI_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$OCI_AUTH_TOKEN" | docker login "${REGISTRY%%/*}" -u "$OCI_NS/$OCI_USERNAME" --password-stdin >/dev/null
+          bash .github/scripts/promote-metal-runtime-image.sh
+
+      - name: Summary
+        if: always()
+        env:
+          SHA: ${{ github.sha }}
+          APP_VERSION: ${{ needs.resolve-config.outputs.app_version }}
+          REGIONS: ${{ needs.plan-region.result }}
+          E2E: ${{ steps.e2e.outcome }}
+          REBUILD: ${{ steps.gate.outputs.rebuild }}
+          REASON: ${{ steps.gate.outputs.reason }}
+          SOURCE: ${{ steps.image.outputs.source }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          {
+            echo "## Release plan for ${SHA:0:12} (${APP_VERSION})"
+            echo ""
+            echo "- Regions: **${REGIONS}** (see the per-region plans above)"
+            echo "- Staging e2e (\`e2e/staging-critical\`): **${E2E}**"
+            echo "- Metal rootfs rebuild: **${REBUILD:-unknown}** — ${REASON}"
+            if [ "$REBUILD" = "true" ]; then WHEN="would"; else WHEN="if a rebuild were needed, would"; fi
+            if [ "$SOURCE" = "promoted" ]; then
+              echo "- Metal runtime image: ${WHEN} promote \`${IMAGE##*:}\` (no build)"
+            elif [ "$SOURCE" = "build" ]; then
+              echo "- Metal runtime image: ${WHEN} **build** \`${IMAGE##*:}\` (~90 min; no staging image matches)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$REGIONS" != "success" ] || [ "$E2E" != "success" ]; then
+            echo "::error::The production deploy of ${SHA:0:12} would fail (regions=${REGIONS}, staging e2e=${E2E})"
+            exit 1
+          fi
+          echo "A production deploy of ${SHA:0:12} would succeed."
 
   # --- Production: Deploy US (primary, runs migrations) ---
   deploy-us:
     name: Deploy to US (primary)
     runs-on: ubuntu-latest
-    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push, staging-e2e-gate]
+    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push, promote-images, staging-e2e-gate]
     if: |
       always() &&
       needs.setup.outputs.build_only != 'true' &&
+      needs.setup.outputs.dry_run != 'true' &&
       needs.resolve-config.outputs.is_production == 'true' &&
       needs.staging-e2e-gate.result == 'success' &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
-      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
+      (needs.promote-images.result == 'success' || needs.promote-images.result == 'skipped')
     environment: production-us
     # deploy-eu refreshes the US subscription after EU publishes new tables.
     outputs:
@@ -1472,6 +1236,9 @@ jobs:
           if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
           if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
           if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.HIGGSFIELD_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=HIGGSFIELD_API_KEY="${{ secrets.HIGGSFIELD_API_KEY }}"); fi
+          if [ -n "${{ secrets.ZERNIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_API_KEY="${{ secrets.ZERNIO_API_KEY }}"); fi
+          if [ -n "${{ secrets.ZERNIO_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_WEBHOOK_SECRET="${{ secrets.ZERNIO_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
@@ -1540,6 +1307,26 @@ jobs:
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
+      # Promote mode: every service gets the release tag, and the runtime only
+      # re-rolls when its digest differs from what THIS cluster pins (see the
+      # script header). Must run before "Apply Kubernetes manifests" resets
+      # the ksvc images to :production-latest.
+      - name: Resolve release images
+        id: release
+        env:
+          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          PROMOTE: ${{ needs.detect-changes.outputs.promote }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
+          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
+          REGISTRY_USERNAME: ${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.OCI_AUTH_TOKEN }}
+        run: .github/scripts/resolve-release-images.sh
+
       # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
       # manifests / patch ksvcs into a disk-starved cluster. A node above the
       # disk threshold (or already under DiskPressure) cannot bring up a new
@@ -1576,24 +1363,20 @@ jobs:
           # `:<env>-bootstrap`) value, so `kubectl apply` itself can never stamp
           # a non-existent runtime image onto the api ksvc and then rely on a
           # later imperative patch to undo it. That undo-gap bricked India on
-          # 2026-05-27 when a mid-deploy abort left the placeholder live. We
-          # resolve the immutable :<env>-<sha> tag here with the same logic as
-          # the later "Resolve runtime image" step; sync-api-env.sh re-verifies
-          # it downstream as defense-in-depth.
-          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
-          PREV_TAG=$(kubectl get configmap shogo-runtime-version -n "${{ env.NS_SYSTEM }}" -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
-          if [ "${{ needs.detect-changes.outputs.runtime_changed }}" = "true" ]; then
-            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
-          elif [ -n "$PREV_TAG" ]; then
-            RUNTIME_TAG="$PREV_TAG"
-          else
-            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
-          fi
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${RUNTIME_TAG}"
+          # 2026-05-27 when a mid-deploy abort left the placeholder live. The
+          # immutable :<env>-<sha> tag comes from "Resolve release images";
+          # apply-release-images.sh re-verifies it downstream as
+          # defense-in-depth.
+          # The studio image is environment-agnostic; production overlays
+          # also carry release-version / GA4 / Facebook Pixel placeholders
+          # (staging has none).
+          export RUNTIME_IMAGE="${{ steps.release.outputs.runtime_image }}"
+          export APP_VERSION="${{ needs.resolve-config.outputs.app_version }}"
+          export GA4_MEASUREMENT_ID="${{ secrets.GA4_MEASUREMENT_ID }}"
+          export FB_PIXEL_ID="${{ secrets.FB_PIXEL_ID }}"
           echo "Rendering manifests with RUNTIME_IMAGE=${RUNTIME_IMAGE}"
-          kubectl kustomize "k8s/overlays/${{ env.ENVIRONMENT }}/" \
-            | sed "s|RUNTIME_IMAGE_PLACEHOLDER|${RUNTIME_IMAGE}|g" \
-            | kubectl apply -f -
+          .github/scripts/render-overlay.sh "${{ env.ENVIRONMENT }}" > /tmp/manifests.yaml
+          kubectl apply -f /tmp/manifests.yaml
           # Node-level inotify quota bump — DaemonSet lives in kube-system,
           # outside the kustomize overlay (kustomize blocks reaching into
           # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
@@ -1696,49 +1479,6 @@ jobs:
           kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
           kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
 
-      - name: Resolve runtime image to immutable tag
-        id: runtime-tag
-        env:
-          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
-          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
-        run: |
-          PREV=$(kubectl get configmap shogo-runtime-version -n ${{ env.NS_SYSTEM }} \
-                  -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
-          if [ "$RUNTIME_CHANGED" = "true" ]; then
-            NEW_TAG="${{ env.IMAGE_TAG }}"
-          elif [ -n "$PREV" ]; then
-            NEW_TAG="$PREV"
-          else
-            NEW_TAG="${{ env.IMAGE_TAG }}"
-          fi
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${NEW_TAG}"
-          kubectl create configmap shogo-runtime-version \
-            --namespace=${{ env.NS_SYSTEM }} \
-            --from-literal=image_tag="$NEW_TAG" \
-            --from-literal=image="$RUNTIME_IMAGE" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          echo "image=$RUNTIME_IMAGE" >> $GITHUB_OUTPUT
-          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
-
-      - name: Deploy Image Prepuller
-        env:
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-        run: |
-          sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
-              -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
-              k8s/base/image-prepuller.yaml | kubectl apply -f -
-
-      # Hard gate (run 26865807851, 2026-06-02): block until the
-      # image-prepuller DaemonSet has finished pulling the runtime image
-      # onto every node BEFORE patching the api/warm-pool revisions onto
-      # it. Without this the revisions race the pull and lose — India's
-      # api revision never achieved initial scale (ProgressDeadlineExceeded)
-      # and EU's warm pool never reached Ready. No-op when the runtime tag
-      # is unchanged. See .github/scripts/wait-runtime-prepulled.sh.
-      - name: Wait for runtime image prepull (gate)
-        run: |
-          .github/scripts/wait-runtime-prepulled.sh "${{ env.NS_SYSTEM }}"
-
       # Continuous warm-pool health monitor: a 5-minute CronJob that fails
       # the K8s job (and pages via the existing kube_job_status_failed
       # alert) on any of the 2026-05-27 incident classes — placeholder env
@@ -1751,84 +1491,23 @@ jobs:
               -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
               k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
 
-      - name: Deploy Knative services
+      # Shared with deploy-staging.yml and rollback-production.yml: pin the runtime
+      # image, block on the prepull gate (run 26865807851, 2026-06-02), patch
+      # the ksvcs, retire stale studio revisions (2026-07-18 EU CSS-404), and
+      # re-pin + verify RUNTIME_IMAGE on the api ksvc (2026-05-27 502s).
+      - name: Apply release images
         env:
-          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
-          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
-          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
-          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
-          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
-          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
-        run: |
-          patch_ksvc() {
-            local name=$1 ns=$2 image_name=$3 changed=$4 prev=$5
-            if [ "$changed" = "true" ]; then
-              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${OCIR_REGISTRY}/shogo/${image_name}:${{ env.IMAGE_TAG }}\"}
-              ]" || echo "$name not found"
-            elif [ -n "$prev" ]; then
-              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
-              ]" || true
-            fi
-          }
-          patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
-          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
-          patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
-
-      # Retire stale studio revisions. The `studio-direct` Service (see
-      # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio revision by
-      # `serving.knative.dev/service=studio`, and each revision keeps a warm pod
-      # (min-scale + studio-direct feeding its queue-proxy keeps the autoscaler
-      # from scaling it to zero). So without this, old revisions keep serving —
-      # historically 404ing hashed assets ~half the time, and even with the
-      # shared-asset CDN they still serve stale HTML. Once the new revision is
-      # Ready, delete every other studio revision so studio-direct converges to
-      # a single serving build. Guarded so a bad rollout (latest not Ready)
-      # never deletes the only working revision.
-      #
-      # This step previously only existed in the staging job — its absence
-      # here on US/EU is exactly what let studio-00323/00324/00325 all keep
-      # serving concurrently in EU on 2026-07-18, causing the CSS-404 incident
-      # (studio-direct round-robined requests across mismatched-hash builds).
-      - name: Retire stale studio revisions
-        if: needs.detect-changes.outputs.web_changed == 'true'
-        run: |
-          set -euo pipefail
-          NS="${{ env.NS_SYSTEM }}"
-          echo "Waiting for studio ksvc to be Ready..."
-          kubectl wait --for=condition=Ready ksvc/studio -n "$NS" --timeout=300s
-          LATEST=$(kubectl get ksvc studio -n "$NS" -o jsonpath='{.status.latestReadyRevisionName}')
-          if [ -z "$LATEST" ]; then
-            echo "ERROR: studio has no latestReadyRevisionName; refusing to GC revisions." >&2
-            exit 1
-          fi
-          echo "Keeping latest-ready studio revision: $LATEST"
-          STALE=$(kubectl get revisions -n "$NS" -l serving.knative.dev/service=studio \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -v "^${LATEST}$" || true)
-          if [ -z "$STALE" ]; then
-            echo "No stale studio revisions to delete."
-          else
-            echo "Deleting stale studio revisions:"; echo "$STALE"
-            echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS"
-          fi
-
-      # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
-      # to live at the bottom of `Deploy Knative services` silently
-      # skipped on every error path (the kubectl pipefail, the python
-      # parse, the patch itself), let the kustomize overlay placeholder
-      # `:production-bootstrap` survive the deploy on EU/India during
-      # v1.8.13, and triggered the 2026-05-27 502 incident once the
-      # warm-pool controller tried to mint pods with a non-existent
-      # image. The shared script `set -euo pipefail`s, ADDs missing env
-      # vars, and verifies the post-patch value via a fresh `kubectl get`.
-      - name: Sync API environment variables
-        env:
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-        run: |
-          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" RUNTIME_IMAGE "$RUNTIME_IMAGE"
+          RUNTIME_TAG: ${{ steps.release.outputs.runtime_tag }}
+          RUNTIME_IMAGE: ${{ steps.release.outputs.runtime_image }}
+          API_IMAGE: ${{ steps.release.outputs.api_image }}
+          WEB_IMAGE: ${{ steps.release.outputs.web_image }}
+          DOCS_IMAGE: ${{ steps.release.outputs.docs_image }}
+          # Re-pin + verify the release tag on the api ksvc (APP_VERSION) and the
+          # studio (SHOGO_APP_VERSION), so /health reports the release even when
+          # this step is the only thing that touched the ksvcs (rollback path).
+          APP_VERSION: ${{ needs.resolve-config.outputs.app_version }}
+          RETIRE_STALE_STUDIO: ${{ steps.release.outputs.web_changed }}
+        run: .github/scripts/apply-release-images.sh
 
       - name: Wait for rollout and health check
         run: |
@@ -1883,6 +1562,24 @@ jobs:
           if [ "$HEALTHY" != "true" ]; then
             echo "::error::US API health check did not return 200 after 20 attempts"
             exit 1
+          fi
+
+          # The api must report the release it was deployed as. An unpinned pod
+          # reads 0.0.0, and admin analytics then cannot answer "N of M desktop
+          # devices on <tag>" — the gap that made version adoption unreadable
+          # (SHO-114). Rollout fails rather than deploying an unlabelled build.
+          if [ -n "${KOURIER_IP:-}" ]; then
+            REPORTED_VERSION=$(curl -sf --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/version" 2>/dev/null | jq -r '.version // empty' || true)
+          else
+            REPORTED_VERSION=$(curl -sf --connect-timeout 5 --max-time 15 "https://${{ env.DOMAIN }}/api/version" 2>/dev/null | jq -r '.version // empty' || true)
+          fi
+          if [ -z "$REPORTED_VERSION" ] || [ "$REPORTED_VERSION" = "0.0.0" ]; then
+            echo "::error::US api /api/version reports '${REPORTED_VERSION:-<none>}' — APP_VERSION never reached the api ksvc; nothing can say which release is latest"
+            exit 1
+          fi
+          echo "US api reports version $REPORTED_VERSION (expected ${{ needs.resolve-config.outputs.app_version }})"
+          if [ -n "${{ needs.resolve-config.outputs.app_version }}" ] && [ "$REPORTED_VERSION" != "${{ needs.resolve-config.outputs.app_version }}" ]; then
+            echo "::warning::US api reports $REPORTED_VERSION but the release resolved to ${{ needs.resolve-config.outputs.app_version }}"
           fi
 
       # (removed) Knative warm-pool health gate — vestigial under metal-only
@@ -2089,7 +1786,7 @@ jobs:
           echo "## US Production Deploy" >> $GITHUB_STEP_SUMMARY
           echo "- API: ${{ needs.detect-changes.outputs.api_changed }}" >> $GITHUB_STEP_SUMMARY
           echo "- Web: ${{ needs.detect-changes.outputs.web_changed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Runtime: ${{ needs.detect-changes.outputs.runtime_changed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Runtime: ${{ steps.release.outputs.runtime_changed }}" >> $GITHUB_STEP_SUMMARY
 
   # --- Production: Deploy EU (active-active node) ---
   deploy-eu:
@@ -2099,6 +1796,7 @@ jobs:
     if: |
       always() &&
       needs.resolve-config.outputs.is_production == 'true' &&
+      needs.resolve-config.outputs.dry_run != 'true' &&
       needs.deploy-us.result == 'success' &&
       (needs.replicate-images.result == 'success' || needs.replicate-images.result == 'skipped')
     environment: production-eu
@@ -2161,6 +1859,9 @@ jobs:
           if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
           if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
           if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.HIGGSFIELD_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=HIGGSFIELD_API_KEY="${{ secrets.HIGGSFIELD_API_KEY }}"); fi
+          if [ -n "${{ secrets.ZERNIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_API_KEY="${{ secrets.ZERNIO_API_KEY }}"); fi
+          if [ -n "${{ secrets.ZERNIO_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_WEBHOOK_SECRET="${{ secrets.ZERNIO_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
@@ -2229,6 +1930,26 @@ jobs:
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
+      # Promote mode: every service gets the release tag, and the runtime only
+      # re-rolls when its digest differs from what THIS cluster pins (see the
+      # script header). Must run before "Apply Kubernetes manifests" resets
+      # the ksvc images to :production-latest.
+      - name: Resolve release images
+        id: release
+        env:
+          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          PROMOTE: ${{ needs.detect-changes.outputs.promote }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
+          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
+          REGISTRY_USERNAME: ${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.OCI_AUTH_TOKEN }}
+        run: .github/scripts/resolve-release-images.sh
+
       # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
       # manifests / patch ksvcs into a disk-starved cluster. A node above the
       # disk threshold (or already under DiskPressure) cannot bring up a new
@@ -2266,24 +1987,20 @@ jobs:
           # `:<env>-bootstrap`) value, so `kubectl apply` itself can never stamp
           # a non-existent runtime image onto the api ksvc and then rely on a
           # later imperative patch to undo it. That undo-gap bricked India on
-          # 2026-05-27 when a mid-deploy abort left the placeholder live. We
-          # resolve the immutable :<env>-<sha> tag here with the same logic as
-          # the later "Resolve runtime image" step; sync-api-env.sh re-verifies
-          # it downstream as defense-in-depth.
-          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
-          PREV_TAG=$(kubectl get configmap shogo-runtime-version -n "${{ env.NS_SYSTEM }}" -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
-          if [ "${{ needs.detect-changes.outputs.runtime_changed }}" = "true" ]; then
-            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
-          elif [ -n "$PREV_TAG" ]; then
-            RUNTIME_TAG="$PREV_TAG"
-          else
-            RUNTIME_TAG="${{ env.IMAGE_TAG }}"
-          fi
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${RUNTIME_TAG}"
+          # 2026-05-27 when a mid-deploy abort left the placeholder live. The
+          # immutable :<env>-<sha> tag comes from "Resolve release images";
+          # apply-release-images.sh re-verifies it downstream as
+          # defense-in-depth.
+          # The studio image is environment-agnostic; production overlays
+          # also carry release-version / GA4 / Facebook Pixel placeholders
+          # (staging has none).
+          export RUNTIME_IMAGE="${{ steps.release.outputs.runtime_image }}"
+          export APP_VERSION="${{ needs.resolve-config.outputs.app_version }}"
+          export GA4_MEASUREMENT_ID="${{ secrets.GA4_MEASUREMENT_ID }}"
+          export FB_PIXEL_ID="${{ secrets.FB_PIXEL_ID }}"
           echo "Rendering manifests with RUNTIME_IMAGE=${RUNTIME_IMAGE}"
-          kubectl kustomize "k8s/overlays/${{ env.ENVIRONMENT }}/" \
-            | sed "s|RUNTIME_IMAGE_PLACEHOLDER|${RUNTIME_IMAGE}|g" \
-            | kubectl apply -f -
+          .github/scripts/render-overlay.sh "${{ env.ENVIRONMENT }}" > /tmp/manifests.yaml
+          kubectl apply -f /tmp/manifests.yaml
           # Node-level inotify quota bump — DaemonSet lives in kube-system,
           # outside the kustomize overlay (kustomize blocks reaching into
           # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
@@ -2611,49 +2328,6 @@ jobs:
           kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
           kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
 
-      - name: Resolve runtime image to immutable tag
-        id: runtime-tag
-        env:
-          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
-          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
-        run: |
-          PREV=$(kubectl get configmap shogo-runtime-version -n ${{ env.NS_SYSTEM }} \
-                  -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
-          if [ "$RUNTIME_CHANGED" = "true" ]; then
-            NEW_TAG="${{ env.IMAGE_TAG }}"
-          elif [ -n "$PREV" ]; then
-            NEW_TAG="$PREV"
-          else
-            NEW_TAG="${{ env.IMAGE_TAG }}"
-          fi
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${NEW_TAG}"
-          kubectl create configmap shogo-runtime-version \
-            --namespace=${{ env.NS_SYSTEM }} \
-            --from-literal=image_tag="$NEW_TAG" \
-            --from-literal=image="$RUNTIME_IMAGE" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          echo "image=$RUNTIME_IMAGE" >> $GITHUB_OUTPUT
-          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
-
-      - name: Deploy Image Prepuller
-        env:
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-        run: |
-          sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
-              -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
-              k8s/base/image-prepuller.yaml | kubectl apply -f -
-
-      # Hard gate (run 26865807851, 2026-06-02): block until the
-      # image-prepuller DaemonSet has finished pulling the runtime image
-      # onto every node BEFORE patching the api/warm-pool revisions onto
-      # it. Without this the revisions race the pull and lose — India's
-      # api revision never achieved initial scale (ProgressDeadlineExceeded)
-      # and EU's warm pool never reached Ready. No-op when the runtime tag
-      # is unchanged. See .github/scripts/wait-runtime-prepulled.sh.
-      - name: Wait for runtime image prepull (gate)
-        run: |
-          .github/scripts/wait-runtime-prepulled.sh "${{ env.NS_SYSTEM }}"
-
       # Continuous warm-pool health monitor: a 5-minute CronJob that fails
       # the K8s job (and pages via the existing kube_job_status_failed
       # alert) on any of the 2026-05-27 incident classes — placeholder env
@@ -2666,84 +2340,23 @@ jobs:
               -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
               k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
 
-      - name: Deploy Knative services
+      # Shared with deploy-staging.yml and rollback-production.yml: pin the runtime
+      # image, block on the prepull gate (run 26865807851, 2026-06-02), patch
+      # the ksvcs, retire stale studio revisions (2026-07-18 EU CSS-404), and
+      # re-pin + verify RUNTIME_IMAGE on the api ksvc (2026-05-27 502s).
+      - name: Apply release images
         env:
-          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
-          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
-          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
-          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
-          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
-          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
-        run: |
-          patch_ksvc() {
-            local name=$1 ns=$2 image_name=$3 changed=$4 prev=$5
-            if [ "$changed" = "true" ]; then
-              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${OCIR_REGISTRY}/shogo/${image_name}:${{ env.IMAGE_TAG }}\"}
-              ]" || echo "$name not found"
-            elif [ -n "$prev" ]; then
-              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
-              ]" || true
-            fi
-          }
-          patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
-          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
-          patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
-
-      # Retire stale studio revisions. The `studio-direct` Service (see
-      # k8s/overlays/*/studio-ws-ingress.yaml) selects EVERY studio revision by
-      # `serving.knative.dev/service=studio`, and each revision keeps a warm pod
-      # (min-scale + studio-direct feeding its queue-proxy keeps the autoscaler
-      # from scaling it to zero). So without this, old revisions keep serving —
-      # historically 404ing hashed assets ~half the time, and even with the
-      # shared-asset CDN they still serve stale HTML. Once the new revision is
-      # Ready, delete every other studio revision so studio-direct converges to
-      # a single serving build. Guarded so a bad rollout (latest not Ready)
-      # never deletes the only working revision.
-      #
-      # This step previously only existed in the staging job — its absence
-      # here on US/EU is exactly what let studio-00323/00324/00325 all keep
-      # serving concurrently in EU on 2026-07-18, causing the CSS-404 incident
-      # (studio-direct round-robined requests across mismatched-hash builds).
-      - name: Retire stale studio revisions
-        if: needs.detect-changes.outputs.web_changed == 'true'
-        run: |
-          set -euo pipefail
-          NS="${{ env.NS_SYSTEM }}"
-          echo "Waiting for studio ksvc to be Ready..."
-          kubectl wait --for=condition=Ready ksvc/studio -n "$NS" --timeout=300s
-          LATEST=$(kubectl get ksvc studio -n "$NS" -o jsonpath='{.status.latestReadyRevisionName}')
-          if [ -z "$LATEST" ]; then
-            echo "ERROR: studio has no latestReadyRevisionName; refusing to GC revisions." >&2
-            exit 1
-          fi
-          echo "Keeping latest-ready studio revision: $LATEST"
-          STALE=$(kubectl get revisions -n "$NS" -l serving.knative.dev/service=studio \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -v "^${LATEST}$" || true)
-          if [ -z "$STALE" ]; then
-            echo "No stale studio revisions to delete."
-          else
-            echo "Deleting stale studio revisions:"; echo "$STALE"
-            echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS"
-          fi
-
-      # The inline `python3 ... 2>/dev/null) || IDX="-1"` block that used
-      # to live at the bottom of `Deploy Knative services` silently
-      # skipped on every error path (the kubectl pipefail, the python
-      # parse, the patch itself), let the kustomize overlay placeholder
-      # `:production-bootstrap` survive the deploy on EU/India during
-      # v1.8.13, and triggered the 2026-05-27 502 incident once the
-      # warm-pool controller tried to mint pods with a non-existent
-      # image. The shared script `set -euo pipefail`s, ADDs missing env
-      # vars, and verifies the post-patch value via a fresh `kubectl get`.
-      - name: Sync API environment variables
-        env:
-          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
-        run: |
-          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" RUNTIME_IMAGE "$RUNTIME_IMAGE"
+          RUNTIME_TAG: ${{ steps.release.outputs.runtime_tag }}
+          RUNTIME_IMAGE: ${{ steps.release.outputs.runtime_image }}
+          API_IMAGE: ${{ steps.release.outputs.api_image }}
+          WEB_IMAGE: ${{ steps.release.outputs.web_image }}
+          DOCS_IMAGE: ${{ steps.release.outputs.docs_image }}
+          # Re-pin + verify the release tag on the api ksvc (APP_VERSION) and the
+          # studio (SHOGO_APP_VERSION), so /health reports the release even when
+          # this step is the only thing that touched the ksvcs (rollback path).
+          APP_VERSION: ${{ needs.resolve-config.outputs.app_version }}
+          RETIRE_STALE_STUDIO: ${{ steps.release.outputs.web_changed }}
+        run: .github/scripts/apply-release-images.sh
 
       - name: Wait for rollout and health check
         run: |
@@ -2791,6 +2404,24 @@ jobs:
             exit 1
           fi
 
+          # The api must report the release it was deployed as. An unpinned pod
+          # reads 0.0.0, and admin analytics then cannot answer "N of M desktop
+          # devices on <tag>" — the gap that made version adoption unreadable
+          # (SHO-114). Rollout fails rather than deploying an unlabelled build.
+          if [ -n "${KOURIER_IP:-}" ]; then
+            REPORTED_VERSION=$(curl -sf --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/version" 2>/dev/null | jq -r '.version // empty' || true)
+          else
+            REPORTED_VERSION=$(curl -sf --connect-timeout 5 --max-time 15 "https://${{ env.DOMAIN }}/api/version" 2>/dev/null | jq -r '.version // empty' || true)
+          fi
+          if [ -z "$REPORTED_VERSION" ] || [ "$REPORTED_VERSION" = "0.0.0" ]; then
+            echo "::error::EU api /api/version reports '${REPORTED_VERSION:-<none>}' — APP_VERSION never reached the api ksvc; nothing can say which release is latest"
+            exit 1
+          fi
+          echo "EU api reports version $REPORTED_VERSION (expected ${{ needs.resolve-config.outputs.app_version }})"
+          if [ -n "${{ needs.resolve-config.outputs.app_version }}" ] && [ "$REPORTED_VERSION" != "${{ needs.resolve-config.outputs.app_version }}" ]; then
+            echo "::warning::EU api reports $REPORTED_VERSION but the release resolved to ${{ needs.resolve-config.outputs.app_version }}"
+          fi
+
       # (removed) Knative warm-pool health gate — vestigial under metal-only
       # prod (see staging block). Metal is authoritative for project runtimes;
       # the Knative project/warm-pool ksvcs churn and were failing the deploy
@@ -2805,27 +2436,13 @@ jobs:
           echo "## EU Production Deploy" >> $GITHUB_STEP_SUMMARY
           echo "- Role: active-active" >> $GITHUB_STEP_SUMMARY
 
-  # ---------------------------------------------------------------------------
-  # Rebuild the production metal runtime image on every prod release.
-  #
-  # The bare-metal Firecracker fleet runs the guest (in-VM) code from a separate
-  # multi-arch runtime image (runtime-multiarch.yml), NOT from the arm64 image
-  # this pipeline ships to OKE. That workflow only auto-builds `staging` (on main
-  # pushes); its production image is a manual dispatch. So before this, cutting a
-  # prod tag deployed the API but left the metal guest code frozen at whatever
-  # runtime image someone last hand-built — which is exactly how prod served
-  # hours-stale guest code (2026-07 incident): fixes were tagged but the prod
-  # runtime image (and thus the fleet rootfs) was never rebuilt.
-  #
-  # Close the gap: a successful prod release dispatches the prod runtime image
-  # build from THIS ref. runtime-multiarch's `converge-fleet` job then fans the
-  # rebuildRootfs release out to every metal region, so the fleet converges on
-  # the released guest code automatically. Best-effort (never blocks the API
-  # release): a dispatch/build failure is a loud CI signal, not a rolled-back
-  # deploy.
-  # ---------------------------------------------------------------------------
-  dispatch-metal-runtime-image:
-    name: Dispatch prod metal runtime image build
+  # The rootfs gate below needs to know which guest revision every host runs,
+  # and each production region is its own control plane whose URL and token live
+  # in its own GitHub environment. A job can only be in one environment, so the
+  # EU fleet is read here and handed over as an output; the gate job reads the
+  # US fleet itself. Never fails: an unreadable fleet makes the gate rebuild.
+  metal-fleet-eu:
+    name: Read EU metal fleet revisions
     runs-on: ubuntu-latest
     needs: [resolve-config, deploy-us, deploy-eu]
     if: |
@@ -2833,42 +2450,6 @@ jobs:
       needs.resolve-config.outputs.is_production == 'true' &&
       needs.deploy-us.result == 'success' &&
       needs.deploy-eu.result == 'success'
-    permissions:
-      contents: read
-      actions: write
-    steps:
-      - name: Dispatch runtime-multiarch (production) from this ref
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REF: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          echo "::notice::Dispatching runtime-multiarch (environment=production) @ $REF"
-          # converge_fleet=false: dispatch-metal-agent-release (below) rolls the
-          # fleet itself, after this image build has actually succeeded. Letting
-          # runtime-multiarch also converge would publish two rebuildRootfs
-          # releases per region for one tag.
-          gh workflow run runtime-multiarch.yml \
-            -R "$GITHUB_REPOSITORY" \
-            --ref "$REF" \
-            -f environment=production \
-            -f converge_fleet=false
-
-  # The rootfs gate below needs to know which guest revision every host runs,
-  # and each production region is its own control plane whose URL and token live
-  # in its own GitHub environment. A job can only be in one environment, so the
-  # EU fleet is read here and handed over as an output; the publish job reads
-  # the US fleet itself. Never fails: an unreadable fleet makes the gate rebuild.
-  metal-fleet-eu:
-    name: Read EU metal fleet revisions
-    runs-on: ubuntu-latest
-    needs: [resolve-config, deploy-us, deploy-eu, dispatch-metal-runtime-image]
-    if: |
-      always() &&
-      needs.resolve-config.outputs.is_production == 'true' &&
-      needs.deploy-us.result == 'success' &&
-      needs.deploy-eu.result == 'success' &&
-      needs.dispatch-metal-runtime-image.result == 'success'
     environment: production-eu
     outputs:
       fleet: ${{ steps.fetch.outputs.fleet }}
@@ -2891,35 +2472,41 @@ jobs:
           echo "$FLEET" | jq .
           echo "fleet=$FLEET" >> "$GITHUB_OUTPUT"
 
-  # ===========================================================================
-  # Stage 8: Metal node-agent release (fold the bare-metal fleet into the tag
-  # cycle). The metal fleet deploys PULL-based via metal-agent-deploy.yml; on a
-  # `v*` tag we publish the `stable` channel to BOTH production control planes so
-  # a release reaches the Firecracker hosts too — it is no longer a separate
-  # manual dispatch. Mirrors dispatch-metal-runtime-image (which handles the
-  # guest runtime image); this handles the host agent bundle + golden-rootfs
-  # rebuild. Hosts converge on their next heartbeat (apps/api metal-agent-release).
-  # ===========================================================================
-  dispatch-metal-agent-release:
-    name: Publish prod metal-agent release (stable)
+  # ---------------------------------------------------------------------------
+  # Give the release a production metal runtime image, when the fleet needs one.
+  #
+  # The bare-metal Firecracker fleet runs the guest (in-VM) code from a separate
+  # multi-arch runtime image (runtime-multiarch.yml), NOT from the arm64 image
+  # this pipeline ships to OKE. A prod tag that didn't refresh it left the metal
+  # guest code frozen at whatever image someone last hand-built (2026-07
+  # incident: fixes were tagged but the fleet rootfs was never rebuilt).
+  #
+  # Ask the rootfs gate first. When the fleet needs new guest code, promote the
+  # staging multi-arch image whose runtime chain matches this commit (seconds,
+  # and the bytes staging's metal hosts already run); only when none exists is
+  # the production image rebuilt from this ref (up to ~90 min). Best-effort:
+  # never blocks the API release.
+  # ---------------------------------------------------------------------------
+  metal-runtime-image:
+    name: Prod metal runtime image
     runs-on: ubuntu-latest
-    needs: [resolve-config, deploy-us, deploy-eu, dispatch-metal-runtime-image, metal-fleet-eu]
-    # Production tag only, and only once both regional control-plane deploys AND
-    # the runtime-image dispatch succeeded (we're about to ask hosts to rebuild
-    # their rootfs from that image). metal-fleet-eu is deliberately not required
-    # to succeed: a missing EU fleet reading only makes the gate rebuild.
+    needs: [resolve-config, deploy-us, deploy-eu, metal-fleet-eu]
+    # metal-fleet-eu is deliberately not required to succeed: a missing EU
+    # fleet reading only makes the gate rebuild.
     if: |
       always() &&
       needs.resolve-config.outputs.is_production == 'true' &&
       needs.deploy-us.result == 'success' &&
-      needs.deploy-eu.result == 'success' &&
-      needs.dispatch-metal-runtime-image.result == 'success'
-    # For the US control plane's URL and token (the gate) and OCIR credentials
-    # (the image wait).
+      needs.deploy-eu.result == 'success'
+    # For the US control plane's URL and token (the gate) and OCIR credentials.
     environment: production-us
     permissions:
       contents: read
       actions: write
+    outputs:
+      rebuild: ${{ steps.gate.outputs.rebuild }}
+      source: ${{ steps.image.outputs.source }}
+      image: ${{ steps.image.outputs.image }}
     steps:
       # Full history: the gate diffs this commit against whatever revision the
       # fleet runs, which can be many releases back.
@@ -2946,29 +2533,90 @@ jobs:
           printf '%s' "$EU_FLEET" > /tmp/fleet-eu.json
           bash scripts/ci/metal-rootfs-gate.sh decide "$SHA" /tmp/fleet-us.json /tmp/fleet-eu.json | tee -a "$GITHUB_OUTPUT"
 
+      - name: Promote the staging multi-arch image (or fall back to building)
+        id: image
+        if: steps.gate.outputs.rebuild == 'true'
+        env:
+          SHA: ${{ github.sha }}
+          REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          FORCE_BUILD: ${{ github.event.inputs.force_rebuild_production || 'false' }}
+          OCI_NS: ${{ vars.OCI_TENANCY_NAMESPACE }}
+          OCI_USERNAME: ${{ secrets.OCI_USERNAME }}
+          OCI_AUTH_TOKEN: ${{ secrets.OCI_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$OCI_AUTH_TOKEN" | docker login "${REGISTRY%%/*}" -u "$OCI_NS/$OCI_USERNAME" --password-stdin >/dev/null
+          bash .github/scripts/promote-metal-runtime-image.sh
+
+      - name: Dispatch runtime-multiarch (production) from this ref
+        if: steps.image.outputs.source == 'build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "::notice::Dispatching runtime-multiarch (environment=production) @ $REF"
+          # converge_fleet=false: dispatch-metal-agent-release (below) rolls the
+          # fleet itself, after the image exists. Letting runtime-multiarch also
+          # converge would publish two rebuildRootfs releases per region for one
+          # tag.
+          gh workflow run runtime-multiarch.yml \
+            -R "$GITHUB_REPOSITORY" \
+            --ref "$REF" \
+            -f environment=production \
+            -f converge_fleet=false
+
+  # ===========================================================================
+  # Stage 8: Metal node-agent release (fold the bare-metal fleet into the tag
+  # cycle). The metal fleet deploys PULL-based via metal-agent-deploy.yml; on a
+  # `v*` tag we publish the `stable` channel to BOTH production control planes so
+  # a release reaches the Firecracker hosts too — it is no longer a separate
+  # manual dispatch. metal-runtime-image handles the guest runtime image; this
+  # handles the host agent bundle + golden-rootfs rebuild. Hosts converge on
+  # their next heartbeat (apps/api metal-agent-release).
+  # ===========================================================================
+  dispatch-metal-agent-release:
+    name: Publish prod metal-agent release (stable)
+    runs-on: ubuntu-latest
+    needs: [resolve-config, deploy-us, deploy-eu, metal-runtime-image]
+    # Production tag only, and only once both regional control-plane deploys AND
+    # the runtime-image step succeeded (we may ask hosts to rebuild their rootfs
+    # from that image).
+    if: |
+      always() &&
+      needs.resolve-config.outputs.is_production == 'true' &&
+      needs.deploy-us.result == 'success' &&
+      needs.deploy-eu.result == 'success' &&
+      needs.metal-runtime-image.result == 'success'
+    # For OCIR credentials (the image wait).
+    environment: production-us
+    permissions:
+      contents: read
+      actions: write
+    steps:
       - name: Wait for the prod runtime image, then publish stable to both regions
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ github.ref_name }}
-          SHA: ${{ github.sha }}
-          REBUILD_ROOTFS: ${{ steps.gate.outputs.rebuild }}
+          REBUILD_ROOTFS: ${{ needs.metal-runtime-image.outputs.rebuild }}
+          IMAGE: ${{ needs.metal-runtime-image.outputs.image }}
           REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
           OCI_NS: ${{ vars.OCI_TENANCY_NAMESPACE }}
           OCI_USERNAME: ${{ secrets.OCI_USERNAME }}
           OCI_AUTH_TOKEN: ${{ secrets.OCI_AUTH_TOKEN }}
         run: |
           set -euo pipefail
-          IMAGE="$REGISTRY/shogo/shogo-runtime:production-multiarch-$SHA"
           if [ "$REBUILD_ROOTFS" != "true" ]; then
-            # No host will rebuild from the new image, so its existence is not a
-            # precondition for anything here.
-            echo "::notice::No rootfs rebuild in this release — not waiting for $IMAGE"
+            # No host will rebuild from a new image, so there is nothing to wait for.
+            echo "::notice::No rootfs rebuild in this release"
           else
-            # dispatch-metal-runtime-image started runtime-multiarch fire-and-forget,
-            # and hosts must not be told to rebuild before the image exists. Wait
-            # for the image itself rather than a workflow run: polling runs by
-            # head_sha matched the staging run on the same commit, already
-            # successful, in the seconds before the production run registered.
+            [ -n "$IMAGE" ] || { echo "::error::metal-runtime-image produced no image"; exit 1; }
+            # A fallback build was started fire-and-forget, and hosts must not be
+            # told to rebuild before the image exists. Wait for the image itself
+            # rather than a workflow run: polling runs by head_sha matched the
+            # staging run on the same commit, already successful, in the seconds
+            # before the production run registered. A promoted image is already
+            # there.
             echo "::notice::Waiting for $IMAGE before publishing metal-agent stable"
             echo "$OCI_AUTH_TOKEN" | docker login "${REGISTRY%%/*}" -u "$OCI_NS/$OCI_USERNAME" --password-stdin >/dev/null
             deadline=$(( $(date +%s) + 3600 ))
@@ -2986,8 +2634,9 @@ jobs:
           # Each production region is a distinct control plane (separate DB), so
           # publish the pointer to both. The agent bundle ships either way; only
           # whether hosts also rebuild their rootfs from the new runtime image is
-          # conditional (see the gate step). A rebuild is pinned to this commit's
-          # image, which the hosts verify before swapping it in.
+          # conditional (see metal-runtime-image). A rebuild is pinned to an
+          # image tagged with the commit it was built from, which the hosts
+          # verify against the revision stamped inside it before swapping it in.
           for TARGET in production-us production-eu; do
             echo "::notice::Publishing metal-agent stable (rebuildRootfs=$REBUILD_ROOTFS) to $TARGET @ $REF"
             args=(-f environment="$TARGET" -f channel=stable -f rebuild_rootfs="$REBUILD_ROOTFS")

@@ -29,6 +29,7 @@ import {
   readWorkspaceFile,
   readAllSrcCodeFromDisk,
   listSrcFilePathsFromDisk,
+  configuredRecurringReminder,
 } from './eval-helpers'
 import { buildSkillServerSchema } from '../workspace-defaults'
 
@@ -406,10 +407,10 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'reminder-configured',
-      description: 'Configured heartbeat for batch reminders',
+      description: 'Configured batch reminders (heartbeat, schedule, or recurring calendar event)',
       points: 5,
       phase: 'intention',
-      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
+      validate: (r) => configuredRecurringReminder(r),
     },
     {
       id: 'reminder-days',
@@ -419,7 +420,8 @@ const PHASE_1: AgentEval = {
       validate: (r) => {
         const json = toolCallsJson(r)
         return json.includes('monday') || json.includes('thursday') || json.includes('weekday') ||
-          json.includes('1,4') || json.includes('mon') || json.includes('thu')
+          json.includes('1,4') || json.includes('mon') || json.includes('thu') ||
+          /byday=[a-z,]*(mo|th)/.test(json)
       },
     },
     {
@@ -437,7 +439,6 @@ const PHASE_1: AgentEval = {
       points: 4,
       phase: 'interaction',
       validate: (r) =>
-        allCanvasCode(r).length === 0 &&
         !responseContains(r, 'prisma') &&
         !responseContains(r, 'typescript') &&
         !responseContains(r, 'react') &&

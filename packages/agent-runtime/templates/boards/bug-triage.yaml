@@ -1,0 +1,46 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: bug-triage
+name: Bug Triage
+summary: Reported bugs triaged to a severity and owner, fixed, and verified.
+channel: engineering
+board:
+  name: Bugs
+  itemType: task
+  keyPrefix: BUG
+  description: "Bugs reported by people or escalated from #support. Triage sets severity and an owner within a day."
+  columns:
+    - name: Reported
+      category: backlog
+      slaHours: 24
+    - name: Triaged
+      category: backlog
+    - name: Fixing
+      category: active
+      wipLimit: 6
+    - name: In review
+      category: review
+    - name: Verified
+      category: done
+    - name: Won't fix
+      category: dismissed
+  fields:
+    - key: severity
+      label: Severity
+      type: select
+      options:
+        - sev1
+        - sev2
+        - sev3
+        - sev4
+      required: true
+    - key: area
+      label: Area
+      type: text
+    - key: pr
+      label: Pull request
+      type: url
+  requiresHumanReview: true

@@ -3,13 +3,45 @@
 import { describe, expect, test } from "bun:test"
 import {
   fileHref,
+  fileIndexHas,
+  isMentionHref,
   linkifyBareUrls,
   linkifyFilePaths,
+  mentionHref,
+  mentionTargetFromHref,
   pathFromFileHref,
   resolveChatFilePath,
 } from "../file-links"
 
 const PROJECT = "6c2a5faf-9683-4cf1-b3d1-bfdab2e912a9"
+const OTHER = "0b1c2d3e-4f50-4617-8899-aabbccddeeff"
+
+describe("fileIndexHas", () => {
+  const projectFiles = new Set(["src/app.tsx", "README.md"])
+  const workspaceFiles = new Set([`${PROJECT}/src/app.tsx`, `${OTHER}/notes.md`])
+
+  test("matches project-relative spellings against a project runtime's list", () => {
+    expect(fileIndexHas(projectFiles, "src/app.tsx", PROJECT)).toBe(true)
+    expect(fileIndexHas(projectFiles, "./src/app.tsx", PROJECT)).toBe(true)
+    expect(fileIndexHas(projectFiles, `${PROJECT}/src/app.tsx`, PROJECT)).toBe(true)
+    expect(fileIndexHas(projectFiles, "/app/workspace/src/app.tsx", PROJECT)).toBe(true)
+    expect(fileIndexHas(projectFiles, "src/missing.tsx", PROJECT)).toBe(false)
+  })
+
+  test("does not match another project's path against this project's files", () => {
+    expect(fileIndexHas(projectFiles, `${OTHER}/src/app.tsx`, PROJECT)).toBe(false)
+  })
+
+  test("matches against a workspace runtime's project-prefixed list", () => {
+    expect(fileIndexHas(workspaceFiles, "src/app.tsx", PROJECT)).toBe(true)
+    expect(fileIndexHas(workspaceFiles, `${OTHER}/notes.md`, PROJECT)).toBe(true)
+    expect(fileIndexHas(workspaceFiles, "notes.md", PROJECT)).toBe(false)
+  })
+
+  test("is false for an empty index", () => {
+    expect(fileIndexHas(new Set(), "src/app.tsx", PROJECT)).toBe(false)
+  })
+})
 
 describe("linkifyFilePaths", () => {
   test("links a bare workspace path and leaves the trailing note alone", () => {
@@ -48,6 +80,41 @@ describe("linkifyFilePaths", () => {
   test("does not link a bare filename with no directory", () => {
     expect(linkifyFilePaths("See README.md for details.")).toBe(
       "See README.md for details.",
+    )
+  })
+
+  test("leaves a code span that is a command alone, so no markdown lands in the backticks", () => {
+    const input = "Run `bun run src/server.ts` now"
+    expect(linkifyFilePaths(input)).toBe(input)
+    expect(linkifyFilePaths("`bun test apps/mobile/components/chat`")).toBe(
+      "`bun test apps/mobile/components/chat`",
+    )
+  })
+
+  test("does not cut a repo id in half at a version-like dot", () => {
+    for (const id of [
+      "empero-ai/Qwen3.8-4B-Distill",
+      "meta-llama/Llama-3.1-8B-Instruct",
+      "org/model-v1.2",
+    ]) {
+      expect(linkifyFilePaths(id)).toBe(id)
+      expect(linkifyFilePaths(`model ${id}`)).toBe(`model ${id}`)
+      expect(linkifyFilePaths(`\`${id}\``)).toBe(`\`${id}\``)
+    }
+  })
+
+  test("keeps a sentence-ending period outside the link", () => {
+    expect(linkifyFilePaths("Edit src/app.tsx.")).toBe(
+      `Edit [src/app.tsx](${fileHref("src/app.tsx")}).`,
+    )
+  })
+
+  test("links a multi-dot name as one path", () => {
+    expect(linkifyFilePaths("grab dist/archive.tar.gz")).toBe(
+      `grab [dist/archive.tar.gz](${fileHref("dist/archive.tar.gz")})`,
+    )
+    expect(linkifyFilePaths("see apps/x/file.test.ts")).toBe(
+      `see [apps/x/file.test.ts](${fileHref("apps/x/file.test.ts")})`,
     )
   })
 })
@@ -116,5 +183,39 @@ describe("resolveChatFilePath", () => {
       relPath: "src/app.tsx",
     })
     expect(resolveChatFilePath("src/app.tsx", null)).toBeNull()
+  })
+})
+
+describe("mention targets", () => {
+  test("round-trips every mention kind, escaping keys that hold punctuation", () => {
+    expect(mentionHref("u", "user-1")).toBe("/shogo-mention/u/user-1")
+    // The workspace agent's key is `ws`; a project agent's is `p:<projectId>`.
+    expect(mentionHref("a", "ws")).toBe("/shogo-mention/a/ws")
+    expect(mentionHref("a", "p:proj-1")).toBe("/shogo-mention/a/p%3Aproj-1")
+    expect(mentionTargetFromHref("/shogo-mention/a/p%3Aproj-1")).toEqual({ kind: "a", id: "p:proj-1" })
+    expect(mentionTargetFromHref(mentionHref("g", "g1"))).toEqual({ kind: "g", id: "g1" })
+  })
+
+  test("a bare prefix has no target, so old and target-less mentions stay plain", () => {
+    // `@here`, `@channel`, `#channel` and every message stored before mentions
+    // carried an id render with the prefix alone.
+    expect(mentionTargetFromHref("/shogo-mention")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/u")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/u/u1/extra")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/x/u1")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/u/u1?q=1")).toBeNull()
+  })
+
+  test("is not confused by other hrefs or bad encoding", () => {
+    expect(mentionTargetFromHref(undefined)).toBeNull()
+    expect(mentionTargetFromHref(null)).toBeNull()
+    expect(mentionTargetFromHref("https://example.com/u/u1")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-file?path=src%2Fapp.tsx")).toBeNull()
+    expect(mentionTargetFromHref("/shogo-mention/u/%")).toBeNull()
+    // A bare prefix is still recognised as a mention, which is what the
+    // renderer keys the highlight off.
+    expect(isMentionHref("/shogo-mention")).toBe(true)
+    expect(isMentionHref("/shogo-mention/u/u1")).toBe(true)
   })
 })

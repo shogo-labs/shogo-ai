@@ -29,6 +29,11 @@ spec:
               value: "api.shogo-staging-system.svc.cluster.local"
             - name: DNS_RESOLVER
               value: "kube-dns.kube-system.svc.cluster.local"
+            # Rendered into index.html at container start by
+            # apps/mobile/docker/shogo-runtime-env.sh. Staging ships no
+            # GA4 / Facebook Pixel IDs.
+            - name: SHOGO_APP_ENV
+              value: "staging_web"
           resources:
             requests:
               memory: "128Mi"

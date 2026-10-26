@@ -148,7 +148,9 @@ export function configureMonaco(monaco: MonacoNs) {
 
   // Load real @types/react, @types/react-dom, csstype, prop-types
   // declaration files as extraLibs so React autocomplete + hover work.
-  setupExtraLibs(monaco, { defer: true });
+  setupExtraLibs(monaco, { defer: true }).catch((err) => {
+    console.warn("[CodeEditor] extraLibs failed to load", err);
+  });
 
   // Register the "Fix with Shogo" hover button + quick-fix code action for
   // every language Monaco knows about. Idempotent across split editors.
@@ -171,12 +173,18 @@ export function CodeEditor({
   settings,
   themeMode,
   editorTheme,
+  readOnly = false,
   onChange,
   onCursor,
   onMount,
 }: {
   value: string;
   language: string;
+  /**
+   * Viewers show a file they cannot write to. Monaco refuses input, the
+   * content listener stays quiet, and no `onChange` is required.
+   */
+  readOnly?: boolean;
   /** Stable unique path used as the Monaco model URI so IntelliSense scopes per-file. */
   pathKey: string;
   settings: EditorSettings;
@@ -197,8 +205,8 @@ export function CodeEditor({
    * React hasn't flushed the new activeId yet, the change carries the
    * authoritative fileId out with it.
    */
-  onChange: (fileId: string, v: string) => void;
-  onCursor: (line: number, col: number) => void;
+  onChange?: (fileId: string, v: string) => void;
+  onCursor?: (line: number, col: number) => void;
   onMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
 }) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
@@ -330,7 +338,7 @@ export function CodeEditor({
       if (!model || model.isDisposed()) return;
       const next = model.getValue();
       pendingEchoesRef.current.add(next);
-      onChangeRef.current(pathKeyRef.current, next);
+      onChangeRef.current?.(pathKeyRef.current, next);
     });
 
     // Same disposed-model guard for cursor events. Without it, Monaco's
@@ -340,7 +348,7 @@ export function CodeEditor({
     ed.onDidChangeCursorPosition((e) => {
       const model = ed.getModel();
       if (!model || model.isDisposed()) return;
-      onCursorRef.current(e.position.lineNumber, e.position.column);
+      onCursorRef.current?.(e.position.lineNumber, e.position.column);
     });
 
     onMount?.(ed, monaco);
@@ -415,6 +423,10 @@ export function CodeEditor({
         // and just hides the dialog, matching VS Code's
         // `"editor.unusualLineTerminators": "off"` setting.
         unusualLineTerminators: "off",
+        // A viewer's file is a read-out, not a buffer: Monaco refuses input
+        // and the gutter/scroll behaviour stays as in the IDE.
+        readOnly,
+        domReadOnly: readOnly,
       }}
     />
   );

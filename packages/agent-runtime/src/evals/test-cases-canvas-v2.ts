@@ -14,7 +14,7 @@
 
 import type { AgentEval, EvalResult } from './types'
 import type { ToolMockMap } from './tool-mocks'
-import { usedTool, neverUsedTool, responseContains, toolCallArgsContain } from './eval-helpers'
+import { usedTool, neverUsedTool, responseContains, toolCallArgsContain, builtCanvasV2Only, deletedFileAnyRoute, fileWrites, readWorkspaceFile, writtenContent } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Shared config — every eval seeds activeMode: 'canvas'
@@ -28,26 +28,9 @@ const V2_CONFIG = JSON.stringify({
   model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
 }, null, 2)
 
-// ---------------------------------------------------------------------------
-// Tool mocks for full-stack evals (skill server)
-// ---------------------------------------------------------------------------
-
-const SKILL_SERVER_MOCKS: ToolMockMap = {
-  exec: {
-    type: 'static',
-    response: 'Done.',
-  },
-  web: {
-    type: 'pattern',
-    patterns: [
-      { match: { url: '/api/', method: 'POST' }, response: JSON.stringify({ id: 'new-1', createdAt: '2026-03-26T00:00:00Z' }) },
-      { match: { url: '/api/', method: 'PATCH' }, response: JSON.stringify({ id: 'new-1', updatedAt: '2026-03-26T00:00:00Z' }) },
-      { match: { url: '/api/', method: 'DELETE' }, response: JSON.stringify({ deleted: true }) },
-      { match: { url: '/api/' }, response: JSON.stringify([]) },
-    ],
-    default: JSON.stringify([]),
-  },
-}
+// Full-stack evals run on the runtime template: exec and web calls to the
+// workspace's own server are real (the built-in mocks pass localhost
+// through), so there are no canned "Done." / fake-/api mocks here.
 
 // ---------------------------------------------------------------------------
 // Canvas-v2 validation helpers
@@ -57,80 +40,37 @@ function isCodeFile(path: string): boolean {
   return /^src\/.*\.(tsx?|jsx?)$/.test(path)
 }
 
+/** Wrote (or edited — the template ships src/App.tsx) a src/ code file via any route. */
 function wroteCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    const path = String((t.input as any).path ?? '')
-    if (!isCodeFile(path)) return false
-    return namePattern ? namePattern.test(path) : true
-  })
+  return fileWrites(r).some(w => isCodeFile(w.path) && (!namePattern || namePattern.test(w.path)))
 }
 
 function wroteCanvasDataFile(r: EvalResult, namePattern?: RegExp): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    const path = String((t.input as any).path ?? '')
-    if (!path.match(/\.(data\.json|json)$/)) return false
-    return namePattern ? namePattern.test(path) : true
-  })
+  return fileWrites(r).some(w => /\.(data\.json|json)$/.test(w.path) && (!namePattern || namePattern.test(w.path)))
 }
 
 function allCanvasCode(r: EvalResult): string {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => {
-      const path = String((t.input as any).path ?? '')
-      return isCodeFile(path)
-    })
-    .map(t => {
-      const inp = t.input as any
-      return String(inp.content ?? inp.new_string ?? '')
-    })
-    .join('\n')
-    .toLowerCase()
+  return writtenContent(r, isCodeFile).toLowerCase()
 }
 
 function anyCanvasCodeContains(r: EvalResult, term: string): boolean {
   return allCanvasCode(r).includes(term.toLowerCase())
 }
 
-function neverUsedV1CanvasTools(_r: EvalResult): boolean {
-  return true
+function neverUsedV1CanvasTools(r: EvalResult): boolean {
+  return builtCanvasV2Only(r)
 }
 
 function editedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'edit_file') return false
-    const path = String((t.input as any).path ?? '')
-    if (!isCodeFile(path)) return false
-    return namePattern ? namePattern.test(path) : true
-  })
+  return fileWrites(r).some(w => w.via !== 'write_file' && isCodeFile(w.path) && (!namePattern || namePattern.test(w.path)))
 }
 
 function deletedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name === 'delete_file') {
-      const path = String((t.input as any).path ?? '')
-      if (!isCodeFile(path)) return false
-      return namePattern ? namePattern.test(path) : true
-    }
-    if (t.name === 'exec') {
-      const cmd = String((t.input as any).command ?? '')
-      if (!cmd.match(/\brm\s/)) return false
-      return namePattern ? namePattern.test(cmd) : true
-    }
-    return false
-  })
+  return deletedFileAnyRoute(r, (p) => isCodeFile(p) && (!namePattern || namePattern.test(p)))
 }
 
 function canvasFileCount(r: EvalResult): number {
-  const paths = new Set<string>()
-  for (const t of r.toolCalls) {
-    if (t.name !== 'write_file') continue
-    const path = String((t.input as any).path ?? '')
-    if (isCodeFile(path)) paths.add(path)
-  }
-  return paths.size
+  return new Set(fileWrites(r).filter(w => isCodeFile(w.path)).map(w => w.path)).size
 }
 
 function canvasCodeJson(r: EvalResult): string {
@@ -151,25 +91,13 @@ function canvasCodeJson(r: EvalResult): string {
 
 /** True if write_file or edit_file was called targeting *prisma/schema.prisma. */
 function wroteSkillServerSchema(r: EvalResult): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
-    const path = String((t.input as any).path ?? '')
-    return path.includes('schema.prisma')
-  })
+  return fileWrites(r).some(w => w.path.endsWith('schema.prisma'))
 }
 
 /** True if a write/edit to schema.prisma referenced the given model name */
 function schemaContainsModel(r: EvalResult, modelName: string): boolean {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => String((t.input as any).path ?? '').includes('schema.prisma'))
-    .some(t => {
-      const input = t.input as any
-      const content = String(
-        input.content ?? input.new_str ?? input.new_string ?? input.code_edit ?? input.replace ?? '',
-      )
-      return content.includes(`model ${modelName}`)
-    })
+  const text = `${writtenContent(r, (p) => p.endsWith('schema.prisma'))}\n${readWorkspaceFile(r, 'prisma/schema.prisma')}`
+  return new RegExp(`model\\s+${modelName}\\b`).test(text)
 }
 
 /** True if canvas code uses fetch() to call the skill server */
@@ -248,18 +176,19 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'What\'s the weather like in San Francisco? Show me something nice — it\'s 72°F and sunny out.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
+    useRuntimeTemplate: true,
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-write-file',
-        description: 'Used write_file to create a canvas file',
+        description: 'Wrote canvas code under src/ (write_file, edit_file, or shell)',
         points: 20,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 20,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -307,18 +236,19 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'Show me our team: 5 engineers, 2 designers, 1 PM with their names and roles. Make it look nice.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
+    useRuntimeTemplate: true,
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-write-file',
-        description: 'Used write_file to create a canvas file',
+        description: 'Wrote canvas code under src/ (write_file, edit_file, or shell)',
         points: 15,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 15,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -367,18 +297,19 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'Build me a counter that I can increment and decrement with buttons. Start at 0.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
+    useRuntimeTemplate: true,
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-write-file',
-        description: 'Used write_file to create a canvas file',
+        description: 'Wrote canvas code under src/ (write_file, edit_file, or shell)',
         points: 15,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 15,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -435,7 +366,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'Build me a lead tracker. I need to add new leads with name, email, and status, and see them in a table.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
-    toolMocks: SKILL_SERVER_MOCKS,
+    useRuntimeTemplate: true,
     maxScore: 100,
     validationCriteria: [
       {
@@ -454,7 +385,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -499,7 +430,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'I want a bookmark manager where I can save URLs with a title and tags, and search through them.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
-    toolMocks: SKILL_SERVER_MOCKS,
+    useRuntimeTemplate: true,
     maxScore: 100,
     validationCriteria: [
       {
@@ -518,7 +449,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -577,7 +508,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'Build an expense tracking dashboard. I need to add expenses with amount, category, and date, see a breakdown by category, and a chart of spending over time.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
-    toolMocks: SKILL_SERVER_MOCKS,
+    useRuntimeTemplate: true,
     maxScore: 100,
     validationCriteria: [
       {
@@ -596,7 +527,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -653,7 +584,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'Build a kanban-style project board with Todo, In Progress, and Done columns. I should be able to add tasks and move them between columns.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
-    toolMocks: SKILL_SERVER_MOCKS,
+    useRuntimeTemplate: true,
     maxScore: 100,
     validationCriteria: [
       {
@@ -672,7 +603,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -747,7 +678,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -769,7 +700,10 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         description: 'Did NOT delete the pre-existing Metric content',
         points: 15,
         phase: 'execution',
-        validate: (r) => allCanvasCode(r).includes('metric'),
+        validate: (r) => {
+          const final = readWorkspaceFile(r, 'src/components/Dashboard.tsx')
+          return final ? /metrics/.test(final) && /Revenue/.test(final) : allCanvasCode(r).includes('metric')
+        },
       },
       {
         id: 'targeted-dashboard',
@@ -808,14 +742,14 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         description: 'Deleted a canvas file (delete_file or exec rm)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'delete_file') || deletedCanvasFile(r, /settings/i),
+        validate: (r) => deletedCanvasFile(r),
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Removed the page as a src/ file, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
-        validate: (r) => neverUsedV1CanvasTools(r),
+        validate: (r) => deletedCanvasFile(r, /settings/i) && !r.toolCalls.some(t => t.name.startsWith('canvas_')),
       },
       {
         id: 'deleted-settings',
@@ -862,7 +796,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'Stages: New, Qualified, Proposal, Closed Won, Closed Lost. Each deal has a company name, deal value in dollars, and contact person. Build the full thing with a pipeline view, summary metrics, and a chart showing value by stage.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
-    toolMocks: SKILL_SERVER_MOCKS,
+    useRuntimeTemplate: true,
     maxScore: 100,
     validationCriteria: [
       {
@@ -881,7 +815,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),

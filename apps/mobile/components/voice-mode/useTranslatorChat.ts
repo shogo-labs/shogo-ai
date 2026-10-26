@@ -56,8 +56,7 @@ export type TranslatorClientTools = Record<
 export interface UseTranslatorChatOptions {
   /**
    * Client-side tool implementations. Must at minimum include
-   * `send_to_chat` and `set_mode`; may include others (e.g.
-   * `get_recent_activity`).
+   * `send_to_chat`; may include others (e.g. `get_recent_activity`).
    */
   clientTools: TranslatorClientTools
   /**

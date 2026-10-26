@@ -2,7 +2,7 @@
 name: analyst
 description: Root-cause analysis and 5 solution options for an incoming issue. Spawn with the issue text plus the coordinator's reproduction notes.
 tools: [read_file, search, exec]
-model: hoshi-2-0
+model: auto
 maxTurns: 15
 ---
 

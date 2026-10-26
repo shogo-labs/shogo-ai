@@ -1,50 +1,55 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The Home (activity inbox) and More panels of the desktop sidebar. Channels,
- * DMs, Agents, Projects and Activity have panels of their own.
+ * The Home (workspace-agent chats) and More panels of the desktop sidebar.
+ * Channels, DMs, Agents, Projects and Activity have panels of their own.
  */
+import { useEffect, useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { Bookmark, ChevronRight, FileText, ListTodo, MessageCircle, MessagesSquare, Store } from 'lucide-react-native'
+import { BarChart3, Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Settings, Share2, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
+import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { useDomainHttp } from '../../../contexts/domain'
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { TASKS_NAV_HIDDEN } from '../../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 import { moreItems, type MoreIcon } from '../../../lib/more-items'
 import { usePlatformConfig } from '../../../lib/platform-config'
-import { ActivityFeed } from '../../activity/ActivityFeed'
 import { PanelLink } from '../../team-chat/ConversationRows'
 import { useTeamChatNav } from '../../team-chat/TeamChatSidebarProvider'
 import { NavItem } from './NavItem'
+import { WorkspaceChatsPanel } from './WorkspaceChatsPanel'
 
 const MORE_ICONS: Record<MoreIcon, React.ElementType> = {
+  analytics: BarChart3,
   tasks: ListTodo,
+  work: KanbanSquare,
   marketplace: Store,
-  'side-chats': MessagesSquare,
   files: FileText,
+  social: Share2,
+  settings: Settings,
 }
 
 export interface HomePanelProps {
   onNavPress?: () => void
-  isHomeRoute: boolean
 }
 
 /**
- * Team Home is the activity inbox: a short header (the workspace agent and
- * Later) over the compact activity feed, which already carries what agents
- * are running, what failed, and who mentioned you. The feed scrolls itself,
- * so this panel must not sit inside a ScrollView.
+ * Home is the workspace agent's chat history, with Tasks and Later above it
+ * when this workspace has them. The Activity tab keeps the feed.
  */
-export function HomePanel({ onNavPress, isHomeRoute }: HomePanelProps) {
+export function HomePanel({ onNavPress }: HomePanelProps) {
   const router = useRouter()
   const chat = useTeamChatNav()
+  const experience = useWorkspaceExperience()
+  const { features } = usePlatformConfig()
 
   return (
-    <View testID="home-panel" className="flex-1">
+    <View testID="home-panel">
       <View className="px-2 pb-1">
-        <NavItem icon={MessageCircle} label="Workspace agent" href="/(app)/agent" active={isHomeRoute} onNavPress={onNavPress} />
         {!TASKS_NAV_HIDDEN && <NavItem icon={ListTodo} label="Tasks" href="/(app)/tasks" onNavPress={onNavPress} />}
+        {features.workBoards && experience.kind === 'team' && <NavItem icon={KanbanSquare} label="My work" href="/(app)/work" onNavPress={onNavPress} />}
         {chat.enabled && (
           <PanelLink
             icon={Bookmark}
@@ -56,9 +61,7 @@ export function HomePanel({ onNavPress, isHomeRoute }: HomePanelProps) {
           />
         )}
       </View>
-      <View className="flex-1">
-        <ActivityFeed compact />
-      </View>
+      <WorkspaceChatsPanel onNavPress={onNavPress} />
     </View>
   )
 }
@@ -68,7 +71,36 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
   const router = useRouter()
   const experience = useWorkspaceExperience()
   const { features } = usePlatformConfig()
-  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace })
+  const http = useDomainHttp()
+  const workspace = useActiveWorkspace()
+  const [social, setSocial] = useState(false)
+
+  // Social management is a capability, not a consequence of having connected an
+  // account: a 200 from `/social/status` means this workspace may manage social
+  // accounts — even with none connected, and even on desktop without Shogo Cloud
+  // (`mode: 'unavailable'` still answers 200, and that screen is where the relay
+  // requirement gets explained). Anything that fails to answer hides the link.
+  useEffect(() => {
+    const workspaceId = workspace?.id
+    if (!workspaceId) {
+      setSocial(false)
+      return
+    }
+    let cancelled = false
+    http
+      .get(`/api/workspaces/${workspaceId}/social/status`)
+      .then(() => {
+        if (!cancelled) setSocial(true)
+      })
+      .catch(() => {
+        if (!cancelled) setSocial(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [http, workspace?.id])
+
+  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards, social })
   const screen = variant === 'screen'
   return (
     <View className={cn(screen ? 'px-2' : 'px-2 pt-1')} testID="more-panel">
@@ -83,7 +115,10 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
               router.push(item.href as any)
               onNavPress?.()
             }}
-            className={cn('flex-row items-center gap-3 rounded-md active:bg-accent/50', screen ? 'px-3 py-3.5' : 'px-2 py-2')}
+            className={cn(
+              'flex-row items-center gap-3',
+              screen ? 'rounded-md px-3 py-3.5 active:bg-accent/50' : 'rounded-lg px-2 py-2 hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60',
+            )}
           >
             <Icon size={screen ? 22 : 18} className="text-muted-foreground" />
             <View className="min-w-0 flex-1">

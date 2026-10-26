@@ -45,6 +45,7 @@ import {
 } from '@/components/ui/modal'
 import { useActiveInstance } from '../../contexts/active-instance'
 import { useInstancePicker, type Instance } from '@shogo/shared-app/hooks'
+import { MachineSyncSettings } from './MachineSyncSettings'
 import { API_URL } from '../../lib/api'
 import { authClient } from '../../lib/auth-client'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
@@ -134,6 +135,10 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
 
   const picker = useInstancePicker({
     workspaceId: workspace?.id,
+    // Every machine this user registered, not only the ones filed under the
+    // cloud workspace that happens to be open — the same list the workspace
+    // switcher lists with the cloud workspaces.
+    scope: 'owner',
     apiUrl: API_URL ?? '',
     activeInstance,
     setInstance,
@@ -351,6 +356,9 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
         ) : (
           <Card>
             <CardContent className="p-0">
+              <View className="px-4 pb-2 pt-4">
+                <MachineSyncSettings />
+              </View>
               {instances.map((inst, index) => {
                 const isActive = activeInstance?.instanceId === inst.id
                 const isConnecting = connecting === inst.id
@@ -386,6 +394,11 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
                             <Text className="text-xs text-muted-foreground">· {relativeTime(inst.lastSeenAt)}</Text>
                           )}
                         </View>
+                        {inst.workspaceName ? (
+                          <Text className="text-xs text-muted-foreground mt-1" numberOfLines={1}>
+                            Registered in {inst.workspaceName}
+                          </Text>
+                        ) : null}
                       </View>
                       {isConnecting ? (
                         <ActivityIndicator size="small" color="rgb(var(--color-primary))" />

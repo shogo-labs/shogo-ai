@@ -9,14 +9,19 @@
 import { prisma } from '../lib/prisma'
 import { loadAccess } from '../lib/authz'
 import { agentIconUrl, ConversationError, storedAgentBuddyLook } from './conversation.service'
+import { serializeSettings, getSettingsRow, timeInZone, toStatus, type UserStatus } from './chat-settings'
 import { publishConversationEvent } from '../lib/conversation-bus'
+import { resolveAgentRunModelLabel } from './agent-run-model.service'
 import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 import {
   agentMentionToken,
-  buildMentionLookup,
+  ambiguousMentionsIn,
+  buildMentionLookupIndex,
+  collapseRepeatedMentions,
   groupMentionToken,
   resolveFriendlyMentionsWith,
   userMentionToken,
+  type AmbiguousMention,
   type MentionDirectoryEntry,
 } from './conversation-mentions'
 
@@ -81,11 +86,35 @@ export function directoryEntries(directory: TeamDirectory): MentionDirectoryEntr
   return entries
 }
 
-/** Resolve plain `@Name`, `@email` and `@group-handle` in `text` to mention tokens. */
-export async function resolveFriendlyMentions(workspaceId: string, text: string, viewerProjectId: string | null = null): Promise<string> {
-  if (!text.includes('@')) return text
-  const directory = await loadTeamDirectory(workspaceId, viewerProjectId)
-  return resolveFriendlyMentionsWith(text, buildMentionLookup(directoryEntries(directory)))
+export interface ResolvedMentions {
+  /** `text` with plain `@Name`s turned into tokens. */
+  text: string
+  /** Names left as written because more than one person or agent answers to them. */
+  ambiguous: AmbiguousMention[]
+}
+
+/**
+ * Resolve plain `@Name`, `@email` and `@group-handle` in `text` to mention
+ * tokens, and fold a mention repeated in parentheses into one. The names that
+ * could not be resolved because they are ambiguous come back with the text so
+ * the caller can say why nothing was tagged.
+ */
+export async function resolveFriendlyMentions(
+  workspaceId: string,
+  text: string,
+  viewerProjectId: string | null = null,
+): Promise<ResolvedMentions> {
+  if (!text.includes('@')) return { text, ambiguous: [] }
+  const index = buildMentionLookupIndex(directoryEntries(await loadTeamDirectory(workspaceId, viewerProjectId)))
+  return {
+    text: collapseRepeatedMentions(resolveFriendlyMentionsWith(text, index.lookup), index.lookup),
+    ambiguous: ambiguousMentionsIn(text, index),
+  }
+}
+
+/** `mention_warnings` lines for tool results: one per name that could not be resolved. */
+export function mentionWarnings(ambiguous: AmbiguousMention[]): string[] {
+  return ambiguous.map((a) => `@${a.name} matches ${a.count} people or agents — use the tag from team_directory`)
 }
 
 
@@ -99,6 +128,12 @@ export interface AgentCard {
   canEdit: boolean
   /** What the agent is for: a project's description, or the workspace agent's tagline. */
   role: string | null
+  /**
+   * The model the agent runs with, named the way the app names models (`Auto`,
+   * `Claude Sonnet 4.6`) — never a raw id. Resolved server-side because the
+   * app's own lookup only knows the cached, workspace-scoped model snapshot.
+   */
+  model: { id: string; label: string }
   owner: { id: string; name: string } | null
   /** Channels the viewer can see this agent in. */
   channels: Array<{
@@ -168,7 +203,61 @@ export async function loadAgentCard(workspaceId: string, projectId: string | nul
       agentTrigger: r.agentTrigger,
       muted: !!r.agentMuted,
     }))
-  return { projectId, name, iconUrl: await agentIconUrl(workspaceId, projectId), buddyLook, canEdit, role, owner, channels }
+  const model = await resolveAgentRunModelLabel(projectId, workspaceId)
+  return { projectId, name, iconUrl: await agentIconUrl(workspaceId, projectId), buddyLook, canEdit, role, model, owner, channels }
+}
+
+export interface UserCard {
+  id: string
+  /** Never empty: falls back to the local part of the email. */
+  name: string
+  email: string
+  /** Email local part — the exact token search's `in:@` / `from:@` resolves. */
+  handle: string
+  image: string | null
+  role: string
+  isSelf: boolean
+  /** Null when the person has not set one; the local time is then unknown too. */
+  timezone: string | null
+  /** `HH:MM` on their clock, computed server-side. */
+  localTime: string | null
+  localTimeLabel: string | null
+  status: UserStatus | null
+}
+
+/**
+ * Profile card for a person in a workspace: who they are, their local time,
+ * and their status.
+ *
+ * Scoped to the workspace: a user who is not a member here gets null, so one
+ * workspace's member list can never be used to read another's emails. Callers
+ * must resolve the id from their own session, never from a client-supplied
+ * workspace.
+ */
+export async function loadUserCard(workspaceId: string, userId: string, viewerId: string): Promise<UserCard | null> {
+  const member = await db.member.findFirst({
+    where: { workspaceId, projectId: null, userId },
+    select: { role: true, user: { select: { id: true, name: true, email: true, image: true } } },
+  })
+  const user = member?.user
+  if (!user?.email) return null
+  const now = new Date()
+  const row = await getSettingsRow(workspaceId, userId)
+  const timezone = serializeSettings(row, now).timezone
+  const localTime = timeInZone(now, timezone)
+  return {
+    id: user.id,
+    name: user.name?.trim() || user.email.split('@')[0]!,
+    email: user.email,
+    handle: user.email.split('@')[0]!.toLowerCase(),
+    image: user.image ?? null,
+    role: member.role,
+    isSelf: user.id === viewerId,
+    timezone,
+    localTime,
+    localTimeLabel: localTime ? `${localTime} local time` : null,
+    status: toStatus(row, now),
+  }
 }
 
 /** `ws` for the workspace agent; a project id, optionally written as the mention key `p:<id>`. */

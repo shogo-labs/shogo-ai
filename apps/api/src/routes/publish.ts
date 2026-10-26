@@ -16,9 +16,17 @@
  */
 
 import { Hono } from "hono"
-import { S3Client, PutObjectCommand, CopyObjectCommand, DeleteObjectsCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3"
+import { PutObjectCommand, CopyObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
 import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
+import {
+  PUBLISH_BUCKET,
+  PUBLISH_DATA_BUCKET,
+  publishS3Client as s3Client,
+  deletePublishedStaticBundle,
+} from "../lib/publish-storage"
+import { flushGitSync } from "../services/publish-git.service"
+import { teardownPublishedSite } from "../services/published-site-teardown"
 import { publishStepTimeouts } from "@shogo/shared-runtime/publish-timeouts"
 import { recordCheckpointForCommit } from "../services/checkpoint.service"
 import {
@@ -54,23 +62,15 @@ import {
 } from "../services/custom-domain.service"
 
 // S3 configuration. `PUBLISH_BUCKET` must be set explicitly in every K8s
-// overlay (k8s/overlays/{staging,production-*}/api-service.yaml) — the
-// fallback below is a deliberately wrong-looking local-dev value so a
-// missing overlay value can't silently route prod uploads to the staging
-// bucket. That happened on 2026-05-26: prod api ksvc had no
-// PUBLISH_BUCKET, the old default `shogo-published-apps-staging` won,
-// and every prod publish wrote to the staging bucket while the
-// Cloudflare Worker for *.shogo.one was reading from
-// `shogo-published-apps-production` — every published app served
-// `ObjectNotFound`. uploadToS3() now also asserts at call time.
-const PUBLISH_BUCKET = process.env.PUBLISH_BUCKET || "shogo-published-apps-LOCAL-DEV"
-// Writable-state bucket for SERVER-BACKED published apps (the SQLite DB +
-// upload dirs the running server.tsx persists). Separate from PUBLISH_BUCKET
-// (static dist). Unset → server-backed publishing degrades to "no durable
-// writes" but still serves dynamic /api/* from the source-seed DB.
-const PUBLISH_DATA_BUCKET = process.env.PUBLISH_DATA_BUCKET || process.env.S3_PUBLISHED_DATA_BUCKET || ""
+// overlay (k8s/overlays/{staging,production-*}/api-service.yaml); the deliberate
+// local-dev fallback lives in `lib/publish-storage.ts`, which also owns the
+// client and the delete paths the project-delete teardown needs.
+// `PUBLISH_DATA_BUCKET` is the writable-state bucket for SERVER-BACKED
+// published apps (the SQLite DB + upload dirs the running server.tsx persists),
+// separate from the static dist bucket. Unset → server-backed publishing
+// degrades to "no durable writes" but still serves dynamic /api/* from the
+// source-seed DB.
 const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || "shogo.one"
-const AWS_REGION = process.env.S3_REGION || process.env.AWS_REGION || "us-east-1"
 
 // Per-step timeouts for outbound calls into the runtime pod. Without these,
 // a frozen pod (e.g. node memory-pressure stalls or scale-to-zero races)
@@ -126,15 +126,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 // warm-pool GC honors this annotation and skips deletion while a publish
 // is mid-flight; the TTL means a forgotten/crashed lock self-heals.
 const PUBLISH_IN_FLIGHT_TTL_MS = 10 * 60 * 1000
-
-// Initialize AWS clients
-const s3Client = new S3Client({
-  region: AWS_REGION,
-  ...(process.env.S3_ENDPOINT && {
-    endpoint: process.env.S3_ENDPOINT,
-    forcePathStyle: true,
-  }),
-})
 
 // Check if we're in Kubernetes (S3 publishing mode) or local dev
 function isKubernetes(): boolean {
@@ -438,26 +429,6 @@ async function syncSitePasswordKv(
 }
 
 /**
- * Remove the Worker KV mappings for all of a project's custom domains so
- * they stop serving once the project is unpublished. CF custom hostnames +
- * DB rows are kept so a later republish restores routing. Best-effort.
- */
-async function clearCustomDomainKv(projectId: string): Promise<void> {
-  if (!getCustomHostnamesConfig()) return
-  try {
-    const domains = await prisma.customDomain.findMany({
-      where: { projectId },
-      select: { hostname: true },
-    })
-    for (const d of domains) {
-      await deleteHostnameMapping(d.hostname)
-    }
-  } catch (err: any) {
-    console.warn(`[Publish] clearCustomDomainKv(${projectId}) failed:`, err?.message ?? err)
-  }
-}
-
-/**
  * Get the MIME type for a file based on extension
  */
 function getMimeType(filename: string): string {
@@ -508,6 +479,44 @@ async function setPublishStatus(
   } catch (err: any) {
     console.warn(`[Publish] setPublishStatus(${projectId}, ${status}) failed:`, err.message)
   }
+}
+
+/**
+ * Per-subdomain in-flight publish claims.
+ *
+ * The DB availability check in `publishProject` only sees *committed*
+ * reservations, and `publishedSubdomain` is written at the very END of the
+ * pipeline (after build, upload and configure). So two projects publishing the
+ * same name concurrently both pass the check, both upload into the same
+ * `{subdomain}/` prefix — the loser overwriting the winner's files — and only
+ * then does the unique constraint reject the second write (SHO-207).
+ *
+ * A claim closes that window: taken after the DB check and before any build or
+ * upload, released in `publishProject`'s `finally`, and self-healing via the
+ * same TTL backstop as `acquirePublishLock` so a crashed publish cannot wedge a
+ * name forever. Same-project re-entry is allowed so a republish stays
+ * idempotent.
+ *
+ * In-process by design: publish requests for one subdomain are served by the
+ * same API deployment, and the DB unique constraint remains the authority for
+ * cross-pod races.
+ */
+const SUBDOMAIN_CLAIM_TTL_MS = PUBLISH_IN_FLIGHT_TTL_MS
+const subdomainClaims = new Map<string, { projectId: string; expiresAt: number }>()
+
+/** Take the claim on `subdomain`, or report that someone else holds it. */
+function claimSubdomain(subdomain: string, projectId: string): boolean {
+  const now = Date.now()
+  const held = subdomainClaims.get(subdomain)
+  if (held && held.expiresAt > now && held.projectId !== projectId) return false
+  subdomainClaims.set(subdomain, { projectId, expiresAt: now + SUBDOMAIN_CLAIM_TTL_MS })
+  return true
+}
+
+/** Release the claim, but only if this project still holds it. */
+function releaseSubdomainClaim(subdomain: string, projectId: string): void {
+  const held = subdomainClaims.get(subdomain)
+  if (held?.projectId === projectId) subdomainClaims.delete(subdomain)
 }
 
 /**
@@ -974,45 +983,6 @@ async function configurePublishedService(
 }
 
 /**
- * Force the runtime pod to flush its git sync so the published source is
- * committed + pushed into the durable repo before we tag HEAD. Best-effort
- * — a pod in legacy `s3` mode (or with git sync inactive) returns
- * `flushed:false` and we fall back to whatever HEAD the durable repo
- * already holds. Never throws; the publish must still proceed.
- */
-async function flushGitSync(
-  projectId: string,
-  opts: {
-    tags?: Array<{ name: string; message?: string; force?: boolean }>
-    deleteTags?: string[]
-  } = {},
-): Promise<{ sha: string | null } | null> {
-  try {
-    const { getProjectPodUrl } = await import("../lib/knative-project-manager")
-    const podUrl = await getProjectPodUrl(projectId)
-    const response = await fetch(`${podUrl}/agent/git-flush`, {
-      method: 'POST',
-      headers: {
-        'x-runtime-token': await deriveProjectRuntimeToken(projectId),
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ tags: opts.tags, deleteTags: opts.deleteTags }),
-      signal: AbortSignal.timeout(PUBLISH_GIT_FLUSH_TIMEOUT_MS),
-    })
-    if (!response.ok) {
-      console.warn(`[Publish] git-flush returned ${response.status} for ${projectId} (continuing)`)
-      return null
-    }
-    const result = await response.json().catch(() => ({})) as { sha?: string }
-    console.log(`[Publish] git-flush for ${projectId}:`, result)
-    return { sha: result.sha ?? null }
-  } catch (err: any) {
-    console.warn(`[Publish] git-flush failed for ${projectId} (continuing):`, err?.message ?? err)
-    return null
-  }
-}
-
-/**
  * Mark the published commit with git tags so a publish is a traceable point in
  * the project's history (visible in the commit graph as `tag:` decorations) and
  * the graph/UI can resolve "what's live" git-natively.
@@ -1054,15 +1024,6 @@ async function tagPublishedCommit(
   }
   console.log(`[Publish] Tagged ${projectId} HEAD ${result.sha.slice(0, 8)} as ${tag} + ${pointerTag}`)
   return { sha: result.sha, tag, pointerTag }
-}
-
-/**
- * Best-effort removal of the stable `published/<subdomain>` pointer tag (the
- * immutable `publish/<subdomain>/<ts>` history tags are intentionally kept).
- * Used on unpublish so the graph stops marking any commit as live.
- */
-async function deletePublishPointer(projectId: string, subdomain: string): Promise<void> {
-  await flushGitSync(projectId, { deleteTags: [`published/${subdomain}`] })
 }
 
 /**
@@ -1133,33 +1094,6 @@ async function purgePublishedCache(subdomain: string): Promise<void> {
 }
 
 /**
- * Delete all files for a subdomain from S3
- */
-async function deleteFromS3(subdomain: string): Promise<void> {
-  console.log(`[Publish] Deleting files for subdomain ${subdomain} from S3`)
-  
-  // List all objects with the subdomain prefix
-  const listResponse = await s3Client.send(new ListObjectsV2Command({
-    Bucket: PUBLISH_BUCKET,
-    Prefix: `${subdomain}/`,
-  }))
-  
-  if (!listResponse.Contents || listResponse.Contents.length === 0) {
-    console.log(`[Publish] No files found for subdomain ${subdomain}`)
-    return
-  }
-  
-  // Delete all objects
-  const objects = listResponse.Contents.map(obj => ({ Key: obj.Key! }))
-  await s3Client.send(new DeleteObjectsCommand({
-    Bucket: PUBLISH_BUCKET,
-    Delete: { Objects: objects },
-  }))
-  
-  console.log(`[Publish] Deleted ${objects.length} files`)
-}
-
-/**
  * Options for {@link publishProject}. `subdomain` is required (the caller must
  * have decided/confirmed it). Everything else mirrors the publish request body.
  */
@@ -1202,6 +1136,9 @@ export async function publishProject(
   projectId: string,
   opts: PublishProjectOptions,
 ): Promise<PublishProjectResult> {
+  // Set once this publish takes the per-subdomain in-flight claim, so the
+  // `finally` below can release it on every exit path (including a throw).
+  let claimedSubdomain: string | null = null
   try {
     const { subdomain: rawSubdomain, accessLevel = "anyone", password, siteTitle, siteDescription } = opts
     const subdomain = rawSubdomain.toLowerCase()
@@ -1250,10 +1187,19 @@ export async function publishProject(
       }
     }
 
+    // The DB check above only sees COMMITTED reservations, and we don't write
+    // `publishedSubdomain` until the end of the pipeline. Take the in-flight
+    // claim now — before any build or upload — so a second project cannot pass
+    // the same check and overwrite this one's files in `{subdomain}/`.
+    if (!claimSubdomain(subdomain, projectId)) {
+      return { ok: false, status: 409, code: "subdomain_taken", message: "Subdomain is already in use" }
+    }
+    claimedSubdomain = subdomain
+
     // If project already has a different subdomain, clean up old S3 files
     if (project.publishedSubdomain && project.publishedSubdomain !== subdomain) {
       try {
-        await deleteFromS3(project.publishedSubdomain)
+        await deletePublishedStaticBundle(project.publishedSubdomain)
       } catch (err) {
         console.warn("[Publish] Failed to delete old S3 files:", err)
       }
@@ -1440,6 +1386,10 @@ export async function publishProject(
       await setPublishStatus(projectId, 'failed', 'publish_failed')
     } catch {}
     return { ok: false, status: 500, code: "publish_failed", message: error.message }
+  } finally {
+    // Always drop the claim — success (the row is committed by now), a structured
+    // failure, or a throw. The TTL is a backstop, not the release mechanism.
+    if (claimedSubdomain) releaseSubdomainClaim(claimedSubdomain, projectId)
   }
 }
 
@@ -1589,6 +1539,10 @@ export function publishRoutes() {
         serverBacked: serverBackedFlag ?? true,
         // Whether the workspace plan (Pro+) may publish to a new subdomain.
         canPublish,
+        // The apex this environment mints `{subdomain}.<domain>` URLs under.
+        // Staging is `staging.shogo.one`, production `shogo.one`. Clients must
+        // render this instead of hardcoding the apex (SHO-207).
+        publishDomain: PUBLISH_DOMAIN,
       }, 200)
     } catch (error: any) {
       console.error("[Publish] Get publish state error:", error)
@@ -1642,42 +1596,26 @@ export function publishRoutes() {
         return c.json({ error: { code: "not_published", message: "Project is not published" } }, 400)
       }
 
-      // Tear down the published runtime + edge routing via the owning substrate
-      // (Knative ksvc + DomainMapping, or metal published microVM + placement),
-      // then delete the static S3 content. The published-data archive is
-      // intentionally KEPT so a later republish restores end-user writes.
+      // Tear down everything the published site is made of: the runtime + edge
+      // routing on both substrates (Knative ksvc + DomainMapping, metal
+      // published microVM + placement), the static S3 content, the password
+      // gate, custom-domain routing and the `published/<subdomain>` pointer.
+      // The published-data archive is intentionally KEPT so a later republish
+      // restores end-user writes (project delete passes purgePublishedData).
+      // Same function the project-delete hook calls — see
+      // services/published-site-teardown.ts.
       if (isKubernetes()) {
-        try {
-          const { unpublishProjectEverywhere } = await import("../lib/substrate/router")
-          // Tear down on BOTH substrates — during a cutover a project can have a
-          // Knative published ksvc AND a metal published microVM, so unpublishing
-          // only the owner would leak the other.
-          await unpublishProjectEverywhere(projectId, project.publishedSubdomain)
-          console.log(`[Publish] Published runtime torn down for ${projectId}`)
-        } catch (err: any) {
-          console.warn("[Publish] Failed to unpublish runtime:", err.message)
-        }
-
-        try {
-          await deleteFromS3(project.publishedSubdomain)
-        } catch (err) {
-          console.warn("[Publish] Failed to delete from S3:", err)
+        const outcomes = await teardownPublishedSite(projectId, project.publishedSubdomain, {
+          purgePublishedData: false,
+        })
+        const failed = outcomes.filter((o) => !o.ok)
+        if (failed.length) {
+          console.warn(
+            `[Publish] Unpublish teardown for ${projectId} completed with ${failed.length} failed step(s):`,
+            failed.map((f) => `${f.step}: ${f.error}`).join("; "),
+          )
         }
       }
-
-      // Drop the password gate so a later (unprotected) republish isn't stuck
-      // behind a stale prompt. The hash is also cleared from the DB below.
-      await clearSitePassword(project.publishedSubdomain)
-
-      // Stop serving any custom domains (their content is gone). The CF
-      // custom hostnames + DB rows are kept so a later republish restores
-      // routing via syncCustomDomainKv.
-      await clearCustomDomainKv(projectId)
-
-      // Remove the stable `published/<subdomain>` pointer so the graph stops
-      // marking any commit as live. The immutable per-deploy history tags are
-      // intentionally kept. Best-effort.
-      await deletePublishPointer(projectId, project.publishedSubdomain)
 
       // Clear publish info from project
       await prisma.project.update({

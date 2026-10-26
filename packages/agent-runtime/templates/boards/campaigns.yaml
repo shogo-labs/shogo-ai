@@ -1,0 +1,35 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: campaigns
+name: Campaigns
+summary: Marketing campaigns from brief to launched and measured.
+channel: marketing
+board:
+  name: Campaigns
+  itemType: task
+  keyPrefix: CMP
+  description: Launches, promotions and events. Close a card only after its results are posted.
+  columns:
+    - name: Brief
+      category: backlog
+    - name: Building
+      category: active
+    - name: Live
+      category: active
+    - name: Measuring
+      category: review
+    - name: Done
+      category: done
+  fields:
+    - key: goal
+      label: Goal
+      type: text
+    - key: budget
+      label: Budget
+      type: money
+    - key: launchDate
+      label: Launch date
+      type: date

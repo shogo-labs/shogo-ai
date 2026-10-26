@@ -185,7 +185,8 @@ export function createScheduleCreateTool(ctx: ToolContext): AgentTool {
     name: 'schedule_create',
     label: 'Create Schedule',
     description:
-      'Create a recurring cron job. Use a standard five-field cron expression, the user timezone when known, and attach it to a goal when the run advances that goal.',
+      'Create a recurring cron job for work tied to the clock (a 9am reminder, a Monday digest, a nightly sync). Use a standard five-field cron expression, the user timezone when known, and attach it to a goal when the run advances that goal. ' +
+      'Not for following work already in motion (cards handed to agents, background commands, project calls): those report back through [Task update] as soon as they finish.',
     parameters: Type.Object({
       name: Type.String(),
       prompt: Type.String(),
@@ -254,7 +255,7 @@ export function createScheduleUpdateTool(ctx: ToolContext): AgentTool {
   return {
     name: 'schedule_update',
     label: 'Update Schedule',
-    description: 'Update a recurring schedule, including its cadence, prompt, goal, or enabled state.',
+    description: 'Update a recurring schedule, including its cadence, prompt, goal, or enabled state. To react faster to work in progress, do not shorten the cadence: rely on its [Task update] instead.',
     parameters: Type.Object({
       scheduleId: Type.String(),
       name: Type.Optional(Type.String()),

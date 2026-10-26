@@ -408,8 +408,9 @@ has written add up to `maxBytes`, the remaining runtimes are recorded as
 ### How long it takes
 
 Each runtime takes about 90 seconds. Concurrency is
-`METAL_REWARM_CONCURRENCY_PER_HOST` (2) times the number of hosts in the region,
-up to 12. So about 400 runtimes on 6 hosts take about 50 minutes. Users who open
+`METAL_REWARM_CONCURRENCY_PER_HOST` (4) times the number of hosts in the region,
+up to 12. So about 400 runtimes on 6 hosts take about 50 minutes, and 100 on a
+single host about 40. Users who open
 a project during the job get a normal cold boot, and the job skips that project.
 
 ### Settings
@@ -418,7 +419,7 @@ a project during the job get a normal cold boot, and the job skips that project.
 | --- | --- | --- |
 | `METAL_REWARM_AUTO` | `true` | Start jobs automatically after a rootfs change |
 | `METAL_REWARM_SINCE_HOURS` | `48` | How far back "recently used" goes |
-| `METAL_REWARM_CONCURRENCY_PER_HOST` | `2` | Boots in flight per host |
+| `METAL_REWARM_CONCURRENCY_PER_HOST` | `4` | Boots in flight per host |
 | `METAL_REWARM_MAX_RUNTIMES` | `1000` | Most runtimes one job will warm |
 | `METAL_REWARM_MAX_BYTES` | `0` (off) | Stop after this many snapshot bytes |
 | `METAL_REWARM_MIN_INTERVAL_MS` | 2 hours | Minimum gap between automatic jobs per region |

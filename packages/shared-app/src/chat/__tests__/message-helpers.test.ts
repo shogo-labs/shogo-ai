@@ -9,7 +9,43 @@ import {
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
+  parseTaskUpdates,
+  parseUsageLimitError,
+  projectCallOf,
+  taskNotificationOf,
 } from '../message-helpers'
+
+describe('parseUsageLimitError', () => {
+  it('reads the code and reset time from a 402 chat response body', () => {
+    const body = JSON.stringify({
+      error: {
+        code: 'usage_limit_reached',
+        message: "You've reached your usage limit.",
+        resetsAt: '2099-01-01T00:00:00.000Z',
+        window: 'fiveHour',
+      },
+    })
+    expect(parseUsageLimitError(body)).toEqual({
+      code: 'usage_limit_reached',
+      resetsAt: '2099-01-01T00:00:00.000Z',
+    })
+  })
+
+  it('recognizes the billing codes and the legacy insufficient_credits alias', () => {
+    for (const code of ['entitlement_expired', 'overage_cap_reached', 'overage_payment_pending']) {
+      expect(parseUsageLimitError(JSON.stringify({ error: { code } }))).toEqual({ code })
+    }
+    expect(parseUsageLimitError('{"error":{"code":"insufficient_credits"}}')).toEqual({
+      code: 'usage_limit_reached',
+    })
+  })
+
+  it('ignores other errors and non-JSON text', () => {
+    expect(parseUsageLimitError('{"error":{"code":"pod_unavailable"}}')).toBeNull()
+    expect(parseUsageLimitError('usage_limit_reached')).toBeNull()
+    expect(parseUsageLimitError('Failed to fetch')).toBeNull()
+  })
+})
 
 describe('extractTextContent', () => {
   it('returns content string when present', () => {
@@ -181,5 +217,71 @@ describe('getToolCategory', () => {
   it('returns other for unknown tools', () => {
     expect(getToolCategory('CustomTool')).toBe('other')
     expect(getToolCategory('something')).toBe('other')
+  })
+})
+
+describe('parseTaskUpdates', () => {
+  it('splits a wake message into one entry per task with its detail', () => {
+    const text = [
+      '[Task update] bun test (watch) (t_1a2b3c4d) failed (exit code 1).',
+      'Output: .shogo/tasks/s/t_1a2b3c4d.log',
+      'Last output:',
+      '1 fail',
+      '',
+      '[Task update] @Ops reply (t_99) was cancelled.',
+    ].join('\n')
+    expect(parseTaskUpdates(text)).toEqual([
+      {
+        taskId: 't_1a2b3c4d',
+        title: 'bun test (watch)',
+        outcome: 'failed (exit code 1)',
+        detail: 'Output: .shogo/tasks/s/t_1a2b3c4d.log\nLast output:\n1 fail',
+      },
+      { taskId: 't_99', title: '@Ops reply', outcome: 'was cancelled', detail: '' },
+    ])
+  })
+
+  it('ignores text without task updates', () => {
+    expect(parseTaskUpdates('just a message')).toEqual([])
+  })
+})
+
+describe('taskNotificationOf', () => {
+  it('reads the task ids and updates of a wake message', () => {
+    const message = {
+      parts: [
+        { type: 'text', text: '[Task update] explore (t_abc) completed.' },
+        { type: 'data-task-notification', data: { taskIds: ['t_abc', 42] } },
+      ],
+    }
+    const n = taskNotificationOf(message)
+    expect(n?.taskIds).toEqual(['t_abc'])
+    expect(n?.updates.map((u) => u.taskId)).toEqual(['t_abc'])
+  })
+
+  it('accepts parts stored as a JSON string', () => {
+    const parts = JSON.stringify([{ type: 'data-task-notification', data: { taskIds: ['t_x'] } }])
+    expect(taskNotificationOf({ parts })?.taskIds).toEqual(['t_x'])
+  })
+
+  it('is null for ordinary messages', () => {
+    expect(taskNotificationOf({ parts: [{ type: 'text', text: 'hi' }] })).toBeNull()
+    expect(taskNotificationOf(null)).toBeNull()
+  })
+})
+
+describe('projectCallOf', () => {
+  it('reads the run and caller of a project-call request', () => {
+    const parts = JSON.stringify([
+      { type: 'text', text: 'do it' },
+      { type: 'data-project-call', data: { runId: 'run_1', callerName: 'Planner' } },
+    ])
+    expect(projectCallOf({ parts })).toEqual({ runId: 'run_1', callerName: 'Planner' })
+  })
+
+  it('is null without a run id or marker', () => {
+    expect(projectCallOf({ parts: [{ type: 'data-project-call', data: { callerName: 'Planner' } }] })).toBeNull()
+    expect(projectCallOf({ parts: [{ type: 'text', text: 'hi' }] })).toBeNull()
+    expect(projectCallOf(null)).toBeNull()
   })
 })

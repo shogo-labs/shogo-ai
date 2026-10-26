@@ -17,6 +17,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 
 // --- in-memory S3 mock (must be registered before importing repo-store) -----
@@ -233,6 +234,130 @@ describe('persist + restore round-trip (mocked S3, real tar/git)', () => {
       expect(r.reason).toBe('no-remote-repo')
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Manifest-aware durable repo (incremental bundles). The pod reads the manifest
+// first, never writes a tarball once one exists, and never falls back to a
+// stale tarball when the manifest is unreadable.
+
+describe('manifest-aware persist + restore (mocked S3, real git bundles)', () => {
+  function publishBundleManifest(src: string, projectId: string): string {
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: src, encoding: 'utf-8' }).trim()
+    const bundlePath = join(tmpdir(), `${projectId}-${randomUUID()}.bundle`)
+    execFileSync('git', ['bundle', 'create', bundlePath, '--all'], { cwd: src, stdio: 'pipe' })
+    const body = readFileSync(bundlePath)
+    const digest = createHash('sha256').update(body).digest('hex')
+    s3store.set(`${projectId}/repo/bundles/${digest}.bundle`, body)
+    const head = execFileSync('git', ['symbolic-ref', 'HEAD'], { cwd: src, encoding: 'utf-8' }).trim()
+    const manifest = {
+      v: 1,
+      head: { ref: head },
+      refs: { [head]: sha },
+      config: readFileSync(join(src, '.git', 'config'), 'utf-8'),
+      rootCommitAt: null,
+      bundles: [{ sha256: digest, bytes: body.length, kind: 'base' }],
+    }
+    s3store.set(`${projectId}/repo/manifest.json`, Buffer.from(JSON.stringify(manifest)))
+    rmSync(bundlePath, { force: true })
+    return sha
+  }
+
+  test('persist refuses to write the tarball once a manifest exists', async () => {
+    s3store.clear()
+    const src = tmp('manifest-persist-src-')
+    try {
+      gitInitWithCommit(src, 'app.ts', 'v1\n')
+      publishBundleManifest(src, 'proj-m')
+      const before = s3store.get('proj-m/repo/manifest.json')!
+      const p = await persistRepoToStore(src, { projectId: 'proj-m', bucket: 'b', logger: NOOP })
+      expect(p.ok).toBe(false)
+      expect(p.changed).toBe(false)
+      expect(p.reason).toBe('repo-manifest-present')
+      expect(s3store.has('proj-m/repo.git.tar.gz')).toBe(false)
+      expect(s3store.get('proj-m/repo/manifest.json')!.equals(before)).toBe(true)
+    } finally {
+      rmSync(src, { recursive: true, force: true })
+    }
+  })
+
+  test('restore rebuilds the repo from the manifest and its bundle', async () => {
+    s3store.clear()
+    const src = tmp('manifest-restore-src-')
+    const dst = tmp('manifest-restore-dst-')
+    try {
+      const sha = gitInitWithCommit(src, 'app.ts', 'from bundle\n')
+      publishBundleManifest(src, 'proj-b')
+      const r = await restoreRepoFromStore(dst, { projectId: 'proj-b', bucket: 'b', logger: NOOP })
+      expect(r.ok).toBe(true)
+      expect(r.restored).toBe(true)
+      expect(await getHeadSha(dst)).toBe(sha)
+      expect(readFileSync(join(dst, 'app.ts'), 'utf-8')).toBe('from bundle\n')
+      expect(existsSync(join(dst, '.repo-stage-'))).toBe(false)
+    } finally {
+      rmSync(src, { recursive: true, force: true })
+      rmSync(dst, { recursive: true, force: true })
+    }
+  })
+
+  test('the manifest wins over a stale tarball', async () => {
+    s3store.clear()
+    const old = tmp('manifest-stale-old-')
+    const src = tmp('manifest-stale-new-')
+    const dst = tmp('manifest-stale-dst-')
+    try {
+      gitInitWithCommit(old, 'app.ts', 'old\n')
+      await persistRepoToStore(old, { projectId: 'proj-s', bucket: 'b', logger: NOOP })
+      expect(s3store.has('proj-s/repo.git.tar.gz')).toBe(true)
+      const sha = gitInitWithCommit(src, 'app.ts', 'new\n')
+      publishBundleManifest(src, 'proj-s')
+      const r = await restoreRepoFromStore(dst, { projectId: 'proj-s', bucket: 'b', logger: NOOP })
+      expect(r.restored).toBe(true)
+      expect(await getHeadSha(dst)).toBe(sha)
+      expect(readFileSync(join(dst, 'app.ts'), 'utf-8')).toBe('new\n')
+    } finally {
+      rmSync(old, { recursive: true, force: true })
+      rmSync(src, { recursive: true, force: true })
+      rmSync(dst, { recursive: true, force: true })
+    }
+  })
+
+  test('a corrupt bundle fails closed and leaves no .git behind', async () => {
+    s3store.clear()
+    const src = tmp('manifest-corrupt-src-')
+    const dst = tmp('manifest-corrupt-dst-')
+    try {
+      gitInitWithCommit(src, 'app.ts', 'x\n')
+      publishBundleManifest(src, 'proj-c')
+      const digest = JSON.parse(s3store.get('proj-c/repo/manifest.json')!.toString()).bundles[0].sha256
+      s3store.set(`proj-c/repo/bundles/${digest}.bundle`, Buffer.from('not a bundle'))
+      const r = await restoreRepoFromStore(dst, { projectId: 'proj-c', bucket: 'b', logger: NOOP })
+      expect(r.ok).toBe(false)
+      expect(r.restored).toBe(false)
+      expect(existsSync(join(dst, '.git'))).toBe(false)
+    } finally {
+      rmSync(src, { recursive: true, force: true })
+      rmSync(dst, { recursive: true, force: true })
+    }
+  })
+
+  test('an unreadable manifest fails closed instead of using the tarball', async () => {
+    s3store.clear()
+    const src = tmp('manifest-bad-src-')
+    const dst = tmp('manifest-bad-dst-')
+    try {
+      gitInitWithCommit(src, 'app.ts', 'x\n')
+      await persistRepoToStore(src, { projectId: 'proj-u', bucket: 'b', logger: NOOP })
+      s3store.set('proj-u/repo/manifest.json', Buffer.from('{ not json'))
+      const r = await restoreRepoFromStore(dst, { projectId: 'proj-u', bucket: 'b', logger: NOOP })
+      expect(r.ok).toBe(false)
+      expect(r.restored).toBe(false)
+      expect(existsSync(join(dst, '.git'))).toBe(false)
+    } finally {
+      rmSync(src, { recursive: true, force: true })
+      rmSync(dst, { recursive: true, force: true })
     }
   })
 })

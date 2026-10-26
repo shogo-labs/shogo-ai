@@ -15,6 +15,9 @@ import {
   createContentReplacementState,
   stableTransformContext,
   pruneReplacementState,
+  resolveInLoopContextBudgetTokens,
+  createStableLoopTransform,
+  DEFAULT_INLOOP_CONTEXT_BUDGET_TOKENS,
 } from '../stable-compaction'
 
 // ---------------------------------------------------------------------------
@@ -262,17 +265,27 @@ describe('stableTransformContext: prefix-stability invariant', () => {
 
   test('consumed large results get replaced with a snip placeholder', () => {
     const state = createContentReplacementState()
-    const msgs = buildToolLoop(5)
+    // SHO-122 protects a FINISHED turn whole, so the loop on its own is one
+    // protected turn. An older turn ahead of it is what sits outside the
+    // boundary and gives snipConsumedResults something to replace.
+    const olderTurn: Message[] = [
+      user('an earlier prompt'),
+      assistantToolCall('exec', 'tc_old', { cmd: 'older' }),
+      toolResult('X'.repeat(10_000), 'tc_old'),
+      assistantText('older turn done'),
+    ]
+    const msgs = [...olderTurn, ...buildToolLoop(5)]
     const budget = 1_000_000 // no budget pressure; snip should still fire
 
     stableTransformContext(msgs, state, budget)
 
-    // tc_0..tc_1 are out of the protected window AND have following
-    // assistant messages AND are >200 chars → snipConsumedResults should
-    // have replaced them.
-    expect(state.replacements.has('tc_0')).toBe(true)
-    expect(state.replacements.has('tc_1')).toBe(true)
-    expect(state.replacements.get('tc_0')).toContain('[Tool output processed')
+    // tc_old is out of the protected window AND has a following assistant
+    // message AND is >200 chars → snipConsumedResults replaced it.
+    expect(state.replacements.has('tc_old')).toBe(true)
+    expect(state.replacements.get('tc_old')).toContain('[Tool output processed')
+    // The finished loop below it is the previous turn: every result kept
+    // original, not snipped, not budget-trimmed.
+    for (let i = 0; i < 5; i++) expect(state.replacements.has(`tc_${i}`)).toBe(false)
   })
 
   // -------------------------------------------------------------------------
@@ -505,5 +518,129 @@ describe('pruneReplacementState', () => {
     expect(state.replacements.has('stale')).toBe(false)
     expect(state.seenAndPreserved.has('liveP')).toBe(true)
     expect(state.seenAndPreserved.has('staleP')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Mid-turn budget checkpoint
+// ---------------------------------------------------------------------------
+
+function estimateTokens(messages: Message[]): number {
+  let chars = 0
+  for (const m of messages) {
+    if (typeof m.content === 'string') { chars += m.content.length; continue }
+    for (const c of m.content as any[]) {
+      if (c.type === 'text') chars += c.text.length
+      else if (c.type === 'toolCall') chars += JSON.stringify(c.arguments).length + c.name.length
+    }
+  }
+  return Math.ceil(chars / 4)
+}
+
+/**
+ * Simulate one long agent turn: before each API call the loop has appended
+ * one more tool call + result. Returns the transform output for every call.
+ */
+function simulateLongTurn(steps: number, resultChars: number, budgetTokens?: number) {
+  const state = createContentReplacementState()
+  const live: Message[] = [user('do the big task')]
+  const outputs: { messages: Message[]; cleared: number }[] = []
+  for (let i = 0; i < steps; i++) {
+    const id = `step_${i}`
+    live.push(assistantToolCall('read_file', id, { path: `src/file-${i}.ts` }))
+    live.push(toolResult(`${i}:`.padEnd(resultChars, 'y'), id, 'read_file'))
+    const r = stableTransformContext(live, state, 10_000_000, { budgetTokens })
+    outputs.push({ messages: r.messages, cleared: r.stats.checkpointCleared })
+  }
+  return outputs
+}
+
+describe('stableTransformContext: mid-turn budget checkpoint', () => {
+  test('without a budget, a single long turn grows without bound', () => {
+    const outputs = simulateLongTurn(60, 8_000)
+    expect(outputs.every((o) => o.cleared === 0)).toBe(true)
+    expect(estimateTokens(outputs.at(-1)!.messages)).toBeGreaterThan(100_000)
+  })
+
+  test('keeps every request under the budget', () => {
+    const budget = 20_000
+    const outputs = simulateLongTurn(60, 8_000, budget)
+    for (const o of outputs) expect(estimateTokens(o.messages)).toBeLessThanOrEqual(budget)
+  })
+
+  test('hysteresis: checkpoints are rare, not every call', () => {
+    const outputs = simulateLongTurn(60, 8_000, 20_000)
+    const checkpoints = outputs.filter((o) => o.cleared > 0).length
+    expect(checkpoints).toBeGreaterThan(1)
+    expect(checkpoints).toBeLessThanOrEqual(12)
+  })
+
+  test('between checkpoints the prefix is byte-identical', () => {
+    const outputs = simulateLongTurn(60, 8_000, 20_000)
+    for (let k = 1; k < outputs.length; k++) {
+      if (outputs[k].cleared > 0) continue
+      const prev = outputs[k - 1].messages
+      const cur = outputs[k].messages
+      for (let i = 0; i < prev.length; i++) {
+        expect(extractText(cur[i])).toBe(extractText(prev[i]))
+      }
+    }
+  })
+
+  test('never clears results in the last three assistant turns', () => {
+    const outputs = simulateLongTurn(60, 8_000, 20_000)
+    const last = outputs.at(-1)!.messages
+    const recent = last.slice(-6).filter((m) => m.role === 'toolResult')
+    expect(recent).toHaveLength(3)
+    for (const m of recent) expect(extractText(m)).not.toContain('cleared to keep the context small')
+  })
+
+  test('cleared results name the tool and tell the model to re-run it', () => {
+    const outputs = simulateLongTurn(60, 8_000, 20_000)
+    const placeholder = outputs.at(-1)!.messages.find(
+      (m) => m.role === 'toolResult' && extractText(m).includes('cleared'),
+    )!
+    expect(extractText(placeholder)).toBe(
+      '[Earlier read_file result cleared to keep the context small (8000 chars). Re-run the tool if you need this output again.]',
+    )
+  })
+})
+
+describe('resolveInLoopContextBudgetTokens', () => {
+  const original = process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS
+  const restore = () => {
+    if (original === undefined) delete process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS
+    else process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS = original
+  }
+
+  test('defaults to 180K and is capped by the model ceiling', () => {
+    delete process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS
+    expect(resolveInLoopContextBudgetTokens()).toBe(DEFAULT_INLOOP_CONTEXT_BUDGET_TOKENS)
+    expect(resolveInLoopContextBudgetTokens(1_000_000)).toBe(180_000)
+    expect(resolveInLoopContextBudgetTokens(168_616)).toBe(168_616)
+    restore()
+  })
+
+  test('honours the env override and ignores garbage', () => {
+    process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS = '120000'
+    expect(resolveInLoopContextBudgetTokens(1_000_000)).toBe(120_000)
+    process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS = 'lots'
+    expect(resolveInLoopContextBudgetTokens()).toBe(180_000)
+    restore()
+  })
+
+  test('createStableLoopTransform bounds a loop at the default budget', () => {
+    delete process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS
+    const transform = createStableLoopTransform()
+    const live: Message[] = [user('go')]
+    let out: Message[] = live
+    for (let i = 0; i < 120; i++) {
+      live.push(assistantToolCall('exec', `e_${i}`, { cmd: 'ls' }))
+      live.push(toolResult('z'.repeat(40_000), `e_${i}`))
+      out = transform(live)
+    }
+    expect(estimateTokens(live)).toBeGreaterThan(1_000_000)
+    expect(estimateTokens(out)).toBeLessThanOrEqual(200_000 - 16_384 - 15_000)
+    restore()
   })
 })

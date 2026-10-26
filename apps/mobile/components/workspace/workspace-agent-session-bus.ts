@@ -8,16 +8,17 @@ const primarySessions = new Map<string, string>()
 const listeners = new Map<string, Set<Listener>>()
 const scopeListeners = new Map<string, Set<ScopeListener>>()
 
-export function publishPrimaryWorkspaceSession(workspaceId: string, sessionId: string) {
+/** The workspace-agent chat currently open for this workspace, when no id is in the URL. */
+export function publishCurrentWorkspaceSession(workspaceId: string, sessionId: string) {
   primarySessions.set(workspaceId, sessionId)
   listeners.get(workspaceId)?.forEach((listener) => listener(sessionId))
 }
 
-export function getKnownPrimaryWorkspaceSession(workspaceId: string): string | null {
+export function getKnownCurrentWorkspaceSession(workspaceId: string): string | null {
   return primarySessions.get(workspaceId) ?? null
 }
 
-export function subscribePrimaryWorkspaceSession(workspaceId: string, listener: Listener) {
+export function subscribeCurrentWorkspaceSession(workspaceId: string, listener: Listener) {
   const workspaceListeners = listeners.get(workspaceId) ?? new Set<Listener>()
   workspaceListeners.add(listener)
   listeners.set(workspaceId, workspaceListeners)

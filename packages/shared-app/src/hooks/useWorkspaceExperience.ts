@@ -57,10 +57,6 @@ export type DockTabId = 'home' | 'dms' | 'activity' | 'more'
 export interface WorkspaceExperienceComposer {
   /** Show the model picker control in ChatInput. */
   showModelPicker: boolean
-  /** Show the interaction-mode (plan/agent/chat) selector and its Tab/Shift+Tab cycling in ChatInput. */
-  showInteractionModes: boolean
-  /** When interaction modes are hidden, the mode ChatPanel should force. */
-  forcedMode?: 'agent'
 }
 
 /**
@@ -94,11 +90,8 @@ export interface WorkspaceExperience {
    */
   showMeetingsNav: boolean
   /**
-   * Sidebar / profile sheet: show a "Side chats" entry — secondary
-   * workspace-scoped chat sessions (`ChatSession.isPrimary === false`)
-   * for exploring a tangent without polluting the goal-tracking primary
-   * thread. Personal-only: team workspaces already expose every chat
-   * session through the projects tree.
+   * Kept for callers that still read it. Personal chats now live in the
+   * Home panel, so this is always false.
    */
   showSideChatsNav: boolean
   /** Bottom tab bar item ids, in display order. */
@@ -165,7 +158,7 @@ export function workspaceExperience(
     showNewChat: !isPersonal,
     showGoalsNav: isPersonal,
     showMeetingsNav: isPersonal,
-    showSideChatsNav: isPersonal,
+    showSideChatsNav: false,
     bottomTabs,
     sidebarTabs,
     dockTabs,
@@ -173,8 +166,6 @@ export function workspaceExperience(
     chatReturnsToProjectContext: !isPersonal,
     composer: {
       showModelPicker: !isPersonal,
-      showInteractionModes: !isPersonal,
-      forcedMode: isPersonal ? 'agent' : undefined,
     },
     workspaceAgent: {
       primarySession: true,

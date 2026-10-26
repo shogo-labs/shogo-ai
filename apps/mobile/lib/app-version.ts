@@ -3,6 +3,7 @@
 
 import * as Application from "expo-application";
 import Constants from "expo-constants";
+import { getRuntimeAppVersion } from "./runtime-env";
 
 export { compareVersions } from "./version";
 
@@ -20,13 +21,14 @@ function normalizeVersion(value: string | null | undefined): string | null {
 /**
  * Resolve the version baked into the current bundle or native binary.
  *
- * EXPO_PUBLIC_APP_VERSION is intentionally checked first: an OTA bundle can
- * be newer than the native binary, and the release tag is the source of truth
- * for that bundle.
+ * The bundle's release version is intentionally checked first: an OTA bundle
+ * can be newer than the native binary, and the release tag is the source of
+ * truth for that bundle. On deployed web it is injected at container start
+ * (see runtime-env.ts) because the image is promoted from staging.
  */
 export function getAppVersion(): string | null {
   return (
-    normalizeVersion(process.env.EXPO_PUBLIC_APP_VERSION) ??
+    normalizeVersion(getRuntimeAppVersion()) ??
     normalizeVersion(Application.nativeApplicationVersion) ??
     normalizeVersion(Constants.expoConfig?.version)
   );

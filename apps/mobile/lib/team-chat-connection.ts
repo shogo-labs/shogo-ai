@@ -10,8 +10,17 @@ import { AppState, Platform } from 'react-native'
 import { createAuthedEventSource } from './authed-event-source'
 import { nativeCookieHeader, realtimeUrls, type TeamChatEvent } from './team-chat-api'
 import { TeamChatConnection, type RealtimeState } from './team-chat-realtime'
+import { useActiveInstance } from '../contexts/active-instance'
+
+type MachineRoute = { instanceId: string; localWorkspaceId: string } | null
 
 const connections = new Map<string, { connection: TeamChatConnection; refs: number; stopPresence: () => void }>()
+
+/** One connection per workspace *and* machine: the same workspace id means two
+ *  different event streams when one of them is a paired desktop's own. */
+function connectionKey(workspaceId: string, machine: MachineRoute): string {
+  return machine ? `${workspaceId}::${machine.instanceId}/${machine.localWorkspaceId}` : workspaceId
+}
 
 function createSocket(url: string) {
   if (Platform.OS === 'web') return new WebSocket(url) as any
@@ -21,26 +30,48 @@ function createSocket(url: string) {
 
 function watchPresence(connection: TeamChatConnection): () => void {
   if (Platform.OS === 'web') {
-    if (typeof document === 'undefined') return () => {}
-    const onVisibility = () => connection.setPresence(document.visibilityState === 'hidden' ? 'away' : 'active')
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
+    if (typeof document === 'undefined' || typeof window === 'undefined') return () => {}
+    // An unfocused window counts as away, so a browser left open behind other
+    // apps doesn't stop phone pushes.
+    let focused = document.hasFocus()
+    const update = () => connection.setPresence(focused && document.visibilityState !== 'hidden' ? 'active' : 'away')
+    const onFocus = () => {
+      focused = true
+      update()
+    }
+    const onBlur = () => {
+      focused = false
+      update()
+    }
+    update()
+    document.addEventListener('visibilitychange', update)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      document.removeEventListener('visibilitychange', update)
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+    }
   }
   const sub = AppState.addEventListener('change', (state) => connection.setPresence(state === 'active' ? 'active' : 'away'))
   return () => sub.remove()
 }
 
-export function acquireTeamChatConnection(workspaceId: string): { connection: TeamChatConnection; release: () => void } {
-  let entry = connections.get(workspaceId)
+export function acquireTeamChatConnection(
+  workspaceId: string,
+  machine: MachineRoute = null,
+): { connection: TeamChatConnection; release: () => void } {
+  const key = connectionKey(workspaceId, machine)
+  let entry = connections.get(key)
   if (!entry) {
     const connection = new TeamChatConnection({
-      urls: realtimeUrls(workspaceId),
+      urls: realtimeUrls(workspaceId, machine),
       createSocket,
       createEventSource: (url) => createAuthedEventSource(url) as any,
     })
     connection.start()
     entry = { connection, refs: 0, stopPresence: watchPresence(connection) }
-    connections.set(workspaceId, entry)
+    connections.set(key, entry)
   }
   entry.refs++
   let released = false
@@ -49,24 +80,31 @@ export function acquireTeamChatConnection(workspaceId: string): { connection: Te
     release: () => {
       if (released) return
       released = true
-      const current = connections.get(workspaceId)
+      const current = connections.get(key)
       if (!current) return
       current.refs--
       if (current.refs > 0) return
       current.stopPresence()
       current.connection.stop()
-      connections.delete(workspaceId)
+      connections.delete(key)
     },
   }
 }
 
 /** Subscribe to team chat events for a workspace while mounted. */
 export function useTeamChatEvents(workspaceId: string | null | undefined, onEvent: (event: TeamChatEvent) => void): RealtimeState {
+  const { instance } = useActiveInstance()
+  const machineInstanceId = instance?.source === 'machine' ? (instance.instanceId ?? null) : null
+  const machineLocalWorkspaceId = instance?.source === 'machine' ? (instance.localWorkspaceId ?? null) : null
   const [state, setState] = useState<RealtimeState>('closed')
   const onEventRef = useLatest(onEvent)
   useEffect(() => {
     if (!workspaceId) return
-    const { connection, release } = acquireTeamChatConnection(workspaceId)
+    const machine: MachineRoute =
+      machineInstanceId && machineLocalWorkspaceId
+        ? { instanceId: machineInstanceId, localWorkspaceId: machineLocalWorkspaceId }
+        : null
+    const { connection, release } = acquireTeamChatConnection(workspaceId, machine)
     setState(connection.state)
     const offState = connection.onState(setState)
     const offEvents = connection.on((event) => onEventRef.current(event))
@@ -75,7 +113,7 @@ export function useTeamChatEvents(workspaceId: string | null | undefined, onEven
       offState()
       release()
     }
-  }, [workspaceId])
+  }, [workspaceId, machineInstanceId, machineLocalWorkspaceId])
   return state
 }
 

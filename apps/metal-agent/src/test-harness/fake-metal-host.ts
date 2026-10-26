@@ -290,6 +290,13 @@ export class FakeHost {
   private snapshotDirs = new Map<string, string>()
   /** Stopped VMs whose disk was kept (`stopVM(h, { keepRootfs: true })`): rootfs → guest. */
   private keptDisks = new Map<string, FakeGuest>()
+  /** Every cold boot, with the golden image it was asked to boot from (absent: the class default). */
+  readonly boots: Array<{ vmId: string; rootfsBase?: string }> = []
+  /**
+   * Write placeholder snapshot artifacts to disk, so a second pool over the
+   * same dirs (an agent restart) rehydrates them from its cache index.
+   */
+  persistSnapshots = false
 
   constructor(
     readonly template: Record<string, string> = { 'src/App.tsx': 'Project Ready (template)\n' },
@@ -338,7 +345,11 @@ export class FakeHost {
   /** The object handed to `new MetalWarmPool(mgr, ...)`. */
   manager(): any {
     const impl = {
-      startVM: async () => this.boot({ template: this.template }),
+      startVM: async (cfg?: { rootfsBase?: string }) => {
+        const h = this.boot({ template: this.template })
+        this.boots.push({ vmId: h.id, ...(cfg?.rootfsBase ? { rootfsBase: cfg.rootfsBase } : {}) })
+        return h
+      },
       restoreVM: async (snap: FcSnapshot) => {
         const from = this.snapshotDirs.get(snap.snapshotPath)
         if (!from) throw new Error(`no snapshot at ${snap.snapshotPath}`)
@@ -389,6 +400,9 @@ export class FakeHost {
         cpSync(guest.ws, copy, { recursive: true })
         cpSync(guest.home, homeOf(copy), { recursive: true })
         this.snapshotDirs.set(snapshotPath, copy)
+        if (this.persistSnapshots) {
+          for (const f of [snapshotPath, `${snapshotPath}.mem`, h.rootfs]) writeFileSync(f, '')
+        }
         guest.stop()
         this.guests.delete(h.id)
         return {

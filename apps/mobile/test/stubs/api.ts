@@ -34,7 +34,6 @@ export function isInvitationExpired(): boolean {
 export function getOnboardingMessage(listingTitle: string): string {
   return listingTitle
 }
-
 /**
  * Every endpoint resolves to `undefined`. Suites that assert on a response
  * override `api` (or the single method they exercise) on top of the spread.

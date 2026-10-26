@@ -23,7 +23,12 @@ const service = await import('../services/conversation.service')
 const db = prisma as any
 let seed: SeededWorkspace
 let agentAuth: { projectId: string | null | undefined } = { projectId: null }
-let invocations: Array<{ projectId: string | null; sessionId: string; prompt: string }> = []
+let invocations: Array<{
+  projectId: string | null
+  sessionId: string
+  prompt: string
+  historySeed?: { summary: string | null; messages: Array<{ role: string; text: string }> } | null
+}> = []
 let replyText = 'Here is the summary.'
 
 const app = new Hono()
@@ -53,7 +58,12 @@ beforeEach(() => {
   dispatcher._resetDispatcherForTests()
   dispatcher.configureConversationAgentDispatcher({
     invoke: async (args) => {
-      invocations.push({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.prompt })
+      invocations.push({
+        projectId: args.projectId,
+        sessionId: args.sessionId,
+        prompt: args.prompt,
+        historySeed: args.historySeed ?? null,
+      })
       return sseResponse([
         { type: 'start' },
         { type: 'text-start', id: 't1' },
@@ -113,6 +123,82 @@ describe('conversations and access', () => {
     expect(after.json.conversation.members.map((m: any) => m.userId)).not.toContain(seed.outsider)
   })
 
+  test('adding a member records who added whom, on the channel', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, {
+      name: 'client-itau-col', kind: 'private',
+    })
+    const id = created.json.conversation.id
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+
+    const list = await call(seed.owner, 'GET', `/conversations/${id}/messages`)
+    const notice = list.json.messages.find((m: any) => m.blocks?.type === 'membership')
+    expect(notice).toBeTruthy()
+    expect(notice.authorType).toBe('system')
+    expect(notice.text).toBe('member was added to 🔒 client-itau-col by owner.')
+    expect(notice.blocks.addedUserIds).toEqual([seed.member])
+    expect(notice.blocks.addedById).toBe(seed.owner)
+  })
+
+  test('adding somebody already in the channel posts no second line', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'growth' })
+    const id = created.json.conversation.id
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+
+    const list = await call(seed.owner, 'GET', `/conversations/${id}/messages`)
+    expect(list.json.messages.filter((m: any) => m.blocks?.type === 'membership')).toHaveLength(1)
+  })
+
+  test('the notice mentions nobody, so it raises no badge', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'quiet' })
+    const id = created.json.conversation.id
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+
+    const list = await call(seed.owner, 'GET', `/conversations/${id}/messages`)
+    const notice = list.json.messages.find((m: any) => m.blocks?.type === 'membership')
+    expect(await db.conversationMention.count({ where: { messageId: notice.id } })).toBe(0)
+
+    const convo = (await call(seed.member, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === id)
+    expect(convo.mentionCount).toBe(0)
+    expect(convo.unreadCount).toBe(0)
+  })
+
+  test('being added leaves you caught up rather than on a wall of unread', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, {
+      name: 'busy', kind: 'private',
+    })
+    const id = created.json.conversation.id
+    for (const text of ['one', 'two', 'three']) {
+      await call(seed.owner, 'POST', `/conversations/${id}/messages`, { text })
+    }
+    await call(seed.owner, 'POST', `/conversations/${id}/members`, { userIds: [seed.member] })
+
+    const convo = (await call(seed.member, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === id)
+    expect(convo.unreadCount).toBe(0)
+    expect(convo.mentionCount).toBe(0)
+
+    // Caught up, not walled off: the history is still readable.
+    const list = await call(seed.member, 'GET', `/conversations/${id}/messages`)
+    expect(list.json.messages.map((m: any) => m.text)).toContain('one')
+  })
+
+  test('an agent that adds somebody is named as the actor', async () => {
+    const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'agent-added' })
+    const id = created.json.conversation.id
+    agentAuth.projectId = seed.projectId
+    const added = await call(null, 'POST', `/internal/workspaces/${seed.workspaceId}/agent-channels/agent-added/members`, { users: [seed.member] })
+    agentAuth.projectId = null
+    expect(added.status).toBe(200)
+
+    const actor = await service.agentDisplayName(seed.workspaceId, seed.projectId)
+    const list = await call(seed.owner, 'GET', `/conversations/${id}/messages`)
+    const notice = list.json.messages.find((m: any) => m.blocks?.type === 'membership')
+    expect(notice.text).toBe(`member was added to #agent-added by ${actor}.`)
+    expect(notice.blocks.addedById).toBeNull()
+  })
+
   test('duplicate channel names get unique slugs and viewers cannot create channels', async () => {
     const a = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'design' })
     const b = await call(seed.member, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'Design' })
@@ -164,6 +250,71 @@ describe('messages', () => {
     const marked = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
       .json.conversations.find((c: any) => c.id === g.id)
     expect(marked.unreadCount).toBe(2)
+  })
+
+  test('advance:true never regresses the read marker, even if an older request arrives late', async () => {
+    const g = await general()
+    const m1 = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: 'first' })
+    const m2 = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: `second <@u:${seed.owner}>` })
+
+    // Two "I'm reading, keep my position current" requests race over the
+    // network. The one carrying the smaller seq (fired first, client-side)
+    // can still have its response land second -- ordinary HTTP reordering.
+    const newer = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: m2.json.message.seq, advance: true })
+    expect(newer.json).toEqual({ lastReadSeq: m2.json.message.seq, unreadCount: 0 })
+
+    const stale = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: m1.json.message.seq, advance: true })
+    expect(stale.json.lastReadSeq).toBe(m2.json.message.seq) // unchanged, not regressed
+    expect(stale.json.unreadCount).toBe(0) // still fully caught up
+
+    const row = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === g.id)
+    expect(row.unreadCount).toBe(0) // the badge does not pop back
+    expect(row.mentionCount).toBe(0)
+  })
+
+  test('a mention in a thread-only reply never badges the channel, so reading can clear it', async () => {
+    const g = await general()
+    const rowOf = async (user: string) =>
+      (await call(user, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+        .json.conversations.find((c: any) => c.id === g.id)
+
+    const root = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: 'thread root' })
+    await call(seed.owner, 'POST', `/conversations/${g.id}/read`, {})
+
+    // In the channel view, so it badges -- and the reader can reach it.
+    const visible = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, {
+      text: `also here <@u:${seed.owner}>`, threadRootId: root.json.message.id, alsoSentToChannel: true,
+    })
+    // Thread-only, with a higher seq than anything the channel view shows. The read marker can
+    // never advance past it from the channel, so counting it would strand the badge permanently.
+    await call(seed.member, 'POST', `/conversations/${g.id}/messages`, {
+      text: `thread only <@u:${seed.owner}>`, threadRootId: root.json.message.id,
+    })
+
+    const waiting = await rowOf(seed.owner)
+    expect(waiting.unreadCount).toBe(1)
+    expect(waiting.mentionCount).toBe(1) // the channel-visible one only
+
+    const read = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, {
+      seq: visible.json.message.seq, advance: true,
+    })
+    expect(read.json).toEqual({ lastReadSeq: visible.json.message.seq, unreadCount: 0 })
+    expect((await rowOf(seed.owner)).mentionCount).toBe(0)
+
+    // Reading again must not resurrect it -- the badge would otherwise pop back on the next refresh.
+    await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: visible.json.message.seq, advance: true })
+    const after = await rowOf(seed.owner)
+    expect(after.unreadCount).toBe(0)
+    expect(after.mentionCount).toBe(0)
+  })
+
+  test('without advance, an explicit seq still sets the marker exactly -- "mark unread" keeps working', async () => {
+    const g = await general()
+    const m = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: 'x' })
+    await call(seed.owner, 'POST', `/conversations/${g.id}/read`, {})
+    const unread = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: m.json.message.seq - 1 })
+    expect(unread.json).toEqual({ lastReadSeq: m.json.message.seq - 1, unreadCount: 1 })
   })
 
   test('clientMsgId makes sends idempotent', async () => {
@@ -318,7 +469,14 @@ describe('@agent threads', () => {
     expect(invocations).toHaveLength(2)
     expect(invocations[1].sessionId).toBe(invocations[0].sessionId)
     expect(invocations[1].prompt).toContain('and last month?')
+    // R3 (SHO-137): a warm turn carries only the traffic since this agent's last
+    // reply — re-sending the whole thread every turn made tokens grow
+    // quadratically, since every stored row is a full prompt. The earlier turn
+    // is not lost: it rides along in the durable seed, which the runtime uses
+    // whenever it has no session of its own.
     expect(invocations[1].prompt).not.toContain('summarize the invoices')
+    const seeded = (invocations[1].historySeed?.messages ?? []).map((m) => m.text).join('\n')
+    expect(seeded).toContain('summarize the invoices')
   })
 
   test('the workspace agent gets a workspace session; agent DMs reply without an @mention', async () => {
@@ -489,6 +647,7 @@ describe('#activity and agent results', () => {
     expect(lines[0].authorType).toBe('system')
     expect(lines[0].text).toContain('**Billing Bot** finished the task “Reconcile invoices”')
     expect(lines[0].blocks.kind).toBe('task.completed')
+    expect(lines[0].blocks.conversationId).toBe(ch.json.conversation.id)
 
     const delivered = await call(seed.owner, 'GET', `/conversations/${ch.json.conversation.id}/messages`)
     expect(delivered.json.messages).toHaveLength(1)
@@ -516,8 +675,9 @@ describe('#activity and agent results', () => {
   })
 
   test('schedule failures, goal events, publishes and joins show up in #activity', async () => {
+    const generalId = (await general()).id
     await activity.recordScheduleOutcome(
-      { id: 'sch-1', workspaceId: seed.workspaceId, userId: seed.owner, name: 'Daily digest' },
+      { id: 'sch-1', workspaceId: seed.workspaceId, userId: seed.owner, name: 'Daily digest', notifyConversationId: generalId },
       { status: 'failed', error: 'runtime offline', runKey: '2026-09-30T08:00:00.000Z' },
     )
     const goal = await db.goal.create({ data: { workspaceId: seed.workspaceId, title: 'Launch v2' } })
@@ -526,7 +686,9 @@ describe('#activity and agent results', () => {
     await activity.recordProjectPublished({ id: seed.projectId, workspaceId: seed.workspaceId, name: 'Billing Bot' }, 'https://billing.shogo.one', new Date(1))
     await activity.recordMemberJoined(seed.workspaceId, seed.viewer)
 
-    const texts = (await activityTexts()).map((m) => m.text)
+    const lines = await activityTexts()
+    const texts = lines.map((m) => m.text)
+    expect(lines.find((m) => m.blocks?.scheduleId === 'sch-1').blocks.conversationId).toBe(generalId)
     expect(texts.some((t) => t.includes('scheduled run “Daily digest” failed: runtime offline'))).toBe(true)
     expect(texts.some((t) => t.includes('is blocked on the goal “Launch v2”: Waiting on legal'))).toBe(true)
     expect(texts.some((t) => t.includes('ignored'))).toBe(false)

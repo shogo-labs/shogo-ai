@@ -13,12 +13,13 @@
  * with an Agent Gateway that makes the configured agent "alive."
  */
 
-import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { resolve, dirname, join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
-import { getStreamFinishReason } from './stream-finish'
+import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
+import { describeTurn } from './turn-status'
+import { RepoAdoptGate, isWorkspaceNeutralRequest } from './repo-adopt-gate'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
   existsSync,
@@ -48,13 +49,14 @@ import {
 import {
   POOL_DIST_BASE_PLACEHOLDER,
   adoptPoolPreseedIntoMember,
-  discardPoolPreseed,
   discardPoolPreseedArtifacts,
+  discardPoolPreseedAtAssign,
   listRootEntries,
   poolDistDir,
   removePoolTemplateDist,
   writePoolPreseedManifest,
 } from './workspace-pool-adopt'
+import { LiveTurnGate } from './live-turn-wait'
 import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
@@ -64,7 +66,6 @@ import {
   initializePostgresBackup,
   configureAIProxy,
   StreamBufferStore,
-  encodeTurnCompleteFrame,
   isMacOSJunkName,
   isBinaryBuffer,
   isBinaryFilePath,
@@ -80,6 +81,7 @@ import {
   packRepoArchive,
   seedRepoIfAbsent,
   untrackDependencyDirs,
+  repairCheckpointRepo,
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
@@ -100,23 +102,37 @@ import {
   type CloudSyncMode,
   wrapSseStreamWithKeepalive,
 } from '@shogo/shared-runtime'
-import { createStreamTrace, traceStream } from '@shogo/shared-runtime/stream-trace'
+import { traceStream } from '@shogo/shared-runtime/stream-trace'
+import {
+  buildRepoBundle,
+  materializeRepoFromBundles,
+  parseRepoManifest,
+  readRepoSnapshotFields,
+  type RepoManifest,
+  type RepoSnapshotFields,
+} from '@shogo/shared-runtime/repo-bundles'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
+  seedWorkspaceRuntimeDefaults,
   seedPersonalCompanionTemplate,
   seedLSPConfig,
   seedRuntimeTemplate,
   ensureWorkspaceDeps,
   seedTechStack,
   runTechStackSetup,
-  wipeProjectFiles,
   getTechStackPath,
   workspaceUsesVite,
   resolveWorkspaceTechStackId,
   applyEnvTechStackMarker,
   refreshTechStackMarker,
 } from './workspace-defaults'
+import {
+  applyTechStackChange,
+  setTechStackPreviewRestarter,
+  syncTechStackEnv,
+  type PreviewRestartRequest,
+} from './tech-stack-switch'
 import {
   archiveNeedsSidecarClear,
   clearSqliteSidecars,
@@ -126,15 +142,17 @@ import {
   SQLITE_SIDECAR_ENTRY,
 } from './writable-state'
 import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
+import { sweepExecCwdMarkers } from './exec-cwd'
 import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { handleExportHome, handleHydrateHome } from './home-state-routes'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
+import { ensureDurableTaskLogs } from './task-log-durability'
 import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
-import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
+import { createPtyWsHandlers, handlePtyUpgrade } from './pty-ws-handler'
 import {
   parsePortParam,
   proxyPortHttp,
@@ -150,7 +168,7 @@ import {
   type PortBridgeWsData,
   type PortHttpWsData,
 } from './port-bridge'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorkspaceNotification, postWorktreeStatus, postPlanMirror } from './internal-api'
 import { acceptsAppToolToken } from './app-runtime-token'
 import {
   detachMemberFromRootRepo,
@@ -159,6 +177,8 @@ import {
   type GitHubWorkspaceOpInput,
 } from './github-workspace-git'
 import { isHostMediatedDurability } from './host-durability'
+import { executeRemoteTool } from './remote-tools'
+import { executeRemoteImport } from './project-transfer'
 import { clearGitHubCliEnvCache } from './github-cli-credentials'
 import { HistoryIndex } from './history-index'
 import { WORKTREE_BRANCH_PREFIX } from '@shogo/shared-runtime'
@@ -180,6 +200,7 @@ import {
   parseWorkspaceMounts,
   shouldAutoStartAnchorPreview,
   userOwnedTrustGroups,
+  defaultShellCwd,
 } from './workspace-runtime-mode'
 import {
   workspaceFileRoutes,
@@ -195,7 +216,8 @@ import {
   listWorkspaceMembers,
   listAvailableWorkspaceProjects,
 } from './workspace-members'
-import { userMessage } from './pi-adapter'
+import { seedEmptyChatSession } from './file-attachment-utils'
+import { parseHistorySeed } from './history-seed'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
@@ -210,7 +232,14 @@ import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFram
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
 import { SlackAgentAdapter } from './channels/slack-agent'
-import { saveUploadedFileParts, buildUploadedFilesNote } from './upload-attachments'
+import {
+  saveUploadedFileParts,
+  buildUploadedFilesNote,
+  attachmentSummaryLine,
+  isReferenceAttachmentPart,
+  resolveReferenceAttachment,
+} from './upload-attachments'
+import { chatAttachmentRoutes } from './chat-attachment-routes'
 import { buildIdeContext, buildReferencedContext } from './reference-context'
 import { maybeRunInteractive } from './interactive/entry'
 import { evaluateServerBacked } from './published-detect'
@@ -637,6 +666,10 @@ const workspaceStatus: {
   depsInstalled: false,
 }
 
+// Gates the metal host's late `.git` swap on nobody having used the workspace
+// (see repo-adopt-gate.ts). Declared before the app so onAssign can reset it.
+const repoAdoptGate = new RepoAdoptGate()
+
 const { app, state, logTiming } = await createRuntimeApp({
   name: 'agent-runtime',
   workDir: WORKSPACE_DIR,
@@ -645,6 +678,7 @@ const { app, state, logTiming } = await createRuntimeApp({
   authPrefixes: ['/agent', '/pool', '/diagnostics', '/terminal'],
   acceptsScopedToken: acceptsAppToolToken,
   async onAssign(projectId, envVars) {
+    repoAdoptGate.reset()
     const hostWorkspacesRoot = envVars.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
     const assignedWorkspaceDir = envVars.WORKSPACE_DIR || envVars.PROJECT_DIR
     const sentinelPath = POOL_SENTINEL_PATH
@@ -776,6 +810,8 @@ const { app, state, logTiming } = await createRuntimeApp({
       const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
       mkdirSync(localShogoDir, { recursive: true })
       const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+      /** `.shogo` dirs moved aside here; their `tasks/` is carried to host storage. */
+      const adoptedShogoDirs: string[] = []
 
       let existingStat: ReturnType<typeof lstatSync> | null = null
       try { existingStat = lstatSync(workspaceShogoDir) } catch { /* doesn't exist — easy path */ }
@@ -797,6 +833,7 @@ const { app, state, logTiming } = await createRuntimeApp({
         try {
           renameSync(workspaceShogoDir, asidePath)
           cleared = true
+          adoptedShogoDirs.push(asidePath)
         } catch (err: any) {
           renameErrMsg = err?.message ?? String(err)
         }
@@ -819,6 +856,17 @@ const { app, state, logTiming } = await createRuntimeApp({
       if (!alreadyCorrect) {
         symlinkSync(localShogoDir, workspaceShogoDir)
       }
+
+      // Task logs must outlive this VM (SHO-141). `.shogo` is on the overlay so
+      // SQLite works; `tasks/` is a symlink out to host-backed storage, which
+      // keeps `<workspace>/.shogo/tasks/<session>/<task>.log` the same path
+      // every caller already uses while the bytes survive a re-assign.
+      ensureDurableTaskLogs({
+        localShogoDir,
+        hostWorkspacesRoot,
+        projectId,
+        adoptFrom: adoptedShogoDirs,
+      })
 
       // Suppress .virtfs_metadata in git (created by 9p security_model=mapped-file)
       try {
@@ -873,10 +921,14 @@ const { app, state, logTiming } = await createRuntimeApp({
       (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
+    const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0, children: 0 }
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
       activeStreams,
+      activeTurns: work.turns,
+      activeTasks: work.tasks,
+      activeChildren: work.children ?? 0,
       repoHeadSha: cachedRepoHeadSha,
       previewHealth: safePreviewHealth(),
     }
@@ -905,6 +957,14 @@ const { app, state, logTiming } = await createRuntimeApp({
       console.error(`[agent-runtime] onRefreshEnv sidecar restart failed: ${err?.message ?? err}`)
     }
   },
+})
+
+// Anything that can write the workspace marks it in use for the repo adopt
+// gate, and waits if a late `.git` swap is running. Registered before every
+// route below so none of them slips past it.
+app.use('*', async (c, next) => {
+  if (!isWorkspaceNeutralRequest(c.req.method, c.req.path)) await repoAdoptGate.enter()
+  return next()
 })
 
 // Readiness probe.
@@ -1082,12 +1142,16 @@ function ensureWorkspaceFiles(): void {
     // or running the legacy APP-layout migration here would corrupt the
     // user's repo (external) or the sibling project subfolders
     // (workspace). Lay down only the workspace-level `.shogo` skeleton.
-    seedWorkspaceDefaults(WORKSPACE_DIR)
     if (IS_WORKSPACE_RUNTIME) {
+      // A workspace root has no app, so its AGENTS.md must send "build me an
+      // app" through `project_create` instead of `src/App.tsx` (SHO-194).
+      seedWorkspaceRuntimeDefaults(WORKSPACE_DIR)
       writeWorkspaceManifest(WORKSPACE_DIR)
       if (workspaceKind() === 'personal') {
         seedPersonalCompanionTemplate(WORKSPACE_DIR)
       }
+    } else {
+      seedWorkspaceDefaults(WORKSPACE_DIR)
     }
     workspaceStatus.templateSeeded = true
     logTiming(
@@ -1282,6 +1346,13 @@ function startWorkspaceDepsInstall(opts: { afterS3Restore?: boolean } = {}): Pro
 // =============================================================================
 
 const streamBufferStore = new StreamBufferStore()
+const liveTurnGate = new LiveTurnGate(streamBufferStore)
+const bufferedTurns = createBufferedTurns({
+  store: streamBufferStore,
+  gate: liveTurnGate,
+  onStreamStart: () => trackStreamStart(),
+  onStreamEnd: () => trackStreamEnd(),
+})
 
 // Hono app, CORS, auth middleware, /health, /pool/activity, /pool/assign are
 // provided by createRuntimeApp(). Agent-specific routes follow below.
@@ -1366,12 +1437,63 @@ app.get('/agent/status', (c) => {
 // plus the metadata the StatusPanel needs to render its expanded view.
 // Sessions live in memory on this pod; if the id has been evicted (TTL)
 // or never existed, this returns 404.
-app.get('/agent/sessions/:sessionId/summary', (c) => {
+app.get('/agent/sessions/:sessionId/summary', async (c) => {
   const sm = agentGateway?.getSessionManager()
   if (!sm) return c.json({ error: 'Agent gateway not running' }, 503)
-  const detail = sm.getDetail(c.req.param('sessionId'))
+  const sessionId = c.req.param('sessionId')
+  // An evicted session is still on disk; load it before reporting 404.
+  await sm.loadSession(sessionId)
+  const detail = sm.getDetail(sessionId)
   if (!detail) return c.json({ error: 'session not found' }, 404)
   return c.json(detail)
+})
+
+/**
+ * Forget a chat's persisted history for good. Called only when the chat itself
+ * is deleted — never for idle time (that is what `pruneExpired()` stopped
+ * doing; see SHO-137). Wipes memory and the durable copy, so a deleted chat
+ * cannot come back from `sessions.db`.
+ */
+app.delete('/agent/sessions/:sessionId', async (c) => {
+  const sm = agentGateway?.getSessionManager()
+  if (!sm) return c.json({ error: 'Agent gateway not running' }, 503)
+  const sessionId = c.req.param('sessionId')
+  const existed = await sm.deleteSession(sessionId)
+  return c.json({ forgotten: true, existed })
+})
+
+// Manually summarize a session's context — the context-usage dock's button.
+// A live turn cannot be summarized synchronously (the request has already been
+// sent), so the flag is queued and consumed at the next step; the caller gets
+// 202 and a reason instead of a fake success. An idle session compacts here and
+// reports the real before/after. Nothing foldable is an honest 200.
+app.post('/agent/sessions/:sessionId/compact', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const result = await agentGateway.compactSession(c.req.param('sessionId'))
+  switch (result.status) {
+    case 'unknown-session':
+      return c.json({ compacted: false, queued: false, reason: result.reason ?? 'session not found' }, 404)
+    case 'queued':
+      return c.json({ compacted: false, queued: true, reason: result.reason }, 202)
+    case 'nothing-to-compact':
+      return c.json({
+        compacted: false,
+        queued: false,
+        reason: result.reason,
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.tokensAfter,
+      })
+    case 'compacted':
+      return c.json({
+        compacted: true,
+        queued: false,
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.tokensAfter,
+        messagesBefore: result.messagesBefore,
+        messagesAfter: result.messagesAfter,
+        summaryChars: result.summaryChars,
+      })
+  }
 })
 
 // List the background shell processes still running for a chat thread. Used by
@@ -1392,6 +1514,31 @@ app.post('/agent/chat/:chatSessionId/processes/:runId/kill', (c) => {
   )
   if (!killed) return c.json({ error: 'unknown run_id' }, 404)
   return c.json({ ok: true, processes: agentGateway.listSessionProcesses(c.req.param('chatSessionId')) })
+})
+
+// Every task still running for a chat thread (shell, subagents, project calls,
+// tagged agents, cards). Seeds the dock and backs its idle polling; live
+// updates arrive via `data-task-update` frames during a turn.
+app.get('/agent/chat/:chatSessionId/tasks', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const tasks = await agentGateway.listSessionTasks(c.req.param('chatSessionId'))
+  return c.json({ tasks })
+})
+
+app.post('/agent/chat/:chatSessionId/tasks/:taskId/cancel', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const sessionId = c.req.param('chatSessionId')
+  if (!agentGateway.killSessionProcess(sessionId, c.req.param('taskId'))) {
+    return c.json({ error: 'unknown task_id' }, 404)
+  }
+  return c.json({ ok: true, tasks: await agentGateway.listSessionTasks(sessionId) })
+})
+
+app.get('/agent/chat/:chatSessionId/tasks/:taskId/output', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const output = await agentGateway.readSessionTaskOutput(c.req.param('chatSessionId'), c.req.param('taskId'))
+  if (!output) return c.json({ error: 'unknown task_id' }, 404)
+  return c.json(output)
 })
 
 // Read agent config
@@ -1462,7 +1609,8 @@ app.patch('/agent/config', async (c) => {
     agentGateway?.reloadConfig()
 
     // The PATCH is the immediate update. Capability toggles are then
-    // confirmed against Project.settings, which wins when the pull succeeds.
+    // confirmed against the database (Project.settings, plus Workspace.settings
+    // in a workspace runtime), which wins when the pull succeeds.
     await agentGateway?.syncCapabilitiesFromApi()
 
     return c.json({ ok: true })
@@ -1695,8 +1843,12 @@ app.post('/agent/channels/disconnect', async (c) => {
 // Accepts AI SDK v3 format: { messages: [{ role, parts: [{ type: 'text', text }] }] }
 // Returns an AI SDK UI message stream so the frontend can use useChat().
 app.post('/agent/chat', async (c) => {
+  // Reported to the API as x-shogo-gateway-wait-ms: the part of a slow first
+  // message spent here, after the VM was up, waiting for the agent to start.
+  let gatewayWaitMs = 0
   if (!agentGateway || gatewayReadyPromise) {
     if (gatewayReadyPromise) {
+      const waitStartedAt = performance.now()
       const timeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Gateway startup timeout')), 30_000)
       )
@@ -1704,7 +1856,10 @@ app.post('/agent/chat', async (c) => {
         await Promise.race([gatewayReadyPromise, timeout])
       } catch {
         return c.json({ error: 'Agent gateway still starting, please retry' }, 503)
+      } finally {
+        gatewayWaitMs = Math.round(performance.now() - waitStartedAt)
       }
+      if (gatewayWaitMs > 1000) console.log(`[AgentChat] waited ${gatewayWaitMs}ms for the agent gateway to start`)
     }
     if (!agentGateway) {
       return c.json({ error: 'Agent gateway not running' }, 503)
@@ -1713,7 +1868,7 @@ app.post('/agent/chat', async (c) => {
 
   const body = await c.req.json()
 
-  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string; name?: string }> }>
+  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string; name?: string; savedPath?: string }> }>
 
   let userText: string | undefined
   let userFileParts: Array<{ type: string; mediaType?: string; url?: string; name?: string; savedPath?: string }> = []
@@ -1726,7 +1881,7 @@ app.post('/agent/chat', async (c) => {
         .join('\n')
 
       userFileParts = last.parts.filter(
-        (p: any) => p.type === 'file' && p.url,
+        (p: any) => p.type === 'file' && (p.url || p.savedPath),
       )
     }
   }
@@ -1795,14 +1950,48 @@ app.post('/agent/chat', async (c) => {
   }
 
   // Save uploaded files to the agent's workspace so they're accessible to the
-  // agent via its workspace tools (read_file, search, exec/unzip, etc.). Every
-  // base64 data-URL part is persisted regardless of MIME type — even archives
-  // and unknown binaries — and the saved path is annotated back onto the file
-  // part so downstream parsing can surface it to the agent.
+  // agent via its workspace tools (read_file, search, exec/unzip, etc.).
+  //
+  // Two transports reach here (SHO-213):
+  //   - reference parts, whose bytes the client already PUT to
+  //     `/agent/chat/attachments` — resolve `savedPath`, never re-save;
+  //   - legacy `data:` URL parts, whose bytes still ride in this request (old
+  //     clients, eval runners, pasted long text) — persist them as before.
+  // Either way the saved path is annotated back onto the file part so
+  // downstream parsing can surface it to the agent.
   if (userFileParts.length > 0) {
+    const referenceSummaries: string[] = []
+    let referenceZipUploaded = false
+    for (const part of userFileParts.filter(isReferenceAttachmentPart)) {
+      const resolved = resolveReferenceAttachment(WORKSPACE_DIR, part)
+      if (resolved === 'outside') {
+        // A path that escapes the workspace is a caller bug at best and an
+        // attempt to read the host filesystem at worst — refuse the turn.
+        return c.json(
+          {
+            error: {
+              code: 'invalid_attachment_path',
+              message: `Attachment path is outside the workspace: ${part.savedPath}`,
+            },
+          },
+          400,
+        )
+      }
+      if (resolved === 'missing') {
+        console.warn(`[AgentChat] attachment reference is gone: ${part.savedPath}`)
+        continue
+      }
+      part.savedPath = resolved.savedPath
+      if (!part.mediaType) part.mediaType = resolved.mediaType
+      referenceSummaries.push(
+        attachmentSummaryLine(resolved.savedPath, resolved.mediaType, resolved.bytes),
+      )
+      if (resolved.isZip) referenceZipUploaded = true
+    }
+
     const { saved, savedSummaries, zipUploaded } = saveUploadedFileParts({
       workspaceDir: WORKSPACE_DIR,
-      parts: userFileParts,
+      parts: userFileParts.filter((part) => !isReferenceAttachmentPart(part)),
     })
 
     for (const sf of saved) {
@@ -1810,7 +1999,10 @@ app.post('/agent/chat', async (c) => {
       try { getIndexEngine().indexFile('files', sf.baseName).catch(() => {}) } catch { /* best-effort */ }
     }
 
-    const note = buildUploadedFilesNote(savedSummaries, zipUploaded)
+    const note = buildUploadedFilesNote(
+      [...referenceSummaries, ...savedSummaries],
+      zipUploaded || referenceZipUploaded,
+    )
     if (note) {
       userText = userText ? `${userText}\n\n${note}` : note
     }
@@ -1837,7 +2029,17 @@ app.post('/agent/chat', async (c) => {
   }
   const chatSessionKey = rawChatSessionKey
   const sessionManager = agentGateway!.getSessionManager()
-  sessionManager.getOrCreate(chatSessionKey)
+  // Load, don't fabricate: on a pod that has not restored this id yet, a
+  // memory-only `getOrCreate` would hand the turn an empty session and the
+  // next persist would write that emptiness over the real history (SHO-137).
+  await sessionManager.getOrCreateAsync(chatSessionKey)
+  const wokenByTasks: unknown = body.taskNotification?.taskIds
+  if (Array.isArray(wokenByTasks)) {
+    agentGateway!.acknowledgeTaskNotification(chatSessionKey, wokenByTasks.filter((id): id is string => typeof id === 'string'))
+  }
+  // What this session is still holding (a pause and the updates behind it) is
+  // part of this turn's prompt, so read it before the prompt is assembled.
+  await agentGateway!.refreshWakeState(chatSessionKey).catch(() => {})
   if (typeof body.chatSessionName === 'string' && body.chatSessionName.trim()) {
     sessionManager.setSessionMetadata(chatSessionKey, { title: body.chatSessionName.trim().slice(0, 200) })
   }
@@ -1845,48 +2047,52 @@ app.post('/agent/chat', async (c) => {
   // Seed the chat session with prior conversation history from the request.
   // AI SDK clients and eval runners send the full message array each turn;
   // the session is the authoritative store so we only seed when it's empty
-  // to avoid duplicating messages on subsequent turns.
+  // to avoid duplicating messages on subsequent turns. Attachments ride along
+  // as real image blocks (guarded like the live turn guards them) instead of
+  // `[N image(s) were attached]` notes — see seedEmptyChatSession.
   if (allMessages.length > 1) {
-    const sessionMgr = sessionManager
-    const session = sessionMgr.getOrCreate(chatSessionKey)
-    if (session.messages.length === 0) {
-      const priorMessages = allMessages.slice(0, -1)
-      for (const msg of priorMessages) {
-        const text = (msg.parts || [])
-          .filter((p: any) => p.type === 'text')
-          .map((p: any) => p.text)
-          .join('\n')
-
-        if (msg.role === 'user') {
-          const historyFileParts = (msg.parts || []).filter(
-            (p: any) => p.type === 'file' && p.url,
-          )
-          if (historyFileParts.length > 0) {
-            const imageCount = historyFileParts.filter((p: any) => p.mediaType?.startsWith('image/')).length
-            const fileCount = historyFileParts.length - imageCount
-            const notes: string[] = []
-            if (imageCount > 0) notes.push(`[${imageCount} image(s) were attached]`)
-            if (fileCount > 0) notes.push(`[${fileCount} file(s) were attached]`)
-            const effectiveText = [text, ...notes].filter(Boolean).join('\n')
-            if (!effectiveText) continue
-            sessionMgr.addMessages(chatSessionKey, userMessage(effectiveText))
-          } else {
-            if (!text) continue
-            sessionMgr.addMessages(chatSessionKey, userMessage(text))
-          }
-        } else if (msg.role === 'assistant') {
-          if (!text) continue
-          sessionMgr.addMessages(chatSessionKey, {
-            role: 'assistant',
-            content: [{ type: 'text', text }],
-            api: 'anthropic-messages',
-            provider: 'anthropic',
-            model: 'history',
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-            stopReason: 'stop',
-            timestamp: Date.now(),
-          } as any)
-        }
+    const seeded = seedEmptyChatSession(
+      sessionManager,
+      chatSessionKey,
+      allMessages.slice(0, -1),
+      { label: 'chat_history', workspaceDir: WORKSPACE_DIR },
+    )
+    if (seeded > 0) {
+      console.log(`[AgentRuntime][chat] seeded ${seeded} history message(s) for session ${chatSessionKey}`)
+    }
+  }
+  // A server-initiated turn (background-task wake, queued message, scheduled
+  // run, team-chat dispatch) carries exactly one message, so the block above
+  // never runs and a session with no local copy starts from the wake note
+  // alone. The API sends the conversation it already stores as `historySeed`
+  // for exactly that case (SHO-137).
+  if (allMessages.length <= 1) {
+    const seed = parseHistorySeed(body.historySeed)
+    const restored = seed && (sessionManager.get(chatSessionKey)?.messages.length ?? 0) === 0
+    if (seed && restored) {
+      const seeded = seedEmptyChatSession(
+        sessionManager,
+        chatSessionKey,
+        seed.messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
+        { label: 'chat_history' },
+      )
+      if (seed.summary) {
+        // The durable summary must win over a runtime copy that covers less.
+        // The runtime has no watermark of its own (its counts are not the
+        // API's `ChatMessage` counts), so the comparable signal is coverage:
+        // a longer durable block folds more of the conversation. Every runtime
+        // compaction is also written back to the API, so it is never the older
+        // copy for long (SHO-137 round 3, R4).
+        const runtimeSummary = sessionManager.get(chatSessionKey)?.compactedSummary ?? null
+        sessionManager.setCompactedSummary(chatSessionKey, seed.summary, {
+          replace: !runtimeSummary || seed.summary.trim().length > runtimeSummary.trim().length,
+        })
+      }
+      if (seeded > 0 || seed.summary) {
+        console.log(
+          `[AgentRuntime][chat] restored ${seeded} message(s) and ${seed.summary ? 'a summary' : 'no summary'} ` +
+            `from historySeed for session ${chatSessionKey}`,
+        )
       }
     }
   }
@@ -1897,10 +2103,23 @@ app.post('/agent/chat', async (c) => {
   // provider's native endpoint instead of inferring `custom` from the id.
   // Optional — absent requests fall back to id-based inference.
   const modelProvider = (body.modelProvider as string | undefined) || undefined
-  const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
+  // Product name of the model `agentMode` resolves to (e.g. "Hoshi 2.0"),
+  // stamped by the API alongside `modelProvider`. The gateway pairs it with the
+  // session override so the Account prompt line names the model this turn
+  // actually sends (SHO-145).
+  const modelDisplayName = (body.modelDisplayName as string | undefined) || undefined
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
-  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, modelProvider: ${modelProvider ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
+  // Which surface this chat belongs to. The API proxy stamps it (workspace
+  // chat vs project chat); a direct caller without it gets the boot mode's
+  // default, which is what this runtime served before the split.
+  const chatContext =
+    body.chatContext === 'workspace' || body.chatContext === 'project'
+      ? (body.chatContext as 'workspace' | 'project')
+      : IS_WORKSPACE_RUNTIME && !process.env.WORKSPACE_ANCHOR_PROJECT_ID
+        ? 'workspace'
+        : 'project'
+  console.log(`[AgentRuntime][chat] received — agentMode: ${modelOverride ?? '(none)'}, modelProvider: ${modelProvider ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, dualPlan: ${dualPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
@@ -1913,237 +2132,104 @@ app.post('/agent/chat', async (c) => {
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
   const requesterTicket = c.req.header('X-Requester-Ticket') || undefined
 
-  // Create a buffer that lives independently of the HTTP connection.
-  // The agent writes into this buffer via a background consumer so that
-  // a client disconnect (e.g. page refresh) does NOT cancel the agent.
-  console.log(`[AgentChat] Creating stream buffer for session: ${chatSessionKey}`)
-  const bufWriter = streamBufferStore.create(chatSessionKey)
-  const turnId = bufWriter.turnId
+  // A busy chat finishes its live turn first; see live-turn-wait.ts.
+  if (liveTurnGate.isBusy(chatSessionKey)) {
+    console.log(`[AgentChat] Session ${chatSessionKey} has a live turn; waiting for it before starting the next`)
+    const { waitedMs, stopped } = await liveTurnGate.waitUntilFree(chatSessionKey)
+    if (stopped) {
+      console.log(`[AgentChat] Session ${chatSessionKey} was stopped after ${waitedMs}ms; not starting the waiting turn`)
+      return c.json({ error: 'The chat was stopped before this message started', code: 'turn_stopped' }, 409)
+    }
+    console.log(`[AgentChat] Session ${chatSessionKey} free after ${waitedMs}ms`)
+  }
+  const turn = bufferedTurns.start(chatSessionKey, async (writer) => {
+    await agentGateway!.processChatMessageStream(userText || '', writer, {
+      modelOverride,
+      modelProvider,
+      modelDisplayName,
+      fileParts: userFileParts.length > 0 ? userFileParts : undefined,
+      userId: chatUserId,
+      requesterTicket,
+      confirmedPlan,
+      dualPlan,
+      chatSessionId: chatSessionKey,
+      chatContext,
+    })
 
-  trackStreamStart()
-  // Tracks whether an explicit `data-turn-complete` terminal frame has been
-  // emitted for this turn. The client's auto-resuming fetch keeps reconnecting
-  // to `/stream?fromSeq=N` until it parses this frame; if the turn ends
-  // abnormally (bg-reader transport error, process abort race) before the
-  // try/catch below writes one, the buffer would be marked `completed` with NO
-  // terminal frame and the client would replay the tail forever — pinning
-  // `useChat().status` at `streaming` and wedging the composer on Stop/Queue.
-  // The bgReader `finally` synthesizes one when this stays false.
-  let terminalFrameWritten = false
-  const stream = createUIMessageStream({
-    execute: async ({ writer }) => {
-      let turnSucceeded = false
-      // Periodic seq heartbeat. The client uses this to know how many
-      // buffered chunks it has already received so it can resume with
-      // `?fromSeq=N` on a premature disconnect without re-rendering text
-      // it has already seen. Transient: the AI SDK would otherwise append
-      // a message part every 250ms for the whole turn.
-      const seqHeartbeat = setInterval(() => {
-        const seq = bufWriter.lastSeq
-        if (seq <= 0) return
+    const usage = agentGateway!.consumeLastTurnUsage()
+    if (usage) {
+      const dollarCost = calculateDollarCost(
+        usage.model,
+        usage.inputTokens,
+        usage.outputTokens,
+        usage.cacheReadTokens,
+        usage.cacheWriteTokens,
+      )
+      writer.write({
+        type: 'data-usage',
+        data: { ...usage, dollarCost },
+      } as any)
+    }
+    return { aborted: !!usage?.wasAborted }
+  }, {
+    afterSuccess: () => {
+      // Per-turn git sync: in `dual_shadow` / `git_only` modes, sync
+      // the workspace once the agent finishes its turn. This is the
+      // natural ProjectCheckpoint granularity — one row per assistant
+      // turn. In `git_only` (pod-owned) the commit is local and the
+      // sync's afterCommit persists `.git` to object storage and records
+      // the ProjectCheckpoint row via the internal API endpoint (see
+      // persistAndRecordCheckpoint above). In `dual_shadow` it pushes to
+      // the API origin, whose post-receive hook writes the row.
+      //
+      // We deliberately do NOT hook the S3Sync filesystem watcher
+      // for git: that fires per file event and would commit 5–50
+      // times per turn (every tool call, every edit). The
+      // turn-complete site is the same boundary the checkpoints
+      // system has always used.
+      //
+      // `triggerSync(false)` is debounced internally (~1.5s) and
+      // returns immediately, so this is a fire-and-forget that
+      // doesn't add latency to the turn-complete response.
+      // `gitLayerReady` is already settled except right after a deferred
+      // local bootstrap (desktop), where it lands within ~1s of assign.
+      void gitLayerReady.then(() => {
+        if (!gitSyncInstance) return
         try {
-          writer.write({
-            type: 'data-turn-seq',
-            data: { turnId, seq },
-            transient: true,
-          } as any)
-        } catch {
-          clearInterval(seqHeartbeat)
+          // Offload large/binary assets first (updates .git/info/exclude
+          // synchronously so the debounced push below stays source-only).
+          triggerLargeFileSync()
+          gitSyncInstance.triggerSync(false)
+        } catch (err: any) {
+          console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
         }
-      }, 250)
-      try {
-        // Mark the start of this durable turn so a reconnecting client
-        // can correlate replay frames against the right turn id.
-        writer.write({
-          type: 'data-turn-start',
-          data: {
-            turnId,
-            chatSessionId: chatSessionKey,
-            startedAt: Date.now(),
-          },
-        } as any)
-        writer.write({ type: 'start-step' })
-        await agentGateway!.processChatMessageStream(userText || '', writer, {
-          modelOverride,
-          modelProvider,
-          fileParts: userFileParts.length > 0 ? userFileParts : undefined,
-          userId: chatUserId,
-          requesterTicket,
-          interactionMode,
-          confirmedPlan,
-          dualPlan,
-          chatSessionId: chatSessionKey,
-        })
+      })
 
-        const usage = agentGateway!.consumeLastTurnUsage()
-        if (usage) {
-          const dollarCost = calculateDollarCost(
-            usage.model,
-            usage.inputTokens,
-            usage.outputTokens,
-            usage.cacheReadTokens,
-            usage.cacheWriteTokens,
-          )
-          writer.write({
-            type: 'data-usage',
-            data: { ...usage, dollarCost },
-          } as any)
-        }
-
-        writer.write({ type: 'finish-step' })
-        // Explicit terminal marker the client uses to differentiate "really
-        // done" from "stream EOF mid-turn". Anything past this point on the
-        // wire is purely framing noise and should be ignored by clients.
-        //
-        // When the user clicked Stop, the agent loop unwinds with
-        // `result.abortReason === 'external'` and the gateway sets
-        // `usage.wasAborted`. We tag the terminal frame `status: 'aborted'`
-        // so project-chat (and other consumers) can distinguish a
-        // user-initiated stop from a clean turn end and bill the partial
-        // usage that was just emitted.
-        writer.write({
-          type: 'data-turn-complete',
-          data: {
-            turnId,
-            chatSessionId: chatSessionKey,
-            status: usage?.wasAborted ? 'aborted' : 'completed',
-            lastSeq: bufWriter.lastSeq,
-            completedAt: Date.now(),
-          },
-        } as any)
-        terminalFrameWritten = true
-        writer.write({ type: 'finish', finishReason: getStreamFinishReason(!!usage?.wasAborted) })
-        turnSucceeded = true
-
-        // Per-turn git sync: in `dual_shadow` / `git_only` modes, sync
-        // the workspace once the agent finishes its turn. This is the
-        // natural ProjectCheckpoint granularity — one row per assistant
-        // turn. In `git_only` (pod-owned) the commit is local and the
-        // sync's afterCommit persists `.git` to object storage and records
-        // the ProjectCheckpoint row via the internal API endpoint (see
-        // persistAndRecordCheckpoint above). In `dual_shadow` it pushes to
-        // the API origin, whose post-receive hook writes the row.
-        //
-        // We deliberately do NOT hook the S3Sync filesystem watcher
-        // for git: that fires per file event and would commit 5–50
-        // times per turn (every tool call, every edit). The
-        // turn-complete site is the same boundary the checkpoints
-        // system has always used.
-        //
-        // `triggerSync(false)` is debounced internally (~1.5s) and
-        // returns immediately, so this is a fire-and-forget that
-        // doesn't add latency to the turn-complete response.
-        // `gitLayerReady` is already settled except right after a deferred
-        // local bootstrap (desktop), where it lands within ~1s of assign.
-        void gitLayerReady.then(() => {
-          if (!gitSyncInstance) return
-          try {
-            // Offload large/binary assets first (updates .git/info/exclude
-            // synchronously so the debounced push below stays source-only).
-            triggerLargeFileSync()
-            gitSyncInstance.triggerSync(false)
-          } catch (err: any) {
-            console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
-          }
-        })
-
-        // BETA: per-chat git worktrees. When this session runs in an isolated
-        // worktree, the agent's edits live on its branch (not the main tree),
-        // so the main gitSync above no-ops. Commit the worktree (and, for a
-        // conflict-resolution turn, finish the merge) here.
-        if (agentGateway?.isWorktreeSession(chatSessionKey)) {
-          void finalizeWorktreeTurn(chatSessionKey).catch((err: any) =>
-            console.warn('[agent-runtime] finalizeWorktreeTurn at turn-complete threw:', err?.message ?? err),
-          )
-        }
-      } catch (error: any) {
-        writer.write({
-          type: 'data-turn-complete',
-          data: {
-            turnId,
-            chatSessionId: chatSessionKey,
-            status: 'failed',
-            error: error?.message || 'Agent chat error',
-            lastSeq: bufWriter.lastSeq,
-            completedAt: Date.now(),
-          },
-        } as any)
-        terminalFrameWritten = true
-        writer.write({ type: 'error', errorText: error.message || 'Agent chat error' } as any)
-      } finally {
-        clearInterval(seqHeartbeat)
-        trackStreamEnd()
-        if (!turnSucceeded) {
-          // Best-effort marker so the snapshot reflects the failure state
-          // for the grace window.
-        }
+      // BETA: per-chat git worktrees. When this session runs in an isolated
+      // worktree, the agent's edits live on its branch (not the main tree),
+      // so the main gitSync above no-ops. Commit the worktree (and, for a
+      // conflict-resolution turn, finish the merge) here.
+      if (agentGateway?.isWorktreeSession(chatSessionKey)) {
+        void finalizeWorktreeTurn(chatSessionKey).catch((err: any) =>
+          console.warn('[agent-runtime] finalizeWorktreeTurn at turn-complete threw:', err?.message ?? err),
+        )
       }
     },
   })
 
-  const response = createUIMessageStreamResponse({ stream })
-  if (response.body) {
-    // Consume the agent's stream in the background, feeding chunks into
-    // the buffer. This reader is NOT tied to the HTTP response — the agent
-    // keeps running even if the client disconnects.
-    const bgReader = response.body.getReader()
-    const streamTrace = createStreamTrace(`runtime-chat:${chatSessionKey.slice(0, 8)}`, ['buffered', 'replay', 'keepalive'])
-    ;(async () => {
-      try {
-        while (true) {
-          const { done, value } = await bgReader.read()
-          if (done) break
-          bufWriter.append(value)
-          streamTrace.mark('buffered', value.byteLength)
-        }
-        console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey} (turn ${turnId}, seq=${bufWriter.lastSeq})`)
-      } catch (err: any) {
-        console.log(`[AgentChat] Background stream error for session: ${chatSessionKey}:`, err?.message || err)
-      } finally {
-        // Guarantee a terminal frame in the buffer. If the turn ended without
-        // the try/catch above writing one (bg-reader transport error, abort
-        // race, or any path that tore the agent stream before the terminal
-        // marker), synthesize one now — WHILE the buffer is still `active`, so
-        // `append` assigns it a seq and it reaches both live subscribers and
-        // future `?fromSeq=N` replays. Without this, the client's
-        // auto-resuming fetch never sees `data-turn-complete`, replays the
-        // tail forever, and the composer stays wedged in `streaming`.
-        if (!terminalFrameWritten) {
-          try {
-            bufWriter.append(
-              encodeTurnCompleteFrame({
-                turnId,
-                chatSessionId: chatSessionKey,
-                status: 'failed',
-                error: 'stream ended without terminal frame',
-                lastSeq: bufWriter.lastSeq,
-                completedAt: Date.now(),
-              }),
-            )
-            terminalFrameWritten = true
-            console.log(`[AgentChat] Synthesized terminal frame for session: ${chatSessionKey} (turn ${turnId})`)
-          } catch (sErr: any) {
-            console.warn(`[AgentChat] Failed to synthesize terminal frame for ${chatSessionKey}:`, sErr?.message || sErr)
-          }
-        }
-        bufWriter.complete()
-      }
-    })()
-
-    // The client reads from a replay stream backed by the buffer.
-    // If this client disconnects, only the replay subscriber is removed;
-    // the background reader + agent keep running.
-    const replayStream = traceStream(streamTrace, 'replay', streamBufferStore.createReplayStream(chatSessionKey)!)
-    const wrappedStream = traceStream(streamTrace, 'keepalive', wrapSseStreamWithKeepalive(replayStream, 15_000), true)
-    const responseHeaders = new Headers(response.headers)
-    responseHeaders.set('X-Turn-Id', turnId)
-    responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
-    return new Response(wrappedStream, {
-      status: response.status,
-      headers: responseHeaders,
-    })
-  }
-  return response
+  // The client reads from a replay stream backed by the buffer.
+  // If this client disconnects, only the replay subscriber is removed;
+  // the background reader + agent keep running.
+  const replayStream = traceStream(turn.streamTrace, 'replay', streamBufferStore.createReplayStream(chatSessionKey)!)
+  const wrappedStream = traceStream(turn.streamTrace, 'keepalive', wrapSseStreamWithKeepalive(replayStream, 15_000), true)
+  const responseHeaders = new Headers(turn.headers)
+  responseHeaders.set('X-Turn-Id', turn.turnId)
+  responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
+  responseHeaders.set('x-shogo-gateway-wait-ms', String(gatewayWaitMs))
+  return new Response(wrappedStream, {
+    status: turn.status,
+    headers: responseHeaders,
+  })
 })
 
 // Reconnect to an active (or recently completed) stream.
@@ -2154,7 +2240,8 @@ app.post('/agent/chat', async (c) => {
 //              client doesn't render duplicates).
 //   - snapshot: `1` (with fromSeq=0) replays the turn as a single
 //              `data-message-snapshot` chunk holding the message up to the
-//              last finished step, then the unfinished step and live frames.
+//              last point where no part is open, then the part that is still
+//              open and live frames.
 //   - compact: the buffered frames are replayed compacted (one delta per
 //              part, see compactSseFrames) so a client joining a long turn
 //              rebuilds it in a few chunks. `compact=0` replays them raw.
@@ -2210,22 +2297,30 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
 // Read-only durable-turn status endpoint. Lets a client poll for the current
 // state of a turn without opening a stream — useful when deciding whether to
 // reconnect. Mirrors the snapshot exposed by the StreamBufferStore.
+//
+// `reply` is the turn's final text once it is terminal. The buffer is evicted
+// 30 s after a turn completes, so the reply is kept separately for an hour —
+// a caller whose stream follower missed the turn (API restart, slow poll) can
+// still persist what the agent said instead of re-running the turn.
+//
+// `?callId=` asks about one named call, and the answer is about that call:
+// `queued` (with `queuedSince`/`queuedDepth`) while it waits for this chat's own
+// turn to end, `lost` when the gate has no record of it any more (the runtime
+// restarted, the queued item vanished, or the chat was stopped first). Without
+// a name the probe describes the chat, which cannot tell those apart.
 app.get('/agent/chat/:chatSessionId/turn', (c) => {
   const chatSessionId = c.req.param('chatSessionId')
-  const snapshot = streamBufferStore.snapshot(chatSessionId)
-  if (!snapshot) {
-    return c.json({ status: 'unknown' as const }, 404)
-  }
-  return c.json({
+  // `?callId=` answers for one named call: a chat that is busy with its own
+  // turn looks identical to a call still waiting behind it, so a follower that
+  // asks by name gets `queued` until the call's own turn exists.
+  const callId = c.req.query('callId')?.trim()
+  const { status, body } = describeTurn(
+    streamBufferStore,
     chatSessionId,
-    turnId: snapshot.turnId,
-    status: snapshot.status,
-    lastSeq: snapshot.lastSeq,
-    terminal: snapshot.terminal,
-    createdAt: snapshot.createdAt,
-    completedAt: snapshot.completedAt,
-    lastEventAt: snapshot.lastEventAt,
-  })
+    liveTurnGate.queued(chatSessionId),
+    callId ? { callId, state: liveTurnGate.callState(chatSessionId, callId) } : null,
+  )
+  return c.json(body, status as 200 | 404)
 })
 
 // Live browser screencast for a running subagent instance.
@@ -2561,7 +2656,10 @@ app.post('/agent/stop', async (c) => {
     )
   }
   const stopSessionKey = rawStopSessionKey
+  liveTurnGate.markStopped(stopSessionKey)
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
+  // Background tasks keep running after Stop but must not restart the agent.
+  agentGateway.muteSessionTasks(stopSessionKey)
 
   // The main turn signal does not reach subagents because each has its own
   // AbortController. Scope their cancellation to this chat: a project runtime
@@ -2597,8 +2695,10 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
+import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
+import { syncGuestClock } from './guest-clock'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
@@ -3236,7 +3336,7 @@ app.post('/pool/export-repo', async (c) => {
     await flushGitBeforeExport(destinationDir)
     let excludeLfsObjects = false
     if (isLfsActive()) {
-      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
       if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
     }
     const packed = await packRepoArchive(destinationDir, tmp, { excludeLfsObjects })
@@ -3276,7 +3376,12 @@ app.post('/pool/repo-hydrated', async (c) => {
   // ends up with a stray `.git` inside its working tree.
   // `deadline` tells the host this guest honours `timeoutMs` and `keepPaths`;
   // an older one resets the whole tree whenever it gets round to it.
-  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true })
+  // `bundles` means this guest can restore the incremental repo format
+  // (`/pool/repo-bundles-hydrate`). The host must not fall back to the legacy
+  // tarball when a manifest exists, so it refuses instead of guessing.
+  // `ifIdle` means this guest honours `ifIdle` below, so the host may hand the
+  // project out before its history arrives and swap it in afterwards.
+  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true })
   let stagingDir: string
   try {
     stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
@@ -3298,8 +3403,8 @@ app.post('/pool/repo-hydrated', async (c) => {
   const timeoutMs = Number(body?.timeoutMs)
   const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : null
   let sync = null as GitWorkspaceSync | null
-  try {
-    const res = await adoptHydratedRepoBefore(WORKSPACE_DIR, stagingDir, {
+  const adopt = () =>
+    adoptHydratedRepoBefore(WORKSPACE_DIR, stagingDir, {
       deadline,
       ready: gitLayerReady,
       // Resumed below, once the LFS pull is done too.
@@ -3307,6 +3412,23 @@ app.post('/pool/repo-hydrated', async (c) => {
       logger: console,
       keepPaths,
     })
+  try {
+    // A late swap (the project is already being served on the source's
+    // `.git`) may only happen while nobody has used the workspace; otherwise
+    // decline and leave the tree exactly as it is. Only the swap holds the
+    // gate: the LFS pull below rewrites pointer files nobody has edited.
+    const res =
+      body?.ifIdle === true
+        ? await repoAdoptGate.adoptIfIdle(adopt, () => {
+            const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0 }
+            return activeStreams > 0 || work.turns > 0 || work.tasks > 0
+          })
+        : await adopt()
+    if (!res) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      console.warn('[pool/repo-hydrated] workspace already in use — declining the late repo adopt')
+      return c.json({ error: 'workspace already in use', adopted: false, busy: true }, 409)
+    }
     if (res.headSha) cachedRepoHeadSha = res.headSha
     if (res.reset && isLfsActive()) {
       // Smudge is skipped on checkout, so files the reset rewrote may be LFS
@@ -3329,6 +3451,134 @@ app.post('/pool/repo-hydrated', async (c) => {
     return c.json({ error: err?.message ?? 'repo adopt failed' }, 500)
   } finally {
     sync?.resume()
+  }
+})
+
+// Incremental durable repo (packages/shared-runtime/src/repo-bundles.ts).
+//
+// The host drives both directions and stores the manifest itself; the guest
+// never holds store credentials. Export builds the next bundle relative to the
+// tips the host last recorded, and serves it by digest. Restore downloads each
+// bundle from a host-presigned URL and rebuilds the staging `.git`, which the
+// existing `/pool/repo-hydrated` adoption then swaps in unchanged.
+
+function sameRepoSnapshot(a: RepoSnapshotFields, b: RepoSnapshotFields): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+app.post('/pool/export-repo-bundle', async (c) => {
+  sweepSpool()
+  let body: { dir?: unknown; since?: unknown; full?: unknown }
+  try {
+    body = (await c.req.json().catch(() => ({}))) as typeof body
+    const destinationDir = resolvePoolWorkspaceDir(body?.dir)
+    const full = body?.full === true
+    const since: string[] | null = full || body?.since == null ? null : (body.since as unknown[]).map((s) => {
+      if (typeof s !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(s)) throw new Error('since must be object ids')
+      return s
+    })
+    await flushGitBeforeExport(destinationDir)
+    // A workspace runtime keeps its members' repos in subfolders and drops
+    // the root `.git`, so the root can have no repo and nothing to push.
+    if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
+      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
+      // Bundles never carry LFS objects, so a failed push fails the export.
+      // The host keeps an unmigrated project on the tarball, which does.
+      if (lfsCfg && !(await lfsPushAll(lfsCfg))) {
+        return c.json({ error: 'lfs push failed; repo bundle not exported', code: 'lfs-push-failed' }, 503)
+      }
+    }
+
+    // Snapshot refs before and after building. Refs that moved in between
+    // could leave the manifest pointing at objects the bundle lacks, so
+    // retry against the newer state.
+    let built: Awaited<ReturnType<typeof buildRepoBundle>> = null
+    let snapshot = await readRepoSnapshotFields(destinationDir)
+    for (let attempt = 0; ; attempt++) {
+      built = await buildRepoBundle(destinationDir, { previous: since, workDir: spoolDir() })
+      const after = await readRepoSnapshotFields(destinationDir)
+      if (sameRepoSnapshot(snapshot, after)) {
+        snapshot = after
+        break
+      }
+      if (built) rmSync(built.path, { force: true })
+      built = null
+      snapshot = after
+      if (attempt >= 2) return c.json({ error: 'repo refs kept moving during export; retry' }, 409)
+    }
+
+    return c.json({
+      bundle: built?.entry ?? null,
+      head: snapshot.head,
+      refs: snapshot.refs,
+      config: snapshot.config,
+      rootCommitAt: repoRootCommitAt(destinationDir),
+    })
+  } catch (err: any) {
+    console.error('[pool/export-repo-bundle] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'export-repo-bundle failed' }, 500)
+  }
+})
+
+app.get('/pool/export-repo-bundle/:sha256', async (c) => {
+  const sha = c.req.param('sha256')
+  if (!/^[0-9a-f]{64}$/.test(sha)) return c.json({ error: 'sha256 must be 64 hex digits' }, 400)
+  const path = join(spoolDir(), `${sha}.bundle`)
+  if (!existsSync(path)) return c.json({ error: 'bundle not built for this export' }, 404)
+  return spooledFileResponse(path, { 'Content-Type': 'application/octet-stream' })
+})
+
+app.post('/pool/repo-bundles-hydrate', async (c) => {
+  sweepSpool()
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body !== 'object') return c.json({ error: 'expected a JSON body' }, 400)
+  let stagingDir: string
+  try {
+    stagingDir = resolvePoolWorkspaceDir(body.stagingDir)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid staging dir' }, 400)
+  }
+  if (stagingDir === WORKSPACE_DIR) return c.json({ error: 'stagingDir is required' }, 400)
+
+  let manifest: RepoManifest
+  try {
+    manifest = parseRepoManifest(body.manifest)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid manifest' }, 400)
+  }
+
+  // The host's URL list must match the manifest chain exactly, in order.
+  const items = Array.isArray(body.bundles) ? (body.bundles as Array<{ sha256?: unknown; url?: unknown }>) : null
+  if (!items || items.length !== manifest.bundles.length) {
+    return c.json({ error: 'bundles must list every manifest bundle, in order' }, 400)
+  }
+  for (const [i, item] of items.entries()) {
+    if (item?.sha256 !== manifest.bundles[i].sha256 || typeof item.url !== 'string' || !/^https?:\/\//.test(item.url)) {
+      return c.json({ error: `bundle ${i} does not match the manifest` }, 400)
+    }
+  }
+
+  const timeoutMs = Number(body.timeoutMs)
+  const downloadMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15 * 60_000
+  const downloaded: string[] = []
+  try {
+    rmSync(stagingDir, { recursive: true, force: true })
+    await materializeRepoFromBundles(stagingDir, manifest, async (entry) => {
+      const item = items[manifest.bundles.indexOf(entry)]
+      const res = await fetch(item.url as string, { signal: AbortSignal.timeout(downloadMs) })
+      if (!res.ok) throw new Error(`bundle ${entry.sha256} download failed (${res.status})`)
+      const path = spoolPath(`repo-bundle-${entry.sha256}.bundle`)
+      await Bun.write(path, res)
+      downloaded.push(path)
+      return path
+    })
+    return c.json({ ok: true, bundles: manifest.bundles.length })
+  } catch (err: any) {
+    rmSync(stagingDir, { recursive: true, force: true })
+    console.error('[pool/repo-bundles-hydrate] failed:', redactUrls(String(err?.message ?? err)))
+    return c.json({ error: redactUrls(String(err?.message ?? 'repo bundle restore failed')) }, 500)
+  } finally {
+    for (const path of downloaded) rmSync(path, { force: true })
   }
 })
 
@@ -3462,9 +3712,20 @@ app.post('/pool/quiesce', async (c) => {
 app.post('/pool/rehydrate', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const waitMs = Math.min(Math.max(Number(body?.waitMs) || 0, 0), 60_000)
+  // Before the sidecars restart, and before anything in the guest makes an
+  // HTTPS call: a guest restored from a snapshot can come back with its wall
+  // clock frozen at snapshot time (see guest-clock.ts). The host sends its
+  // clock in `hostNowMs`; a host that predates it sends nothing and this is a
+  // no-op. Logged either way, because an uncorrected skew is exactly the bug.
+  const clock = await syncGuestClock(body?.hostNowMs)
+  if (clock?.corrected) {
+    console.log(`[pool/rehydrate] clock skew ${clock.skewMs}ms corrected (residual ${clock.residualMs}ms)`)
+  } else if (clock?.error) {
+    console.error(`[pool/rehydrate] clock skew ${clock.skewMs}ms NOT corrected: ${clock.error}`)
+  }
   const projects = await rehydrateSidecars(allPreviewManagers(), waitMs)
   console.log(`[pool/rehydrate] ${JSON.stringify(projects)}`)
-  return c.json({ ok: true, projects })
+  return c.json({ ok: true, projects, ...(clock ? { clock } : {}) })
 })
 
 // Alias for `/preview/restart`. The code-agent prompt and older SDK/template
@@ -3810,23 +4071,46 @@ app.post('/agent/pipeline/call', async (c) => {
     callerProjectId: typeof body.callerProjectId === 'string' ? body.callerProjectId : undefined,
     requesterTicket: c.req.header('x-requester-ticket') || undefined,
   }
+  // The caller names its call so the turn probe can answer for it: "queued
+  // behind the chat's own turn" and "this is the chat's live turn" are
+  // indistinguishable from the chat's state alone.
+  const callId = typeof body.callId === 'string' && body.callId.trim() ? body.callId.trim() : crypto.randomUUID()
 
   if (body.wait === false) {
-    agentGateway.processPipelineCall(opts).then(
+    // Ack at once: the caller's forward timeout is 15 s, and a chat that is
+    // busy with its own turn queues this call rather than dropping it, so the
+    // answer is which of the two happened — not a hold on the turn.
+    const sessionId = opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline')
+    let started = false
+    const pending = runPipelineCall({ ...opts, callId }, {
+      onQueued: () => { started = false },
+      onTurnStarted: () => { started = true },
+    })
+    pending.then(
       (r: { reply: string; sessionId: string; runId?: string }) =>
         console.log(`[agent-runtime] pipeline call complete (run=${r.runId ?? '-'}):`, r.reply.substring(0, 200)),
       (err: any) => console.error('[agent-runtime] pipeline call failed:', err?.message ?? err),
     )
-    return c.json({ status: 'accepted', runId: opts.runId, sessionId: opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline') }, 202)
+    // `runPipelineCall` creates the buffer synchronously when the chat is free,
+    // so by the time it returns, `started` already says whether the turn is
+    // running or still waiting for the chat's own turn to end.
+    return c.json({ status: started ? 'started' : 'queued', callId, runId: opts.runId, sessionId }, 202)
   }
 
   try {
-    const result = await agentGateway.processPipelineCall(opts)
+    const result = await runPipelineCall({ ...opts, callId })
     return c.json({ status: 'completed', ...result })
   } catch (err: any) {
     return c.json({ error: { code: 'agent_turn_failed', message: err?.message ?? String(err) } }, 500)
   }
 })
+
+function runPipelineCall(
+  opts: PipelineCallOptions,
+  hooks: PipelineCallHooks = {},
+): Promise<PipelineCallResult> {
+  return bufferedTurns.runPipelineCall((call) => agentGateway!.processPipelineCall(call), opts, hooks)
+}
 
 /**
  * POST /agent/events
@@ -3930,8 +4214,7 @@ app.post('/agent/session/reset', async (c) => {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
   const body = await c.req.json().catch(() => ({})) as { evalLabel?: string }
-  const sm = agentGateway.getSessionManager()
-  sm.clearHistory('chat')
+  agentGateway.clearSessionHistory('chat')
   agentGateway.reloadConfig()
   agentGateway.setActiveMode('canvas')
   agentGateway.setEvalLabel(body.evalLabel ?? null)
@@ -3941,15 +4224,18 @@ app.post('/agent/session/reset', async (c) => {
 })
 
 // Tool mocks — used by eval runner to install deterministic tool responses
+let simWorld: import('./evals/company-sim/world').CompanyWorld | null = null
 app.post('/agent/tool-mocks', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
   const raw = await c.req.json()
   const { compileInstallBody } = await import('./evals/tool-mocks-runtime')
-  const compiled = compileInstallBody(raw)
+  const simSchemas = raw?.sim ? (await import('./evals/company-sim/tool-defs')).simToolSchemas() : undefined
+  const compiled = compileInstallBody(raw, { simSchemas, workspaceDir: WORKSPACE_DIR })
   agentGateway.setToolMocks(compiled.fns, compiled.syntheticDefs, compiled.hiddenTools)
-  return c.json({ ok: true, mockedTools: Object.keys(compiled.fns), defaults: compiled.defaults })
+  simWorld = compiled.world
+  return c.json({ ok: true, mockedTools: Object.keys(compiled.fns), defaults: compiled.defaults, sim: !!compiled.world })
 })
 
 app.delete('/agent/tool-mocks', (c) => {
@@ -3957,7 +4243,52 @@ app.delete('/agent/tool-mocks', (c) => {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
   agentGateway.clearToolMocks()
+  simWorld = null
   return c.json({ ok: true })
+})
+
+// Final state of the company simulation installed with the mocks, for graders.
+app.get('/agent/tool-mocks/sim-state', (c) => {
+  if (!simWorld) return c.json({ error: 'No simulation installed' }, 404)
+  return c.json(simWorld.snapshot())
+})
+
+// Let simulated time pass between eval turns; scripted teammates act on the way.
+app.post('/agent/tool-mocks/sim-advance', async (c) => {
+  if (!simWorld) return c.json({ error: 'No simulation installed' }, 404)
+  const { hours } = await c.req.json().catch(() => ({})) as { hours?: number }
+  if (typeof hours !== 'number' || !(hours > 0)) return c.json({ error: 'hours must be a positive number' }, 400)
+  simWorld.advance(hours)
+  return c.json({ ok: true, now: simWorld.snapshot().now })
+})
+
+// Let simulated time pass until the agent would next be woken; returns that wake's message, or wake: null.
+app.post('/agent/tool-mocks/sim-next-wake', (c) => {
+  if (!simWorld) return c.json({ error: 'No simulation installed' }, 404)
+  return c.json({ ok: true, wake: simWorld.nextWake() })
+})
+
+// Prompt-cache prefix probe — builds the real system prompt twice without
+// calling a model, so `cache-efficiency` can assert that the cached zone is
+// byte-identical across a tick, and that the tool block is stable.
+app.get('/agent/tool-mocks/cache-prefix', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const sessionId = c.req.query('sessionId') || 'chat'
+  const probe = await agentGateway.sampleCachePrefix(sessionId)
+  return c.json(probe)
+})
+
+// Force one compaction pass between eval turns (prefix-rewrite recovery test).
+app.post('/agent/tool-mocks/compact', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const { sessionId } = await c.req.json().catch(() => ({})) as { sessionId?: string }
+  const result = await agentGateway.forceCompaction(sessionId || 'chat')
+  if (!result) return c.json({ ok: false, compacted: false, reason: 'nothing to compact' })
+  return c.json({ ok: true, compacted: true, ...result })
 })
 
 app.post('/agent/workspace/seed', async (c) => {
@@ -4009,29 +4340,38 @@ app.post('/agent/workspace/reset-stack', async (c) => {
     console.warn(`[reset-stack] Preview stop failed (continuing): ${err?.message ?? err}`)
   }
 
-  const removed = wipeProjectFiles(WORKSPACE_DIR)
-
-  const seeded = seedTechStack(WORKSPACE_DIR, stackId)
-  if (!seeded) {
-    return c.json({ error: `Failed to seed tech stack ${stackId}` }, 500)
-  }
-
-  // Vite-based stacks share the bundled runtime-template (vite + react +
-  // tailwind + shadcn/ui). Mirrors the boot-time logic in `ensureWorkspaceFiles`.
-  const viteStacks = new Set(['react-app', 'threejs-game', 'phaser-game'])
-  if (viteStacks.has(stackId)) {
-    seedRuntimeTemplate(WORKSPACE_DIR)
-  }
-
-  // Kick off a preview restart but don't block the HTTP response on it —
-  // `bun install` for a fresh stack can take 30s+ and the client only needs
-  // to know the wipe + seed is done so it can refresh the iframe.
-  void getPreviewManager().restart().catch((err: any) => {
-    console.error(`[reset-stack] Preview restart failed: ${err?.message ?? err}`)
+  // Same helper the `project_configure` tool uses: wipe → seed → env → restart.
+  // The response stays fire-and-forget on the restart (`bun install` for a
+  // fresh stack can take 30s+) — the client only needs to know the wipe + seed
+  // is done so it can refresh the iframe.
+  const applied = applyTechStackChange({
+    projectDir: WORKSPACE_DIR,
+    projectId: process.env.WORKSPACE_ANCHOR_PROJECT_ID || basename(WORKSPACE_DIR),
+    stackId,
+    scope: 'root',
+    resetFiles: true,
   })
+  if (!applied.ok) {
+    return c.json(
+      {
+        error: applied.error ?? `Failed to seed tech stack ${stackId}`,
+        ...(applied.code ? { code: applied.code } : {}),
+        ...(applied.hint ? { hint: applied.hint } : {}),
+        collisions: applied.collisions,
+      },
+      applied.code === 'stack_change_needs_reset' ? 409 : 500,
+    )
+  }
 
-  console.log(`[reset-stack] Reset complete (stack=${stackId}, wiped=${removed} entries)`)
-  return c.json({ ok: true, stackId, wiped: removed })
+  console.log(`[reset-stack] Reset complete (stack=${stackId}, wiped=${applied.wiped ?? 0} entries)`)
+  return c.json({
+    ok: true,
+    stackId,
+    wiped: applied.wiped ?? 0,
+    stackDocUpdated: applied.stackDocUpdated,
+    leftInPlace: applied.leftInPlace,
+    previewRestarted: applied.previewRestarted,
+  })
 })
 
 // Heartbeat trigger (called by external HeartbeatScheduler).
@@ -4282,8 +4622,12 @@ function collectBundleFiles(dir: string, baseDir: string): Record<string, string
   return files
 }
 
+// `?scope=project` bundles the runtime's own project. On a workspace runtime
+// that is `<WORKSPACE_DIR>/<anchorId>/`; the unscoped merged root holds only
+// workspace scaffolding plus one folder per member.
 app.get('/agent/workspace/bundle', (c) => {
-  const files = collectBundleFiles(WORKSPACE_DIR, WORKSPACE_DIR)
+  const root = c.req.query('scope') === 'project' ? projectScopeRoot() : WORKSPACE_DIR
+  const files = collectBundleFiles(root, root)
   return c.json({ files })
 })
 
@@ -4295,6 +4639,17 @@ app.route('/', workspaceFileRoutes({
   getProjectRoot: projectScopeRoot,
   onFileWritten: notifyCanvasWorkspaceWrite,
   onFileDeleted: notifyCanvasWorkspaceDelete,
+}))
+
+// Chat attachment bytes, uploaded before the turn that references them.
+// Streaming PUT so a large archive never becomes a base64 JSON body — see
+// chat-attachment-routes.ts and SHO-213.
+app.route('/', chatAttachmentRoutes({
+  workspaceDir: WORKSPACE_DIR,
+  onFileWritten: (saved) => {
+    if (saved.isZip) return
+    try { getIndexEngine().indexFile('files', saved.baseName).catch(() => {}) } catch { /* best-effort */ }
+  },
 }))
 
 // Upload files (multipart/form-data)
@@ -4690,6 +5045,26 @@ app.post('/agent/tools/execute', async (c) => {
   const mcpMgr = agentGateway.getMcpClientManager()
   const result = await mcpMgr.callTool(tool, args || {})
   return c.json(result, result.ok ? 200 : 404)
+})
+
+// Remote tool channel (remote-tools.ts): another project of this workspace runs
+// one allow-listed tool against THIS project's root. Reached only through the
+// API (RBAC + wake); auth is the `/agent` runtime-token guard.
+app.post('/agent/remote/tool', async (c) => {
+  if (!agentGateway) {
+    return c.json({ ok: false, error: 'Agent gateway not running' }, 503)
+  }
+  const body = await c.req.json().catch(() => null)
+  const outcome = await executeRemoteTool(agentGateway.getRemoteTools(), body)
+  return c.json(outcome.body, outcome.status)
+})
+
+// Bulk counterpart (project-transfer.ts, `copy_to_project`): unpack another
+// project's tar.gz under the same root the remote tools use.
+app.post('/agent/remote/import', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  const outcome = await executeRemoteImport(defaultShellCwd(WORKSPACE_DIR), body, notifyCanvasWorkspaceWrite)
+  return c.json(outcome.body, outcome.status)
 })
 
 app.get('/agent/tools/schemas', (c) => {
@@ -5932,7 +6307,14 @@ app.post('/agent/github/git', async (c) => {
     if (result.ok && (body.op === 'connect' || body.op === 'checkout')) {
       const stack = refreshTechStackMarker(projectDir)
       result.techStackId = stack.techStackId
-      if (stack.changed) restartPreviewForStack(projectDir, stack.techStackId)
+      if (stack.changed) {
+        restartPreviewForStack({
+          projectDir,
+          projectId: projectDir === WORKSPACE_DIR ? '' : basename(projectDir),
+          stackId: stack.techStackId,
+          scope: IS_WORKSPACE_RUNTIME && projectDir !== WORKSPACE_DIR ? 'member' : 'root',
+        })
+      }
     }
     return c.json(result, result.ok ? 200 : 422)
   } finally {
@@ -5948,28 +6330,35 @@ app.post('/agent/github/git', async (c) => {
  * member's preview manager is rebuilt from scratch (its dev server kind is
  * fixed at creation), and the member's entry in WORKSPACE_TECH_STACKS is
  * updated so re-stamping doesn't put the old stack back.
+ *
+ * The one place a preview is restarted for a stack change: registered with
+ * `tech-stack-switch` so `project_configure` (and anything else that applies a
+ * stack change through `applyTechStackChange`) lands here too, and called
+ * directly by the GitHub import path.
  */
-function restartPreviewForStack(projectDir: string, techStackId: string): void {
-  console.log(`[github] ${projectDir} is a ${techStackId} project now; restarting its preview`)
-  if (!IS_WORKSPACE_RUNTIME || projectDir === WORKSPACE_DIR) {
-    if (process.env.TECH_STACK_ID) process.env.TECH_STACK_ID = techStackId
-    getRootPreviewManager().restart().catch((e: any) => console.error('[github] preview restart failed:', e?.message ?? e))
+export function restartPreviewForStack(req: PreviewRestartRequest): void {
+  const { projectDir, projectId, stackId } = req
+  const isMember = IS_WORKSPACE_RUNTIME && projectDir !== WORKSPACE_DIR
+  syncTechStackEnv(projectId || basename(projectDir), stackId, isMember ? 'member' : 'root')
+  console.log(`[tech-stack] ${projectDir} is a ${stackId} project now; restarting its preview`)
+  if (!isMember) {
+    getRootPreviewManager().restart().catch((e: any) => console.error('[tech-stack] preview restart failed:', e?.message ?? e))
     return
   }
-  const projectId = basename(projectDir)
-  try {
-    const stacks = JSON.parse(process.env.WORKSPACE_TECH_STACKS || '{}') as Record<string, string>
-    process.env.WORKSPACE_TECH_STACKS = JSON.stringify({ ...stacks, [projectId]: techStackId })
-  } catch {
-    process.env.WORKSPACE_TECH_STACKS = JSON.stringify({ [projectId]: techStackId })
-  }
-  const previous = workspacePreviewManagers.get(projectId)
+  const memberId = projectId || basename(projectDir)
+  const previous = workspacePreviewManagers.get(memberId)
   if (previous) {
     previous.stop()
-    workspacePreviewManagers.delete(projectId)
+    workspacePreviewManagers.delete(memberId)
   }
-  getWorkspacePreviewManager(projectId)?.start().catch((e: any) => console.error('[github] preview start failed:', e?.message ?? e))
+  getWorkspacePreviewManager(memberId)?.start().catch((e: any) => console.error('[tech-stack] preview start failed:', e?.message ?? e))
 }
+
+// `project_configure` (and anything else that applies a stack change through
+// `applyTechStackChange`) restarts the preview through the function above. The
+// helper is a leaf module so it can be imported by the tools; the preview
+// managers live here, so we hand it the restart.
+setTechStackPreviewRestarter(restartPreviewForStack)
 
 /**
  * Phases during which a build is plausibly in flight and `dist/` may
@@ -6196,6 +6585,18 @@ async function initializeEssentials(): Promise<void> {
     const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
     mkdirSync(localShogoDir, { recursive: true })
     const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+    // A real `.shogo` here is HOST-mode state that is about to be replaced by
+    // the overlay symlink. Carry its task logs to host storage first, so the
+    // cold-start path loses nothing that the assign path keeps (SHO-141).
+    let adoptWorkspaceShogo: string[] = []
+    try {
+      if (!lstatSync(workspaceShogoDir).isSymbolicLink()) adoptWorkspaceShogo = [workspaceShogoDir]
+    } catch { /* nothing there yet */ }
+    const hostRoot = process.env.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
+    const hostWorkspacesRoot = existsSync(hostRoot) ? hostRoot : undefined
+    if (adoptWorkspaceShogo.length > 0) {
+      ensureDurableTaskLogs({ localShogoDir, projectId, hostWorkspacesRoot, adoptFrom: adoptWorkspaceShogo })
+    }
     try {
       const st = lstatSync(workspaceShogoDir)
       if (!st.isSymbolicLink()) {
@@ -6205,6 +6606,13 @@ async function initializeEssentials(): Promise<void> {
     } catch {
       try { symlinkSync(localShogoDir, workspaceShogoDir) } catch {}
     }
+    // Same durability rule as onAssign: the logs go to host-backed storage even
+    // though `.shogo` itself has to stay on the overlay (SHO-141).
+    ensureDurableTaskLogs({
+      localShogoDir,
+      projectId,
+      hostWorkspacesRoot,
+    })
     logTiming('.shogo symlinked to local overlay (9p mount)')
   }
 
@@ -6411,12 +6819,22 @@ async function initializeEssentials(): Promise<void> {
         console.error(`[agent-runtime] Seeding anchor ${anchorId} failed:`, error.message)
       }
     }
+    // This process pre-seeded the root only when it booted as an unassigned
+    // pool VM, which is the assign — see discardPoolPreseedAtAssign for why
+    // that is the only path allowed to delete.
+    const bootedFromPool = poolPreseedDone !== null
     const discardRootPreseed = () => {
-      const removed = discardPoolPreseed(WORKSPACE_DIR)
-      if (removed.length) logTiming(`Workspace runtime: removed pool pre-seed from workspace root (${removed.join(', ')})`)
+      const result = discardPoolPreseedAtAssign(WORKSPACE_DIR, { bootedFromPool })
+      if (result.source === 'manifest') {
+        logTiming(`Workspace runtime: removed pool pre-seed from workspace root (${result.removed.join(', ')})`)
+      } else if (result.source === 'template') {
+        console.warn(
+          `[agent-runtime] Workspace runtime: the pool pre-seed manifest was missing or empty — removed the runtime template from the workspace root by name (${result.removed.join(', ')})`,
+        )
+      }
     }
-    if (preseedSettled) discardRootPreseed()
-    else poolPreseedDone?.then(discardRootPreseed).catch(() => {})
+    if (bootedFromPool && !preseedSettled) poolPreseedDone?.then(discardRootPreseed).catch(() => {})
+    else discardRootPreseed()
   } else if (poolPreseedDone) {
     poolPreseedDone.then(() => discardPoolPreseedArtifacts(WORKSPACE_DIR)).catch(() => {})
   }
@@ -6529,6 +6947,26 @@ async function initializeEssentials(): Promise<void> {
           if (sha) cachedRepoHeadSha = sha
         })
         .catch(() => { /* logged by the helper */ })
+      // SHO-105 / #1597: this pod's repo may already hold `.shogo/sessions.db`
+      // (+ its live WAL) in its history and its LFS store. Rewrite the refs
+      // without touching the working tree, then tell the API which commits
+      // changed so the `ProjectCheckpoint` rows still resolve. Marker-gated, so
+      // every later boot is a no-op, and off the readiness path.
+      void repairCheckpointRepo(WORKSPACE_DIR, {
+        onRemap: projectId
+          ? async (remap) => {
+              await postCheckpointShaRemap(projectId, remap)
+            }
+          : undefined,
+      })
+        .then((repaired) => {
+          if (repaired.skipped) return
+          logTiming(
+            `Git repo repaired: .git/lfs ${(repaired.bytesBefore / 1e6).toFixed(0)}MB -> ` +
+              `${(repaired.bytesAfter / 1e6).toFixed(0)}MB, ${repaired.rewritten} commit(s) rewritten`,
+          )
+        })
+        .catch(() => { /* logged by the helper */ })
       // A host-mediated guest holds no S3 credentials, so the SDK's provider
       // chain can only fail — and on metal it takes minutes to do so, holding
       // up `gitLayerReady` and with it the host's repo hydrate.
@@ -6573,7 +7011,7 @@ async function initializeEssentials(): Promise<void> {
         beforeStage: isLfsActive()
           ? async () => { await autoTrackLargeFiles(WORKSPACE_DIR) }
           : undefined,
-        stageExcludes: ['.shogo/local'],
+        stageExcludes: ['.shogo/local', 'chat-files'],
         onDegrade: (reason) => {
           console.warn(
             `[agent-runtime] cloud-sync degraded (mode=${cloudSyncMode}): ${reason}`,
@@ -6588,6 +7026,26 @@ async function initializeEssentials(): Promise<void> {
           if (cloudSyncMode === 'git_only') {
             s3SyncInstance?.setSuppressProjectArchive(true)
           }
+        },
+        // Parked means git has failed the same way 20 times in a row and will
+        // not fix itself — tell the user once instead of failing silently for
+        // days (SHO-180 / #1686).
+        onPark: (info) => {
+          const workspaceId = process.env.WORKSPACE_ID || ''
+          const what = cloudSyncMode === 'git_only' ? 'checkpoint commit' : 'push'
+          console.warn(
+            `[agent-runtime] git sync parked after ${info.consecutiveFailures} failed ${what}s: ${info.reason}`,
+          )
+          if (!workspaceId) return
+          void postWorkspaceNotification({
+            workspaceId,
+            title: 'Workspace backup has failed',
+            body:
+              `Workspace backup has failed ${info.consecutiveFailures} times: ${info.reason}` +
+              (info.lifetimeFailures > info.consecutiveFailures
+                ? ` (${info.lifetimeFailures} failures since ${info.firstFailureAt ?? 'the first attempt'})`
+                : ''),
+          })
         },
       })
       if (gitSyncInstance) {
@@ -6795,6 +7253,10 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
 
   gatewayStarting = true
   logTiming('Starting agent gateway...')
+
+  // Clear cwd markers a previous process (or a crash) left behind, including
+  // the `.shogo-cwd-*` files older builds wrote into the workspace root.
+  sweepExecCwdMarkers(WORKSPACE_DIR)
 
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
 
@@ -7153,6 +7615,17 @@ async function gracefulShutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
+// Windows has no SIGTERM: `TerminateProcess` ends this process without running
+// a single line of the shutdown above, which is why every runtime stop there
+// stranded its execs, the API sidecar and vite. Putting the runtime in a
+// kill-on-close job makes their death the kernel's job instead of ours — and
+// because we are the only holder of the handle, no crash can dodge it (SHO-144).
+// No-op on POSIX and on a Windows without job objects, where the worker's
+// `taskkill /T` and the POSIX ledger remain the fallback.
+void installRuntimeJobGuard().then((armed) => {
+  if (armed) console.log('[agent-runtime] Arming runtime job object (kill-on-close) for its process tree')
+})
+
 // =============================================================================
 // Start Server
 // =============================================================================
@@ -7166,6 +7639,15 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
 } else if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
   const rootEntriesBeforePreseed = listRootEntries(WORKSPACE_DIR)
+  if (rootEntriesBeforePreseed.length > 0) {
+    // A resumed snapshot, a reused /data/workspace drive or a container
+    // restart boots with last boot's pre-seed already in the root. The
+    // pre-seed still owns all of it, so the manifest lists every entry —
+    // this line is here so the reused-root case is visible in the logs.
+    logTiming(
+      `Pool mode: workspace root already held ${rootEntriesBeforePreseed.length} entries before the pre-seed (reused drive or snapshot)`,
+    )
+  }
   ensureWorkspaceFiles()
   const poolTechStackId = resolveWorkspaceTechStackId(WORKSPACE_DIR) || null
   let poolDistBuilt = false
@@ -7202,7 +7684,6 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
   }).finally(() => {
     try {
       writePoolPreseedManifest(WORKSPACE_DIR, {
-        entriesBefore: rootEntriesBeforePreseed,
         techStackId: poolTechStackId,
         distBuilt: poolDistBuilt,
         exclude: IS_WORKSPACE_RUNTIME
@@ -7252,9 +7733,6 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
     })
 }
 
-// Match a path like `/terminal/sessions/<id>/ws`; the id segment is opaque
-// (no slashes) and is whatever PtySessionManager.create() assigned.
-const WS_PATH_RE = /^\/terminal\/sessions\/([^/]+)\/ws$/
 // Raw TCP port-bridge upgrade (Phase 3, Tier 2 plan) — see port-bridge.ts.
 const PORT_WS_PATH_RE = /^\/agent\/ports\/([0-9]+)\/ws$/
 const PORT_HTTP_WS_PATH_RE = /^\/agent\/ports\/([0-9]+)\/http(\/.*)?$/
@@ -7329,21 +7807,8 @@ export default {
       )
     }
     const upgrade = req.headers.get('upgrade')?.toLowerCase()
-    const wsMatch = upgrade === 'websocket' ? WS_PATH_RE.exec(url.pathname) : null
-    if (wsMatch) {
-      const sessionId = wsMatch[1]
-      const since = Number(url.searchParams.get('since')) || 0
-      // Quick existence check pre-upgrade so a missing session returns a
-      // proper 404 rather than a confusing accept-then-immediate-close.
-      // We don't `attach()` here — that happens in the WS open handler.
-      if (!ptyManager.get(sessionId)) {
-        return new Response('Unknown session', { status: 404 })
-      }
-      const data: WsData = { manager: ptyManager, sessionId, since }
-      const upgraded = server.upgrade(req, { data })
-      if (upgraded) return undefined
-      return new Response('WebSocket upgrade failed', { status: 500 })
-    }
+    const ptyUpgrade = handlePtyUpgrade(req, server, ptyManager)
+    if (ptyUpgrade !== null) return ptyUpgrade
     const portWsMatch = upgrade === 'websocket' ? PORT_WS_PATH_RE.exec(url.pathname) : null
     if (portWsMatch) {
       if (!isAuthedForPortBridge(req)) {

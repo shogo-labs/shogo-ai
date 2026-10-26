@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_request_error",
+    "message": "A profile with this externalId already exists"
+  }
+}

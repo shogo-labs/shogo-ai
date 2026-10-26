@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { Platform } from 'react-native'
 import {
   homePathForWorkspaceKind,
+  adoptChatWorkspace,
   openInWorkspace,
   reloadAfterWorkspaceSwitch,
   scheduleWorkspaceSwitch,
+  shouldAdoptChatWorkspace,
   subscribeWorkspaceSwitched,
 } from '../switch-workspace'
-import { clearActiveWorkspaceId, getActiveWorkspaceId } from '../workspace-store'
+import { clearActiveWorkspaceId, getActiveWorkspaceId, setActiveWorkspaceId } from '../workspace-store'
 
 afterEach(() => {
   clearActiveWorkspaceId()
@@ -65,10 +67,8 @@ describe('scheduleWorkspaceSwitch', () => {
 })
 
 describe('homePathForWorkspaceKind', () => {
-  test('opens main chat for personal and the project builder for team', () => {
-    expect(homePathForWorkspaceKind('personal')).toBe('/(app)')
-    expect(homePathForWorkspaceKind('team')).toBe('/(app)/new-project')
-    expect(homePathForWorkspaceKind(undefined)).toBe('/(app)/new-project')
+  test('lands on the workspace agent landing', () => {
+    expect(homePathForWorkspaceKind()).toBe('/(app)')
   })
 })
 
@@ -90,6 +90,127 @@ describe('reloadAfterWorkspaceSwitch', () => {
     unsubscribe()
     reloadAfterWorkspaceSwitch()
     expect(calls).toBe(1)
+  })
+})
+
+describe('adoptChatWorkspace', () => {
+  test('switches to the workspace that owns the chat and reloads projects', () => {
+    let cleared = 0
+    const loaded: string[] = []
+    const projects = {
+      clear: () => {
+        cleared += 1
+      },
+      loadAll: async ({ workspaceId }: { workspaceId: string }) => {
+        loaded.push(workspaceId)
+      },
+    }
+
+    expect(adoptChatWorkspace('ws-team', 'ws-personal', projects)).toBe(true)
+    expect(getActiveWorkspaceId()).toBe('ws-team')
+    expect(cleared).toBe(1)
+    expect(loaded).toEqual(['ws-team'])
+  })
+
+  test('leaves the workspace alone when the chat is already in it', () => {
+    let cleared = 0
+    const projects = {
+      clear: () => {
+        cleared += 1
+      },
+      loadAll: async () => {},
+    }
+
+    expect(adoptChatWorkspace('ws-personal', 'ws-personal', projects)).toBe(false)
+    expect(adoptChatWorkspace(undefined, 'ws-personal', projects)).toBe(false)
+    expect(getActiveWorkspaceId()).toBeNull()
+    expect(cleared).toBe(0)
+  })
+
+  /**
+   * SHO-157: Russell's staging trace. The switcher applied NEW, and ~10 ms
+   * later this screen re-ran its load, found the chat it still had open
+   * belonged to OLD (cached meta → microtask) and adopted OLD back. The reload
+   * that followed then booted into OLD. The chat's workspace must not be
+   * allowed to undo a switch the person just made.
+   */
+  test('does not adopt the old workspace back over a switch the person just made', async () => {
+    const projects = {
+      clear: () => {},
+      loadAll: async () => {},
+    }
+    setActiveWorkspaceId('ws-old')
+    scheduleWorkspaceSwitch('ws-new', projects)
+    await flushSwitch()
+
+    expect(getActiveWorkspaceId()).toBe('ws-new')
+    expect(adoptChatWorkspace('ws-old', 'ws-new', projects)).toBe(false)
+    expect(getActiveWorkspaceId()).toBe('ws-new')
+  })
+
+  test('still adopts a chip’s workspace when no switch is in flight', () => {
+    const projects = {
+      clear: () => {},
+      loadAll: async () => {},
+    }
+    expect(adoptChatWorkspace('ws-team', 'ws-personal', projects)).toBe(true)
+    expect(getActiveWorkspaceId()).toBe('ws-team')
+  })
+
+  test('a chip for the workspace the person just switched to still wins', async () => {
+    const projects = {
+      clear: () => {},
+      loadAll: async () => {},
+    }
+    setActiveWorkspaceId('ws-old')
+    scheduleWorkspaceSwitch('ws-new', projects)
+    await flushSwitch()
+
+    // The chip's chat lives in the workspace already picked — nothing to adopt.
+    expect(adoptChatWorkspace('ws-new', 'ws-old', projects)).toBe(true)
+    expect(getActiveWorkspaceId()).toBe('ws-new')
+  })
+})
+
+describe('shouldAdoptChatWorkspace', () => {
+  const base = {
+    initialSessionId: 'chat-1',
+    adoptedSessionId: null,
+    screenWorkspaceId: 'ws-a',
+    workspaceId: 'ws-a',
+  }
+
+  test('adopts on the first load of a session id', () => {
+    expect(shouldAdoptChatWorkspace(base)).toBe(true)
+  })
+
+  test('adopts a different session id in the same workspace (a second chip)', () => {
+    expect(
+      shouldAdoptChatWorkspace({ ...base, adoptedSessionId: 'chat-0' }),
+    ).toBe(true)
+  })
+
+  test('does not adopt the session it already adopted', () => {
+    expect(
+      shouldAdoptChatWorkspace({ ...base, adoptedSessionId: 'chat-1' }),
+    ).toBe(false)
+  })
+
+  test('does not adopt after the workspace changed under the screen', () => {
+    expect(
+      shouldAdoptChatWorkspace({ ...base, workspaceId: 'ws-b' }),
+    ).toBe(false)
+  })
+
+  test('adopts before the screen has loaded a workspace, once one arrives', () => {
+    expect(
+      shouldAdoptChatWorkspace({ ...base, screenWorkspaceId: null }),
+    ).toBe(true)
+  })
+
+  test('does nothing without a session id or a workspace', () => {
+    expect(shouldAdoptChatWorkspace({ ...base, initialSessionId: null })).toBe(false)
+    expect(shouldAdoptChatWorkspace({ ...base, workspaceId: undefined })).toBe(false)
   })
 })
 

@@ -3,7 +3,9 @@
 import { describe, expect, test } from "bun:test"
 import type { UIMessage } from "ai"
 import {
+  applyMessageSnapshot,
   dropUnfinishedAssistantTail,
+  foldSnapshotContinuation,
   isUnfinishedAssistant,
   withResumeReplayReset,
 } from "../resume-replay-transport"
@@ -43,6 +45,17 @@ describe("isUnfinishedAssistant", () => {
     expect(isUnfinishedAssistant(done)).toBe(false)
   })
 
+  test("a reply the user stopped is finished, not unfinished", () => {
+    expect(
+      isUnfinishedAssistant(
+        message("assistant", [
+          { type: "text", text: "half a sen" },
+          { type: "data-turn-stopped", data: { turnId: "turn-1" } },
+        ]),
+      ),
+    ).toBe(false)
+  })
+
   test("user messages and an empty list are never dropped", () => {
     expect(isUnfinishedAssistant(message("user"))).toBe(false)
     expect(isUnfinishedAssistant(undefined)).toBe(false)
@@ -55,12 +68,96 @@ describe("dropUnfinishedAssistantTail", () => {
     expect(dropUnfinishedAssistantTail(history)).toEqual([history[0]])
   })
 
+  test("keeps a reply the user stopped", () => {
+    const history = [
+      message("user"),
+      message("assistant", [{ type: "data-turn-stopped", data: { turnId: "t1" } }]),
+    ]
+    expect(dropUnfinishedAssistantTail(history)).toBe(history)
+  })
+
   test("returns the same array when there is nothing to drop", () => {
     const history = [
       message("user"),
       message("assistant", [{ type: "data-turn-complete", data: {} }]),
     ]
     expect(dropUnfinishedAssistantTail(history)).toBe(history)
+  })
+})
+
+describe("foldSnapshotContinuation", () => {
+  const user = { id: "u1", role: "user", parts: [{ type: "text", text: "go" }] } as UIMessage
+  const snapshot = {
+    id: "msg_live",
+    role: "assistant",
+    parts: [
+      { type: "step-start" },
+      { type: "text", text: "step one done", state: "done" },
+    ],
+  } as UIMessage
+  // What the SDK appends for the rest of the stream: a new id, only the
+  // unfinished step.
+  const continuation = {
+    id: "sdk-generated",
+    role: "assistant",
+    parts: [{ type: "step-start" }, { type: "text", text: "writing step two", state: "streaming" }],
+  } as UIMessage
+
+  test("shows the snapshot and the SDK's continuation as one message", () => {
+    const installed = applyMessageSnapshot([user], snapshot)
+    const folded = foldSnapshotContinuation([...installed, continuation], snapshot.id)
+    expect(folded).toHaveLength(2)
+    expect(folded[0]).toBe(user)
+    expect(folded[1].id).toBe("msg_live")
+    expect(folded[1].parts).toEqual([...snapshot.parts, ...continuation.parts])
+  })
+
+  test("shows the snapshot alone before the continuation arrives", () => {
+    const installed = applyMessageSnapshot([user], snapshot)
+    expect(foldSnapshotContinuation(installed, snapshot.id)).toBe(installed)
+  })
+
+  test("folds a continuation that opens a sub-agent tool part into the snapshot", () => {
+    // A runtime mid-turn snapshot ends where the last part closed, so the
+    // continuation starts with the part that is still open — here a running
+    // `agent_spawn`, not a `start-step`.
+    const spawnSnapshot = {
+      id: "msg_live",
+      role: "assistant",
+      parts: [{ type: "step-start" }, { type: "text", text: "spawning qa", state: "done" }],
+    } as UIMessage
+    const spawnContinuation = {
+      id: "sdk-generated",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-agent_spawn",
+          toolCallId: "spawn",
+          state: "output-available",
+          input: { type: "browser_qa" },
+          output: { parts: [{ type: "text", text: "clicking", id: "sa-text-0" }] },
+          preliminary: true,
+        },
+      ],
+    } as UIMessage
+
+    const installed = applyMessageSnapshot([user], spawnSnapshot)
+    const folded = foldSnapshotContinuation([...installed, spawnContinuation], spawnSnapshot.id)
+    expect(folded).toHaveLength(2)
+    expect(folded[1].id).toBe("msg_live")
+    expect(folded[1].parts).toEqual([...spawnSnapshot.parts, ...spawnContinuation.parts])
+  })
+
+  test("leaves messages alone once the snapshot is gone or a new turn starts", () => {
+    const history = [user, { ...continuation, id: "persisted" } as UIMessage]
+    expect(foldSnapshotContinuation(history, snapshot.id)).toBe(history)
+    const nextTurn = [user, snapshot, { ...user, id: "u2" } as UIMessage]
+    expect(foldSnapshotContinuation(nextTurn, snapshot.id)).toBe(nextTurn)
+    expect(foldSnapshotContinuation([user, snapshot, continuation], null)).toEqual([
+      user,
+      snapshot,
+      continuation,
+    ])
   })
 })
 
@@ -130,6 +227,50 @@ describe("withResumeReplayReset", () => {
     })
     expect(await readAll(result)).toEqual(chunks)
     expect(resets).toBe(0)
+  })
+
+  test("keeps the transcript when the replay has nothing left to rebuild", async () => {
+    let resets = 0
+    const heartbeat = [
+      { type: "data-turn-seq", data: { turnId: "turn-1", seq: 91 }, transient: true },
+    ]
+    const heartbeatOnly = withResumeReplayReset(
+      {
+        sendMessages: async () => chunkStream(chunks),
+        reconnectToStream: async () => chunkStream(heartbeat),
+      },
+      () => resets++,
+      () => {},
+    )
+    const empty = withResumeReplayReset(
+      {
+        sendMessages: async () => chunkStream(chunks),
+        reconnectToStream: async () => chunkStream([]),
+      },
+      () => resets++,
+      () => {},
+    )
+
+    expect(await readAll(await heartbeatOnly.reconnectToStream(request))).toEqual(heartbeat)
+    expect(resets, "a heartbeat-only replay drops nothing, so it must not reset").toBe(0)
+
+    expect(await readAll(await empty.reconnectToStream(request))).toEqual([])
+    expect(resets, "an empty replay drops nothing, so it must not reset").toBe(0)
+  })
+
+  test("resets once the replay really starts rebuilding the message", async () => {
+    let resets = 0
+    const transport = withResumeReplayReset(
+      {
+        sendMessages: async () => chunkStream(chunks),
+        reconnectToStream: async () => chunkStream(chunks),
+      },
+      () => resets++,
+      () => {},
+    )
+
+    expect(await readAll(await transport.reconnectToStream(request))).toEqual(chunks)
+    expect(resets).toBe(1)
   })
 })
 

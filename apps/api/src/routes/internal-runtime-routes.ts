@@ -27,6 +27,11 @@ import {
 import { prisma } from '../lib/prisma'
 import type { Permission } from '@shogo/authz'
 import { accessibleProjectsWhere, decide, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
+import {
+  authorizeAttachmentAction,
+  filterReadableAttachments,
+  type AttachmentAuthorizer,
+} from '../services/project-attachment.authz'
 import { hydrateRepo } from '../services/git-repo-store'
 import {
   attachProject,
@@ -35,10 +40,12 @@ import {
 } from '../services/workspace-session.service'
 import { memberCallFailure, resolveWhileStarting } from '../lib/workspace-member-call'
 import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
+import { isMetalEnabled } from '../lib/metal-eligibility'
+import { REMOTE_IMPORT_MAX_BASE64_CHARS, remoteToolPermission } from '../lib/remote-tool-policy'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { resolve as resolvePath } from 'path'
-import { searchWorkspaceHistory, renderWorkspaceTranscript, readWorkspacePlan } from '../lib/history-search'
+import { searchWorkspaceHistory, renderWorkspaceTranscript, readRuntimeChatTranscript, readWorkspacePlan } from '../lib/history-search'
 import {
   workspaceAgentRoutes,
   type WorkspaceAgentAuthContext,
@@ -46,6 +53,8 @@ import {
 } from './workspace-agent'
 import { workspaceMeetingRoutes } from './workspace-meetings'
 import { agentChannelRoutes, type AgentChannelAuthContext } from './conversations'
+import { agentBoardRoutes } from './work-boards'
+import { agentSocialRoutes } from './social'
 import {
   createInternalAuthorizers,
   logAuthReject,
@@ -57,8 +66,19 @@ import { signSharedFileToken } from '../lib/shared-file-token'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import { resolveConnectionAuth } from '../services/github-auth'
 import { CREDENTIAL_APPROVAL_HEADER } from '../services/integration-credentials/approvals'
-import { handOffRequesterTicket, REQUESTER_TICKET_HEADER, verifyRequesterTicket, type RequesterTicket } from '../lib/requester-ticket'
+import {
+  handOffRequesterTicket,
+  REQUESTER_TICKET_HEADER,
+  verifyRequesterTicket,
+  verifyRequesterTicketInWorkspace,
+  type RequesterTicket,
+} from '../lib/requester-ticket'
 import { signResumeToken } from '../services/integration-credentials/resume'
+import { resolveChatByRef, resolveChatForUser, listChatMentionables } from '../lib/chat-mentionables'
+import { handOffToChat } from '../services/chat-mention-delivery.service'
+import { remapCheckpointCommitShas } from '../services/checkpoint-repo-repair.service'
+import { waitForAgentCall } from '../lib/agent-call-store'
+import { keepAliveJson, KEEPALIVE_HEADER, wantsKeepAlive } from '../lib/keepalive-json'
 
 /** Where a connect link handed out in this turn should pick the conversation back up. */
 type CredentialUseSource = 'shared' | 'personal' | 'delegate' | 'approved'
@@ -109,6 +129,14 @@ export interface RuntimeInternalRoutesOptions {
   loadAgentCall?: () => Promise<AgentCallService>
   /** Cloud-only GitHub App operations; omitted from the slim desktop bundle. */
   loadGitHub?: () => Promise<GitHubService>
+  /**
+   * Desktop resolves a shared-file target before signing it, so the link and
+   * the download route cannot disagree about what `path` is relative to.
+   * Omitted in cloud, where the project runtime owns the files.
+   */
+  resolveSharedFileTarget?: (
+    scope: { projectId?: string; workspaceId: string; path: string },
+  ) => Promise<{ target: string; normalizedPath: string } | null>
 }
 
 export function numberOr(value: unknown, fallback: number): number {
@@ -166,12 +194,71 @@ async function enforceProjectPermission(
   return null
 }
 
+/**
+ * Authorizer for a cluster-internal runtime request. Mirrors
+ * `sessionAttachmentAuthorizer` but resolves identity through the internal
+ * actor model (service accounts stay unscoped) and uses the internal error
+ * envelope.
+ */
+function internalAttachmentAuthorizer(
+  c: Context,
+  identity: InternalIdentity,
+  workspaceId: string,
+): AttachmentAuthorizer {
+  return {
+    async requireProject(projectId: string, permission: Permission) {
+      const denied = await enforceProjectPermission(c, identity, workspaceId, projectId, permission)
+      if (denied) return denied
+      return { workspaceId }
+    },
+    async readableProjectsWhere() {
+      return readableProjectFilter(c, identity, workspaceId)
+    },
+    crossWorkspace(targetProjectId: string) {
+      return c.json(
+        {
+          error: {
+            code: 'cross_workspace',
+            message: `Project ${targetProjectId} is not in the same workspace as the anchor project`,
+          },
+        },
+        409,
+      )
+    },
+  }
+}
+
 function hideInaccessibleEdges<T extends { id: string; attachments?: Array<{ attachedProjectId: string }> }>(projects: T[]): T[] {
   const ids = new Set(projects.map((p) => p.id))
   return projects.map((p) => ({
     ...p,
     attachments: (p.attachments ?? []).filter((edge) => ids.has(edge.attachedProjectId)),
   }))
+}
+
+/** Metal never mounts a project into a runtime other than its own `ws:proj:<id>`. */
+function metalMountingRemoved(): boolean {
+  return process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalEnabled()
+}
+
+/**
+ * How long the internal preview route waits for a project runtime to start its
+ * build before it answers `building`. Bounded well under Cloudflare's ~100s
+ * silence limit, and the URL it returns is already valid.
+ */
+const PREVIEW_START_TIMEOUT_MS = 75_000
+
+function mountingRemovedResponse(c: Context, extra: Record<string, unknown> = {}) {
+  return c.json(
+    {
+      error: {
+        code: 'mounting_removed',
+        message: 'Projects are no longer mounted into other runtimes; use the project parameter / connect_project to reach them.',
+      },
+      ...extra,
+    },
+    410,
+  )
 }
 
 function unavailable(c: Context, capability: string) {
@@ -219,6 +306,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     loadProjectLifecycle,
     loadAgentCall,
     loadGitHub,
+    resolveSharedFileTarget,
   } = opts
   const { validateAuth, authorizeWorkspaceScope, authorizeWorkspaceRuntimeRequest } =
     createInternalAuthorizers(authenticate)
@@ -356,7 +444,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   /**
    * POST /api/internal/reminders/notify
-   *   body: { workspaceId, projectId?, userId, title, body, actionUrl?,
+   *   body: { workspaceId, projectId?, userId?, title, body, actionUrl?,
    *           dedupeKey?, metadata?, type?, pushType?, channelId? }
    *
    * Boundary capability behind the runtime `notify_user` tool: write one
@@ -365,6 +453,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * the user" half of the reminder path — the agent detects a due reminder in
    * MEMORY.md and calls the tool; there is no server-side reminder row or
    * scheduler here (see issue #1046).
+   *
+   * `userId` is optional: without it the workspace owner is the recipient, so a
+   * runtime-side notice that is not about one specific user (the workspace
+   * backup parking itself, SHO-180) can still reach a human.
    *
    * `type` is an existing `NotificationType` member (the enum is deliberately
    * NOT migrated — reminder-specific context rides in `metadata`), and
@@ -388,7 +480,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: 'Unauthorized' }, 401)
     }
 
-    const userId = typeof body.userId === 'string' ? body.userId : ''
+    const userId = typeof body.userId === 'string' && body.userId
+      ? body.userId
+      // A runtime knows its workspace, not its users: fall back to the
+      // workspace owner so a runtime-originated notice (e.g. "your workspace
+      // backup is failing", SHO-180) can reach a human.
+      : workspaceId
+        ? ((await prisma.member.findFirst({
+            where: { workspaceId, projectId: null, role: 'owner' },
+            orderBy: { createdAt: 'asc' },
+            select: { userId: true },
+          }))?.userId ?? '')
+        : ''
     const title = typeof body.title === 'string' ? body.title.trim() : ''
     const message = typeof body.body === 'string' ? body.body : ''
     if (!userId || !title || !message) {
@@ -540,7 +643,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /**
    * POST /api/internal/agent-cost-metrics
    *   body: { workspaceId, projectId?, agentRunId?, agentType, model,
-   *           inputTokens, outputTokens, cachedInputTokens?, toolCalls,
+   *           inputTokens, outputTokens, cachedInputTokens?, cacheWriteTokens?, toolCalls,
    *           creditCost, wallTimeMs, success, hitMaxTurns?, loopDetected?,
    *           escalated?, responseEmpty? }
    *
@@ -583,6 +686,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         inputTokens: numberOr(body.inputTokens, 0),
         outputTokens: numberOr(body.outputTokens, 0),
         cachedInputTokens: numberOr(body.cachedInputTokens, 0),
+        cacheWriteTokens: numberOr(body.cacheWriteTokens, 0),
         toolCalls: numberOr(body.toolCalls, 0),
         creditCost: numberOr(body.creditCost, 0),
         wallTimeMs: numberOr(body.wallTimeMs, 0),
@@ -658,6 +762,128 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       },
     }),
   )
+
+  app.route(
+    '/',
+    agentBoardRoutes({
+      authorize: async (c) => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        const identity = await authenticate(c)
+        const projectId = identity?.kind === 'project' ? identity.projectId : undefined
+        return { workspaceId, projectId }
+      },
+    }),
+  )
+
+  // Social management mirrors the user routes so `social_media` and the UI can
+  // never drift apart: same bodies, same services, one provider path.
+  app.route(
+    '/',
+    agentSocialRoutes({
+      authorize: async (c) => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        const identity = await authenticate(c)
+        const projectId = identity?.kind === 'project' ? identity.projectId : undefined
+        return { workspaceId, projectId }
+      },
+    }),
+  )
+
+  /**
+   * `chat_handoff`: deliver a message into another chat and start its turn,
+   * acting as the person whose turn this is. The person comes from the signed
+   * requester ticket (never from the body), and the target chat must be one
+   * they can open — the same rule the composer picker follows.
+   */
+  app.post('/workspaces/:workspaceId/chat-handoff', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const chat = typeof body?.chat === 'string' ? body.chat.trim() : ''
+    const message = typeof body?.message === 'string' ? body.message : ''
+    const sourceChatId = typeof body?.sourceChatId === 'string' ? body.sourceChatId : null
+    if (!chat || !message.trim()) {
+      return c.json({ error: { code: 'invalid_body', message: 'chat and message are required' } }, 400)
+    }
+    const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), workspaceId)
+    if (!ticket) {
+      return c.json({ error: { code: 'requester_required', message: 'A signed requester is required for this action' } }, 403)
+    }
+    const target = await resolveChatByRef(ticket.userId, chat)
+    if (!target) {
+      // A wrong id is one correction, not a loop: hand back the chats this
+      // person can actually open so the agent stops guessing (SHO-118).
+      const reachable = await listChatMentionables({ userId: ticket.userId, limit: 8 })
+      return c.json(
+        {
+          error: {
+            code: 'chat_not_found',
+            message: `No chat "${chat}" the requester can open`,
+            reachable: reachable.map((entry) => entry.title),
+          },
+        },
+        404,
+      )
+    }
+    const delivered = await handOffToChat({
+      targetChatId: target.id,
+      text: message,
+      actingUserId: ticket.userId,
+      sourceSessionId: sourceChatId ?? (ticket.origin.kind === 'chat' ? ticket.origin.chatSessionId ?? null : null),
+    })
+    if (!delivered) {
+      return c.json({ error: { code: 'not_delivered', message: 'The chat could not take the message' } }, 409)
+    }
+    return c.json({ delivered })
+  })
+
+  /**
+   * `chat-reachable`: which of these chat ids the requester can actually open.
+   * The runtime's "other chats" list comes from its own session store and is
+   * independent of this API's access rule, which is how the prompt came to
+   * advertise chats `chat_handoff` then refused. The runtime asks here so the
+   * list it renders cannot over-promise (SHO-118).
+   */
+  app.get('/workspaces/:workspaceId/chat-reachable', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    const ids = (c.req.query('ids') ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .slice(0, 20)
+    if (!ids.length) return c.json({ reachable: [] })
+    const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), workspaceId)
+    if (!ticket) {
+      return c.json({ error: { code: 'requester_required', message: 'A signed requester is required for this action' } }, 403)
+    }
+    const resolved = await Promise.all(ids.map((id) => resolveChatForUser(ticket.userId, id).catch(() => null)))
+    return c.json({ reachable: resolved.flatMap((chat, index) => (chat ? [ids[index]] : [])) })
+  })
+
+  /**
+   * The workspace-wide agent pause, so a woken runtime can say so in its prompt
+   * and stop instead of starting work (SHO-118). The pause is set and lifted
+   * through `agent_run_stop`; this only reads it.
+   */
+  app.get('/workspaces/:workspaceId/agents-paused', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    const { readWorkspacePause } = await import('../services/workspace-pause.service')
+    return c.json({ paused: await readWorkspacePause(workspaceId) })
+  })
 
   // ---------------------------------------------------------------------------
   // Workspace meta-agent membership
@@ -801,7 +1027,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       const plan = await readWorkspacePlan(id, { workspaceId, userId })
       return plan ? c.json(plan) : c.json({ error: 'Not found' }, 404)
     }
-    const transcript = await renderWorkspaceTranscript(id, {
+    const transcript = await readRuntimeChatTranscript(id, {
       workspaceId,
       userId,
       from: Number(c.req.query('from') || 0),
@@ -899,6 +1125,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         projectId,
         body?.attachMode === 'readonly' ? 'readonly' : 'readwrite',
       )
+      if (metalMountingRemoved()) return mountingRemovedResponse(c, { attached: attachedRow, project })
       const attached = await getAttachedProjects(sessionId)
       const attachedIds = attached.map((row) => row.projectId)
       const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
@@ -947,6 +1174,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
     try {
       const removed = await detachProject(sessionId, projectId)
+      if (metalMountingRemoved()) return mountingRemovedResponse(c, { removed })
       const attached = await getAttachedProjects(sessionId)
       const attachedIds = attached.map((row) => row.projectId)
       const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
@@ -971,6 +1199,140 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.route('/', projectTrustRoutes({ authorize: validateAuth }))
 
   /**
+   * POST /api/internal/workspaces/:workspaceId/sessions/:sessionId/projects/:projectId/preview
+   *   body: { userId? }
+   *
+   * Internal twin of the user-auth
+   * `.../projects/:projectId/preview-url` route, for a workspace runtime that
+   * has to hand out a member project's app. On metal each project is served by
+   * its OWN runtime, and other projects are never mounted here, so the
+   * runtime's local `/p/<id>/preview/start` answers 410 and `preview_project`
+   * used to have no successful path at all (SHO-125).
+   *
+   * Resolves the project's runtime, kicks its own `/preview/start` so the app
+   * is actually built, and returns `<podUrl>/p/<projectId>/` — the same URL the
+   * app's canvas uses. Everything else is an error the agent can act on:
+   * 404 `project_not_attached`, 502 `target_unavailable`, 503
+   * `target_not_ready`, 409 `use_local_runtime` for the anchor (whose app this
+   * runtime already serves itself).
+   */
+  app.post('/workspaces/:workspaceId/sessions/:sessionId/projects/:projectId/preview', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const sessionId = c.req.param('sessionId')
+    const projectId = c.req.param('projectId')
+    const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => ({}))
+    const visible = await readableProjectFilter(c, identity, workspaceId, body?.userId)
+    if (visible instanceof Response) return visible
+    const projects = await accessibleWorkspaceProjects(workspaceId, visible)
+    if (!projects.some((row) => row.id === projectId)) {
+      return c.json(
+        {
+          error: {
+            code: 'project_not_attached',
+            message: `Project ${projectId} is not part of workspace ${workspaceId}.`,
+          },
+        },
+        404,
+      )
+    }
+
+    if (!metalMountingRemoved() || projectId === process.env.WORKSPACE_ANCHOR_PROJECT_ID) {
+      // Non-metal: this runtime multiplexes the projects it has mounted on its
+      // own port. Anchor on metal: its app is this runtime's own app. Either
+      // way the caller's local `/p/<id>/preview/start` is the right path.
+      return c.json(
+        {
+          error: {
+            code: 'use_local_runtime',
+            message: 'This project is served by the calling runtime; start its preview there.',
+          },
+        },
+        409,
+      )
+    }
+
+    const agentCallSvc = await loadAgentCall?.()
+    let runtimeUrl: string
+    if (agentCallSvc) {
+      // Same resolver (and wake) every remote tool call uses, so the preview
+      // and a `project:` read land on the same pod.
+      const resolved = await agentCallSvc.resolveRemoteProjectUrl(projectId, 'WorkspacePreview')
+      if ('status' in resolved) return c.json(resolved.body, resolved.status as any)
+      runtimeUrl = resolved.url
+    } else {
+      try {
+        const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
+        runtimeUrl = (await resolveProjectPodUrl(projectId, { logTag: 'WorkspacePreview' })).url
+      } catch (err: any) {
+        return c.json(
+          {
+            error: {
+              code: 'target_unavailable',
+              message: `Project ${projectId}'s runtime is unavailable: ${err?.message ?? err}`,
+            },
+          },
+          502,
+        )
+      }
+    }
+
+    const previewUrl = `${runtimeUrl}/p/${projectId}/`
+    if (!agentCallSvc) {
+      // Capability not wired on this API (slim desktop composer): the URL is
+      // still correct — the app builds on first request — so say so, don't
+      // pretend the start ran.
+      return c.json({ projectId, sessionId, mode: 'metal', url: previewUrl, status: 'unstarted' })
+    }
+
+    const outcome = await agentCallSvc.forwardToProjectRuntime(
+      c,
+      projectId,
+      workspaceId,
+      '/preview/start',
+      '{}',
+      {
+        runtimeUrl,
+        timeoutMs: PREVIEW_START_TIMEOUT_MS,
+        // `/preview/start` is idempotent: it either starts a build or reports
+        // the one already running.
+        retryOnTransportError: true,
+        reportUndelivered: true,
+      },
+    )
+    if (outcome.status === 503) {
+      for (const [key, value] of Object.entries(outcome.headers ?? {})) c.header(key, value)
+      return c.json(outcome.body, 503)
+    }
+    if (outcome.status >= 500 && outcome.status !== 504) {
+      return c.json(
+        {
+          error: {
+            code: 'target_unavailable',
+            message:
+              `Project ${projectId}'s runtime refused to start the preview: ` +
+              `${outcome.body?.error?.message ?? `HTTP ${outcome.status}`}`,
+          },
+        },
+        502,
+      )
+    }
+
+    // A 504 here means the build is still running (the tool's budget is the
+    // build's, not the caller's). The URL is live either way — the project pod
+    // serves it as soon as `dist/` exists.
+    return c.json({
+      projectId,
+      sessionId,
+      mode: 'metal',
+      url: previewUrl,
+      status: outcome.status === 504 ? 'building' : outcome.status < 400 ? 'ready' : 'error',
+    })
+  })
+
+  /**
    * POST /api/internal/projects/:projectId/shared-files
    *
    * Desktop equivalent of the cloud shared-file capability route. The
@@ -983,7 +1345,37 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!(await validateAuth(c, projectId))) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
+    return mintSharedFileLink(c, projectId, async () => {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true },
+      })
+      if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+      return { projectId, workspaceId: project.workspaceId }
+    })
+  })
 
+  /**
+   * POST /api/internal/workspaces/:workspaceId/shared-files
+   *
+   * Same capability for a file in a workspace runtime that has no single
+   * project to own it (e.g. a workspace-agent chat with nothing attached).
+   * The download is served by that workspace's runtime.
+   */
+  app.post('/workspaces/:workspaceId/shared-files', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!workspaceId) return c.json({ error: 'Missing workspaceId' }, 400)
+    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    return mintSharedFileLink(c, `workspace ${workspaceId}`, async () => ({ workspaceId }))
+  })
+
+  async function mintSharedFileLink(
+    c: Context,
+    label: string,
+    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
+  ): Promise<Response> {
     const body = await c.req.json().catch(() => null) as {
       path?: unknown
       expiresInDays?: unknown
@@ -1008,16 +1400,31 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const now = Math.floor(Date.now() / 1000)
 
     try {
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { workspaceId: true },
-      })
-      if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+      const scope = await loadScope()
+      if (scope instanceof Response) return scope
+
+      // Sign the path the download route will actually resolve: a project
+      // link is read from the project root, but a workspace runtime's agent
+      // path is workspace-relative. Resolving here (instead of signing
+      // verbatim) means a missing file fails the mint instead of producing a
+      // link that 404s later.
+      let signedPath = path
+      if (resolveSharedFileTarget) {
+        const resolved = await resolveSharedFileTarget({
+          projectId: scope.projectId,
+          workspaceId: scope.workspaceId,
+          path,
+        })
+        if (!resolved) {
+          return c.json({ error: { code: 'file_not_found', message: 'File not found' } }, 400)
+        }
+        signedPath = resolved.normalizedPath
+      }
 
       const token = signSharedFileToken({
-        projectId,
-        workspaceId: project.workspaceId,
-        path,
+        ...(scope.projectId ? { projectId: scope.projectId } : {}),
+        workspaceId: scope.workspaceId,
+        path: signedPath,
         exp: now + expiresInDays * 24 * 60 * 60,
         now,
       })
@@ -1028,13 +1435,13 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         ok: true,
         url: `${origin}/api/f/${encodeURIComponent(token)}`,
         expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
-        path,
+        path: signedPath,
       })
     } catch (err: any) {
-      console.error(`[Internal] local shared file token for ${projectId} failed:`, err?.message || err)
+      console.error(`[Internal] shared file token for ${label} failed:`, err?.message || err)
       return c.json({ error: { code: 'shared_file_failed', message: 'Failed to create shared file link' } }, 500)
     }
-  })
+  }
 
   /**
    * POST /api/internal/projects/:projectId/checkpoints/record
@@ -1087,6 +1494,51 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     } catch (err: any) {
       console.error(`[Internal] Failed to record checkpoint for ${projectId}:`, err.message)
       return c.json({ error: 'Failed to record checkpoint' }, 500)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/checkpoints/remap
+   *   body: { remap: { <oldSha>: <newSha>, ... } }
+   *
+   * Called by the agent-runtime pod after `repairCheckpointRepo` rewrote its
+   * history to drop Shogo's own runtime state (SHO-105 / #1597). A rewrite
+   * changes every descendant's sha, so the rows the pod recorded earlier would
+   * stop resolving; the pod sends the `old -> new` map it got from
+   * `fast-import --export-marks` and we point the rows at the rewritten commits.
+   *
+   * Auth: K8s SA token (cluster) OR `x-runtime-token` (local desktop).
+   */
+  app.post('/projects/:projectId/checkpoints/remap', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const body = await c.req.json().catch(() => null) as { remap?: unknown } | null
+    const remap = body && typeof body.remap === 'object' && body.remap !== null
+      ? body.remap as Record<string, unknown>
+      : null
+    if (!remap) return c.json({ error: 'remap object is required' }, 400)
+
+    const sha = /^[0-9a-f]{7,64}$/i
+    const changes = new Map<string, string>()
+    for (const [from, to] of Object.entries(remap)) {
+      if (!sha.test(from) || typeof to !== 'string' || !sha.test(to)) {
+        return c.json({ error: `Invalid sha pair: ${from}` }, 400)
+      }
+      changes.set(from, to)
+    }
+    if (changes.size === 0) return c.json({ ok: true, updated: 0 })
+    if (changes.size > 50_000) return c.json({ error: 'remap is too large' }, 413)
+
+    try {
+      const updated = await remapCheckpointCommitShas(projectId, changes)
+      return c.json({ ok: true, updated })
+    } catch (err: any) {
+      console.error(`[Internal] Failed to remap checkpoints for ${projectId}:`, err?.message ?? err)
+      return c.json({ error: 'Failed to remap checkpoints' }, 500)
     }
   })
 
@@ -1192,16 +1644,19 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /**
    * GET /api/internal/projects/:projectId/integrations/policies
    *
-   * The project's saved "acts as" policies. The runtime only consults the
-   * resolver for providers listed here; everything else keeps its default
-   * behavior.
+   * The project's "acts as" policies: what it saved, plus GitHub's default
+   * when it saved none and GitHub is available here. The runtime only
+   * consults the resolver for providers listed here; everything else keeps
+   * its default behavior.
    */
   app.get('/projects/:projectId/integrations/policies', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
     if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
-    const { listPolicies } = await import('../services/integration-credentials')
-    return c.json({ ok: true, policies: await listPolicies(projectId) })
+    const { getPolicy, listPolicies } = await import('../services/integration-credentials')
+    const policies = await listPolicies(projectId)
+    if (loadGitHub && !policies.some((p) => p.provider === 'github')) policies.unshift(await getPolicy(projectId, 'github'))
+    return c.json({ ok: true, policies })
   })
 
   /**
@@ -1396,6 +1851,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const base = typeof body?.base === 'string' ? body.base.trim() : ''
     const prBody = typeof body?.body === 'string' ? body.body : ''
     const runId = typeof body?.runId === 'string' ? body.runId.trim() : ''
+    const workItem = typeof body?.workItem === 'string' ? body.workItem.trim() : ''
     if (!title || !head) {
       return c.json({ error: 'title and head are required' }, 400)
     }
@@ -1456,11 +1912,34 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         : auth.kind === 'token'
           ? auth.login ?? undefined
           : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`
+      // A PR that names a card links itself: explicit `workItem`, then a card
+      // key in the head branch, then one in the title. No key is not an error.
+      let linked: { key: string } | null = null
+      try {
+        const project = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
+        if (project?.workspaceId) {
+          const { linkPullRequestToCard } = await import('../services/work-item-pr.service')
+          const link = await linkPullRequestToCard({
+            workspaceId: project.workspaceId,
+            repoFullName: `${connection.repoOwner}/${connection.repoName}`,
+            number: result.number,
+            url: result.html_url,
+            title,
+            head,
+            workItem,
+            actor: { agentRef: `project:${projectId}` },
+          })
+          if (link) linked = { key: link.key }
+        }
+      } catch (err: any) {
+        console.warn(`[Internal] Could not link PR #${result.number} to a card:`, err?.message ?? err)
+      }
       return c.json({
         ok: true,
         number: result.number,
         url: result.html_url,
         htmlUrl: result.html_url,
+        ...(linked ? { workItem: linked.key } : {}),
         mode: actor.kind === 'personal' ? 'requester' : auth.kind === 'token' ? 'user-token' : 'github-app',
         author,
         credential: credentialUse(actor, author),
@@ -1502,6 +1981,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       }
       const actor = await githubWriteActor(c, projectId, 'github_merge_pr')
       if (actor.kind === 'blocked') return actor.response
+      // A PR linked to a card may only be merged from a column whose rules
+      // allow it: arming from "In Development" is how #1519 merged unwatched.
+      const { mergeGuard } = await import('../services/work-item-pr.service')
+      const guard = await mergeGuard(projectId, number)
+      if (!guard.ok) {
+        return c.json({
+          error: {
+            code: guard.code,
+            message: guard.message,
+            card: guard.card,
+            column: guard.column,
+            allowedColumns: guard.allowedColumns,
+          },
+        }, 409)
+      }
       const result = await github.mergePullRequest({
         ...(actor.kind === 'personal'
           ? { token: actor.token }
@@ -1627,6 +2121,15 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         newCheckpoint: result.newCheckpoint,
       })
     } catch (err: any) {
+      // The checkpoint service's ownership gate throws a typed error (foreign
+      // repo, or external mode). Surface it as the same 409 the public route
+      // uses so the agent's rollback tool reports "not ours" instead of a 500.
+      if (
+        err?.code === 'checkpoints_disabled_foreign_repo' ||
+        err?.code === 'checkpoints_disabled_in_external_mode'
+      ) {
+        return c.json({ error: { code: err.code, message: err.message } }, 409)
+      }
       console.error(`[Internal] checkpoint rollback for ${projectId} failed:`, err.message)
       return c.json({ error: 'Failed to rollback' }, 500)
     }
@@ -1682,6 +2185,55 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
   })
 
+  /**
+   * POST /api/internal/chat-sessions/:chatSessionId/context-summary
+   *   body: { summary }
+   *
+   * Called by the agent-runtime after it compacts a session, so the durable
+   * block on `ChatSession` keeps the runtime's own summary (SHO-137 round 3,
+   * R4). Losing `sessions.db` must never lose a summary, and the runtime's
+   * compaction sees tool steps the API's rows do not.
+   *
+   * The watermark is deliberately not written here: it counts the session's
+   * `ChatMessage` rows, and only `ensureDurableSummary` may move it. The
+   * summary text is adopted as-is; the next fold appends whatever it does not
+   * yet cover.
+   *
+   * Auth: K8s SA token (cluster) OR `x-runtime-token` (local desktop).
+   */
+  app.post('/chat-sessions/:chatSessionId/context-summary', async (c) => {
+    const chatSessionId = c.req.param('chatSessionId')
+    if (!chatSessionId) return c.json({ error: 'Missing chatSessionId' }, 400)
+
+    const { prisma } = await import('../lib/prisma')
+    const session = await prisma.chatSession.findUnique({
+      where: { id: chatSessionId },
+      select: { id: true, contextId: true, contextType: true },
+    })
+    if (!session) return c.json({ error: 'Chat session not found' }, 404)
+
+    const projectId = session.contextType === 'project' ? session.contextId ?? undefined : undefined
+    if (!(await validateAuth(c, projectId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body || typeof body !== 'object') return c.json({ error: 'Invalid JSON body' }, 400)
+    const summary = typeof body.summary === 'string' ? body.summary.trim() : ''
+    if (!summary) return c.json({ error: 'summary is required' }, 400)
+
+    try {
+      await prisma.chatSession.update({
+        where: { id: chatSessionId },
+        data: { contextSummary: summary.slice(0, 6000) },
+      })
+      return c.json({ ok: true })
+    } catch (err: any) {
+      console.error(`[Internal] Failed to store context summary for ${chatSessionId}:`, err.message)
+      return c.json({ error: 'Failed to store context summary' }, 500)
+    }
+  })
+
   // ---------------------------------------------------------------------------
   // Project lifecycle — create / attach / configure / call
   //
@@ -1727,8 +2279,52 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return { identity, workspaceId: project.workspaceId }
   }
 
+  /**
+   * Authorize a workspace-scoped lifecycle call: SA passes; a runtime token
+   * must name this same workspace (a project token must belong to one of its
+   * projects). Returns the identity so the handler can check a permission
+   * against the person behind the turn.
+   */
+  async function authorizeLifecycleWorkspace(
+    c: Context,
+    workspaceId: string,
+  ): Promise<{ identity: InternalIdentity; workspaceId: string } | null> {
+    const identity = await authenticate(c)
+    if (!identity) return null
+    if (identity.kind === 'sa') return { identity, workspaceId }
+    const scope = await identityWorkspaceId(identity)
+    if (scope !== workspaceId) {
+      logAuthReject(`lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'} requestedWorkspace=${workspaceId}`)
+      return null
+    }
+    return { identity, workspaceId }
+  }
+
+  /** Workspace-scoped twin of `enforceProjectPermission`. */
+  async function enforceWorkspacePermission(
+    c: Context,
+    identity: InternalIdentity,
+    workspaceId: string,
+    permission: Permission,
+  ): Promise<Response | null> {
+    if (identity.kind === 'sa') return null
+    const actor = await resolveAgentActor(c, identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) {
+      if ((await getRbacMode()) !== 'on') return null
+      return requesterRequired(c)
+    }
+    const access = await loadAccess(actor.principal, { workspaceId })
+    const decision = await decide(access, permission, actor.principal, `${c.req.method} ${c.req.path}`)
+    if (!decision.ok) return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+    return null
+  }
+
   function lifecycleErrorResponse(c: Context, err: unknown): Response {
     const anyErr = err as { name?: string; code?: string; message?: string }
+    if (anyErr?.name === 'WorkspaceConfigError') {
+      const status = anyErr.code === 'not_found' ? 404 : 400
+      return c.json({ error: { code: anyErr.code, message: anyErr.message } }, status)
+    }
     if (anyErr?.name === 'ProjectLifecycleError') {
       const status =
         anyErr.code === 'unauthorized' ? 401
@@ -1736,6 +2332,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         : anyErr.code === 'not_found' ? 404
         : anyErr.code === 'instance_too_small' ? 402
         : anyErr.code === 'paywall' ? 402
+        // Working-mode flips conflict with the project's current state: the
+        // repo already has a history we cannot detach, or the direction is
+        // unsupported. 409 so the runtime can tell it apart from a bad body.
+        : anyErr.code === 'working_mode_flip_not_supported' || anyErr.code === 'durable_repo_external_flip' ? 409
         : 400
       return c.json({ error: { code: anyErr.code, message: anyErr.message } }, status)
     }
@@ -1829,23 +2429,25 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const projectId = c.req.param('projectId')
     const authz = await authorizeLifecycleProject(c, projectId)
     if (!authz) return c.json({ error: 'Unauthorized' }, 401)
-    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:read')
+    const authorizer = internalAttachmentAuthorizer(c, authz.identity, authz.workspaceId)
+    const denied = await authorizeAttachmentAction(authorizer, 'list', projectId)
     if (denied) return denied
     const { listAttachments } = await import('../services/project-attachment.service')
     const rows = await listAttachments(projectId)
-    const visible = await readableProjectFilter(c, authz.identity, authz.workspaceId)
-    if (visible instanceof Response) return visible
-    if (!visible || rows.length === 0) return c.json({ projectId, attachments: rows })
-    const allowed = new Set(
-      ((await prisma.project.findMany({
-        where: { AND: [{ id: { in: rows.map((row) => row.attachedProjectId) } }, visible] },
-        select: { id: true },
-      })) as Array<{ id: string }>).map((row) => row.id),
+    const visible = await filterReadableAttachments(
+      authorizer,
+      authz.workspaceId,
+      rows,
+      async (ids, where) => {
+        const readable = (await prisma.project.findMany({
+          where: { AND: [{ id: { in: ids } }, where] },
+          select: { id: true },
+        })) as Array<{ id: string }>
+        return readable.map((row) => row.id)
+      },
     )
-    return c.json({
-      projectId,
-      attachments: rows.filter((row) => allowed.has(row.attachedProjectId)),
-    })
+    if (visible instanceof Response) return visible
+    return c.json({ projectId, attachments: visible })
   })
 
   /**
@@ -1868,22 +2470,17 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'attachedProjectId is required' } }, 400)
     }
     const attachMode = body.attachMode === 'readonly' ? 'readonly' : 'readwrite'
-    const anchorDenied = await enforceProjectPermission(
-      c, authz.identity, authz.workspaceId, projectId, 'project:update',
-    )
-    if (anchorDenied) return anchorDenied
-    const targetDenied = await enforceProjectPermission(
-      c,
-      authz.identity,
-      authz.workspaceId,
-      body.attachedProjectId,
-      attachMode === 'readonly' ? 'project:read' : 'project:update',
-    )
-    if (targetDenied) return targetDenied
+    const authorizer = internalAttachmentAuthorizer(c, authz.identity, authz.workspaceId)
+    const denied = await authorizeAttachmentAction(authorizer, 'attach', projectId, {
+      projectId: body.attachedProjectId,
+      attachMode,
+    })
+    if (denied) return denied
 
     try {
       const svc = await import('../services/project-attachment.service')
       const attachment = await svc.attachProjectToProject(projectId, body.attachedProjectId, attachMode)
+      if (metalMountingRemoved()) return mountingRemovedResponse(c, { attachment, mounted: false })
 
       let mounted = false
       try {
@@ -1932,7 +2529,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const attachedProjectId = c.req.param('attachedProjectId')
     const authz = await authorizeLifecycleProject(c, projectId)
     if (!authz) return c.json({ error: 'Unauthorized' }, 401)
-    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:update')
+    const denied = await authorizeAttachmentAction(
+      internalAttachmentAuthorizer(c, authz.identity, authz.workspaceId),
+      'detach',
+      projectId,
+    )
     if (denied) return denied
     try {
       const { detachProjectFromProject } = await import('../services/project-attachment.service')
@@ -1962,7 +2563,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   /**
    * PATCH /api/internal/projects/:projectId/config
-   *   body: { name?, description?, settings?, slackEnabled?, agent?: { heartbeat*, model*, quietHours* } }
+   *   body: { name?, description?, settings?, slackEnabled?, workingMode?, agent?: { heartbeat*, model*, quietHours* } }
    */
   app.patch('/projects/:projectId/config', async (c) => {
     const projectId = c.req.param('projectId')
@@ -1970,8 +2571,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!authz) return c.json({ error: 'Unauthorized' }, 401)
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    // `workingMode` is one-way (managed → external). Anything else is a caller
+    // bug, so reject it here rather than letting it fall through as undefined.
+    if (body.workingMode !== undefined && body.workingMode !== 'managed' && body.workingMode !== 'external') {
+      return c.json(
+        { error: { code: 'invalid_working_mode', message: 'workingMode must be "managed" or "external"' } },
+        400,
+      )
+    }
     const permissions = new Set<Permission>()
-    if (typeof body.name === 'string' || body.description !== undefined || (body.agent && typeof body.agent === 'object')) {
+    if (
+      typeof body.name === 'string' ||
+      body.description !== undefined ||
+      body.workingMode !== undefined ||
+      (body.agent && typeof body.agent === 'object')
+    ) {
       permissions.add('project:update')
     }
     if ((body.settings && typeof body.settings === 'object') || typeof body.slackEnabled === 'boolean') {
@@ -1989,6 +2603,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       const project = await configureProject(projectId, {
         name: typeof body.name === 'string' ? body.name : undefined,
         description: typeof body.description === 'string' || body.description === null ? (body.description as string | null) : undefined,
+        workingMode: body.workingMode as 'managed' | 'external' | undefined,
         settings: body.settings && typeof body.settings === 'object' ? (body.settings as Record<string, unknown>) : undefined,
         slackEnabled: typeof body.slackEnabled === 'boolean' ? body.slackEnabled : undefined,
         agent: body.agent && typeof body.agent === 'object' ? (body.agent as any) : undefined,
@@ -2015,6 +2630,52 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * GET /api/internal/workspaces/:workspaceId/config — the workspace agent's
+   * own config. Deliberately workspace-scoped: a workspace chat's capability
+   * toggles belong to the workspace, not to whichever project its runtime is
+   * anchored on.
+   */
+  app.get('/workspaces/:workspaceId/config', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const authz = await authorizeLifecycleWorkspace(c, workspaceId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceWorkspacePermission(c, authz.identity, workspaceId, 'workspace:read')
+    if (denied) return denied
+    try {
+      const { readWorkspaceConfig } = await import('../services/workspace.service')
+      return c.json({ ok: true, workspace: await readWorkspaceConfig(workspaceId) })
+    } catch (err) {
+      return lifecycleErrorResponse(c, err)
+    }
+  })
+
+  /**
+   * PATCH /api/internal/workspaces/:workspaceId/config
+   *   body: { settings? }  — shallow-merged over the existing settings.
+   */
+  app.patch('/workspaces/:workspaceId/config', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const authz = await authorizeLifecycleWorkspace(c, workspaceId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceWorkspacePermission(c, authz.identity, workspaceId, 'workspace.settings:manage')
+    if (denied) return denied
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body) return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    if (body.settings !== undefined && (typeof body.settings !== 'object' || body.settings === null || Array.isArray(body.settings))) {
+      return c.json({ error: { code: 'bad_request', message: 'settings must be an object' } }, 400)
+    }
+    try {
+      const { configureWorkspace } = await import('../services/workspace.service')
+      const workspace = await configureWorkspace(workspaceId, {
+        settings: body.settings as Record<string, unknown> | undefined,
+      })
+      return c.json({ ok: true, workspace })
+    } catch (err) {
+      return lifecycleErrorResponse(c, err)
+    }
+  })
+
+  /**
    * POST /api/internal/projects/:projectId/agent-call
    *   body: { message, runId?, sessionId?, wait?, timeoutMs?, callerProjectId? }
    *
@@ -2025,6 +2686,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * given a `WEBHOOK_TOKEN`, so the external `/agent/hooks/*` path can't be
    * reused here. `wait=true` blocks for the reply (bounded by `timeoutMs`,
    * default 5 min, max 20 min); otherwise the runtime acks with 202.
+   * `wait=false, track=true` records the outcome for
+   * `GET .../agent-call/:runId`. Callers behind Cloudflare send
+   * `X-Shogo-Keepalive: 1` to get whitespace pings while a `wait=true` call
+   * is pending (see `keepAliveJson`).
    */
   app.post('/projects/:projectId/agent-call', async (c) => {
     const projectId = c.req.param('projectId')
@@ -2057,16 +2722,333 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const agentCallSvc = await loadAgentCall?.()
     if (!agentCallSvc) return unavailable(c, 'Cross-project agent calls')
     const { callProjectAgentAsChat } = agentCallSvc
-    const outcome = await callProjectAgentAsChat(c, projectId, authz.workspaceId, {
+    const wait = body.wait !== false
+    const work = callProjectAgentAsChat(c, projectId, authz.workspaceId, {
       message: body.message,
       runId: typeof body.runId === 'string' ? body.runId : undefined,
       sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
-      wait: body.wait !== false,
+      wait,
       timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+      track: body.track === true,
       callerProjectId,
       ...(requesterTicket ? { requesterTicket } : {}),
     })
+    if (wait && wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
+    const outcome = await work
     return c.json(outcome.body, outcome.status as any)
   })
+
+  /**
+   * POST /api/internal/projects/:projectId/remote-tool
+   *   body: { tool, args?, callerProjectId?, timeoutMs? }
+   *
+   * Run one tool against another project in the caller's workspace. The
+   * target is woken in its own runtime and the call is forwarded to its
+   * `/agent/remote/tool`; status and JSON body pass through. Read-only tools
+   * need `project:read` on the target, everything else `project:update`.
+   */
+  app.post('/projects/:projectId/remote-tool', async (c) => {
+    const projectId = c.req.param('projectId')
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) {
+      const identity = await authenticate(c)
+      const target = identity
+        ? ((await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })) as { workspaceId: string } | null)
+        : null
+      if (target) {
+        return c.json(
+          { error: { code: 'cross_workspace', message: 'The target project is in a different workspace.' } },
+          403,
+        )
+      }
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const ticketHeader = c.req.header(REQUESTER_TICKET_HEADER)
+    if (ticketHeader && !(await verifyRequesterTicketInWorkspace(ticketHeader, authz.workspaceId))) {
+      return c.json({ error: { code: 'invalid_requester_ticket', message: 'The requester ticket is invalid or expired.' } }, 401)
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body || typeof body.tool !== 'string' || !body.tool.trim()) {
+      return c.json({ error: { code: 'bad_request', message: 'tool is required' } }, 400)
+    }
+    if (body.args !== undefined && (typeof body.args !== 'object' || body.args === null || Array.isArray(body.args))) {
+      return c.json({ error: { code: 'bad_request', message: 'args must be an object' } }, 400)
+    }
+    const tool = body.tool.trim()
+    const denied = await enforceProjectPermission(
+      c, authz.identity, authz.workspaceId, projectId, remoteToolPermission(tool),
+    )
+    if (denied) return denied
+
+    const callerProjectId =
+      authz.identity.kind === 'project'
+        ? authz.identity.projectId
+        : typeof body.callerProjectId === 'string' ? body.callerProjectId : undefined
+
+    let requesterTicket: string | undefined
+    const callerTicket = callerProjectId ? verifyRequesterTicket(ticketHeader, callerProjectId) : null
+    if (callerTicket && callerProjectId !== projectId) {
+      requesterTicket = handOffRequesterTicket(callerTicket, projectId) ?? undefined
+    }
+
+    const agentCallSvc = await loadAgentCall?.()
+    if (!agentCallSvc) return unavailable(c, 'Remote project tools')
+    const work = agentCallSvc.callProjectRemoteTool(c, projectId, authz.workspaceId, {
+      tool,
+      args: (body.args as Record<string, unknown> | undefined) ?? {},
+      callerProjectId,
+      timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+      ...(requesterTicket ? { requesterTicket } : {}),
+    })
+    if (wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
+    const outcome = await work
+    if (outcome.headers) for (const [key, value] of Object.entries(outcome.headers)) c.header(key, value)
+    return c.json(outcome.body, outcome.status as any)
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/files/import
+   *   body: { archive (base64 tar.gz), dest?, overwrite? }
+   *
+   * `copy_to_project`: unpack files from another project of the caller's
+   * workspace inside this project's own runtime (`/agent/remote/import`).
+   * Same auth, wake and ticket hand-off as `/remote-tool`; always needs
+   * `project:update` on the target.
+   */
+  app.post('/projects/:projectId/files/import', async (c) => {
+    const projectId = c.req.param('projectId')
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) {
+      const identity = await authenticate(c)
+      const target = identity
+        ? ((await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })) as { workspaceId: string } | null)
+        : null
+      if (target) {
+        return c.json(
+          { error: { code: 'cross_workspace', message: 'The target project is in a different workspace.' } },
+          403,
+        )
+      }
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const ticketHeader = c.req.header(REQUESTER_TICKET_HEADER)
+    if (ticketHeader && !(await verifyRequesterTicketInWorkspace(ticketHeader, authz.workspaceId))) {
+      return c.json({ error: { code: 'invalid_requester_ticket', message: 'The requester ticket is invalid or expired.' } }, 401)
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body || typeof body.archive !== 'string' || !body.archive) {
+      return c.json({ error: { code: 'bad_request', message: 'archive (base64 tar.gz) is required' } }, 400)
+    }
+    if (body.archive.length > REMOTE_IMPORT_MAX_BASE64_CHARS) {
+      return c.json({ error: { code: 'too_large', message: 'The archive exceeds the 25 MB transfer limit.' } }, 413)
+    }
+    if (body.dest !== undefined && typeof body.dest !== 'string') {
+      return c.json({ error: { code: 'bad_request', message: 'dest must be a string' } }, 400)
+    }
+    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:update')
+    if (denied) return denied
+
+    const callerProjectId =
+      authz.identity.kind === 'project'
+        ? authz.identity.projectId
+        : typeof body.callerProjectId === 'string' ? body.callerProjectId : undefined
+
+    let requesterTicket: string | undefined
+    const callerTicket = callerProjectId ? verifyRequesterTicket(ticketHeader, callerProjectId) : null
+    if (callerTicket && callerProjectId !== projectId) {
+      requesterTicket = handOffRequesterTicket(callerTicket, projectId) ?? undefined
+    }
+
+    const agentCallSvc = await loadAgentCall?.()
+    if (!agentCallSvc) return unavailable(c, 'Remote project file import')
+    const work = agentCallSvc.callProjectRemoteImport(c, projectId, authz.workspaceId, {
+      archive: body.archive,
+      ...(typeof body.dest === 'string' ? { dest: body.dest } : {}),
+      overwrite: body.overwrite === true,
+      callerProjectId,
+      ...(requesterTicket ? { requesterTicket } : {}),
+    })
+    if (wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
+    const outcome = await work
+    return c.json(outcome.body, outcome.status as any)
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/agent-call/:runId?waitMs=
+   *
+   * Long-poll a call started with `wait=false, track=true`. Returns as soon as
+   * the call is `completed` / `failed`, or the `running` record after
+   * `waitMs` (default 60s, max 90s). With `X-Shogo-Keepalive: 1` the wait is
+   * padded with whitespace pings so Cloudflare does not cut it off.
+   */
+  app.get('/projects/:projectId/agent-call/:runId', async (c) => {
+    const projectId = c.req.param('projectId')
+    const runId = c.req.param('runId')
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:update')
+    if (denied) return denied
+
+    const requested = Number(c.req.query('waitMs'))
+    const waitMs = Number.isFinite(requested) ? Math.min(Math.max(requested, 0), 90_000) : 60_000
+    const work = waitForAgentCall(projectId, runId, waitMs, { signal: c.req.raw.signal }).then((record) =>
+      record
+        ? { status: 200, body: record }
+        : { status: 404, body: { error: { code: 'agent_call_unknown', message: `No tracked call ${runId} for this project.` } } },
+    )
+    if (wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
+    const outcome = await work
+    return c.json(outcome.body, outcome.status as any)
+  })
+
+  // ─── Background tasks ──────────────────────────────────────────────────────
+  //
+  // Tasks a runtime's agent waits on or is woken by (see
+  // background-tasks.service). Every route is scoped to the chat session the
+  // task belongs to, authorized like that session's runtime.
+
+  async function authorizeChatSession(c: Context, chatSessionId: string): Promise<boolean> {
+    const session = (await prisma.chatSession.findUnique({
+      where: { id: chatSessionId },
+      select: { contextType: true, contextId: true, workspaceId: true },
+    })) as { contextType: string; contextId: string | null; workspaceId: string | null } | null
+    if (!session) return false
+    const projectId = session.contextType === 'project' ? session.contextId ?? undefined : undefined
+    let workspaceId = session.workspaceId
+    if (!workspaceId && projectId) {
+      const project = (await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })) as { workspaceId: string } | null
+      workspaceId = project?.workspaceId ?? null
+    }
+    const identity = await authenticate(c)
+    if (!identity) return false
+    if (identity.kind === 'sa') return true
+    if (identity.kind === 'workspace') return !!workspaceId && identity.workspaceId === workspaceId
+    return !!projectId && identity.projectId === projectId
+  }
+
+  const tasksSvc = () => import('../services/background-tasks.service')
+
+  async function taskOr404(c: Context, id: string) {
+    const { getTask } = await tasksSvc()
+    const row = await getTask(id)
+    if (!row || !(await authorizeChatSession(c, row.chatSessionId))) return null
+    return row
+  }
+
+  function taskError(c: Context, err: unknown) {
+    const e = err as { status?: number; code?: string; message?: string }
+    if (e?.status === 400 || e?.status === 404) return c.json({ error: { code: e.code, message: e.message } }, e.status)
+    throw err
+  }
+
+  /** POST /api/internal/tasks  body: { id, chatSessionId, source, targetRef, title, until?, link? } */
+  app.post('/tasks', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const chatSessionId = typeof body?.chatSessionId === 'string' ? body.chatSessionId : ''
+    if (!chatSessionId) return c.json({ error: { code: 'bad_request', message: 'chatSessionId is required' } }, 400)
+    if (!(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { createTask, viewOf } = await tasksSvc()
+    try {
+      const row = await createTask({
+        id: String(body!.id ?? ''),
+        chatSessionId,
+        source: String(body!.source ?? ''),
+        targetRef: String(body!.targetRef ?? ''),
+        title: String(body!.title ?? ''),
+        until: typeof body!.until === 'string' ? body!.until : null,
+        link: body!.link,
+      })
+      return c.json({ task: viewOf(row) }, 201)
+    } catch (err) {
+      return taskError(c, err)
+    }
+  })
+
+  /**
+   * GET /api/internal/tasks?chatSessionId= — running tasks for a session (the
+   * dock), plus what the session is waiting to be told: a pause, and the titles
+   * its undelivered wakes are for.
+   */
+  app.get('/tasks', async (c) => {
+    const chatSessionId = c.req.query('chatSessionId') ?? ''
+    if (!chatSessionId || !(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { listTasks, viewOf, sessionWakeState } = await tasksSvc()
+    const [tasks, wake] = await Promise.all([listTasks(chatSessionId), sessionWakeState(chatSessionId).catch(() => null)])
+    return c.json({ tasks: tasks.map((row) => viewOf(row)), ...(wake ? { wake } : {}) })
+  })
+
+  /** POST /api/internal/tasks/consume  body: { ids } — the agent saw these results. */
+  app.post('/tasks/consume', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { ids?: unknown } | null
+    const ids = Array.isArray(body?.ids) ? body!.ids.filter((id): id is string => typeof id === 'string') : []
+    const { getTask, consumeTasks } = await tasksSvc()
+    const allowed: string[] = []
+    const checked = new Map<string, boolean>()
+    for (const id of ids.slice(0, 200)) {
+      const row = await getTask(id)
+      if (!row) continue
+      if (!checked.has(row.chatSessionId)) checked.set(row.chatSessionId, await authorizeChatSession(c, row.chatSessionId))
+      if (checked.get(row.chatSessionId)) allowed.push(id)
+    }
+    return c.json({ consumed: await consumeTasks(allowed) })
+  })
+
+  /** POST /api/internal/tasks/notify  body: { chatSessionId, tasks: [{ id, source, title, status, text }] } */
+  app.post('/tasks/notify', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { chatSessionId?: unknown; tasks?: unknown } | null
+    const chatSessionId = typeof body?.chatSessionId === 'string' ? body.chatSessionId : ''
+    if (!chatSessionId || !(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { notifyLocalTasks } = await tasksSvc()
+    const tasks = Array.isArray(body?.tasks) ? (body!.tasks as any[]) : []
+    const n = await notifyLocalTasks(chatSessionId, tasks)
+    return c.json({ queued: n > 0 })
+  })
+
+  /** GET /api/internal/tasks/:id?waitMs=&until= — long-poll one task. */
+  app.get('/tasks/:id', async (c) => {
+    const row = await taskOr404(c, c.req.param('id'))
+    if (!row) return c.json({ error: { code: 'task_unknown', message: 'No such task.' } }, 404)
+    const { waitForTask, viewOf, MAX_WAIT_MS } = await tasksSvc()
+    const requested = Number(c.req.query('waitMs'))
+    const waitMs = Number.isFinite(requested) ? Math.min(Math.max(requested, 0), MAX_WAIT_MS) : 0
+    const work = waitForTask(row.id, { waitMs, until: c.req.query('until') || null, signal: c.req.raw.signal })
+      .then((outcome) => outcome
+        ? { status: 200, body: { task: viewOf(outcome.row, outcome.matched) } }
+        : { status: 404, body: { error: { code: 'task_unknown', message: 'No such task.' } } })
+      .catch((err) => {
+        const e = err as { status?: number; code?: string; message?: string }
+        if (e?.status === 400) return { status: 400, body: { error: { code: e.code, message: e.message } } }
+        throw err
+      })
+    if (waitMs > 0 && wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
+    const outcome = await work
+    return c.json(outcome.body, outcome.status as any)
+  })
+
+  /** POST /api/internal/tasks/:id/cancel — stop tracking (and notifying about) a task. */
+  app.post('/tasks/:id/cancel', async (c) => {
+    const row = await taskOr404(c, c.req.param('id'))
+    if (!row) return c.json({ error: { code: 'task_unknown', message: 'No such task.' } }, 404)
+    const { cancelTask, viewOf } = await tasksSvc()
+    const updated = await cancelTask(row.id)
+    return c.json({ task: updated ? viewOf(updated) : null })
+  })
+
+  /** POST /api/internal/chat/:id/resume  body: { toolName?, resume? } — a turn died mid-work. */
+  app.post('/chat/:id/resume', async (c) => {
+    const chatSessionId = c.req.param('id')
+    if (!chatSessionId || !(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
+    const body = (await c.req.json().catch(() => null)) as { toolName?: unknown; resume?: unknown } | null
+    const toolName = typeof body?.toolName === 'string' ? body.toolName : null
+    const resume = body?.resume !== false
+    const { postInterruptedResume } = await import('../services/chat-resume.service')
+    const result = await postInterruptedResume(chatSessionId, { toolName, resume })
+    return c.json(result)
+  })
+
   return app
 }

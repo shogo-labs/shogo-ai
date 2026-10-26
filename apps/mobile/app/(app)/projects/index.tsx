@@ -77,7 +77,6 @@ import { useAuth } from '../../../contexts/auth'
 import { ProjectCard } from '../../../components/home/ProjectCard'
 import { api } from '../../../lib/api'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
-import { ProjectImportModal } from '../../../components/projects/ProjectImportModal'
 import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu'
 import {
   useNativePhoneWindow, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
@@ -293,7 +292,6 @@ export default observer(function AllProjectsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [newFolderModalVisible, setNewFolderModalVisible] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
-  const [importModalVisible, setImportModalVisible] = useState(false)
   const [moveToFolderModalVisible, setMoveToFolderModalVisible] = useState(false)
   const [sortOpen, setSortOpen] = useState(false)
   const [visibilityOpen, setVisibilityOpen] = useState(false)
@@ -788,11 +786,6 @@ export default observer(function AllProjectsPage() {
     setSelectedIds(new Set())
     setSelectMode(false)
   }, [selectedIds, store, currentWorkspace?.id])
-
-  const handleImportProject = useCallback(() => {
-    if (!currentWorkspace?.id) return
-    setImportModalVisible(true)
-  }, [currentWorkspace?.id])
 
   const handleImportCompleted = useCallback(
     (project: { id: string; name: string }) => {
@@ -1490,7 +1483,7 @@ export default observer(function AllProjectsPage() {
               onPress={() => setSortOpen(true)}
               accessibilityRole="button"
               accessibilityLabel={`Sort projects: ${sortLabel}`}
-              accessibilityState={{ expanded: sortOpen }}
+              aria-expanded={sortOpen}
               className="h-11 flex-row items-center gap-1.5 rounded-xl border border-input px-3"
             >
               <Text className="text-base text-foreground">{sortLabel}</Text>
@@ -1500,7 +1493,7 @@ export default observer(function AllProjectsPage() {
               onPress={() => setVisibilityOpen(true)}
               accessibilityRole="button"
               accessibilityLabel={`Filter by visibility: ${visibilityLabel}`}
-              accessibilityState={{ expanded: visibilityOpen }}
+              aria-expanded={visibilityOpen}
               className="h-11 flex-row items-center gap-1.5 rounded-xl border border-input px-3"
             >
               <Text className="text-base text-foreground">{visibilityLabel}</Text>
@@ -1510,7 +1503,7 @@ export default observer(function AllProjectsPage() {
               onPress={() => setStatusOpen(true)}
               accessibilityRole="button"
               accessibilityLabel={`Filter by status: ${statusLabel}`}
-              accessibilityState={{ expanded: statusOpen }}
+              aria-expanded={statusOpen}
               className="h-11 flex-row items-center gap-1.5 rounded-xl border border-input px-3"
             >
               <Text className="text-base text-foreground">{statusLabel}</Text>
@@ -1521,7 +1514,7 @@ export default observer(function AllProjectsPage() {
               onPress={handleToggleSelect}
               accessibilityRole="button"
               accessibilityLabel={selectMode ? 'Exit project selection mode' : 'Select projects'}
-              accessibilityState={{ selected: selectMode }}
+              aria-selected={selectMode}
               className={cn(
                 'h-11 w-11 items-center justify-center rounded-xl',
                 selectMode ? 'bg-primary/10' : 'border border-input',
@@ -1533,7 +1526,7 @@ export default observer(function AllProjectsPage() {
               onPress={() => setViewMode('grid')}
               accessibilityRole="button"
               accessibilityLabel="Show projects as a grid"
-              accessibilityState={{ selected: viewMode === 'grid' }}
+              aria-selected={viewMode === 'grid'}
               className={cn(
                 'h-11 w-11 items-center justify-center rounded-xl',
                 viewMode === 'grid' ? 'bg-secondary' : 'border border-input',
@@ -1545,7 +1538,7 @@ export default observer(function AllProjectsPage() {
               onPress={() => setViewMode('list')}
               accessibilityRole="button"
               accessibilityLabel="Show projects as a list"
-              accessibilityState={{ selected: viewMode === 'list' }}
+              aria-selected={viewMode === 'list'}
               className={cn(
                 'h-11 w-11 items-center justify-center rounded-xl',
                 viewMode === 'list' ? 'bg-secondary' : 'border border-input',
@@ -1584,7 +1577,7 @@ export default observer(function AllProjectsPage() {
                 {...triggerProps}
                 accessibilityRole="button"
                 accessibilityLabel={`Sort projects: ${sortLabel}`}
-                accessibilityState={{ expanded: sortOpen }}
+                aria-expanded={sortOpen}
                 className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
               >
                 <Text className="text-xs text-foreground">{sortLabel}</Text>
@@ -1625,7 +1618,7 @@ export default observer(function AllProjectsPage() {
                 {...triggerProps}
                 accessibilityRole="button"
                 accessibilityLabel={`Filter by visibility: ${visibilityLabel}`}
-                accessibilityState={{ expanded: visibilityOpen }}
+                aria-expanded={visibilityOpen}
                 className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
               >
                 <Text className="text-xs text-foreground">{visibilityLabel}</Text>
@@ -1666,7 +1659,7 @@ export default observer(function AllProjectsPage() {
                 {...triggerProps}
                 accessibilityRole="button"
                 accessibilityLabel={`Filter by status: ${statusLabel}`}
-                accessibilityState={{ expanded: statusOpen }}
+                aria-expanded={statusOpen}
                 className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
               >
                 <Text className="text-xs text-foreground">{statusLabel}</Text>
@@ -1725,7 +1718,7 @@ export default observer(function AllProjectsPage() {
             onPress={handleToggleSelect}
             accessibilityRole="button"
             accessibilityLabel={selectMode ? 'Exit project selection mode' : 'Select projects'}
-            accessibilityState={{ selected: selectMode }}
+            aria-selected={selectMode}
             className={cn(
               'w-8 h-8 items-center justify-center rounded-lg',
               selectMode ? 'bg-primary/10' : 'bg-transparent',
@@ -1740,7 +1733,7 @@ export default observer(function AllProjectsPage() {
               onPress={() => setViewMode('grid')}
               accessibilityRole="button"
               accessibilityLabel="Show projects as a grid"
-              accessibilityState={{ selected: viewMode === 'grid' }}
+              aria-selected={viewMode === 'grid'}
               className={cn(
                 'w-8 h-8 items-center justify-center rounded-lg',
                 viewMode === 'grid' ? 'bg-secondary' : 'bg-transparent',
@@ -1755,7 +1748,7 @@ export default observer(function AllProjectsPage() {
               onPress={() => setViewMode('list')}
               accessibilityRole="button"
               accessibilityLabel="Show projects as a list"
-              accessibilityState={{ selected: viewMode === 'list' }}
+              aria-selected={viewMode === 'list'}
               className={cn(
                 'w-8 h-8 items-center justify-center rounded-lg',
                 viewMode === 'list' ? 'bg-secondary' : 'bg-transparent',
@@ -1932,14 +1925,6 @@ export default observer(function AllProjectsPage() {
             onClose={() => setStatusOpen(false)}
           />
         </>
-      )}
-      {currentWorkspace?.id && (
-        <ProjectImportModal
-          open={importModalVisible}
-          onOpenChange={setImportModalVisible}
-          workspaceId={currentWorkspace.id}
-          onOpenProject={handleImportCompleted}
-        />
       )}
 
       {/* New Folder Modal */}

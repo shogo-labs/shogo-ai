@@ -47,11 +47,188 @@ kubectl get pods -n shogo-production-workspaces -l app.kubernetes.io/name=warm-p
 
 # 4. Per-node memory pressure < 80% (Insufficient memory races appear above this).
 kubectl top nodes
+
+# 5. Ingress is redundant: two Kourier gateway pods, ready, on different nodes,
+#    and the HPA floor is 2. A region whose ingress is one pod deep is one
+#    SIGKILL away from a region-wide 502 (SHO-173, 2026-10-22).
+kubectl -n kourier-system get hpa 3scale-kourier-gateway     # MINPODS 2
+kubectl -n kourier-system get pods -o wide -l app=3scale-kourier-gateway
+kubectl -n kourier-system get pdb 3scale-kourier-gateway-pdb  # MAX UNAVAILABLE 1
 ```
 
 If any of these fail, **stop and resolve before deploying**. A red
 `kubectl top nodes` value is the single best predictor of a roll
 that ends in a capacity-famine incident.
+
+## Ingress capacity (Kourier) — a targeted apply must not skip it
+
+Ingress hardening lives in `terraform/modules/knative-oci` as
+`null_resource.kourier_gateway_capacity` (HPA floor, CPU/memory, liveness
+tolerance, node spread) and the PDB it applies. It is **not** gated on
+`manage_install` precisely because every live cluster runs with
+`manage_install = false` — which is why #1062's hardening ("harden prod ingress
+against 502s", 2026-09-26) sat unapplied in prod for a month while the gateway
+crash-looped under a scanner flood on 10-18, 10-21 and 10-22.
+
+Two rules follow from that:
+
+1. **A surgical `-target` apply that touches the ingress must include
+   `kourier_gateway_capacity`** (both regions). The resource address differs by
+   env because the region module nests it:
+
+   | env | `extra_args` |
+   | --- | --- |
+   | `production-us` | `-target=module.us.module.knative.null_resource.kourier_gateway_capacity` |
+   | `production-eu` | `-target=module.eu.module.knative.null_resource.kourier_gateway_capacity` |
+   | `staging` | `-target=module.knative.null_resource.kourier_gateway_capacity` |
+
+   Run it through `terraform.yml` → `workflow_dispatch` (environment, action
+   `apply`, that string in `extra_args`), once per region. A targeted apply that
+   lists the app resources but not this one leaves prod running whatever the last
+   patch happened to be.
+2. **Verify live state after the apply, not the plan.** The `null_resource` only
+   re-runs when one of its `triggers` changes, so a green apply proves nothing
+   about the pods:
+
+```bash
+for region in oke-production-us oke-production-eu; do
+  echo "== $region"
+  kubectl --context $region -n kourier-system get hpa 3scale-kourier-gateway
+  kubectl --context $region -n kourier-system get pods -o wide -l app=3scale-kourier-gateway
+  kubectl --context $region -n kourier-system get deploy 3scale-kourier-gateway \
+    -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{" "}{.resources}{"\n"}{end}'
+  kubectl --context $region -n kourier-system get deploy 3scale-kourier-gateway \
+    -o jsonpath='live: t={.spec.template.spec.containers[0].livenessProbe.timeoutSeconds} f={.spec.template.spec.containers[0].livenessProbe.failureThreshold}{"\n"}'
+done
+```
+
+Expected, per region (SHO-173):
+
+| Field | Value |
+| --- | --- |
+| HPA `MINPODS` / `MAXPODS` | `2` / `10`, `TARGETS` reading real CPU (not `<unknown>`) |
+| pods | `2/2` Running, **different nodes** (soft hostname anti-affinity, weight 100) |
+| memory | requests `512Mi`, limits `2Gi` |
+| CPU | requests `500m`, limits `2` |
+| liveness | `timeoutSeconds` 5, `failureThreshold` 6 (readiness stays 1/3) |
+| PDB | `MAX UNAVAILABLE 1` |
+
+`kubectl -n kourier-system get hpa` showing `<unknown>` in `TARGETS` means
+metrics-server is broken in that region and the gateway will never scale above
+its floor — fix that first (`terraform/modules/metrics-server`, 2 replicas).
+
+Alerts: `KourierGatewayRestarts` (`terraform/modules/signoz/alerts/kourier-gateway-restarts.yaml`)
+pages on 3+ gateway restarts in 10m; `ProdNodeCountBelowMin` covers the node
+floor. The `preview--*.shogo.ai` flood that triggered 2026-10-22 is blocked at
+the edge by `cloudflare_ruleset.worker_m2m_bot_skip` in
+`terraform/environments/edge-global` (`block_retired_preview_hosts` rule).
+
+## How a release ships: promote, don't rebuild
+
+Production never rebuilds images. A `v*` tag promotes the exact digests
+staging built for that commit and ran `e2e/staging-critical` against:
+
+1. Every staging deploy (push to `main`) leaves a complete `staging-<sha>`
+   tag set for `shogo-api`, `shogo-web`, `shogo-docs` and `shogo-runtime` —
+   but only **when its rollout finishes**. Images the run built get the tag
+   directly; unchanged ones are re-tagged from what staging already runs
+   ("Complete staging release tag set"), minutes later. A tag pushed while
+   that rollout is still running is not a broken release (v2.3.7).
+2. On the tag push, `promote-images` **waits for that tag set**
+   (`scripts/ci/wait-for-staging-images.ts`, up to 60 min, one progress line
+   per 30 s poll) and then re-tags it as `production-<sha>` and
+   `production-latest` (manifest-only, seconds). `replicate-images` copies
+   them to EU, and `deploy-us` / `deploy-eu` roll out once
+   `staging-e2e-gate` is green. The runtime only re-rolls when its digest
+   differs from what the region already pins.
+3. It stops waiting early only when this commit's rollout already finished
+   without the tags, or no main-branch rollout for it ever started: then
+   `promote-images` fails with "No staging-<sha> image …", naming the run,
+   its conclusion and the repos. Re-run that commit's main-branch staging
+   deploy, or (escape hatch) dispatch `deploy.yml` with
+   `environment=production` and `force_rebuild_production=true`.
+
+The metal fleet's guest image follows the same rule. After both regions
+deploy, `metal-runtime-image` asks the rootfs gate (`scripts/ci/metal-rootfs-gate.sh`)
+whether hosts need new guest code. If they do, it promotes the newest
+`staging-[docker-]multiarch-<C>` image whose runtime chain is identical to
+the release (`.github/scripts/promote-metal-runtime-image.sh`) as
+`production-[docker-]multiarch-<C>` and `-latest`. The tag keeps the sha
+the image was built from, because hosts verify it against the revision
+stamped inside. Only when no such image exists (or with
+`force_rebuild_production`) does it dispatch `runtime-multiarch.yml` to
+build the production image, which takes up to ~90 minutes. When the gate
+says no rebuild, no production multi-arch image is made for the release.
+So a manual `metal-agent-deploy.yml` rebuild for production must pass
+`runtime_image` explicitly.
+
+Because one image serves both environments, **never add an
+environment-specific build arg** to the image builds. The studio's
+per-environment values (`SHOGO_APP_ENV`, `SHOGO_APP_VERSION`, GA4 and
+Facebook Pixel IDs) are ksvc env vars, rendered into `index.html` at
+container start by `apps/mobile/docker/shogo-runtime-env.sh`.
+
+## Rolling back
+
+Run **Rollback Production** (`.github/workflows/rollback-production.yml`)
+with `release` set to the `v*` tag (or full SHA) to return to, `regions`, and
+a `reason`. It re-points studio / api / docs and the pinned runtime image at
+that release's `production-<sha>` images through the same
+`.github/scripts/apply-release-images.sh` path every deploy uses (prepull
+gate, stale studio revision GC, verified `RUNTIME_IMAGE`), US first, then EU.
+Nothing is rebuilt, so it takes minutes.
+
+It does **not** revert database migrations. The api container runs
+`prisma migrate deploy` on start, which only applies pending migrations, so
+the older api must work against the newer schema. That is why migrations
+must stay backward-compatible: add columns/tables first, and only drop or
+rename them in a later release, once no rollback target still needs them.
+
+Run it with `dry_run` first. A dry run resolves the release, checks its
+images exist in each region, and shows current versus target images per
+service, the node disk gate, and every applied migration the target release
+doesn't have (the older api will run against them). It blocks on unfinished
+migrations, because the older api's `prisma migrate deploy` would refuse to
+start. It copies, patches and deletes nothing, and it doesn't share a
+concurrency group with real rollbacks.
+
+Rollback targets survive image cleanup: `cleanup-ocir.yml` never deletes the
+images of the last 10 `v*` releases (`release_keep`), or any digest in use by
+any cluster.
+
+To roll forward again, re-run `deploy.yml` for the newer tag, or run the
+rollback workflow with the newer release.
+
+### What a rollback does not touch: the metal fleet
+
+The rollback only moves the Kubernetes side. The metal fleet keeps running
+whatever it already has:
+
+- **The node agent** stays on the release its channel pointer names. To move
+  it back, dispatch `metal-agent-deploy.yml` from the older tag (`--ref vX.Y.Z`)
+  with the same environment; hosts converge on their next heartbeat.
+- **The guest rootfs** (the runtime code inside each microVM) stays as baked.
+  Rolling it back means a rootfs rebuild from the older
+  `production-multiarch-<sha>` image (`metal-agent-deploy.yml` with
+  `rebuild_rootfs` and `runtime_image`), which invalidates every snapshot on
+  every host, so every project cold-starts afterwards. Don't do it as part of
+  a routine rollback.
+
+So after a rollback, the older api talks to newer agent and guest code. Keep
+the api ↔ agent and api ↔ guest protocols backward-compatible the same way
+as migrations: an api must keep working with agents and guests from at
+least one release ahead (new fields optional, no removed endpoints or
+renamed messages until the release after). If a release breaks that, say so
+in its release notes, since rolling back across it also needs an agent
+rollback and a rootfs rebuild.
+
+### Who can deploy production
+
+The `production-us` and `production-eu` environments only accept runs from
+`main` and `v*` tags (GitHub → Settings → Environments → Deployment branches
+and tags). So deploys, dry runs (`deploy.yml` with `dry_run`), rollbacks and
+image cleanup must be dispatched from `main` or a release tag. A dry run
+from `main` plans `main`'s head.
 
 ## Pre-scale by 1 node (now automated — fallback only)
 

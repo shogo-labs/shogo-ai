@@ -231,7 +231,7 @@ describe('SessionManager — extra coverage', () => {
       expect((sm as any).pruneTimer).toBeNull()
     })
 
-    test('pruneExpired deletes from persistence and logs the eviction', async () => {
+    test('pruneExpired evicts from memory and leaves the persisted copy alone', async () => {
       const { p, deleted } = makePersistence()
       const sm = new SessionManager({ sessionTtlSeconds: 0 })
       sm.setPersistence(p)
@@ -244,26 +244,28 @@ describe('SessionManager — extra coverage', () => {
         expect(pruned).toEqual(['to-prune'])
       } finally { console.log = origLog }
       await new Promise(r => setTimeout(r, 5))
-      expect(deleted).toContain('to-prune')
+      // Idle time bounds memory, never history: the durable copy stays on disk
+      // so the next turn can read the conversation back (SHO-137).
+      expect(deleted).not.toContain('to-prune')
+      expect(sm.get('to-prune')).toBeUndefined()
     })
 
-    test('pruneExpired logs the persistence-delete failure path', async () => {
-      const { p } = makePersistence({ delete: async () => { throw new Error('disk gone') } })
+    test('deleteSession is the only path that removes the persisted copy', async () => {
+      const { p, deleted } = makePersistence({ delete: async () => { throw new Error('disk gone') } })
       const sm = new SessionManager({ sessionTtlSeconds: 0 })
       sm.setPersistence(p)
       sm.getOrCreate('boom')
-      ;(sm as any).sessions.get('boom').lastActivityAt = Date.now() - 60_000
       const errs: any[] = []
       const origErr = console.error
-      const origLog = console.log
       console.error = (...a) => { errs.push(a) }
-      console.log = () => {}
       try {
-        ;(sm as any).pruneExpired()
-        await new Promise(r => setTimeout(r, 10))
-      } finally { console.error = origErr; console.log = origLog }
+        await sm.deleteSession('boom')
+      } finally { console.error = origErr }
+      // A failed wipe is reported rather than swallowed…
       expect(errs.length).toBeGreaterThan(0)
       expect(String(errs[0].join(' '))).toContain('disk gone')
+      // …and the delete was still attempted for the row that exists.
+      expect(deleted).toEqual([])
     })
 
     test('pruneExpired with no expirees does not log', () => {

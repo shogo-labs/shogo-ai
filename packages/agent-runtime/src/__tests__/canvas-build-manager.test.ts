@@ -257,6 +257,39 @@ describe('CanvasBuildManager atomic dist swap', () => {
     expect(existsSync(join(TMP, CANVAS_STAGING_DIR))).toBe(false)
   })
 
+  test('tells the reload gate whether the rebuild changed anything', async () => {
+    // The metro path can't hash its output (two `expo export` runs over
+    // identical sources emit different bundles), so CanvasBuildManager must
+    // report from the inputs the build consumed. Without this the gateway
+    // broadcast unconditionally and the canvas raised "Update available ·
+    // Refresh" on every successful export.
+    freshWorkspace({ withExpo: true, stagingPayload: '<html>x</html>' })
+    mkdirSync(join(TMP, 'app'), { recursive: true })
+    writeFileSync(join(TMP, 'app/index.tsx'), 'export const Index = 1\n')
+    const seen: (boolean | undefined)[] = []
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: (info) => { seen.push(info?.outputChanged) },
+      onBuildError: () => {},
+    })
+
+    await mgr.start()
+    expect(seen).toEqual([true])
+
+    // A second build over untouched sources reproduces the same app.
+    await mgr.start()
+    expect(seen).toEqual([true, false])
+
+    // A real edit is an update.
+    writeFileSync(join(TMP, 'app/index.tsx'), 'export const Index = 2\n')
+    await mgr.start()
+    expect(seen).toEqual([true, false, true])
+
+    // So is reverting it — the served page is the first version again.
+    writeFileSync(join(TMP, 'app/index.tsx'), 'export const Index = 1\n')
+    await mgr.start()
+    expect(seen).toEqual([true, false, true, true])
+  })
+
   test('isBuilding flips during runBuild and clears afterwards', async () => {
     freshWorkspace({ withExpo: true, stagingPayload: '<html>x</html>' })
     const mgr = new CanvasBuildManager(TMP, {

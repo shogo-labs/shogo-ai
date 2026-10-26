@@ -23,12 +23,17 @@ const findUniqueWs = mock(async (_: any): Promise<any> => null)
 const findManyWs = mock(async (_: any): Promise<any[]> => [])
 const findManyProject = mock(async (_: any): Promise<any[]> => [])
 const upsertStorageUsage = mock(async (_: any): Promise<any> => ({}))
+// Freshness gate: `_max.lastCalculatedAt` is null by default so the fleet pass
+// runs, which is what every pre-existing test below expects.
+const aggregateStorageUsage = mock(async (_: any): Promise<any> => ({
+  _max: { lastCalculatedAt: null },
+}))
 
 mock.module('../lib/prisma', () => ({
   prisma: {
     workspace: { findUnique: findUniqueWs, findMany: findManyWs },
     project: { findMany: findManyProject },
-    storageUsage: { upsert: upsertStorageUsage },
+    storageUsage: { upsert: upsertStorageUsage, aggregate: aggregateStorageUsage },
   },
 }))
 
@@ -58,7 +63,10 @@ beforeEach(() => {
   findManyWs.mockReset()
   findManyProject.mockReset()
   upsertStorageUsage.mockReset()
+  aggregateStorageUsage.mockReset()
+  aggregateStorageUsage.mockImplementation(async () => ({ _max: { lastCalculatedAt: null } }))
   listAllObjectsInS3.mockReset()
+  listAllObjectsInS3.mockImplementation(async () => [])
   errorSpy = spyOn(console, 'error').mockImplementation(() => {})
   logSpy = spyOn(console, 'log').mockImplementation(() => {})
 })

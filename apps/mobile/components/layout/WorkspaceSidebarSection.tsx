@@ -61,7 +61,7 @@ export function WorkspaceSidebarSection({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${label}`}
-          accessibilityState={{ expanded }}
+          aria-expanded={expanded}
           onPress={() => onExpandedChange(!expanded)}
           className={cn(
             "min-h-11 flex-1 flex-row items-center rounded-lg px-2 hover:bg-muted active:bg-muted",

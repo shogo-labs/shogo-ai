@@ -233,7 +233,7 @@ describe('resolveWorkspaceRuntimeUrl', () => {
     ).rejects.toThrow(/workspaceId is required/)
   })
 
-  it('routes metal (over k8s) when metal is enabled and a resolver is injected', async () => {
+  it('routes metal (over k8s) when metal is enabled and a resolver is injected; a workspace-session runtime mounts nothing', async () => {
     let sawK8s = false
     const res = await resolveWorkspaceRuntimeUrl('ws-1', {
       attachedProjectIds: ['p1', 'p2'],
@@ -247,11 +247,11 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       },
       _metalResolver: async (wsId, ids) => `http://metal-ws/${wsId}/${ids.join('+')}`,
     })
-    expect(res).toEqual({ mode: 'metal', url: 'http://metal-ws/ws-1/p1+p2' })
+    expect(res).toEqual({ mode: 'metal', url: 'http://metal-ws/ws-1/' })
     expect(sawK8s).toBe(false)
   })
 
-  it('metal branch forwards anchor + readonly and leases on the anchor', async () => {
+  it('metal branch forwards the anchor, drops readonly members, and leases on the anchor', async () => {
     const leaseCalls: string[] = []
     let seenAnchor: string | undefined
     let seenReadonly: string[] | undefined
@@ -274,7 +274,7 @@ describe('resolveWorkspaceRuntimeUrl', () => {
     })
     expect(res.mode).toBe('metal')
     expect(seenAnchor).toBe('anchor')
-    expect(seenReadonly).toEqual(['p2'])
+    expect(seenReadonly).toEqual([])
     expect(leaseCalls).toEqual(['proj:anchor'])
   })
 
@@ -328,6 +328,23 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       attachedProjectIds: ['anchor', 'p2'],
       anchorProjectId: 'anchor',
       _isEnabled: enabled,
+      _isMetalEnabled: () => false,
+      _isKubernetes: () => true,
+      _spawnLease: passthroughLease,
+      _k8sResolver: async (_wsId, ids) => {
+        seenIds = ids
+        return 'http://workspace-proj-anchor.svc'
+      },
+    })
+    expect(seenIds).toEqual(['anchor', 'p2'])
+  })
+
+  it('metal anchored runtime mounts only the anchor, never its attachments', async () => {
+    let seenIds: string[] | undefined
+    await resolveWorkspaceRuntimeUrl('ws-1', {
+      attachedProjectIds: ['anchor', 'p2', 'p3'],
+      anchorProjectId: 'anchor',
+      _isEnabled: enabled,
       _isMetalEnabled: () => true,
       _isKubernetes: () => true,
       _spawnLease: passthroughLease,
@@ -336,7 +353,7 @@ describe('resolveWorkspaceRuntimeUrl', () => {
         return 'http://metal-ws/anchor'
       },
     })
-    expect(seenIds).toEqual(['anchor', 'p2'])
+    expect(seenIds).toEqual(['anchor'])
   })
 
   it('host + anchor path also receives the anchor-inclusive member list', async () => {

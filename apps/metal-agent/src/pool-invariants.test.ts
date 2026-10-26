@@ -285,9 +285,10 @@ describe('crash rescue keeps uncommitted edits (seed 56433)', () => {
 })
 
 describe('ws:proj runtime key mapping', () => {
-  test('source only under member keys, the merged repo only under the anchor key', async () => {
+  test('source only under the own member key, the merged repo only under the anchor key', async () => {
     const { s3, host, pool } = rig()
     const ANCHOR = 'ws:proj:m1'
+    // A legacy API replica still sends a foreign member; it must never be written from here.
     const WS_ENV = { ...ENV, WORKSPACE_PROJECT_IDS: 'm1,m2' }
     s3.put('m1/project-src.tar.gz', tarOf({ 'App.tsx': 'm1 v0\n' }))
     s3.put('m2/project-src.tar.gz', tarOf({ 'App.tsx': 'm2 v0\n' }))
@@ -307,14 +308,14 @@ describe('ws:proj runtime key mapping', () => {
 
     const bad = s3.writes.filter((k) => {
       if (k.startsWith('conflict/')) return false
-      if (k.endsWith('/project-src.tar.gz')) return !/^m[12]\//.test(k)
+      if (k.endsWith('/project-src.tar.gz')) return !k.startsWith('m1/')
       if (k.endsWith('/repo.git.tar.gz')) return k !== `${ANCHOR}/repo.git.tar.gz`
-      return false
+      return k.startsWith('m2/')
     })
     expect(bad).toEqual([])
     expect(s3.writes).toContain('m1/project-src.tar.gz')
     expect(s3.writes).toContain(`${ANCHOR}/repo.git.tar.gz`)
     expect(untar(s3.body('m1/project-src.tar.gz')!)['App.tsx']).toBe('m1 v3\n')
-    expect(untar(s3.body('m2/project-src.tar.gz')!)['App.tsx']).toBe('m2 v3\n')
+    expect(untar(s3.body('m2/project-src.tar.gz')!)['App.tsx']).toBe('m2 v0\n')
   }, 120_000)
 })

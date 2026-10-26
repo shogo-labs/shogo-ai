@@ -65,6 +65,11 @@ const INTENTIONAL_DIFFERENCES: Allow[] = [
     reason:
       'Float[] vector on PG; SQLite has no array type, so the desktop mirror stores it as a JSON string (decoded by ARRAY_FIELDS in apps/api/src/lib/prisma.ts).',
   },
+  {
+    key: 'ConversationAttachmentChunk.embedding',
+    reason:
+      'pgvector on PG; SQLite has no vector type, so the desktop mirror stores the optional embedding as a JSON string (decoded by the file indexer).',
+  },
   // Cloud-only fields -------------------------------------------------------
   {
     key: 'Workspace.homeRegion',
@@ -75,6 +80,21 @@ const INTENTIONAL_DIFFERENCES: Allow[] = [
     key: 'User.homeRegion',
     reason:
       'Multi-region write-ownership marker for identity-scoped rows. The cloud routes a user\'s identity writes to their homeRegion; Shogo Desktop is single-region/local, so the column is meaningless there and intentionally omitted from the SQLite schema.',
+  },
+  {
+    key: 'User.emailCanonical',
+    reason:
+      'Normalized email used by the cloud signup risk scorer to spot duplicate accounts. Signup abuse controls are cloud-only; desktop has a single local account and no signup flow.',
+  },
+  {
+    key: 'SignupRiskAssessment',
+    reason:
+      'Cloud signup risk assessments (IP, device, email signals and the resulting credit band). Desktop has no public signups, so this table is never written there.',
+  },
+  {
+    key: 'TrialRedemption',
+    reason:
+      'Cloud Stripe free-trial redemptions keyed by card fingerprint. Desktop does not run Stripe Checkout trials.',
   },
   {
     key: 'RemoteHost',

@@ -1,0 +1,78 @@
+# SigNoz alert: metal time-to-ready slow
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (dotted metric names, builder queries not PromQL, v2alpha1, real
+# channel).
+#
+# Why: `metal.wake_total_ms` covers one /assign attempt and stops at the 30s
+# assign timeout, so an open that times out and is retried several times never
+# shows up there as slow. `metal.time_to_ready_ms` starts at the first attempt
+# for the project and ends when an attempt returns a ready URL, so it is the
+# wait the user actually sees in the IDE spinner. On 2026-10-25 one open took
+# 2m33s (five assign timeouts while the guest downloaded git history) and no
+# alert fired. Normal p95 is well under 30s; above 60s means opens are timing
+# out and being retried.
+
+alert: MetalTimeToReadySlow
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    unit: ms
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.time_to_ready_ms.bucket
+              spaceAggregation: p95
+          legend: time_to_ready_p95_ms
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: warning
+        op: above
+        matchType: on_average
+        target: 60000
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 1m
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+notificationSettings:
+  renotify:
+    enabled: true
+    interval: 12h
+    alertStates: [firing]
+annotations:
+  summary: "Metal time-to-ready p95 above 60s for 15+ minutes"
+  description: |
+    Users are waiting more than a minute for projects to open. Usually this
+    means /assign is timing out and the API is retrying.
+
+    Triage:
+    1. Metal startup dashboard: split time-to-ready by `host_id`. One host
+       usually means its object-storage path is slow.
+    2. Look at metal.repo_hydrate by `mode`. If `foreground` is rising, opens
+       are waiting on the git history download. Downloads that take longer than
+       METAL_REPO_HYDRATE_FOREGROUND_MS (default 10s) should finish in the
+       background as `deferred`.
+    3. Look at metal.host_errors by `reason`. A rising `timeout` count means
+       /assign attempts are timing out and being retried.
+    4. Look at metal.wake_phase_ms by `phase` for the slow host to see which
+       host phase is using the time, or open a slow `metal.get_pod_url` trace
+       (wake.time_to_ready_ms > 60000).
+
+    Runbook: docs/runbooks/metal-fleet.md

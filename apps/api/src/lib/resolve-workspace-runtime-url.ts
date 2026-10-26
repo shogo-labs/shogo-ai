@@ -25,6 +25,12 @@
 import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
 import { withWorkspaceSpawnLease } from './runtime/workspace-spawn-lease'
 import { isMetalEnabled as defaultIsMetalEnabled } from './metal-eligibility'
+import { metrics } from '@opentelemetry/api'
+
+const spawnLeaseWait = metrics.getMeter('shogo-metal-pool').createHistogram('metal.wake_phase_ms', {
+  description: 'Per-phase wall time of a runtime wake; api.* phases run in the API, host.* phases on the metal host',
+  unit: 'ms',
+})
 
 export type WorkspacePodMode = 'k8s' | 'metal' | 'host'
 
@@ -79,6 +85,12 @@ export interface ResolveWorkspaceRuntimeOpts {
    * recorded as an open and does not enter the keep-warm MRU.
    */
   background?: boolean
+  /**
+   * Metal only: boot on the host's STAGED rootfs (switch-over pre-warm, see
+   * metal-rewarm.ts). The host keeps the project's current snapshot; this
+   * boot's suspend lands in its staged slot. Implies `background`.
+   */
+  rootfs?: 'staged'
 
   /** @deprecated Workspace runtimes are always enabled. */
   _isEnabled?: () => boolean
@@ -103,7 +115,7 @@ export interface ResolveWorkspaceRuntimeOpts {
   _metalResolver?: (
     workspaceId: string,
     attachedProjectIds: string[],
-    opts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
+    opts?: { anchorProjectId?: string; readonlyProjectIds?: string[]; rootfs?: 'staged' },
   ) => Promise<string>
   _hostStart?: (
     workspaceId: string,
@@ -258,19 +270,25 @@ export async function resolveWorkspaceRuntimeUrl(
       (async (
         id: string,
         ids: string[],
-        resolverOpts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
+        resolverOpts?: { anchorProjectId?: string; readonlyProjectIds?: string[]; rootfs?: 'staged' },
       ) => {
         const { getMetalWarmPoolController } = await import('./metal-warm-pool-controller')
         return getMetalWarmPoolController().getMetalWorkspaceUrl(id, ids, resolverOpts)
       })
     const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
-    const url = await spawnLease(leaseKey, () =>
-      resolver(workspaceId, attachedProjectIds, {
+    // On metal a project is online only in its own `ws:proj:<id>` runtime;
+    // other runtimes reach it through the remote-tool channel, never a mount.
+    const metalMembers = opts.anchorProjectId ? [opts.anchorProjectId] : []
+    const leaseStartedAt = performance.now()
+    const url = await spawnLease(leaseKey, () => {
+      spawnLeaseWait.record(performance.now() - leaseStartedAt, { phase: 'api.spawn_lease', mode: 'workspace' })
+      return resolver(workspaceId, metalMembers, {
         anchorProjectId: opts.anchorProjectId,
-        readonlyProjectIds: opts.readonlyProjectIds,
-      }),
-    )
-    if (!opts.background) {
+        readonlyProjectIds: [],
+        ...(opts.rootfs ? { rootfs: opts.rootfs } : {}),
+      })
+    })
+    if (!opts.background && !opts.rootfs) {
       try {
         const { getWorkspaceKeepWarm } = await import('./workspace-keep-warm')
         getWorkspaceKeepWarm().recordOpened(leaseKey, url)

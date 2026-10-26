@@ -639,6 +639,18 @@ describe('artifact presign', () => {
     expect(presignCalls[0].command.input.Bucket).toBe('art-override')
   })
 
+  // A download link is answered by S3 itself, so the disposition has to be part
+  // of the signature — a header added after the redirect never arrives.
+  it('read presign carries a response disposition when asked to save the file', async () => {
+    await s3.getArtifactPresignedReadUrl('k', { responseContentDisposition: "attachment; filename*=UTF-8''deck.pptx" })
+    expect(presignCalls[0].command.input.ResponseContentDisposition).toBe("attachment; filename*=UTF-8''deck.pptx")
+  })
+
+  it('read presign omits the response disposition when the file is just being shown', async () => {
+    await s3.getArtifactPresignedReadUrl('k')
+    expect(presignCalls[0].command.input.ResponseContentDisposition).toBeUndefined()
+  })
+
   it('write presign honors bucket override option', async () => {
     await s3.getArtifactPresignedWriteUrl('k', { bucket: 'art-override' })
     expect(presignCalls[0].command.input.Bucket).toBe('art-override')

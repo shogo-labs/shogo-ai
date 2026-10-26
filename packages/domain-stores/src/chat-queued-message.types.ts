@@ -18,6 +18,7 @@ export interface ChatQueuedMessageType {
   error?: string
   createdAt: Date
   updatedAt: Date
+  kind: string
 }
 
 export interface ChatQueuedMessageCreateInput {
@@ -29,6 +30,7 @@ export interface ChatQueuedMessageCreateInput {
   parts?: string
   body: string
   error?: string
+  kind?: string
 }
 
 export interface ChatQueuedMessageUpdateInput {
@@ -40,4 +42,5 @@ export interface ChatQueuedMessageUpdateInput {
   parts?: string
   body?: string
   error?: string
+  kind?: string
 }

@@ -106,7 +106,6 @@ export const SideChatScreen = observer(function SideChatScreen() {
           setPrefillRequest({ nonce: Date.now(), content }),
         onCustomizeAvatar: () => setBuddyLookSheetOpen(true),
         onOpenActivity: () => router.push("/(app)/activity" as any),
-        onOpenSideChats: () => router.push("/(app)/side-chats" as any),
       })
     : []
 

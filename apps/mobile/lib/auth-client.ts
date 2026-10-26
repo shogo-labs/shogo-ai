@@ -7,6 +7,7 @@ import type { BetterFetch } from 'better-auth/react'
 import { expoClient } from '@better-auth/expo/client'
 import * as SecureStore from 'expo-secure-store'
 import { API_URL } from './api-url'
+import { authStoragePrefixFor, getActiveEnvKey } from './env-override'
 
 function normalizeCookieHeader(cookie: string | null | undefined): string | null {
   if (!cookie) return null
@@ -32,7 +33,7 @@ function createMobileAuthClient() {
     plugins: [
       expoClient({
         scheme: 'shogo',
-        storagePrefix: 'shogo',
+        storagePrefix: authStoragePrefixFor(getActiveEnvKey()),
         cookiePrefix: 'shogo',
         storage: SecureStore,
       }),

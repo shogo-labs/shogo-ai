@@ -61,6 +61,12 @@ export interface RuntimeAppConfig {
     activeSessions: number
     lastActivityAt: number | null
     activeStreams?: number
+    /** Agent turns running now, including ones not started over HTTP (heartbeat, channels). */
+    activeTurns?: number
+    /** Tasks still running in the registry, whether or not they will notify. */
+    activeTasks?: number
+    /** Live child processes of those tasks. */
+    activeChildren?: number
     /** Current git HEAD; metal host uses a change to trigger repo.git.tar.gz export. */
     repoHeadSha?: string | null
     /** Per-project API sidecar state; the metal host recycles a runtime stuck unhealthy. */
@@ -242,6 +248,9 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
   let poolAssigned = false
   let poolAssignedAt: number | null = null
+  // `state.poolAssigned` flips true at the start of /pool/assign (it is the
+  // assignment lock), so this marks the window before the pod is usable.
+  let assignInFlight = false
   let lastRequestAt: number = Date.now()
 
   const internalPaths = new Set([
@@ -521,6 +530,13 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       })
 
       if (!res.ok) {
+        // A 5xx means the API could not answer — not that the token is bad.
+        // Caching that as "invalid" used to poison a perfectly good token for
+        // 30s across a deploy or an API blip (SHO-125).
+        if (res.status >= 500) {
+          console.warn(`[${config.name}] Runtime token validation deferred: API HTTP ${res.status}`)
+          return { valid: false }
+        }
         runtimeTokenCache.set(token, { valid: false, expiresAt: now + RUNTIME_CACHE_INVALID_MS })
         return { valid: false }
       }
@@ -530,6 +546,8 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       runtimeTokenCache.set(token, { valid: data.valid, projectId: data.projectId, workspaceId: data.workspaceId, expiresAt: now + ttl })
       return { valid: data.valid, projectId: data.projectId, workspaceId: data.workspaceId }
     } catch (err) {
+      // Timeout / transport failure: the token's validity is unknown, so never
+      // remember it as invalid. The next request re-validates.
       console.error(`[${config.name}] Runtime token validation failed:`, err)
       return { valid: false }
     }
@@ -545,11 +563,35 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     const auth = c.req.header('authorization') || ''
     const runtimeToken = c.req.header('x-runtime-token') || ''
 
-    // Fast path: incoming token matches our env-injected token byte-for-byte.
-    // This is the common case after a successful /pool/assign and signing-
-    // secret stability — no API round-trip needed.
-    if (auth === `Bearer ${runtimeSecret}` || runtimeToken === runtimeSecret) return null
+    // Fast path: incoming token matches one of our env-injected tokens
+    // byte-for-byte. This is the common case after a successful /pool/assign
+    // and signing-secret stability — no API round-trip needed.
+    //
+    // A project pod holds TWO tokens: its own project token (`rt_v1_…`, which
+    // it also presents *outbound* to the API and which is RUNTIME_AUTH_SECRET),
+    // and the workspace token (`wrt_v1_…`, WORKSPACE_RUNTIME_AUTH_SECRET) that
+    // the API presents *inbound* — every remote tool call, `project_call` and
+    // preview hop. Holding both is what lets the byte-compare hit instead of
+    // falling through to the API on every cross-project call, where a single
+    // blip was cached as "invalid", refused for 30s and read as a 401 burst
+    // (SHO-125).
+    const envSecrets = [runtimeSecret, process.env.WORKSPACE_RUNTIME_AUTH_SECRET].filter(
+      (secret): secret is string => Boolean(secret),
+    )
+    if (envSecrets.some((secret) => auth === `Bearer ${secret}` || runtimeToken === secret)) return null
     if (runtimeToken && config.acceptsScopedToken?.(c.req.path, runtimeToken)) return null
+
+    const candidate = runtimeToken || (auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '')
+    // An unassigned (or still-assigning) pool pod has no identity to check a
+    // token against. A 401 here reads as terminal to callers, so tell them to
+    // retry: the API routes to a pod as soon as it is claimed.
+    if (IS_POOL_MODE && (!state.poolAssigned || assignInFlight) && /^w?rt_v1_/.test(candidate)) {
+      c.header('Retry-After', '1')
+      return c.json(
+        { error: { code: 'runtime_not_ready', message: 'Runtime is still being assigned; retry shortly.' } },
+        503,
+      )
+    }
 
     // Slow path: byte-compare missed. That happens during warm-pool reassign
     // races, signing-secret rotation, or stale-image pods inherited across
@@ -560,7 +602,6 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     // recovered projectId must match the pod's currently-assigned project
     // so a token valid for project A can't authenticate calls to a pod
     // bound to project B.
-    const candidate = runtimeToken || (auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '')
     // Local pre-filter: only proxy plausibly-structured v1 tokens to the
     // API. Without this, an attacker spamming the pod with random bearer
     // garbage would amplify into one API HMAC-verify roundtrip per unique
@@ -580,6 +621,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       workspaceId &&
       candidate.startsWith(`wrt_v1_${workspaceId}_`),
     )
+    let apiVerdict: string = 'not_checked'
     if (isProjectToken || isWorkspaceToken) {
       const result = await validateRuntimeTokenViaApi(candidate)
       if (isProjectToken && result.valid && result.projectId === state.currentProjectId) {
@@ -588,6 +630,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       if (isWorkspaceToken && result.valid && result.workspaceId === workspaceId) {
         return null
       }
+      apiVerdict = result.valid ? `valid_for:${result.workspaceId ?? result.projectId}` : 'invalid'
     }
 
     // Fallback: validate preview JWT via API callback (browser → pod path,
@@ -600,7 +643,41 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       }
     }
 
-    return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
+    logRuntimeAuthRejection(candidate, workspaceId, apiVerdict)
+    return c.json(
+      {
+        error: 'Unauthorized — missing or invalid runtime token',
+        // Identity only (never token material) so the caller can tell "wrong
+        // workspace / wrong project" (do NOT retry) from "the API could not
+        // answer" (a retry may work). Without this the agent retried 19 times
+        // against an auth mismatch it could not see (SHO-125).
+        code: 'auth_mismatch',
+        tokenScope: tokenScopeOf(candidate),
+        apiVerdict,
+      },
+      401,
+    )
+  }
+
+  // Identity only, never token material: enough to tell a guest bound to the
+  // wrong workspace from a signing-secret mismatch. Throttled because callers
+  // retry a refused turn for minutes.
+  let lastAuthRejectionLogAt = 0
+  function tokenScopeOf(candidate: string): string {
+    return candidate.match(/^(w?rt_v1_[^_]+)_/)?.[1] ?? (candidate ? 'unrecognized' : 'none')
+  }
+  function logRuntimeAuthRejection(candidate: string, workspaceId: string | undefined, apiVerdict: string): void {
+    const now = Date.now()
+    if (now - lastAuthRejectionLogAt < 60_000) return
+    lastAuthRejectionLogAt = now
+    console.warn(`[${config.name}] runtime auth rejected ${JSON.stringify({
+      tokenScope: tokenScopeOf(candidate),
+      workspaceId: workspaceId ?? null,
+      currentProjectId: state.currentProjectId,
+      poolMode: IS_POOL_MODE,
+      poolAssigned: state.poolAssigned,
+      apiVerdict,
+    })}`)
   }
 
   const publicPaths = new Set([
@@ -682,6 +759,9 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       lastActivityAt: lastActivity,
       idleSeconds: streams > 0 ? 0 : Math.floor((now - lastActivity) / 1000),
       activeStreams: streams,
+      activeTurns: activityStats.activeTurns ?? 0,
+      activeTasks: activityStats.activeTasks ?? 0,
+      activeChildren: activityStats.activeChildren ?? 0,
       activeSessions: activityStats.activeSessions,
       lastRequestAt: state.lastRequestAt,
       lastSessionActivityAt: lastSessionActivity,
@@ -703,6 +783,16 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   // Pool Assignment
   // ---------------------------------------------------------------------------
   app.post('/pool/assign', async (c) => {
+    // A concurrent assign that loses the lock must not clear the winner's flag.
+    const otherAssignRunning = assignInFlight
+    try {
+      return await assignPool(c)
+    } finally {
+      if (!otherAssignRunning) assignInFlight = false
+    }
+  })
+
+  const assignPool = async (c: any) => {
     if (!IS_POOL_MODE) {
       return c.json({ error: 'Not in pool mode' }, 400)
     }
@@ -715,6 +805,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     // pods could both pass the check above if an await yields the event loop
     // between the check and the state mutation.
     state.poolAssigned = true
+    assignInFlight = true
 
     const startTime = Date.now()
     let body: any
@@ -841,7 +932,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       console.error(`[${config.name}] Pool assignment failed for ${projectId}:`, error.message)
       return c.json({ error: `Assignment failed: ${error.message}` }, 500)
     }
-  })
+  }
 
   // ---------------------------------------------------------------------------
   // POST /pool/refresh-env

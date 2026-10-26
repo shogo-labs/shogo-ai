@@ -9,38 +9,71 @@ const enc = new TextEncoder()
 const dec = new TextDecoder()
 const frame = (chunk: Record<string, unknown>) => enc.encode(`data: ${JSON.stringify(chunk)}\n\n`)
 
-/** Two steps; the second is still open (text part reusing id "0", streaming tool input). */
-function turn(deltas: number): Record<string, unknown>[] {
-  const chunks: Record<string, unknown>[] = [
+const deltas = (type: 'text-delta' | 'reasoning-delta', id: string, count: number, prefix: string) =>
+  Array.from({ length: count }, (_, i) => ({ type, id, delta: `${prefix}${i} ` }))
+
+/** One sub-agent update, as `emitPreliminary` writes it: the whole accumulated state. */
+const spawnUpdate = (i: number, text = `update ${i} `) => ({
+  type: 'tool-output-available',
+  toolCallId: 'spawn',
+  output: { agentId: 'a1', instance_id: 'i1', model: 'm', parts: [{ type: 'text', text, id: 'sa-text-0' }] },
+  dynamic: true,
+  preliminary: true,
+})
+
+/**
+ * A turn shaped like the runtime's: `buffered-turn.ts` writes one `start-step`
+ * when the turn begins and one `finish-step` when it ends, so nothing closes a
+ * step mid-turn. Reasoning, a tool call and the answer's text close, then
+ * `agent_spawn` runs a sub-agent that streams `updates` preliminary outputs and
+ * is still going when the client joins.
+ */
+function liveTurn(updates: number): Record<string, unknown>[] {
+  return [
     { type: 'start', messageId: 'm1' },
     { type: 'data-turn-start', data: { turnId: 't' } },
     { type: 'data-context-usage', data: { inputTokens: 1 }, transient: true },
     { type: 'start-step' },
     { type: 'reasoning-start', id: 'r0' },
-  ]
-  for (let i = 0; i < deltas; i++) chunks.push({ type: 'reasoning-delta', id: 'r0', delta: `think ${i} ` })
-  chunks.push(
+    ...deltas('reasoning-delta', 'r0', 3, 'think'),
     { type: 'reasoning-end', id: 'r0' },
     { type: 'tool-input-start', toolCallId: 'c1', toolName: 'exec' },
+    { type: 'tool-input-delta', toolCallId: 'c1', inputTextDelta: '{"command":' },
+    { type: 'tool-input-delta', toolCallId: 'c1', inputTextDelta: '"ls"}' },
     { type: 'tool-input-available', toolCallId: 'c1', toolName: 'exec', input: { command: 'ls' } },
-    { type: 'data-context-usage', data: { inputTokens: 2 }, transient: true },
-    { type: 'text-start', id: '0' },
-  )
-  for (let i = 0; i < deltas; i++) chunks.push({ type: 'text-delta', id: '0', delta: `a${i} ` })
-  chunks.push(
-    { type: 'text-end', id: '0' },
-    { type: 'finish-step' },
-    { type: 'start-step' },
-    // c1's output lands in the next step: the snapshot must leave the part
-    // open for it.
     { type: 'tool-output-available', toolCallId: 'c1', output: { ok: true } },
-    { type: 'tool-input-start', toolCallId: 'c2', toolName: 'exec' },
-    { type: 'tool-input-delta', toolCallId: 'c2', inputTextDelta: '{"comm' },
     { type: 'text-start', id: '0' },
-  )
-  for (let i = 0; i < deltas; i++) chunks.push({ type: 'text-delta', id: '0', delta: `b${i} ` })
-  return chunks
+    ...deltas('text-delta', '0', 3, 'answer'),
+    { type: 'text-end', id: '0' },
+    { type: 'data-context-usage', data: { inputTokens: 2 }, transient: true },
+    { type: 'tool-input-start', toolCallId: 'spawn', toolName: 'agent_spawn' },
+    { type: 'tool-input-available', toolCallId: 'spawn', toolName: 'agent_spawn', input: { type: 'browser_qa' } },
+    ...Array.from({ length: updates }, (_, i) => spawnUpdate(i)),
+  ]
 }
+
+/** The closed work of `liveTurn`, as a prefix the mid-part cases build on. */
+const closedWork = () => liveTurn(0).slice(0, 14)
+
+/** Joined while the answer's text is still streaming. */
+const midTextDelta = () => [...closedWork(), { type: 'text-start', id: '0' }, ...deltas('text-delta', '0', 3, 'half')]
+
+/** Joined while a tool call's input is still streaming. */
+const midToolInput = () => [
+  ...closedWork(),
+  { type: 'tool-input-start', toolCallId: 'spawn', toolName: 'agent_spawn' },
+  { type: 'tool-input-delta', toolCallId: 'spawn', inputTextDelta: '{"type":' },
+]
+
+/** A turn that has finished: every part closed, `finish-step` and `finish` written. */
+const finishedTurn = () => [
+  ...closedWork(),
+  { type: 'text-start', id: '0' },
+  ...deltas('text-delta', '0', 3, 'answer'),
+  { type: 'text-end', id: '0' },
+  { type: 'finish-step' },
+  { type: 'finish' },
+]
 
 const toStream = (frames: Uint8Array[]) =>
   new ReadableStream<Uint8Array>({
@@ -78,53 +111,106 @@ async function finalMessage(chunks: ReadableStream<UIMessageChunk>, message?: UI
   return last
 }
 
+const snapshotOf = (events: Record<string, any>[]) => events.find((e) => e.type === MESSAGE_SNAPSHOT_EVENT_TYPE)
+const continuationOf = (events: Record<string, any>[]) => events.filter((e) => e.type !== MESSAGE_SNAPSHOT_EVENT_TYPE)
+
+/** The continuation's part chunks, without the re-sent transient state. */
+const partChunks = (events: Record<string, any>[]) => continuationOf(events).filter((e) => !e.type.startsWith('data-'))
+
 /** What the client does: apply the snapshot, then feed the rest to the SDK seeded with it. */
 async function joinLikeClient(events: Record<string, any>[]) {
-  const snapshotEvent = events.find((e) => e.type === MESSAGE_SNAPSHOT_EVENT_TYPE)
-  const rest = events.filter((e) => e !== snapshotEvent)
+  const rest = continuationOf(events)
   const stream = new ReadableStream<UIMessageChunk>({
     start(controller) {
       for (const e of rest) controller.enqueue(e as UIMessageChunk)
       controller.close()
     },
   })
-  return finalMessage(stream, snapshotEvent?.data.message)
+  return finalMessage(stream, snapshotOf(events)?.data.message)
 }
 
-describe('buildSnapshotReplay', () => {
-  test('snapshot + rest rebuilds the same message as the raw replay', async () => {
-    const frames = turn(300).map(frame)
-    const bytes = await buildSnapshotReplay(frames)
-    const events = (await readAll(toStream([bytes])))
+/** The same message built the old way, chunk by chunk, from the raw buffered frames. */
+const fullReplayMessage = (chunks: Record<string, unknown>[]) =>
+  finalMessage(parseChunks(toStream(chunks.map(frame))))
 
-    expect(events[0]!.type).toBe(MESSAGE_SNAPSHOT_EVENT_TYPE)
-    const expected = await finalMessage(parseChunks(toStream(frames)))
-    expect(await joinLikeClient(events)).toEqual(expected)
+describe('buildSnapshotReplay', () => {
+  test('a live turn gets a snapshot and one sub-agent update, whatever N is', async () => {
+    for (const updates of [1, 50, 200]) {
+      const events = await readAll(toStream([await buildSnapshotReplay(liveTurn(updates).map(frame))]))
+
+      expect(events[0]!.type).toBe(MESSAGE_SNAPSHOT_EVENT_TYPE)
+      const parts = snapshotOf(events)!.data.message.parts as Array<Record<string, any>>
+      expect(parts.some((p) => p.type === 'text' && p.text.includes('answer'))).toBe(true)
+      // The sub-agent's update history collapses to its current state.
+      expect(continuationOf(events).filter((e) => e.preliminary === true)).toHaveLength(1)
+      expect(events.at(-1)!.output.parts[0].text).toContain(`update ${updates - 1}`)
+      expect(events.map((e) => e.type)).toEqual([
+        MESSAGE_SNAPSHOT_EVENT_TYPE,
+        'data-context-usage',
+        'tool-input-start',
+        'tool-input-available',
+        'tool-output-available',
+      ])
+    }
   })
 
-  test('sends only the unfinished step as chunks, never the finished steps', async () => {
-    const events = await readAll(toStream([await buildSnapshotReplay(turn(300).map(frame))]))
+  test('snapshot + continuation rebuilds the same message as the raw replay', async () => {
+    const chunks = liveTurn(50)
+    const events = await readAll(toStream([await buildSnapshotReplay(chunks.map(frame))]))
+    expect(await joinLikeClient(events)).toEqual(await fullReplayMessage(chunks))
+  })
+
+  test('joining mid text delta cuts at the last closed part', async () => {
+    const chunks = midTextDelta()
+    const events = await readAll(toStream([await buildSnapshotReplay(chunks.map(frame))]))
+
+    expect(events[0]!.type).toBe(MESSAGE_SNAPSHOT_EVENT_TYPE)
+    expect(partChunks(events)[0]!.type).toBe('text-start')
+    expect(await joinLikeClient(events)).toEqual(await fullReplayMessage(chunks))
+  })
+
+  test('joining mid tool input cuts at the last closed part', async () => {
+    const chunks = midToolInput()
+    const events = await readAll(toStream([await buildSnapshotReplay(chunks.map(frame))]))
+
+    expect(events[0]!.type).toBe(MESSAGE_SNAPSHOT_EVENT_TYPE)
+    expect(partChunks(events).map((e) => e.type)).toEqual(['tool-input-start', 'tool-input-delta'])
+    expect(await joinLikeClient(events)).toEqual(await fullReplayMessage(chunks))
+  })
+
+  test('sends only the unfinished part as chunks, never the finished work', async () => {
+    const events = await readAll(toStream([await buildSnapshotReplay(liveTurn(50).map(frame))]))
     const types = events.map((e) => e.type)
     expect(types).not.toContain('reasoning-start')
     expect(types).not.toContain('start')
-    expect(types.slice(0, 3)).toEqual([MESSAGE_SNAPSHOT_EVENT_TYPE, 'data-context-usage', 'start-step'])
-    expect(events.length).toBeLessThan(12)
     // Latest transient state only.
     expect(events.filter((e) => e.type === 'data-context-usage')).toHaveLength(1)
     expect(events.find((e) => e.type === 'data-context-usage')!.data.inputTokens).toBe(2)
   })
 
   test('snapshot message holds the finished work (parts, tool call, reasoning)', async () => {
-    const [snapshot] = await readAll(toStream([await buildSnapshotReplay(turn(5).map(frame))]))
-    const parts = snapshot!.data.message.parts as Array<Record<string, any>>
-    expect(snapshot!.data.message.id).toBe('m1')
-    expect(parts.some((p) => p.type === 'reasoning' && p.text.includes('think 4'))).toBe(true)
-    expect(parts.some((p) => p.type === 'text' && p.text.includes('a4'))).toBe(true)
-    expect(parts.some((p) => p.type === 'tool-exec' && p.toolCallId === 'c1')).toBe(true)
+    const events = await readAll(toStream([await buildSnapshotReplay(liveTurn(50).map(frame))]))
+    const parts = snapshotOf(events)!.data.message.parts as Array<Record<string, any>>
+    expect(snapshotOf(events)!.data.message.id).toBe('m1')
+    expect(parts.some((p) => p.type === 'reasoning' && p.text.includes('think2'))).toBe(true)
+    expect(parts.some((p) => p.type === 'text' && p.text.includes('answer2'))).toBe(true)
+    expect(parts.some((p) => p.type === 'tool-exec' && p.toolCallId === 'c1' && p.state === 'output-available')).toBe(true)
   })
 
-  test('falls back to the compacted replay before the first step finishes', async () => {
-    const frames = turn(20).slice(0, 12).map(frame)
+  test('a finished turn snapshots the whole message and sends no continuation', async () => {
+    const chunks = finishedTurn()
+    const events = await readAll(toStream([await buildSnapshotReplay(chunks.map(frame))]))
+    expect(events.map((e) => e.type)).toEqual([MESSAGE_SNAPSHOT_EVENT_TYPE, 'data-context-usage'])
+    expect(await joinLikeClient(events)).toEqual(await fullReplayMessage(chunks))
+  })
+
+  test('falls back to the compacted replay until a part closes', async () => {
+    const frames = [
+      { type: 'start', messageId: 'm1' },
+      { type: 'start-step' },
+      { type: 'reasoning-start', id: 'r0' },
+      ...deltas('reasoning-delta', 'r0', 20, 'think'),
+    ].map(frame)
     const events = await readAll(toStream([await buildSnapshotReplay(frames)]))
     expect(events.map((e) => e.type)).not.toContain(MESSAGE_SNAPSHOT_EVENT_TYPE)
     expect(events[0]!.type).toBe('start')
@@ -135,8 +221,7 @@ describe('StreamBufferStore buildReplay', () => {
   test('snapshot, exact seq, then live frames that finish the same message', async () => {
     const store = new StreamBufferStore()
     const writer = store.create('s', { turnId: 't' })
-    const all = turn(100)
-    for (const c of all) writer.append(frame(c))
+    for (const c of liveTurn(100)) writer.append(frame(c))
     const lastSeq = writer.lastSeq
 
     const reader = store.createReplayStream('s', { buildReplay: buildSnapshotReplay })!.getReader()
@@ -149,8 +234,8 @@ describe('StreamBufferStore buildReplay', () => {
       transient: true,
     })
 
-    writer.append(frame({ type: 'text-delta', id: '0', delta: 'live' }))
-    expect(dec.decode((await reader.read()).value!)).toContain('"delta":"live"')
+    writer.append(frame(spawnUpdate(100, 'live')))
+    expect(dec.decode((await reader.read()).value!)).toContain('"text":"live"')
     reader.cancel()
     store.dispose()
   })

@@ -4,8 +4,9 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { getRuntimeManager } from '../lib/runtime'
+import { pinWorkspaceToHomeRegion } from '../lib/chat-region-pin'
 import { verifySessionAccess, type HookContext } from '../generated/chat-queued-message.hooks'
-import { dispatchNext } from '../services/chat-queue-dispatcher.service'
+import { dispatchNext, dispatchQueuedRow } from '../services/chat-queue-dispatcher.service'
 import { projectChatRoutes } from './project-chat'
 import { workspaceChatRoutes } from './workspace-chat'
 
@@ -32,7 +33,24 @@ function hookError(c: any, result: any): Response {
   return c.json({ error: result.error }, status)
 }
 
-/** Both actions reorder or dispatch the queue, so they need write access to the session. */
+function parseJsonBody(value: string | null | undefined): Record<string, any> {
+  if (!value) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, any>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function taskNotificationOf(value: string | null | undefined): Record<string, any> {
+  const tn = parseJsonBody(value).taskNotification
+  return tn && typeof tn === 'object' ? (tn as Record<string, any>) : {}
+}
+
+/**
+ * Both actions reorder or dispatch the queue, so they need write access to the session.
+ */
 async function getAuthorizedRow(c: any, id: string): Promise<any | Response> {
   const queued = await (prisma as any).chatQueuedMessage.findUnique({ where: { id }, select: { sessionId: true } })
   if (!queued) return c.json({ error: { code: 'not_found', message: 'Queued message not found' } }, 404)
@@ -47,6 +65,7 @@ async function getAuthorizedRow(c: any, id: string): Promise<any | Response> {
           contextId: true,
           workspaceId: true,
           activeTurnId: true,
+          project: { select: { workspaceId: true } },
         },
       },
     },
@@ -62,6 +81,10 @@ async function stopActiveTurn(row: any, userId: string): Promise<void> {
     'X-Queue-User-Id': userId,
     'X-Billing-User-Id': userId,
   }
+  // `handOff: 'caller'` tells the stop route not to start the queue itself: this
+  // route dispatches the clicked row as soon as the turn is clear, and answers
+  // the click with what that came to. Two starters would race for one turn.
+  const body = JSON.stringify({ chatSessionId: row.sessionId, handOff: 'caller' })
   let response: Response
   if (row.session.contextType === 'project' && row.session.contextId) {
     response = await projectChatRoutes({
@@ -70,7 +93,7 @@ async function stopActiveTurn(row: any, userId: string): Promise<void> {
       new Request(`http://internal/projects/${encodeURIComponent(row.session.contextId)}/chat/stop`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ chatSessionId: row.sessionId }),
+        body,
       }),
     )
   } else if (row.session.workspaceId) {
@@ -83,7 +106,7 @@ async function stopActiveTurn(row: any, userId: string): Promise<void> {
       new Request(`http://internal/workspaces/${encodeURIComponent(row.session.workspaceId)}/chat/stop`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ chatSessionId: row.sessionId }),
+        body,
       }),
     )
   } else {
@@ -147,6 +170,15 @@ export function chatQueuedMessageActionsRoutes(): Hono {
     if (!userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
+    // Every write below (promote, claim, turn start) has to happen in the
+    // session's home region, or two regions claim the same row and insert the
+    // same `chat_messages.id`. Forwarding the whole click is the same pin the
+    // chat routes use, so the region that answers is the one that dispatches.
+    const workspaceId = row.session.workspaceId ?? row.session.project?.workspaceId ?? null
+    if (workspaceId) {
+      const pinned = await pinWorkspaceToHomeRegion(c, workspaceId)
+      if (pinned) return pinned
+    }
 
     const first = await (prisma as any).chatQueuedMessage.findFirst({
       where: { sessionId: row.sessionId, status: { in: ['pending', 'failed'] } },
@@ -168,6 +200,52 @@ export function chatQueuedMessageActionsRoutes(): Hono {
         },
       }, 502)
     }
+
+    // The stop is the preemption, so this row starts now — claimed by id, not
+    // "whatever the queue picks if it reads idle", and awaited so the click is
+    // answered with what actually happened instead of a promise a timer has to
+    // keep (SHO-205).
+    const outcome = await dispatchQueuedRow(row.sessionId, id)
+    const updated = await (prisma as any).chatQueuedMessage.findUnique({ where: { id } })
+    if (!outcome.started) {
+      return c.json({
+        ok: false,
+        status: 'failed',
+        error: { code: 'dispatch_failed', message: outcome.error },
+        data: updated,
+      }, 502)
+    }
+    return c.json({ ok: true, status: 'started', data: updated })
+  })
+
+  router.post('/:id/resume', async (c) => {
+    const id = c.req.param('id')
+    const row = await getAuthorizedRow(c, id)
+    if (row instanceof Response) return row
+    if (row.kind !== 'task_notification') {
+      return c.json({ error: { code: 'bad_request', message: 'Only a waiting background update can be resumed' } }, 400)
+    }
+    if (row.status === 'dispatching') {
+      return c.json({ error: { code: 'busy', message: 'Queued message is already being dispatched' } }, 409)
+    }
+    // Resuming a paused wake is the same thing a person writing does, without
+    // writing: the row goes back to pending, and it is marked so the dispatcher
+    // does not re-pause it (`wakeRunReset` ends the run of automatic wakes that
+    // hit the cap). `consecutiveWakeWaits` reads the mark off the persisted
+    // message and starts counting again.
+    const body = { ...parseJsonBody(row.body), taskNotification: { ...taskNotificationOf(row.body), paused: false, wakeRunReset: true } }
+    const parts = (Array.isArray(parseJsonBody(row.parts) as unknown as any[])
+      ? (parseJsonBody(row.parts) as Array<Record<string, any>>)
+      : [{ type: 'text', text: row.content }]
+    ).map((part) =>
+      part?.type === 'data-task-notification'
+        ? { ...part, data: { ...(part.data ?? {}), wakeRunReset: true } }
+        : part,
+    )
+    await (prisma as any).chatQueuedMessage.update({
+      where: { id },
+      data: { status: 'pending', error: null, body: JSON.stringify(body), parts: JSON.stringify(parts) },
+    })
     void dispatchNext(row.sessionId)
     const updated = await (prisma as any).chatQueuedMessage.findUnique({ where: { id } })
     return c.json({ ok: true, data: updated })

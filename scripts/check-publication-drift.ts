@@ -68,6 +68,11 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
  * LLM traffic served by the local region and stays next to that region's
  * capture bucket.
  *
+ * `device_version_events` was briefly here (#1635) and REJOINED the mesh
+ * (SHO-142): `20261022120000_device_version_events_region_ids` gave it random
+ * ids and a `(region, deviceId, version)` unique key, so the two regions can no
+ * longer collide on it. Do not add it back — it is published on purpose.
+ *
  * IMPORTANT DRIFT NOTE: a `FOR TABLES IN SCHEMA public` publication cannot
  * exclude individual tables (`ALTER PUBLICATION ... DROP TABLE` is unsupported
  * on schema-level pubs). To exclude these two, the LIVE publication was hand-
@@ -206,4 +211,9 @@ function main(): number {
   return 1
 }
 
-process.exit(main())
+// Only run when executed as a script: `scripts/check-migration-derived-ids.ts`
+// imports INTENTIONALLY_UNPUBLISHED from here so there is one source of truth
+// for "which tables are region-local".
+if (import.meta.main) {
+  process.exit(main())
+}

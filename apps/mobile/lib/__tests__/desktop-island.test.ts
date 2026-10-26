@@ -3,7 +3,9 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
 import {
+  DESKTOP_ISLAND_WORKSPACE_AGENT_ID,
   getDesktopIslandSnapshot,
+  isWorkspaceAgentProjectId,
   registerDesktopIslandSession,
   setDesktopIslandNavigator,
   updateDesktopIslandSession,
@@ -91,7 +93,7 @@ describe("desktop island session routing", () => {
       text: "Start here",
     })
     await tick()
-    expect(navigations).toEqual([{ projectId: "project-3", sessionId: "session-3" }])
+    expect(navigations).toEqual([{ kind: "project", projectId: "project-3", sessionId: "session-3" }])
 
     const messages: string[] = []
     const dispose = registerDesktopIslandSession({
@@ -213,5 +215,65 @@ describe("desktop island session routing", () => {
     await tick()
     expect(calls).toEqual(["stop", "build:model-x", "feedback:Smaller steps"])
     dispose()
+  })
+
+  test("publishes workspace-agent sessions without listing them as projects", async () => {
+    const dispose = registerDesktopIslandSession({
+      sessionId: "ws-session-1",
+      projectId: DESKTOP_ISLAND_WORKSPACE_AGENT_ID,
+      title: "Plan my week",
+      status: "running",
+      sendMessage: () => {},
+    })
+    await flushPublish()
+    const snapshot = getDesktopIslandSnapshot()
+    expect(snapshot.sessions.map((s) => s.sessionId)).toEqual(["ws-session-1"])
+    expect(snapshot.sessions[0].projectName).toBe("Shogo")
+    expect(snapshot.recentProjects).toEqual([])
+    dispose()
+    await flushPublish()
+  })
+
+  test("opens a workspace-agent session in the app's agent chat", async () => {
+    const navigations: DesktopIslandNavigation[] = []
+    setDesktopIslandNavigator((navigation) => navigations.push(navigation))
+
+    actionHandler?.({
+      type: "open",
+      projectId: DESKTOP_ISLAND_WORKSPACE_AGENT_ID,
+      sessionId: "ws-session-2",
+    })
+    await tick()
+    expect(navigations).toEqual([{ kind: "workspace-agent", sessionId: "ws-session-2" }])
+  })
+
+  test("queues a workspace-agent send and delivers it when the agent chat registers", async () => {
+    const navigations: DesktopIslandNavigation[] = []
+    setDesktopIslandNavigator((navigation) => navigations.push(navigation))
+
+    actionHandler?.({
+      type: "send",
+      target: { kind: "session", projectId: DESKTOP_ISLAND_WORKSPACE_AGENT_ID, sessionId: "ws-session-3" },
+      text: "Create a project called Atlas",
+    })
+    await tick()
+    expect(navigations).toEqual([{ kind: "workspace-agent", sessionId: "ws-session-3" }])
+
+    const messages: string[] = []
+    const dispose = registerDesktopIslandSession({
+      sessionId: "ws-session-3",
+      projectId: DESKTOP_ISLAND_WORKSPACE_AGENT_ID,
+      sendMessage: (text) => {
+        messages.push(text)
+      },
+    })
+    expect(messages).toEqual(["Create a project called Atlas"])
+    dispose()
+  })
+
+  test("recognises the workspace-agent id", () => {
+    expect(isWorkspaceAgentProjectId(DESKTOP_ISLAND_WORKSPACE_AGENT_ID)).toBe(true)
+    expect(isWorkspaceAgentProjectId("project-1")).toBe(false)
+    expect(isWorkspaceAgentProjectId(undefined)).toBe(false)
   })
 })

@@ -11,8 +11,33 @@ import { prisma } from '../lib/prisma'
 import { listAllObjectsInS3 } from '../lib/s3'
 import { INSTANCE_SIZES, type InstanceSizeName } from '../config/instance-sizes'
 import { withGlobalJobLock } from '../lib/global-job-lock'
+import { homeRegionWorkspaceWhere } from '../lib/region'
 
 const S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET || 'shogo-workspaces'
+
+/**
+ * Minimum gap between two fleet-wide recalculation passes.
+ *
+ * Every API pod schedules the pass (boot + every 6h) and the global advisory
+ * lock only stops passes that *overlap*, so pods that boot at different times
+ * each ran a full sweep — ~61 passes/day against 4 intended (PERF-1).
+ *
+ * 5h, not 5.5h: `lastCalculatedAt` is written per workspace as it *finishes*,
+ * so the max marks the END of a pass that may have started tens of minutes
+ * earlier. A 5.5h gate would make the next 6h tick (only 5h20m after a
+ * 40-minute pass) skip a whole cycle; staggered pods tick often, so 5h still
+ * lands roughly one pass every 5–6h.
+ */
+export const STORAGE_RECALC_MIN_GAP_MS = 5 * 60 * 60 * 1000
+
+export type StorageRecalcStatus = 'ran' | 'fresh' | 'locked'
+
+export interface StorageRecalcOutcome {
+  /** `fresh` = a pass finished recently, `locked` = another pod held the lock. */
+  status: StorageRecalcStatus
+  /** Workspaces scanned. Only present when `status === 'ran'`. */
+  workspaces?: number
+}
 
 export interface StorageBreakdown {
   totalBytes: number
@@ -158,23 +183,63 @@ export async function isOverStorageLimit(workspaceId: string): Promise<boolean> 
  * which would poison the apply worker until manually unwedged — same
  * failure class as the 2026-05-21 `analytics_digests` incident. See
  * `apps/api/src/lib/global-job-lock.ts` for the lock contract.
+ *
+ * The advisory lock only stops *overlapping* passes, and every pod schedules
+ * its own (boot + 6h), so pods booting at different times each ran a full
+ * sweep — ~61 passes/day against 4 intended (PERF-1). The freshness gate below
+ * skips the sweep when `storage_usage.lastCalculatedAt` shows one finished
+ * within `STORAGE_RECALC_MIN_GAP_MS`. `calculateWorkspaceStorageUsage` has
+ * exactly one caller (this pass), so that timestamp already means "the fleet
+ * pass touched this workspace". No new table, no schema change, and because
+ * `storage_usage` is replicated an EU pod sees a US pass too.
  */
-export async function recalculateAllStorageUsage() {
-  await withGlobalJobLock('storage-recalculate-all', async () => {
-    const workspaces = await prisma.workspace.findMany({
-      select: { id: true },
-    })
+export async function recalculateAllStorageUsage(): Promise<StorageRecalcOutcome> {
+  const lock = await withGlobalJobLock<StorageRecalcOutcome>(
+    'storage-recalculate-all',
+    async () => {
+      // The advisory lock is per database, so it never stopped US and EU from
+      // each sweeping every workspace (PERF-8). Each region recalculates only
+      // the workspaces it is home for, and judges freshness on those alone:
+      // a peer's pass over its own slice says nothing about ours.
+      const home = homeRegionWorkspaceWhere()
+      const { _max } = await prisma.storageUsage.aggregate({
+        ...(home ? { where: { workspace: home } } : {}),
+        _max: { lastCalculatedAt: true },
+      })
+      const lastCalculatedAt = _max.lastCalculatedAt ?? null
 
-    console.log(`[Storage] Recalculating storage for ${workspaces.length} workspaces`)
-
-    for (const ws of workspaces) {
-      try {
-        await calculateWorkspaceStorageUsage(ws.id)
-      } catch (err: any) {
-        console.error(`[Storage] Failed to recalculate for workspace ${ws.id}:`, err.message)
+      if (lastCalculatedAt) {
+        // `null` max (empty table) means a fresh environment: always run.
+        const ageMs = Date.now() - new Date(lastCalculatedAt).getTime()
+        if (ageMs < STORAGE_RECALC_MIN_GAP_MS) {
+          console.log(
+            `[Storage] Skipping recalculation: last pass finished ${Math.round(ageMs / 60_000)}m ago`,
+          )
+          return { status: 'fresh' as const }
+        }
       }
-    }
 
-    console.log(`[Storage] Recalculation complete`)
-  })
+      const workspaces = await prisma.workspace.findMany({
+        ...(home ? { where: home } : {}),
+        select: { id: true },
+      })
+
+      console.log(`[Storage] Recalculating storage for ${workspaces.length} workspaces`)
+
+      for (const ws of workspaces) {
+        try {
+          await calculateWorkspaceStorageUsage(ws.id)
+        } catch (err: any) {
+          console.error(`[Storage] Failed to recalculate for workspace ${ws.id}:`, err.message)
+        }
+      }
+
+      console.log(`[Storage] Recalculation complete`)
+
+      return { status: 'ran' as const, workspaces: workspaces.length }
+    },
+  )
+
+  if (!lock.acquired) return { status: 'locked' }
+  return lock.result
 }

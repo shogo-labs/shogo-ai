@@ -694,6 +694,15 @@ export default observer(function MarketplaceHomeScreen() {
         </View>
         <View className={isNative ? 'flex-row items-center gap-1 shrink-0' : 'flex-row items-center gap-3 shrink-0'}>
           <Pressable
+            onPress={() => router.push('/(app)/marketplace/packs' as any)}
+            className={isNative ? 'h-10 w-10 items-center justify-center rounded-full active:bg-muted' : 'flex-row items-center gap-1.5 py-1.5 rounded-lg active:opacity-70'}
+            accessibilityRole="button"
+            accessibilityLabel="Agent packs"
+          >
+            <Package size={isNative ? 18 : 14} color={isNative ? '#a1a1aa' : '#71717a'} />
+            {!isNative && <Text className="text-xs font-medium text-muted-foreground">Packs</Text>}
+          </Pressable>
+          <Pressable
             onPress={() => router.push('/(app)/marketplace/installs' as any)}
             className={isNative ? 'h-10 w-10 items-center justify-center rounded-full active:bg-muted' : 'flex-row items-center gap-1.5 py-1.5 rounded-lg active:opacity-70'}
             accessibilityRole="button"

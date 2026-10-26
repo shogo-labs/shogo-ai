@@ -9,8 +9,7 @@
  */
 
 import type { AgentEval, EvalResult } from './types'
-import type { ToolMockMap } from './tool-mocks'
-import { usedTool, neverUsedTool } from './eval-helpers'
+import { usedTool, neverUsedTool, builtCanvasV2Only, execCommands, fileWrites, readWorkspaceFile, writtenContent } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Shared config
@@ -23,20 +22,6 @@ const V2_CONFIG = JSON.stringify({
   activeMode: 'canvas',
   model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
 }, null, 2)
-
-const SKILL_SERVER_MOCKS: ToolMockMap = {
-  exec: { type: 'static', response: 'Done.' },
-  web: {
-    type: 'pattern',
-    patterns: [
-      { match: { url: '/api/', method: 'POST' }, response: JSON.stringify({ id: 'new-1', createdAt: '2026-03-26T00:00:00Z' }) },
-      { match: { url: '/api/', method: 'PATCH' }, response: JSON.stringify({ id: 'new-1', updatedAt: '2026-03-26T00:00:00Z' }) },
-      { match: { url: '/api/', method: 'DELETE' }, response: JSON.stringify({ deleted: true }) },
-      { match: { url: '/api/' }, response: JSON.stringify([]) },
-    ],
-    default: JSON.stringify([]),
-  },
-}
 
 const LINT_ANTI_PATTERNS = [
   'used v1 canvas tools instead of file tools',
@@ -51,58 +36,34 @@ function isCodeFile(path: string): boolean {
   return /^src\/.*\.(tsx?|jsx?)$/.test(path)
 }
 
+/** Wrote or edited a src/ code file via any route (the template ships src/App.tsx). */
 function wroteCodeFile(r: EvalResult, namePattern?: RegExp): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    const path = String((t.input as any).path ?? '')
-    if (!isCodeFile(path)) return false
-    return namePattern ? namePattern.test(path) : true
-  })
+  return fileWrites(r).some(w => isCodeFile(w.path) && (!namePattern || namePattern.test(w.path)))
 }
 
 function allWrittenCode(r: EvalResult): string {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => {
-      const path = String((t.input as any).path ?? '')
-      return isCodeFile(path)
-    })
-    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
-    .join('\n')
+  return writtenContent(r, isCodeFile)
 }
 
 function anyCodeContains(r: EvalResult, term: string): boolean {
   return allWrittenCode(r).toLowerCase().includes(term.toLowerCase())
 }
 
-function neverUsedV1CanvasTools(_r: EvalResult): boolean {
-  return true
+function neverUsedV1CanvasTools(r: EvalResult): boolean {
+  return builtCanvasV2Only(r)
 }
 
 function editedCodeFile(r: EvalResult, namePattern?: RegExp): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'edit_file') return false
-    const path = String((t.input as any).path ?? '')
-    if (!isCodeFile(path)) return false
-    return namePattern ? namePattern.test(path) : true
-  })
+  return fileWrites(r).some(w => w.via !== 'write_file' && isCodeFile(w.path) && (!namePattern || namePattern.test(w.path)))
 }
 
 function codeFileCount(r: EvalResult): number {
-  const paths = new Set<string>()
-  for (const t of r.toolCalls) {
-    if (t.name !== 'write_file') continue
-    const path = String((t.input as any).path ?? '')
-    if (isCodeFile(path)) paths.add(path)
-  }
-  return paths.size
+  return new Set(fileWrites(r).filter(w => isCodeFile(w.path)).map(w => w.path)).size
 }
 
 function schemaContainsModel(r: EvalResult, modelName: string): boolean {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file')
-    .filter(t => String((t.input as any).path ?? '').includes('schema.prisma'))
-    .some(t => String((t.input as any).content ?? '').includes(`model ${modelName}`))
+  const text = `${writtenContent(r, (p) => p.endsWith('schema.prisma'))}\n${readWorkspaceFile(r, 'prisma/schema.prisma')}`
+  return new RegExp(`model\\s+${modelName}\\b`).test(text)
 }
 
 function canvasCodeFetches(r: EvalResult): boolean {
@@ -114,35 +75,53 @@ function canvasCodeFetches(r: EvalResult): boolean {
 // Lint-specific validation helpers (read_lints-based)
 // ---------------------------------------------------------------------------
 
-function usedReadLints(r: EvalResult): boolean {
-  return r.toolCalls.some(t => t.name === 'read_lints')
+function parseOutput(output: unknown): any {
+  if (typeof output !== 'string') return output
+  try { return JSON.parse(output) } catch { return output }
 }
 
+const TSC_RE = /(^|[\s;&|(])(npx\s+|bunx\s+|bun\s+x\s+)?(tsc|vue-tsc)\b|\b(bun|npm|pnpm|yarn)\s+(run\s+)?(typecheck|type-check|tsc|lint)\b/
+
+/**
+ * Ordered lint verdicts from every route: read_lints results, the inline
+ * `lint` field attached to write_file/edit_file results, and tsc / lint
+ * script runs. A code write with no inline verdict is `null` (unverified).
+ */
+function lintSignals(r: EvalResult): Array<boolean | null> {
+  const out: Array<boolean | null> = []
+  for (const t of r.toolCalls) {
+    const o = parseOutput(t.output)
+    if (t.name === 'read_lints') {
+      out.push(o?.ok === true ? true : o?.ok === false ? false : null)
+    } else if (fileWrites(r, [t]).some(w => isCodeFile(w.path))) {
+      const lint = o && typeof o === 'object' ? o.lint : undefined
+      out.push(lint?.ok === true ? true : lint?.ok === false ? false : null)
+    } else if ((t.name === 'exec' || t.name === 'terminal_exec') && execCommands(r, [t]).some(c => TSC_RE.test(c))) {
+      const text = typeof o === 'string' ? o : JSON.stringify(o ?? '')
+      const exit = o && typeof o === 'object' ? (o.exitCode ?? o.exit_code ?? o.code) : undefined
+      out.push(/error TS\d+|Found [1-9]\d* errors?|✖ [1-9]\d* problems?/.test(text) || (typeof exit === 'number' && exit !== 0) ? false : true)
+    }
+  }
+  return out
+}
+
+/** Checked lints at some point: read_lints, or a tsc/lint run. */
+function usedReadLints(r: EvalResult): boolean {
+  return r.toolCalls.some(t => t.name === 'read_lints') ||
+    execCommands(r).some(c => TSC_RE.test(c))
+}
+
+/** The last lint verdict (read_lints, inline write/edit lint, or tsc) is clean. */
 function lastReadLintsClean(r: EvalResult): boolean {
-  const lintCalls = r.toolCalls.filter(t => t.name === 'read_lints')
-  if (lintCalls.length === 0) return false
-  const last = lintCalls[lintCalls.length - 1]
-  try {
-    const out = typeof last.output === 'string' ? JSON.parse(last.output) : last.output
-    return out?.ok === true
-  } catch { return false }
+  const signals = lintSignals(r)
+  return signals.length > 0 && signals[signals.length - 1] === true
 }
 
 function selfCorrectedIfNeeded(r: EvalResult): boolean {
-  const lintCalls = r.toolCalls.filter(t => t.name === 'read_lints')
-  const firstWithErrors = lintCalls.findIndex(t => {
-    try {
-      const out = typeof t.output === 'string' ? JSON.parse(t.output) : t.output
-      return out?.ok === false
-    } catch { return false }
-  })
+  const signals = lintSignals(r)
+  const firstWithErrors = signals.indexOf(false)
   if (firstWithErrors === -1) return true
-  return lintCalls.slice(firstWithErrors + 1).some(t => {
-    try {
-      const out = typeof t.output === 'string' ? JSON.parse(t.output) : t.output
-      return out?.ok === true
-    } catch { return false }
-  })
+  return signals.slice(firstWithErrors + 1).includes(true)
 }
 
 function countDistinctIconImports(r: EvalResult): number {
@@ -323,7 +302,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -347,7 +326,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final code is lint-clean',
+        description: 'Final code is lint-clean (last read_lints / inline lint / tsc verdict)',
         points: 25,
         phase: 'execution',
         validate: (r) => lastReadLintsClean(r),
@@ -385,7 +364,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -413,7 +392,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final code is lint-clean',
+        description: 'Final code is lint-clean (last read_lints / inline lint / tsc verdict)',
         points: 25,
         phase: 'execution',
         validate: (r) => lastReadLintsClean(r),
@@ -461,7 +440,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -528,7 +507,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final code is lint-clean',
+        description: 'Final code is lint-clean (last read_lints / inline lint / tsc verdict)',
         points: 20,
         phase: 'execution',
         validate: (r) => lastReadLintsClean(r),
@@ -568,7 +547,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'used-read-lints',
-        description: 'Called read_lints at some point',
+        description: 'Checked lints (read_lints or a tsc/lint run)',
         points: 15,
         phase: 'intention',
         validate: (r) => usedReadLints(r),
@@ -579,30 +558,26 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          return r.toolCalls.some(t => {
-            if (t.name !== 'edit_file') return false
-            const oldStr = String((t.input as any).old_string ?? '')
-            const newStr = String((t.input as any).new_string ?? '')
-            return oldStr.includes('CardDescrption') && newStr.includes('CardDescription')
-          })
+          const final = readWorkspaceFile(r, 'src/components/Dashboard.tsx')
+          if (final) return !final.includes('CardDescrption') && final.includes('<CardTitle>Metrics</CardTitle>')
+          return writtenContent(r, /Dashboard\.tsx$/).includes('CardDescription')
         },
       },
       {
         id: 'fixed-hook',
-        description: 'Fixed or removed useLocalStorage',
+        description: 'Fixed or removed useLocalStorage (import removed, or the hook now exists)',
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          return r.toolCalls.some(t => {
-            if (t.name !== 'edit_file') return false
-            const oldStr = String((t.input as any).old_string ?? '')
-            return oldStr.includes('useLocalStorage')
-          })
+          const final = readWorkspaceFile(r, 'src/components/Dashboard.tsx')
+          const hookExists = ['src/hooks/useLocalStorage.ts', 'src/hooks/useLocalStorage.tsx'].some(p => readWorkspaceFile(r, p).includes('useLocalStorage'))
+          if (final) return !final.includes('useLocalStorage') || hookExists
+          return r.toolCalls.some(t => t.name === 'edit_file' && String((t.input as any).old_string ?? '').includes('useLocalStorage'))
         },
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final code is lint-clean',
+        description: 'Final code is lint-clean (last read_lints / inline lint / tsc verdict)',
         points: 20,
         phase: 'execution',
         validate: (r) => lastReadLintsClean(r),
@@ -640,7 +615,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -719,7 +694,6 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     input: 'Build a real-time notification center that fetches notifications from /api/notifications, groups them by type (info, warning, error), shows unread count badges, and lets me mark them as read. Use optimistic updates when marking as read.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
-    toolMocks: SKILL_SERVER_MOCKS,
     antiPatterns: LINT_ANTI_PATTERNS,
     maxScore: 100,
     validationCriteria: [
@@ -739,7 +713,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -780,7 +754,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final code is lint-clean',
+        description: 'Final code is lint-clean (last read_lints / inline lint / tsc verdict)',
         points: 25,
         phase: 'execution',
         validate: (r) => lastReadLintsClean(r),
@@ -811,7 +785,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'never-v1',
-        description: 'Never used v1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'intention',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -856,7 +830,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final code is lint-clean',
+        description: 'Final code is lint-clean (last read_lints / inline lint / tsc verdict)',
         points: 25,
         phase: 'execution',
         validate: (r) => lastReadLintsClean(r),
@@ -930,19 +904,19 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final code is lint-clean',
+        description: 'Final code is lint-clean (last read_lints / inline lint / tsc verdict)',
         points: 25,
         phase: 'execution',
         validate: (r) => lastReadLintsClean(r),
       },
       {
         id: 'did-not-break-existing',
-        description: 'Core tracker elements still present',
+        description: 'Final Tracker.tsx still has state, table, add and totals',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allWrittenCode(r)
-          return code.includes('useState') && (code.includes('Table') || code.includes('Card'))
+          const code = readWorkspaceFile(r, 'src/components/Tracker.tsx') || allWrittenCode(r)
+          return code.includes('useState') && code.includes('<Table') && code.includes('addItem') && code.includes('totalHours')
         },
       },
       {

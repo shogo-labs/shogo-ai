@@ -57,7 +57,24 @@ export interface HostScalars {
   }
   /** NVMe cache scalars from the heartbeat (Phase 5). */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
+  /** A rebuilt rootfs built beside the live one, waiting for activation. Drives the switch-over pre-warm. */
+  stagedRootfs?: StagedRootfsReport
+  /** The host's last heartbeat came from an agent about to restart (control port briefly down). */
+  restarting?: boolean
   lastSeenAt: number
+}
+
+/** A host's staged rootfs, as reported in its heartbeat (metal-agent self-update.ts). */
+export interface StagedRootfsReport {
+  /** Release the staged image was built for. */
+  version: string
+  /** Rootfs identity of each staged image; equal to the host's identity after activation. */
+  identities: { standard: string; docker?: string }
+  stagedAt?: number
+  /** False when the host can't boot on the staged image: activate without a pre-warm. */
+  prewarm?: boolean
+  /** Pre-warmed snapshots the host holds on the staged image. */
+  stagedSnapshots?: number
 }
 
 export interface Placement {
@@ -128,6 +145,9 @@ const WS_RUN_KEY = 'metal:wsrun:' // + workspaceId → ZSET(member=runtimeKey, s
 const WS_MEM_KEY = 'metal:wsmem:' // + workspaceId → HASH(runtimeKey → memMiB)
 const WS_NOTICE_KEY = 'metal:wsnotice:' // + runtimeKey → JSON BudgetNotice, read once
 const WS_NOTICE_TTL_S = 300
+const WAKE_START_KEY = 'metal:wakestart:' // + runtimeKey → epoch ms the user started waiting
+/** Longer than any open we would still call one wait (the guest clamps hydrate at 30 min). */
+const WAKE_START_TTL_S = 30 * 60
 
 // Compare-and-delete / compare-and-expire so only the lease holder can
 // renew or release it (a stale holder must not free a re-acquired lease).
@@ -167,6 +187,7 @@ export class MetalPlacementRegistry {
   // workspaceId → (runtimeKey → { openedAt, memMiB }). Analog of the wsrun/wsmem keys.
   private memWorkspaceRuns = new Map<string, Map<string, WorkspaceRun>>()
   private memBudgetNotices = new Map<string, { notice: unknown; expiresAt: number }>()
+  private memWakeStarts = new Map<string, number>()
 
   constructor(private redisGetter: () => Redis | null = getSharedRedis) {}
 
@@ -373,6 +394,41 @@ export class MetalPlacementRegistry {
     } catch {
       this.memPubPlace.delete(subdomain)
     }
+  }
+
+  /**
+   * Every live published placement this registry knows about. Used by the
+   * orphaned-published-site reconcile sweep (a deleted project's placement is
+   * still a routing entry until it's cleared). Redis TTLs already prune stale
+   * entries; the in-process map is the fallback when Redis isn't configured.
+   */
+  async listPublishedPlacements(): Promise<Array<{ subdomain: string } & PublishedPlacement>> {
+    const out = new Map<string, { subdomain: string } & PublishedPlacement>()
+    for (const [subdomain, rec] of this.memPubPlace) out.set(subdomain, { subdomain, ...rec })
+
+    const r = this.redis()
+    if (r) {
+      try {
+        let cursor = '0'
+        do {
+          const [next, keys] = (await r.scan(cursor, 'MATCH', `${PUB_PLACE_KEY}*`, 'COUNT', 200)) as any
+          cursor = next
+          for (const fullKey of keys as string[]) {
+            const raw = await r.get(fullKey)
+            if (!raw) continue
+            try {
+              const rec = JSON.parse(raw) as PublishedPlacement
+              out.set(fullKey.slice(PUB_PLACE_KEY.length), { subdomain: fullKey.slice(PUB_PLACE_KEY.length), ...rec })
+            } catch {
+              // A malformed entry can't be reconciled safely — leave it for the TTL.
+            }
+          }
+        } while (cursor !== '0')
+      } catch {
+        // Redis blip: fall back to whatever the in-process map holds.
+      }
+    }
+    return [...out.values()]
   }
 
   // --- per-project lease (anti split brain) --------------------------------
@@ -730,6 +786,44 @@ export class MetalPlacementRegistry {
       await r.set(`${WS_NOTICE_KEY}${runtimeKey}`, JSON.stringify(notice), 'EX', WS_NOTICE_TTL_S)
     } catch {
       setMem()
+    }
+  }
+
+  /**
+   * Remember when a user started waiting for `runtimeKey`, if nobody has yet.
+   * A slow open is several resolves (each /assign gives up after 30s and is
+   * retried, often on another replica), so the first attempt is the start.
+   */
+  async markWakeStart(runtimeKey: string, at: number): Promise<void> {
+    const r = this.redis()
+    const setMem = () => {
+      if (!this.memWakeStarts.has(runtimeKey)) this.memWakeStarts.set(runtimeKey, at)
+    }
+    if (!r) return setMem()
+    try {
+      await r.set(`${WAKE_START_KEY}${runtimeKey}`, String(at), 'EX', WAKE_START_TTL_S, 'NX')
+    } catch {
+      setMem()
+    }
+  }
+
+  /** Read and clear when the user started waiting for `runtimeKey`; null if no earlier attempt failed. */
+  async takeWakeStart(runtimeKey: string, now: number = Date.now()): Promise<number | null> {
+    const fromMem = (): number | null => {
+      const at = this.memWakeStarts.get(runtimeKey)
+      this.memWakeStarts.delete(runtimeKey)
+      return at !== undefined && now - at <= WAKE_START_TTL_S * 1000 ? at : null
+    }
+    const r = this.redis()
+    if (!r) return fromMem()
+    try {
+      const key = `${WAKE_START_KEY}${runtimeKey}`
+      const res = await r.multi().get(key).del(key).exec()
+      const raw = res?.[0]?.[1] as string | null | undefined
+      const at = raw ? Number(raw) : NaN
+      return Number.isFinite(at) ? at : fromMem()
+    } catch {
+      return fromMem()
     }
   }
 

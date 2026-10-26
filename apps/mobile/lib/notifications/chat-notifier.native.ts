@@ -12,6 +12,7 @@ import { AppState, Platform } from 'react-native'
 import * as Notifications from 'expo-notifications'
 
 import { parseAgentDeepLink } from '../agent-glance'
+import { alertTitleFor } from './alert-title'
 import { answerApproval } from '../approval-decision'
 import { getRequireBiometricApproval, subscribeRequireBiometricApproval } from '../approval-lock'
 import {
@@ -21,10 +22,18 @@ import {
   failedAnswerBody,
   type ApprovalAction,
 } from './agent-actions'
+import {
+  HUDDLE_CALLS_CHANNEL,
+  HUDDLE_CALL_CATEGORY,
+  huddleCallActionFrom,
+  huddleCallCategoryActions,
+  type HuddleCallAction,
+} from './huddle-call-actions'
 import type {
   ChannelNotificationPayload,
   ChatNotificationClickData,
   ChatNotificationPayload,
+  NotificationPermissionState,
 } from './chat-notifier'
 
 let handlerConfigured = false
@@ -79,10 +88,38 @@ async function handleApprovalAction(action: ApprovalAction) {
   }
 }
 
+/** Join and Decline on a huddle call alert. */
+async function registerHuddleCallCategory() {
+  try {
+    await Notifications.setNotificationCategoryAsync(HUDDLE_CALL_CATEGORY, huddleCallCategoryActions())
+  } catch {
+    // Without the category the alert still rings; its buttons just don't show.
+  }
+}
+
+/** Join or Decline on a huddle call alert: the same actions as the in-app ring. */
+async function handleHuddleCallAction(action: HuddleCallAction, notificationId: string | null) {
+  if (notificationId) {
+    await Notifications.dismissNotificationAsync(notificationId).catch(() => {})
+  }
+  const ring = {
+    huddleId: action.huddleId,
+    conversationId: action.conversationId,
+    workspaceId: action.workspaceId,
+    kind: action.kind,
+    from: { userId: '', name: action.callerName, image: null },
+  }
+  // Loaded late: the ring module sets up the system call screen, which this file should not do at load.
+  const ringStore = await import('../huddle-ring')
+  if (action.decision === 'join') await ringStore.answerRing(ring)
+  else await ringStore.declineRing(ring)
+}
+
 function ensureHandler() {
   if (handlerConfigured) return
   handlerConfigured = true
   void registerApprovalCategory()
+  void registerHuddleCallCategory()
   subscribeRequireBiometricApproval((value) => void registerApprovalCategory(value))
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
@@ -123,6 +160,14 @@ async function ensureAndroidChannel() {
       importance: Notifications.AndroidImportance.HIGH,
       sound: 'default',
     })
+    // Incoming huddle calls ring like a phone call: top importance, sound and vibration.
+    await Notifications.setNotificationChannelAsync(HUDDLE_CALLS_CHANNEL, {
+      name: 'Huddle calls',
+      importance: Notifications.AndroidImportance.MAX,
+      sound: 'default',
+      vibrationPattern: [0, 500, 250, 500],
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    })
   } catch {
     // Channel setup is best-effort.
   }
@@ -132,33 +177,81 @@ export async function isUserInactive(): Promise<boolean> {
   return AppState.currentState !== 'active'
 }
 
-let permissionCache: boolean | null = null
+/** Phones have no dock or taskbar to flag; the notification itself is the attention. */
+export async function requestAttention(_reason: string | null | undefined): Promise<void> {}
+
+// Only a grant is cached: a denial can be reversed in iOS Settings while the
+// app is running, so it has to be checked again next time.
+let permissionGranted = false
+const permissionGrantedListeners = new Set<() => void>()
+
+/** Called whenever permission turns out to be granted, e.g. after the user allows it in Settings. */
+export function subscribeNotificationPermissionGranted(listener: () => void): () => void {
+  permissionGrantedListeners.add(listener)
+  return () => permissionGrantedListeners.delete(listener)
+}
+
+async function markGranted() {
+  await ensureAndroidChannel()
+  if (permissionGranted) return
+  permissionGranted = true
+  permissionGrantedListeners.forEach((l) => l())
+}
+
+async function requestPermission(): Promise<boolean> {
+  const next = await Notifications.requestPermissionsAsync({
+    ios: {
+      allowAlert: true,
+      allowSound: true,
+      allowBadge: false,
+    },
+  })
+  if (next.granted) await markGranted()
+  return next.granted
+}
 
 export async function ensureNotificationPermission(): Promise<boolean> {
-  if (permissionCache !== null) return permissionCache
+  if (permissionGranted) return true
   try {
     const current = await Notifications.getPermissionsAsync()
     if (current.granted) {
-      await ensureAndroidChannel()
-      permissionCache = true
+      await markGranted()
       return true
     }
     if (!current.canAskAgain) {
-      permissionCache = false
+      console.warn('[notifications] Permission denied; it can only be turned on in Settings')
       return false
     }
-    const next = await Notifications.requestPermissionsAsync({
-      ios: {
-        allowAlert: true,
-        allowSound: true,
-        allowBadge: false,
-      },
-    })
-    permissionCache = next.granted
-    if (next.granted) await ensureAndroidChannel()
-    return next.granted
-  } catch {
+    const granted = await requestPermission()
+    if (!granted) console.warn('[notifications] Permission request was declined')
+    return granted
+  } catch (err) {
+    console.warn('[notifications] Permission check failed:', (err as Error).message)
     return false
+  }
+}
+
+export async function getNotificationPermissionState(): Promise<NotificationPermissionState> {
+  try {
+    const current = await Notifications.getPermissionsAsync()
+    if (current.granted) {
+      await markGranted()
+      return 'granted'
+    }
+    permissionGranted = false
+    return current.canAskAgain ? 'prompt' : 'denied'
+  } catch {
+    return 'unsupported'
+  }
+}
+
+export async function requestNotificationPermissionFromGesture(): Promise<NotificationPermissionState> {
+  const state = await getNotificationPermissionState()
+  if (state !== 'prompt') return state
+  try {
+    return (await requestPermission()) ? 'granted' : await getNotificationPermissionState()
+  } catch {
+    return 'unsupported'
   }
 }
 
@@ -182,7 +275,7 @@ export async function notifyChatFinished(p: ChatNotificationPayload): Promise<vo
   }
 }
 
-function parseClickData(raw: unknown): ChatNotificationClickData | null {
+export function parseClickData(raw: unknown): ChatNotificationClickData | null {
   const data = (raw ?? {}) as Record<string, unknown>
   const agentKey = typeof data.url === 'string' ? parseAgentDeepLink(data.url) : null
   if (agentKey) return { agentKey }
@@ -195,6 +288,12 @@ function parseClickData(raw: unknown): ChatNotificationClickData | null {
   }
   if (typeof data.sessionId === 'string' && typeof data.projectId === 'string') {
     return { sessionId: data.sessionId, projectId: data.projectId }
+  }
+  // Any other notification with an in-app destination (an invitation, a due
+  // reminder) carries it as an app-relative path. Absolute URLs are not
+  // followed here: only the agent deep link above is a known destination.
+  if (typeof data.actionUrl === 'string' && data.actionUrl.startsWith('/')) {
+    return { actionUrl: data.actionUrl }
   }
   return null
 }
@@ -210,7 +309,7 @@ export async function notifyChannelMessage(p: ChannelNotificationPayload): Promi
     await Notifications.scheduleNotificationAsync({
       identifier: `channel-${p.messageId}`,
       content: {
-        title: p.title,
+        title: alertTitleFor(p.reason, p.title),
         body: p.body,
         data: { conversationId: p.conversationId, threadRootId: p.threadRootId },
         sound: 'default',
@@ -234,6 +333,11 @@ export function subscribeNotificationClicks(
       void handleApprovalAction(answer)
       return
     }
+    const call = huddleCallActionFrom(response)
+    if (call) {
+      void handleHuddleCallAction(call, response.notification.request.identifier)
+      return
+    }
     const data = parseClickData(response.notification.request.content.data)
     if (data) cb(data)
   })
@@ -255,6 +359,13 @@ export async function consumeColdStartNotification(): Promise<ChatNotificationCl
     if (answer) {
       await Notifications.clearLastNotificationResponseAsync().catch(() => {})
       void handleApprovalAction(answer)
+      return null
+    }
+    // A press on Join or Decline of a huddle call alert opened the app: act on it, don't open a chat.
+    const call = huddleCallActionFrom(resp)
+    if (call) {
+      await Notifications.clearLastNotificationResponseAsync().catch(() => {})
+      void handleHuddleCallAction(call, resp?.notification.request.identifier ?? null)
       return null
     }
     return parseClickData(resp?.notification.request.content.data)

@@ -1,0 +1,44 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: renewals
+name: Renewals
+summary: Upcoming renewals worked 90 days out, with risk and expansion flagged.
+channel: sales
+board:
+  name: Renewals
+  itemType: deal
+  keyPrefix: REN
+  description: Contracts up for renewal. Open a card 90 days before the renewal date.
+  columns:
+    - name: Upcoming
+      category: backlog
+    - name: In conversation
+      category: active
+    - name: At risk
+      category: waiting
+    - name: Renewed
+      category: done
+    - name: Churned
+      category: dismissed
+  fields:
+    - key: company
+      label: Company
+      type: text
+      required: true
+    - key: arr
+      label: ARR
+      type: money
+    - key: renewalDate
+      label: Renewal date
+      type: date
+      required: true
+    - key: risk
+      label: Risk
+      type: select
+      options:
+        - low
+        - medium
+        - high

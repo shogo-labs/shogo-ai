@@ -2,12 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import {
-  BarChart3,
   Boxes,
   Building2,
-  Coins,
   CreditCard,
   Laptop,
+  MessageSquare,
   Monitor,
   Paintbrush,
   Plug,
@@ -23,17 +22,17 @@ import {
 export type SettingsTabId =
   | "workspace"
   | "people"
+  | "chat"
   | "models"
   | "integrations"
   | "automations"
+  | "data"
   | "remote-control"
   | "account"
   | "security"
   | "computer-files"
   | "billing"
   | "compute"
-  | "analytics"
-  | "costs"
   | "appearance"
   | "updates";
 
@@ -62,15 +61,11 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     group: "settings",
     cloudOnly: true,
   },
-  {
-    id: "models",
-    label: "Models",
-    Icon: Boxes,
-    group: "settings",
-    cloudOnly: true,
-  },
+  { id: "chat", label: "Chat", Icon: MessageSquare, group: "settings" },
+  { id: "models", label: "Models", Icon: Boxes, group: "settings" },
   { id: "integrations", label: "Integrations", Icon: Plug, group: "settings" },
   { id: "automations", label: "Automations", Icon: Zap, group: "settings" },
+  { id: "data", label: "Backup & export", Icon: Server, group: "settings" },
   {
     id: "remote-control",
     label: "Remote Control",
@@ -93,8 +88,6 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     desktopOnly: true,
   },
   { id: "billing", label: "Billing", Icon: CreditCard, group: "plan" },
-  { id: "analytics", label: "Usage", Icon: BarChart3, group: "plan" },
-  { id: "costs", label: "Cost Optimizer", Icon: Coins, group: "plan" },
   {
     id: "compute",
     label: "Compute",
@@ -140,13 +133,18 @@ export function visibleSettingsTabs({
   showBilling = true,
   platform,
   isDesktop = false,
+  teamChat = false,
 }: {
   localMode?: boolean;
   showBilling?: boolean;
   platform?: string;
   isDesktop?: boolean;
+  /** Chat preferences only exist in a team workspace; default off so callers
+   * that have not opted in never list a tab they cannot render. */
+  teamChat?: boolean;
 } = {}): SettingsTabDefinition[] {
   return SETTINGS_TABS.filter((tab) => {
+    if (tab.id === "chat") return teamChat;
     if (tab.id === "compute") return showBilling && platform !== "ios";
     // Desktop-only tabs that also need the local API (computer use, local apps).
     if (tab.desktopOnly && tab.localOnly) return isDesktop && localMode;

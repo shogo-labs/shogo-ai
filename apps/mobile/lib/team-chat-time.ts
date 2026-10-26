@@ -23,6 +23,31 @@ export function formatShortTime(iso: string): string {
   return out.join('').trim()
 }
 
+/** The reader's calendar day for an instant, usable for grouping and comparison. */
+function dayOf(d: Date): string {
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+}
+
+/** Which calendar day an instant falls on, in the reader's timezone. */
+export function dayKey(iso: string): string {
+  return dayOf(new Date(iso))
+}
+
+/**
+ * "Today", "Yesterday", or "Monday, October 12" (with the year once it differs)
+ * — the label on a timeline's day divider.
+ */
+export function formatDayDivider(iso: string, now: Date = new Date()): string {
+  const d = new Date(iso)
+  if (dayOf(d) === dayOf(now)) return 'Today'
+  const yesterday = new Date(now)
+  yesterday.setDate(yesterday.getDate() - 1)
+  if (dayOf(d) === dayOf(yesterday)) return 'Yesterday'
+  return d.toLocaleDateString([], d.getFullYear() === now.getFullYear()
+    ? { weekday: 'long', month: 'long', day: 'numeric' }
+    : { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+}
+
 /** "Today at 10:13:22 PM", "Yesterday at ...", or "Mon, Oct 5 at ...". */
 export function formatFullTime(iso: string, now: Date = new Date()): string {
   const d = new Date(iso)

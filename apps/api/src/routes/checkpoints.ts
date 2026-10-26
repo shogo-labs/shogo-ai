@@ -66,7 +66,15 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
   async function validateProject(projectId: string) {
     return prisma.project.findUnique({
       where: { id: projectId },
-      select: { id: true, name: true, workspaceId: true, workingMode: true } as any,
+      select: {
+        id: true,
+        name: true,
+        workspaceId: true,
+        workingMode: true,
+        // A `GitHubConnection` row means the repo was handed to Shogo, so a
+        // configured `origin` there is ours to commit to.
+        githubConnection: { select: { id: true } },
+      } as any,
     });
   }
 
@@ -91,6 +99,52 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
 
   function isExternal(project: { workingMode?: string } | null | undefined): boolean {
     return project?.workingMode === 'external';
+  }
+
+  /**
+   * A folder that is a checkout of someone else's git repository (a manual
+   * `git clone`, or any repo whose `origin` a human configured) is never
+   * committed into. Decided from the repo itself plus the presence of a
+   * `GitHubConnection` row — `workingMode` alone can't tell, because a managed
+   * project can still wrap a hand-made clone.
+   *
+   * Returns a typed 409 response, or null when Shogo owns the repo.
+   */
+  async function foreignRepoResponse(
+    c: any,
+    project: { githubConnection?: { id: string } | null } | null | undefined,
+    workspacePath: string,
+  ) {
+    if (project?.githubConnection) return null;
+    const originUrl = await gitService.getOriginRemoteUrl(workspacePath);
+    if (!originUrl) return null;
+    return c.json(
+      {
+        error: {
+          code: 'checkpoints_disabled_foreign_repo',
+          message:
+            `This project's folder is a checkout of another git repository (${originUrl}) — ` +
+            "Shogo won't commit into it. Use your own git, or connect the repo to Shogo so " +
+            'Shogo manages its history.',
+        },
+      },
+      409,
+    );
+  }
+
+  /**
+   * Map a checkpoint-disabled error thrown by the service (the gate can also
+   * fire after the route's own check, e.g. a repo cloned mid-request) onto the
+   * same typed 409 the UI already understands.
+   */
+  function disabledErrorResponse(c: any, error: any) {
+    if (error?.code === 'checkpoints_disabled_foreign_repo') {
+      return c.json({ error: { code: error.code, message: error.message } }, 409);
+    }
+    if (error?.code === 'checkpoints_disabled_in_external_mode') {
+      return externalModeResponse(c);
+    }
+    return null;
   }
 
   /**
@@ -134,6 +188,9 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
       // diverging from the durable history in object storage.
       const workspacePath = await withHydratedRepo(projectId);
 
+      const foreign = await foreignRepoResponse(c, project as any, workspacePath);
+      if (foreign) return foreign;
+
       const checkpoint = await checkpointService.createCheckpoint({
         projectId,
         workspacePath,
@@ -146,6 +203,8 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
 
       return c.json({ ok: true, checkpoint }, 201);
     } catch (error: any) {
+      const disabled = disabledErrorResponse(c, error);
+      if (disabled) return disabled;
       console.error('[Checkpoints] Create error:', error);
       return c.json(
         { error: { code: 'checkpoint_failed', message: error.message || 'Failed to create checkpoint' } },
@@ -172,6 +231,9 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
         );
       }
       if (isExternal(project as any)) return externalModeResponse(c);
+
+      const foreign = await foreignRepoResponse(c, project as any, getWorkspacePath(projectId));
+      if (foreign) return foreign;
 
       const checkpoints = await checkpointService.listCheckpoints(projectId, {
         limit: Math.min(limit, 100),
@@ -268,6 +330,9 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
       // checkpoint's commit was durably stored all along.
       const workspacePath = await withHydratedRepo(projectId);
 
+      const foreign = await foreignRepoResponse(c, project as any, workspacePath);
+      if (foreign) return foreign;
+
       const result = await checkpointService.rollback({
         projectId,
         workspacePath,
@@ -289,6 +354,8 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
         newCheckpoint: result.newCheckpoint,
       });
     } catch (error: any) {
+      const disabled = disabledErrorResponse(c, error);
+      if (disabled) return disabled;
       console.error('[Checkpoints] Rollback error:', error);
       return c.json(
         { error: { code: 'rollback_failed', message: error.message || 'Failed to rollback' } },

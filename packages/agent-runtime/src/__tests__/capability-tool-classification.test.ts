@@ -81,7 +81,7 @@ describe('capability tool classification', () => {
     for (const removed of [
       'exec', 'exec_list', 'terminal_exec', 'checkpoint', 'publish', 'create_plan', 'system_apply',
       'project_attach', 'project_detach', 'list_projects', 'mount_project',
-      'agent_spawn', 'team_create', 'task_create',
+      'agent_spawn', 'team_create', 'team_task_create',
       'impact_radius', 'detect_changes', 'review_context', 'read_lints', 'server_sync',
     ]) {
       expect(disabled.has(removed)).toBe(true)

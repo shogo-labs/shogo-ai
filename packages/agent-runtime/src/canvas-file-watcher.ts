@@ -114,11 +114,14 @@ const IGNORED_PATH_PREFIXES = [
   // auto-open log files and steal the active tab. Keep in sync with the
   // exclude list in github-workspace-git.ts.
   '.shogo/logs',
+  '.shogo/tasks',
   '.shogo/local',
   '.shogo/install-marker',
   '.shogo/agent-state.json',
   '.shogo/vite-watch.pid',
   '.shogo/vite.watch.config.ts',
+  // Downloaded team chat files (chat-files.ts): a cache, not source.
+  'chat-files',
   'dist',
   // Build-output-commit staging/rotation dirs. Must be ignored or
   // chokidar's recursive ReadDirectoryChangesW on Windows pins a handle

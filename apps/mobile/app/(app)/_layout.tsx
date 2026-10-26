@@ -28,7 +28,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { Slot, usePathname, useRouter } from "expo-router";
+import { Slot, Stack, usePathname, useRouter } from "expo-router";
 import { useAuth } from "../../contexts/auth";
 import {
   isWorkspaceRuntimeEnabled,
@@ -45,8 +45,8 @@ import { trackSignUp, trackLogin } from "../../lib/tracking";
 import { usePostHogIdentify, usePostHogSafe } from "../../contexts/posthog";
 import { DomainProvider, useWorkspaceCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { useActiveInstance } from "../../contexts/active-instance";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
-import { getActiveWorkspaceId } from "../../lib/workspace-store";
 import {
   homePathForWorkspaceKind,
   subscribeWorkspaceSwitched,
@@ -54,8 +54,10 @@ import {
 import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
 import { TeamChatNotifier } from "../../components/team-chat/TeamChatNotifier";
+import { NotificationPermissionBanner } from "../../components/notifications/NotificationPermissionBanner";
+import { AgentLimitBanner } from "../../components/AgentLimitBanner";
 import { AgentGlancePublisher } from "../../components/layout/AgentGlancePublisher";
-import { HuddleDock } from "../../components/team-chat/HuddleDock";
+import { HuddleWindow } from "../../components/team-chat/HuddleWindow";
 import { HuddleRinger } from "../../components/team-chat/HuddleRinger";
 import { AppHeader } from "../../components/layout/AppHeader";
 import { RecordingIndicator } from "../../components/meetings/RecordingIndicator";
@@ -69,6 +71,7 @@ import { mark as csMark } from "../../lib/cold-start-timing";
 import {
   nativePhoneCanvas,
   NATIVE_PHONE_HOME_CANVAS,
+  usePhoneLayout,
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
 import { useNativeSheetDrawer } from "../../lib/use-native-drawer-swipe";
@@ -77,11 +80,21 @@ import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawe
 import { MobileBottomNav } from "../../components/layout/MobileBottomNav";
 import { TeamChatSidebarProvider } from "../../components/team-chat/TeamChatSidebarProvider";
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
-import { projectSidebarEvents } from "../../lib/project-sidebar-events";
+import { sidebarOpenEvents } from "../../lib/sidebar-open-events";
 import { getCloudWorkspacesState, refreshCloudWorkspaces, subscribeCloudWorkspaces } from "../../lib/workspace-route";
 import { isConversationPath } from "../../lib/sidebar-tab";
 
 csMark("app:layout:module-load");
+
+/**
+ * Phone stack screens draw their own header, and the shell behind them owns the
+ * canvas, so a pushed screen must not paint an opaque background over it.
+ */
+const PHONE_STACK_SCREEN_OPTIONS = {
+  headerShown: false,
+  animation: "slide_from_right",
+  contentStyle: { backgroundColor: "transparent" },
+} as const;
 
 function AppLayoutInner() {
   csMark("app:layout:render");
@@ -95,6 +108,7 @@ function AppLayoutInner() {
   // known.
   const experience = useWorkspaceExperience();
   const activeWorkspace = useActiveWorkspace();
+  const { instance } = useActiveInstance();
   const workspaces = useWorkspaceCollection();
   const router = useRouter();
   const pathname = usePathname();
@@ -116,9 +130,13 @@ function AppLayoutInner() {
   const { width } = useWindowDimensions();
   const isNativeApp = Platform.OS !== "web";
   const isDark = useResolvedTheme() === "dark";
+  const isPhone = usePhoneLayout();
   const phoneSheetOpen = useNativePhoneSheetOpen();
   const nativeDrawerCanvas = nativePhoneCanvas(isDark);
   const isWide = !isNativeApp && width >= WEB_WIDE_MIN_WIDTH;
+  // Phones get a real navigator so a screen you go into is pushed over Home and
+  // back pops it; desktop and wide web (and tablets) keep the flat Slot.
+  const phoneStack = !isWide && !isIdeEmbed && isPhone;
   const isProjectDetail =
     /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, "/")) &&
     pathname !== "/projects" &&
@@ -130,17 +148,22 @@ function AppLayoutInner() {
   const mobileAgentShellEnabled = isWorkspaceRuntimeEnabled();
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";
+  // `/(app)/home` is the pre-landing home: the team feed on a phone and the
+  // builder on wide web. `/` itself is the workspace agent chat.
+  const isExplicitHome = pathname === "/home" || pathname === "/(app)/home";
+  const isHomeCanvas = (isHomePage || isExplicitHome) && isDark;
   // The workspace agent chat has a route of its own (`/agent`); on phones the
-  // team Home is a feed that links into it.
+  // team Home feed lives on `/(app)/home` and links into it.
   const isAgentChatPage = /\/agent\/?$/.test(pathname);
   const isTeamHomeFeed =
-    isHomePage &&
+    isExplicitHome &&
     !isWide &&
     !isIdeEmbed &&
     mobileAgentShellEnabled &&
     (experience.kind === "team" || !experience.resolved);
   const isWorkspaceChatRoute =
     isHomePage ||
+    isExplicitHome ||
     isAgentChatPage ||
     isProjectDetail ||
     pathname.includes("/new-project") ||
@@ -174,10 +197,6 @@ function AppLayoutInner() {
   const isNewConversationPage =
     !isWide && !isIdeEmbed && /\/c\/new\/?$/.test(pathname);
 
-  const isSettingsPage =
-    pathname === "/settings" ||
-    pathname === "/(app)/settings" ||
-    pathname.includes("/settings");
   const isBillingPage =
     pathname === "/billing" || pathname === "/(app)/billing";
   // The notifications inbox provides its own header (back + mark-all-read), so
@@ -190,6 +209,11 @@ function AppLayoutInner() {
     pathname === "/profile" || pathname === "/(app)/profile";
   const isAccountPage =
     pathname === "/account" || pathname === "/(app)/account";
+  // Phone Settings redirects to Account (`lib/phone-settings-route.ts`). The
+  // redirect frame must not draw the legacy AppHeader or open the legacy
+  // AppSidebar drawer — it is a phone screen, not the wide Settings page.
+  const isSettingsPage =
+    pathname === "/settings" || pathname === "/(app)/settings";
   const isSearchPage = pathname === "/search" || pathname === "/(app)/search";
   const isProjectChatsPage =
     pathname === "/project-chats" || pathname === "/(app)/project-chats";
@@ -348,6 +372,7 @@ function AppLayoutInner() {
     isApiKeysPage ||
     isProfilePage ||
     isAccountPage ||
+    isSettingsPage ||
     isSearchPage ||
     isProjectChatsPage ||
     isAIModelsPage ||
@@ -370,7 +395,7 @@ function AppLayoutInner() {
     windowWidth: width,
     isDark,
     swipeEnabled: nativeDrawerSwipe,
-    closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
+    closedCanvas: isHomeCanvas ? NATIVE_PHONE_HOME_CANVAS : undefined,
   });
   const { drawerOpen, closeDrawer, toggleDrawer, openDrawer, resetDrawer } =
     drawer;
@@ -380,61 +405,34 @@ function AppLayoutInner() {
   }, [closeDrawer, drawerOpen, phoneSheetOpen]);
 
   useEffect(() => {
-    let pendingFrame: number | null = null;
-    const unsubscribe = projectSidebarEvents.subscribeOpenProject(() => {
-      if (isWide || isIdeEmbed || useMobileWorkspaceShell) return;
-      if (drawerOpen) {
-        closeDrawer();
-        return;
-      }
-      // Let the sidebar commit its focused-project state before the drawer
-      // animation starts. Otherwise the default sidebar renders for the first
-      // frame and then crossfades into the project panel.
-      if (pendingFrame !== null) cancelAnimationFrame(pendingFrame);
-      pendingFrame = requestAnimationFrame(() => {
-        pendingFrame = null;
-        openDrawer();
-      });
-    });
-    return () => {
-      if (pendingFrame !== null) cancelAnimationFrame(pendingFrame);
-      unsubscribe();
-    };
-  }, [
-    closeDrawer,
-    drawerOpen,
-    isIdeEmbed,
-    isWide,
-    openDrawer,
-    useMobileWorkspaceShell,
-  ]);
-
-  useEffect(() => {
-    if (!isWide && !isAccountPage) return;
+    if (!isWide && !isAccountPage && !isSettingsPage) return;
     resetDrawer();
-  }, [isAccountPage, isWide, resetDrawer]);
+  }, [isAccountPage, isSettingsPage, isWide, resetDrawer]);
+
+  // Home's workspace avatar is the sidebar's only button on a phone; the drawer
+  // itself stays here, where the shell owns it.
+  useEffect(() => {
+    if (isWide || isIdeEmbed) return;
+    return sidebarOpenEvents.subscribeOpenSidebar(() => openDrawer());
+  }, [isIdeEmbed, isWide, openDrawer]);
 
   useEffect(() => {
     if (useMobileWorkspaceShell) resetDrawer();
   }, [resetDrawer, useMobileWorkspaceShell]);
 
-  // After a workspace switch, leave the previous screen. Personal opens
-  // main chat; team opens the project builder. `openInWorkspace` navigates
-  // itself and does not emit this.
+  // After a workspace switch, leave the previous screen: every workspace
+  // lands on its agent chat. `openInWorkspace` navigates itself and does not
+  // emit this.
   useEffect(() => {
     return subscribeWorkspaceSwitched(() => {
-      const id = getActiveWorkspaceId();
-      const kind = (workspaces?.all ?? []).find(
-        (workspace: { id: string; kind?: string }) => workspace.id === id
-      )?.kind;
-      const href = homePathForWorkspaceKind(kind);
+      const href = homePathForWorkspaceKind();
       if (Platform.OS === "web" && typeof window !== "undefined") {
         window.location.assign(href.replace(/\/\([^)]+\)/g, "") || "/");
         return;
       }
       router.replace(href as any);
     });
-  }, [router, workspaces]);
+  }, [router]);
 
   useEffect(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return;
@@ -506,11 +504,7 @@ function AppLayoutInner() {
     return null;
   }
 
-  const showSidebar =
-    isWide &&
-    !isIdeEmbed &&
-    !isSettingsPage &&
-    !isBillingPage;
+  const showSidebar = isWide && !isIdeEmbed && !isBillingPage;
   const nativeEdgeToEdgeChrome =
     isFloatingConversation ||
     isNewConversationPage ||
@@ -525,17 +519,26 @@ function AppLayoutInner() {
 
   return (
     <TeamChatSidebarProvider
-      workspaceId={experience.kind === "team" ? activeWorkspace?.id : null}
+      workspaceId={
+        experience.kind === "team"
+          ? // A machine workspace's team chat lives on the machine: its own
+            // workspace id, not the cloud workspace that happens to be selected
+            // (SHO-185). Asking the cloud id resolved the chat mode of a
+            // different workspace, so the machine's channels never appeared.
+            (instance?.source === "machine" ? instance.localWorkspaceId : null) ?? activeWorkspace?.id ?? null
+          : null
+      }
     >
     <NativeSheetDrawerShell
       isWide={isWide}
       nativeSheetDrawer={nativeSheetDrawer}
       canvas={
-        isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : nativeDrawerCanvas
+        isHomeCanvas ? NATIVE_PHONE_HOME_CANVAS : nativeDrawerCanvas
       }
       safeAreaEdges={nativeEdgeToEdgeChrome ? ["left", "right"] : undefined}
       sidebarWide={showSidebar ? <AppSidebar /> : null}
       sidebarSheet={<AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />}
+      lazySidebarSheet={!isWide}
       sidebarOverlay={
         <AppSidebar
           isOpen={drawerOpen}
@@ -561,20 +564,26 @@ function AppLayoutInner() {
     >
       {(localMode || Platform.OS !== "web") && !isIdeEmbed ? <RecordingIndicator /> : null}
       {!isIdeEmbed ? <TeamChatNotifier /> : null}
+      {!isIdeEmbed ? <NotificationPermissionBanner /> : null}
+      {!isIdeEmbed ? <AgentLimitBanner /> : null}
       {!isIdeEmbed ? <AgentGlancePublisher /> : null}
-      {!isIdeEmbed ? <HuddleDock /> : null}
+      {!isIdeEmbed ? <HuddleWindow /> : null}
       {!isIdeEmbed ? <HuddleRinger /> : null}
       {/* The shell stays mounted on every phone route and only toggles its
-          chrome. Swapping the parent of <Slot /> between routes (e.g. the team
-          Home feed -> a project) remounts the navigator mid-push and the tap
-          appears to do nothing. */}
+          chrome. Swapping the parent of the navigator between routes (e.g. the
+          team Home feed -> a project) remounts it mid-push and the tap appears
+          to do nothing. On a phone the navigator is a real Stack, so a screen
+          you go into is pushed over Home and back pops it without rebuilding
+          Home; desktop and wide web keep the flat Slot. */}
       {phoneShellMounted ? (
         <MobileWorkspaceShell
           key={activeWorkspace?.id ?? "workspace-loading"}
           enabled={useMobileWorkspaceShell}
         >
-          <Slot />
+          {phoneStack ? <Stack screenOptions={PHONE_STACK_SCREEN_OPTIONS} /> : <Slot />}
         </MobileWorkspaceShell>
+      ) : phoneStack ? (
+        <Stack screenOptions={PHONE_STACK_SCREEN_OPTIONS} />
       ) : (
         <Slot />
       )}

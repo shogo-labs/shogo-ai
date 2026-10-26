@@ -216,12 +216,12 @@ describe('SUBAGENT_GUIDE', () => {
     expect(SUBAGENT_GUIDE).toContain('Omit type')
   })
 
-  test('includes lifecycle management tools', () => {
+  test('includes lifecycle management tools, not the hidden legacy ones', () => {
     expect(SUBAGENT_GUIDE).toContain('agent_spawn')
-    expect(SUBAGENT_GUIDE).toContain('agent_result')
-    expect(SUBAGENT_GUIDE).toContain('agent_status')
-    expect(SUBAGENT_GUIDE).toContain('agent_cancel')
     expect(SUBAGENT_GUIDE).toContain('agent_list')
+    expect(SUBAGENT_GUIDE).toContain('task_cancel')
+    expect(SUBAGENT_GUIDE).not.toContain('agent_result')
+    expect(SUBAGENT_GUIDE).not.toContain('agent_status')
   })
 })
 

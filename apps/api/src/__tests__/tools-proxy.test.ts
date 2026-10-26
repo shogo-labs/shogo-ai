@@ -73,6 +73,7 @@ const ENV_KEYS = [
   'LOCAL_EMBEDDING_MODEL',
   'LOCAL_EMBEDDING_DIMENSIONS',
   'SHOGO_LOCAL_MODE',
+  'AI_MODE',
 ] as const
 let savedEnv: Record<string, string | undefined> = {}
 
@@ -293,10 +294,11 @@ describe('Tools Proxy', () => {
       expect(res.headers.get('x-upstream-id')).toBe('req-1')
     })
 
-    test('forwards to Shogo Cloud when SHOGO_API_KEY is configured', async () => {
+    test('forwards to Shogo Cloud when the desktop is cloud authed', async () => {
       const app = await makeApp()
       const token = await makeToken()
       const calls: any[] = []
+      process.env.SHOGO_LOCAL_MODE = 'true'
       process.env.SHOGO_API_KEY = 'shogo-cloud-key'
       process.env.SHOGO_CLOUD_URL = 'https://cloud.example/'
       globalThis.fetch = (async (url: string, init: any) => {
@@ -315,6 +317,63 @@ describe('Tools Proxy', () => {
       expect(calls[0].init.headers.get('Authorization')).toBe('Bearer shogo-cloud-key')
       expect(calls[0].init.headers.get('x-original')).toBe('present')
       expect(await res.text()).toBe('cloud-ok')
+    })
+
+    // Russell, 2026-10-19: tools always use the relay while we are cloud authed.
+    // `AI_MODE=api-keys` only switches *model* calls to the user's own provider
+    // key — there is no local Composio/Serper/social key to fall back to, so
+    // turning the relay off here would answer 503 instead of saving a bill.
+    test('keeps forwarding in AI_MODE=api-keys, where only model calls go direct', async () => {
+      const app = await makeApp()
+      const token = await makeToken()
+      const calls: any[] = []
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      process.env.SHOGO_API_KEY = 'shogo-cloud-key'
+      process.env.SHOGO_CLOUD_URL = 'https://cloud.example'
+      process.env.AI_MODE = 'api-keys'
+      process.env.SERPER_API_KEY = 'local-serper-key'
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ ok: true })
+      }) as any
+
+      const res = await app.request('/tools/serper/search?q=agents', {
+        headers: { authorization: `Bearer ${token}` },
+      })
+
+      expect(res.status).toBe(200)
+      expect(calls[0].url).toBe('https://cloud.example/api/tools/serper/search?q=agents')
+      expect(calls[0].init.headers.get('Authorization')).toBe('Bearer shogo-cloud-key')
+    })
+
+    test('does not relay to Shogo Cloud on a cloud instance or a signed-out desktop', async () => {
+      process.env.SHOGO_CLOUD_URL = 'https://cloud.example'
+      process.env.SERPER_API_KEY = 'local-serper-key'
+      const calls: any[] = []
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ ok: true })
+      }) as any
+      const app = await makeApp()
+      const token = await makeToken()
+
+      // Cloud itself: SHOGO_API_KEY present but not a bundled local instance.
+      process.env.SHOGO_API_KEY = 'shogo-cloud-key'
+      await app.request('/tools/serper/search?q=agents', {
+        headers: { authorization: `Bearer ${token}` },
+      })
+      // Signed-out desktop: bundled instance, no cloud key.
+      delete process.env.SHOGO_API_KEY
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      await app.request('/tools/serper/search?q=agents', {
+        headers: { authorization: `Bearer ${token}` },
+      })
+
+      expect(calls.map((c) => c.url)).toEqual([
+        'https://google.serper.dev/search?q=agents',
+        'https://google.serper.dev/search?q=agents',
+      ])
+      expect(calls[0].init.headers.get('X-API-KEY')).toBe('local-serper-key')
     })
 
     test('rewrites local OpenAI embedding requests to the configured local model', async () => {
@@ -696,6 +755,7 @@ describe('Tools Proxy', () => {
     test('forwards to Shogo Cloud after the local capability check passes', async () => {
       enableSocial()
       stubProvider()
+      process.env.SHOGO_LOCAL_MODE = 'true'
       process.env.SHOGO_API_KEY = 'shogo-cloud-key'
       process.env.SHOGO_CLOUD_URL = 'https://cloud.example'
       const calls: any[] = []

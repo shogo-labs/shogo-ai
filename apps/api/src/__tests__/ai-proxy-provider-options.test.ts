@@ -25,6 +25,7 @@ const ORIGINAL_ENV = {
   SHOGO_API_KEY: process.env.SHOGO_API_KEY,
   SHOGO_CLOUD_URL: process.env.SHOGO_CLOUD_URL,
   AI_MODE: process.env.AI_MODE,
+  AI_PROXY_AUTO_CACHE: process.env.AI_PROXY_AUTO_CACHE,
 }
 
 process.env.AI_PROXY_SECRET = 'provider-options-test-secret'
@@ -104,6 +105,9 @@ beforeEach(() => {
   delete process.env.SHOGO_API_KEY
   delete process.env.SHOGO_CLOUD_URL
   delete process.env.AI_MODE
+  // These suites pin the raw conversion shape; the automatic cache
+  // breakpoint backstop has its own suite below with this flag cleared.
+  process.env.AI_PROXY_AUTO_CACHE = '0'
 })
 
 const { Hono } = await import('hono')
@@ -493,6 +497,123 @@ describe('AI proxy: OpenAI tool calls on the OpenAI-compatible → Anthropic pat
       },
       { role: 'user', content: 'hello?' },
     ])
+  })
+})
+
+describe('AI proxy: automatic cache breakpoints on the OpenAI-compatible → Anthropic path', () => {
+  const tools = [
+    { type: 'function', function: { name: 'read', parameters: { type: 'object', properties: {} } } },
+    { type: 'function', function: { name: 'run', parameters: { type: 'object', properties: {} } } },
+  ]
+  const toolLoop = [
+    { role: 'user', content: 'Fix the build.' },
+    { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c1', content: 'error: missing import' },
+    { role: 'assistant', content: null, tool_calls: [{ id: 'c2', type: 'function', function: { name: 'read', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c2', content: 'file contents' },
+  ]
+
+  function countBreakpoints(body: any): number {
+    let n = 0
+    const walk = (blocks: unknown) => {
+      if (!Array.isArray(blocks)) return
+      for (const b of blocks as any[]) {
+        if (b?.cache_control) n++
+        if (b?.type === 'tool_result') walk(b.content)
+      }
+    }
+    walk(body.system)
+    walk(body.tools)
+    for (const m of body.messages) walk(m.content)
+    return n
+  }
+
+  beforeEach(() => {
+    delete process.env.AI_PROXY_AUTO_CACHE
+  })
+
+  test('a request with no cache metadata gets system, tool and rolling message breakpoints', async () => {
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      tools,
+      messages: [{ role: 'system', content: 'You are a coding agent.' }, ...toolLoop],
+    })
+
+    expect(forwarded.system).toEqual([{ type: 'text', text: 'You are a coding agent.', cache_control: { type: 'ephemeral' } }])
+    expect(forwarded.tools[1].cache_control).toEqual({ type: 'ephemeral' })
+    expect(forwarded.tools[0].cache_control).toBeUndefined()
+    const last = forwarded.messages[forwarded.messages.length - 1]
+    expect(last.content).toEqual([{ type: 'tool_result', tool_use_id: 'c2', content: 'file contents', cache_control: { type: 'ephemeral' } }])
+    const secondToLast = forwarded.messages[forwarded.messages.length - 2]
+    expect(secondToLast.content[secondToLast.content.length - 1].cache_control).toEqual({ type: 'ephemeral' })
+    expect(countBreakpoints(forwarded)).toBe(4)
+  })
+
+  test('a pi-ai style request gains a rolling breakpoint on the final tool result without exceeding four', async () => {
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      tools: [tools[0], { ...tools[1], cache_control: { type: 'ephemeral' } }],
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: 'You are a coding agent.', cache_control: { type: 'ephemeral' } }] },
+        { role: 'user', content: [{ type: 'text', text: 'Fix the build.', cache_control: { type: 'ephemeral' } }] },
+        ...toolLoop.slice(1),
+      ],
+    })
+
+    expect(forwarded.tools[1].cache_control).toEqual({ type: 'ephemeral' })
+    expect(forwarded.messages[0].content[0].cache_control).toEqual({ type: 'ephemeral' })
+    const last = forwarded.messages[forwarded.messages.length - 1]
+    expect(last.content[0].cache_control).toEqual({ type: 'ephemeral' })
+    expect(countBreakpoints(forwarded)).toBe(4)
+  })
+
+  test('never adds breakpoints when the client already used all four', async () => {
+    const cc = { type: 'ephemeral' }
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: 'a', cache_control: cc }] },
+        { role: 'system', content: [{ type: 'text', text: 'b', cache_control: cc }] },
+        { role: 'user', content: [{ type: 'text', text: 'c', cache_control: cc }, { type: 'text', text: 'd', cache_control: cc }] },
+        { role: 'assistant', content: 'ok' },
+        { role: 'user', content: 'next' },
+      ],
+    })
+
+    expect(countBreakpoints(forwarded)).toBe(4)
+    expect(forwarded.messages[forwarded.messages.length - 1].content).toBe('next')
+  })
+
+  test('splits the runtime CACHE_BOUNDARY marker and caches only the stable prefix', async () => {
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      messages: [
+        { role: 'system', content: 'Stable rules.\n\n<|CACHE_BOUNDARY|>\n\nToday is Tuesday.' },
+        { role: 'user', content: 'hi' },
+      ],
+    })
+
+    expect(forwarded.system).toEqual([
+      { type: 'text', text: 'Stable rules.', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: 'Today is Tuesday.' },
+    ])
+    expect(JSON.stringify(forwarded)).not.toContain('CACHE_BOUNDARY')
+  })
+
+  test('AI_PROXY_AUTO_CACHE=0 leaves the body uncached but still strips the boundary marker', async () => {
+    process.env.AI_PROXY_AUTO_CACHE = '0'
+    const plain = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'system', content: 'Rules.' }, { role: 'user', content: 'hi' }],
+    })
+    expect(plain.system).toBe('Rules.')
+    expect(countBreakpoints(plain)).toBe(0)
+
+    const split = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'system', content: 'Stable.\n\n<|CACHE_BOUNDARY|>\n\nDynamic.' }, { role: 'user', content: 'hi' }],
+    })
+    expect(split.system).toEqual([{ type: 'text', text: 'Stable.' }, { type: 'text', text: 'Dynamic.' }])
   })
 })
 

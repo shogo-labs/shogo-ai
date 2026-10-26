@@ -276,10 +276,14 @@ test.describe("Offline-resilient chat — E2E (mocked)", () => {
       body: buildReconnectedTurnStream("Reconnected — here is your answer."),
     }
 
-    await sendProjectMessage(page, "Are you still there?")
-
+    // Start watching before the send: the mocked turn can be consumed — and the
+    // banner's 3s self-clear timer can start — before `sendProjectMessage`
+    // resolves on a loaded CI runner.
     const reconnectedBanner = page.getByText("Back online — resuming\u2026")
-    await expect(reconnectedBanner).toBeVisible({ timeout: 15_000 })
+    const bannerAppeared = reconnectedBanner.waitFor({ state: "visible", timeout: 15_000 })
+
+    await sendProjectMessage(page, "Are you still there?")
+    await bannerAppeared
 
     // Self-clears via a real 3s `setTimeout` in `ChatPanel` — independent of
     // how fast the mocked stream itself was delivered.

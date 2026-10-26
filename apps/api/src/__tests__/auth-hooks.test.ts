@@ -158,7 +158,7 @@ mock.module('../lib/prisma', () => ({
 // Now import auth.ts — this triggers betterAuth() with our captured config.
 // ---------------------------------------------------------------------------
 
-const { parseCookieHeader } = await import('../auth')
+const { parseCookieHeader, signupProviderFromPath } = await import('../auth')
 if (!capturedConfig) throw new Error('betterAuth() was not captured')
 
 const origLog = console.log
@@ -229,6 +229,20 @@ describe('parseCookieHeader', () => {
 // ===========================================================================
 // emailAndPassword.sendResetPassword
 // ===========================================================================
+
+describe('signupProviderFromPath', () => {
+  test('OAuth callbacks and ID-token sign-in are social', () => {
+    expect(signupProviderFromPath('/callback/google')).toBe('social')
+    expect(signupProviderFromPath('/callback/apple')).toBe('social')
+    expect(signupProviderFromPath('/sign-in/social')).toBe('social')
+  })
+
+  test('email sign-up, unknown paths and no request context score as credential', () => {
+    expect(signupProviderFromPath('/sign-up/email')).toBe('credential')
+    expect(signupProviderFromPath('/admin/create-user')).toBe('credential')
+    expect(signupProviderFromPath(undefined)).toBe('credential')
+  })
+})
 
 describe('emailAndPassword.sendResetPassword', () => {
   test('success: calls sendPasswordResetEmail and returns silently', async () => {
@@ -424,7 +438,9 @@ describe('databaseHooks.user.create.after', () => {
     wsState.shouldFailTimes = 5
     // 1+2+3+4 = 10s of setTimeout retries between 5 attempts
     let errMsg = ''
-    console.error = (m: string) => { errMsg = String(m) }
+    // Signup-risk assessment logs are expected here (the prisma mock has no
+    // risk tables); capture the workspace/affiliate message only.
+    console.error = (m: string) => { if (!String(m).startsWith('[signup-risk]')) errMsg = String(m) }
     await capturedConfig.databaseHooks.user.create.after(
       { id: 'u-3', email: 'c@c.com', name: 'Charlie' }, {},
     )
@@ -491,7 +507,7 @@ describe('databaseHooks.user.create.after', () => {
       }},
     }
     let errLog = ''
-    console.error = (m: string) => { errLog = String(m) }
+    console.error = (m: string) => { if (!String(m).startsWith('[signup-risk]')) errLog = String(m) }
     await capturedConfig.databaseHooks.user.create.after(
       { id: 'u', email: 'a@b.com', name: 'A' }, ctx,
     )

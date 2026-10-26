@@ -47,6 +47,12 @@ export type EvalCategory =
   | 'teammate-coordination'
   | 'plan'
   | 'workspace-attachments'
+  | 'workspace-builds'
+  | 'company-sim'
+  | 'company-ops'
+  | 'orchestration'
+  | 'reactive'
+  | 'cache-efficiency'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
@@ -70,6 +76,22 @@ export interface AgentEval {
   toolMocks?: import('./tool-mocks').ToolMockMap
   /** Files to write into the workspace before running the eval (path relative to workspace root -> content) */
   workspaceFiles?: Record<string, string>
+  /**
+   * Boot the worker as a real multi-project WORKSPACE runtime instead of a
+   * single-project one (SHO-195).
+   *
+   * Without this, every eval ran the way a project runtime runs, and no case
+   * could reproduce the staging bug where a workspace chat asked to build a
+   * portfolio built it into the workspace root: a workspace root holds
+   * sibling project folders, so "build an app" there has to go through
+   * `project_create` + `project_call` (SHO-194).
+   *
+   * When set, the worker gets `WORKSPACE_RUNTIME=true`, `WORKSPACE_ID`,
+   * `WORKSPACE_KIND`, `WORKSPACE_PROJECT_IDS`, the project catalog, and no
+   * anchor; the runtime itself then writes the workspace `AGENTS.md` and
+   * `WORKSPACE.md` at boot, exactly as it does for a real workspace agent.
+   */
+  workspaceRuntime?: EvalWorkspaceRuntime
   /** Seed workspace with the runtime template (Vite + React + Tailwind + shadcn/ui). Provides index.html, package.json, tsconfig, etc. */
   useRuntimeTemplate?: boolean
   /**
@@ -81,8 +103,6 @@ export interface AgentEval {
   useSkillServer?: boolean
   /** Visual mode to activate before running the eval (e.g. 'canvas'). Defaults to 'none'. */
   initialMode?: 'canvas' | 'app' | 'plan' | 'none'
-  /** Interaction mode sent in the request body (e.g. 'plan' for plan-mode evals). */
-  interactionMode?: 'agent' | 'plan' | 'ask'
   /** Pipeline name — evals sharing a pipeline run sequentially on one worker, each inheriting the prior phase's workspace. */
   pipeline?: string
   /** 1-based ordering within a pipeline. Phase 1 gets full workspace setup; phase 2+ skip cleanup and use pipelineFiles. */
@@ -97,11 +117,63 @@ export interface AgentEval {
    *  the runner sends the next response as a follow-up user message.
    *  Responses are consumed in order; if exhausted, subsequent ask_user calls get no response. */
   askUserResponses?: string[]
+  /** Company simulation seed: board, chat and system tools answer from one stateful world (see company-sim/). */
+  sim?: import('./company-sim/world').WorldSeed
+  /**
+   * Simulated hours to let pass before each user turn (history user turns in
+   * order, then the final turn). Scripted teammates act while time passes.
+   */
+  simAdvanceHours?: number[]
+  /**
+   * Structural test: never send a turn to the model, only probe the runtime's
+   * prompt-cache prefix (`GET /agent/tool-mocks/cache-prefix`). Used by the
+   * `cache-efficiency` tests that assert on prompt bytes rather than on tokens.
+   */
+  noLlm?: boolean
+  /** Session ids to probe when `noLlm` is set (default `['chat']`). */
+  cacheProbeSessions?: string[]
+  /**
+   * Actions applied between executed turns (1-based `afterTurn`), before the
+   * next turn starts. Lets an eval mutate the workspace — or force a
+   * compaction — and then measure the effect on the next turn's cache.
+   */
+  betweenTurns?: Array<{
+    afterTurn: number
+    /** Files written into the workspace (path relative to the workspace root). */
+    writeFiles?: Record<string, string>
+    /** Force one compaction pass on the session. */
+    compact?: boolean
+  }>
 }
 
 export interface ConversationTurn {
   role: 'user' | 'assistant'
   content: string
+}
+
+/** One project in the workspace catalog an eval fixture boots with. */
+export interface EvalWorkspaceProject {
+  id: string
+  name: string
+  /** Mounted projects get a `<id>/` folder; unmounted ones are only in the catalog. */
+  mounted?: boolean
+  /** Files written under `<id>/` before the turn. */
+  files?: Record<string, string>
+}
+
+/** How an eval's worker boots: a real workspace runtime, not a project runtime. */
+export interface EvalWorkspaceRuntime {
+  kind: 'team' | 'personal'
+  /** Projects in the workspace. Mounted ones become `<id>/` folders in the root. */
+  projects?: EvalWorkspaceProject[]
+  /** Render `WORKSPACE.md` the metal way (remote-project guidance). */
+  metal?: boolean
+  /**
+   * Put the runtime template (Vite + React + Tailwind app) into the **root**
+   * before the turn, the way a leftover pool pre-seed did in staging. An agent
+   * that reads `src/App.tsx` finds a working app there and builds in it.
+   */
+  poolPreseedAtRoot?: boolean
 }
 
 export interface ValidationCriterion {
@@ -186,7 +258,30 @@ export interface RuntimeCheckResults {
   previewReachable?: boolean | null
   /** Whether an unauthenticated request to the tenant-probe route was rejected (401/403). null = not probed. */
   tenantIsolationOk?: boolean | null
+  /**
+   * Workspace-runtime root check (SHO-195): the root holds no app of its own,
+   * and any template an eval seeded there (the staging pool pre-seed) is
+   * unmodified. null = the eval didn't boot as a workspace runtime.
+   */
+  workspaceRootClean?: WorkspaceRootCheck | null
   errors: string[]
+}
+
+/**
+ * Result of `checkWorkspaceRootClean`. A workspace root is Shogo scaffolding
+ * around sibling project folders: it must never grow `package.json`, `src/`,
+ * `prisma/` or a Vite scaffold of its own (SHO-195 / SHO-194).
+ */
+export interface WorkspaceRootCheck {
+  ok: boolean
+  /** App artifacts at the root that the eval did not seed. */
+  forbidden: string[]
+  /** Files seeded at the root (the pool pre-seed) whose content changed. */
+  modified: string[]
+  /** Seeded files the run removed. */
+  missing: string[]
+  /** Root entries after the run, for debugging a failure. */
+  entries: string[]
 }
 
 export interface PromptBreakdownSection {
@@ -194,6 +289,71 @@ export interface PromptBreakdownSection {
   zone: 'stable' | 'dynamic'
   chars: number
   estTokens: number
+}
+
+/** Usage of one model call (one assistant message) inside a turn. */
+export interface PerCallUsage {
+  iteration: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  /** True for a dropped retry attempt the provider still billed. */
+  discarded?: boolean
+}
+
+/** The prompt-cache prefix a turn was sent with (hashes, from `data-usage.prefix`). */
+export interface CachePrefix {
+  turn: number
+  stableHash: string
+  dynamicHash: string
+  toolsHash: string
+  historyHash: string
+  stableChars: number
+  dynamicChars: number
+  toolCount: number
+  messageCount: number
+}
+
+/** A prompt-cache prefix probe taken without calling a model. */
+export interface CachePrefixProbe {
+  sessionId: string
+  identical: boolean
+  drift: { label: string; chars: number } | null
+  builds: Array<{
+    stableHash: string
+    dynamicHash: string
+    stableChars: number
+    dynamicChars: number
+    toolsHash: string
+    toolCount: number
+  }>
+  sections: PromptBreakdownSection[]
+}
+
+/** One turn's worth of usage, as reported by the gateway's `data-usage` frame. */
+export interface TurnUsage {
+  /** 1-based turn index within this eval run. */
+  turn: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  iterations: number
+  /** Prompt-cache prefix hashes; absent on gateways that don't report them. */
+  prefix?: CachePrefix
+  /** Per-model-call breakdown for this turn. */
+  perCallUsage: PerCallUsage[]
+}
+
+/** Usage reported by a subagent's own `data-usage` frame. */
+export interface SubagentUsage {
+  /** `fork` or `sync` — which spawn mode produced it. */
+  subagent: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
 }
 
 /**
@@ -257,6 +417,11 @@ export interface EvalResult {
    * per-phase from cumulative state.
    */
   pipelineToolCalls?: ToolCallRecord[]
+  /**
+   * This phase's calls only, even in intention criteria (whose `toolCalls`
+   * is the pipeline view). For ordering checks like "the first spawn".
+   */
+  phaseToolCalls?: ToolCallRecord[]
   criteriaResults: CriterionResult[]
   triggeredAntiPatterns: string[]
   timing: {
@@ -278,10 +443,25 @@ export interface EvalResult {
   /** Per-section prompt token breakdown from the first turn. */
   promptBreakdown?: PromptBreakdown
   /**
+   * Per-turn usage, in order, with each turn's prompt-cache prefix hashes.
+   * Cache-hit ratios are computed from this (see `cacheHitRatio` /
+   * `prefixTokens` in eval-helpers) rather than from the run totals, because
+   * a turn that re-wrote the cache is invisible in an aggregate.
+   */
+  perTurnUsage: TurnUsage[]
+  /** Flat per-model-call usage across every turn. */
+  perCallUsage: PerCallUsage[]
+  /** Usage emitted by subagent `data-usage` frames (fork/sync spawns). */
+  subagentUsage?: SubagentUsage[]
+  /** Prefix probes, for `noLlm` structural tests. */
+  cachePrefixSamples?: CachePrefixProbe[]
+  /**
    * Gateway quality signals from the final evaluated turn's `data-usage`
    * frame. Captured by the runner so evals can assert on loop/iteration/empty
    * outcomes that are otherwise invisible (the runner used to drop these).
    */
+  /** Final state of the company simulation, when the eval ran one. */
+  sim?: import('./company-sim/world').WorldSnapshot
   loopDetected?: boolean
   hitMaxTurns?: boolean
   responseEmpty?: boolean

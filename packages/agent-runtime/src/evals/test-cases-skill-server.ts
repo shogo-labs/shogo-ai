@@ -7,139 +7,59 @@
  * the per-workspace Hono API backed by SQLite that skills can add endpoints to.
  *
  * Covers:
- * - Creating a Prisma schema + shogo.config.json for a new skill server
- * - Running shogo generate + prisma db push via exec
+ * - Creating a Prisma schema with the data model and scoring logic
  * - Evolving an existing schema (adding fields and models)
  * - Using the skill server's REST API to persist and query data
  * - Writing a SKILL.md that references the skill server endpoints
  */
 
-import type { AgentEval } from './types'
-import type { ToolMockMap } from './tool-mocks'
+import type { AgentEval, EvalResult } from './types'
 import {
-  usedTool,
-  toolCallArgsContain,
   responseContains,
-  execCommandContains,
-  toolCallsJson,
+  readWorkspaceFile,
+  readFileAnyRoute,
+  fileWrites,
+  pathMatches,
+  writtenContent,
+  execCommands,
 } from './eval-helpers'
 import { buildSkillServerSchema } from '../workspace-defaults'
 
 // ---------------------------------------------------------------------------
-// Tool Mocks
+// Grading helpers
+//
+// The runtime regenerates routes and pushes the schema itself whenever
+// prisma/schema.prisma changes (the prompt tells the agent NOT to run
+// `shogo generate` / `prisma db push` by hand), so these evals grade the
+// schema and code that end up on disk, not which commands were run. No
+// exec/web mocks: the real workspace server answers localhost calls and the
+// built-in exec mock keeps account CLIs (gh, …) mocked.
 // ---------------------------------------------------------------------------
 
-const SKILL_SERVER_BUILD_MOCKS: ToolMockMap = {
-  exec: {
-    type: 'pattern',
-    patterns: [
-      {
-        match: { command: 'shogo generate' },
-        response: {
-          stdout: '🚀 Shogo Generate\n   ✓ lead.routes.ts\n   ✓ lead.hooks.ts\n   ✓ scoring-rule.routes.ts\n   ✓ scoring-rule.hooks.ts\n   ✓ index.ts\n✅ Generated 5 files for 2 models',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'prisma db push' },
-        response: {
-          stdout: '🚀  Your database is now in sync with your Prisma schema.',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'prisma generate' },
-        response: {
-          stdout: '✓ Generated Prisma Client',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-    ],
-    default: { stdout: '', stderr: '', exitCode: 0 },
-  },
-  web: {
-    type: 'pattern',
-    patterns: [
-      {
-        match: { url: 'localhost' },
-        response: {
-          content: JSON.stringify({ ok: true, items: [
-            { id: '1', name: 'Acme Corp', companySize: 500, fundingStage: 'Series B', score: 85 },
-            { id: '2', name: 'Small LLC', companySize: 10, fundingStage: 'Pre-seed', score: 20 },
-          ] }),
-          status: 200,
-        },
-      },
-    ],
-    default: {
-      content: '<html><body>Mock page</body></html>',
-      status: 200,
-    },
-  },
+/** Final schema: the workspace file, else the last full write of it. */
+function finalSchema(r: EvalResult): string {
+  const disk = readWorkspaceFile(r, 'prisma/schema.prisma')
+  if (disk) return disk
+  const writes = fileWrites(r).filter(w => pathMatches(w.path, 'prisma/schema.prisma') && w.via !== 'edit_file')
+  return writes.length ? writes[writes.length - 1].content : ''
 }
 
-const SKILL_SERVER_EVOLVE_MOCKS: ToolMockMap = {
-  exec: {
-    type: 'pattern',
-    patterns: [
-      {
-        match: { command: 'shogo generate' },
-        response: {
-          stdout: '🚀 Shogo Generate\n   ✓ todo.routes.ts\n   ✓ tag.routes.ts\n   ✓ index.ts\n✅ Generated 5 files for 2 models',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'prisma db push' },
-        response: {
-          stdout: '🚀  Your database is now in sync with your Prisma schema.',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-    ],
-    default: { stdout: '', stderr: '', exitCode: 0 },
-  },
+/** Body of `model <name> { … }` in a Prisma schema ('' if absent). */
+function modelBlock(schema: string, name: string): string {
+  const m = schema.match(new RegExp(`model\\s+${name}\\s*\\{([\\s\\S]*?)\\n\\}`, 'i'))
+  return m ? m[1] : ''
 }
 
-const SKILL_SERVER_PERSIST_MOCKS: ToolMockMap = {
-  web: {
-    type: 'pattern',
-    patterns: [
-      {
-        match: { url: 'bookmarks', method: 'POST' },
-        response: {
-          content: JSON.stringify({ ok: true, data: { id: 'bk-1', url: 'https://react.dev', title: 'React docs' } }),
-          status: 201,
-        },
-      },
-      {
-        match: { url: 'bookmarks' },
-        response: {
-          content: JSON.stringify({
-            ok: true,
-            items: [
-              { id: 'bk-1', url: 'https://react.dev', title: 'React docs', createdAt: '2026-03-23T00:00:00Z' },
-              { id: 'bk-2', url: 'https://bun.sh', title: 'Bun docs', createdAt: '2026-03-23T00:01:00Z' },
-            ],
-          }),
-          status: 200,
-        },
-      },
-    ],
-    default: {
-      content: JSON.stringify({ ok: true }),
-      status: 200,
-    },
-  },
-  exec: {
-    type: 'static',
-    response: { stdout: '', stderr: '', exitCode: 0 },
-  },
+/** Schema text the agent produced: final schema plus every edit to it. */
+function schemaWork(r: EvalResult): string {
+  return `${finalSchema(r)}\n${writtenContent(r, 'prisma/schema.prisma')}`
+}
+
+/** Every HTTP call the agent made, via the web tool or curl. */
+function httpCalls(r: EvalResult): string[] {
+  const web = r.toolCalls.filter(t => t.name === 'web').map(t => JSON.stringify(t.input))
+  const curl = execCommands(r).filter(c => /\bcurl\b/.test(c))
+  return [...web, ...curl]
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +89,7 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 1: Build a lead scoring skill from scratch
-  // Level 3 | Agent creates schema, hooks, runs generate, writes SKILL.md
+  // Level 3 | Agent creates schema + scoring logic (runtime regenerates)
   // =========================================================================
   {
     id: 'skill-server-build-lead-scorer',
@@ -178,66 +98,32 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
     level: 3,
     input: 'I need a skill that scores incoming leads based on company size and funding stage. Leads with >500 employees or Series B+ should score above 80. Set up a skill server with the data model and scoring logic.',
     maxScore: 100,
-    toolMocks: SKILL_SERVER_BUILD_MOCKS,
     validationCriteria: [
       {
         id: 'wrote-schema',
-        description: 'Created or edited prisma/schema.prisma with a Lead model',
-        points: 20,
+        description: 'prisma/schema.prisma defines a Lead model',
+        points: 25,
         phase: 'execution',
-        validate: (r) =>
-          r.toolCalls
-            .filter((t) => t.name === 'write_file' || t.name === 'edit_file')
-            .some((t) => {
-              const input = t.input as Record<string, any>
-              const path = String(input.path ?? '')
-              const content = String(
-                input.content ?? input.new_str ?? input.new_string ?? input.code_edit ?? input.replace ?? '',
-              )
-              return path.includes('schema.prisma') && content.toLowerCase().includes('model') && content.toLowerCase().includes('lead')
-            }),
+        validate: (r) => modelBlock(finalSchema(r), 'Lead') !== '' || /model\s+Lead\b/i.test(writtenContent(r, 'prisma/schema.prisma')),
       },
       {
         id: 'schema-has-scoring-fields',
-        description: 'Schema includes scoring-relevant fields (companySize, fundingStage, score)',
-        points: 15,
+        description: 'Lead model includes scoring-relevant fields (company size, funding stage, score)',
+        points: 20,
         phase: 'execution',
         validate: (r) => {
-          const schemaWrite = r.toolCalls
-            .filter((t) => t.name === 'write_file')
-            .find((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-          if (!schemaWrite) return false
-          const content = String((schemaWrite.input as any).content ?? '').toLowerCase()
-          return (
-            (content.includes('companysize') || content.includes('company_size') || content.includes('size')) &&
-            (content.includes('fundingstage') || content.includes('funding_stage') || content.includes('funding') || content.includes('stage')) &&
-            content.includes('score')
-          )
+          const content = (modelBlock(finalSchema(r), 'Lead') || writtenContent(r, 'prisma/schema.prisma')).toLowerCase()
+          return /company_?size|employees|headcount|size/.test(content) && /funding|stage/.test(content) && content.includes('score')
         },
       },
       {
-        id: 'ran-generate',
-        description: 'Ran shogo generate via exec',
-        points: 20,
+        id: 'scoring-logic-implemented',
+        description: 'Code outside the schema implements the thresholds (>500 employees, Series B+)',
+        points: 35,
         phase: 'execution',
-        validate: (r) => execCommandContains(r, 'shogo generate') || execCommandContains(r, 'shogo gen'),
-      },
-      {
-        id: 'ran-db-push',
-        description: 'Ran prisma db push via exec',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => execCommandContains(r, 'prisma db push'),
-      },
-      {
-        id: 'wrote-config',
-        description: 'Created shogo.config.json',
-        points: 10,
-        phase: 'execution',
-        validate: (r) =>
-          r.toolCalls
-            .filter((t) => t.name === 'write_file')
-            .some((t) => String((t.input as any).path ?? '').includes('shogo.config.json')),
+        validate: (r) => fileWrites(r).some(w =>
+          !pathMatches(w.path, 'prisma/schema.prisma') && /\.(ts|tsx|js|py)$/.test(w.path) &&
+          /500/.test(w.content) && /series[\s_-]?b|series_?[bcdef]\b|SERIES_B/i.test(w.content)),
       },
       {
         id: 'response-describes-scoring',
@@ -260,7 +146,7 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 2: Evolve an existing skill server schema
-  // Level 3 | Agent reads existing schema, adds fields + model, re-generates
+  // Level 3 | Agent reads existing schema, adds fields + model (runtime regenerates)
   // =========================================================================
   {
     id: 'skill-server-evolve-schema',
@@ -273,33 +159,21 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
     },
     input: 'I have a skill server with a Todo model. Add a "priority" field (P0-P3, default P2) to Todo, and add a new Tag model with name and color fields so I can tag my todos.',
     maxScore: 100,
-    toolMocks: SKILL_SERVER_EVOLVE_MOCKS,
     validationCriteria: [
       {
         id: 'read-existing-schema',
         description: 'Read the existing schema.prisma first',
         points: 15,
         phase: 'intention',
-        validate: (r) =>
-          r.toolCalls.some(
-            (t) =>
-              t.name === 'read_file' &&
-              String((t.input as any).path ?? '').includes('schema.prisma'),
-          ),
+        validate: (r) => readFileAnyRoute(r, 'prisma/schema.prisma'),
       },
       {
         id: 'added-priority-field',
         description: 'Added a priority field to the Todo model',
         points: 20,
         phase: 'execution',
-        validate: (r) => {
-          const write = r.toolCalls
-            .filter((t) => t.name === 'write_file' || t.name === 'edit_file')
-            .find((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-          if (!write) return false
-          const content = String((write.input as any).content ?? (write.input as any).new_string ?? '').toLowerCase()
-          return content.includes('priority')
-        },
+        validate: (r) => /priority/i.test(modelBlock(finalSchema(r), 'Todo')) ||
+          (!readWorkspaceFile(r, 'prisma/schema.prisma') && /priority/i.test(writtenContent(r, 'prisma/schema.prisma'))),
       },
       {
         id: 'added-tag-model',
@@ -307,27 +181,29 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const write = r.toolCalls
-            .filter((t) => t.name === 'write_file' || t.name === 'edit_file')
-            .find((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-          if (!write) return false
-          const content = String((write.input as any).content ?? (write.input as any).new_string ?? '').toLowerCase()
-          return content.includes('model tag') && content.includes('name') && content.includes('color')
+          const tag = modelBlock(finalSchema(r), 'Tag') || (/model\s+tag\b/i.test(schemaWork(r)) ? schemaWork(r) : '')
+          return /\bname\b/i.test(tag) && /\bcolou?r\b/i.test(tag)
         },
       },
       {
-        id: 'regenerated',
-        description: 'Ran shogo generate after schema change',
+        id: 'priority-default-p2',
+        description: 'Priority covers P0-P3 and defaults to P2',
         points: 20,
         phase: 'execution',
-        validate: (r) => execCommandContains(r, 'shogo generate'),
+        validate: (r) => {
+          const schema = schemaWork(r)
+          return /P0/.test(schema) && /P3/.test(schema) && /@default\(\s*"?P2"?\s*\)/.test(schema)
+        },
       },
       {
-        id: 'pushed-db',
-        description: 'Ran prisma db push after schema change',
+        id: 'kept-existing-todo-fields',
+        description: 'Existing Todo fields (title, done, createdAt) are still in the final schema',
         points: 15,
         phase: 'execution',
-        validate: (r) => execCommandContains(r, 'prisma db push'),
+        validate: (r) => {
+          const todo = modelBlock(finalSchema(r), 'Todo')
+          return /\btitle\b/.test(todo) && /\bdone\b/.test(todo) && /\bcreatedAt\b/.test(todo)
+        },
       },
       {
         id: 'response-mentions-endpoints',
@@ -366,41 +242,28 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
     ],
     input: 'Save these bookmarks: React docs (https://react.dev) and Bun docs (https://bun.sh). Then show me all saved bookmarks.',
     maxScore: 100,
-    toolMocks: SKILL_SERVER_PERSIST_MOCKS,
     validationCriteria: [
       {
         id: 'posted-react-bookmark',
-        description: 'Called POST /api/bookmarks for React docs',
+        description: 'POSTed the React docs bookmark (web tool or curl)',
         points: 20,
         phase: 'execution',
-        validate: (r) => {
-          const json = toolCallsJson(r)
-          return json.includes('react.dev') && (json.includes('post') || usedTool(r, 'web'))
-        },
+        validate: (r) => httpCalls(r).some(c => c.includes('react.dev') && /post|-d\s|--data/i.test(c)),
       },
       {
         id: 'posted-bun-bookmark',
-        description: 'Called POST /api/bookmarks for Bun docs',
+        description: 'POSTed the Bun docs bookmark (web tool or curl)',
         points: 20,
         phase: 'execution',
-        validate: (r) => {
-          const json = toolCallsJson(r)
-          return json.includes('bun.sh') && (json.includes('post') || usedTool(r, 'web'))
-        },
+        validate: (r) => httpCalls(r).some(c => c.includes('bun.sh') && /post|-d\s|--data/i.test(c)),
       },
       {
         id: 'fetched-bookmarks',
-        description: 'Called GET /api/bookmarks to list saved bookmarks',
+        description: 'Listed bookmarks with a GET /api/bookmarks',
         points: 20,
         phase: 'execution',
-        validate: (r) =>
-          r.toolCalls
-            .filter((t) => t.name === 'web')
-            .some((t) => {
-              const input = t.input as Record<string, any>
-              const url = String(input.url ?? '')
-              return url.includes('bookmarks') && !url.includes('react.dev') && !url.includes('bun.sh')
-            }),
+        validate: (r) => httpCalls(r).some(c =>
+          /api\/bookmarks/.test(c) && !c.includes('react.dev') && !c.includes('bun.sh') && !/"method":"(post|patch|put|delete)"|-X\s*(POST|PATCH|PUT|DELETE)/i.test(c)),
       },
       {
         id: 'response-lists-both',
@@ -411,10 +274,10 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
       },
       {
         id: 'used-web-tool',
-        description: 'Used the web tool to interact with the skill server',
+        description: 'Talked to the server over HTTP (web tool or curl)',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'web'),
+        validate: (r) => httpCalls(r).some(c => /bookmarks/.test(c)),
       },
       {
         id: 'reasonable-tool-count',

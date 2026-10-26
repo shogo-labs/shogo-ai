@@ -63,6 +63,22 @@ describe('github_connect', () => {
     expect(requests[0].body).toEqual({ repoOwner: 'CodeGlo', repoName: 'shogo-website' })
   })
 
+  test('shows the authorization link as a connect card, not only in the tool result', async () => {
+    responses.push({ status: 200, json: { ok: true, available: true, url: 'https://github.com/apps/shogo/installations/new?state=s' } })
+    const written: any[] = []
+    await createGitHubConnectTool(ctx({ uiWriter: { write: (p: any) => written.push(p) } })).execute('c1', { repo: 'CodeGlo/shogo-website' })
+    expect(written).toEqual([
+      {
+        type: 'data-integration-auth-required',
+        data: {
+          provider: 'github_app',
+          connectUrl: 'https://github.com/apps/shogo/installations/new?state=s',
+          message: 'Authorize the Shogo GitHub App so this project can use CodeGlo/shogo-website.',
+        },
+      },
+    ])
+  })
+
   test('offers only the token option when the server cannot run the App flow', async () => {
     responses.push({ status: 200, json: { ok: true, available: false } })
     const res = await createGitHubConnectTool(ctx()).execute('c1', { repo: 'CodeGlo/shogo-website' })

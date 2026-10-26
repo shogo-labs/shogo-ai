@@ -30,7 +30,7 @@
 
 import { prisma } from '../lib/prisma'
 import { decryptSecret } from '../lib/secret-crypto'
-import { setDbModelPricingProvider } from '../lib/db-model-pricing'
+import { setDbModelBillingModelProvider, setDbModelPricingProvider } from '../lib/db-model-pricing'
 import * as modelCatalog from '@shogo/model-catalog'
 import type {
   ModelEntry,
@@ -243,6 +243,25 @@ function resolveCapabilityFallback(
 }
 
 /**
+ * Per-token rates carried on a cloud catalog entry, or undefined if the entry
+ * has none or any rate is missing or not a finite number.
+ */
+function cloudCatalogModelPricing(raw: unknown): DbModelPricing | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const p = (raw as Record<string, unknown>).pricing
+  if (!p || typeof p !== 'object') return undefined
+  const r = p as Record<string, unknown>
+  const rates = [r.inputPerMillion, r.cachedInputPerMillion, r.cacheWritePerMillion, r.outputPerMillion]
+  if (!rates.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0)) return undefined
+  return {
+    inputPerMillion: r.inputPerMillion as number,
+    cachedInputPerMillion: r.cachedInputPerMillion as number,
+    cacheWritePerMillion: r.cacheWritePerMillion as number,
+    outputPerMillion: r.outputPerMillion as number,
+  }
+}
+
+/**
  * Map a cloud `visible-models` catalog entry (the `toVisible` shape served by
  * the upstream's `/api/platform/visible-models`) to a local `ModelEntry`.
  *
@@ -309,6 +328,11 @@ async function mergeCloudCatalog(next: RegistrySnapshot): Promise<void> {
     if (next.dbIds.has(entry.id)) continue
     next.merged.set(entry.id, entry)
     next.cloudIds.add(entry.id)
+    // Cloud-only models have no local DB row, so their per-token rates come
+    // with the catalog entry. Without them, usage is billed at the static
+    // `sonnet` fallback.
+    const pricing = cloudCatalogModelPricing(raw)
+    if (pricing) next.pricing.set(entry.id, pricing)
     merged++
   }
   if (merged > 0) {
@@ -393,6 +417,11 @@ async function refresh(): Promise<void> {
 
     next.loadedAt = Date.now()
     snapshot = next
+    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+      void import('../lib/local-usage-repricing')
+        .then((m) => m.repriceLocalUsage(next.pricing, next.cloudIds))
+        .catch(() => {})
+    }
   } catch (err) {
     // Keep whatever snapshot we had; just stamp it so we don't hot-loop.
     snapshot = { ...snapshot, loadedAt: Date.now() }
@@ -419,6 +448,21 @@ function refreshIfStaleInBackground(): void {
 /** Await a fresh load. Call once at server startup to prime the cache. */
 export async function primeModelRegistry(): Promise<void> {
   await refresh()
+}
+
+/**
+ * Await the first load when nothing has been loaded yet. The local/desktop
+ * entry point never calls `primeModelRegistry`, so the sync accessors return
+ * an empty snapshot until the lazy background refresh lands.
+ */
+export async function ensureModelRegistryLoaded(): Promise<void> {
+  if (snapshot.loadedAt > 0) return
+  if (!inflight) {
+    inflight = refresh().finally(() => {
+      inflight = null
+    })
+  }
+  await inflight
 }
 
 /** Drop the cache and reload. Call from admin write routes. */
@@ -600,10 +644,22 @@ export function getDbModelPricingSync(id: string): DbModelPricing | undefined {
   return snapshot.pricing.get(canonical)
 }
 
+/**
+ * Billing bucket for a merged (DB or cloud) model. Prefers the static catalog
+ * entry for the backing `apiModel` (e.g. a UUID row for `claude-opus-5-5` maps
+ * to the `claude-opus-5-5` bucket rather than the family-derived `opus`).
+ */
+export function getDbModelBillingModelSync(id: string): string | undefined {
+  const entry = getMergedModelEntrySync(id)
+  if (!entry) return undefined
+  return modelCatalog.getModelEntry(entry.apiModel)?.billingModel ?? entry.billingModel
+}
+
 // Register with the billing-side pricing hook so usage-cost / cost-analytics
 // can read DB pricing without importing this module (and the full catalog)
 // directly. See apps/api/src/lib/db-model-pricing.ts.
 setDbModelPricingProvider(getDbModelPricingSync)
+setDbModelBillingModelProvider(getDbModelBillingModelSync)
 
 /** Async merged catalog (awaits a refresh when stale). For non-hot paths. */
 export async function getMergedCatalog(): Promise<ModelEntry[]> {

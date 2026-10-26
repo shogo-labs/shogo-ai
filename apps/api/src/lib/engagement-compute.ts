@@ -39,9 +39,57 @@ export interface ToolRow {
   createdAt: Date
 }
 
+/**
+ * Who a team-chat message was aimed at.
+ *
+ *   person   tagged people (or a DM/group DM with only people)
+ *   agent    tagged an agent, or a reply in an agent's thread
+ *   mixed    tagged both people and agents
+ *   channel  untagged, posted to a channel
+ */
+export type MessageAudience = 'person' | 'agent' | 'mixed' | 'channel'
+
 export interface MessageRow {
   userId: string
   createdAt: Date
+  id?: string
+  conversationId?: string
+  threadRootId?: string | null
+  /** Full text of what the person sent; replies and agent output never appear here. */
+  text?: string
+  /** Absent on rows collected before audience classification existed: counted as a channel post. */
+  audience?: MessageAudience
+  /** Card this message belongs to, when its thread is a card's thread. */
+  workItemKey?: string | null
+}
+
+/** A prompt a person typed in an agent chat (`ChatMessage`, `role: user`). */
+export interface ChatPromptRow {
+  userId: string
+  createdAt: Date
+  id?: string
+  sessionId?: string
+  sessionName?: string | null
+  projectId?: string | null
+  text?: string
+}
+
+/** One board action by a person. Agent actions carry no user and never reach here. */
+export interface CardEventRow {
+  userId: string
+  at: Date
+  /** created | moved | assigned | commented | updated | linked | … */
+  type: string
+  id?: string
+  workItemId?: string
+  key?: string
+  title?: string
+  board?: string | null
+  column?: string | null
+  category?: string | null
+  threadId?: string | null
+  /** Human line for the event, e.g. "moved to QA & Review". */
+  label?: string
 }
 
 export interface ApprovalRow {
@@ -75,10 +123,28 @@ export interface RawActivity {
   approvals: ApprovalRow[]
   tasks: TaskRow[]
   meetings: MeetingRow[]
+  chatPrompts: ChatPromptRow[]
+  cardEvents: CardEventRow[]
+  /**
+   * User prompts in the scope's agent chats that nobody can be credited for:
+   * a shared project chat with no session owner and no `authorUserId`. Reported
+   * as a number instead of guessed onto a person.
+   */
+  unattributedChatPrompts: number
 }
 
 export function emptyRaw(): RawActivity {
-  return { usage: [], tools: [], messages: [], approvals: [], tasks: [], meetings: [] }
+  return {
+    usage: [],
+    tools: [],
+    messages: [],
+    approvals: [],
+    tasks: [],
+    meetings: [],
+    chatPrompts: [],
+    cardEvents: [],
+    unattributedChatPrompts: 0,
+  }
 }
 
 // ============================================================================
@@ -87,6 +153,21 @@ export function emptyRaw(): RawActivity {
 
 export interface WorkTotals {
   messagesSent: number
+  /** Team-chat messages, split by who they were aimed at. The four add up to `messagesSent`. */
+  messagesToPeople: number
+  messagesToAgents: number
+  messagesMixed: number
+  messagesToChannel: number
+  /** Prompts typed into an agent chat, credited to the sender. */
+  agentChatPrompts: number
+  /** Prompts in a shared chat nobody can be credited for (see `RawActivity`). */
+  unattributedPrompts: number
+  cardsCreated: number
+  cardsMoved: number
+  /** Moved into a done-category column. */
+  cardsCompleted: number
+  cardComments: number
+  cardAssignments: number
   approvalsDecided: number
   approvalsApproved: number
   approvalsDenied: number
@@ -106,10 +187,29 @@ export interface WorkTotals {
 }
 
 export interface RecentWorkItem {
-  kind: 'task_completed' | 'approval'
+  kind: 'task_completed' | 'approval' | 'card_event' | 'message' | 'chat_prompt'
   at: string
   label: string
   detail?: string
+  /** Row id to dig further: the card event, message, approval or task. */
+  id?: string
+  workItemKey?: string
+  conversationId?: string
+  chatSessionId?: string
+  audience?: MessageAudience
+}
+
+/** A card a person touched in the window, with where it stands now. */
+export interface MemberCard {
+  key: string
+  title: string
+  board: string | null
+  column: string | null
+  /** The person's own last action on it, e.g. "moved to QA & Review". */
+  lastAction: string
+  at: string
+  workItemId?: string
+  threadId?: string | null
 }
 
 export interface DailyModelPoint {
@@ -280,6 +380,47 @@ export function resolveActivityWindow(
 }
 
 // ============================================================================
+// Audience
+// ============================================================================
+
+/**
+ * Who one team-chat message was aimed at. One place decides, so the summary,
+ * the export and the tool can never disagree.
+ *
+ * Mentions win: a post that tags a person and an agent is `mixed` even inside a
+ * channel. Without mentions the conversation decides — a DM or group DM belongs
+ * to its other members — and an untagged reply in an agent's thread is `agent`
+ * because it is answering that agent. Everything else is a plain channel post.
+ */
+export function classifyAudience(input: {
+  conversationKind: string
+  hasPersonMention?: boolean
+  hasAgentMention?: boolean
+  /** For `dm` / `group_dm`: member types of everyone except the author. */
+  otherMemberTypes?: readonly string[] | null
+  /** For a reply: the author type of the thread root. */
+  threadRootAuthorType?: string | null
+}): MessageAudience {
+  const { hasPersonMention = false, hasAgentMention = false } = input
+  if (hasPersonMention && hasAgentMention) return 'mixed'
+  if (hasAgentMention) return 'agent'
+  if (hasPersonMention) return 'person'
+
+  const kind = input.conversationKind
+  if (kind === 'dm' || kind === 'group_dm') {
+    const others = input.otherMemberTypes ?? []
+    if (others.length === 0) return 'channel'
+    const agents = others.filter((t) => t === 'agent').length
+    if (agents === others.length) return 'agent'
+    if (agents === 0) return 'person'
+    return 'mixed'
+  }
+
+  if (input.threadRootAuthorType === 'agent') return 'agent'
+  return 'channel'
+}
+
+// ============================================================================
 // Streaks
 // ============================================================================
 
@@ -330,6 +471,8 @@ export function groupRawByUser(raw: RawActivity): Map<string, RawActivity> {
   for (const r of raw.approvals) bucket(r.userId).approvals.push(r)
   for (const r of raw.tasks) bucket(r.userId).tasks.push(r)
   for (const r of raw.meetings) bucket(r.userId).meetings.push(r)
+  for (const r of raw.chatPrompts) bucket(r.userId).chatPrompts.push(r)
+  for (const r of raw.cardEvents) bucket(r.userId).cardEvents.push(r)
   return out
 }
 
@@ -345,6 +488,8 @@ function activityTimes(raw: RawActivity, window?: { from: Date; to: Date }): Dat
     if (r.completedAt) times.push(r.completedAt)
   }
   for (const r of raw.meetings) times.push(r.createdAt)
+  for (const r of raw.chatPrompts) times.push(r.createdAt)
+  for (const r of raw.cardEvents) times.push(r.at)
   return window ? times.filter((t) => t >= window.from && t <= window.to) : times
 }
 
@@ -403,6 +548,49 @@ export function computeWorkTotals(raw: RawActivity, clock: ZoneClock, window: { 
   const approvalsApproved = raw.approvals.filter((a) => a.decision === 'approved').length
   const approvalsDenied = raw.approvals.length - approvalsApproved
 
+  let messagesToPeople = 0
+  let messagesToAgents = 0
+  let messagesMixed = 0
+  let messagesToChannel = 0
+  for (const m of raw.messages) {
+    switch (m.audience ?? 'channel') {
+      case 'person':
+        messagesToPeople++
+        break
+      case 'agent':
+        messagesToAgents++
+        break
+      case 'mixed':
+        messagesMixed++
+        break
+      default:
+        messagesToChannel++
+    }
+  }
+
+  let cardsCreated = 0
+  let cardsMoved = 0
+  let cardsCompleted = 0
+  let cardComments = 0
+  let cardAssignments = 0
+  for (const e of raw.cardEvents) {
+    switch (e.type) {
+      case 'created':
+        cardsCreated++
+        break
+      case 'moved':
+        cardsMoved++
+        if (e.category === 'done') cardsCompleted++
+        break
+      case 'commented':
+        cardComments++
+        break
+      case 'assigned':
+        cardAssignments++
+        break
+    }
+  }
+
   const times = activityTimes(raw, window)
   const days = new Set<string>()
   let last = 0
@@ -413,6 +601,17 @@ export function computeWorkTotals(raw: RawActivity, clock: ZoneClock, window: { 
 
   return {
     messagesSent: raw.messages.length,
+    messagesToPeople,
+    messagesToAgents,
+    messagesMixed,
+    messagesToChannel,
+    agentChatPrompts: raw.chatPrompts.length,
+    unattributedPrompts: raw.unattributedChatPrompts,
+    cardsCreated,
+    cardsMoved,
+    cardsCompleted,
+    cardComments,
+    cardAssignments,
     approvalsDecided: raw.approvals.length,
     approvalsApproved,
     approvalsDenied,
@@ -430,6 +629,14 @@ export function computeWorkTotals(raw: RawActivity, clock: ZoneClock, window: { 
     activeDays: days.size,
     lastActiveAt: last ? new Date(last).toISOString() : null,
   }
+}
+
+const MESSAGE_PREVIEW_CHARS = 160
+
+function previewText(text: string | undefined): string {
+  const flat = (text ?? '').replace(/\s+/g, ' ').trim()
+  if (!flat) return '(no text)'
+  return flat.length > MESSAGE_PREVIEW_CHARS ? `${flat.slice(0, MESSAGE_PREVIEW_CHARS - 1)}…` : flat
 }
 
 export function computeRecentWork(raw: RawActivity, limit = 10): RecentWorkItem[] {
@@ -452,7 +659,65 @@ export function computeRecentWork(raw: RawActivity, limit = 10): RecentWorkItem[
       detail: a.decision === 'approved' ? 'Approved' : 'Denied',
     })
   }
+  for (const e of raw.cardEvents) {
+    items.push({
+      kind: 'card_event',
+      at: e.at.toISOString(),
+      label: e.key ? `${e.key} ${e.label ?? e.type}` : (e.label ?? e.type),
+      detail: [e.title, e.column].filter(Boolean).join(' · ') || undefined,
+      id: e.id,
+      workItemKey: e.key,
+    })
+  }
+  for (const p of raw.chatPrompts) {
+    items.push({
+      kind: 'chat_prompt',
+      at: p.createdAt.toISOString(),
+      label: previewText(p.text),
+      detail: p.sessionName ?? undefined,
+      id: p.id,
+      chatSessionId: p.sessionId,
+    })
+  }
+  for (const m of raw.messages) {
+    items.push({
+      kind: 'message',
+      at: m.createdAt.toISOString(),
+      label: previewText(m.text),
+      detail: m.audience,
+      id: m.id,
+      conversationId: m.conversationId,
+      workItemKey: m.workItemKey ?? undefined,
+      audience: m.audience ?? 'channel',
+    })
+  }
   return items.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit)
+}
+
+/** The cards a person touched in the window, newest action first. */
+export function computeCards(raw: RawActivity, limit = 10): MemberCard[] {
+  const byItem = new Map<string, MemberCard & { atMs: number }>()
+  for (const e of raw.cardEvents) {
+    const key = e.workItemId ?? e.key ?? e.id ?? ''
+    if (!key) continue
+    const previous = byItem.get(key)
+    if (previous && previous.atMs >= e.at.getTime()) continue
+    byItem.set(key, {
+      key: e.key ?? '',
+      title: e.title ?? '',
+      board: e.board ?? null,
+      column: e.column ?? null,
+      lastAction: e.label ?? e.type,
+      at: e.at.toISOString(),
+      workItemId: e.workItemId,
+      threadId: e.threadId ?? null,
+      atMs: e.at.getTime(),
+    })
+  }
+  return [...byItem.values()]
+    .sort((a, b) => b.atMs - a.atMs)
+    .slice(0, limit)
+    .map(({ atMs: _atMs, ...card }) => card)
 }
 
 // ============================================================================

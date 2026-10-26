@@ -14,6 +14,7 @@ const { dir } = setupChannelsTestDb()
 const { prisma } = await import('../lib/prisma')
 const bus = await import('../lib/conversation-bus')
 const service = await import('../services/conversation.service')
+const { agentMentionToken, userMentionToken } = await import('../services/conversation-mentions')
 
 const db = prisma as any
 let seed: SeededWorkspace
@@ -71,5 +72,39 @@ describe('lastMessage on the conversation list', () => {
     const dm = await service.openDirectConversation(seed.workspaceId, seed.member, [seed.viewer])
     const list = await service.listConversationsForUser(seed.workspaceId, seed.member)
     expect(list.find((c: any) => c.id === dm.id)!.lastMessage).toBeUndefined()
+  })
+
+  test('a preview names the people and agents the message tags', async () => {
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    await post(dm.id, seed.owner, `${userMentionToken(seed.viewer)} and ${agentMentionToken(seed.projectId)} please review`)
+
+    const list = await service.listConversationsForUser(seed.workspaceId, seed.owner)
+    expect(list.find((c: any) => c.id === dm.id)!.lastMessage.preview).toBe('@viewer and @Billing Bot please review')
+  })
+})
+
+describe('channel references in a preview', () => {
+  test('a public #channel is named in the preview', async () => {
+    const ops = await db.conversation.create({
+      data: { workspaceId: seed.workspaceId, kind: 'public', name: 'ops', slug: 'ops' },
+    })
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    await post(dm.id, seed.member, `ask in <#c:${ops.id}> today`)
+
+    const list = await service.listConversationsForUser(seed.workspaceId, seed.owner)
+    expect(list.find((c: any) => c.id === dm.id)!.lastMessage.preview).toBe('ask in #ops today')
+  })
+
+  test('a private #channel this reader is not in is never named', async () => {
+    const secret = await db.conversation.create({
+      data: { workspaceId: seed.workspaceId, kind: 'private', name: 'secret-plans', slug: 'secret-plans' },
+    })
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.member, [seed.owner])
+    await post(dm.id, seed.member, `look in <#c:${secret.id}>`)
+
+    const list = await service.listConversationsForUser(seed.workspaceId, seed.owner)
+    const preview = list.find((c: any) => c.id === dm.id)!.lastMessage.preview
+    expect(preview).toBe('look in #privatechannel')
+    expect(preview).not.toContain('secret-plans')
   })
 })

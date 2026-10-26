@@ -26,6 +26,19 @@ spec:
               value: "api.shogo-production-system.svc.cluster.local"
             - name: DNS_RESOLVER
               value: "kube-dns.kube-system.svc.cluster.local"
+            # Rendered into index.html at container start by
+            # apps/mobile/docker/shogo-runtime-env.sh. The image itself is
+            # environment-agnostic (promoted unchanged from staging).
+            - name: SHOGO_APP_ENV
+              value: "production_web"
+            # Substituted by deploy.yml's "Apply Kubernetes manifests" step
+            # (and SHOGO_APP_VERSION re-pinned by apply-prod-images.sh).
+            - name: SHOGO_APP_VERSION
+              value: "SHOGO_APP_VERSION_PLACEHOLDER"
+            - name: GA4_MEASUREMENT_ID
+              value: "GA4_MEASUREMENT_ID_PLACEHOLDER"
+            - name: FB_PIXEL_ID
+              value: "FB_PIXEL_ID_PLACEHOLDER"
           resources:
             requests:
               memory: "128Mi"

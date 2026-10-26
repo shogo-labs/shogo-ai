@@ -122,6 +122,9 @@ const RESOURCE_LOOKUPS: Record<string, Lookup> = {
     const log = await db.toolCallLog.findUnique({ where: { id }, select: { chatSessionId: true } })
     return log?.chatSessionId ? chatSessionWorkspace(log.chatSessionId) : null
   },
+  // Work boards: /api/boards/:id/... and /api/work-items/:id/... (people and agents).
+  boards: directWs('board'),
+  'work-items': directWs('workItem'),
   // Handwritten (non-generated) workspace-owned resources.
   'api-keys': directWs('apiKey'),
   instances: directWs('instance'),

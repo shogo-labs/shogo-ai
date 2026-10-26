@@ -168,12 +168,19 @@ describe('pool home-state durability', () => {
       expect(calls).toHaveLength(1)
     })
 
-    test('workspace runtimes and published sites never carry a home', async () => {
+    test('published sites never carry a home', async () => {
       const calls = guestResponds(blob)
-      pool.add('ws:abc')
       pool.add('p-pub', { publishedSubdomain: 'site' } as Partial<AssignedVm>)
       expect(await pool.exportAllHomeState()).toBe(0)
       expect(calls).toHaveLength(0)
+    })
+
+    test('workspace runtimes export their home under their own runtime key', async () => {
+      guestResponds(blob)
+      pool.add('ws:abc')
+      pool.add('ws:proj:p9')
+      expect(await pool.exportAllHomeState()).toBe(2)
+      expect(pool.uploads.map((u) => u.projectId).sort()).toEqual(['ws:abc', 'ws:proj:p9'])
     })
 
     test('one failing guest does not stop the sweep', async () => {

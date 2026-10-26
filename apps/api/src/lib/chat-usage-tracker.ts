@@ -191,7 +191,7 @@ export function teeChatStreamForBilling(
     stream: ReadableStream<Uint8Array>,
     projectId: string,
     chatSessionId?: string | null,
-  ) => Promise<void> | void = trackChatStreamForBilling,
+  ) => Promise<unknown> | void = trackChatStreamForBilling,
 ): ReadableStream<Uint8Array> {
   const bgReader = upstreamBody.getReader()
   const trackingChunks: Uint8Array[] = []

@@ -26,7 +26,14 @@
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { buildProjectEnv, buildPublishedProjectEnv } from './runtime/build-project-env'
 import { buildWorkspaceEnv } from './runtime/build-workspace-env'
-import { getMetalPlacementRegistry, type HostScalars, type MetalPlacementRegistry } from './metal-placement-registry'
+import {
+  getMetalPlacementRegistry,
+  type HostScalars,
+  type MetalPlacementRegistry,
+  type StagedRootfsReport,
+} from './metal-placement-registry'
+import { idleDirective, idlePolicyConfig, type IdleDirective, type IdleTier } from './metal-idle-policy'
+import { reportWake } from './wake-capture'
 import {
   admitWorkspaceRuntime,
   isWorkspaceBudgetEnabled,
@@ -72,12 +79,39 @@ const urlCacheHitCounter = meter.createCounter('metal.url_cache_hit', {
 const hostErrorCounter = meter.createCounter('metal.host_errors', {
   description: 'Metal host /assign call failures (network/5xx), labelled by reason',
 })
+const agentRetryCounter = meter.createCounter('metal.agent_restart_retry', {
+  description: 'Control calls retried across a node-agent restart (retry / recovered / gave_up)',
+})
 const noHostCounter = meter.createCounter('metal.no_host', {
   description: 'getMetalProjectUrl calls with no live host available (falls back to Knative)',
 })
 const wakeLatency = meter.createHistogram('metal.wake_latency_ms', {
-  description: 'Host-reported restore→ready latency for a resumed project (the user-facing wake cost)',
+  description: 'Host-reported restore→ready latency for a resumed project (VM restore + /health only; see metal.wake_total_ms)',
   unit: 'ms',
+})
+const wakeTotal = meter.createHistogram('metal.wake_total_ms', {
+  description:
+    'Wall time the API spent resolving a non-cached runtime (lease, placement, env, budget, host /assign), labelled by mode (reused|resumed|assigned|assign_timeout|failed), source and stale_reason',
+  unit: 'ms',
+})
+const wakePhase = meter.createHistogram('metal.wake_phase_ms', {
+  description: 'Per-phase wall time of a runtime wake; api.* phases run in the API, host.* phases on the metal host',
+  unit: 'ms',
+})
+const timeToReady = meter.createHistogram('metal.time_to_ready_ms', {
+  description:
+    'What the user waited: first resolve attempt to a usable runtime URL, across the 30s /assign retries. ' +
+    'Labelled by path (resumed|assigned|reused|after_timeout), host_id and region',
+  unit: 'ms',
+})
+const repoHydrateCounter = meter.createCounter('metal.repo_hydrate', {
+  description:
+    'Assign-time git history restores by mode: foreground (open waited), deferred (open returned on the ' +
+    "source's .git, history swapped in later), none (no durable repo), failed",
+})
+const repoHydrateBytes = meter.createHistogram('metal.repo_hydrate_bytes', {
+  description: 'Bytes of git history a fresh assign had to download',
+  unit: 'By',
 })
 
 // --- Per-host fleet gauges (SigNoz) ------------------------------------------
@@ -150,6 +184,34 @@ const hostUnhealthyGauge = meter.createObservableGauge('metal.host.assigned_unhe
 const hostHealthGateDiscardGauge = meter.createObservableGauge('metal.host.health_gate_discard_total', {
   description: 'Cumulative health-gate discards reported by a metal host (mute guests torn down on open)',
 })
+// Every node-agent counter from the heartbeat (resume hits/misses, stale-snapshot
+// skips by reason, drift repairs, backup conflicts, ...), as one series per
+// {host_id, counter, <labels>}. More than one API replica observes each host, so
+// take `max by (host_id)` of the rate rather than summing replicas.
+const fleetUtilGauge = meter.createObservableGauge('metal.fleet_utilization_pct', {
+  description: 'Region utilization: assigned microVMs ÷ (live hosts × MAX_VMS_PER_HOST); picks the idle-suspend tier',
+})
+const hostIdleTierGauge = meter.createObservableGauge('metal.idle_tier', {
+  description: 'Idle-suspend tier a metal host is applying: 0 relaxed, 1 aggressive (label `reason`: directive|stale|host_guard|static)',
+})
+const hostIdleWindowGauge = meter.createObservableGauge('metal.host.idle_window_ms', {
+  description: 'Idle-suspend window a metal host is applying',
+  unit: 'ms',
+})
+const hostCounter = meter.createObservableCounter('metal.host.counter', {
+  description: 'Cumulative node-agent counter reported on the metal host heartbeat; `counter` is the agent metric name',
+})
+
+/** `metal_x_total{reason="repo"}` → `{ counter: 'metal_x_total', reason: 'repo' }`. */
+export function parseHostCounterName(key: string): Record<string, string> {
+  const brace = key.indexOf('{')
+  if (brace < 0 || !key.endsWith('}')) return { counter: key }
+  const attrs: Record<string, string> = { counter: key.slice(0, brace) }
+  for (const m of key.slice(brace + 1, -1).matchAll(/(\w+)="([^"]*)"/g)) {
+    if (m[1] !== 'counter' && m[1] !== 'host_id') attrs[m[1]] = m[2]
+  }
+  return attrs
+}
 
 let fleetGaugesRegistered = false
 
@@ -167,8 +229,22 @@ function ensureFleetGauges(): void {
   meter.addBatchObservableCallback(
     (obs) => {
       const c = getMetalWarmPoolController()
+      const byRegion = new Map<string, { hosts: number; assigned: number }>()
+      for (const h of c.liveHosts()) {
+        const r = byRegion.get(h.region) ?? { hosts: 0, assigned: 0 }
+        r.hosts++
+        r.assigned += h.load?.assigned ?? 0
+        byRegion.set(h.region, r)
+      }
+      for (const [region, r] of byRegion) {
+        obs.observe(fleetUtilGauge, Math.round((r.assigned / (r.hosts * MAX_VMS_PER_HOST)) * 100), { region })
+      }
       for (const h of c.liveHosts()) {
         const attrs = { host_id: h.hostId, region: h.region, arch: h.arch }
+        if (h.idle) {
+          obs.observe(hostIdleTierGauge, h.idle.tier === 'aggressive' ? 1 : 0, { ...attrs, reason: h.idle.reason })
+          obs.observe(hostIdleWindowGauge, h.idle.idleMs, attrs)
+        }
         obs.observe(hostUpGauge, 1, attrs)
         obs.observe(hostAvailableGauge, h.load?.available ?? 0, attrs)
         obs.observe(hostAssignedGauge, h.load?.assigned ?? 0, attrs)
@@ -203,6 +279,11 @@ function ensureFleetGauges(): void {
         if (typeof discards === 'number') {
           obs.observe(hostHealthGateDiscardGauge, discards, attrs)
         }
+        for (const [key, value] of Object.entries(h.metrics ?? {})) {
+          if (typeof value === 'number' && Number.isFinite(value)) {
+            obs.observe(hostCounter, value, { ...parseHostCounterName(key), ...attrs })
+          }
+        }
       }
     },
     [
@@ -223,6 +304,10 @@ function ensureFleetGauges(): void {
       hostIdleTailGauge,
       hostUnhealthyGauge,
       hostHealthGateDiscardGauge,
+      hostCounter,
+      fleetUtilGauge,
+      hostIdleTierGauge,
+      hostIdleWindowGauge,
     ],
   )
 }
@@ -280,11 +365,24 @@ export interface MetalHostRegistration {
      * silently unless leaked devices are being reclaimed faster than they appear.
      */
     taps?: { inUse: number; capacity: number }
+    /** Host RAM from /proc/meminfo. Absent on older agents. */
+    mem?: { totalMiB: number; availableMiB: number }
   }
   /** NVMe cache scalars (Phase 5). Absent on older agents → treated as headroom. */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
   /** Compact node-agent counters (gc/resume) for fleet observability. */
   metrics?: Record<string, number>
+  /**
+   * Idle-suspend window the host is applying right now and why: `directive`
+   * (the tier from the last /register response), `stale` (no fresh directive,
+   * failing safe to aggressive), `host_guard` (this host is near its VM cap).
+   * Absent on agents predating the two-tier policy.
+   */
+  idle?: { tier: IdleTier; idleMs: number; reason: string; directiveTier?: IdleTier }
+  /** See HostScalars.stagedRootfs. */
+  stagedRootfs?: StagedRootfsReport
+  /** See HostScalars.restarting. */
+  restarting?: boolean
 }
 
 interface HostEntry extends MetalHostRegistration {
@@ -295,6 +393,13 @@ interface HostEntry extends MetalHostRegistration {
 /** A host is considered live if it heartbeat within this window. */
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
+
+/** Each recent cold open on a host counts as this many assigned VMs when placing new projects. */
+const COLD_OPEN_WEIGHT = Math.max(0, parseFloat(process.env.METAL_PLACEMENT_COLD_OPEN_WEIGHT || '2'))
+const COLD_OPEN_WINDOW_MS = parseInt(process.env.METAL_PLACEMENT_COLD_OPEN_WINDOW_MS || '600000', 10)
+
+/** Resolve outcomes the caller retries into the same placement: the user is still waiting. */
+const RETRIED_WAKE_MODES = new Set(['assign_timeout', 'owner_unreachable', 'assign_failed_owner', 'all_hosts_failed'])
 /**
  * Upper bound on a host's /stop reply, which includes the durable snapshot
  * upload. Kept under the ~100s edge proxy limit because the user stop route
@@ -346,6 +451,45 @@ export class MetalHostUnreachableError extends Error {
   }
 }
 
+/**
+ * A staged pre-warm (`rootfs: 'staged'`) found the host already holds a
+ * snapshot on the staged rootfs for this key: nothing was booted.
+ */
+export class RuntimePrewarmedError extends Error {
+  readonly code = 'prewarmed'
+  constructor(
+    readonly runtimeKey: string,
+    readonly stagedSnapshotIdentity?: string,
+  ) {
+    super(`${runtimeKey} is already pre-warmed on the staged rootfs`)
+    this.name = 'RuntimePrewarmedError'
+  }
+}
+
+/** Options for one host /assign. */
+interface AssignOpts {
+  /** Boot on the host's staged rootfs (switch-over pre-warm). */
+  rootfs?: 'staged'
+}
+
+/**
+ * How long a control call rides out an agent restart (see agentFetch): the
+ * normal window, and the longer one once the host announced the restart.
+ */
+const agentRestartRetry = { shortMs: 20_000, longMs: 60_000 }
+
+/** Test-only: shrink the restart retry window (0 = no retry). */
+export function _setAgentRestartRetry(v: { shortMs: number; longMs: number } | null): void {
+  Object.assign(agentRestartRetry, v ?? { shortMs: 20_000, longMs: 60_000 })
+}
+
+/** The agent's port refused or dropped the connection: what a restarting agent looks like. */
+export function isConnectionError(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } } | null
+  const code = e?.code ?? e?.cause?.code
+  return code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ConnectionRefused' || code === 'EPIPE'
+}
+
 const OWNER_PROBE_TIMEOUT_MS = parseInt(process.env.METAL_OWNER_PROBE_TIMEOUT_MS || '1500', 10)
 /** Hosts at/above this used% are de-prioritized for NEW cold placements (GC pressure). */
 const DISK_HIGH_PCT = parseInt(process.env.METAL_DISK_HIGH_PCT || '85', 10)
@@ -392,9 +536,27 @@ export class NoMetalHostError extends Error {
   }
 }
 
+/** A live mount of a project into a runtime other than its own `ws:proj:<id>`. */
+export class ForeignMemberMountError extends Error {
+  readonly code = 'mounting_removed'
+  constructor(readonly runtimeKey: string, readonly projectId: string) {
+    super(`refusing to mount project ${projectId} into ${runtimeKey}: projects are only online in their own runtime`)
+    this.name = 'ForeignMemberMountError'
+  }
+}
+
+export interface MetalHostDrainReport {
+  hostId: string
+  ok: boolean
+  results?: Array<{ runtimeKey: string; projectId: string; outcome: string; detail?: string }>
+  error?: string
+}
+
 interface AssignResult {
   url: string
-  mode?: 'assigned' | 'resumed'
+  mode?: 'assigned' | 'resumed' | 'prewarmed'
+  /** Set with `mode:'prewarmed'`: the staged snapshot already held for this runtime. */
+  stagedSnapshotIdentity?: string
   source?: 'local' | 'store'
   readyMs?: number
   /**
@@ -403,6 +565,33 @@ interface AssignResult {
    * controller record a warm hit instead of a cold miss for repeat resolves.
    */
   reused?: boolean
+  /** Host-side wall ms per open phase (absent on older agents). */
+  phases?: Record<string, number>
+  /** Host-side wall ms for the whole open. */
+  totalMs?: number
+  /** Cold boot only: why the host did not resume a snapshot. */
+  staleReason?: string
+  /** Fresh assign only: how the git history restore went (absent on older agents). */
+  repo?: RepoRestoreReport
+  /**
+   * `reused` only: the open that brought this VM up, when the request that
+   * started it timed out before it could report (absent on older agents).
+   */
+  lateWake?: {
+    mode: 'assigned' | 'resumed'
+    source?: string
+    staleReason?: string
+    phases?: Record<string, number>
+    totalMs?: number
+    repo?: RepoRestoreReport
+  }
+}
+
+interface RepoRestoreReport {
+  mode: 'foreground' | 'deferred' | 'none' | 'failed'
+  bytes: number
+  bundles: number
+  foregroundMs: number
 }
 
 /** A cached resolution of a project to its runtime URL (see URL_CACHE_TTL_MS). */
@@ -420,6 +609,12 @@ export interface StopResult {
   busy: boolean
   /** Size of the memory snapshot a fresh suspend wrote (absent otherwise). */
   memBytes?: number
+  /** Booted from a superseded rootfs: backed up and stopped without a snapshot (cold here now). */
+  retired?: boolean
+  /** The snapshot went to the host's staged slot (switch-over pre-warm). */
+  staged?: boolean
+  /** Rootfs identity the snapshot was taken on. */
+  snapshotRootfsIdentity?: string
 }
 
 /** A runtime's state on the host that holds it (the node-agent `/status` body). */
@@ -433,6 +628,10 @@ export interface RuntimeHostStatus {
   lastRealActivityAt?: number
   realIdleMs?: number
   activeStreams?: number
+  /** Rootfs the running guest booted from, or the local snapshot was taken on. */
+  snapshotRootfsIdentity?: string
+  /** A pre-warmed snapshot on the host's staged rootfs is held for this key. */
+  stagedSnapshotIdentity?: string
 }
 
 export interface RecycleResult {
@@ -477,6 +676,8 @@ export class MetalWarmPoolController {
   private urlCache = new Map<string, UrlCacheEntry>()
   private foreignPublishedReleaseAt = new Map<string, number>()
   private stats = { assigned: 0, resumed: 0, reused: 0, coldMiss: 0, cacheHit: 0, hostErrors: 0, noHost: 0 }
+  /** Per host: when this replica last sent it a cold open (see coldOpenPenalty). */
+  private recentColdOpens = new Map<string, number[]>()
   /** Cordoned hostIds (admin drain) — excluded from NEW placements. Synced from
    * the shared registry on each resolve so every API replica honors a cordon. */
   private cordoned = new Set<string>()
@@ -492,6 +693,11 @@ export class MetalWarmPoolController {
     private publishedEnvBuilder: PublishedEnvBuilder = buildPublishedProjectEnv,
     private budgetDeps: BudgetDeps = {},
   ) {}
+
+  /** Overridable in tests. */
+  protected sleep(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms))
+  }
 
   /**
    * The workspace budget this assignment draws from, or null when the budget
@@ -554,9 +760,24 @@ export class MetalWarmPoolController {
       capacity: reg.capacity,
       load: reg.load,
       disk: reg.disk,
+      stagedRootfs: reg.stagedRootfs,
+      restarting: reg.restarting,
       lastSeenAt: entry.lastSeenAt,
     }
     void this.registry.upsertHost(scalars).catch(() => {})
+  }
+
+  /**
+   * Idle-suspend window for a host in `region`, from the region's utilization
+   * across the whole fleet (shared registry, not just this replica's
+   * heartbeats). `prevTier` is the tier the host reports applying, which is
+   * what carries the hysteresis between heartbeats.
+   */
+  async idleDirectiveFor(region: string, prevTier: IdleTier | undefined): Promise<IdleDirective> {
+    const live = (await this.liveHostsShared()).filter((h) => h.region === region)
+    const assigned = live.reduce((n, h) => n + (h.load?.assigned ?? 0), 0)
+    const utilPct = live.length ? Math.round((assigned / (live.length * MAX_VMS_PER_HOST)) * 100) : 0
+    return idleDirective(utilPct, prevTier, idlePolicyConfig(), this.now())
   }
 
   /** Hosts this replica has heard heartbeat from within HOST_TTL_MS. */
@@ -610,7 +831,9 @@ export class MetalWarmPoolController {
    *   1. the host that holds the project locally (cache hit) — from the shared
    *      registry placement if provided, else local stickiness; a local resume
    *      is sub-second vs a cross-host S3 pull or a cold boot;
-   *   2. remaining live hosts UNDER the disk high-watermark, lightest-load first;
+   *   2. remaining live hosts UNDER the disk high-watermark, lightest-load first,
+   *      where load also counts the cold opens this replica sent there recently
+   *      (see coldOpenPenalty);
    *   3. hosts AT/OVER the high-watermark last (they're shedding via GC, so
    *      placing a new cold project there just fights the sweep).
    */
@@ -627,9 +850,35 @@ export class MetalWarmPoolController {
         const ap = overWatermark(a) ? 1 : 0
         const bp = overWatermark(b) ? 1 : 0
         if (ap !== bp) return ap - bp
-        return loadRatio(a) - loadRatio(b)
+        return loadRatio(a) + this.coldOpenPenalty(a) - (loadRatio(b) + this.coldOpenPenalty(b))
       })
     return preferred ? [preferred, ...rest] : rest
+  }
+
+  /**
+   * Load-ratio surcharge for cold opens recently sent to `host`.
+   *
+   * `assigned` alone balances how many VMs each host RUNS, not how many it is
+   * BOOTING. Two hosts can sit at 47 and 50 VMs while one takes every new
+   * project: on 2026-10-22..25 latitude-dal-1 took 1,601 fresh assigns to
+   * dal-2's 45, and its concurrent hydrates fought over one uplink (p50 open
+   * 16s vs 4s). Each recent cold open counts as COLD_OPEN_WEIGHT VMs for
+   * COLD_OPEN_WINDOW_MS, so new placements alternate instead of piling up.
+   */
+  private coldOpenPenalty(host: HostEntry): number {
+    const opens = this.recentColdOpens.get(host.hostId)
+    if (!opens?.length) return 0
+    const cutoff = this.now() - COLD_OPEN_WINDOW_MS
+    while (opens.length && opens[0] < cutoff) opens.shift()
+    return (opens.length * COLD_OPEN_WEIGHT) / MAX_VMS_PER_HOST
+  }
+
+  private noteColdOpen(hostId: string): void {
+    if (COLD_OPEN_WEIGHT <= 0) return
+    const opens = this.recentColdOpens.get(hostId) ?? []
+    opens.push(this.now())
+    if (opens.length > 500) opens.splice(0, opens.length - 500)
+    this.recentColdOpens.set(hostId, opens)
   }
 
   /**
@@ -647,19 +896,26 @@ export class MetalWarmPoolController {
   async getMetalWorkspaceUrl(
     workspaceId: string,
     attachedProjectIds: string[],
-    opts: { anchorProjectId?: string; readonlyProjectIds?: string[] } = {},
+    opts: { anchorProjectId?: string; readonlyProjectIds?: string[]; rootfs?: 'staged' } = {},
   ): Promise<string> {
     // Project canvases are anchored workspace runtimes. Their merged roots
     // differ even when the projects share a workspace, so they must never
     // share the workspace-session VM/cache/placement key.
     const key = workspaceRuntimeKey(workspaceId, opts.anchorProjectId)
+    // A project is online only in its own runtime: the member set is the
+    // anchor alone (or nothing for a workspace-session runtime).
+    const members = opts.anchorProjectId ? [opts.anchorProjectId] : []
+    if (attachedProjectIds.some((id) => !members.includes(id))) {
+      console.warn(`[MetalPool] ${key}: ignoring foreign members ${attachedProjectIds.filter((id) => !members.includes(id)).join(',')}`)
+    }
     return this.resolveRuntime(key, () =>
-      buildWorkspaceEnv(workspaceId, attachedProjectIds, {
+      buildWorkspaceEnv(workspaceId, members, {
         forMetal: true,
         anchorProjectId: opts.anchorProjectId,
-        readonlyProjectIds: opts.readonlyProjectIds,
+        readonlyProjectIds: [],
       }),
-      { workspaceId, attachedProjectIds, anchorProjectId: opts.anchorProjectId },
+      { workspaceId, attachedProjectIds: members, anchorProjectId: opts.anchorProjectId },
+      opts.rootfs ? { rootfs: opts.rootfs } : {},
     )
   }
 
@@ -675,15 +931,16 @@ export class MetalWarmPoolController {
     destDir: string,
   ): Promise<Record<string, unknown>> {
     const runtimeKey = `ws:${workspaceId}`
+    if (action === 'mount') {
+      // `ws:<workspaceId>` owns no project, so every mount into it is foreign.
+      throw new ForeignMemberMountError(runtimeKey, projectId)
+    }
     const hostId = this.projectHost.get(runtimeKey)
     const host = hostId ? this.hosts.get(hostId) : undefined
     if (!host) throw new Error(`No Metal host placement for workspace ${workspaceId}`)
-    const path =
-      action === 'mount'
-        ? `/runtimes/${encodeURIComponent(runtimeKey)}/members`
-        : `/runtimes/${encodeURIComponent(runtimeKey)}/members/${encodeURIComponent(projectId)}`
+    const path = `/runtimes/${encodeURIComponent(runtimeKey)}/members/${encodeURIComponent(projectId)}`
     const response = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}${path}`, {
-      method: action === 'mount' ? 'POST' : 'DELETE',
+      method: 'DELETE',
       headers: this.agentHeaders(),
       body: JSON.stringify({ projectId, destDir }),
       signal: AbortSignal.timeout(10 * 60_000),
@@ -707,19 +964,25 @@ export class MetalWarmPoolController {
     runtimeKey: string,
     buildEnv: () => Promise<Record<string, string>>,
     bind?: { workspaceId?: string; attachedProjectIds?: string[]; anchorProjectId?: string },
+    opts: AssignOpts = {},
   ): Promise<string> {
     // Fast path: an already-resolved, still-running runtime returns its cached
     // URL without touching the host — killing the per-request /assign churn that
     // a client polling loop (e.g. a stuck preview iframe) would otherwise create.
-    const cached = this.getCachedUrl(runtimeKey)
+    // A staged pre-warm always asks the host: it must learn what is running.
+    const cached = opts.rootfs ? undefined : this.getCachedUrl(runtimeKey)
     if (cached) {
       this.stats.cacheHit++
       urlCacheHitCounter.add(1)
+      reportWake({ mode: 'cached' })
       return cached
     }
     const inflight = this.pending.get(runtimeKey)
-    if (inflight) return inflight
-    const p = this._resolve(runtimeKey, buildEnv, bind).finally(() => this.pending.delete(runtimeKey))
+    if (inflight) {
+      reportWake({ mode: 'joined' })
+      return inflight
+    }
+    const p = this._resolve(runtimeKey, buildEnv, bind, opts).finally(() => this.pending.delete(runtimeKey))
     this.pending.set(runtimeKey, p)
     return p
   }
@@ -750,30 +1013,36 @@ export class MetalWarmPoolController {
     projectId: string,
     buildEnv: () => Promise<Record<string, string>>,
     bind?: { workspaceId?: string; attachedProjectIds?: string[]; anchorProjectId?: string },
+    opts: AssignOpts = {},
   ): Promise<string> {
     return tracer.startActiveSpan('metal.get_pod_url', { attributes: { 'project.id': projectId } }, async (span) => {
+      const resolveStartedAt = this.now()
+      const wake = new WakeTiming()
+      let wakeMode = 'failed'
+      let wakeHost: AssignResult | undefined
+      let wakeHostEntry: HostEntry | undefined
       try {
         // Anti split brain: acquire a short-TTL lease before resuming. The
         // winner runs the project; a loser converges on the winner's host (from
         // the placement it publishes) so two hosts never run the same project
         // and write the same S3 workspace keys. Fails open on a Redis blip.
-        const gotLease = await this.registry.acquireLease(projectId, this.holderId).catch(() => true)
+        const gotLease = await wake.time('lease', () => this.registry.acquireLease(projectId, this.holderId).catch(() => true))
         let placedHostId: string | undefined
         if (!gotLease) {
-          placedHostId = (await this.waitForPlacement(projectId))?.hostId
+          placedHostId = (await wake.time('placement_wait', () => this.waitForPlacement(projectId)))?.hostId
           span.setAttribute('resolve.lease', 'joined')
         } else {
-          placedHostId = (await this.registry.getPlacement(projectId).catch(() => null))?.hostId
+          placedHostId = (await wake.time('placement', () => this.registry.getPlacement(projectId).catch(() => null)))?.hostId
           span.setAttribute('resolve.lease', 'acquired')
         }
 
-        const live = await this.liveHostsShared()
+        const live = await wake.time('live_hosts', () => this.liveHostsShared())
         // This replica's memory of a host is only a fallback: the copy may have
         // been evicted there and moved since, so without a placement ask the
         // hosts before trusting it.
         let ownerHostId = placedHostId
         if (live.length > 1 && !live.some((h) => h.hostId === ownerHostId)) {
-          const probed = await this.probeOwner(projectId, live)
+          const probed = await wake.time('probe_owner', () => this.probeOwner(projectId, live))
           if (probed) {
             ownerHostId = probed
             span.setAttribute('resolve.owner_probe', probed)
@@ -792,13 +1061,13 @@ export class MetalWarmPoolController {
 
         // forMetal: the guest runs outside OKE and must reach the AI proxy /
         // Shogo API over the PUBLIC URL (in-cluster DNS is unresolvable there).
-        const env = await buildEnv()
+        const env = await wake.time('build_env', buildEnv)
         let lastErr: unknown
 
         const budget = this.budgetFor(projectId, env, bind)
         if (budget) {
           try {
-            await this.admitToBudget(budget.workspaceId, projectId, budget.memMiB)
+            await wake.time('budget', () => this.admitToBudget(budget.workspaceId, projectId, budget.memMiB))
           } catch (err) {
             if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
             span.setAttribute('resolve.method', 'workspace_over_budget')
@@ -837,9 +1106,13 @@ export class MetalWarmPoolController {
           // copy on its own least-loaded host. Pointed here instead, its
           // /assign joins ours (the agent singleflights per runtime key).
           const provisional = gotLease && placedHostId !== host.hostId
+          span.setAttribute('resolve.host', host.hostId)
+          span.setAttribute('resolve.region', host.region)
+          wakeHostEntry = host
           try {
             if (provisional) await this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
-            const res = await this.assignOnHost(host, projectId, env, bind)
+            const res = await wake.time('assign', () => this.assignOnHost(host, projectId, env, bind, opts))
+            wakeHost = res
             this.projectHost.set(projectId, host.hostId)
             // Publish placement so sibling replicas route here (cache-aware) and
             // any lease loser converges on this host. The project is now local.
@@ -854,12 +1127,12 @@ export class MetalWarmPoolController {
             const mode = res.mode ?? 'assigned'
             const source = res.source ?? 'none'
             assignmentsCounter.add(1, { mode, source })
-            span.setAttribute('resolve.host', host.hostId)
-            span.setAttribute('resolve.region', host.region)
+            wakeMode = mode === 'resumed' ? 'resumed' : res.reused ? 'reused' : 'assigned'
             span.setAttribute(
               'resolve.method',
               mode === 'resumed' ? `resumed_${source}` : res.reused ? 'reused' : 'assigned',
             )
+            if (res.staleReason) span.setAttribute('resolve.stale_reason', res.staleReason)
             if (mode === 'resumed') {
               this.stats.resumed++
               if (typeof res.readyMs === 'number') {
@@ -875,7 +1148,9 @@ export class MetalWarmPoolController {
               this.stats.assigned++
               this.stats.coldMiss++
               coldMissCounter.add(1)
+              this.noteColdOpen(host.hostId)
             }
+            await this.recordTimeToReady(span, projectId, resolveStartedAt, wakeMode, res, host)
             // Cache the resolution so repeat requests skip /assign entirely.
             if (URL_CACHE_TTL_MS > 0) {
               this.urlCache.set(projectId, {
@@ -888,8 +1163,24 @@ export class MetalWarmPoolController {
             return res.url
           } catch (err) {
             lastErr = err
+
+            // A staged pre-warm targets the host that owns the key and nothing
+            // else: no failover, and no placement change beyond undoing ours.
+            if (opts.rootfs) {
+              // A timed-out boot is still coming up there (see below).
+              if (isAssignTimeout(err)) this.projectHost.set(projectId, host.hostId)
+              else if (provisional) void this.registry.clearPlacement(projectId, host.hostId).catch(() => {})
+              if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
+              wakeMode = err instanceof RuntimePrewarmedError ? 'prewarmed' : 'staged_failed'
+              span.setAttribute('resolve.method', wakeMode)
+              throw err
+            }
+
             this.stats.hostErrors++
-            hostErrorCounter.add(1, { host: host.hostId })
+            hostErrorCounter.add(1, {
+              host: host.hostId,
+              reason: isAssignTimeout(err) ? 'timeout' : err instanceof MetalHostUnreachableError ? 'unreachable' : 'error',
+            })
 
             // A timeout is not a failure, it is an unfinished boot.
             //
@@ -907,6 +1198,7 @@ export class MetalWarmPoolController {
             // it is the one bringing the project up — and let the caller retry
             // into it rather than scattering the project across the fleet.
             if (isAssignTimeout(err)) {
+              this.noteColdOpen(host.hostId)
               this.projectHost.set(projectId, host.hostId)
               void this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
               this.urlCache.delete(projectId)
@@ -915,6 +1207,7 @@ export class MetalWarmPoolController {
                 `[MetalPool] assign on host ${host.hostId} for ${projectId} did not answer within ` +
                   `${ASSIGN_TIMEOUT_MS}ms — still booting there; keeping placement instead of failing over`,
               )
+              wakeMode = 'assign_timeout'
               span.setAttribute('resolve.method', 'assign_timeout')
               span.setStatus({ code: SpanStatusCode.ERROR, message: 'assign timed out' })
               throw err
@@ -935,8 +1228,28 @@ export class MetalWarmPoolController {
               console.warn(
                 `[MetalPool] owner host ${host.hostId} for ${projectId} unreachable — keeping placement instead of failing over`,
               )
+              wakeMode = 'owner_unreachable'
               span.setAttribute('resolve.method', 'owner_unreachable')
               span.setStatus({ code: SpanStatusCode.ERROR, message: 'owner host unreachable' })
+              throw err
+            }
+
+            // A host that ANSWERED with an error can still be running the key:
+            // on 2026-10-17 latitude-dal-1 replied 500 (Firecracker boot
+            // failure) for a runtime it went on to run, and failing over
+            // put a second copy on dal-2. Ask before moving on.
+            if (!(err instanceof MetalHostUnreachableError) && (await this.hostIsRunning(host, projectId))) {
+              this.projectHost.set(projectId, host.hostId)
+              void this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
+              this.urlCache.delete(projectId)
+              if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
+              console.warn(
+                `[MetalPool] assign on host ${host.hostId} failed for ${projectId} but the host is running it — ` +
+                  `keeping placement instead of failing over: ${(err as any)?.message ?? err}`,
+              )
+              wakeMode = 'assign_failed_owner'
+              span.setAttribute('resolve.method', 'assign_failed_owner')
+              span.setStatus({ code: SpanStatusCode.ERROR, message: 'assign failed on owner host' })
               throw err
             }
 
@@ -958,9 +1271,86 @@ export class MetalWarmPoolController {
         span.recordException(err)
         throw err
       } finally {
+        // The caller retries these into the same host, so the user is still
+        // waiting: remember when the wait began for metal.time_to_ready_ms.
+        if (RETRIED_WAKE_MODES.has(wakeMode)) {
+          void this.registry.markWakeStart?.(projectId, resolveStartedAt)?.catch(() => {})
+        }
+        wake.record(span, wakeMode, wakeHost, wakeHostEntry)
         span.end()
       }
     })
+  }
+
+  /**
+   * Record what the user waited for this runtime. A slow open spans several
+   * resolves (each /assign gives up after ASSIGN_TIMEOUT_MS and the caller
+   * retries), so the wait starts at the first attempt, shared across replicas
+   * via the registry. The retry that finally succeeds usually re-attaches the
+   * VM the timed-out attempt left booting; its host phases arrive as
+   * `lateWake` and are recorded here so slow opens are not invisible.
+   */
+  private async recordTimeToReady(
+    span: { setAttribute(k: string, v: string | number): unknown },
+    projectId: string,
+    resolveStartedAt: number,
+    wakeMode: string,
+    res: AssignResult,
+    host: HostEntry,
+  ): Promise<void> {
+    const firstAttemptAt = (await this.registry.takeWakeStart?.(projectId)?.catch(() => null)) ?? null
+    const waitedMs = Math.max(0, this.now() - (firstAttemptAt ?? resolveStartedAt))
+    const path = firstAttemptAt ? 'after_timeout' : wakeMode
+    span.setAttribute('wake.time_to_ready_ms', waitedMs)
+    span.setAttribute('wake.ready_path', path)
+    timeToReady.record(waitedMs, { path, host_id: host.hostId, region: host.region })
+
+    const repo = res.repo ?? (firstAttemptAt ? res.lateWake?.repo : undefined)
+    if (repo) {
+      span.setAttribute('wake.repo.mode', repo.mode)
+      span.setAttribute('wake.repo.bytes', repo.bytes)
+      span.setAttribute('wake.repo.bundles', repo.bundles)
+      span.setAttribute('wake.repo.foreground_ms', repo.foregroundMs)
+      repoHydrateCounter.add(1, { mode: repo.mode, host_id: host.hostId })
+      if (repo.bytes > 0) repoHydrateBytes.record(repo.bytes, { host_id: host.hostId })
+    }
+
+    const late = firstAttemptAt ? res.lateWake : undefined
+    if (late) {
+      const mode = `late_${late.mode}`
+      span.setAttribute('wake.late.mode', late.mode)
+      if (late.staleReason) span.setAttribute('wake.late.stale_reason', late.staleReason)
+      if (typeof late.totalMs === 'number') {
+        span.setAttribute('wake.late.host.total_ms', late.totalMs)
+        wakeTotal.record(late.totalMs, {
+          mode,
+          source: late.source ?? 'none',
+          stale_reason: late.staleReason ?? 'none',
+          host_id: host.hostId,
+        })
+      }
+      for (const [phase, ms] of Object.entries(late.phases ?? {})) {
+        if (typeof ms !== 'number') continue
+        span.setAttribute(`wake.late.host.${phase}_ms`, ms)
+        wakePhase.record(ms, { phase: `host.${phase}`, mode, host_id: host.hostId })
+      }
+    }
+  }
+
+  /** Whether `host` reports a running VM for `projectId`. False when it can't say. */
+  private async hostIsRunning(host: HostEntry, projectId: string): Promise<boolean> {
+    try {
+      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/status`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({ projectId }),
+        signal: AbortSignal.timeout(OWNER_PROBE_TIMEOUT_MS),
+      })
+      if (!res.ok) return false
+      return ((await res.json()) as { state?: string }).state === 'assigned'
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -1065,12 +1455,12 @@ export class MetalWarmPoolController {
     const host = await this.hostForProject(projectId)
     if (!host) return { exists: false, ready: false, replicas: 0 }
     try {
-      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/status`, {
+      const res = await this.agentFetch(host, `http://${host.meshIp}:${host.agentPort}/status`, () => ({
         method: 'POST',
         headers: this.agentHeaders(),
         body: JSON.stringify({ projectId }),
         signal: AbortSignal.timeout(5000),
-      })
+      }))
       if (!res.ok) return { exists: false, ready: false, replicas: 0 }
       const b = (await res.json()) as { exists?: boolean; ready?: boolean; replicas?: number; url?: string }
       return { exists: !!b.exists, ready: !!b.ready, replicas: b.replicas ?? 0, url: b.url }
@@ -1088,12 +1478,12 @@ export class MetalWarmPoolController {
     const host = await this.hostForProject(runtimeKey)
     if (!host) return null
     try {
-      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/status`, {
+      const res = await this.agentFetch(host, `http://${host.meshIp}:${host.agentPort}/status`, () => ({
         method: 'POST',
         headers: this.agentHeaders(),
         body: JSON.stringify({ projectId: runtimeKey }),
         signal: AbortSignal.timeout(5000),
-      })
+      }))
       if (!res.ok) return null
       const b = (await res.json()) as Partial<RuntimeHostStatus> & { exists?: boolean; ready?: boolean }
       const state = b.state ?? (b.ready ? 'assigned' : b.exists ? 'suspended' : 'none')
@@ -1106,6 +1496,8 @@ export class MetalWarmPoolController {
         lastRealActivityAt: b.lastRealActivityAt,
         realIdleMs: b.realIdleMs,
         activeStreams: b.activeStreams,
+        snapshotRootfsIdentity: b.snapshotRootfsIdentity,
+        stagedSnapshotIdentity: b.stagedSnapshotIdentity,
       }
     } catch {
       return null
@@ -1152,22 +1544,31 @@ export class MetalWarmPoolController {
 
   private async requestStop(host: HostEntry, projectId: string): Promise<StopResult> {
     try {
-      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/stop`, {
+      const res = await this.agentFetch(host, `http://${host.meshIp}:${host.agentPort}/stop`, () => ({
         method: 'POST',
         headers: this.agentHeaders(),
         body: JSON.stringify({ projectId }),
         signal: AbortSignal.timeout(STOP_TIMEOUT_MS),
-      })
+      }))
       const body: any = await res.json().catch(() => ({}))
       const busy = body?.busy === true
       // Only treat it as suspended when the agent confirms it (fresh suspend or
       // already-stopped). A busy/ambiguous reply → not suspended.
-      const suspended = body?.suspended === true || body?.alreadyStopped === true
+      // A retire (stale rootfs) stopped the VM too, just without a snapshot.
+      const retired = body?.retired === true
+      const suspended = body?.suspended === true || body?.alreadyStopped === true || retired
       if (busy) {
         console.log(`[MetalPool] stop ${projectId} on ${host.hostId} skipped: busy (active message)`)
       }
       const memBytes = typeof body?.memBytes === 'number' ? body.memBytes : undefined
-      return { suspended, busy, ...(memBytes !== undefined ? { memBytes } : {}) }
+      return {
+        suspended,
+        busy,
+        ...(memBytes !== undefined ? { memBytes } : {}),
+        ...(retired ? { retired } : {}),
+        ...(body?.staged === true ? { staged: true } : {}),
+        ...(typeof body?.snapshotRootfsIdentity === 'string' ? { snapshotRootfsIdentity: body.snapshotRootfsIdentity } : {}),
+      }
     } catch (err) {
       // The host answers /stop only once the snapshot is uploaded, which can
       // outlast the timeout under load; by then the VM is usually suspended.
@@ -1341,16 +1742,72 @@ export class MetalWarmPoolController {
     return out
   }
 
+  /**
+   * Which runtimes on the fleet currently hold `projectId` as a mounted
+   * member. A host that does not answer is skipped.
+   */
+  async memberHolders(projectId: string): Promise<Array<{ hostId: string; runtimeKey: string }>> {
+    const hosts = await this.liveHostsShared()
+    const out: Array<{ hostId: string; runtimeKey: string }> = []
+    await Promise.all(
+      hosts.map(async (h) => {
+        try {
+          const res = await this.fetchImpl(`http://${h.meshIp}:${h.agentPort}/members/holders`, {
+            method: 'POST',
+            headers: this.agentHeaders(),
+            body: JSON.stringify({ projectId }),
+            signal: AbortSignal.timeout(5000),
+          })
+          if (!res.ok) return
+          const body = (await res.json()) as { hostId?: string; holders?: string[] }
+          for (const runtimeKey of body.holders ?? []) out.push({ hostId: body.hostId ?? h.hostId, runtimeKey })
+        } catch {
+          /* skip a host that didn't answer */
+        }
+      }),
+    )
+    return out
+  }
+
+  /** Ask every live host to unmount members that are not the runtime's own project. */
+  async drainForeignMembers(): Promise<MetalHostDrainReport[]> {
+    const hosts = await this.liveHostsShared()
+    return Promise.all(
+      hosts.map(async (h): Promise<MetalHostDrainReport> => {
+        try {
+          const res = await this.fetchImpl(`http://${h.meshIp}:${h.agentPort}/drain-foreign-members`, {
+            method: 'POST',
+            headers: this.agentHeaders(),
+            body: '{}',
+            signal: AbortSignal.timeout(10 * 60_000),
+          })
+          const body = (await res.json().catch(() => ({}))) as {
+            hostId?: string
+            results?: MetalHostDrainReport['results']
+            error?: string
+          }
+          if (!res.ok) return { hostId: body.hostId ?? h.hostId, ok: false, error: body.error ?? `HTTP ${res.status}` }
+          return { hostId: body.hostId ?? h.hostId, ok: true, results: body.results ?? [] }
+        } catch (err) {
+          return { hostId: h.hostId, ok: false, error: (err as any)?.message ?? String(err) }
+        }
+      }),
+    )
+  }
+
   private async assignOnHost(
     host: HostEntry,
     projectId: string,
     env: Record<string, string>,
     bind?: { workspaceId?: string; attachedProjectIds?: string[]; anchorProjectId?: string },
+    opts: AssignOpts = {},
   ): Promise<AssignResult> {
     const base = `http://${host.meshIp}:${host.agentPort}`
     let res: Response
     try {
-      res = await this.fetchImpl(`${base}/assign`, {
+      // /assign is idempotent per runtime key on the agent (singleflight +
+      // live hand-back), so riding out an agent restart is safe.
+      res = await this.agentFetch(host, `${base}/assign`, () => ({
         method: 'POST',
         headers: this.agentHeaders(),
         body: JSON.stringify({
@@ -1363,9 +1820,10 @@ export class MetalWarmPoolController {
                 anchorProjectId: bind.anchorProjectId,
               }
             : {}),
+          ...(opts.rootfs ? { rootfs: opts.rootfs } : {}),
         }),
         signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
-      })
+      }))
     } catch (err) {
       if (isAssignTimeout(err)) throw err
       throw new MetalHostUnreachableError(host.hostId, err)
@@ -1374,8 +1832,53 @@ export class MetalWarmPoolController {
       throw new Error(`metal /assign ${res.status}: ${await res.text().catch(() => '')}`)
     }
     const body = (await res.json()) as AssignResult
+    if (body?.mode === 'prewarmed') throw new RuntimePrewarmedError(projectId, body.stagedSnapshotIdentity)
     if (!body?.url) throw new Error('metal /assign returned no url')
     return body
+  }
+
+  /**
+   * fetch() to a node-agent that rides out the agent's own restart. A
+   * self-update or rootfs activation takes the control port down for a few
+   * seconds while every microVM keeps running, so a refused/reset connection
+   * or the draining agent's 503 (`x-metal-restarting`) is retried with
+   * backoff: up to RESTART_RETRY_MS, or RESTART_RETRY_LONG_MS when the host's
+   * last heartbeat announced the restart. Callers pass only idempotent calls.
+   * `init` is rebuilt per attempt (a fresh timeout signal each time).
+   */
+  private async agentFetch(host: HostEntry, url: string, init: () => RequestInit): Promise<Response> {
+    // Budgeted in time slept, not wall time: deterministic, and independent of
+    // how long each refused attempt took to fail.
+    let waited = 0
+    let delay = 250
+    for (let attempt = 1; ; attempt++) {
+      const budget = host.restarting ? agentRestartRetry.longMs : agentRestartRetry.shortMs
+      const exhausted = waited + delay > budget
+      let why: string
+      try {
+        const res = await this.fetchImpl(url, init())
+        if (!(res.status === 503 && res.headers.get('x-metal-restarting'))) {
+          if (attempt > 1) agentRetryCounter.add(1, { outcome: 'recovered' })
+          return res
+        }
+        if (exhausted) {
+          agentRetryCounter.add(1, { outcome: 'gave_up' })
+          return res
+        }
+        why = 'draining for restart (503)'
+      } catch (err) {
+        if (!isConnectionError(err) || exhausted) {
+          if (attempt > 1) agentRetryCounter.add(1, { outcome: 'gave_up' })
+          throw err
+        }
+        why = (err as any)?.code ?? (err as any)?.message ?? String(err)
+      }
+      agentRetryCounter.add(1, { outcome: 'retry' })
+      if (attempt === 1) console.warn(`[MetalPool] agent ${host.hostId} unavailable (${why}) — retrying`)
+      await this.sleep(delay)
+      waited += delay
+      delay = Math.min(delay * 2, 2_000)
+    }
   }
 
   // --- published site runtime (published:{id} key) -------------------------
@@ -1562,6 +2065,8 @@ export class MetalWarmPoolController {
           capacity: h.capacity,
           load: h.load,
           disk: h.disk,
+          stagedRootfs: h.stagedRootfs,
+          restarting: h.restarting,
           live: true,
           overWatermark: overWatermark(h),
           cordoned: cordoned.has(h.hostId),
@@ -1582,6 +2087,58 @@ export class MetalWarmPoolController {
     if (cordoned) this.cordoned.add(hostId)
     else this.cordoned.delete(hostId)
     await this.registry.setCordon(hostId, cordoned).catch(() => {})
+  }
+}
+
+/**
+ * API-side wall time of one runtime resolve, folded together with the host's
+ * own phase breakdown from /assign so a slow wake can be attributed (lease
+ * wait vs budget shed vs S3 hydrate vs restore) from a single span.
+ */
+class WakeTiming {
+  private readonly startedAt = performance.now()
+  private readonly ms: Record<string, number> = {}
+
+  async time<T>(phase: string, fn: () => Promise<T>): Promise<T> {
+    const t0 = performance.now()
+    try {
+      return await fn()
+    } finally {
+      this.ms[phase] = (this.ms[phase] ?? 0) + (performance.now() - t0)
+    }
+  }
+
+  record(
+    span: { setAttribute(k: string, v: string | number): unknown },
+    mode: string,
+    host?: AssignResult,
+    hostEntry?: HostEntry,
+  ): void {
+    const total = Math.round(performance.now() - this.startedAt)
+    const source = host?.source ?? 'none'
+    const staleReason = host?.staleReason ?? 'none'
+    reportWake({
+      mode,
+      source,
+      staleReason: host?.staleReason,
+      totalMs: total,
+      hostId: hostEntry?.hostId,
+      idleTier: hostEntry?.idle?.tier,
+    })
+    span.setAttribute('wake.mode', mode)
+    span.setAttribute('wake.total_ms', total)
+    const hostId = hostEntry?.hostId ?? 'none'
+    wakeTotal.record(total, { mode, source, stale_reason: staleReason, host_id: hostId })
+    for (const [phase, ms] of Object.entries(this.ms)) {
+      span.setAttribute(`wake.api.${phase}_ms`, Math.round(ms))
+      wakePhase.record(ms, { phase: `api.${phase}`, mode, host_id: hostId })
+    }
+    for (const [phase, ms] of Object.entries(host?.phases ?? {})) {
+      if (typeof ms !== 'number') continue
+      span.setAttribute(`wake.host.${phase}_ms`, ms)
+      wakePhase.record(ms, { phase: `host.${phase}`, mode, host_id: hostId })
+    }
+    if (typeof host?.totalMs === 'number') span.setAttribute('wake.host.total_ms', host.totalMs)
   }
 }
 
@@ -1619,6 +2176,10 @@ export function _setMetalWarmPoolController(c: MetalWarmPoolController | null): 
 export function registerMetalHost(reg: MetalHostRegistration): void {
   ensureFleetGauges()
   getMetalWarmPoolController().registerHost(reg)
+}
+
+export async function metalIdleDirectiveFor(region: string, prevTier: IdleTier | undefined): Promise<IdleDirective> {
+  return getMetalWarmPoolController().idleDirectiveFor(region, prevTier)
 }
 
 export async function getMetalProjectUrl(projectId: string): Promise<string> {

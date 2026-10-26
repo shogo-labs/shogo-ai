@@ -4,6 +4,7 @@ import { test, expect, type Page } from "./fixtures"
 import {
   createProjectAndWait,
   makeTestUser,
+  NO_BUILD_PROJECT_PROMPT,
   signUpAndOnboard,
   waitForAgentIdle,
   waitForAgentResponse,
@@ -88,7 +89,7 @@ test.describe("Chat File Upload", () => {
   })
 
   test("create a project for file upload testing", async () => {
-    await createProjectAndWait(page, "Simple test agent for file uploads")
+    await createProjectAndWait(page, NO_BUILD_PROJECT_PROMPT)
     expect(page.url()).toMatch(/\/projects\//)
   })
 

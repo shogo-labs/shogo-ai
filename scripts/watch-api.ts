@@ -14,7 +14,9 @@ import { resolve, relative, sep } from "path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const ENTRY = resolve(ROOT, "apps/api/src/entry.ts");
-const API_PORT = Number(process.env.API_PORT ?? 8002);
+// See the same note in `scripts/dev-all.ts`: `API_PORT` is the desktop app's
+// own API port, so this dev-only watcher must never inherit it.
+const API_PORT = Number(process.env.SHOGO_DEV_API_PORT ?? 8002);
 const IS_WIN = process.platform === "win32";
 
 const WATCH_DIRS = [
@@ -146,6 +148,12 @@ async function startServer() {
       stdin: "inherit",
       env: {
         ...process.env,
+        // The API reads the bare `API_PORT` for its own bind (server.ts). This
+        // is the one place that translates the dev port into it: `.env.local`
+        // no longer writes `API_PORT` (SHO-28), and passing it explicitly also
+        // overwrites any inherited value from the desktop app's shell, so the
+        // child always binds the port this watcher health-checks and clears.
+        API_PORT: String(API_PORT),
       },
     });
 

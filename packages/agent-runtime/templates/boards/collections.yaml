@@ -1,0 +1,43 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: collections
+name: Collections
+summary: Overdue invoices chased on a schedule until paid or written off.
+channel: finance
+board:
+  name: Collections
+  itemType: task
+  keyPrefix: COL
+  description: One card per overdue invoice. Reminders at 7, 14 and 30 days; escalate to the account owner after 30.
+  columns:
+    - name: Overdue
+      category: backlog
+      slaHours: 24
+    - name: Reminded
+      category: waiting
+      slaHours: 168
+    - name: Escalated
+      category: active
+    - name: Paid
+      category: done
+    - name: Written off
+      category: dismissed
+  fields:
+    - key: customer
+      label: Customer
+      type: text
+      required: true
+    - key: invoice
+      label: Invoice
+      type: text
+      required: true
+    - key: amount
+      label: Amount due
+      type: money
+      required: true
+    - key: dueDate
+      label: Due date
+      type: date

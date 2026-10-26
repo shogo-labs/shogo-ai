@@ -72,6 +72,7 @@ export const TRIP_PLANNER_EVALS: AgentEval[] = [
     level: 5,
     input: 'I want to plan a luxury trip to Bali, Indonesia. The trip should start next monday and it should be for 10 days. My budget is $5,000. I want an agent that can help me plan the full itinerary including luxury accommodations (Airbnb villas or boutique hotels), high-end restaurants, activities, and transportation. Please help me create a comprehensive trip planner.',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: LUXURY_BALI_TRIP_PLANNER_MOCKS,
     validationCriteria: [
       // --- Web tool for flight research ---

@@ -4,8 +4,10 @@
  * Workspace activity in team chat.
  *
  * - `#activity` gets a system line for agent task outcomes, schedule runs,
- *   goal events, publishes, new members, and finished agent posts in public
- *   channels, so the whole team can see what agents and teammates are doing.
+ *   goal events, publishes, new members, finished agent posts in public
+ *   channels, and questions agents ask people (asked, answered, closed), so
+ *   the whole team can see what agents and teammates are doing. A question
+ *   from a private conversation is only shown to its members (`visibleTo`).
  * - Schedules and tasks with `notifyConversationId` also post their result
  *   into that channel/DM as the agent that did the work.
  * - "Catch me up" summarizes unread messages with the workspace agent.
@@ -24,8 +26,11 @@ import {
   loadAccess,
   onMessageTextSettled,
   postMessage,
+  updateMessageInternal,
   type PostMessageResult,
 } from './conversation.service'
+import { renderMentionsAsText } from './conversation-mentions'
+import { summarizeActivity, type ActivitySummaryInput } from './conversation-activity-summary'
 import { renderTranscript, runWorkspaceAgentPrompt } from './conversation-agent-dispatcher'
 import { agentChatEnabled, getWorkspaceChatConfig, nativeChatEnabled } from './chat-mode'
 import { postAgentMessage } from './chat-providers/outbound'
@@ -45,6 +50,12 @@ export type ActivityKind =
   | 'project.published'
   | 'member.joined'
   | 'agent.message'
+  | 'question.asked'
+  | 'question.answered'
+  | 'question.closed'
+  | 'work.created'
+  | 'work.done'
+  | 'work.regressed'
 
 export interface ActivityInput {
   kind: ActivityKind
@@ -60,6 +71,33 @@ export interface ActivityInput {
 function clip(text: string, max: number): string {
   const trimmed = text.trim()
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed
+}
+
+const PREVIEW_CHARS = 280
+
+/** Clip a preview without leaving a half-written mention token at the end. */
+export function clipActivityText(text: string, max = PREVIEW_CHARS): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= max) return trimmed
+  let clipped = trimmed.slice(0, max - 1)
+  const open = clipped.lastIndexOf('<')
+  const close = clipped.lastIndexOf('>')
+  if (open > close) clipped = clipped.slice(0, open)
+  clipped = clipped.trimEnd()
+  return clipped ? `${clipped}…` : '…'
+}
+
+/** Ask for a one-sentence summary and write it onto the line once it arrives. */
+function fillActivitySummary(posted: PostMessageResult | null, input: ActivitySummaryInput): void {
+  if (!posted || posted.duplicate || !posted.row?.id) return
+  const messageId = posted.row.id as string
+  const blocks = posted.row.blocks ?? {}
+  void summarizeActivity(input)
+    .then((summary) => {
+      if (!summary) return
+      return updateMessageInternal(messageId, { blocks: { ...blocks, summary } })
+    })
+    .catch((err) => logFailure('summary', err))
 }
 
 function logFailure(what: string, err: unknown): void {
@@ -113,7 +151,14 @@ export async function recordAgentMessage(result: PostMessageResult): Promise<voi
     const projectId = row.authorAgentRef?.projectId ?? null
     const name = row.authorAgentRef?.name ?? (await agentDisplayName(conversation.workspaceId, projectId))
     const where = `<#c:${conversation.id}>`
-    await postActivity(conversation.workspaceId, {
+    const names = { conversations: new Map([[conversation.id, conversation.slug ?? conversation.name ?? 'channel']]) }
+    const plain = renderMentionsAsText(row.text ?? '', names)
+    let context: string | null = null
+    if (row.threadRootId) {
+      const root = await db.conversationMessage.findUnique({ where: { id: row.threadRootId }, select: { text: true } })
+      context = root?.text ? clipActivityText(renderMentionsAsText(root.text, names)) : null
+    }
+    const posted = await postActivity(conversation.workspaceId, {
       kind: 'agent.message',
       text: row.threadRootId
         ? `**${name}** replied in a thread in ${where}`
@@ -124,7 +169,15 @@ export async function recordAgentMessage(result: PostMessageResult): Promise<voi
         conversationId: conversation.id,
         messageId: row.id,
         threadRootId: row.threadRootId ?? null,
+        preview: clipActivityText(row.text ?? ''),
       },
+    })
+    fillActivitySummary(posted, {
+      kind: 'agent.message',
+      actor: name,
+      where: `#${conversation.slug ?? conversation.name ?? 'channel'}`,
+      text: plain,
+      context,
     })
   } catch (err) {
     logFailure('agent message', err)
@@ -216,7 +269,8 @@ export async function recordAgentTaskOutcome(task: {
   try {
     const name = await agentDisplayName(task.workspaceId, task.projectId)
     const ref = `task:${task.id}:${task.status}:${task.chatSessionId ?? ''}`
-    await postActivity(task.workspaceId, {
+    const detail = (failed ? task.errorMessage : task.resultSummary) ?? ''
+    const posted = await postActivity(task.workspaceId, {
       kind: failed ? 'task.failed' : 'task.completed',
       text: failed
         ? `**${name}** couldn't finish the task “${task.title}”: ${clip(task.errorMessage ?? 'unknown error', 300)}`
@@ -225,7 +279,17 @@ export async function recordAgentTaskOutcome(task: {
       link: `/tasks?taskId=${encodeURIComponent(task.id)}`,
       projectId: task.projectId,
       actorUserId: task.userId,
-      meta: { taskId: task.id },
+      meta: {
+        taskId: task.id,
+        chatSessionId: task.chatSessionId,
+        preview: clipActivityText(detail),
+        conversationId: task.notifyConversationId ?? null,
+      },
+    })
+    fillActivitySummary(posted, {
+      kind: failed ? 'task.failed' : 'task.completed',
+      actor: name,
+      text: [`Task: ${task.title}`, detail].filter(Boolean).join('\n'),
     })
     if (task.notifyConversationId) {
       await deliverAgentResult({
@@ -259,14 +323,25 @@ export async function recordScheduleOutcome(schedule: {
   try {
     const name = await agentDisplayName(schedule.workspaceId, null)
     const ref = `schedule:${schedule.id}:${outcome.runKey}`
-    await postActivity(schedule.workspaceId, {
+    const detail = (failed ? outcome.error : outcome.summary) ?? ''
+    const posted = await postActivity(schedule.workspaceId, {
       kind: failed ? 'schedule.failed' : 'schedule.ok',
       text: failed
         ? `**${name}**'s scheduled run “${schedule.name}” failed: ${clip(outcome.error ?? 'unknown error', 300)}`
         : `**${name}** ran the schedule “${schedule.name}”.`,
       ref,
       actorUserId: schedule.userId,
-      meta: { scheduleId: schedule.id },
+      meta: {
+        scheduleId: schedule.id,
+        chatSessionId: schedule.chatSessionId ?? null,
+        preview: clipActivityText(detail),
+        conversationId: schedule.notifyConversationId ?? null,
+      },
+    })
+    fillActivitySummary(posted, {
+      kind: failed ? 'schedule.failed' : 'schedule.ok',
+      actor: name,
+      text: [`Schedule: ${schedule.name}`, detail].filter(Boolean).join('\n'),
     })
     if (schedule.notifyConversationId) {
       await deliverAgentResult({
@@ -314,6 +389,48 @@ export async function recordGoalEvent(workspaceId: string, event: {
     })
   } catch (err) {
     logFailure('goal event', err)
+  }
+}
+
+const WORK_VERB: Record<'work.created' | 'work.done' | 'work.regressed', string> = {
+  'work.created': 'opened',
+  'work.done': 'finished',
+  'work.regressed': 'reopened',
+}
+
+/**
+ * Card milestones on boards in public channels: opened, done, and problems
+ * that came back. Moves between open columns stay in the card thread.
+ */
+export async function recordWorkItemActivity(kind: keyof typeof WORK_VERB, input: {
+  item: { id: string; key: string; title: string; workspaceId: string; conversationId?: string | null; threadRootMessageId?: string | null }
+  board: { id: string; name: string; conversationId?: string | null }
+  actor: string
+  link: string
+  projectId?: string | null
+  actorUserId?: string | null
+  ref: string
+}): Promise<void> {
+  try {
+    if (!input.board.conversationId) return
+    const conversation = await db.conversation.findUnique({ where: { id: input.board.conversationId }, select: { kind: true, archivedAt: true } })
+    if (conversation?.kind !== 'public' || conversation.archivedAt) return
+    await postActivity(input.item.workspaceId, {
+      kind,
+      text: `**${input.actor}** ${WORK_VERB[kind]} ${input.item.key} “${clip(input.item.title, 200)}” on ${input.board.name} in <#c:${input.board.conversationId}>`,
+      ref: `work:${input.item.id}:${input.ref}`,
+      link: input.link,
+      projectId: input.projectId ?? null,
+      actorUserId: input.actorUserId ?? null,
+      meta: {
+        conversationId: input.board.conversationId,
+        boardId: input.board.id,
+        workItemId: input.item.id,
+        threadRootId: input.item.threadRootMessageId ?? null,
+      },
+    })
+  } catch (err) {
+    logFailure('work item', err)
   }
 }
 

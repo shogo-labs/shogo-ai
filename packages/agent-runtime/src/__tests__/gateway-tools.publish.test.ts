@@ -13,18 +13,21 @@
  * build pipeline runs.
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { mkdirSync, writeFileSync } from 'fs'
+import { mkdirSync, realpathSync, writeFileSync } from 'fs'
 import * as realInternalApi from '../internal-api'
 import type { ToolContext } from '../gateway-tools'
 
-const TEST_DIR = '/tmp/test-gateway-tools-publish'
-mkdirSync(TEST_DIR, { recursive: true })
+// Canonical path: the share_file trust check compares real paths, and on
+// macOS /tmp is a symlink to /private/tmp.
+mkdirSync('/tmp/test-gateway-tools-publish', { recursive: true })
+const TEST_DIR = realpathSync('/tmp/test-gateway-tools-publish')
 
 let getPublishStateImpl: (projectId: string) => Promise<any>
 let publishProjectImpl: (projectId: string, opts: any) => Promise<any>
 let createSharedFileLinkImpl: (projectId: string, opts: any) => Promise<any>
 let publishCalls: Array<{ projectId: string; opts: any }> = []
 let sharedFileCalls: Array<{ projectId: string; opts: any }> = []
+let workspaceSharedFileCalls: Array<{ workspaceId: string; opts: any }> = []
 
 mock.module('../internal-api', () => ({
   ...realInternalApi,
@@ -36,6 +39,14 @@ mock.module('../internal-api', () => ({
   createSharedFileLink: (projectId: string, opts: any) => {
     sharedFileCalls.push({ projectId, opts })
     return createSharedFileLinkImpl(projectId, opts)
+  },
+  createWorkspaceSharedFileLink: async (workspaceId: string, opts: any) => {
+    workspaceSharedFileCalls.push({ workspaceId, opts })
+    return {
+      ok: true,
+      status: 200,
+      data: { url: 'https://api.example/api/f/workspace-token', expiresAt: '2026-10-03T00:00:00.000Z', path: opts.path },
+    }
   },
 }))
 
@@ -97,8 +108,17 @@ let fetchThrows = false
 const origFetch = globalThis.fetch
 
 beforeEach(() => {
+  // These are unit tests: pin the runtime mode per test instead of inheriting
+  // it, because a dev/QA agent checkout is itself a workspace runtime
+  // (WORKSPACE_RUNTIME/WORKSPACE_ANCHOR_PROJECT_ID are set in its env).
+  // `describe('workspace runtime project id')` sets them back per test.
+  delete process.env.WORKSPACE_RUNTIME
+  delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+  delete process.env.WORKSPACE_PROJECT_IDS
+  delete process.env.WORKSPACE_ID
   publishCalls = []
   sharedFileCalls = []
+  workspaceSharedFileCalls = []
   getPublishStateImpl = async () => STATE_UNPUBLISHED
   createSharedFileLinkImpl = async (_projectId, _opts) => ({
     ok: true,
@@ -134,6 +154,14 @@ test('share_file validates and returns a signed download link', async () => {
   })
 })
 
+// Production: assistants handed out filebin.net links in sessions that never
+// called share_file; those uploads leave the platform and expire unpredictably.
+test('share_file description rules out third-party file hosts', () => {
+  const description = shareFileTool(baseCtx()).description
+  expect(description).toMatch(/filebin/i)
+  expect(description).toMatch(/never upload/i)
+})
+
 test('share_file rejects paths outside the workspace', async () => {
   const result = await runShareFile(baseCtx(), { path: '../secret.txt' })
   expect(result.error).toContain('relative workspace path')
@@ -144,6 +172,7 @@ describe('workspace runtime project id', () => {
     WORKSPACE_RUNTIME: process.env.WORKSPACE_RUNTIME,
     WORKSPACE_ANCHOR_PROJECT_ID: process.env.WORKSPACE_ANCHOR_PROJECT_ID,
     WORKSPACE_PROJECT_IDS: process.env.WORKSPACE_PROJECT_IDS,
+    WORKSPACE_ID: process.env.WORKSPACE_ID,
   }
 
   afterEach(() => {
@@ -157,6 +186,7 @@ describe('workspace runtime project id', () => {
     process.env.WORKSPACE_RUNTIME = 'true'
     delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
     delete process.env.WORKSPACE_PROJECT_IDS
+    delete process.env.WORKSPACE_ID
     for (const [key, value] of Object.entries(over)) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
@@ -191,19 +221,46 @@ describe('workspace runtime project id', () => {
   })
 
   test('share_file uses the anchor and never sends the workspace key', async () => {
-    workspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' })
-    writeFileSync(`${TEST_DIR}/report.pdf`, 'pdf bytes')
-    const result = await runShareFile(baseCtx({ projectId: 'ws:abc' }), { path: 'report.pdf' })
+    workspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1', WORKSPACE_PROJECT_IDS: 'anchor-1' })
+    mkdirSync(`${TEST_DIR}/anchor-1`, { recursive: true })
+    writeFileSync(`${TEST_DIR}/anchor-1/report.pdf`, 'pdf bytes')
+    const result = await runShareFile(baseCtx({ projectId: 'ws:abc' }), { path: 'anchor-1/report.pdf' })
     expect(result.ok).toBe(true)
     expect(sharedFileCalls[0].projectId).toBe('anchor-1')
+    // Signed relative to the project root: a project-scoped download reads
+    // from there, not from the merged workspace root (SHO-67).
+    expect(sharedFileCalls[0].opts.path).toBe('report.pdf')
+    expect(workspaceSharedFileCalls).toHaveLength(0)
   })
 
-  test('share_file asks for project_id when several projects are attached', async () => {
-    workspaceEnv({ WORKSPACE_PROJECT_IDS: 'p1,p2' })
+  // Production: 86 share_file calls in a week failed with "No project
+  // selected" in workspace-agent chats whose runtime had no single project.
+  // The file was on disk in this runtime, so a workspace-scoped link serves it.
+  test('share_file links a workspace file when the runtime has no project', async () => {
+    workspaceEnv({ WORKSPACE_ID: 'ws-1' })
     writeFileSync(`${TEST_DIR}/report.pdf`, 'pdf bytes')
-    const result = await runShareFile(baseCtx({ projectId: 'ws:abc' }), { path: 'report.pdf' })
+    const result = await runShareFile(baseCtx({ projectId: 'ws:ws-1' }), { path: 'report.pdf', expires_in_days: 2 })
+    expect(result).toMatchObject({ ok: true, url: 'https://api.example/api/f/workspace-token', filename: 'report.pdf' })
+    expect(sharedFileCalls).toHaveLength(0)
+    expect(workspaceSharedFileCalls).toEqual([{ workspaceId: 'ws-1', opts: { path: 'report.pdf', expiresInDays: 2 } }])
+  })
+
+  test('share_file links a workspace file when several projects are attached', async () => {
+    workspaceEnv({ WORKSPACE_PROJECT_IDS: 'p1,p2', WORKSPACE_ID: 'ws-1' })
+    writeFileSync(`${TEST_DIR}/report.pdf`, 'pdf bytes')
+    const result = await runShareFile(baseCtx({ projectId: 'ws:ws-1' }), { path: 'report.pdf' })
+    expect(result.ok).toBe(true)
+    expect(sharedFileCalls).toHaveLength(0)
+    expect(workspaceSharedFileCalls[0].workspaceId).toBe('ws-1')
+  })
+
+  test('share_file still reports a missing project when there is no workspace either', async () => {
+    workspaceEnv({ WORKSPACE_RUNTIME: undefined })
+    writeFileSync(`${TEST_DIR}/report.pdf`, 'pdf bytes')
+    const result = await runShareFile(baseCtx({ projectId: undefined }), { path: 'report.pdf' })
     expect(result.error).toMatch(/pass project_id/i)
     expect(sharedFileCalls).toHaveLength(0)
+    expect(workspaceSharedFileCalls).toHaveLength(0)
   })
 })
 

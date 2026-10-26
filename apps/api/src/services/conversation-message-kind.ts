@@ -13,6 +13,9 @@
  * message's `blocks` JSON (`messageKind`, `type: 'status_card'`), and the
  * message `text` always holds a Markdown rendering so providers without rich
  * messages, search, and agent transcripts all see the same content.
+ *
+ * Questions an agent asks people ride along in `blocks.questions`; the text
+ * stays the agent's own prose.
  */
 
 export const MESSAGE_KINDS = ['status', 'result', 'decision', 'alert'] as const
@@ -45,12 +48,258 @@ export interface AgentWork {
   toolCalls: number
 }
 
+/** An account the agent needs someone to connect before it can carry on (GitHub, a Composio app). */
+export interface IntegrationConnectRequest {
+  provider: string
+  connectUrl: string
+  message?: string
+}
+
+/**
+ * A card's run ended with nobody on it and the card was handed back to its
+ * agent once, after `notBefore`. One per (card, last move).
+ */
+export interface CardRetry {
+  agentRef: string
+  /** The reply that died, so the card's history points at it. */
+  messageId: string
+}
+
+/**
+ * A card's run died twice (or could not be re-handed). Answering its question
+ * is what applies the choice — see `applyCardEscalationAnswer`.
+ */
+export interface CardEscalation {
+  itemId: string
+  agentRef: string
+  reason: CardEscalationReason
+}
+
+export type CardEscalationReason = 'run_died_twice' | 'no_holder' | 'rate_limited'
+
+/** A board card's channel post: enough for a client to draw a tappable card without a fetch. */
+export interface WorkItemBlock {
+  id: string
+  key: string
+  boardId: string
+  boardName?: string | null
+  /** The full card title, not `card.title`'s clipped one. */
+  title?: string
+  column?: { name: string; category: string }
+  priority?: string
+  assignee?: { kind: 'user' | 'agent'; name: string } | null
+  dueAt?: string | null
+  /** App path to the card. */
+  path?: string
+  /** Why the card appears here, e.g. where it was moved from. */
+  note?: string
+}
+
 export interface MessageBlocks {
   type?: 'status_card' | 'approval_request'
   messageKind?: MessageKind
   card?: StatusCard
   work?: AgentWork
+  /** The board card this message is about; see `work-boards.service`. */
+  workItem?: WorkItemBlock
+  /** Connect links the agent hit during the run, shown as cards on its reply. */
+  connect?: IntegrationConnectRequest[]
+  /** Questions this message asks people; see `conversation-questions`. */
+  questions?: QuestionBlock[]
+  /** Open questions asked again here; the card lives on the original message. */
+  questionRefs?: QuestionRef[]
+  /** A card's run died and the card was handed back to its agent once (see `noteCardRunEnded`). */
+  cardRetry?: CardRetry
+  /** A card's run died twice: this question asks a person who takes it. */
+  cardEscalation?: CardEscalation
+  /** `explicit`: the agent passed questions; `done`: the designer has looked at it. */
+  questionScan?: 'explicit' | 'done'
   [key: string]: unknown
+}
+
+// ─── Questions ───────────────────────────────────────────────────────────────
+
+export const QUESTION_INTERACTIONS = ['choice', 'confirm', 'text', 'person', 'secret'] as const
+export type QuestionInteraction = (typeof QUESTION_INTERACTIONS)[number]
+export type QuestionStatus = 'open' | 'answered' | 'superseded' | 'dismissed'
+export type QuestionVia = 'mention' | 'run' | 'thread' | 'channel'
+
+export interface QuestionOption {
+  label: string
+  description?: string
+}
+
+export interface QuestionRecipients {
+  userIds: string[]
+  /** Nobody in particular: any member who can post in the channel may answer. */
+  anyone?: boolean
+  via: QuestionVia
+}
+
+export interface QuestionAnswer {
+  text: string
+  by: { userId: string | null; name: string }
+  at: string
+  /** When the answer was posted to the agent; answers to one card go in one reply. */
+  relayedAt?: string
+}
+
+export interface QuestionBlock {
+  id: string
+  to: QuestionRecipients
+  header: string
+  prompt: string
+  interaction: QuestionInteraction
+  options?: QuestionOption[]
+  multiSelect?: boolean
+  /** Input hint for `text` questions. */
+  hint?: 'number' | 'url'
+  /** Environment-style name for `secret` questions, e.g. `ENSEMBLEDATA_API_TOKEN`. */
+  secretName?: string
+  status: QuestionStatus
+  answer?: QuestionAnswer
+  closedReason?: string
+  closedAt?: string
+  source: 'agent' | 'inferred'
+  askCount?: number
+  lastAskedAt?: string
+  /** Encrypted secret answer. Never leaves the API except to the agent that asked. */
+  secretCipher?: string
+}
+
+export interface QuestionRef {
+  messageId: string
+  questionId: string
+  header: string
+  prompt: string
+}
+
+/** A question as an agent or the designer proposes it, before it has recipients and an id. */
+export interface QuestionDraft {
+  header: string
+  prompt: string
+  interaction: QuestionInteraction
+  options?: QuestionOption[]
+  multiSelect?: boolean
+  hint?: 'number' | 'url'
+  secretName?: string
+  /** Who it is for, when the asker named people. */
+  userIds?: string[]
+}
+
+export const CONFIRM_OPTIONS: QuestionOption[] = [
+  { label: 'Approve' },
+  { label: 'Not yet' },
+  { label: 'Discuss' },
+]
+
+const MAX_QUESTIONS = 4
+const MAX_HEADER = 40
+const MAX_PROMPT = 500
+const MAX_OPTIONS = 6
+const MAX_OPTION_LABEL = 80
+const MAX_OPTION_DESCRIPTION = 200
+const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]{1,63}$/
+
+function cleanString(value: unknown, max: number): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : ''
+}
+
+/** `ENSEMBLEDATA_API_TOKEN` from a name or header the asker gave. */
+export function secretNameFrom(value: string): string | null {
+  const name = value.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').replace(/^[0-9_]+/, '').slice(0, 64)
+  return SECRET_NAME_RE.test(name) ? name : null
+}
+
+function normalizeDraft(value: unknown): QuestionDraft | null {
+  if (!value || typeof value !== 'object') return null
+  const v = value as Record<string, unknown>
+  const prompt = cleanString(v.prompt ?? v.question, MAX_PROMPT)
+  if (!prompt) return null
+  const header = cleanString(v.header, MAX_HEADER) || prompt.slice(0, MAX_HEADER)
+  let interaction: QuestionInteraction = (QUESTION_INTERACTIONS as readonly string[]).includes(v.interaction as string)
+    ? (v.interaction as QuestionInteraction)
+    : Array.isArray(v.options) && v.options.length ? 'choice' : 'text'
+  const options = Array.isArray(v.options)
+    ? v.options
+        .map((o) => (typeof o === 'string' ? { label: o } : o))
+        .filter((o): o is Record<string, unknown> => !!o && typeof o === 'object')
+        .map((o) => ({ label: cleanString(o.label, MAX_OPTION_LABEL), description: cleanString(o.description, MAX_OPTION_DESCRIPTION) }))
+        .filter((o) => o.label)
+        .map((o) => (o.description ? o : { label: o.label }))
+        .slice(0, MAX_OPTIONS)
+    : []
+  // A choice needs something to choose between; with fewer than two it is a free answer.
+  if (interaction === 'choice' && options.length < 2) interaction = 'text'
+  const draft: QuestionDraft = { header, prompt, interaction }
+  if (interaction === 'choice') {
+    draft.options = options
+    if (v.multiSelect === true) draft.multiSelect = true
+  }
+  if (interaction === 'text' && (v.hint === 'number' || v.hint === 'url')) draft.hint = v.hint
+  if (interaction === 'secret') {
+    const name = (typeof v.secretName === 'string' && secretNameFrom(v.secretName)) || secretNameFrom(header)
+    if (!name) return null
+    draft.secretName = name
+  }
+  const userIds = Array.isArray(v.userIds) ? v.userIds.filter((id): id is string => typeof id === 'string' && !!id.trim()) : []
+  if (userIds.length) draft.userIds = [...new Set(userIds)].slice(0, 20)
+  return draft
+}
+
+/** Validate questions from an agent's tool call or the designer; drops the ones that aren't usable. */
+export function normalizeQuestionDrafts(value: unknown): QuestionDraft[] {
+  if (!Array.isArray(value)) return []
+  return value.map(normalizeDraft).filter((d): d is QuestionDraft => d !== null).slice(0, MAX_QUESTIONS)
+}
+
+export function questionsOf(blocks: unknown): QuestionBlock[] {
+  const list = (blocks as MessageBlocks | null | undefined)?.questions
+  return Array.isArray(list) ? list.filter((q) => q && typeof q.id === 'string' && typeof q.prompt === 'string') : []
+}
+
+export function questionRefsOf(blocks: unknown): QuestionRef[] {
+  const list = (blocks as MessageBlocks | null | undefined)?.questionRefs
+  return Array.isArray(list) ? list.filter((r) => r && typeof r.messageId === 'string' && typeof r.questionId === 'string') : []
+}
+
+/** Options a person picks from: the confirm set for `confirm`, the asker's for `choice`. */
+export function questionOptions(q: Pick<QuestionBlock, 'interaction' | 'options'>): QuestionOption[] {
+  if (q.interaction === 'confirm') return CONFIRM_OPTIONS
+  return q.interaction === 'choice' ? q.options ?? [] : []
+}
+
+/** Blocks as clients see them: secret answers stay on the server. */
+export function publicBlocks(blocks: unknown): unknown {
+  const questions = (blocks as MessageBlocks | null | undefined)?.questions
+  if (!Array.isArray(questions) || !questions.some((q) => q?.secretCipher)) return blocks
+  return {
+    ...(blocks as MessageBlocks),
+    questions: questions.map(({ secretCipher: _secret, ...q }) => q),
+  }
+}
+
+const QUESTION_STATUS_TEXT: Record<Exclude<QuestionStatus, 'open'>, string> = {
+  answered: 'Answered',
+  superseded: 'No longer needed',
+  dismissed: 'Dismissed',
+}
+
+/** Markdown for providers and transcripts that can't render question cards. */
+export function questionsToMarkdown(questions: QuestionBlock[], names: { users?: Map<string, string> } = {}): string {
+  return questions
+    .map((q) => {
+      const who = q.to.anyone
+        ? 'anyone'
+        : q.to.userIds.map((id) => `@${names.users?.get(id) ?? 'someone'}`).join(', ')
+      const lines = [`❓ **${q.header}** (for ${who}) — ${q.prompt}`]
+      const options = questionOptions(q)
+      if (q.status === 'open' && options.length) lines.push(options.map((o) => o.label).join(' · '))
+      if (q.status === 'answered' && q.answer) lines.push(`_${QUESTION_STATUS_TEXT.answered} by ${q.answer.by.name}: ${q.answer.text}_`)
+      else if (q.status !== 'open') lines.push(`_${QUESTION_STATUS_TEXT[q.status]}${q.closedReason ? ` — ${q.closedReason}` : ''}_`)
+      return lines.join('\n')
+    })
+    .join('\n\n')
 }
 
 const MAX_TITLE = 160

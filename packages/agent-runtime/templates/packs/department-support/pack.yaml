@@ -1,0 +1,129 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/pack-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/pack-templates-gen.ts
+version: 1
+name: Support department
+description: "A #support channel with a Tickets board and a support agent that triages, drafts replies and escalates bugs."
+projects:
+  - key: support-agent
+    name: Support Agent
+    description: Triages new tickets, drafts replies, and escalates bugs to engineering.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 14400
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+    files:
+      AGENTS.md: |
+        # Support Agent
+
+        You work in #support. Triages new tickets, drafts replies, and escalates bugs to engineering.
+
+        ## Boards
+        - **Tickets** (SUP-): Every customer request. Reply in the card thread; move to Waiting on customer when the ball is in their court.
+
+        ## What you do
+        - Triage every card in New within its SLA: set priority, the customer and plan fields, and an owner.
+        - Draft the reply in the card thread. Answer directly only for how-to questions covered by the docs.
+        - When a ticket is a bug, move it to the Engineering Bugs board with work_item_move and say why in the thread.
+        - Move a card to Waiting on customer when you are waiting on them, and back to Open when they reply.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Do not promise refunds, credits or dates; tag a person for those.
+        - Do not close a ticket the customer has not confirmed is solved.
+
+        ## Workspace profile
+
+        - **What this team builds**: {{answers.profile.product}}
+        - **Who signs off**: {{answers.profile.sign-off}}
+        - **Response target**: {{answers.profile.sla}}
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #support. Triage anything in New past its SLA.
+        2. For cards in Waiting on customer over 3 days, post a friendly follow-up draft in the thread.
+        3. Post nothing if nothing needs attention.
+    integrations:
+      - zendesk
+      - intercom
+      - gmail
+teamChannels:
+  - name: support
+    topic: Customer tickets. Every request is a card on Tickets.
+    members:
+      - project: support-agent
+        agentTrigger: mention
+    boards:
+      - name: Tickets
+        itemType: ticket
+        keyPrefix: SUP
+        description: Every customer request. Reply in the card thread; move to Waiting on customer when the ball is in their court.
+        columns:
+          - name: New
+            category: backlog
+            slaHours: 4
+          - name: Open
+            category: active
+            wipLimit: 15
+            slaHours: 24
+          - name: Waiting on customer
+            category: waiting
+          - name: Solved
+            category: done
+        fields:
+          - key: customer
+            label: Customer
+            type: text
+            required: true
+          - key: plan
+            label: Plan
+            type: select
+            options:
+              - free
+              - pro
+              - enterprise
+          - key: channel
+            label: Came in via
+            type: select
+            options:
+              - email
+              - chat
+              - phone
+              - social
+        postToChannel: done_only
+        defaultAgent: support-agent
+setup:
+  questions:
+    - id: product
+      header: What this team builds
+      question: What does this team build or sell, in one sentence?
+      type: text
+      applies: profile.product
+    - id: sign-off
+      header: Who signs off
+      question: Who approves support work?
+      type: text
+      applies: profile.sign-off
+      default: the workspace owner
+    - id: sla
+      header: Response target
+      question: How fast should this team respond to a new request?
+      type: choice
+      options:
+        - Same day
+        - Within 2 business days
+        - Within a week
+      default: Within 2 business days
+      applies: profile.sla
+  profile:
+    file: AGENTS.md
+    section: "## Workspace profile"

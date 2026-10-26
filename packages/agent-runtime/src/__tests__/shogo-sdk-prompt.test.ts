@@ -10,7 +10,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { AgentGateway } from '../gateway'
-import { SHOGO_SDK_GUIDE } from '../shogo-sdk-prompt'
+import { getShogoSdkGuide } from '../shogo-sdk-prompt'
 import { createMockStreamFn, buildTextResponse } from './helpers/mock-anthropic'
 
 const TEST_DIR = '/tmp/test-shogo-sdk-prompt'
@@ -65,7 +65,7 @@ describe('Shogo SDK prompt section', () => {
     expect(sdk).toBeDefined()
     expect(sdk!.zone).toBe('stable')
     expect(sdk!.chars).toBeGreaterThan(0)
-    expect(sdk!.chars).toBe(SHOGO_SDK_GUIDE.length)
+    expect(sdk!.chars).toBe(getShogoSdkGuide().length)
   })
 
   test('section is omitted when sdkGuideEnabled is false', async () => {

@@ -8,6 +8,8 @@ import { createReactNativeMock } from '../../../test/react-native-mock'
 
 const agentDms: Array<{ workspaceId: string; projectId: string | null }> = []
 const dms: Array<{ workspaceId: string; userIds: string[] }> = []
+const selfDms: Array<{ workspaceId: string; userId: string }> = []
+const huddles: Array<{ conversationId: string; workspaceId: string; label: string; kind?: string | null }> = []
 
 mock.module('react-native', () =>
   createReactNativeMock({
@@ -27,8 +29,13 @@ mock.module('react-native', () =>
       }),
   } as any),
 )
+mock.module('../../../lib/huddle-call', () => ({
+  huddleMediaSupported: true,
+  joinHuddleCall: async (input: any) => void huddles.push(input),
+}))
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }))
 mock.module('../../../lib/team-chat-api', () => ({
+  absoluteApiUrl: (url: string) => url,
   teamChatApi: () => ({
     openAgentDm: async (workspaceId: string, projectId: string | null) => {
       agentDms.push({ workspaceId, projectId })
@@ -37,6 +44,10 @@ mock.module('../../../lib/team-chat-api', () => ({
     openDm: async (workspaceId: string, userIds: string[]) => {
       dms.push({ workspaceId, userIds })
       return { id: 'people-dm' }
+    },
+    openSelfDm: async (workspaceId: string, userId: string) => {
+      selfDms.push({ workspaceId, userId })
+      return { id: 'self-dm' }
     },
   }),
 }))
@@ -69,6 +80,8 @@ afterEach(() => {
   cleanup()
   agentDms.length = 0
   dms.length = 0
+  selfDms.length = 0
+  huddles.length = 0
 })
 
 describe('filterRecipients', () => {
@@ -76,7 +89,19 @@ describe('filterRecipients', () => {
     expect(filterRecipients(mentionables, 'me', '').people.map((p) => p.id)).toEqual(['u-ana', 'u-ben'])
     expect(filterRecipients(mentionables, 'me', 'ben@').people.map((p) => p.id)).toEqual(['u-ben'])
     expect(filterRecipients(mentionables, 'me', 'invoices').agents.map((a) => a.key)).toEqual(['p:proj-1'])
-    expect(filterRecipients(null, 'me', '')).toEqual({ people: [], agents: [] })
+    expect(filterRecipients(null, 'me', '')).toEqual({ people: [], agents: [], selfRecipient: null })
+  })
+
+  test('returns yourself apart from the people list, so you can message your own notes', () => {
+    const { people, selfRecipient } = filterRecipients(mentionables, 'me', '')
+    expect(people.map((p) => p.id)).toEqual(['u-ana', 'u-ben'])
+    expect(selfRecipient?.id).toBe('me')
+  })
+
+  test('your own row follows the search like any other, and needs to know who you are', () => {
+    expect(filterRecipients(mentionables, 'me', 'myself').selfRecipient?.id).toBe('me')
+    expect(filterRecipients(mentionables, 'me', 'ana').selfRecipient).toBeNull()
+    expect(filterRecipients(mentionables, null, '').selfRecipient).toBeNull()
   })
 })
 
@@ -131,6 +156,23 @@ describe('NewMessagePicker', () => {
     await waitFor(() => expect(agentDms).toEqual([{ workspaceId: 'ws-1', projectId: null }]))
   })
 
+  test('your own row sits above People and opens your notes', async () => {
+    const created = renderPicker()
+    expect(screen.getByText('You')).toBeTruthy() // the section heading, not a person
+    expect(screen.getByLabelText('Me Myself (you), message yourself')).toBeTruthy()
+
+    fireEvent.click(screen.getByLabelText('Me Myself (you), message yourself'))
+    await waitFor(() => expect(created).toEqual([{ id: 'self-dm' }]))
+    expect(selfDms).toEqual([{ workspaceId: 'ws-1', userId: 'me' }])
+    // Your own note is a one-to-one conversation, not a pick from the people list.
+    expect(dms).toEqual([])
+  })
+
+  test('the Agents chip leaves your own row out, since it is not an agent', () => {
+    renderPicker({ initialFilter: 'agents' })
+    expect(screen.queryByLabelText('Me Myself (you), message yourself')).toBeNull()
+  })
+
   test('teammates are multi-selected and started together', async () => {
     const created = renderPicker()
     expect(screen.queryByLabelText('Start message')).toBeNull()
@@ -142,5 +184,19 @@ describe('NewMessagePicker', () => {
 
     await waitFor(() => expect(created).toEqual([{ id: 'people-dm' }]))
     expect(dms).toEqual([{ workspaceId: 'ws-1', userIds: ['u-ana', 'u-ben'] }])
+  })
+
+  test('"Start huddle" opens the group DM for everyone checked and rings them into a call', async () => {
+    const created = renderPicker()
+    expect(screen.queryByLabelText('Start huddle')).toBeNull()
+
+    fireEvent.click(screen.getByLabelText('Ana Lopez, ana@example.com'))
+    expect(screen.getByLabelText('Start huddle')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Ben Okafor, ben@example.com'))
+    fireEvent.click(screen.getByLabelText('Start huddle with 2 people'))
+
+    await waitFor(() => expect(created).toEqual([{ id: 'people-dm' }]))
+    expect(dms).toEqual([{ workspaceId: 'ws-1', userIds: ['u-ana', 'u-ben'] }])
+    expect(huddles).toEqual([{ conversationId: 'people-dm', workspaceId: 'ws-1', label: 'Ana Lopez, Ben Okafor' }])
   })
 })

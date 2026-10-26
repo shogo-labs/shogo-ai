@@ -7,12 +7,11 @@
  *
  * Shape:
  *   - `send(text)`         — send a user message to the chat agent.
- *   - `setMode(mode)`      — switch between 'agent' / 'plan' / 'ask'.
  *   - `subscribe(fn)`      — receive a typed stream of agent events
  *                            (`turn-start`, `tool-activity`, `turn-end`).
  *
- * `ChatPanel` calls `useChatBridgeRegistrar({ send, setMode })` at mount
- * to wire its real implementations into the bridge. The registrar
+ * `ChatPanel` calls `useChatBridgeRegistrar({ send })` at mount
+ * to wire its real implementation into the bridge. The registrar
  * returns `emitTurnStart`, `emitToolActivity`, and `emitTurnEnd` helpers
  * the host invokes at the appropriate lifecycle points.
  *
@@ -36,8 +35,6 @@ import type { ToolCallData } from '../chat/tools/types'
 import {
   useEzModeActivePreference,
 } from '../../lib/ez-mode-preference'
-
-export type ChatInteractionMode = 'agent' | 'plan' | 'ask'
 
 /**
  * Agent-side lifecycle events broadcast through the bridge.
@@ -66,7 +63,6 @@ export type AgentEvent =
 
 export interface ChatBridgeApi {
   send: (text: string) => void
-  setMode: (mode: ChatInteractionMode) => void
   /** Subscribe to the typed lifecycle event stream. Returns an unsubscribe. */
   subscribe: (listener: (event: AgentEvent) => void) => () => void
   /**
@@ -134,7 +130,6 @@ interface SubagentCardsSnapshot {
 
 interface BridgeInternals {
   sendImpl: ((text: string) => void) | null
-  setModeImpl: ((mode: ChatInteractionMode) => void) | null
   listeners: Set<(event: AgentEvent) => void>
   subagentCardsSnapshot: SubagentCardsSnapshot
   subagentCardsListeners: Set<() => void>
@@ -179,7 +174,6 @@ export function ChatBridgeProvider({
 }: ChatBridgeProviderProps) {
   const internalsRef = useRef<BridgeInternals>({
     sendImpl: null,
-    setModeImpl: null,
     listeners: new Set(),
     subagentCardsSnapshot: { cards: [], version: 0 },
     subagentCardsListeners: new Set(),
@@ -240,14 +234,6 @@ export function ChatBridgeProvider({
           return
         }
         fn(text)
-      },
-      setMode: (mode: ChatInteractionMode) => {
-        const fn = internalsRef.current.setModeImpl
-        if (!fn) {
-          console.warn('[ChatBridge] setMode() called before ChatPanel registered')
-          return
-        }
-        fn(mode)
       },
       subscribe: (listener) => {
         internalsRef.current.listeners.add(listener)
@@ -330,7 +316,6 @@ export function useSubagentCards(): ToolCallData[] {
 
 export interface RegistrarArgs {
   send: (text: string) => void
-  setMode: (mode: ChatInteractionMode) => void
 }
 
 export interface RegistrarEmitters {
@@ -364,18 +349,16 @@ export interface RegistrarEmitters {
  * corresponding lifecycle points so subscribers see the typed event
  * stream.
  */
-export function useChatBridgeRegistrar({ send, setMode }: RegistrarArgs): RegistrarEmitters {
+export function useChatBridgeRegistrar({ send }: RegistrarArgs): RegistrarEmitters {
   const ctx = useContext(ChatBridgeContext)
 
   useEffect(() => {
     if (!ctx) return
     ctx.internals.sendImpl = send
-    ctx.internals.setModeImpl = setMode
     return () => {
       if (ctx.internals.sendImpl === send) ctx.internals.sendImpl = null
-      if (ctx.internals.setModeImpl === setMode) ctx.internals.setModeImpl = null
     }
-  }, [ctx, send, setMode])
+  }, [ctx, send])
 
   const emit = useCallback(
     (event: AgentEvent) => {

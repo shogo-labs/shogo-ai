@@ -231,7 +231,7 @@ export const COMPOSIO_EVALS: AgentEval[] = [
       PURE_TOOL_CALL_HIDES,
     ),
     workspaceFiles: {
-      'skills/google-calendar.md': `---
+      '.shogo/skills/google-calendar/SKILL.md': `---
 name: google-calendar
 version: 1.0.0
 description: List Google Calendar events for a specified time range.
@@ -363,7 +363,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     category: 'mcp-discovery',
     level: 3,
     input: 'Send an email to john@example.com about the meeting tomorrow at 2pm. Subject: "Meeting Tomorrow" and let him know we will discuss the Q1 roadmap.',
-    maxScore: 100,
+    maxScore: 90,
     toolMocks: withHiddenNativeTools(COMPOSIO_GMAIL_SEND_MOCKS, PURE_TOOL_CALL_HIDES),
     validationCriteria: [
       {
@@ -786,7 +786,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
     maxScore: 100,
     toolMocks: withHiddenNativeTools(COMPOSIO_GMAIL_SEND_MOCKS, PURE_TOOL_CALL_HIDES),
     workspaceFiles: {
-      'skills/google-calendar.md': `---
+      '.shogo/skills/google-calendar/SKILL.md': `---
 name: google-calendar
 version: 1.0.0
 description: List and manage Google Calendar events.

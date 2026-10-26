@@ -11,7 +11,7 @@
  */
 
 import type { AgentEval, EvalResult } from './types'
-import { usedTool, neverUsedTool, toolCallCount } from './eval-helpers'
+import { usedTool, neverUsedTool, toolCallCount, builtCanvasV2Only } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Shared V2 config
@@ -75,8 +75,8 @@ function wroteSchema(r: EvalResult): boolean {
   })
 }
 
-function neverUsedV1CanvasTools(_r: EvalResult): boolean {
-  return true
+function neverUsedV1CanvasTools(r: EvalResult): boolean {
+  return builtCanvasV2Only(r)
 }
 
 // Pre-seeded workspace files for incremental-update evals
@@ -231,7 +231,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 15,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -293,7 +293,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 15,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -345,7 +345,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 20,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -417,7 +417,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -482,7 +482,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -619,7 +619,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 15,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),

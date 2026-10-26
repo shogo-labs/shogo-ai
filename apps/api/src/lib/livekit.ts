@@ -6,7 +6,7 @@
  * self-hosted) carries it. Huddles are off unless all three env vars are set.
  */
 
-import { AccessToken, RoomServiceClient, TrackSource, WebhookReceiver, type WebhookEvent } from 'livekit-server-sdk'
+import { AccessToken, DataPacket_Kind, RoomServiceClient, TrackSource, WebhookReceiver, type WebhookEvent } from 'livekit-server-sdk'
 
 export interface LiveKitConfig {
   /** `wss://` URL clients connect to. */
@@ -36,12 +36,12 @@ export function huddlesEnabled(): boolean {
  */
 export async function mintJoinToken(
   config: LiveKitConfig,
-  input: { roomName: string; userId: string; name: string; image?: string | null },
+  input: { roomName: string; userId: string; name: string; image?: string | null; guest?: boolean },
 ): Promise<string> {
   const token = new AccessToken(config.apiKey, config.apiSecret, {
     identity: input.userId,
     name: input.name,
-    metadata: JSON.stringify({ image: input.image ?? null }),
+    metadata: JSON.stringify({ image: input.image ?? null, ...(input.guest ? { guest: true } : {}) }),
     ttl: TOKEN_TTL_SECONDS,
   })
   token.addGrant({
@@ -49,7 +49,10 @@ export async function mintJoinToken(
     room: input.roomName,
     canPublish: true,
     canSubscribe: true,
-    canPublishData: false,
+    // Reactions and raised hands travel as small data messages between participants.
+    canPublishData: true,
+    // A raised hand is a participant attribute, so late joiners see it too.
+    canUpdateOwnMetadata: true,
     canPublishSources: [TrackSource.MICROPHONE, TrackSource.CAMERA, TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO],
   })
   return token.toJwt()
@@ -84,7 +87,64 @@ export async function deleteRoom(config: LiveKitConfig, roomName: string): Promi
   }
 }
 
+/**
+ * Silence someone's microphone from the server (host moderation). They can
+ * unmute themselves again; this is a "please quiet down", not a lock.
+ * Returns whether anything was muted.
+ */
+export async function muteParticipantMicrophone(config: LiveKitConfig, roomName: string, identity: string): Promise<boolean> {
+  try {
+    const client = roomService(config)
+    const participant = await client.getParticipant(roomName, identity)
+    const mics = (participant.tracks ?? []).filter((t: any) => t.source === TrackSource.MICROPHONE && !t.muted)
+    for (const track of mics) await client.mutePublishedTrack(roomName, identity, track.sid, true)
+    return mics.length > 0
+  } catch (err: any) {
+    if (err?.status === 404 || /does not exist|not found/i.test(String(err?.message ?? ''))) return false
+    console.warn(`[LiveKit] mute ${identity} in ${roomName} failed:`, err?.message ?? err)
+    return false
+  }
+}
+
+/** Disconnect one person from the room (host moderation). */
+export async function removeRoomParticipant(config: LiveKitConfig, roomName: string, identity: string): Promise<void> {
+  try {
+    await roomService(config).removeParticipant(roomName, identity)
+  } catch (err: any) {
+    if (err?.status === 404 || /does not exist|not found/i.test(String(err?.message ?? ''))) return
+    console.warn(`[LiveKit] remove ${identity} from ${roomName} failed:`, err?.message ?? err)
+  }
+}
+
 /** Verify and parse a LiveKit webhook. Throws when the signature is wrong. */
 export async function receiveWebhook(config: LiveKitConfig, body: string, authHeader: string | undefined): Promise<WebhookEvent> {
   return new WebhookReceiver(config.apiKey, config.apiSecret).receive(body, authHeader)
+}
+
+/**
+ * Send one small JSON message to everyone in the room, on a topic of our own.
+ * This is how the huddle wake tells the call what the agent is doing: it
+ * reaches guests and phones without the conversation bus, and clients that
+ * don't know the topic ignore it. Best effort — a call whose media is fine
+ * must not fail because a status message didn't go out.
+ */
+export async function sendRoomData(
+  config: LiveKitConfig,
+  roomName: string,
+  topic: string,
+  payload: unknown,
+  options: { destinationIdentities?: string[] } = {},
+): Promise<boolean> {
+  try {
+    const data = new TextEncoder().encode(JSON.stringify(payload))
+    await roomService(config).sendData(roomName, data, DataPacket_Kind.RELIABLE, {
+      topic,
+      ...(options.destinationIdentities?.length ? { destinationIdentities: options.destinationIdentities } : {}),
+    })
+    return true
+  } catch (err: any) {
+    if (err?.status === 404 || /does not exist|not found/i.test(String(err?.message ?? ''))) return false
+    console.warn(`[LiveKit] room data on ${topic} in ${roomName} failed:`, err?.message ?? err)
+    return false
+  }
 }

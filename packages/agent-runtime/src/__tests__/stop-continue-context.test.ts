@@ -23,8 +23,10 @@ import type { StreamFn } from '@mariozechner/pi-agent-core'
 import {
   createMockStreamFn,
   buildTextResponse,
+  buildToolUseResponse,
 } from '../pi-adapter'
 import { createAssistantMessageEventStream } from '@mariozechner/pi-ai'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -369,4 +371,69 @@ describe('Fix 3: concurrent turn waits for previous turn', () => {
     expect(hasFirstUserMsg).toBe(true)
     expect(hasFirstAssistantMsg).toBe(true)
   })
+})
+
+// ===========================================================================
+// Stop reaches tools through the permission gate
+// ===========================================================================
+
+describe('Stop during a blocking tool ends the turn', () => {
+  let gateway: AgentGateway
+  let testDir: string
+
+  beforeEach(() => {
+    testDir = makeTestDir()
+    setupWorkspace(testDir)
+    trustWorkspaceForTests(testDir)
+  })
+  afterEach(async () => {
+    if (gateway) await gateway.stop()
+    clearTrustForTests()
+    safeCleanup(testDir)
+  })
+
+  test('wait on output that never appears returns as soon as the user stops', async () => {
+    const SESSION_ID = 'stop-ends-wait'
+    const taskIdFrom = (messages: Message[]) => JSON.stringify(messages).match(/t_[0-9a-f]{8}/g)?.at(-1)
+    const responses = [
+      () => buildToolUseResponse([{ name: 'exec', arguments: { command: 'sleep 30', background: true }, id: 'tu_exec' }]),
+      (messages: Message[]) => buildToolUseResponse([
+        { name: 'wait', arguments: { task_ids: [taskIdFrom(messages)], until: 'READY', timeout_ms: 600_000 }, id: 'tu_wait' },
+      ]),
+      () => buildTextResponse('done'),
+    ]
+    let call = 0
+    const streamFn: StreamFn = (_model, context) => {
+      const msg = responses[Math.min(call++, responses.length - 1)](context.messages)
+      const stream = createAssistantMessageEventStream()
+      setTimeout(() => {
+        stream.push({ type: 'start', partial: msg })
+        const reason = msg.content.some((c: any) => c.type === 'toolCall') ? 'toolUse' : 'stop'
+        stream.push({ type: 'done', reason, message: msg })
+        stream.end(msg)
+      }, 5)
+      return stream as any
+    }
+
+    gateway = new AgentGateway(testDir, undefined as any)
+    gateway.setStreamFn(streamFn)
+    await gateway.start()
+
+    const { writer, chunks } = createCollectingWriter()
+    const turn = gateway.processChatMessageStream('Start it and wait until it is ready', writer as any, {
+      chatSessionId: SESSION_ID,
+    })
+
+    const deadline = Date.now() + 5_000
+    while (!chunks.some((c) => c.type === 'data-task-wait' && c.data?.active) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    expect(chunks.some((c) => c.type === 'data-task-wait' && c.data?.active)).toBe(true)
+
+    const stoppedAt = Date.now()
+    expect(gateway.abortCurrentTurn(SESSION_ID)).toBe(true)
+    await turn
+    expect(Date.now() - stoppedAt).toBeLessThan(5_000)
+    expect(chunks.some((c) => c.type === 'data-task-wait' && c.data?.active === false)).toBe(true)
+  }, 20_000)
 })

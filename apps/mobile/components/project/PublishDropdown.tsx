@@ -46,10 +46,15 @@ import { api } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
 import { CustomDomainsSection } from './CustomDomainsSection'
 import { AlwaysOnSection } from './AlwaysOnSection'
+import { isPublishPlanError, publishErrorMessage } from './publish-errors'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private' | 'password'
 
-const PUBLISH_DOMAIN = 'shogo.one'
+/**
+ * Fallback apex only — the API reports the real one (`publishDomain`) because
+ * staging mints `{sub}.staging.shogo.one` and production `{sub}.shogo.one`.
+ */
+const DEFAULT_PUBLISH_DOMAIN = 'shogo.one'
 
 const SITE_PASSWORD_MIN_LENGTH = 4
 
@@ -59,30 +64,6 @@ const ACCESS_OPTIONS: { value: AccessLevel; label: string; Icon: any }[] = [
   { value: 'private', label: 'Private', Icon: Lock },
   { value: 'password', label: 'Password protected', Icon: KeyRound },
 ]
-
-// Map a publish error to user-facing copy. The thrown ShogoError carries the
-// raw response body in `details`, so we can switch on the structured server
-// code (e.g. the cloud-proxy codes returned by the local/desktop API) and fall
-// back to the server message otherwise.
-function publishErrorMessage(err: any): string {
-  if (err?.name === 'AbortError') {
-    return "This is taking longer than expected. We're likely experiencing elevated load — please try again in a moment."
-  }
-  const code: string | undefined = err?.details?.error?.code ?? err?.details?.code
-  switch (code) {
-    case 'cloud_signin_required':
-      return 'Sign in to Shogo Cloud to publish from the desktop app.'
-    case 'project_not_synced':
-      return 'Sync this project to Shogo Cloud before publishing.'
-    case 'cloud_unreachable':
-      return "Couldn't reach Shogo Cloud. Check your connection and try again."
-    case 'upload_timeout':
-    case 'configure_timeout':
-      return "Publishing timed out while setting up your site. Please try again — if it keeps happening, we're on it."
-    default:
-      return err?.message || 'Failed to publish'
-  }
-}
 
 interface PublishDropdownProps {
   projectId: string
@@ -109,6 +90,8 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const [publishedAt, setPublishedAt] = useState<number | null>(null)
   const [publishedSubdomain, setPublishedSubdomain] = useState<string | null>(null)
   const [publishedCommitSha, setPublishedCommitSha] = useState<string | null>(null)
+  // Apex reported by the API for this environment (see getPublishState).
+  const [publishDomain, setPublishDomain] = useState(DEFAULT_PUBLISH_DOMAIN)
   const [isPublishing, setIsPublishing] = useState(false)
   const [isUnpublishing, setIsUnpublishing] = useState(false)
   const [isRepublishing, setIsRepublishing] = useState(false)
@@ -137,13 +120,13 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const checkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    if (!isOpen) return
     loadPublishState()
   }, [isOpen, projectId])
 
   const loadPublishState = useCallback(async () => {
     try {
       const data = await api.getPublishState(http, projectId)
+      if (data.publishDomain) setPublishDomain(data.publishDomain)
       if (data.subdomain) {
         setIsPublished(true)
         setPublishedSubdomain(data.subdomain)
@@ -199,7 +182,12 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
       // A fresh publish may flip the app to server-backed / consume a slot.
       bumpPublishState()
     } catch (err: any) {
-      setError(publishErrorMessage(err))
+      if (isPublishPlanError(err)) {
+        // The Pro card and Upgrade button explain the gate.
+        setPlanAllowsPublish(false)
+      } else {
+        setError(publishErrorMessage(err))
+      }
     } finally {
       setIsPublishing(false)
     }
@@ -325,7 +313,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const handlePushData = () => {
     Alert.alert(
       'Push dev data to live?',
-      `This replaces the live database at ${publishedSubdomain}.${PUBLISH_DOMAIN} with your current dev data. The previous live data is backed up so you can restore it.`,
+      `This replaces the live database at ${publishedSubdomain}.${publishDomain} with your current dev data. The previous live data is backed up so you can restore it.`,
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Push to live', style: 'destructive', onPress: () => { void doPushData(false) } },
@@ -335,7 +323,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
 
   const handleViewPublished = () => {
     if (publishedSubdomain) {
-      Linking.openURL(`https://${publishedSubdomain}.${PUBLISH_DOMAIN}`)
+      Linking.openURL(`https://${publishedSubdomain}.${publishDomain}`)
     }
   }
 
@@ -371,9 +359,14 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
       trigger={(triggerProps) => (
         <Pressable
           {...triggerProps}
-          className="h-8 flex-row items-center px-3 rounded-md bg-primary active:bg-primary/80"
+          className="h-8 flex-row items-center gap-1.5 px-3 rounded-md bg-primary active:bg-primary/80"
         >
           <Text className="text-xs font-medium text-primary-foreground">Publish</Text>
+          {!planAllowsPublish && !isPublished && (
+            <View className="rounded px-1 bg-primary-foreground/20">
+              <Text className="text-[10px] font-medium text-primary-foreground">Pro</Text>
+            </View>
+          )}
         </Pressable>
       )}
     >
@@ -413,7 +406,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
               <View className="flex-row items-center gap-2">
                 <CheckCircle size={16} color="#10b981" />
                 <Text className="text-sm text-emerald-600 dark:text-emerald-400">
-                  {publishedSubdomain}.{PUBLISH_DOMAIN}
+                  {publishedSubdomain}.{publishDomain}
                 </Text>
               </View>
               {publishedCommitSha && (
@@ -465,7 +458,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
             </View>
             <View className="flex-row items-center justify-between mt-1">
               <Text className="text-[11px] text-muted-foreground">
-                {subdomain || 'your-subdomain'}.{PUBLISH_DOMAIN}
+                {subdomain || 'your-subdomain'}.{publishDomain}
               </Text>
               {subdomainStatus.available === false && subdomainStatus.reason && (
                 <Text className="text-[11px] text-destructive">{subdomainStatus.reason}</Text>
@@ -627,7 +620,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
                 <Text className="text-[11px] text-muted-foreground mt-0.5">
                   {isPublished
                     ? 'Changing your URL requires Pro. You can still publish updates to your current URL.'
-                    : 'Get a permanent public link on your own name.shogo.one address. Available on Pro & Business.'}
+                    : `Get a permanent public link on your own name.${publishDomain} address. Available on Pro & Business.`}
                 </Text>
               </View>
               <ExternalLink size={14} className="text-primary" />

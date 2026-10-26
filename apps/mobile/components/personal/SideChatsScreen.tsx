@@ -5,63 +5,43 @@
  * "help me plan a birthday party") without it becoming part of the
  * goal-tracking primary companion thread. Lists every non-primary
  * `ChatSession` for the workspace (see `workspace-session.service.ts`); tap
- * one to open it, or start a new one.
+ * one to open it, or start a new one. Data comes from `useWorkspaceChats`, the
+ * same path Home and the phone drawer read.
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback } from 'react'
 import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { ArrowLeft, ChevronRight, MessageSquare, MessagesSquare, Plus } from 'lucide-react-native'
-import { useDomainHttp } from '../../contexts/domain'
+import { ArrowLeft, ChevronRight, Loader2, MessageSquare, MessagesSquare, Pin, Plus } from 'lucide-react-native'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { api } from '../../lib/api'
-import { sideChatLabel, sortSideChats, type SideChatItem } from '../../lib/side-chats'
+import { useWorkspaceChats } from '../../hooks/useWorkspaceChats'
+import { sideChatLabel, type SideChatItem } from '../../lib/side-chats'
 
 export const SideChatsScreen = observer(function SideChatsScreen() {
-  const http = useDomainHttp()
   const router = useRouter()
   const workspace = useActiveWorkspace()
-  const [sessions, setSessions] = useState<SideChatItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(false)
+  const chats = useWorkspaceChats(workspace?.id)
 
-  const load = useCallback(async () => {
-    if (!workspace?.id) return
-    try {
-      const all = await api.listWorkspaceSessions(http, workspace.id)
-      setSessions(all.filter((s) => !s.isPrimary))
-    } catch {
-      setSessions([])
-    } finally {
-      setLoading(false)
-    }
-  }, [http, workspace?.id])
-
-  useFocusEffect(useCallback(() => {
-    void load()
-  }, [load]))
-
-  const sorted = useMemo(() => sortSideChats(sessions), [sessions])
+  // Re-read on focus: a chat archived or renamed from Home must be gone from
+  // (or renamed in) this screen too.
+  useFocusEffect(
+    useCallback(() => {
+      void chats.refresh()
+    }, [chats.refresh]),
+  )
 
   const openChat = useCallback(
     (sessionId: string) => {
-      router.push({ pathname: '/(app)/side-chats/[id]', params: { id: sessionId } } as any)
+      chats.markSeen(sessionId)
+      router.push({ pathname: '/(app)/agent', params: { chatSessionId: sessionId } } as any)
     },
-    [router],
+    [chats.markSeen, router],
   )
 
   const startNewChat = useCallback(async () => {
-    if (!workspace?.id || creating) return
-    setCreating(true)
-    try {
-      const session = await api.createWorkspaceSession(http, workspace.id, {})
-      openChat(session.id)
-    } catch {
-      // Non-fatal — the user can retry.
-    } finally {
-      setCreating(false)
-    }
-  }, [creating, http, openChat, workspace?.id])
+    const session = await chats.createChat()
+    if (session) openChat(session.id)
+  }, [chats.createChat, openChat])
 
   const goBack = useCallback(() => {
     if (router.canGoBack()) router.back()
@@ -82,19 +62,19 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
         </View>
         <Pressable
           onPress={() => void startNewChat()}
-          disabled={creating}
+          disabled={chats.creating}
           accessibilityLabel="New side chat"
           className="rounded-md p-2 active:bg-muted disabled:opacity-50"
         >
-          {creating ? <ActivityIndicator size="small" /> : <Plus size={22} className="text-foreground" />}
+          {chats.creating ? <ActivityIndicator size="small" /> : <Plus size={22} className="text-foreground" />}
         </Pressable>
       </View>
 
-      {loading ? (
+      {chats.loading ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />
         </View>
-      ) : sorted.length === 0 ? (
+      ) : chats.sessions.length === 0 ? (
         <View className="flex-1 items-center justify-center px-8">
           <MessageSquare size={40} className="mb-3 text-muted-foreground" />
           <Text className="text-center text-base font-medium text-foreground">No side chats yet</Text>
@@ -103,15 +83,15 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
           </Text>
           <Pressable
             onPress={() => void startNewChat()}
-            disabled={creating}
+            disabled={chats.creating}
             className="mt-5 rounded-full bg-muted px-5 py-2.5 active:opacity-80 disabled:opacity-50"
           >
             <Text className="text-base font-medium text-foreground">New side chat</Text>
           </Pressable>
         </View>
       ) : (
-        <FlatList
-          data={sorted}
+        <FlatList<SideChatItem>
+          data={[...chats.active, ...chats.archived]}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
             <Pressable
@@ -119,6 +99,27 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
               accessibilityRole="button"
               className="flex-row items-center gap-3 border-b border-border/60 px-4 py-4 active:bg-muted/50"
             >
+              {/* Same leading slot as the sidebar row: running › unread › pinned. */}
+              <View className="w-4 items-center justify-center">
+                {chats.streamingIds.has(item.id) ? (
+                  <Loader2
+                    size={14}
+                    className="text-primary animate-spin"
+                    accessibilityLabel="Chat running"
+                  />
+                ) : chats.completedIds.has(item.id) ? (
+                  <View
+                    className="h-1.5 w-1.5 rounded-full bg-primary"
+                    accessibilityLabel="Chat has new activity"
+                  />
+                ) : item.isPinned ? (
+                  <Pin
+                    size={13}
+                    className="text-muted-foreground"
+                    accessibilityLabel="Pinned"
+                  />
+                ) : null}
+              </View>
               <View className="h-9 w-9 items-center justify-center rounded-xl bg-muted">
                 <MessageSquare size={16} className="text-foreground" />
               </View>

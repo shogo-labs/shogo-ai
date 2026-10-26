@@ -24,6 +24,8 @@ const store = {
   resolveThrow: null as null | Error,
   fetchImpl: null as null | ((url: string, init?: RequestInit) => Promise<Response>),
   sessionWorkspaceMatches: true,
+  foreignSession: false,
+  defaultCalls: [] as Array<[string, string]>,
 }
 
 mock.module('../../services/workspace.service', () => ({
@@ -78,11 +80,20 @@ mock.module('../../services/workspace-session.service', () => ({
       throw new MockWorkspaceSessionError('session_not_in_workspace')
     }
   },
+  assertWorkspaceSessionAccess: async () => {
+    if (store.foreignSession) throw new MockWorkspaceSessionError('session_not_found')
+    if (!store.sessionWorkspaceMatches) {
+      throw new MockWorkspaceSessionError('session_not_in_workspace')
+    }
+  },
   detachProject: async () => true,
   getAttachedProjects: async () => [],
   createWorkspaceSession: async () => ({ id: 'sess-1' }),
-  listWorkspaceSessions: async () => [],
-  getOrCreatePrimaryWorkspaceSession: async () => ({ id: 'sess-1' }),
+  listWorkspaceSessions: async (_workspaceId: string, userId: string) => [{ id: `sess-${userId}` }],
+  getOrCreateDefaultWorkspaceSession: async (workspaceId: string, userId: string) => {
+    store.defaultCalls.push([workspaceId, userId])
+    return { id: `sess-${userId}` }
+  },
   pinWorkspaceSessionToProject: async () => ({ pinned: false, changed: false }),
   unpinWorkspaceSession: async () => {},
   upgradeProjectSessionToWorkspace: async () => null,
@@ -115,6 +126,8 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     store.resolveThrow = null
     store.fetchImpl = null
     store.sessionWorkspaceMatches = true
+    store.foreignSession = false
+    store.defaultCalls = []
     globalThis.fetch = ((url: any, init?: any) => {
       if (store.fetchImpl) return store.fetchImpl(String(url), init)
       return originalFetch(url, init)
@@ -145,8 +158,29 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     )
     expect(first.status).toBe(200)
     expect(second.status).toBe(200)
-    expect((await first.json() as any).session.id).toBe('sess-1')
-    expect((await second.json() as any).session.id).toBe('sess-1')
+    expect((await first.json() as any).session.id).toBe('sess-user-1')
+    expect((await second.json() as any).session.id).toBe('sess-user-1')
+    expect(store.defaultCalls).toEqual([['ws-1', 'user-1'], ['ws-1', 'user-1']])
+  })
+
+  test('gives each member a different default chat and hides the other member\'s session', async () => {
+    const app = buildApp()
+    store.userId = 'user-a'
+    const first = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/primary', { method: 'POST' }),
+    )
+    const listed = await app.fetch(new Request('http://x/api/workspaces/ws-1/sessions'))
+    store.userId = 'user-b'
+    const second = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/primary', { method: 'POST' }),
+    )
+    expect((await first.json() as any).session.id).toBe('sess-user-a')
+    expect((await second.json() as any).session.id).toBe('sess-user-b')
+    expect((await listed.json() as any).sessions).toEqual([{ id: 'sess-user-a' }])
+
+    store.foreignSession = true
+    const hidden = await app.fetch(new Request('http://x/api/workspaces/ws-1/sessions/sess-user-a/projects'))
+    expect(hidden.status).toBe(404)
   })
 
   test('does not expose a primary session outside the workspace', async () => {
@@ -241,5 +275,80 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
       new Request('http://x/api/workspaces/ws-1/agent-proxy/agent/workspace/download/images/a.png'),
     )
     expect(res.status).toBe(501)
+  })
+
+  test('streams an attachment upload body to the pod instead of buffering it', async () => {
+    let capturedUrl = ''
+    let capturedInit: any = null
+    let received: number[] = []
+    store.fetchImpl = async (url, init) => {
+      capturedUrl = url
+      capturedInit = init
+      // Drain the forwarded body the way the runtime does, proving the bytes
+      // survive the proxy untouched.
+      const reader = (init!.body as ReadableStream<Uint8Array>).getReader()
+      const chunks: number[] = []
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(...value)
+      }
+      received = chunks
+      return new Response(JSON.stringify({ savedPath: 'files/big.zip', bytes: chunks.length }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+
+    const payload = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef])
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(payload)
+        controller.close()
+      },
+    })
+
+    const app = buildApp()
+    const res = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/agent-proxy/agent/chat/attachments?name=big.zip', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/zip', 'content-length': String(payload.byteLength) },
+        body,
+        // @ts-expect-error Bun accepts duplex on RequestInit; TS lib does not.
+        duplex: 'half',
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(capturedUrl).toBe('http://pod.internal:8080/agent/chat/attachments?name=big.zip')
+    expect(capturedInit.method).toBe('PUT')
+    // A buffered body would be an ArrayBuffer here; the upload must stay a
+    // stream so a 200 MB archive never lands in API memory.
+    expect(typeof (capturedInit.body as any)?.getReader).toBe('function')
+    expect(capturedInit.duplex).toBe('half')
+    expect(capturedInit.headers.get('content-length')).toBe(String(payload.byteLength))
+    expect(capturedInit.headers.get('x-runtime-token')).toBe('mock-workspace-runtime-token')
+    expect(received).toEqual(Array.from(payload))
+  })
+
+  test('still buffers a non-upload body (chat turn JSON)', async () => {
+    let capturedInit: any = null
+    store.fetchImpl = async (_url, init) => {
+      capturedInit = init
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+
+    const app = buildApp()
+    await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/agent-proxy/agent/workspace/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ q: 'hello' }),
+      }),
+    )
+
+    expect(typeof (capturedInit.body as any)?.getReader).toBe('undefined')
+    expect(capturedInit.duplex).toBeUndefined()
+    expect(new TextDecoder().decode(capturedInit.body)).toBe('{"q":"hello"}')
   })
 })

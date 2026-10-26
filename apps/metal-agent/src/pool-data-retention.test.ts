@@ -150,15 +150,21 @@ describe('writable-state retention', () => {
     test('applies per workspace member', async () => {
       const pool = makePool(dir)
       const today = utcDate(Date.now())
-      const a = pool.add('ws:w1', {
-        workspaceMemberIds: ['big', 'small'],
+      const big = pool.add('ws:proj:big', {
+        workspaceMemberIds: ['big'],
         memberData: {
           big: { parentEtag: '"b"', lastBytes: 300 * MB, lastUploadAt: Date.now() - 1000, lastDailyCopyDate: today },
+        },
+      })
+      const small = pool.add('ws:proj:small', {
+        workspaceMemberIds: ['small'],
+        memberData: {
           small: { parentEtag: '"s"', lastBytes: 1 * MB, lastUploadAt: Date.now() - 1000, lastDailyCopyDate: today },
         },
       })
       changingGuest()
-      await pool.saveProjectDataToStore(a)
+      await pool.saveProjectDataToStore(big)
+      await pool.saveProjectDataToStore(small)
       expect(pool.events).toEqual(['upload small'])
     })
   })
@@ -211,7 +217,7 @@ describe('writable-state retention', () => {
 
     test('workspace members get their own restore points', async () => {
       const pool = makePool(dir)
-      const a = pool.add('ws:w1', {
+      const a = pool.add('ws:proj:m1', {
         workspaceMemberIds: ['m1'],
         memberData: { m1: { parentEtag: '"m"' } },
       })

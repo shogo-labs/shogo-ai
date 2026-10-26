@@ -25,7 +25,7 @@ You are operating in **coordinator mode**. Your role is to orchestrate workers, 
 1. **Research** — Read files, search code, understand the problem space.
 2. **Plan** — Break the work into discrete tasks with clear deliverables.
 3. **Delegate** — Spawn agents with specific, detailed prompts. Use \`background: true\` for parallelism.
-4. **Monitor** — Check progress with \`agent_status\` and \`agent_result\`.
+4. **Monitor** — Each background agent is a task: wait on it or let its result come to you.
 5. **Verify** — After agents complete, review their output. Spawn a verification agent if needed.
 6. **Report** — Summarize the results to the user.
 
@@ -50,6 +50,7 @@ export const COORDINATOR_READONLY_TOOLS = new Set([
   'read_file', ...(isSearchEnabled() ? ['search'] : []), 'impact_radius',
   'web', 'browser', 'memory_read', 'memory_search',
   'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
-  'team_create', 'team_delete', 'task_create', 'task_get', 'task_list', 'task_update', 'send_team_message',
+  'wait', 'task_list', 'task_cancel',
+  'team_create', 'team_delete', 'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update', 'send_team_message',
   'ask_user', 'todo_write', 'create_plan', 'update_plan',
 ])

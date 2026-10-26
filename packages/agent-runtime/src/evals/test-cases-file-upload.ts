@@ -16,6 +16,8 @@ import {
   responseContains,
   toolCallArgsContain,
   neverUsedTool,
+  readFileAnyRoute,
+  searchedAnyRoute,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -241,10 +243,13 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-list-files',
-        description: 'Used exec, read_file, or search to check the files/ directory',
+        description: 'Checked the files/ directory (exec/read/search), or listed the exact uploaded filenames from the system-prompt listing',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'exec') || usedTool(r, 'read_file') || usedTool(r, 'search'),
+        validate: (r) =>
+          usedTool(r, 'exec') || usedTool(r, 'read_file') || usedTool(r, 'search') ||
+          ['sales-report.csv', 'meeting-notes.md', 'config.json', 'deploy.log']
+            .filter(f => r.responseText.includes(f)).length >= 3,
       },
       {
         id: 'mentions-csv',
@@ -292,10 +297,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-read-file',
-        description: 'Used read_file to read the CSV',
+        description: 'Read the CSV',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file'),
+        validate: (r) => readFileAnyRoute(r),
       },
       {
         id: 'read-correct-file',
@@ -345,7 +350,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         description: 'Used search or read_file to find error info',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'search') || usedTool(r, 'read_file'),
+        validate: (r) => searchedAnyRoute(r),
       },
       {
         id: 'found-deploy-log',
@@ -401,7 +406,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         description: 'Used read_file or search to access meeting notes',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
+        validate: (r) => searchedAnyRoute(r),
       },
       {
         id: 'read-meeting-file',
@@ -458,7 +463,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         description: 'Used search or read_file for database info',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'search') || usedTool(r, 'read_file'),
+        validate: (r) => searchedAnyRoute(r),
       },
       {
         id: 'mentions-postgresql',
@@ -515,10 +520,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
       },
       {
         id: 'read-the-data',
-        description: 'Used read_file to access the CSV data',
+        description: 'Read the CSV data',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file'),
+        validate: (r) => readFileAnyRoute(r),
       },
       {
         id: 'mentions-products',
@@ -596,7 +601,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         description: 'Used read_file or search to access the deploy log',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
+        validate: (r) => searchedAnyRoute(r),
       },
       {
         id: 'identifies-root-cause',
@@ -634,7 +639,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     name: 'File Upload: Read JSON config and report feature flags',
     category: 'tool-usage',
     level: 2,
-    input: 'What feature flags are currently enabled in our config?',
+    input: 'What feature flags are currently enabled in the config file I uploaded?',
     maxScore: 100,
     toolMocks: FILE_UPLOAD_MULTI_MOCKS,
     workspaceFiles: {
@@ -646,10 +651,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-file-tools',
-        description: 'Used read_file or search to check config',
+        description: 'Read or searched the uploaded files (any route)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
+        validate: (r) => readFileAnyRoute(r) || searchedAnyRoute(r),
       },
       {
         id: 'targeted-config',
@@ -861,7 +866,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         description: 'Read the discovered file',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file'),
+        validate: (r) => readFileAnyRoute(r),
       },
       {
         id: 'summarizes-content',

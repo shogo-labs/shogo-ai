@@ -32,6 +32,10 @@ ARG FB_PIXEL_ID=
 ARG SENTRY_AUTH_TOKEN=
 ARG SENTRY_ORG=shogo-ai
 ARG SENTRY_PROJECT=javascript-react
+# Deploy builds set this: one image serves staging AND production (the
+# environment is injected at container start), so the "is this a production
+# build" Sentry guard below can no longer key off EXPO_PUBLIC_APP_ENV.
+ARG REQUIRE_SENTRY_UPLOAD=false
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
 ENV EXPO_PUBLIC_BUILD_HASH=$EXPO_PUBLIC_BUILD_HASH
 ENV EXPO_PUBLIC_APP_VERSION=$EXPO_PUBLIC_APP_VERSION
@@ -114,17 +118,18 @@ RUN node scripts/inject-analytics.js
 # undeleted (and publicly served). Fail loudly in that case too. Fork /
 # contributor builds (non-production) without the token still skip and stay
 # telemetry-free.
-RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
-      sentry-cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
-      sentry-cli sourcemaps upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
-      find ./dist -name '*.map' -delete; \
-    elif [ "${EXPO_PUBLIC_APP_ENV#production}" != "$EXPO_PUBLIC_APP_ENV" ]; then \
-      echo "ERROR: SENTRY_AUTH_TOKEN is empty on a production build (EXPO_PUBLIC_APP_ENV=$EXPO_PUBLIC_APP_ENV)." >&2; \
-      echo "Refusing to ship a web bundle whose source maps never reach Sentry — production_web issues would be unsymbolicated and .map files would leak publicly. Configure SENTRY_AUTH_TOKEN (project:releases scope) for this deploy environment." >&2; \
-      exit 1; \
-    else \
-      echo "SENTRY_AUTH_TOKEN not set — skipping Sentry source map upload (non-production build)"; \
-    fi
+#
+# The retry loop lives in docker/upload-sourcemaps.sh: a single Sentry 502
+# killed this step and with it the release's web image (v2.3.8, run
+# 39573508746), so inject+upload get three attempts while the build still
+# fails closed on the third.
+RUN sh docker/upload-sourcemaps.sh
+
+# Precompress the hashed JS/CSS (brotli q11 + gzip -9) so nginx serves the
+# .br/.gz copies instead of gzipping on the fly (PERF-5: __common 3.08 MB gzip
+# -> 1.78 MB br). Runs after the .map strip so no maps get compressed, and
+# before both the nginx and web-assets stages copy dist/.
+RUN node scripts/precompress-assets.mjs dist/_expo
 
 # =============================================================================
 # Asset export stage (CDN upload source)
@@ -155,7 +160,8 @@ ENV DNS_RESOLVER=kube-dns.kube-system.svc.cluster.local
 COPY --from=builder /app/apps/mobile/dist /usr/share/nginx/html
 
 COPY apps/mobile/nginx.conf /etc/nginx/nginx.conf.template
+COPY --chmod=0755 apps/mobile/docker/shogo-runtime-env.sh /usr/local/bin/shogo-runtime-env
 
 EXPOSE 80
 
-CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST} ${DNS_RESOLVER}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-c", "shogo-runtime-env && envsubst '${API_UPSTREAM} ${API_HOST} ${DNS_RESOLVER}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]

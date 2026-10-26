@@ -103,6 +103,22 @@ export const BUILTIN_MEETING_TEMPLATES: readonly MeetingTemplateView[] = [
     ].join('\n'),
     builtIn: true,
   },
+  {
+    id: `${BUILTIN_TEMPLATE_PREFIX}huddle`,
+    name: 'Huddle',
+    description: 'A short recap of a quick call: what was decided, who is doing what.',
+    instructions: [
+      'These notes are for everyone who was in the call, not for one person: write "we", never "you" or "the user".',
+      'Every line of the transcript is labelled with who said it. Attribute decisions and action items to those names.',
+      'Sections, in order:',
+      '## Summary: two or three sentences on what the call was about and where it landed.',
+      '## Decisions: only decisions that were actually reached, each with who agreed. Omit the section if none.',
+      '## Action items: one bullet per item, written as `<what will be done> — <the name of the person who owns it>`. Use the speaker names from the transcript. Omit the section if none.',
+      '## Open questions: what was left unresolved. Omit the section if none.',
+      'Keep it short. This is a quick call, not a conference: a summary, a few bullets, nothing padded.',
+    ].join('\n'),
+    builtIn: true,
+  },
 ]
 
 export function isBuiltinTemplateId(id: string | null | undefined): boolean {

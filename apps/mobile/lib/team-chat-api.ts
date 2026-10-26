@@ -6,9 +6,13 @@
  * `/api/conversation-messages/:id`).
  */
 import type { BuddyLook } from '@shogo/shared-app/buddy-look'
+import type { HttpClient } from '@shogo-ai/sdk'
+import { getSDKHttpClient } from '@shogo/shared-app/domain'
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
+import type { LiveChunk } from './live-audio'
+import type { Question } from './team-chat-kinds'
 import type { UploadPart } from './upload-part'
 import { routeUrl } from './workspace-route'
 
@@ -25,6 +29,32 @@ export interface WorkspaceChatMode {
   installations: Array<{ provider: ExternalChatProvider; tenantName: string | null; createdAt: string }>
 }
 
+/** How many agent replies may work at once, and how busy the queue is now. */
+export interface AgentCapacity {
+  /** Slots a new run is admitted against right now. */
+  limit: number
+  /** The most this workspace may be configured to. */
+  max: number
+  /** What a workspace with no explicit setting gets. */
+  defaultLimit: number
+  /** The workspace's own setting, or null when it uses the default. */
+  configured: number | null
+  source: 'plan' | 'local'
+  planId: string
+  running: number
+  parked: number
+  queued: number
+  canManage: boolean
+}
+
+/** Where a queued reply stands: 1 is next in line. */
+export interface QueuePosition {
+  position: number
+  ahead: number
+  running: number
+  limit: number
+}
+
 /** Whether the Shogo chat UI (sidebar, channels, DMs) is available in this mode. */
 export function nativeChatVisible(mode: ChatModeValue | null | undefined): boolean {
   return mode === 'native' || mode === 'bridged'
@@ -32,7 +62,7 @@ export function nativeChatVisible(mode: ChatModeValue | null | undefined): boole
 export type AgentStatus = 'running' | 'done' | 'error' | 'stopped'
 
 export type Participant =
-  | { type: 'user'; id: string; name: string; image: string | null }
+  | { type: 'user'; id: string; name: string; image: string | null; /** Your own row, in the note-to-self conversation. */ self?: boolean }
   | { type: 'agent'; projectId: string | null; name: string | null }
 
 export interface ConversationSummary {
@@ -54,6 +84,9 @@ export interface ConversationSummary {
   unreadCount: number
   mentionCount: number
   participants?: Participant[]
+  /** Whether the channel has a doc (the shared markdown document tab). */
+  hasDoc?: boolean
+  docUpdatedAt?: string | null
   /** Newest top-level message; sent for direct messages only. */
   lastMessage?: {
     preview: string
@@ -72,6 +105,10 @@ export interface ConversationDetail extends Omit<ConversationSummary, 'unreadCou
   /** Can reply in threads (true in #activity even though top-level posts are system-only). */
   canReply: boolean
   canManage: boolean
+  /** This user may permanently delete the channel (older servers omit it). */
+  canDelete?: boolean
+  /** An agent system's manifest declares this channel, so it can't be deleted until it stops. */
+  systemManaged?: boolean
   members: ConversationMember[]
 }
 
@@ -89,6 +126,86 @@ export interface MessageAttachment {
   width: number | null
   height: number | null
   url: string
+  /** Voice notes only: clip length in ms, so a player can show the total up front. */
+  durationMs?: number | null
+  /** Voice notes only: waveform levels 0-100, space separated. */
+  peaks?: string | null
+  /** A small sample of the file's content, if the server could read it. Built
+   *  during the upload's background extraction, so it may arrive later than the
+   *  message itself (as a `message.updated`). */
+  preview?: AttachmentPreview | null
+}
+
+/**
+ * Mirrors `AttachmentPreview` in `apps/api/src/services/conversation-file-preview.ts`.
+ * `v` is the shape version: a preview from a different version is dropped by the
+ * server, and anything unrecognised here renders as no preview.
+ */
+export type AttachmentPreview =
+  | { v: 1; kind: 'text'; lines: string[]; pages?: number }
+  | { v: 1; kind: 'code'; lines: string[]; lang?: string }
+  | { v: 1; kind: 'slides'; title: string; bullets: string[]; count: number }
+  | { v: 1; kind: 'table'; rows: string[][]; sheet?: string; truncated: boolean }
+
+export type ConversationFileKind = 'image' | 'document' | 'other'
+
+/** A file shared in a conversation, as the Files pane lists it. */
+export interface ConversationFile {
+  id: string
+  conversationId: string
+  messageId: string
+  threadRootId: string | null
+  name: string
+  mimeType: string
+  kind: ConversationFileKind
+  size: number
+  width: number | null
+  height: number | null
+  uploadedBy: { id: string | null; name: string }
+  createdAt: string
+  url: string
+}
+
+export interface ConversationFilePage {
+  files: ConversationFile[]
+  nextCursor: string | null
+}
+
+/**
+ * What the file viewer needs to decide how to show a file, from
+ * `GET /api/conversation-files/:id/meta`. Deliberately not the capability
+ * URL's response: that one redirects to storage, which is what sent people to
+ * a browser tab in the first place.
+ */
+export interface ConversationFileMeta {
+  id: string
+  conversationId: string
+  messageId: string | null
+  name: string
+  mimeType: string
+  size: number
+  width: number | null
+  height: number | null
+  durationMs: number | null
+  peaks: string | null
+  preview: AttachmentPreview | null
+  createdAt: string
+  /** Capability URL, still needed to download or to open outside the app. */
+  url: string
+  /** The server holds this file's text, or can extract it on demand. */
+  hasText: boolean
+}
+
+/** A page of a file's text, from `GET /api/conversation-files/:id/text`. */
+export interface ConversationFileText {
+  fileId: string
+  name: string
+  mimeType: string
+  /** Null when nothing could be read out of the file. */
+  text: string | null
+  offset: number
+  totalChars: number
+  nextOffset: number | null
 }
 
 export interface ChatMessage {
@@ -115,6 +232,11 @@ export interface ChatMessage {
   editedAt: string | null
   deletedAt: string | null
   createdAt: string
+  /**
+   * Where the message lives. Only the single-message fetch returns this (a
+   * quote labels itself from it); list responses leave it off.
+   */
+  conversation?: { id: string; name: string | null; kind: ConversationKind } | null
   /** Client-only: optimistic send not yet acknowledged, or failed. */
   pending?: 'sending' | 'failed'
 }
@@ -162,7 +284,8 @@ export type PresenceStatus = 'active' | 'away' | 'offline'
 
 export interface Mentionables {
   people: Array<{ id: string; name: string; email: string; image: string | null; role: string }>
-  agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null; buddyLook?: BuddyLook | null }>
+  /** `boards` is false for agents with the Boards capability off; they can't be given cards. */
+  agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null; buddyLook?: BuddyLook | null; boards?: boolean }>
   statuses?: Record<string, UserStatus>
   groups?: UserGroup[]
 }
@@ -191,8 +314,27 @@ export interface AgentCard {
   /** The viewer may change the agent's look. */
   canEdit?: boolean
   role: string | null
+  /** The model the agent runs with, already labelled by the API (`Auto`, `Claude Sonnet 4.6`). */
+  model: { id: string; label: string }
   owner: { id: string; name: string } | null
   channels: Array<{ conversationId: string; kind: string; name: string | null; slug: string | null; agentTrigger: string; muted: boolean }>
+}
+
+/** A person's profile: who they are, their local time, and their status. */
+export interface UserCard {
+  id: string
+  name: string
+  email: string
+  /** Email local part — the exact token search's `in:@` / `from:@` resolves. */
+  handle: string
+  image: string | null
+  role: string
+  isSelf: boolean
+  timezone: string | null
+  /** `HH:MM` on their clock. */
+  localTime: string | null
+  localTimeLabel: string | null
+  status: UserStatus | null
 }
 
 export interface UserGroup {
@@ -232,9 +374,46 @@ export interface ChatSettings {
   notifyDefault: NotifyLevel
   keywords: string[]
   emailDigest: 'off' | 'daily'
+  messageSound: MessageSound
+  /** Which sound a chat message plays on web and desktop. */
+  messageTone: MessageTone
+  huddleSound: HuddleSound
+  /** Direct messages also appear in the Activity inbox. */
+  dmInActivity: boolean
+  /** Unread thread replies count toward the Activity badge. */
+  threadRepliesInBadge: boolean
+  /** When a phone push goes out. */
+  mobilePushDelay: MobilePushDelay
 }
 
-export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message'
+export type MobilePushDelay = 'immediate' | 'inactive' | 'inactive_5m' | 'inactive_10m'
+
+export type MessageSound = 'default' | 'subtle' | 'off'
+export type MessageTone = 'knock' | 'chirp' | 'pristine' | 'definite' | 'juntos' | 'confirmation' | 'question' | 'glass'
+export type HuddleSound = 'ring' | 'chime' | 'off'
+
+export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message' | 'question'
+
+/** A question an agent asked, across channels the viewer can read. */
+export interface QuestionListItem {
+  messageId: string
+  conversationId: string
+  threadRootId: string | null
+  conversation: { id: string; kind: string; name: string | null; slug: string | null }
+  agent: { projectId: string | null; name: string; iconUrl: string | null }
+  question: Question
+  askedAt: string
+  /** For the viewer, or open to anyone. */
+  mine: boolean
+  canAnswer: boolean
+}
+
+export interface QuestionInbox {
+  questions: QuestionListItem[]
+  /** Open questions for the viewer, for the badge. */
+  openCount: number
+  approvals: PendingApproval[]
+}
 
 export interface InboxItem {
   id: string
@@ -293,6 +472,24 @@ export interface Reminder {
 export interface InboxPage {
   items: InboxItem[]
   unread: number
+  /** The unread items that are thread replies. */
+  unreadThreads?: number
+  hasMore: boolean
+}
+
+/** One team-chat message the viewer sent — the Activity panel's Sent view. */
+export interface SentMessage {
+  id: string
+  conversationId: string
+  threadRootId: string | null
+  /** Sliced to a single-row preview server-side. */
+  text: string
+  createdAt: string
+  conversation: ConversationRef | null
+}
+
+export interface SentPage {
+  items: SentMessage[]
   hasMore: boolean
 }
 
@@ -322,13 +519,16 @@ export type TeamChatEvent =
   | { type: 'message.created'; conversationId: string; message: ChatMessage; moved?: boolean }
   | { type: 'message.updated'; conversationId: string; message: ChatMessage }
   | { type: 'reaction.changed'; conversationId: string; messageId: string; reactions: ReactionSummary[] }
-  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> }
+  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }>; queue?: QueuePosition | null; waiting?: { tool: string | null } | null }
+  | { type: 'agent.capacity'; workspaceId: string; limit: number; running: number; parked: number; queued: number }
   | { type: 'conversation.created'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.updated'; conversationId: string; conversation: ConversationSummary }
+  | { type: 'conversation.deleted'; conversationId: string }
   | { type: 'member.joined' | 'member.left'; conversationId: string; userId?: string; userIds?: string[] }
   | { type: 'read'; conversationId: string; userId: string; seq: number; unreadCount?: number }
   | { type: 'typing'; conversationId: string; threadRootId: string | null; userId: string; name: string }
-  | { type: 'presence'; userId: string; status: PresenceStatus }
+  | { type: 'presence'; userId: string; status: PresenceStatus }  | { type: 'huddle.presence'; userId: string; inHuddle: boolean }
+
   | {
       type: 'notification'
       conversationId: string | null
@@ -338,15 +538,17 @@ export type TeamChatEvent =
       title: string
       body: string
     }
+  | { type: 'settings.changed'; settings: ChatSettings }
   | { type: 'status.changed'; userId: string; status: UserStatus | null }
   | { type: 'inbox.created'; item: InboxItem }
-  | { type: 'inbox.read'; unread: number }
+  | { type: 'inbox.read'; unread: number; unreadThreads?: number }
   | { type: 'saved.changed'; messageId: string; saved: boolean }
   | { type: 'draft.changed'; draft: Draft }
   | { type: 'scheduled.failed'; id: string; error: string | null }
   | { type: 'groups.changed' }
   | { type: 'agent.updated'; projectId: string | null }
   | { type: 'emoji.changed' }
+  | { type: 'board.changed'; boardId: string; conversationId?: string; action: string; itemId?: string }
   | { type: 'huddle.updated'; conversationId: string; huddle: Huddle | null }
   | {
       type: 'huddle.ring'
@@ -354,14 +556,123 @@ export type TeamChatEvent =
       conversationKind: ConversationKind
       huddleId: string
       from: { userId: string; name: string; image: string | null }
+      /** Someone rang you into a huddle already under way (as opposed to a call starting in your DM). */
+      invite?: boolean
+      /** The channel the invitation is for, when it isn't a DM. */
+      conversationName?: string | null
     }
   | { type: 'huddle.declined'; conversationId: string; huddleId: string; userId: string; name: string }
+  | { type: 'huddle.notes'; conversationId: string; huddleId: string; enabled: boolean; changedById: string; name: string }
+  | { type: 'huddle.knock'; conversationId: string; huddleId: string; request: { id: string; name: string; guest: boolean } }
+  | {
+      type: 'doc.updated'
+      conversationId: string
+      version: number
+      title: string
+      locked: boolean
+      updatedBy: DocAuthor | null
+    }
+
+export interface DocAuthor {
+  type: 'user' | 'agent'
+  id: string | null
+  name: string
+}
+
+/** A channel's shared markdown document. */
+export interface ChannelDoc {
+  id: string
+  conversationId: string
+  title: string
+  content: string
+  version: number
+  locked: boolean
+  /** How full the doc is; the doc is injected into every agent's prompt, so full is expensive. */
+  budget?: DocBudget
+  updatedBy: DocAuthor | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type DocBudgetLevel = 'ok' | 'warn' | 'critical'
+
+export interface DocBudget {
+  chars: number
+  limit: number
+  /** Percent used, one decimal. */
+  pct: number
+  level: DocBudgetLevel
+}
+
+/** A section archived out of a channel doc. `content` is only on a single-archive read. */
+export interface ChannelDocArchive {
+  id: string
+  conversationId: string
+  title: string
+  heading: string
+  chars: number
+  content?: string
+  archivedBy: DocAuthor | null
+  createdAt: string
+}
+
+export interface ChannelDocState {
+  doc: ChannelDoc | null
+  canEdit: boolean
+  canManage: boolean
+}
+
+export interface ChannelDocRevision {
+  id: string
+  version: number
+  title: string
+  content: string
+  updatedBy: DocAuthor | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** Thrown by `saveDoc` when someone else saved first; `current` is the doc as it is now. */
+export class DocConflictError extends Error {
+  constructor(public current: ChannelDoc | null) {
+    super('This doc was changed by someone else')
+    this.name = 'DocConflictError'
+  }
+}
+
+function asDocConflict(err: unknown): DocConflictError | null {
+  const e = err as { status?: number; details?: { error?: { code?: string; doc?: ChannelDoc | null } } }
+  if (e?.status !== 409 || e.details?.error?.code !== 'doc_conflict') return null
+  return new DocConflictError(e.details.error.doc ?? null)
+}
 
 export interface HuddleParticipant {
   userId: string
   name: string
   image: string | null
   joinedAt: string
+  /** An outside guest let in through the huddle link. */
+  guest?: boolean
+}
+
+/** Someone rung into the huddle who hasn't joined yet. */
+export interface HuddleInvitee {
+  userId: string
+  name: string
+  image: string | null
+  status: 'ringing' | 'declined' | 'missed'
+  invitedById: string
+}
+
+/** Someone knocking to be let into the huddle: everyone in the call sees Admit and Deny. */
+export interface HuddleJoinRequest {
+  id: string
+  /** Set for a workspace member without access to the conversation; null for an outside guest. */
+  userId: string | null
+  name: string
+  image: string | null
+  guest: boolean
+  createdAt: string
 }
 
 /** A live audio call in a conversation. */
@@ -371,7 +682,132 @@ export interface Huddle {
   workspaceId: string
   startedById: string
   startedAt: string
+  /** The "started a huddle" message: chat during the call is posted as replies to it. */
+  messageId?: string | null
   participants: HuddleParticipant[]
+  /** People rung in who haven't joined: "Ringing…" tiles. */
+  invited: HuddleInvitee[]
+  /**
+   * Everyone the call's chat is shared with (people who have been in the call
+   * or were invited, and the members of a DM it started in). Only grows; when
+   * it changes, ask for your chat again with `huddleChat`.
+   */
+  chatMembers?: string[]
+  /** People knocking through the huddle link. */
+  requests?: HuddleJoinRequest[]
+  /** Notes: a speaker-labelled transcript, and an auto summary posted when the call ends. */
+  notes?: {
+    enabled: boolean
+    /**
+     * Why the LiveKit fallback can't cover a track no device is transcribing
+     * (an all-native call, or a coverer who left). Null when it can.
+     */
+    unavailableReason?: string | null
+  }
+}
+
+/** Audio-socket ticket that transcribes one person in a huddle. */
+export interface HuddleNotesTicket {
+  ticket: string
+  path: string
+  backend: string
+  expiresInMs: number
+}
+
+/** One line of a huddle transcript, labelled with who said it. */
+export interface HuddleNotesSegment {
+  start: number
+  end: number
+  text: string
+  speaker?: string
+}
+
+/** A finished huddle's notes, as `GET /api/huddles/:id/notes` returns them. */
+export interface HuddleNotesDetail {
+  huddleId: string
+  meeting: {
+    id: string
+    title: string | null
+    duration: number | null
+    status: string
+    createdAt: string
+    workspaceId?: string
+    enhanceStatus?: string
+    enhancedNotes?: string | null
+    [key: string]: unknown
+  }
+  transcript: { text: string; segments: HuddleNotesSegment[]; language?: string }
+  actionItems: Array<{ text: string; owner?: string; done: boolean }>
+}
+
+/** Where one person chats during a call. */
+export interface HuddleChatTarget {
+  conversationId: string
+  kind: string
+  /** The huddle's start message when the chat is its thread; null for a plain group conversation. */
+  threadRootId: string | null
+  members: string[]
+  /** Not the conversation the call started in: a person added to the call moved the chat to a matching group. */
+  moved: boolean
+}
+
+/** The shareable huddle link. */
+export interface HuddleLink {
+  token: string
+  /** App path that opens the join page. */
+  path: string
+}
+
+/** What a huddle link shows before anyone asks to join. */
+export interface HuddleLinkInfo {
+  enabled?: boolean
+  live: boolean
+  startedBy?: string | null
+  participantCount?: number
+  /** `member` can join directly; `knock` has to ask to be let in. */
+  access?: 'member' | 'knock'
+  /** You are signed in; otherwise you join as a guest with just a name. */
+  signedIn?: boolean
+  conversationId?: string
+  workspaceId?: string
+  label?: string | null
+}
+
+export interface HuddleKnock {
+  requestId: string | null
+  status: 'waiting' | 'admitted'
+  guest: boolean
+  conversationId?: string
+  workspaceId?: string
+}
+
+export type HuddleRequestStatus = 'waiting' | 'admitted' | 'denied' | 'expired' | 'ended'
+
+export interface HuddleRequestResult {
+  status: HuddleRequestStatus
+  /** Guests get a LiveKit token the moment they are let in. */
+  token?: string
+  url?: string
+  guestId?: string
+  conversationId?: string
+  workspaceId?: string
+}
+
+/** A poll block on a huddle-thread message. */
+export interface PollBlock {
+  question: string
+  options: Array<{ id: string; text: string }>
+  multiple: boolean
+  closed: boolean
+  tally: Record<string, number>
+  voters: Record<string, string[]>
+}
+
+/** A Q&A block on a huddle-thread message. */
+export interface QuestionBlock {
+  answered: boolean
+  upvotes: number
+  upvoters: string[]
 }
 
 /** A live huddle as the workspace list returns it. */
@@ -379,6 +815,8 @@ export interface ActiveHuddle extends Huddle {
   conversationKind: ConversationKind
   /** Started in a DM moments ago without you, so it should still be ringing here. */
   ringing: boolean
+  /** Set when the ring is an invitation to a huddle already under way. */
+  invite?: { from: { userId: string; name: string; image: string | null }; conversationName: string | null; at: string }
 }
 
 export interface HuddleJoin {
@@ -396,7 +834,13 @@ export const mentionToken = {
 
 export function conversationTitle(c: Pick<ConversationSummary, 'kind' | 'name' | 'participants'>): string {
   if (c.kind === 'dm' || c.kind === 'group_dm') {
-    const names = (c.participants ?? []).map((p) => p.name ?? 'Agent').filter(Boolean)
+    const names = (c.participants ?? [])
+      .map((p) => {
+        const name = p.name ?? 'Agent'
+        // A note-to-self lists you, so say which row is you.
+        return p.type === 'user' && p.self ? `${name} (you)` : name
+      })
+      .filter(Boolean)
     return names.length ? names.join(', ') : 'Direct message'
   }
   return c.name ?? 'channel'
@@ -406,15 +850,60 @@ export function isAgentDm(c: Pick<ConversationSummary, 'kind' | 'participants'>)
   return c.kind === 'dm' && (c.participants ?? []).some((p) => p.type === 'agent')
 }
 
+/** The note-to-self conversation: a direct message whose only member is you. */
+export function isSelfDm(c: Pick<ConversationSummary, 'kind' | 'participants'>): boolean {
+  return c.kind === 'dm' && (c.participants ?? []).some((p) => p.type === 'user' && p.self === true)
+}
+
+/**
+ * A lazily-resolved client, so team chat is routed like the rest of the app.
+ *
+ * The domain client is the SDK interceptor's insert point: it sends a
+ * workspace's conversations to a paired desktop when one of that desktop's own
+ * workspaces is open (and rewrites the workspace id on the way), and to this
+ * app's API otherwise. Resolving it per call rather than once matters — many
+ * callers build an api at module scope, before the domain provider has mounted,
+ * and a client captured then would never see a machine.
+ */
+function teamChatHttp() {
+  return getSDKHttpClient() ?? createHttpClient()
+}
+
 export function teamChatApi() {
-  const http = createHttpClient()
+  // Forward each call to whichever client exists when it is made (see
+  // `teamChatHttp` above). Inheriting the client's methods through a proxy keeps
+  // every existing `api.get(...)` / `api.patch(...)` call site untouched.
+  const http = new Proxy({} as HttpClient, {
+    get(_target, prop) {
+      const client = teamChatHttp() as unknown as Record<string | symbol, unknown>
+      const value = client[prop]
+      return typeof value === 'function' ? value.bind(client) : value
+    },
+  })
   const ws = (workspaceId: string) => `/api/workspaces/${encodeURIComponent(workspaceId)}`
   const conv = (id: string) => `/api/conversations/${encodeURIComponent(id)}`
   const msg = (id: string) => `/api/conversation-messages/${encodeURIComponent(id)}`
+  const file = (id: string) => `/api/conversation-files/${encodeURIComponent(id)}`
   return {
     async list(workspaceId: string): Promise<ConversationSummary[]> {
       return (await http.get<{ conversations: ConversationSummary[] }>(`${ws(workspaceId)}/conversations`)).data
         .conversations ?? []
+    },
+    /**
+     * Reconnect/foreground catch-up: the conversations that changed since the
+     * last full list, plus the server's clock so the next call has its cursor.
+     * Merged into what the client already has instead of re-downloading 150 rows.
+     */
+    async listSince(
+      workspaceId: string,
+      since: string,
+    ): Promise<{ conversations: ConversationSummary[]; syncedAt: string | null }> {
+      const data = (
+        await http.get<{ conversations?: ConversationSummary[]; syncedAt?: string }>(
+          `${ws(workspaceId)}/conversations?since=${encodeURIComponent(since)}`,
+        )
+      ).data
+      return { conversations: data.conversations ?? [], syncedAt: data.syncedAt ?? null }
     },
     async createChannel(workspaceId: string, input: { name: string; kind: 'public' | 'private'; topic?: string }) {
       return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/conversations`, input)).data
@@ -427,6 +916,11 @@ export function teamChatApi() {
     async openAgentDm(workspaceId: string, projectId: string | null) {
       return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/dms`, { agent: { projectId } }))
         .data.conversation
+    },
+    /** The note-to-self conversation. Same endpoint: you are the only member. */
+    async openSelfDm(workspaceId: string, userId: string) {
+      return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/dms`, { userIds: [userId] })).data
+        .conversation
     },
     async search(
       workspaceId: string,
@@ -445,6 +939,13 @@ export function teamChatApi() {
     },
     async setChatMode(workspaceId: string, input: { mode: ChatModeValue; provider?: ExternalChatProvider | null }): Promise<WorkspaceChatMode> {
       return (await http.patch<WorkspaceChatMode>(`${ws(workspaceId)}/chat-mode`, input)).data
+    },
+    /** How many agents may work at once here, and how many are running or queued. */
+    async agentCapacity(workspaceId: string): Promise<AgentCapacity> {
+      return (await http.get<AgentCapacity>(`${ws(workspaceId)}/agent-capacity`)).data
+    },
+    async setAgentCapacity(workspaceId: string, agentReplyConcurrency: number | null): Promise<AgentCapacity> {
+      return (await http.put<AgentCapacity>(`${ws(workspaceId)}/agent-capacity`, { agentReplyConcurrency })).data
     },
     async chatConnectCode(workspaceId: string, provider: ExternalChatProvider): Promise<{ code: string; command: string; expiresAt: string }> {
       return (await http.post<{ code: string; command: string; expiresAt: string }>(
@@ -468,6 +969,16 @@ export function teamChatApi() {
       if (opts.limit) q.set('limit', String(opts.limit))
       return (await http.get<InboxPage>(`${ws(workspaceId)}/inbox?${q}`)).data
     },
+    async sentMessages(
+      workspaceId: string,
+      opts: { before?: string; beforeId?: string; limit?: number } = {},
+    ): Promise<SentPage> {
+      const q = new URLSearchParams()
+      if (opts.before) q.set('before', opts.before)
+      if (opts.beforeId) q.set('beforeId', opts.beforeId)
+      if (opts.limit) q.set('limit', String(opts.limit))
+      return (await http.get<SentPage>(`${ws(workspaceId)}/sent-messages?${q}`)).data
+    },
     async markInboxRead(
       workspaceId: string,
       input: { ids?: string[]; all?: boolean; conversationId?: string; threadRootId?: string; unread?: boolean },
@@ -479,6 +990,64 @@ export function teamChatApi() {
     },
     async pins(conversationId: string): Promise<ChatMessage[]> {
       return (await http.get<{ messages: ChatMessage[] }>(`${conv(conversationId)}/pins`)).data.messages ?? []
+    },
+    async getDoc(conversationId: string): Promise<ChannelDocState> {
+      return (await http.get<ChannelDocState>(`${conv(conversationId)}/doc`)).data
+    },
+    async saveDoc(conversationId: string, input: { title: string; content: string; baseVersion: number }): Promise<ChannelDoc> {
+      try {
+        return (await http.request<{ doc: ChannelDoc }>(`${conv(conversationId)}/doc`, { method: 'PUT', body: input })).data.doc
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
+    },
+    async listDocRevisions(conversationId: string): Promise<ChannelDocRevision[]> {
+      return (await http.get<{ revisions: ChannelDocRevision[] }>(`${conv(conversationId)}/doc/revisions`)).data.revisions ?? []
+    },
+    async restoreDocRevision(conversationId: string, revisionId: string, baseVersion: number): Promise<ChannelDoc> {
+      try {
+        return (await http.post<{ doc: ChannelDoc }>(
+          `${conv(conversationId)}/doc/revisions/${encodeURIComponent(revisionId)}/restore`,
+          { baseVersion },
+        )).data.doc
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
+    },
+    async lockDoc(conversationId: string, locked: boolean): Promise<ChannelDoc> {
+      return (await http.post<{ doc: ChannelDoc }>(`${conv(conversationId)}/doc/lock`, { locked })).data.doc
+    },
+    async listDocArchives(conversationId: string): Promise<ChannelDocArchive[]> {
+      return (await http.get<{ archives: ChannelDocArchive[] }>(`${conv(conversationId)}/doc/archives`)).data.archives ?? []
+    },
+    async getDocArchive(conversationId: string, archiveId: string): Promise<ChannelDocArchive> {
+      return (await http.get<{ archive: ChannelDocArchive }>(
+        `${conv(conversationId)}/doc/archives/${encodeURIComponent(archiveId)}`,
+      )).data.archive
+    },
+    async archiveDocSection(
+      conversationId: string,
+      section: string,
+      baseVersion: number,
+    ): Promise<{ doc: ChannelDoc; archive: ChannelDocArchive }> {
+      try {
+        return (await http.post<{ doc: ChannelDoc; archive: ChannelDocArchive }>(
+          `${conv(conversationId)}/doc/archives`,
+          { section, baseVersion },
+        )).data
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
+    },
+    async restoreDocArchive(conversationId: string, archiveId: string, baseVersion: number): Promise<ChannelDoc> {
+      try {
+        return (await http.post<{ doc: ChannelDoc }>(
+          `${conv(conversationId)}/doc/archives/${encodeURIComponent(archiveId)}/restore`,
+          { baseVersion },
+        )).data.doc
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
     },
     async save(messageId: string, on: boolean) {
       await http.post(`${msg(messageId)}/save`, { on })
@@ -557,6 +1126,9 @@ export function teamChatApi() {
       const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
       return (await http.get<{ card: AgentCard }>(`${ws(workspaceId)}/agent-card${qs}`)).data.card
     },
+    async userCard(workspaceId: string, userId: string): Promise<UserCard> {
+      return (await http.get<{ card: UserCard }>(`${ws(workspaceId)}/user-card?userId=${encodeURIComponent(userId)}`)).data.card
+    },
     /** Save an agent's buddy look; `null` goes back to the look generated from its id. */
     async setAgentBuddyLook(workspaceId: string, projectId: string | null, look: BuddyLook | null): Promise<BuddyLook | null> {
       const key = projectId ?? 'ws'
@@ -570,20 +1142,30 @@ export function teamChatApi() {
     async pendingApprovals(workspaceId: string): Promise<PendingApproval[]> {
       return (await http.get<{ approvals: PendingApproval[] }>(`${ws(workspaceId)}/approvals/pending`)).data.approvals
     },
-    /** Batched: ~400 ids would push the URL past the server's header limit. */
-    async presence(workspaceId: string, userIds: string[]): Promise<Record<string, PresenceStatus>> {
+    /**
+     * Batched: ~400 ids would push the URL past the server's header limit.
+     * `huddle` is the subset of these ids currently in a huddle.
+     */
+    async presence(workspaceId: string, userIds: string[]): Promise<{ presence: Record<string, PresenceStatus>; huddle: string[] }> {
       const out: Record<string, PresenceStatus> = {}
+      const huddle = new Set<string>()
       for (let i = 0; i < userIds.length; i += 200) {
         const ids = userIds.slice(i, i + 200).map(encodeURIComponent).join(',')
-        Object.assign(out, (await http.get<{ presence: Record<string, PresenceStatus> }>(`${ws(workspaceId)}/presence?userIds=${ids}`)).data.presence)
+        const res = (await http.get<{ presence: Record<string, PresenceStatus>; huddle?: string[] }>(`${ws(workspaceId)}/presence?userIds=${ids}`)).data
+        Object.assign(out, res.presence)
+        for (const id of res.huddle ?? []) huddle.add(id)
       }
-      return out
+      return { presence: out, huddle: [...huddle] }
     },
     async get(id: string): Promise<ConversationDetail> {
       return (await http.get<{ conversation: ConversationDetail }>(conv(id))).data.conversation
     },
     async update(id: string, patch: { name?: string; topic?: string | null; archived?: boolean }) {
       return (await http.patch<{ conversation: ConversationDetail }>(conv(id), patch)).data.conversation
+    },
+    /** Permanently delete a channel with all its messages and files. */
+    async delete(id: string) {
+      await http.delete(conv(id))
     },
     async join(id: string) {
       await http.post(`${conv(id)}/join`, {})
@@ -619,15 +1201,57 @@ export function teamChatApi() {
     },
     async post(
       id: string,
-      input: { text: string; threadRootId?: string | null; alsoSentToChannel?: boolean; clientMsgId: string; attachmentIds?: string[] },
+      input: { text: string; threadRootId?: string | null; alsoSentToChannel?: boolean; clientMsgId: string; attachmentIds?: string[]; linkPreviewsOff?: string[] },
     ): Promise<ChatMessage> {
       return (await http.post<{ message: ChatMessage }>(`${conv(id)}/messages`, input)).data.message
     },
-    async markRead(id: string, seq?: number): Promise<{ lastReadSeq: number; unreadCount?: number }> {
-      return (await http.post<{ lastReadSeq: number; unreadCount?: number }>(`${conv(id)}/read`, seq === undefined ? {} : { seq })).data
+    /** Files shared in a conversation, newest first. */
+    async files(
+      id: string,
+      opts: { q?: string; kind?: ConversationFileKind; cursor?: string; limit?: number } = {},
+    ): Promise<ConversationFilePage> {
+      const q = new URLSearchParams()
+      if (opts.q) q.set('q', opts.q)
+      if (opts.kind) q.set('kind', opts.kind)
+      if (opts.cursor) q.set('cursor', opts.cursor)
+      if (opts.limit) q.set('limit', String(opts.limit))
+      return (await http.get<ConversationFilePage>(`${conv(id)}/files?${q}`)).data
+    },
+    async markRead(id: string, seq?: number, opts?: { advance?: boolean }): Promise<{ lastReadSeq: number; unreadCount?: number }> {
+      const body: Record<string, unknown> = {}
+      if (seq !== undefined) body.seq = seq
+      if (opts?.advance) body.advance = true
+      return (await http.post<{ lastReadSeq: number; unreadCount?: number }>(`${conv(id)}/read`, body)).data
     },
     async message(messageId: string): Promise<ChatMessage> {
       return (await http.get<{ message: ChatMessage }>(msg(messageId))).data.message
+    },
+    /** What a file is, for the viewer. Never redirects to storage. */
+    async fileMeta(
+      attachmentId: string,
+    ): Promise<{ file: ConversationFileMeta; conversation: { id: string; name: string | null; kind: string } }> {
+      return (
+        await http.get<{ file: ConversationFileMeta; conversation: { id: string; name: string | null; kind: string } }>(
+          `${file(attachmentId)}/meta`,
+        )
+      ).data
+    },
+    /**
+     * A page of a file's text, extracted server-side when needed.
+     *
+     * `raw` returns the body as written (blank lines and indentation intact)
+     * instead of the tidied search text — what a markdown renderer needs.
+     */
+    async fileText(
+      attachmentId: string,
+      opts: { offset?: number; limit?: number; raw?: boolean } = {},
+    ): Promise<ConversationFileText> {
+      const q = new URLSearchParams()
+      if (opts.offset !== undefined) q.set('offset', String(opts.offset))
+      if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+      if (opts.raw) q.set('raw', '1')
+      const suffix = q.toString() ? `?${q}` : ''
+      return (await http.get<ConversationFileText>(`${file(attachmentId)}/text${suffix}`)).data
     },
     async catchUp(id: string): Promise<CatchUpResult> {
       return (await http.post<CatchUpResult>(`${conv(id)}/catch-up`, {})).data
@@ -644,6 +1268,18 @@ export function teamChatApi() {
     async stopAgent(messageId: string) {
       await http.post(`${msg(messageId)}/stop`, {})
     },
+    /**
+     * Start a queued team-chat message now: it goes to the front of the queue
+     * and the reply in front of it is stopped, the same as the chat queue's
+     * Send now. A wake that already ran throws, so the row can say why.
+     */
+    async sendWakeNow(wakeId: string) {
+      await http.post(`/api/agent-wakes/${encodeURIComponent(wakeId)}/send-now`, {})
+    },
+    /** Take a queued team-chat message off the queue. It never runs. */
+    async removeWake(wakeId: string) {
+      await http.delete(`/api/agent-wakes/${encodeURIComponent(wakeId)}`)
+    },
     /** What an agent did before its final message: its turn's parts, trimmed for the channel. */
     async workLog(messageId: string): Promise<AgentWorkLog> {
       return (await http.get<AgentWorkLog>(`${msg(messageId)}/work`)).data
@@ -651,6 +1287,24 @@ export function teamChatApi() {
     /** Approve or deny an action an agent is waiting on. The first answer wins; later ones throw. */
     async decideApproval(messageId: string, decision: 'approve' | 'deny'): Promise<ChatMessage> {
       return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/approval`, { decision })).data.message
+    },
+    /** Agent questions the viewer can see, plus approvals waiting on them. */
+    async questions(workspaceId: string, opts: { status?: 'open' | 'answered' | 'all'; scope?: 'mine' | 'all' } = {}): Promise<QuestionInbox> {
+      const q = new URLSearchParams()
+      if (opts.status) q.set('status', opts.status)
+      if (opts.scope) q.set('scope', opts.scope)
+      return (await http.get<QuestionInbox>(`${ws(workspaceId)}/questions?${q}`)).data
+    },
+    /**
+     * Answer an agent's question. The first answer wins; later ones throw. The
+     * person's answers on a card go to its thread together: `relay` is `held`
+     * while they still have questions open there, and `reply` is null then.
+     */
+    async answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<{ message: ChatMessage; question: Question; relay: 'sent' | 'held'; reply: ChatMessage | null }> {
+      return (await http.post<{ message: ChatMessage; question: Question; relay: 'sent' | 'held'; reply: ChatMessage | null }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/answer`, input)).data
+    },
+    async dismissQuestion(messageId: string, questionId: string): Promise<{ message: ChatMessage; question: Question }> {
+      return (await http.post<{ message: ChatMessage; question: Question }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/dismiss`, {})).data
     },
     async huddles(workspaceId: string): Promise<{ enabled: boolean; huddles: ActiveHuddle[] }> {
       return (await http.get<{ enabled: boolean; huddles: ActiveHuddle[] }>(`${ws(workspaceId)}/huddles`)).data
@@ -664,6 +1318,104 @@ export function teamChatApi() {
     async declineHuddle(id: string): Promise<Huddle | null> {
       return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/decline`, {})).data.huddle
     },
+    /** Ring more people into the huddle you're in. */
+    async inviteToHuddle(id: string, userIds: string[]): Promise<Huddle> {
+      return (await http.post<{ huddle: Huddle }>(`${conv(id)}/huddle/invite`, { userIds })).data.huddle
+    },
+    async cancelHuddleInvite(id: string, userId: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/invite/${encodeURIComponent(userId)}/cancel`, {})).data.huddle
+    },
+    /** Mute someone's mic (the host or a workspace admin). */
+    async muteHuddleParticipant(id: string, userId: string): Promise<void> {
+      await http.post(`${conv(id)}/huddle/mute`, { userId })
+    },
+    /** Remove someone from the call (the host or a workspace admin). */
+    async removeHuddleParticipant(id: string, userId: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/remove`, { userId })).data.huddle
+    },
+    /** The shareable link for the huddle you're in; `rotate` revokes the old one (host only). */
+    async huddleLink(id: string, opts: { rotate?: boolean } = {}): Promise<HuddleLink> {
+      return (await http.post<HuddleLink>(`${conv(id)}/huddle/link`, { rotate: opts.rotate === true })).data
+    },
+    async admitHuddleRequest(id: string, requestId: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/requests/${encodeURIComponent(requestId)}/admit`, {})).data.huddle
+    },
+    /** Turn notes on or off for the rest of the call. Any participant may. */
+    async setHuddleNotes(id: string, enabled: boolean): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle }>(`${conv(id)}/huddle/notes`, { enabled })).data.huddle
+    },
+    /** The audio-socket ticket that transcribes one person in this huddle. */
+    async huddleNotesTicket(id: string, opts: { forUserId?: string | null; client?: 'web' | 'desktop' | 'native' } = {}): Promise<HuddleNotesTicket> {
+      return (await http.post<HuddleNotesTicket>(`${conv(id)}/huddle/notes/ticket`, opts)).data
+    },
+    /** One WAV chunk from this device, when the audio socket can't run. */
+    async postHuddleNotesChunk(id: string, chunk: LiveChunk, opts: { forUserId?: string | null; client?: string | null } = {}): Promise<void> {
+      await postNotesChunk(`${conv(id)}/huddle/notes/chunk`, chunk, opts)
+    },
+    async denyHuddleRequest(id: string, requestId: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/requests/${encodeURIComponent(requestId)}/deny`, {})).data.huddle
+    },
+    async huddleLinkInfo(token: string): Promise<HuddleLinkInfo> {
+      return (await http.get<HuddleLinkInfo>(`/api/huddle-links/${encodeURIComponent(token)}`)).data
+    },
+    /** Ask to be let in. Guests (no account) give a name. */
+    async knockOnHuddle(token: string, name?: string): Promise<HuddleKnock> {
+      return (await http.post<HuddleKnock>(`/api/huddle-links/${encodeURIComponent(token)}/knock`, name ? { name } : {})).data
+    },
+    async huddleJoinRequest(requestId: string): Promise<HuddleRequestResult> {
+      return (await http.get<HuddleRequestResult>(`/api/huddle-links/requests/${encodeURIComponent(requestId)}`)).data
+    },
+    async leaveHuddleAsGuest(requestId: string): Promise<void> {
+      await http.post(`/api/huddle-links/requests/${encodeURIComponent(requestId)}/leave`, {})
+    },
+    /** Leave as a guest from a closing tab: survives page unload, never throws. */
+    leaveHuddleAsGuestOnUnload(requestId: string): void {
+      try {
+        void fetch(`${API_URL}/api/huddle-links/requests/${encodeURIComponent(requestId)}/leave`, {
+          method: 'POST',
+          keepalive: true,
+          credentials: 'omit',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        }).catch(() => {})
+      } catch {}
+    },
+    /** The notes ticket for an admitted guest: their request id is their credential. */
+    async guestHuddleNotesTicket(requestId: string): Promise<HuddleNotesTicket> {
+      return (await http.post<HuddleNotesTicket>(`/api/huddle-links/requests/${encodeURIComponent(requestId)}/notes/ticket`, {})).data
+    },
+    /** One WAV chunk of a guest's speech, when the socket can't run. */
+    async guestHuddleNotesChunk(requestId: string, chunk: LiveChunk): Promise<void> {
+      await postNotesChunk(`/api/huddle-links/requests/${encodeURIComponent(requestId)}/notes/chunk`, chunk, {})
+    },
+    /** A finished huddle's notes: the meeting row, its transcript and action items. */
+    async huddleNotes(huddleId: string): Promise<HuddleNotesDetail> {
+      return (await http.get<HuddleNotesDetail>(`/api/huddles/${encodeURIComponent(huddleId)}/notes`)).data
+    },
+    /** Delete a huddle's notes (the person who started it, or a workspace admin). */
+    async deleteHuddleNotes(huddleId: string): Promise<void> {
+      await http.delete(`/api/huddles/${encodeURIComponent(huddleId)}/notes`)
+    },
+    /** Where you chat in this call: your DM for two people, the exact group DM for more. */
+    async huddleChat(id: string): Promise<HuddleChatTarget | null> {
+      return (await http.get<{ chat: HuddleChatTarget | null }>(`${conv(id)}/huddle/chat`)).data.chat
+    },
+    async postHuddlePoll(id: string, input: { question: string; options: string[]; multiple?: boolean }): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${conv(id)}/huddle/polls`, input)).data.message
+    },
+    async postHuddleQuestion(id: string, text: string): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${conv(id)}/huddle/questions`, { text })).data.message
+    },
+    /** Vote on a poll option, or upvote a question with `optionId: 'up'`. Voting again takes the vote back. */
+    async voteOnMessage(messageId: string, optionId: string): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/vote`, { optionId })).data.message
+    },
+    async closePoll(messageId: string): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/poll/close`, {})).data.message
+    },
+    async setQuestionAnswered(messageId: string, answered = true): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/question/answered`, { answered })).data.message
+    },
     /** Leave from a closing tab: survives page unload, never throws. */
     leaveHuddleOnUnload(id: string): void {
       try {
@@ -676,9 +1428,16 @@ export function teamChatApi() {
         }).catch(() => {})
       } catch {}
     },
-    async upload(id: string, file: UploadPart | File): Promise<MessageAttachment> {
+    async upload(
+      id: string,
+      file: UploadPart | File,
+      /** Voice-note metadata: the server can't decode audio, so it comes from the recorder. */
+      audio?: { durationMs?: number | null; peaks?: string | null },
+    ): Promise<MessageAttachment> {
       const form = new FormData()
       form.append('file', file as any)
+      if (audio?.durationMs) form.append('durationMs', String(Math.round(audio.durationMs)))
+      if (audio?.peaks) form.append('peaks', audio.peaks)
       const res = await fetch(`${API_URL}${conv(id)}/attachments`, {
         method: 'POST',
         body: form,
@@ -694,9 +1453,13 @@ export function teamChatApi() {
   }
 }
 
-/** Server file links are root-relative; resolve them against the API origin. */
+/**
+ * Server file links are root-relative; resolve them against the API origin.
+ * `<img>` loads bypass the fetch router, so a cloud workspace's links are
+ * routed here or they'd hit the desktop's local API.
+ */
 export function absoluteApiUrl(url: string): string {
-  return url.startsWith('/') && API_URL ? `${API_URL}${url}` : url
+  return url.startsWith('/') && API_URL ? routeUrl(`${API_URL}${url}`, API_URL) : url
 }
 
 export function nativeCookieHeader(): Record<string, string> {
@@ -705,7 +1468,60 @@ export function nativeCookieHeader(): Record<string, string> {
   return cookie ? { Cookie: cookie } : {}
 }
 
-export function realtimeUrls(workspaceId: string): { ws: string; sse: string } {
+export class HuddleNotesError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
+/**
+ * One WAV chunk of live speech, when the audio socket can't run. Raw fetch:
+ * the SDK client JSON-serializes bodies and this one is binary.
+ */
+async function postNotesChunk(
+  path: string,
+  chunk: LiveChunk,
+  opts: { forUserId?: string | null; client?: string | null },
+): Promise<void> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    body: new Uint8Array(chunk.wav),
+    credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    headers: {
+      ...nativeCookieHeader(),
+      'Content-Type': 'audio/wav',
+      'X-Live-Seq': String(chunk.seq),
+      ...(opts.forUserId ? { 'X-Notes-For': opts.forUserId } : {}),
+      ...(opts.client ? { 'X-Client-Platform': opts.client } : {}),
+    },
+  })
+  if (res.ok) return
+  const body = await res.json().catch(() => null)
+  throw new HuddleNotesError(body?.error?.message ?? `Live notes failed (${res.status})`, res.status)
+}
+
+/**
+ * Where this workspace's live team-chat traffic comes from.
+ *
+ * A paired desktop's own workspace is served by that desktop: its events come
+ * from the machine relay, and there is no socket URL — the tunnel carries HTTP,
+ * not a WebSocket upgrade — so the connection goes straight to the SSE stream,
+ * which the relay forwards chunk by chunk.
+ */
+export function realtimeUrls(
+  workspaceId: string,
+  machine?: { instanceId: string; localWorkspaceId: string } | null,
+): { ws: string; sse: string } {
+  if (machine?.instanceId && machine.localWorkspaceId) {
+    const localId = encodeURIComponent(machine.localWorkspaceId)
+    return {
+      ws: '',
+      sse: `${API_URL}/api/machines/${encodeURIComponent(machine.instanceId)}/w/${localId}/api/workspaces/${localId}/conversations/events`,
+    }
+  }
   const base = `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}`
   return {
     // WebSockets bypass the fetch router; the desktop API relays this one.

@@ -125,6 +125,9 @@ export function createChatMessageFeedbackRoutes(): Hono {
           (m: any) => m.userId === auth.userId,
         ) || message.session?.workspace?.members?.some((m: any) => m.userId === auth.userId)
       if (!hasAccess) return forbidden(c)
+      if (message.session?.createdByUserId && message.session.createdByUserId !== auth.userId) {
+        return c.json({ error: { code: 'not_found', message: 'Message not found' } }, 404)
+      }
     }
 
     const feedback = await prisma.messageFeedback.upsert({
@@ -182,6 +185,9 @@ export function createChatMessageFeedbackRoutes(): Hono {
           (m: any) => m.userId === auth.userId,
         ) || message.session?.workspace?.members?.some((m: any) => m.userId === auth.userId)
       if (!hasAccess) return forbidden(c)
+      if (message.session?.createdByUserId && message.session.createdByUserId !== auth.userId) {
+        return c.json({ error: { code: 'not_found', message: 'Message not found' } }, 404)
+      }
     }
 
     // deleteMany (not delete) so a missing row is a clean no-op
@@ -238,6 +244,9 @@ export function createChatSessionFeedbackRoutes(): Hono {
           (m: any) => m.userId === auth.userId,
         ) || (session as any).workspace?.members?.some((m: any) => m.userId === auth.userId)
       if (!hasAccess) return forbidden(c)
+      if ((session as any).createdByUserId && (session as any).createdByUserId !== auth.userId) {
+        return c.json({ error: { code: 'not_found', message: 'Chat session not found' } }, 404)
+      }
     }
 
     const rows = await prisma.messageFeedback.findMany({

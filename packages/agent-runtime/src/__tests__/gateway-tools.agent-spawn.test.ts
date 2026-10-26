@@ -8,6 +8,7 @@
 // overrides, resume with history, sync wait via inst.promise, error tails.
 
 import { describe, test, expect, mock } from 'bun:test'
+import { TaskRegistry } from '../task-registry'
 
 let subagentResult: any = {
   toolCalls: 3,
@@ -45,13 +46,14 @@ function makeAgentManager(opts: {
   spawnError?: string
   instanceId?: string
   instanceResult?: any
+  instanceStatus?: string
   noInstance?: boolean
   getConfig?: (type: string) => any
   history?: any
 } = {}): any {
   const instanceId = opts.instanceId ?? 'inst-1'
   const instance = opts.noInstance ? null : {
-    status: 'completed',
+    status: opts.instanceStatus ?? 'completed',
     model: 'claude-sonnet-4-5',
     promise: Promise.resolve(opts.instanceResult ?? {
       toolCalls: 2,
@@ -235,7 +237,8 @@ describe('agent_spawn normal mode (type specified)', () => {
   test('background mode returns running status immediately', async () => {
     const am = makeAgentManager({ instanceId: 'bg-inst-99' })
     const w = makeWriter()
-    const ctx = makeCtx({ agentManager: am, uiWriter: w })
+    const registry = new TaskRegistry()
+    const ctx = makeCtx({ agentManager: am, uiWriter: w, commandRegistry: registry })
     const r = await exec(ctx, 'agent_spawn', {
       type: 'general-purpose',
       prompt: 'long running task',
@@ -243,7 +246,9 @@ describe('agent_spawn normal mode (type specified)', () => {
     })
     expect(r.instance_id).toBe('bg-inst-99')
     expect(r.status).toBe('running')
-    expect(String(r.hint)).toContain('agent_status')
+    expect(r.task_id).toMatch(/^t_/)
+    expect(registry.get('bg-inst-99')?.id).toBe(r.task_id)
+    expect(String(r.hint)).toContain('wait({ task_ids: [task_id] })')
   })
 
   test('instance lost after spawn returns error', async () => {
@@ -318,6 +323,54 @@ describe('agent_spawn normal mode (type specified)', () => {
     expect(r.instance_id).toBe('resume-inst')
   })
 
+  test('resume without type resumes the instance using its own type (not fork mode)', async () => {
+    const history = [{ role: 'user', content: 'previous' }]
+    let spawnedType: string | null = null
+    let capturedHistory: any = null
+    const instances: Record<string, any> = {
+      'prior-explore': { id: 'prior-explore', type: 'explore', status: 'completed', model: 'm', promise: Promise.resolve({}) },
+      'resumed-inst': {
+        id: 'resumed-inst', type: 'explore', status: 'completed', model: 'm',
+        promise: Promise.resolve({
+          toolCalls: 1, iterations: 1, inputTokens: 5, outputTokens: 5,
+          cacheReadTokens: 0, cacheWriteTokens: 0, agentId: 'a', effectiveModelId: 'm',
+        }),
+      },
+    }
+    const am: any = {
+      spawn: (t: string, _p: string, _ctx: any, _tools: any, _cb: any, opts: any) => {
+        spawnedType = t
+        capturedHistory = opts?.history
+        return { ok: true, instanceId: 'resumed-inst' }
+      },
+      getInstance: (id: string) => instances[id] ?? null,
+      getInstanceMessages: (id: string) => (id === 'prior-explore' ? history : null),
+      getConfig: () => undefined,
+    }
+    subagentResult = { ...subagentResult, agentId: 'SHOULD-NOT-FORK' }
+    const ctx = makeCtx({
+      agentManager: am,
+      renderedSystemPrompt: 'sys',
+      sessionMessages: [{ role: 'user', content: 'x' }],
+    })
+    const r = await exec(ctx, 'agent_spawn', { prompt: 'continue', resume: 'prior-explore' })
+    expect(r.mode).toBeUndefined()
+    expect(spawnedType as unknown as string).toBe('explore')
+    expect(capturedHistory).toEqual(history)
+    expect(r.instance_id).toBe('resumed-inst')
+  })
+
+  test('resume without type for an unknown instance errors instead of forking', async () => {
+    const ctx = makeCtx({
+      agentManager: { ...makeAgentManager(), getInstance: () => null },
+      renderedSystemPrompt: 'sys',
+      sessionMessages: [{ role: 'user', content: 'x' }],
+    })
+    const r = await exec(ctx, 'agent_spawn', { prompt: 'continue', resume: 'nope' })
+    expect(r.mode).toBeUndefined()
+    expect(String(r.error)).toContain('Cannot resume "nope"')
+  })
+
   test('model_tier / max_turns / readonly overrides applied to config', async () => {
     let mutatedConfig: any = null
     const am: any = {
@@ -386,5 +439,80 @@ describe('agent_spawn normal mode (type specified)', () => {
     await exec(ctx, 'agent_spawn', { type: 'general-purpose', prompt: 'zero' })
     const usage = w.events.find(e => e.type === 'data-usage')
     expect(usage).toBeUndefined()
+  })
+})
+
+describe('agent_spawn: what the parent model sees', () => {
+  async function runRaw(ctx: any, params: Record<string, any>) {
+    const result = await getTool(ctx, 'agent_spawn').execute('test-tool-call-id', params)
+    return { details: result.details, modelText: (result.content[0] as any).text as string }
+  }
+
+  test('fork result sends the capped report instead of the streamed transcript', async () => {
+    subagentResult = {
+      toolCalls: 2, iterations: 2, inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0,
+      agentId: 'fork-report', effectiveModelId: 'claude-sonnet-4-5',
+      responseText: 'Scope: x\nResult: ' + 'r'.repeat(20_000),
+    }
+    const w = makeWriter()
+    const ctx = makeCtx({
+      agentManager: makeAgentManager(),
+      renderedSystemPrompt: 'sys',
+      sessionMessages: [{ role: 'user', content: 'hi' }],
+      uiWriter: w,
+    })
+    const { details, modelText } = await runRaw(ctx, { prompt: 'investigate' })
+    const seen = JSON.parse(modelText)
+    expect(seen.parts).toBeUndefined()
+    expect(seen.response.startsWith('Scope: x')).toBe(true)
+    expect(seen.response).toContain('chars of the subagent report truncated')
+    expect(seen.response.length).toBeLessThan(8_200)
+    expect(seen.mode).toBe('fork')
+    expect(Array.isArray(details.parts)).toBe(true)
+  })
+
+  test('sync spawn without a UI writer still gives the model the response text', async () => {
+    const am = makeAgentManager({
+      instanceResult: {
+        toolCalls: 1, iterations: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0,
+        agentId: 'a', effectiveModelId: 'claude-sonnet-4-5', responseText: 'Found 3 call sites in src/api.',
+      },
+    })
+    const { modelText } = await runRaw(makeCtx({ agentManager: am }), { type: 'explore', prompt: 'find callers' })
+    expect(JSON.parse(modelText).response).toBe('Found 3 call sites in src/api.')
+  })
+
+  test('a failed run sends the real error, not a placeholder', async () => {
+    const am = makeAgentManager({
+      instanceStatus: 'failed',
+      instanceResult: {
+        toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+        agentId: 'a', effectiveModelId: 'claude-sonnet-4-5',
+        responseText: '', responseEmpty: true,
+        error: { code: 'provider_error', message: 'provider 400: bad tool schema' },
+      },
+    })
+    const { details, modelText } = await runRaw(makeCtx({ agentManager: am }), { type: 'browser_qa', prompt: 'check it' })
+
+    const seen = JSON.parse(modelText)
+    expect(details.status).toBe('failed')
+    expect(details.error).toMatchObject({ message: 'provider 400: bad tool schema' })
+    expect(seen.error).toMatchObject({ message: 'provider 400: bad tool schema' })
+    expect(seen.reason).toBe('provider_error')
+    expect(seen.response).toContain('provider 400: bad tool schema')
+    expect(seen.response).not.toContain('returned no output')
+  })
+
+  test('a completed run with genuinely empty text still says so', async () => {
+    const am = makeAgentManager({
+      instanceResult: {
+        toolCalls: 1, iterations: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0,
+        agentId: 'a', effectiveModelId: 'claude-sonnet-4-5', responseText: '',
+      },
+    })
+    const { details, modelText } = await runRaw(makeCtx({ agentManager: am }), { type: 'explore', prompt: 'p' })
+    expect(details.status).toBe('completed')
+    expect(details.error).toBeUndefined()
+    expect(JSON.parse(modelText).response).toContain('returned no output')
   })
 })

@@ -202,6 +202,44 @@ Relevant source:
   stable route and `update.electronjs.org` for the same inputs. Run after any
   Terraform apply that touches `releases-worker.js.tftpl`.
 
+## Memory Limits (runtime vs. agent commands)
+
+Two different budgets, two different jobs — do not conflate them.
+
+| Budget | What it bounds | Where it is set | Scale |
+|---|---|---|---|
+| `hostRuntime.memoryMB` in `config.json` | The runtime's **own** processes (bun, vite/esbuild, tsserver, pyright). The RSS watchdog / cgroup / Job Object restarts the runtime on a sustained breach. | `config.json` only | 40% of RAM, floored at 3 GB, **capped at 8 GB** |
+| Agent-command budget | The commands an agent runs with `exec` — builds, test suites, local models. The guard stops the largest command with a note in its output. | **Settings → Computer and files → Memory for agent commands** | `max(50% of RAM, RAM − 8 GB)` when set to Auto (128 GB → 120 GB) |
+
+Before SHO-203 the command budget was borrowed from `memoryMB`, so every command
+was killed at 8 GB even on a 128 GB machine, and the only fix was editing
+`config.json` and restarting the app. If you raised `hostRuntime.memoryMB` by
+hand to fit a model, set it back to the default (or delete the key) — it no
+longer affects commands, and a raised value only widens the runtime's own leak
+ceiling.
+
+**How it applies without a restart.** `config.json` still holds the setting, but
+the value the runtime acts on lives in `<userData>/data/host-limits.json`:
+
+```json
+{ "execMemoryMB": 122880, "totalMemMB": 131072, "source": "auto" }
+```
+
+The desktop writes it atomically on boot and on every settings change and passes
+its path to the API as `SHOGO_HOST_LIMITS_FILE`. The exec guard re-reads it
+(cached by mtime, one `stat` per 15 s sample), so a change takes effect on the
+**next sample of a command already running**. `WorkerRuntimeManager` watches the
+same file and re-applies the kernel cap to live runtimes — `systemctl --user
+set-property --runtime` for a systemd scope, a `memory.max` write for a direct
+cgroup, next spawn on Windows (a Job Object limit cannot be changed in place).
+On Linux the cgroup `MemoryMax` is the runtime ceiling **plus** the command
+budget, so the guard always trips before the kernel, which kills with no
+message.
+
+The alternative sources are for headless use: `SHOGO_EXEC_MEMORY_MB` (explicit
+budget, wins over the file; the OOM note names it) and `RUNTIME_MEMORY_MB` (the
+runtime ceiling). Cloud pods set neither and keep the k8s pod limit.
+
 ## What's Different in Local Mode
 
 | Feature             | Cloud                      | Local                           |

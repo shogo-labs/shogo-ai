@@ -208,6 +208,7 @@ describe('project_call turns', () => {
     const calls: any[][] = []
     const self = {
       activePipelineRuns: new Map(),
+      unattendedSessions: new Set(),
       agentTurn: async (...args: any[]) => {
         calls.push(args)
         return 'done'
@@ -222,9 +223,30 @@ describe('project_call turns', () => {
     expect(result).toEqual({ reply: 'done', sessionId: 'run:r1', runId: 'r1' })
     expect(calls[0]![0]).toBe('[pipeline runId=r1] [from project pA]\nfile it')
     expect(calls[0]![1]).toBe('run:r1')
-    expect(calls[0]![9]).toBe('ticket-for-B')
+    // Positional: prompt, sessionId, isHeartbeat, streamTarget, uiWriter,
+    // activeSkill, images, dualPlan, requesterTicket.
+    expect(calls[0]![7]).toBe(false)
+    expect(calls[0]![8]).toBe('ticket-for-B')
 
     await (AgentGateway.prototype as any).processPipelineCall.call(self, { message: 'no person' })
-    expect(calls[1]![9]).toBeUndefined()
+    expect(calls[1]![8]).toBeUndefined()
+  })
+
+  test('a streamed call reaches the turn, which stays unattended for permission asks', async () => {
+    const { AgentGateway } = await import('../gateway')
+    const writer = { write: () => {} }
+    let unattendedDuringTurn = false
+    const self = {
+      activePipelineRuns: new Map(),
+      unattendedSessions: new Set<string>(),
+      agentTurn: async (_prompt: string, sessionId: string, ...rest: any[]) => {
+        expect(rest[2]).toBe(writer)
+        unattendedDuringTurn = self.unattendedSessions.has(sessionId)
+        return 'done'
+      },
+    }
+    await (AgentGateway.prototype as any).processPipelineCall.call(self, { message: 'go', sessionId: 'chat-1', writer })
+    expect(unattendedDuringTurn).toBe(true)
+    expect(self.unattendedSessions.size).toBe(0)
   })
 })

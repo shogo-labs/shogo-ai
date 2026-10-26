@@ -9,6 +9,7 @@
 
 import { useMemo } from 'react'
 import { createAutoResumingFetch } from './auto-resuming-fetch'
+import { trimLegacyInlineAttachments } from './trim-history-attachments'
 
 export interface ChatTransportOptions {
   /** API base URL (e.g., "http://localhost:8002" or "" for same-origin) */
@@ -83,6 +84,21 @@ export interface ChatTransportConfig {
   credentials?: RequestCredentials
   fetch?: typeof globalThis.fetch
   headers?: Record<string, string> | (() => Record<string, string>)
+  prepareSendMessagesRequest?: (options: {
+    id: string
+    messages: any[]
+    body: Record<string, any> | undefined
+    headers: HeadersInit | undefined
+    credentials: RequestCredentials | undefined
+    api: string
+    trigger: 'submit-message' | 'regenerate-message'
+    messageId: string | undefined
+  }) => {
+    body: object
+    headers?: HeadersInit
+    credentials?: RequestCredentials
+    api?: string
+  }
   prepareReconnectToStreamRequest?: (options: { id: string; api: string }) => { api?: string }
 }
 
@@ -124,6 +140,34 @@ export function buildChatTurnUrl(
 ): string {
   const base = buildChatApiUrl(apiBaseUrl, projectId, localAgentUrl, workspaceId).replace(/\/+$/, '')
   return `${base}/${encodeURIComponent(chatSessionId)}/turn`
+}
+
+/**
+ * Build the URL that lists a chat's still-running tasks.
+ *
+ * The list is how a window learns that background work is in flight and, when
+ * it empties, that a `[Task update]` wake is about to be queued for this
+ * session — so it has to exist for a workspace chat too, which resolves its
+ * runtime differently from a project chat.
+ *
+ * Returns null when the caller has no chat scope at all.
+ */
+export function buildChatTasksUrl(
+  apiBaseUrl: string,
+  projectId: string | undefined,
+  localAgentUrl: string | null | undefined,
+  chatSessionId: string,
+  workspaceId?: string | undefined,
+): string | null {
+  const session = encodeURIComponent(chatSessionId)
+  if (localAgentUrl) return `${localAgentUrl.replace(/\/+$/, '')}/agent/chat/${session}/tasks`
+  if (workspaceId) {
+    return `${apiBaseUrl.replace(/\/+$/, '')}/api/workspaces/${workspaceId}/chat/${session}/tasks`
+  }
+  if (projectId) {
+    return `${apiBaseUrl.replace(/\/+$/, '')}/api/projects/${projectId}/agent-proxy/agent/chat/${session}/tasks`
+  }
+  return null
 }
 
 /**
@@ -174,6 +218,20 @@ export function useChatTransportConfig({
       credentials,
       fetch,
       headers: composedHeaders,
+      // The whole transcript is POSTed on every send, so without this a file
+      // attached earlier is re-uploaded with every later turn (SHO-213).
+      prepareSendMessagesRequest: ({ id, messages, body, headers: requestHeaders, credentials: requestCredentials, api, trigger, messageId }) => ({
+        body: {
+          ...body,
+          id,
+          messages: trimLegacyInlineAttachments(messages),
+          trigger,
+          messageId,
+        },
+        headers: requestHeaders,
+        credentials: requestCredentials,
+        api,
+      }),
       ...(resumeSnapshot && {
         // Same URL the SDK builds by default, plus the snapshot flag. The
         // auto-resuming fetch strips the query for its own `?fromSeq=N`

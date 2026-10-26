@@ -315,7 +315,7 @@ test.describe("Remote Control — E2E", () => {
   // =========================================================================
 
   test("2a — sidebar shows 'This device' as default in instance picker area", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     // The InstancePicker should display "This device" when no remote instance is active.
@@ -353,7 +353,7 @@ test.describe("Remote Control — E2E", () => {
   })
 
   test("2b — instance picker trigger is visible in sidebar", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     // Look for the instance picker trigger (shows "This device" or instance name)
@@ -377,7 +377,7 @@ test.describe("Remote Control — E2E", () => {
   })
 
   test("2c — empty state shows setup instructions when no instances exist", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     // Try to open the instance picker
@@ -443,7 +443,7 @@ test.describe("Remote Control — E2E", () => {
   })
 
   test("3b — instance picker shows registered instance in dropdown", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 30_000 })
 
     // Try to open the instance picker

@@ -250,10 +250,11 @@ describe('exec — cwdReset + soft-timeout running status', () => {
     const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
     const result = await run(ctx, 'exec', { command: 'sleep 5', timeout: 50 })
     expect(result.status).toBe('running')
-    expect(result.run_id).toMatch(/^cmd_/)
+    expect(result.run_id).toMatch(/^t_/)
     expect(result.pid).toBeGreaterThan(0)
     expect(typeof result.hint).toBe('string')
-    expect(result.hint).toContain(result.run_id)
+    expect(result.hint).toContain('wait')
+    expect(result.task_id).toBe(result.run_id)
     // Cleanup
     try { ctx.commandRegistry!.get(result.run_id)!.handle.kill('SIGKILL') } catch { /* ignore */ }
   })

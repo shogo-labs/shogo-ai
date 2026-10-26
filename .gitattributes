@@ -1,2 +1,5 @@
 # Normalize all text files to LF in the repo, let git handle checkout conversion
 * text=auto eol=lf
+# Vendored vendor docs are a verbatim snapshot, not hand-written source: collapse
+# them in review diffs instead of rendering thousands of changed lines.
+docs/vendors/** linguist-generated=true

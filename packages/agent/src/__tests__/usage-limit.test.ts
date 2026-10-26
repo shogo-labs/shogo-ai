@@ -27,13 +27,21 @@ describe('detectUsageLimit', () => {
 describe('buildUsageLimitNotice', () => {
   const now = new Date('2026-09-29T00:00:00.000Z')
 
-  it('includes progress and a relative reset time', () => {
+  it('includes progress, a relative reset time and the billing action', () => {
     const text = buildUsageLimitNotice(3, { resetsAt: '2026-09-29T02:00:00.000Z' }, now)
     expect(text).toContain("You've reached your usage limit")
     expect(text).toContain('I completed 3 steps')
     expect(text).toContain('in about 2 hours')
-    expect(text).toContain('Send "continue"')
+    expect(text).toContain('Settings > Billing')
     expect(text).not.toContain('provider error')
+  })
+
+  it('never tells the user to type "continue"', () => {
+    for (const info of [{ resetsAt: '2026-09-29T02:00:00.000Z' }, {}, { resetsAt: 'garbage' }]) {
+      const text = buildUsageLimitNotice(2, info, now)
+      expect(text.toLowerCase()).not.toContain('continue')
+      expect(text.toLowerCase()).not.toContain('say "continue"')
+    }
   })
 
   it('uses minutes for short waits and singular step', () => {
@@ -42,11 +50,11 @@ describe('buildUsageLimitNotice', () => {
     expect(text).toContain('in 13 minutes')
   })
 
-  it('falls back to generic guidance without a usable reset time', () => {
+  it('falls back to the billing action without a usable reset time', () => {
     for (const info of [{}, { resetsAt: 'garbage' }, { resetsAt: '2026-09-28T00:00:00.000Z' }]) {
       const text = buildUsageLimitNotice(2, info, now)
-      expect(text).toContain('once your usage resets or you upgrade')
       expect(text).toContain('Settings > Billing')
+      expect(text).toContain('Your work is saved and picks up exactly where it stopped')
     }
   })
 })

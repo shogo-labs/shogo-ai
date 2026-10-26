@@ -56,6 +56,10 @@ they're managed separately as YAML/JSON files under this directory:
   (error-level) publish failures within 5 minutes.
 - `alerts/prod-node-count-low.yaml` — pages when prod-us has fewer ready
   nodes than the terraform-declared `system_pool_min`.
+- `alerts/kourier-gateway-restarts.yaml` — pages when the ingress gateway
+  (`3scale-kourier-gateway`) restarts 3+ times in 10 minutes on prod-us or
+  prod-eu, i.e. the 2026-10-22 scanner-flood crash-loop that 502'd a region
+  (SHO-173). Staging is excluded.
 - `alerts/warm-pool-starvation.yaml` — pages when warm-pool depth
   stays below 3 for 10+ minutes (every new project hitting cold start).
 - `alerts/metal-fc-process-leak.yaml` — pages when a metal host carries
@@ -69,6 +73,23 @@ they're managed separately as YAML/JSON files under this directory:
   100% the host cannot start a microVM and every /assign there fails.
 - `alerts/metal-wake-latency-high.yaml` — warns when metal wake p95
   exceeds 15s for 10+ minutes (sleep/wake degraded to cold-start feel).
+- `alerts/metal-resumed-wake-slow.yaml` — warns when snapshot resumes
+  (`metal.wake_total_ms{mode="resumed"}`, the API's whole /assign time) pass
+  5s at p95 for 15+ minutes.
+- `alerts/metal-time-to-ready-slow.yaml` — warns when the user-visible open
+  time (`metal.time_to_ready_ms`, first /assign attempt to ready URL,
+  including timeouts and retries) passes 60s at p95 for 15+ minutes.
+- `alerts/metal-assign-timeouts.yaml` — warns when a host's /assign runs past
+  the API's 30s budget 10+ times in 15 minutes (`metal.host_errors{reason="timeout"}`;
+  each one is a retry the user waits through).
+- `alerts/metal-repo-hydrate-failing.yaml` — warns when 5+ opens on a host in
+  30 minutes fail to restore git history (`metal.repo_hydrate{mode="failed"}`;
+  they run on the source's `.git` with git writes blocked).
+- `alerts/metal-cold-boot-ratio-high.yaml` — warns when cold boots exceed 40%
+  of wakes that needed work for 30+ minutes (snapshots being discarded or
+  never taken; the 2026-10 20s-wake regression).
+- `alerts/chat-ttft-high.yaml` — warns when chat time-to-first-token
+  (`chat.ttft_ms`) passes 15s at p95 for 15+ minutes.
 - `alerts/metal-host-disk-pressure.yaml` — warns when a metal host's
   NVMe cache stays above 85% for 10+ minutes (GC not keeping up; wakes
   degrade to slower S3 pulls).
@@ -91,6 +112,12 @@ they're managed separately as YAML/JSON files under this directory:
   used%, wake-latency quantiles, assignment source mix, hit-rate, and
   host-error/no-host rates. Feeds off the `metal.*` OTel series from the
   API plus the per-host gauges folded from each agent heartbeat.
+- `dashboards/chat-latency.json` — chat time-to-first-token by route and wake
+  mode with its resolve/headers/gateway/model breakdown, wake end-to-end and
+  per-phase timings (API and host), cold boots by stale reason, and the
+  two-tier idle policy (region utilization, tier per host, suspends by tier,
+  periodic source backups). Schema v6 builder queries, checked against
+  `/api/v5/query_range`; import with `POST /api/v2/dashboards`.
 
 ### Applying alerts
 

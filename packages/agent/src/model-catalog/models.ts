@@ -10,6 +10,10 @@
  * continue to work without code changes.
  */
 
+import { HIGGSFIELD_IMAGE_MODELS, HIGGSFIELD_VIDEO_MODELS } from './media-catalog.generated'
+
+export { HIGGSFIELD_LEGACY_MODEL_ALIASES } from './media-overlay'
+
 /** Special model ID that enables the intelligent model router. */
 export const AUTO_MODEL_ID = 'auto' as const
 
@@ -21,7 +25,8 @@ export type Provider = 'anthropic' | 'openai' | 'google' | 'local' | 'openrouter
  * `inferProviderFromModel` route requests without colliding with native
  * Anthropic/OpenAI model names. */
 export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
-export type ImageProvider = 'openai' | 'google' | 'local'
+export type ImageProvider = 'openai' | 'google' | 'local' | 'higgsfield'
+export type VideoProvider = 'higgsfield'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
@@ -29,7 +34,7 @@ export type ModelKind = 'chat' | 'live'
 export type BillingModel =
   | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus' | 'claude-fable-5-1'
   | 'gpt-6-astra' | 'gpt-6-sol' | 'gpt-6-luna' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
-  | 'claude-opus-5-5'
+  | 'claude-opus-5-5' | 'claude-haiku-5-5'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -106,6 +111,51 @@ export interface ModelEntry {
   contextWindow?: number
   /** Reasoning effort applied when this model runs (drives `thinkingLevel`). */
   reasoningEffort?: ReasoningEffort
+  /**
+   * Anthropic thinking API shape. `adaptive` models reject the legacy
+   * budget-based `thinking.type: "enabled"` block with a 400. Required on
+   * every Anthropic entry (enforced by thinking.test.ts) so a new model
+   * can't ship without someone deciding it.
+   */
+  thinkingApi?: 'adaptive' | 'budget'
+}
+
+export interface ImageModelCapabilities {
+  textToImage: boolean
+  /** Accepts reference images (edits, character/style references). */
+  imageToImage: boolean
+  /** Most reference images one request accepts. 0 when `imageToImage` is false. */
+  maxReferenceImages: number
+}
+
+/**
+ * One request field a media endpoint documents, with the constraints the
+ * vendor's schema states. Generated from `docs/vendors/higgsfield/catalog.json`,
+ * never hand-written, so `generate_image` / `generate_video` can advertise and
+ * validate every knob a model has instead of a hardcoded subset.
+ */
+export interface ModelOptionField {
+  name: string
+  /** `string`, `integer`, `number`, `boolean`, `array`, `object` or `any`. */
+  type: string
+  /** Required by at least one endpoint that declares it. */
+  required?: boolean
+  /** Allowed values, when the vendor restricts them. */
+  enum?: readonly string[]
+  minimum?: number
+  maximum?: number
+  multipleOf?: number
+  default?: string | number | boolean
+  title?: string
+  /** Array item type, for `type: "array"`. */
+  items?: string
+  /** Item schema, for arrays of objects (`multi_prompt[]`). */
+  itemFields?: Readonly<Record<string, ModelOptionField>>
+  minItems?: number
+  maxItems?: number
+  maxLength?: number
+  /** Endpoints that declare this field — a grouped model has several. */
+  endpoints?: readonly string[]
 }
 
 export interface ImageModelEntry {
@@ -113,7 +163,97 @@ export interface ImageModelEntry {
   provider: ImageProvider
   apiModel: string
   displayName: string
+  /** Endpoint for requests with reference images, when it differs from `apiModel`. */
+  editApiModel?: string
+  capabilities: ImageModelCapabilities
+  /** One line telling an agent when to pick this model. */
+  bestFor?: string
+  /** Retired upstream: kept so old ids still resolve and bill, hidden from model lists. */
+  retired?: boolean
+  /**
+   * Still routable but superseded: dropped from the tool descriptions agents
+   * read, still listed (flagged) by `list_media_models`. `replacement` names
+   * the model to use instead.
+   */
+  deprecated?: boolean
+  replacement?: string
+  /**
+   * Upstream list price for one generation, in USD, for providers that price
+   * per request (Higgsfield). The exact amount billed is the `/estimate`
+   * captured at submit time; this is the display fallback.
+   */
+  usdPerRequest?: number
+  /** Every endpoint this model can submit to (`apiModel`, plus `editApiModel`). */
+  endpoints?: readonly string[]
+  /** The documented field that carries reference images, when the model takes them. */
+  referenceField?: { name: string; multiple: boolean }
+  /**
+   * The model's quality vocabulary when it is not the generic tier order —
+   * e.g. Ideogram's `rendering_speed` DEFAULT/QUALITY.
+   */
+  quality?: { field: string; standard: string; hd: string }
+  /** Documented request fields, keyed by endpoint id. */
+  optionsByEndpoint?: Readonly<Record<string, readonly ModelOptionField[]>>
 }
+
+export interface VideoModelEntry {
+  id: string
+  provider: VideoProvider
+  displayName: string
+  /** Text-to-video endpoint. Absent on image-to-video-only families. */
+  textToVideoApiModel?: string
+  /** Image-to-video endpoint (animates `start_image`). */
+  imageToVideoApiModel?: string
+  /** Durations in seconds the model accepts. Empty when the clip follows a source video. */
+  durations: readonly number[]
+  defaultDuration: number
+  /** Aspect ratios the model takes as a parameter. Empty: output framing is fixed or follows the start image. */
+  aspectRatios: readonly string[]
+  /** Upstream list price per generated second, in USD (per-second priced providers). */
+  usdPerSecond?: number
+  /** Price per second when native audio is on. Absent when the model has no audio. */
+  usdPerSecondWithAudio?: number
+  /** Upstream list price for one clip, in USD (per-request priced providers: Higgsfield). */
+  usdPerRequest?: number
+  /**
+   * Price per source second by resolution tier (Genjutsu). These workflows
+   * quote no `usd` from `/estimate` — the vendor answers with a prose
+   * description of the rate card — so the numbers here are the vendor's
+   * published rates and the proxy bills `rate(resolution) × source seconds`.
+   */
+  usdPerSecondByResolution?: Record<string, number>
+  /** Most reference images (character/object elements) one request accepts. */
+  maxReferenceImages: number
+  bestFor?: string
+  /** Still routable but superseded — see `ImageModelEntry.deprecated`. */
+  deprecated?: boolean
+  replacement?: string
+  /** Resolution tiers the model accepts (`480p` / `720p` / `1080p`). Empty when fixed. */
+  resolutions?: readonly string[]
+  defaultResolution?: string
+  /** Takes a source video and edits it (Genjutsu workflows) instead of generating from scratch. */
+  sourceVideo?: boolean
+  /**
+   * Genjutsu workflow this entry runs. `restyle` additionally requires a
+   * `preset_id` from the restyle preset catalog.
+   */
+  genjutsu?: 'motion_transfer' | 'object_swap' | 'restyle'
+  /** Minimum source-video duration in seconds (Genjutsu). */
+  minSourceSeconds?: number
+  /** Maximum source-video duration in seconds before the provider trims it (Genjutsu). */
+  maxSourceSeconds?: number
+  /** Minimum source pixels per frame (width × height), when the workflow requires it. */
+  minSourcePixels?: number
+  /** Maximum source-video size in bytes (Genjutsu restyle caps this at 200 MiB). */
+  maxSourceBytes?: number
+  /** Every endpoint this model can submit to (`textToVideoApiModel`, plus `imageToVideoApiModel`). */
+  endpoints?: readonly string[]
+  /** Documented request fields, keyed by endpoint id. */
+  optionsByEndpoint?: Readonly<Record<string, readonly ModelOptionField[]>>
+  /** Native audio: the endpoint declares `sound` or `generate_audio`. */
+  audio?: boolean
+}
+
 
 // ---------------------------------------------------------------------------
 // Chat Model Catalog — single source of truth
@@ -125,6 +265,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-5-5',
     provider: 'anthropic',
     apiModel: 'claude-opus-5-5',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Opus 5.5',
     shortDisplayName: 'Opus 5.5',
     tier: 'premium',
@@ -134,6 +275,11 @@ export const MODEL_CATALOG = {
     // cheaper on cache reads (see MODEL_DOLLAR_COSTS['claude-opus-5-5']),
     // so it can't reuse the shared 'opus' bucket.
     billingModel: 'claude-opus-5-5',
+    // Same 1M-token window as the rest of the current generation. Without this
+    // the threshold fell back to the 200k *window* (≈168k after reserve) while
+    // the provider happily accepted 400k — one opus-5-5 turn grew that large
+    // with nothing summarized (SHO-96).
+    contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     // Released 2026-09-22. Not yet run through the subagent-smoke eval —
     // unrated until verified (see `ModelCapabilities` doc comment above).
@@ -142,6 +288,7 @@ export const MODEL_CATALOG = {
     id: 'claude-sonnet-5',
     provider: 'anthropic',
     apiModel: 'claude-sonnet-5',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Sonnet 5',
     shortDisplayName: 'Sonnet 5',
     tier: 'premium',
@@ -156,6 +303,7 @@ export const MODEL_CATALOG = {
     id: 'claude-fable-5-1',
     provider: 'anthropic',
     apiModel: 'claude-fable-5-1',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Fable 5.1',
     shortDisplayName: 'Fable 5.1',
     tier: 'premium',
@@ -166,15 +314,38 @@ export const MODEL_CATALOG = {
     // Not yet run through the subagent-smoke eval — unrated until verified
     // (see `ModelCapabilities` doc comment above).
   },
+  'claude-haiku-5-5': {
+    id: 'claude-haiku-5-5',
+    provider: 'anthropic',
+    apiModel: 'claude-haiku-5-5',
+    thinkingApi: 'adaptive',
+    displayName: 'Claude Haiku 5.5',
+    shortDisplayName: 'Haiku 5.5',
+    tier: 'economy',
+    family: 'haiku',
+    generation: 'current',
+    // Dedicated bucket — 10x cheaper than the shared `haiku` bucket (Haiku 4.5
+    // rates) and tiered above 100k input tokens, so it cannot reuse it.
+    billingModel: 'claude-haiku-5-5',
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    // Released 2026-10-07. Not yet run through the subagent-smoke eval —
+    // unrated until verified (see `ModelCapabilities` doc comment above).
+  },
   'claude-haiku-4-5-20251001': {
     id: 'claude-haiku-4-5-20251001',
     provider: 'anthropic',
     apiModel: 'claude-haiku-4-5-20251001',
+    thinkingApi: 'budget',
     displayName: 'Claude Haiku 4.5',
     shortDisplayName: 'Haiku 4.5',
     tier: 'economy',
     family: 'haiku',
-    generation: 'current',
+    // Superseded by Haiku 5.5 as the current-gen economy model on 2026-10-13 —
+    // kept addressable by its own id but no longer claims the shared
+    // `haiku`/`claude-haiku` aliases (see aliases.ts), same handoff pattern
+    // used for every prior Haiku release.
+    generation: 'legacy',
     billingModel: 'haiku',
     maxOutputTokens: 64_000,
     capabilities: { subagentOrchestration: 'reliable' },
@@ -185,6 +356,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-5',
     provider: 'anthropic',
     apiModel: 'claude-opus-5',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Opus 5',
     shortDisplayName: 'Opus 5',
     tier: 'premium',
@@ -203,6 +375,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-7',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-7',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Opus 4.7',
     shortDisplayName: 'Opus 4.7',
     tier: 'premium',
@@ -216,6 +389,7 @@ export const MODEL_CATALOG = {
     id: 'claude-sonnet-4-6',
     provider: 'anthropic',
     apiModel: 'claude-sonnet-4-6',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Sonnet 4.6',
     shortDisplayName: 'Sonnet 4.6',
     tier: 'standard',
@@ -229,6 +403,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-6',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-6',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Opus 4.6',
     shortDisplayName: 'Opus 4.6',
     tier: 'premium',
@@ -241,6 +416,7 @@ export const MODEL_CATALOG = {
     id: 'claude-sonnet-4-5-20250929',
     provider: 'anthropic',
     apiModel: 'claude-sonnet-4-5-20250929',
+    thinkingApi: 'budget',
     displayName: 'Claude Sonnet 4.5',
     shortDisplayName: 'Sonnet 4.5',
     tier: 'standard',
@@ -253,6 +429,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-5-20251101',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-5-20251101',
+    thinkingApi: 'budget',
     displayName: 'Claude Opus 4.5',
     shortDisplayName: 'Opus 4.5',
     tier: 'premium',
@@ -265,6 +442,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-1-20250805',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-1-20250805',
+    thinkingApi: 'budget',
     displayName: 'Claude Opus 4.1',
     shortDisplayName: 'Opus 4.1',
     tier: 'premium',
@@ -277,6 +455,7 @@ export const MODEL_CATALOG = {
     id: 'claude-sonnet-4-20250514',
     provider: 'anthropic',
     apiModel: 'claude-sonnet-4-20250514',
+    thinkingApi: 'budget',
     displayName: 'Claude Sonnet 4',
     shortDisplayName: 'Sonnet 4',
     tier: 'standard',
@@ -289,6 +468,7 @@ export const MODEL_CATALOG = {
     id: 'claude-3-7-sonnet-20250219',
     provider: 'anthropic',
     apiModel: 'claude-3-7-sonnet-20250219',
+    thinkingApi: 'budget',
     displayName: 'Claude 3.7 Sonnet',
     shortDisplayName: 'Sonnet 3.7',
     tier: 'standard',
@@ -301,6 +481,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-20250514',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-20250514',
+    thinkingApi: 'budget',
     displayName: 'Claude Opus 4',
     shortDisplayName: 'Opus 4',
     tier: 'premium',
@@ -313,6 +494,7 @@ export const MODEL_CATALOG = {
     id: 'claude-3-haiku-20240307',
     provider: 'anthropic',
     apiModel: 'claude-3-haiku-20240307',
+    thinkingApi: 'budget',
     displayName: 'Claude 3 Haiku',
     shortDisplayName: 'Haiku 3',
     tier: 'economy',
@@ -562,15 +744,38 @@ export type ModelId = keyof typeof MODEL_CATALOG
 // Image Model Catalog
 // ---------------------------------------------------------------------------
 
+const TEXT_ONLY = { textToImage: true, imageToImage: false, maxReferenceImages: 0 } as const
+const GPT_IMAGE = { textToImage: true, imageToImage: true, maxReferenceImages: 16 } as const
+
+
+/**
+ * Higgsfield is the only image/video provider: its models are generated from the
+ * vendor snapshot (`media-catalog.generated.ts`, built by
+ * `scripts/generate-media-catalog.ts`), so a model the vendor documents cannot
+ * be missing and one it dropped cannot linger. Ids from the retired fal catalog
+ * still resolve through `HIGGSFIELD_LEGACY_MODEL_ALIASES`.
+ */
 export const IMAGE_MODEL_CATALOG = {
-  'dall-e-3':       { id: 'dall-e-3',       provider: 'openai',  apiModel: 'dall-e-3',                          displayName: 'DALL-E 3' },
-  'dall-e-2':       { id: 'dall-e-2',       provider: 'openai',  apiModel: 'dall-e-2',                          displayName: 'DALL-E 2' },
-  'gpt-image-1':    { id: 'gpt-image-1',    provider: 'openai',  apiModel: 'gpt-image-1',                      displayName: 'GPT Image 1' },
-  'gpt-image-1.5':  { id: 'gpt-image-1.5',  provider: 'openai',  apiModel: 'gpt-image-1.5',                    displayName: 'GPT Image 1.5' },
-  'gpt-image-2.5-flare': { id: 'gpt-image-2.5-flare', provider: 'openai', apiModel: 'gpt-image-2.5-flare',      displayName: 'GPT Image 2.5 Flare' },
-  'imagen-4':       { id: 'imagen-4',       provider: 'google',  apiModel: 'imagen-4.0-generate-001',          displayName: 'Imagen 4' },
-  'imagen-4-ultra': { id: 'imagen-4-ultra', provider: 'google',  apiModel: 'imagen-4.0-ultra-generate-001',    displayName: 'Imagen 4 Ultra' },
-  'imagen-4-fast':  { id: 'imagen-4-fast',  provider: 'google',  apiModel: 'imagen-4.0-fast-generate-001',     displayName: 'Imagen 4 Fast' },
+  ...HIGGSFIELD_IMAGE_MODELS,
+  'dall-e-3':       { id: 'dall-e-3',       provider: 'openai',  apiModel: 'dall-e-3',                          displayName: 'DALL-E 3', capabilities: TEXT_ONLY, retired: true },
+  'dall-e-2':       { id: 'dall-e-2',       provider: 'openai',  apiModel: 'dall-e-2',                          displayName: 'DALL-E 2', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 }, retired: true },
+  'gpt-image-1':    { id: 'gpt-image-1',    provider: 'openai',  apiModel: 'gpt-image-1',                      displayName: 'GPT Image 1', capabilities: GPT_IMAGE },
+  'gpt-image-1.5':  { id: 'gpt-image-1.5',  provider: 'openai',  apiModel: 'gpt-image-1.5',                    displayName: 'GPT Image 1.5', capabilities: GPT_IMAGE },
+  'gpt-image-2':    { id: 'gpt-image-2',    provider: 'openai',  apiModel: 'gpt-image-2',                      displayName: 'GPT Image 2', capabilities: GPT_IMAGE, bestFor: 'Detailed prompt following and clean game or UI art' },
+  'gpt-image-2.5-flare': { id: 'gpt-image-2.5-flare', provider: 'openai', apiModel: 'gpt-image-2.5-flare',      displayName: 'GPT Image 2.5 Flare', capabilities: GPT_IMAGE, bestFor: 'General-purpose default; strong prompt following and edits' },
+  'imagen-4':       { id: 'imagen-4',       provider: 'google',  apiModel: 'imagen-4.0-generate-001',          displayName: 'Imagen 4', capabilities: TEXT_ONLY },
+  'imagen-4-ultra': { id: 'imagen-4-ultra', provider: 'google',  apiModel: 'imagen-4.0-ultra-generate-001',    displayName: 'Imagen 4 Ultra', capabilities: TEXT_ONLY },
+  'imagen-4-fast':  { id: 'imagen-4-fast',  provider: 'google',  apiModel: 'imagen-4.0-fast-generate-001',     displayName: 'Imagen 4 Fast', capabilities: TEXT_ONLY },
 } as const satisfies Record<string, ImageModelEntry>
 
 export type ImageModelId = keyof typeof IMAGE_MODEL_CATALOG
+
+// ---------------------------------------------------------------------------
+// Video Model Catalog
+// ---------------------------------------------------------------------------
+
+export const VIDEO_MODEL_CATALOG = {
+  ...HIGGSFIELD_VIDEO_MODELS,
+} as const satisfies Record<string, VideoModelEntry>
+
+export type VideoModelId = keyof typeof VIDEO_MODEL_CATALOG

@@ -24,45 +24,46 @@ datasource db {
 // =============================================================================
 
 model User {
-  id                  String   @id @default(cuid())
-  name                String?
-  email               String   @unique
-  emailVerified       Boolean  @default(false)
-  image               String?
-  role                String   @default("user")
+  id                          String   @id @default(cuid())
+  name                        String?
+  email                       String   @unique
+  emailVerified               Boolean  @default(false)
+  image                       String?
+  role                        String   @default("user")
   // See prisma/schema.prisma for the canonical comment. SQLite has no native
   // String[] so adminScopes is stored as JSON-encoded TEXT (`["analytics:read"]`).
-  adminScopes         String   @default("[]")
-  onboardingCompleted Boolean  @default(false)
+  adminScopes                 String   @default("[]")
+  onboardingCompleted         Boolean  @default(false)
   lastSeenAnnouncementVersion String?
-  onboardingIntent    String?
-  buddyLook           String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  onboardingIntent            String?
+  buddyLook                   String?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
 
-  sessions             Session[]
-  accounts             Account[]
-  members              Member[]
-  notifications        Notification[]
-  agentTasks           AgentTask[]
-  agentSchedules       AgentSchedule[]
-  starredProjects      StarredProject[]
-  apiKeys              ApiKey[]
-  creatorProfile       CreatorProfile?
-  signupAttribution    SignupAttribution?
-  creatorFollows       CreatorFollow[]       @relation("UserFollows")
-  affiliate            Affiliate?
-  affiliateAttribution AffiliateAttribution?
-  projectAuthSignIns   ProjectAuthSignIn[]
-  mobilePushSubscriptions MobilePushSubscription[]
-  appInstalls          AppInstall[]
-  slackUserLinks       SlackUserLink[]
-  chatIdentityLinks    ChatIdentityLink[]
-  conversationMemberships ConversationMember[]
-  conversationMessages ConversationMessage[]
-  integrationConnections UserIntegrationConnection[]
-  integrationGrants    UserIntegrationGrant[]
-  identityLinks           UserIdentityLink[]
+  sessions                   Session[]
+  accounts                   Account[]
+  members                    Member[]
+  notifications              Notification[]
+  agentTasks                 AgentTask[]
+  agentSchedules             AgentSchedule[]
+  starredProjects            StarredProject[]
+  apiKeys                    ApiKey[]
+  creatorProfile             CreatorProfile?
+  signupAttribution          SignupAttribution?
+  creatorFollows             CreatorFollow[]                 @relation("UserFollows")
+  affiliate                  Affiliate?
+  affiliateAttribution       AffiliateAttribution?
+  projectAuthSignIns         ProjectAuthSignIn[]
+  mobilePushSubscriptions    MobilePushSubscription[]
+  appInstalls                AppInstall[]
+  slackUserLinks             SlackUserLink[]
+  chatIdentityLinks          ChatIdentityLink[]
+  conversationMemberships    ConversationMember[]
+  conversationMessages       ConversationMessage[]
+  integrationConnections     UserIntegrationConnection[]
+  integrationGrants          UserIntegrationGrant[]
+  integrationWorkspaceGrants UserIntegrationWorkspaceGrant[]
+  identityLinks              UserIdentityLink[]
 
   @@map("users")
 }
@@ -128,6 +129,12 @@ model Workspace {
   slug              String   @unique
   description       String?
   ssoSettings       String?
+  // The workspace agent's own settings (capability toggles and anything else
+  // it owns). Distinct from any project's `settings`: a workspace runtime
+  // serves both surfaces, and a toggle made in a workspace chat must land
+  // here, not on whichever project the user last opened. JSON stored as TEXT
+  // on SQLite (see `apps/api/src/lib/workspace-settings.ts`).
+  settings          String?
   instanceSize      String   @default("micro")
   // See packages/agent-runtime/src/composio.ts and
   // apps/api/src/routes/integrations.ts. New workspaces default to
@@ -137,7 +144,7 @@ model Workspace {
   // Whether proxy requests and responses may be retained for product
   // analysis and training. "default" and "enabled" both capture (on for
   // every plan, including enterprise); only "disabled" opts the workspace out.
-  trainingDataMode   String   @default("default")
+  trainingDataMode  String   @default("default")
   // Optional parent workspace. When set, this workspace is a "child" that
   // pools the parent's plan, usage wallet, and seats (no subscription/wallet
   // of its own). Only Business/Enterprise workspaces may have children.
@@ -147,11 +154,21 @@ model Workspace {
   chatMode          String?
   // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
   chatProvider      String?
+  // How many agent replies may be *working at once* in this workspace, or null
+  // for the maximum the plan (or local mode) allows. An admin can lower it; the
+  // plan value is the ceiling in the cloud (see `agent-reply-capacity.ts`).
+  agentReplyConcurrency Int?
+  // Set when this workspace is a copy of a paired desktop's workspace: the
+  // machine's id. The cloud holds the records (copied into the normal tables
+  // with their desktop ids), serves reads from them, and refuses its own writes
+  // to them — see `lib/machine-workspace.ts`. Null means a normal cloud
+  // workspace. Added to both schemas; the desktop leaves it null.
+  machineInstanceId String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  parent                 Workspace?                  @relation("WorkspaceHierarchy", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
-  children               Workspace[]                 @relation("WorkspaceHierarchy")
+  parent                 Workspace?                      @relation("WorkspaceHierarchy", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
+  children               Workspace[]                     @relation("WorkspaceHierarchy")
   projects               Project[]
   members                Member[]
   billingAccounts        BillingAccount[]
@@ -165,6 +182,7 @@ model Workspace {
   liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
   starredProjects        StarredProject[]
+  integrationGrants      UserIntegrationWorkspaceGrant[]
   agentTasks             AgentTask[]
   agentSchedules         AgentSchedule[]
   workspaceEvents        WorkspaceEvent[]
@@ -186,20 +204,32 @@ model Workspace {
   proxyTurns             ProxyTurn[]
   conversations          Conversation[]
   chatInstallations      ChatInstallation[]
+  boards                 Board[]
+  workItems              WorkItem[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
   slackInstallation      SlackWorkspaceInstallation?
   agentProfile           WorkspaceAgentProfile?
   goals                  Goal[]
+  socialProfiles         SocialProfile[]
+  socialAccounts         SocialAccount[]
+  socialPosts            SocialPost[]
+  socialRelayedEvents    SocialRelayedEvent[]
+  socialConversations    SocialConversation[]
+  socialMessages         SocialMessage[]
+  socialComments         SocialComment[]
+  socialAutomations      SocialAutomation[]
+  socialAutomationRuns   SocialAutomationRun[]
 
   @@index([parentWorkspaceId])
+  @@index([machineInstanceId])
   @@map("workspaces")
 }
 
 model ProxyTurn {
-  id                String   @id @default(uuid())
-  firstAt           DateTime @default(now())
-  lastAt            DateTime @default(now())
+  id                String    @id @default(uuid())
+  firstAt           DateTime  @default(now())
+  lastAt            DateTime  @default(now())
   source            String
   workspaceId       String
   projectId         String?
@@ -207,38 +237,37 @@ model ProxyTurn {
   chatSessionId     String?
   turnKey           String
   resolvedModel     String?
-  llmCalls          Int      @default(0)
-  inputTokens       Int      @default(0)
-  outputTokens      Int      @default(0)
-  cachedInputTokens Int      @default(0)
-  cacheWriteTokens  Int      @default(0)
-  reasoningTokens   Int      @default(0)
-  errorCount        Int      @default(0)
+  llmCalls          Int       @default(0)
+  inputTokens       Int       @default(0)
+  outputTokens      Int       @default(0)
+  cachedInputTokens Int       @default(0)
+  cacheWriteTokens  Int       @default(0)
+  reasoningTokens   Int       @default(0)
+  errorCount        Int       @default(0)
   userText          String?
   assistantText     String?
-  toolNames         String   @default("[]")
+  toolNames         String    @default("[]")
   archivePrefix     String?
   feedback          String?
   revertedAt        DateTime?
-  hadError          Boolean  @default(false)
-  truncated         Boolean  @default(false)
+  hadError          Boolean   @default(false)
+  truncated         Boolean   @default(false)
   userFollowupKind  String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, turnKey])
   @@index([workspaceId, lastAt])
   @@index([chatSessionId, lastAt])
-  @@index([source])
   @@map("proxy_turns")
 }
 
 model WorkspaceAgentProfile {
-  id              String   @id @default(uuid())
-  workspaceId     String   @unique
-  name            String   @default("Shogo")
+  id              String    @id @default(uuid())
+  workspaceId     String    @unique
+  name            String    @default("Shogo")
   avatarUrl       String?
   // JSON-encoded Shogo buddy look (see packages/shared-app/src/buddy-look.ts); null = the default look.
   buddyLook       String?
@@ -246,6 +275,8 @@ model WorkspaceAgentProfile {
   personality     String?
   statusText      String?
   statusUpdatedAt DateTime?
+  // Model used when the agent is tagged in a channel or thread; null = Auto. Set by workspace admins.
+  defaultModel    String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -255,19 +286,19 @@ model WorkspaceAgentProfile {
 }
 
 model Goal {
-  id             String   @id @default(uuid())
+  id             String    @id @default(uuid())
   workspaceId    String
   title          String
   why            String?
-  status         String   @default("active")
-  plan           String   @default("[]")
-  deliverables   String   @default("[]")
+  status         String    @default("active")
+  plan           String    @default("[]")
+  deliverables   String    @default("[]")
   nextCheckInAt  DateTime?
   lastProgressAt DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   events     GoalEvent[]
   agentTasks AgentTask[]
   schedules  AgentSchedule[]
@@ -278,27 +309,27 @@ model Goal {
 }
 
 model AgentSchedule {
-  id                  String    @id @default(uuid())
-  workspaceId         String
-  goalId              String?
-  userId              String
-  name                String
-  prompt              String
-  cronExpression      String
-  timezone            String    @default("UTC")
-  enabled             Boolean   @default(true)
-  nextRunAt           DateTime
-  lastRunAt           DateTime?
-  lastRunStatus       String?
-  lastRunSummary      String?
-  lastError           String?
-  chatSessionId       String?
+  id                   String    @id @default(uuid())
+  workspaceId          String
+  goalId               String?
+  userId               String
+  name                 String
+  prompt               String
+  cronExpression       String
+  timezone             String    @default("UTC")
+  enabled              Boolean   @default(true)
+  nextRunAt            DateTime
+  lastRunAt            DateTime?
+  lastRunStatus        String?
+  lastRunSummary       String?
+  lastError            String?
+  chatSessionId        String?
   notifyConversationId String?
-  notifyThreadRootId  String?
-  runningAt           DateTime?
-  consecutiveFailures Int       @default(0)
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  notifyThreadRootId   String?
+  runningAt            DateTime?
+  consecutiveFailures  Int       @default(0)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   goal      Goal?     @relation(fields: [goalId], references: [id], onDelete: Cascade)
@@ -362,6 +393,8 @@ model EventSubscription {
   prompt               String?
   notifyConversationId String?
   notifyThreadRootId   String?
+  /// For `work_item` targets: { boardId, columnId?, mapping, dedupeKey? }.
+  workItemTarget       String?
   webhookUrl           String?
   webhookSecret        String?
 
@@ -511,18 +544,18 @@ model Project {
   //   the migration. See prisma/schema.prisma for the canonical comment.
   //   Default mirrors the PG schema (`git_only`); harmless on desktop
   //   where cloud sync is disabled (SHOGO_LOCAL_MODE).
-  cloudSyncMode String @default("git_only")
+  cloudSyncMode String  @default("git_only")
   // Optional SSH host for desktop Remote-SSH projects. When set, the
   // primary ProjectFolder path is resolved on the remote machine.
-  remoteHostId String?
+  remoteHostId  String?
 
-  workspace              Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  folder                 Folder?                      @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  workspace              Workspace                       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder                 Folder?                         @relation(fields: [folderId], references: [id], onDelete: SetNull)
   members                Member[]
   inviteLinks            InviteLink[]
   featureSessions        FeatureSession[]
   chatSessions           ChatSession[]
-  plans                 Plan[]
+  plans                  Plan[]
   usageEvents            UsageEvent[]
   liveSessionMeters      LiveSessionMeter[]
   checkpoints            ProjectCheckpoint[]
@@ -543,20 +576,20 @@ model Project {
   subagentModelOverrides SubagentModelOverride[]
   agentEvalSets          AgentEvalSet[]
   projectFolders         ProjectFolder[]
-  preferredInstance      Instance?                    @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
+  preferredInstance      Instance?                       @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
   // Restrict: clearing remoteHostId would silently turn a remote project into
   // a local folder project whose path is resolved on this machine.
-  remoteHost             RemoteHost?                  @relation(fields: [remoteHostId], references: [id], onDelete: Restrict)
+  remoteHost             RemoteHost?                     @relation(fields: [remoteHostId], references: [id], onDelete: Restrict)
   authConfig             ProjectAuthConfig?
   authSignIns            ProjectAuthSignIn[]
   attachedSessions       ChatSessionProject[]
-  attachments            ProjectAttachment[]          @relation("ProjectAttachmentAnchor")
-  attachedTo             ProjectAttachment[]          @relation("ProjectAttachmentTarget")
+  attachments            ProjectAttachment[]             @relation("ProjectAttachmentAnchor")
+  attachedTo             ProjectAttachment[]             @relation("ProjectAttachmentTarget")
   customDomains          CustomDomain[]
-  slackWorkspaceDefaults SlackWorkspaceInstallation[] @relation("SlackWorkspaceDefaultProject")
-  slackUserDefaults      SlackUserLink[]              @relation("SlackUserDefaultProject")
-  slackUserRecent        SlackUserLink[]              @relation("SlackUserLastUsedProject")
-  slackChannelDefaults   SlackChannelSettings[]       @relation("SlackChannelDefaultProject")
+  slackWorkspaceDefaults SlackWorkspaceInstallation[]    @relation("SlackWorkspaceDefaultProject")
+  slackUserDefaults      SlackUserLink[]                 @relation("SlackUserDefaultProject")
+  slackUserRecent        SlackUserLink[]                 @relation("SlackUserLastUsedProject")
+  slackChannelDefaults   SlackChannelSettings[]          @relation("SlackChannelDefaultProject")
   slackRoutingRules      SlackProjectRoutingRule[]
 
   @@index([workspaceId])
@@ -806,6 +839,11 @@ model ProjectCheckpoint {
   commitSha     String
   commitMessage String
   branch        String   @default("main")
+  // "branch" = a real commit on `branch` (local-only projects, historical
+  // rows); "ref" = a commit pinned only by `refName` under
+  // refs/shogo/checkpoints/** so the user's branch never gains an AI commit.
+  mode          String   @default("branch")
+  refName       String?
   includesDb    Boolean  @default(false)
   filesChanged  Int      @default(0)
   additions     Int      @default(0)
@@ -850,20 +888,20 @@ model GitHubConnection {
 }
 
 model IntegrationCredentialPolicy {
-  id           String   @id @default(uuid())
-  projectId    String
-  provider     String
-  writeMode    String   @default("shared")
-  readMode     String   @default("shared")
-  fallback     String   @default("ask")
-  writeChain   String?
-  readChain    String?
-  sharedUserId String?
+  id             String    @id @default(uuid())
+  projectId      String
+  provider       String
+  writeMode      String    @default("shared")
+  readMode       String    @default("shared")
+  fallback       String    @default("ask")
+  writeChain     String?
+  readChain      String?
+  sharedUserId   String?
   delegateUserId String?
   delegatedAt    DateTime?
-  updatedBy    String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  updatedBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
@@ -957,6 +995,7 @@ model UserIntegrationGrant {
   userId    String
   projectId String
   provider  String
+  effect    String    @default("allow")
   createdAt DateTime  @default(now())
   revokedAt DateTime?
 
@@ -966,6 +1005,24 @@ model UserIntegrationGrant {
   @@unique([userId, projectId, provider])
   @@index([projectId])
   @@map("user_integration_grants")
+}
+
+model UserIntegrationWorkspaceGrant {
+  id          String    @id @default(uuid())
+  userId      String
+  workspaceId String
+  provider    String
+  scope       String    @default("own")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  revokedAt   DateTime?
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId, provider])
+  @@index([workspaceId])
+  @@map("user_integration_workspace_grants")
 }
 
 model StarredProject {
@@ -1103,25 +1160,25 @@ model Notification {
 }
 
 model AgentTask {
-  id            String   @id @default(uuid())
-  userId        String
-  workspaceId   String
-  goalId        String?
-  projectId     String?
-  chatSessionId String?
-  title         String
-  notes         String?
-  dueAt         DateTime?
-  status        String   @default("draft")
-  currentStep   String?
-  resultSummary String?
-  errorMessage  String?
+  id                   String    @id @default(uuid())
+  userId               String
+  workspaceId          String
+  goalId               String?
+  projectId            String?
+  chatSessionId        String?
+  title                String
+  notes                String?
+  dueAt                DateTime?
+  status               String    @default("draft")
+  currentStep          String?
+  resultSummary        String?
+  errorMessage         String?
   notifyConversationId String?
-  queuedAt      DateTime?
-  startedAt     DateTime?
-  completedAt   DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  queuedAt             DateTime?
+  startedAt            DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1274,6 +1331,11 @@ model UsageWallet {
   fiveHourUsedUsd              Float     @default(0)
   weeklyWindowStart            DateTime?
   weeklyUsedUsd                Float     @default(0)
+  // Signup promo credit. Mirrors prisma/schema.prisma UsageWallet.promoCredit*.
+  promoCreditUsd               Float     @default(0)
+  promoCreditGrantedUsd        Float     @default(0)
+  promoCreditExpiresAt         DateTime?
+  promoCreditStage             Int       @default(0)
   createdAt                    DateTime  @default(now())
   updatedAt                    DateTime  @updatedAt
 
@@ -1303,6 +1365,11 @@ model UsageEvent {
   @@index([projectId])
   @@index([memberId])
   @@index([createdAt])
+  // Mirrors prisma/schema.prisma: the Analytics reads are "one workspace over
+  // a date window", and the single-column indexes make SQLite re-check every
+  // row of the workspace (SHO-140).
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
   @@map("usage_events")
 }
 
@@ -1348,26 +1415,34 @@ model StorageUsage {
 // =============================================================================
 
 model ChatSession {
-  id                  String   @id @default(uuid())
-  name                String?
-  inferredName        String
+  id                    String    @id @default(uuid())
+  name                  String?
+  inferredName          String
   // Allowed values mirror schema.prisma ContextType: feature, project,
   // general, workspace. SQLite has no enum support so we store the string.
-  contextType         String
-  contextId           String?
+  contextType           String
+  contextId             String?
   // Set only for contextType == workspace (see schema.prisma).
-  workspaceId         String?
-  phase               String?
-  claudeCodeSessionId String?
-  cachedMessageCount  Int      @default(0)
-  contextUsageTokens  Int      @default(0)
-  contextWindowTokens Int      @default(0)
-  isPrimary           Boolean  @default(false)
-  isPinned            Boolean  @default(false)
-  isArchived          Boolean  @default(false)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @default(now()) @updatedAt
-  lastActiveAt        DateTime @default(now())
+  workspaceId           String?
+  // Owner of a personal workspace-agent chat. Null for project chats,
+  // scheduled/DM/Slack sessions, and chats created before ownership existed.
+  createdByUserId       String?
+  phase                 String?
+  claudeCodeSessionId   String?
+  cachedMessageCount    Int       @default(0)
+  contextUsageTokens    Int       @default(0)
+  contextWindowTokens   Int       @default(0)
+  // Durable summary of everything up to `contextSummaryThroughCount` messages
+  // (see schema.prisma — kept in the DB, not the runtime's sessions.db, so an
+  // evicted session cannot take it with it; SHO-137).
+  contextSummary              String?
+  contextSummaryThroughCount  Int       @default(0)
+  isPrimary             Boolean   @default(false)
+  isPinned              Boolean   @default(false)
+  isArchived            Boolean   @default(false)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @default(now()) @updatedAt
+  lastActiveAt          DateTime  @default(now())
   // Set while an agent turn is in flight. The turn id makes completion
   // updates conditional so an older stream cannot clear a newer turn.
   // The heartbeat is refreshed while the stream runs; activity treats a
@@ -1393,6 +1468,7 @@ model ChatSession {
 
   @@index([contextType, contextId])
   @@index([workspaceId])
+  @@index([workspaceId, createdByUserId, lastActiveAt])
   @@index([activeTurnHeartbeatAt])
   @@map("chat_sessions")
 }
@@ -1453,6 +1529,9 @@ model ChatMessage {
   /// Model selection (picker `agentMode` value) used to author this row.
   /// Stamped on assistant messages; null for legacy rows.
   model     String?
+  /// The person who typed this row, stamped server-side for user prompts.
+  /// Null for assistant rows and server-written prompts (see schema.prisma).
+  authorUserId String?
 
   session  ChatSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   feedback MessageFeedback[]
@@ -1460,29 +1539,130 @@ model ChatMessage {
   @@index([sessionId])
   @@index([sessionId, createdAt])
   @@index([sessionId, agent, createdAt])
+  @@index([authorUserId, createdAt])
   @@map("chat_messages")
 }
 
 /// A prompt submitted while another turn is active. Queue rows are durable so
 /// the local API can dispatch them after the client disconnects or restarts.
 model ChatQueuedMessage {
-  id            String   @id @default(uuid())
-  sessionId     String
-  userId        String
-  position      Int      @default(0)
-  status        String   @default("pending")
-  content       String
-  parts         String?
-  body          String
-  error         String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @default(now()) @updatedAt
+  id        String   @id @default(uuid())
+  sessionId String
+  userId    String
+  position  Int      @default(0)
+  status    String   @default("pending")
+  content   String
+  parts     String?
+  body      String
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  /// "user" for prompts; "task_notification" for a wake after background tasks finished.
+  kind      String   @default("user")
 
-  session       ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId, status, position])
   @@index([sessionId, createdAt])
   @@map("chat_queued_messages")
+}
+
+/// Async work an agent session can wait on or be woken by. The runtime keeps
+/// its own tasks (shell, subagents) in memory; rows here are the ones the API
+/// observes (a project call, a tagged agent's reply, a card) plus local tasks
+/// the runtime handed over to wake an idle session. `consumed` means the agent
+/// already saw the result, so no wake is sent for it.
+model BackgroundTask {
+  id            String    @id
+  chatSessionId String
+  /// project_call | agent_reply | work_item | shell | subagent
+  source        String
+  /// What events match: `projectId:runId`, `triggerMessageId:projectId|ws`, a work item id.
+  targetRef     String
+  title         String
+  /// running | completed | failed | cancelled
+  status        String    @default("running")
+  output        String    @default("")
+  summary       String?
+  /// Regex that completes the task when its output matches (cards).
+  until         String?
+  /// Notification text for a wake, when the runtime formatted it.
+  note          String?
+  notify        Boolean   @default(true)
+  consumed      Boolean   @default(false)
+  /// Set when a wake claims this row; cleared again if that wake never ran, so
+  /// the drain sweep can re-queue it.
+  notifiedAt    DateTime?
+  /// How many wakes claimed this row and had to be released.
+  attempts      Int       @default(0)
+  /// Earliest time the sweep may re-queue it, so a broken wake cannot hot-loop.
+  nextAttemptAt DateTime?
+  /// A finished card watch waits while agents are still working the card's
+  /// thread; its wake goes out when the thread goes quiet or at this time.
+  heldUntil     DateTime?
+  /// Where the task's work is happening, so the chat dock can open that thread
+  /// instead of an empty log: channel thread, card, project session, subagent.
+  /// (SQLite has no Json: JSON-encoded here.)
+  link          String?
+  finishedAt    DateTime?
+  expiresAt     DateTime
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  @@index([source, targetRef, status])
+  @@index([chatSessionId, status])
+  @@index([expiresAt])
+  @@index([notify, consumed, notifiedAt])
+  @@map("background_tasks")
+}
+
+/// A wake that arrived while the agent already had a live run in that thread.
+/// One live run per (agent, thread): the loser of the reservation writes a row
+/// here, is acknowledged in the thread, and runs when the live reply ends.
+/// `status` runs pending → claimed → done | failed; the drain sweep picks up a
+/// pending row left behind by an API restart (nothing else would run it).
+model AgentWake {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  conversationId   String
+  threadRootId     String?
+  /// The message that woke the agent: one wake per (trigger, agent).
+  triggerMessageId String
+  /// `project:<id>` or `workspace`, as boards and mentions name an agent.
+  agentRef         String
+  /// Who the drain runs the wake for (billing and the chain's origin).
+  userId           String
+  /// Chain state to resume with, so a queued hand-off keeps its place.
+  /// (SQLite has no Json: JSON-encoded here.)
+  chain            String?
+  /// Why the row exists: `wake` (behind a live run) or `move_nudge` (a move
+  /// into a column that binds no agent — a hint, debounced by `notBefore`, that
+  /// the tag following it supersedes).
+  reason           String    @default("wake")
+  /// Earliest time the drain may start this row. Null runs as soon as it can.
+  notBefore        DateTime?
+  /// The chat session the live run held, so the session's queue dock finds
+  /// this row and can send it now from there.
+  chatSessionId    String?
+  /// The system note that says it is queued, so its status can follow the row.
+  noteMessageId    String?
+  /// Set when a person presses Send now: the drain takes the newest first, the
+  /// way the chat queue's send-now marks a row ahead of the rest.
+  sendNowAt        DateTime?
+  /// pending | claimed | done | failed | superseded
+  status           String    @default("pending")
+  attempts         Int       @default(0)
+  claimedAt        DateTime?
+  lastError        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt
+
+  @@unique([triggerMessageId, agentRef])
+  @@index([conversationId, threadRootId, agentRef, status])
+  @@index([status, createdAt])
+  @@index([status, notBefore])
+  @@index([chatSessionId, status])
+  @@map("agent_wakes")
 }
 
 /// A user's thumbs up/down reaction to one assistant `ChatMessage` (one
@@ -1976,10 +2156,10 @@ model ModelDefinition {
   reasoningEffort String? // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
   // Per-1M-token USD list prices (raw; markup applied at billing time).
-  inputPerMillion       Float @default(0)
-  cachedInputPerMillion Float @default(0)
-  cacheWritePerMillion  Float @default(0)
-  outputPerMillion      Float @default(0)
+  inputPerMillion       Float  @default(0)
+  cachedInputPerMillion Float  @default(0)
+  cacheWritePerMillion  Float  @default(0)
+  outputPerMillion      Float  @default(0)
   usdPerMinute          Float?
 
   createdAt DateTime @default(now())
@@ -2144,18 +2324,20 @@ model PushSubscription {
 }
 
 model MobilePushSubscription {
-  id        String   @id @default(cuid())
-  userId    String
-  pushToken String   @unique
-  platform  String
+  id                           String   @id @default(cuid())
+  userId                       String
+  pushToken                    String   @unique
+  platform                     String
   /// Also deliver agent turn and task completion pushes (team chat pushes always go).
-  agentTurns Boolean @default(true)
+  agentTurns                   Boolean  @default(true)
   /// APNs token that lets the server start the agent Live Activity on this iPhone (iOS 17.2+).
   liveActivityPushToStartToken String?
   /// APNs token for the Live Activity running now on this iPhone, to update or end it.
-  liveActivityToken String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  liveActivityToken            String?
+  /// PushKit VoIP token that rings this iPhone's incoming-call screen for a huddle (iOS only).
+  voipToken                    String?
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -2180,6 +2362,39 @@ model AppInstall {
   @@index([lastSeenAt])
   @@index([userId])
   @@map("app_installs")
+}
+
+/// One row the first time a device reports a version, bumped on every later
+/// sighting of that same version.
+///
+/// `api_keys` only keeps the *current* row per device, so "how many devices
+/// were on 2.3.5 the day 2.3.6 shipped" was unanswerable and the admin card
+/// could not show adoption. This keeps the (device, version) history, with the
+/// OS/arch/client/channel normalised once at the insert point
+/// (`lib/device-platform.ts`) so legacy platform spellings stay collapsed.
+model DeviceVersionEvent {
+  id          String   @id @default(cuid())
+  /// Region that wrote the row (`REGION_ID`, or `local` in single-region and
+  /// desktop mode). NULL means the row predates region tagging; the app never
+  /// writes NULL. Part of the unique key so two regions cannot conflict on one
+  /// (device, version) — see the 2026-10-22 replication incident (SHO-142).
+  region      String?
+  deviceId    String
+  /// macos | windows | linux | unknown
+  os          String   @default("unknown")
+  arch        String?
+  /// desktop | cli | unknown
+  client      String   @default("desktop")
+  /// stable | beta
+  channel     String   @default("stable")
+  version     String
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime
+
+  @@unique([region, deviceId, version])
+  @@index([lastSeenAt])
+  @@index([version])
+  @@map("device_version_events")
 }
 
 // =============================================================================
@@ -2357,6 +2572,49 @@ model LocalConfig {
 }
 
 // =============================================================================
+// Tracked `project_call` store
+//
+// One record per call plus one link per callee chat session, so a call in
+// flight outlives the process that is writing it (the desktop API restarts on
+// app update, quit/relaunch and the SIGKILL recovery in
+// apps/desktop/src/local-server.ts; the cloud rolls pods). `updatedAt` is the
+// liveness signal, see AGENT_CALL_STALE_MS in
+// apps/api/src/lib/agent-call-store.ts. Identical to prisma/schema.prisma —
+// desktop and cloud run the same store code.
+// =============================================================================
+
+model AgentCall {
+  projectId     String
+  runId         String
+  /// running | completed | failed
+  status        String
+  reply         String?
+  /// JSON-encoded { code?, message }
+  error         String?
+  sessionId     String?
+  chatSessionId String?
+  startedAt     DateTime
+  updatedAt     DateTime @updatedAt
+  expiresAt     DateTime
+
+  @@id([projectId, runId])
+  @@index([status, updatedAt])
+  @@index([expiresAt])
+  @@map("agent_calls")
+}
+
+model AgentCallSessionLink {
+  chatSessionId String   @id
+  projectId     String
+  runId         String
+  startedAt     DateTime
+  expiresAt     DateTime
+
+  @@index([expiresAt])
+  @@map("agent_call_session_links")
+}
+
+// =============================================================================
 // MARKETPLACE (Agent Marketplace & Creator Economy)
 // SQLite: enums → String, String[] → String (JSON), Json? → String?, no @db.Text
 // =============================================================================
@@ -2494,6 +2752,10 @@ model MarketplaceListingVersion {
   /// Parsed `shogo.app.json` (events, scopes, required toolkits) for this version.
   appManifest String?
 
+  // Parsed pack.yaml (a shogo-system.yaml manifest plus setup questions),
+  // JSON-encoded as usual for the local schema. See schema.prisma.
+  systemPack String?
+
   // S3-backed workspace snapshot — see prisma/schema.prisma for the
   // narrative. Local SQLite stores the JSON snapshot as a String column
   // for backward compatibility; the new S3 fields are mirrored as
@@ -2522,6 +2784,10 @@ model MarketplaceInstall {
   installedVersion     String
   // Phase 6 drift detection. JSON-encoded manifest of relPath -> sha256.
   baselineManifest     String?
+  // Answers to the pack's setup.questions and the ids it created, JSON-encoded
+  // (see schema.prisma). Uninstall deletes exactly packBindings.
+  answers              String?
+  packBindings         String?
   stripeSubscriptionId String?
   status               String   @default("active")
   createdAt            DateTime @default(now())
@@ -2673,23 +2939,23 @@ model VoiceCallMeter {
 // Meters GPT-Live sessions. A session emits cumulative duration snapshots,
 // so this row is the idempotency boundary for final usage billing.
 model LiveSessionMeter {
-  id              String    @id @default(cuid())
-  sessionId       String    @unique
-  workspaceId     String
-  projectId       String?
-  memberId        String
-  model           String
-  backendModel    String?
-  transport       String
-  seconds         Float     @default(0)
-  rawUsd          Float     @default(0)
-  billedUsd       Float     @default(0)
-  usageConfirmed  Boolean   @default(false)
-  billed          Boolean   @default(false)
-  startedAt       DateTime?
-  endedAt         DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id             String    @id @default(cuid())
+  sessionId      String    @unique
+  workspaceId    String
+  projectId      String?
+  memberId       String
+  model          String
+  backendModel   String?
+  transport      String
+  seconds        Float     @default(0)
+  rawUsd         Float     @default(0)
+  billedUsd      Float     @default(0)
+  usageConfirmed Boolean   @default(false)
+  billed         Boolean   @default(false)
+  startedAt      DateTime?
+  endedAt        DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
@@ -2713,6 +2979,7 @@ model AgentCostMetric {
   inputTokens       Int      @default(0)
   outputTokens      Int      @default(0)
   cachedInputTokens Int      @default(0)
+  cacheWriteTokens  Int      @default(0)
   toolCalls         Int      @default(0)
   creditCost        Float    @default(0)
   wallTimeMs        Int      @default(0)
@@ -3073,32 +3340,39 @@ model AffiliatePostSnapshot {
 // =============================================================================
 
 model Conversation {
-  id            String    @id @default(uuid())
-  workspaceId   String
-  kind          String    @default("public")
-  name          String?
-  slug          String?
-  topic         String?
-  dmKey         String?
-  createdById   String?
-  lastSeq       Int       @default(0)
-  lastMessageAt DateTime?
-  archivedAt    DateTime?
+  id              String    @id @default(uuid())
+  workspaceId     String
+  kind            String    @default("public")
+  name            String?
+  slug            String?
+  topic           String?
+  dmKey           String?
+  createdById     String?
+  lastSeq         Int       @default(0)
+  lastMessageAt   DateTime?
+  archivedAt      DateTime?
   /// "shogo" for native channels, else the external provider this channel mirrors.
-  provider      String    @default("shogo")
+  provider        String    @default("shogo")
   /// Channel / conversation / space id on the external provider.
-  externalId    String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  externalId      String?
+  /// Project whose agent system declares this channel (`teamChannels` in its
+  /// shogo-system.yaml). Such a channel can't be deleted — `system_apply` would
+  /// recreate it — until the manifest drops it and the next apply clears this.
+  systemManagedBy String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  workspace   Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  members     ConversationMember[]
-  messages    ConversationMessage[]
-  attachments ConversationAttachment[]
+  workspace         Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members           ConversationMember[]
+  messages          ConversationMessage[]
+  attachments       ConversationAttachment[]
   pins              ConversationPin[]
   drafts            ConversationDraft[]
   scheduledMessages ScheduledMessage[]
   huddles           Huddle[]
+  doc               ConversationDoc?
+  docArchives       ConversationDocArchive[]
+  boards            Board[]
 
   @@unique([workspaceId, slug])
   @@unique([workspaceId, dmKey])
@@ -3120,15 +3394,92 @@ model Huddle {
   startedById    String
   /// The "started a huddle" system message, updated when the huddle ends.
   messageId      String?
+  /// Secret in the shareable join link. Null until someone asks for a link; rotating it revokes old links.
+  linkToken      String?   @unique
   startedAt      DateTime  @default(now())
   endedAt        DateTime?
+  /// Notes (a speaker-labelled transcript and an auto summary) are on for this call. Any participant may turn them off.
+  notesEnabled   Boolean   @default(true)
+  /// Set when the notes summary was posted, claimed with `updateMany where notesMessageId: null`
+  /// so exactly one pod posts it. Holds the summary message id once it is posted.
+  notesMessageId String?
+  /// Audit: audio seconds the client path actually forwarded to STT for this call.
+  notesClientSeconds  Int @default(0)
+  /// Audit: audio seconds the LiveKit fallback forwarded to Inference STT for this call.
+  notesLivekitSeconds Int @default(0)
+  /// When someone last said "hey Shogo" out loud and woke the workspace agent.
+  /// Written with a compare-and-set so one wake runs per huddle per 10 s, whatever the pod.
+  lastWakeAt DateTime?
 
   conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   participants HuddleParticipant[]
+  invites      HuddleInvite[]
+  joinRequests HuddleJoinRequest[]
+  wakes        HuddleWake[]
 
   @@index([workspaceId, endedAt])
   @@index([conversationId, startedAt])
   @@map("huddles")
+}
+
+/// One spoken "hey Shogo" and the agent turn it started. `@@unique([huddleId, itemId])`
+/// is the replay guard: a re-sent final can never wake twice. status: running | replied | failed.
+model HuddleWake {
+  id        String   @id @default(uuid())
+  huddleId  String
+  /// The person whose words woke it; the turn runs as them, with their permissions.
+  speakerId String
+  /// The transcript item that carried the phrase, so a replay is recognised.
+  itemId    String
+  /// The note posted into the huddle's chat, which is the agent's trigger.
+  messageId String?
+  status    String   @default("running")
+  reason    String?
+  createdAt DateTime @default(now())
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@unique([huddleId, itemId])
+  @@index([huddleId, createdAt])
+  @@map("huddle_wakes")
+}
+
+/// Someone a participant rang into a live huddle. An invite lets the person
+/// join the huddle (not the conversation). status: ringing | joined | declined | missed | cancelled.
+model HuddleInvite {
+  id          String   @id @default(uuid())
+  huddleId    String
+  userId      String
+  invitedById String
+  status      String   @default("ringing")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@unique([huddleId, userId])
+  @@index([userId, status])
+  @@map("huddle_invites")
+}
+
+/// Someone who opened the huddle link without access and is waiting to be let in.
+/// A workspace member has `userId`; an outside guest has `guestId` and `guestName`.
+/// status: waiting | admitted | denied | expired.
+model HuddleJoinRequest {
+  id         String    @id @default(uuid())
+  huddleId   String
+  userId     String?
+  guestId    String?
+  guestName  String?
+  status     String    @default("waiting")
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@index([huddleId, status])
+  @@index([guestId])
+  @@map("huddle_join_requests")
 }
 
 /// One stay in a huddle. Rejoining after leaving opens a new row.
@@ -3191,24 +3542,24 @@ model ChatIdentityLink {
 }
 
 model ConversationMember {
-  id             String    @id @default(uuid())
-  conversationId String
-  memberType     String    @default("user")
-  userId         String?
-  projectId      String?
-  projectAgentId String?
-  role           String    @default("member")
-  lastReadSeq    Int       @default(0)
-  lastReadAt     DateTime?
-  notifyLevel    String    @default("default")
-  muted          Boolean   @default(false)
-  starred        Boolean   @default(false)
-  agentTrigger   String    @default("mention")
-  agentKeywords  String?
-  agentMuted     Boolean   @default(false)
-  agentContextMode String  @default("shared")
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id               String    @id @default(uuid())
+  conversationId   String
+  memberType       String    @default("user")
+  userId           String?
+  projectId        String?
+  projectAgentId   String?
+  role             String    @default("member")
+  lastReadSeq      Int       @default(0)
+  lastReadAt       DateTime?
+  notifyLevel      String    @default("default")
+  muted            Boolean   @default(false)
+  starred          Boolean   @default(false)
+  agentTrigger     String    @default("mention")
+  agentKeywords    String?
+  agentMuted       Boolean   @default(false)
+  agentContextMode String    @default("shared")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -3247,10 +3598,11 @@ model ConversationMessage {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  conversation Conversation             @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  authorUser   User?                    @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+  conversation Conversation                  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  authorUser   User?                         @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
   mentions     ConversationMention[]
   reactions    ConversationReaction[]
+  votes        ConversationVote[]
   attachments  ConversationAttachment[]
   pin          ConversationPin?
   savedBy      SavedMessage[]
@@ -3297,26 +3649,77 @@ model ConversationReaction {
   @@map("conversation_reactions")
 }
 
+/// A vote on a poll option, or an upvote on a question (`optionId` = "up").
+model ConversationVote {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  optionId  String
+  createdAt DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, optionId])
+  @@index([messageId])
+  @@map("conversation_votes")
+}
+
 model ConversationAttachment {
   id             String   @id @default(uuid())
   conversationId String
   messageId      String?
-  uploaderUserId String
+  /// Null when an agent uploaded the file.
+  uploaderUserId String?
+  /// "workspace" or "project:<id>" for files an agent posted.
+  uploaderAgentRef String?
   storageKey     String
   name           String
   mimeType       String
   size           Int
   width          Int?
   height         Int?
+  /// Voice notes only: length of the clip in milliseconds, so a player can
+  /// show the total before the audio has loaded.
+  durationMs     Int?
+  /// Voice notes only: waveform levels, 0-100, space separated. Sampled while
+  /// recording because the server cannot decode audio to derive them.
+  peaks          String?
   extractedText  String?
+  /// Display-ready preview of the file's content (Json? on PG, JSON-encoded here).
+  previewData    String?
   createdAt      DateTime @default(now())
 
-  conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  message      ConversationMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  conversation Conversation                  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      ConversationMessage?          @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  chunks       ConversationAttachmentChunk[]
 
   @@index([conversationId])
   @@index([messageId])
   @@map("conversation_attachments")
+}
+
+/// A slice of a chat file's extracted text, read by agents and ranked by search.
+model ConversationAttachmentChunk {
+  id             String   @id @default(uuid())
+  attachmentId   String
+  conversationId String
+  workspaceId    String
+  idx            Int
+  text           String
+  charStart      Int
+  charEnd        Int
+  /// Embedding model, set once the indexer has processed the chunk (even when it produced no vector).
+  model          String?
+  /// JSON array of numbers.
+  embedding      String?
+  createdAt      DateTime @default(now())
+
+  attachment ConversationAttachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@index([attachmentId, idx])
+  @@index([conversationId])
+  @@index([workspaceId, createdAt])
+  @@map("conversation_attachment_chunks")
 }
 
 /// Per-workspace chat settings: custom status, Do Not Disturb, and notification defaults.
@@ -3338,6 +3741,18 @@ model ChatUserSettings {
   /// "off" or "daily": email a digest of unread mentions and DMs.
   emailDigest     String    @default("off")
   lastDigestAt    DateTime?
+  /// Sound for chat messages: "default", "subtle", or "off".
+  messageSound    String    @default("default")
+  /// Which sound a chat message plays on web and desktop: "knock", "chirp", "pristine", "definite", "juntos", "confirmation", "question", or "glass".
+  messageTone     String    @default("knock")
+  /// Sound for incoming huddles: "ring", "chime", or "off".
+  huddleSound     String    @default("ring")
+  /// Put direct messages in the Activity inbox too.
+  dmInActivity         Boolean   @default(false)
+  /// Count unread thread replies in the Activity badge.
+  threadRepliesInBadge Boolean   @default(true)
+  /// When a phone push goes out: "immediate", "inactive", "inactive_5m", or "inactive_10m".
+  mobilePushDelay      String    @default("inactive")
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -3358,6 +3773,67 @@ model ConversationPin {
 
   @@index([conversationId, createdAt])
   @@map("conversation_pins")
+}
+
+/// The channel's single shared markdown document. See schema.prisma.
+model ConversationDoc {
+  id                 String   @id @default(uuid())
+  conversationId     String   @unique
+  workspaceId        String
+  title              String   @default("")
+  content            String   @default("")
+  version            Int      @default(1)
+  locked             Boolean  @default(false)
+  updatedByType      String   @default("user")
+  updatedByUserId    String?
+  updatedByProjectId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  conversation Conversation              @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  revisions    ConversationDocRevision[]
+
+  @@index([workspaceId])
+  @@map("conversation_docs")
+}
+
+model ConversationDocRevision {
+  id                 String   @id @default(uuid())
+  docId              String
+  version            Int
+  title              String   @default("")
+  content            String   @default("")
+  updatedByType      String   @default("user")
+  updatedByUserId    String?
+  updatedByProjectId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  doc ConversationDoc @relation(fields: [docId], references: [id], onDelete: Cascade)
+
+  @@index([docId, createdAt])
+  @@map("conversation_doc_revisions")
+}
+
+/// A section archived out of a ConversationDoc. See schema.prisma.
+model ConversationDocArchive {
+  id                  String   @id @default(uuid())
+  conversationId      String
+  workspaceId         String
+  title               String   @default("")
+  heading             String
+  content             String   @default("")
+  chars               Int      @default(0)
+  archivedByType      String   @default("user")
+  archivedByUserId    String?
+  archivedByProjectId String?
+  createdAt           DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([workspaceId])
+  @@map("conversation_doc_archives")
 }
 
 model SavedMessage {
@@ -3390,25 +3866,29 @@ model ConversationDraft {
 }
 
 model ScheduledMessage {
-  id                String    @id @default(uuid())
+  id                String   @id @default(uuid())
   workspaceId       String
   conversationId    String
   userId            String
   threadRootId      String?
-  alsoSentToChannel Boolean   @default(false)
+  alsoSentToChannel Boolean  @default(false)
   text              String
   sendAt            DateTime
   /// pending | sent | cancelled | failed
-  status            String    @default("pending")
+  status            String   @default("pending")
   sentMessageId     String?
   error             String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  /// Set on a held reply to an agent's question card: the message that asked.
+  /// Hidden from the person's scheduled list; its text is rebuilt when it sends.
+  questionMessageId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([status, sendAt])
   @@index([userId, status])
+  @@index([questionMessageId, userId, status])
   @@map("scheduled_messages")
 }
 
@@ -3436,7 +3916,7 @@ model ChatInboxItem {
   id             String    @id @default(uuid())
   workspaceId    String
   userId         String
-  /// mention | dm | thread | reaction | reminder | keyword | broadcast | message
+  /// mention | dm | thread | reaction | reminder | keyword | broadcast | message | question
   kind           String
   conversationId String?
   messageId      String?
@@ -3507,4 +3987,569 @@ model ConversationMessageEmbedding {
 
   @@index([workspaceId, createdAt])
   @@map("conversation_message_embeddings")
+}
+
+// =============================================================================
+// WORK BOARDS
+// =============================================================================
+
+/// A Kanban board. A channel can hold several; boards with no channel are
+/// workspace-level. `managedBy: "manifest"` boards are declared in a project's
+/// shogo-system.yaml (`teamChannels[].boards`) and owned by `system_apply`.
+model Board {
+  id                      String    @id @default(uuid())
+  workspaceId             String
+  conversationId          String?
+  name                    String
+  slug                    String
+  /// Prefix for card keys, e.g. "SUP" for SUP-42.
+  keyPrefix               String
+  /// Last card number handed out; card numbers stay with the card when it moves.
+  itemCounter             Int       @default(0)
+  /// Tab order within the channel.
+  position                Int       @default(0)
+  /// task | problem | ticket | deal | candidate | approval | content | custom
+  itemType                String    @default("task")
+  description             String?
+  /// Card field definitions: [{ key, label, type, options?, required? }].
+  fieldsSchema            String?
+  /// all | done_only | none — which card events post to the channel.
+  postToChannel           String    @default("all")
+  requiresHumanReview     Boolean   @default(false)
+  /// "workspace" or "project:<id>".
+  defaultAssigneeAgentRef String?
+  /// user | manifest
+  managedBy               String    @default("user")
+  /// Project whose shogo-system.yaml declares this board.
+  systemManagedBy         String?
+  templateId              String?
+  createdById             String?
+  archivedAt              DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  columns      BoardColumn[]
+  items        WorkItem[]
+
+  @@unique([workspaceId, slug])
+  @@index([conversationId, position])
+  @@map("boards")
+}
+
+model BoardColumn {
+  id        String   @id @default(uuid())
+  boardId   String
+  name      String
+  position  Int      @default(0)
+  /// backlog | active | waiting | review | done | dismissed
+  category  String   @default("active")
+  wipLimit  Int?
+  /// Agent that picks up cards moved here: "workspace" or "project:<id>".
+  agentRef  String?
+  /// Cards older than this in the column count as breaching SLA.
+  slaHours  Float?
+  /// Per-column rules. `allowAutoMerge` is the only key today: a card's PR may
+  /// only be armed / merged by an agent from a column that allows it.
+  rules     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  board Board      @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  items WorkItem[]
+
+  @@index([boardId, position])
+  @@map("board_columns")
+}
+
+/// A card. Its conversation lives in a thread in the board's channel
+/// (`conversationId` + `threadRootMessageId`); everything else it touches is
+/// recorded as a WorkItemLink.
+model WorkItem {
+  id                  String    @id @default(uuid())
+  workspaceId         String
+  boardId             String
+  columnId            String
+  /// Sort order inside the column.
+  position            Float     @default(0)
+  /// e.g. "SUP-42". Unique in the workspace and kept across board moves.
+  key                 String
+  number              Int
+  title               String
+  description         String?
+  fields              String?
+  /// urgent | high | medium | low | none
+  priority            String    @default("none")
+  assigneeUserId      String?
+  /// "workspace" or "project:<id>".
+  assigneeAgentRef    String?
+  dueAt               DateTime?
+  goalId              String?
+  projectId           String?
+  conversationId      String?
+  threadRootMessageId String?
+  /// manual | message | trigger | agent | api | problem
+  source              String    @default("manual")
+  externalRef         String?
+  eventSubscriptionId String?
+  /// Dedupe key for trigger and problem intake.
+  fingerprint         String?
+  /// Rolling summary of the card's whole history, for agent context.
+  historySummary      String?
+  historySummaryAt    DateTime?
+  createdById         String?
+  createdByAgentRef   String?
+  /// When the card entered its current column (drives SLA and staleness).
+  columnEnteredAt     DateTime  @default(now())
+  lastActivityAt      DateTime  @default(now())
+  completedAt         DateTime?
+  archivedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  workspace     Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  board         Board                  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  column        BoardColumn            @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  events        WorkItemEvent[]
+  links         WorkItemLink[]
+  subscriptions WorkItemSubscription[]
+  occurrences   ProblemOccurrence[]
+
+  @@unique([workspaceId, key])
+  @@index([boardId, columnId, position])
+  @@index([workspaceId, assigneeUserId])
+  @@index([workspaceId, assigneeAgentRef])
+  @@index([workspaceId, fingerprint])
+  @@index([threadRootMessageId])
+  @@map("work_items")
+}
+
+model WorkItemEvent {
+  id            String   @id @default(uuid())
+  workItemId    String
+  workspaceId   String
+  /// created | updated | moved | assigned | commented | linked | archived | restored | regressed | occurrence
+  type          String
+  actorUserId   String?
+  actorAgentRef String?
+  /// Chat session that made the change, when an agent did.
+  sessionId     String?
+  eventData     String?
+  createdAt     DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@map("work_item_events")
+}
+
+/// A conversation a card has been part of, beyond its own thread.
+model WorkItemLink {
+  id              String   @id @default(uuid())
+  workItemId      String
+  workspaceId     String
+  /// message | thread | chat_session | agent_task | external_thread | pr | doc
+  kind            String
+  refId           String
+  conversationId  String?
+  /// origin | mention | agent_run | tool_call | escalation | manual | sync
+  reason          String
+  addedByUserId   String?
+  addedByAgentRef String?
+  snippet         String?
+  url             String?
+  /// Live state of the linked PR (JSON on SQLite) — see schema.prisma.
+  metadata        String?
+  /// When `metadata` was last read from the source (null = never).
+  syncedAt        DateTime?
+  createdAt       DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@unique([workItemId, kind, refId])
+  @@index([kind, refId])
+  @@map("work_item_links")
+}
+
+model WorkItemSubscription {
+  id         String   @id @default(uuid())
+  workItemId String
+  userId     String
+  createdAt  DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@unique([workItemId, userId])
+  @@index([userId])
+  @@map("work_item_subscriptions")
+}
+
+/// One sighting of the error behind a `problem` card.
+model ProblemOccurrence {
+  id                String   @id @default(uuid())
+  workItemId        String
+  workspaceId       String
+  fingerprint       String
+  environment       String?
+  release           String?
+  message           String?
+  stack             String?
+  url               String?
+  userRef           String?
+  occurrenceContext String?
+  occurredAt        DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId, occurredAt])
+  @@index([workspaceId, fingerprint])
+  @@map("problem_occurrences")
+}
+
+// ─── Social management (Zernio) — SQLite mirror of prisma/schema.prisma ──────
+// Json? columns are stored as JSON strings; String[] as JSON-encoded String.
+
+model SocialProfile {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  localWorkspaceId String   @default("")
+  zernioProfileId  String   @unique
+  externalId       String   @unique
+  name             String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  accounts  SocialAccount[]
+
+  @@unique([workspaceId, localWorkspaceId])
+  @@map("social_profiles")
+}
+
+model SocialAccount {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  profileId       String
+  zernioAccountId String    @unique
+  platform        String
+  username        String
+  displayName     String?
+  isActive        Boolean   @default(true)
+  tokenHealthy    Boolean   @default(true)
+  needsReconnect  Boolean   @default(false)
+  lastHealthAt    DateTime?
+  /// Watermark for the `social_account_monthly` meter: the month this row has
+  /// already been charged for. Zernio bills per connected account, prorated by
+  /// active days, so the sweep charges once per account per month.
+  monthlyRateDebitedFor DateTime?
+  connectedAt     DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  profile   SocialProfile      @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  targets   SocialPostTarget[]
+  conversations SocialConversation[]
+  comments  SocialComment[]
+  automations SocialAutomation[]
+
+  @@unique([workspaceId, platform, username])
+  @@index([workspaceId, platform])
+  @@map("social_accounts")
+}
+
+model SocialPost {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  status          String    @default("draft")
+  content         String
+  mediaJson       String?
+  scheduledFor    DateTime?
+  publishedAt     DateTime?
+  zernioPostId    String?
+  idempotencyKey  String    @unique
+  createdByUserId String?
+  tags            String    @default("[]")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  targets   SocialPostTarget[]
+  comments  SocialComment[]
+
+  @@index([workspaceId, scheduledFor])
+  @@index([workspaceId, status])
+  @@map("social_posts")
+}
+
+model SocialPostTarget {
+  id              String   @id @default(uuid())
+  postId          String
+  accountId       String
+  platform        String
+  customContent   String?
+  mediaJson       String?
+  status          String   @default("pending")
+  platformPostId  String?
+  platformPostUrl String?
+  error           String?
+  /// Set once the `social_x_api` meter has charged this leg, so a retried
+  /// dispatch cannot bill the same published post twice. Null on every
+  /// non-X platform, which Zernio does not bill per post.
+  meteredAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  post    SocialPost    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  account SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, accountId])
+  @@index([accountId, status])
+  @@map("social_post_targets")
+}
+
+/// A verified webhook that belongs to a desktop's local scope, written down
+/// before we answer the provider. A desktop polls the cloud relay for these,
+/// applies each in its own DB and acks it; `dedupeKey` makes a provider retry
+/// collapse onto the row that already exists.
+model SocialRelayedEvent {
+  id               String    @id @default(uuid())
+  dedupeKey        String    @unique
+  workspaceId      String
+  localWorkspaceId String
+  externalId       String
+  eventType        String
+  /// JSON-encoded envelope the desktop replays through `applySocialEvent`.
+  /// Deliberately not `payload`: that name is globally JSON-coerced by the
+  /// SQLite client for `WorkspaceEvent.payload`.
+  eventJson        String
+  occurredAt       DateTime  @default(now())
+  appliedAt        DateTime?
+  /// Failed apply attempts. A delivery whose payload we cannot apply is retried
+  /// rather than acked away, but not forever: past the attempt cap it is
+  /// dead-lettered (`failedAt`) so a poison event cannot loop.
+  attempts         Int       @default(0)
+  lastAttemptAt    DateTime?
+  lastError        String?
+  failedAt         DateTime?
+  createdAt        DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, localWorkspaceId, appliedAt])
+  @@index([workspaceId, failedAt])
+  @@map("social_relayed_events")
+}
+
+/// One inbox thread — a DM conversation on a messaging platform. Written by
+/// the provider's webhooks and by the backfill sweep, never by polling the
+/// provider for each render.
+model SocialConversation {
+  id                   String    @id @default(uuid())
+  workspaceId          String
+  accountId            String?
+  zernioConversationId String    @unique
+  platform             String
+  participantId        String?
+  participantName      String?
+  participantPicture   String?
+  status               String    @default("active")
+  unreadCount          Int       @default(0)
+  lastReadAt           DateTime?
+  lastMessageAt        DateTime?
+  lastMessagePreview   String?
+  assignedToUserId     String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account   SocialAccount?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  messages  SocialMessage[]
+
+  @@index([workspaceId, lastMessageAt])
+  @@index([workspaceId, unreadCount])
+  @@index([workspaceId, platform])
+  @@map("social_conversations")
+}
+
+/// One message inside a thread. Unique on the provider's message id, so a
+/// redelivered webhook and a backfill sweep that overlaps it are the same row.
+model SocialMessage {
+  id              String   @id @default(uuid())
+  workspaceId     String
+  conversationId  String
+  zernioMessageId String   @unique
+  direction       String
+  platform        String
+  text            String?
+  attachmentsJson String?
+  authorId        String?
+  authorName      String?
+  authorUsername  String?
+  authorPicture   String?
+  status          String   @default("sent")
+  error           String?
+  /// True once a billable outbound message has been counted (P6's `social_dm`
+  /// meter flips this; the reply path records the row and leaves it false).
+  metered         Boolean  @default(false)
+  sentAt          DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation SocialConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, sentAt])
+  @@index([workspaceId, sentAt])
+  @@map("social_messages")
+}
+
+/// One comment on a post we published (or on a post the account owns that
+/// Zernio tracks). Separate from messages on purpose: comments are answered
+/// publicly and addressed by their own ids.
+model SocialComment {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  postId          String?
+  accountId       String?
+  zernioCommentId String    @unique
+  /// What `POST /inbox/comments/{postId}` takes: Zernio's post id when the
+  /// payload carries one, else the platform's own post id.
+  zernioPostId    String
+  platformPostId  String
+  platform        String
+  text            String
+  authorId        String?
+  authorName      String?
+  authorUsername  String?
+  authorPicture   String?
+  /// The connected account wrote this — the platform echoes our own replies
+  /// back as comment events.
+  isOwn           Boolean   @default(false)
+  isHidden        Boolean   @default(false)
+  status          String    @default("new")
+  repliedAt       DateTime?
+  permalink       String?
+  occurredAt      DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  post      SocialPost?    @relation(fields: [postId], references: [id], onDelete: SetNull)
+  account   SocialAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, occurredAt])
+  @@index([workspaceId, status])
+  @@index([zernioPostId])
+  @@map("social_comments")
+}
+
+/// A ManyChat-style automation the workspace runs on one connected account.
+///
+/// Zernio owns the execution: a `comment_dm`/`keyword_reply` row mirrors a
+/// comment automation (`POST /v1/comment-automations`), and a `sequence` row
+/// mirrors a workflow graph (`POST /v1/workflows`). This table is what we bill,
+/// count and show — never a second scheduler. `runCount`/`lastRunAt` are moved
+/// by the automation webhooks, not by a sweep.
+model SocialAutomation {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  accountId        String?
+  /// comment_dm | keyword_reply | sequence
+  kind             String    @default("comment_dm")
+  /// The provider's own id: a comment automation id or a workflow id.
+  zernioResourceId String?   @unique
+  platform         String
+  name             String
+  /// static (fixed copy) | agent (the agent writes the DM)
+  mode             String    @default("static")
+  /// draft | active | paused
+  status           String    @default("active")
+  /// JSON-encoded string[]: SQLite has no list type.
+  keywords         String    @default("[]")
+  /// The provider request this row mirrors, so a later edit can be replayed.
+  config           Json?
+  runCount         Int       @default(0)
+  lastRunAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  workspace Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account   SocialAccount?        @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  runs      SocialAutomationRun[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, kind])
+  @@map("social_automations")
+}
+
+/// One execution of an automation, from the provider's own run webhooks.
+///
+/// A row per execution (not a counter on the automation) is what lets analytics
+/// answer "how many runs in this range" honestly; the provider's execution id is
+/// globally unique, so a redelivered `workflow.run.completed` collapses onto the
+/// same row instead of inflating the count.
+model SocialAutomationRun {
+  id                String    @id @default(uuid())
+  workspaceId       String
+  automationId      String?
+  zernioExecutionId String    @unique
+  /// running | completed | exited | failed
+  status            String    @default("running")
+  error             String?
+  startedAt         DateTime  @default(now())
+  endedAt           DateTime?
+  createdAt         DateTime  @default(now())
+
+  workspace  Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  automation SocialAutomation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, startedAt])
+  @@index([automationId])
+  @@map("social_automation_runs")
+}
+
+// ─── Machine workspaces (SHO-185) ───────────────────────────────────────────
+// Cloud-side copy bookkeeping, kept in the desktop schema too because the two
+// must stay identical (check-schema-parity). The desktop only ever writes
+// `machine_sync_changes`.
+
+model MachineSyncState {
+  instanceId   String    @id
+  epoch        String    @default("")
+  cursor       Int       @default(0)
+  lastIngestAt DateTime?
+  enabled      Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("machine_sync_states")
+}
+
+model MachineMirrorRow {
+  model      String
+  recordId   String
+  instanceId String
+  epoch      String   @default("")
+  createdAt  DateTime @default(now())
+
+  @@id([model, recordId])
+  @@index([instanceId])
+  @@index([instanceId, model])
+  @@map("machine_mirror_rows")
+}
+
+/// The desktop's own change log. SQLite triggers write here, the pusher reads
+/// it and advances `MachineSyncState.cursor` as the cloud acks.
+model MachineSyncChange {
+  seq       Int      @id @default(autoincrement())
+  model     String
+  recordId  String
+  op        String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("machine_sync_changes")
 }

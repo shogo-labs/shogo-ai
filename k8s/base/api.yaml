@@ -99,6 +99,12 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "production"
+            # Release tag this pod runs. Exposed on /health and /api/version so
+            # admin analytics can say "N of M desktop devices on <tag>". The
+            # k3d/dev manifests leave it at "dev"; the OKE overlays ship an
+            # APP_VERSION_PLACEHOLDER that deploy renders per release.
+            - name: APP_VERSION
+              value: "dev"
             - name: NODE_EXTRA_CA_CERTS
               value: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
             - name: VITE_PORT
@@ -127,6 +133,29 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: ANTHROPIC_API_KEY
+            # Huddles, and with them the hidden `huddle-notes` fallback agent
+            # (started in-process by the API). Optional: without them huddles are
+            # off and every other feature works as before.
+            - name: LIVEKIT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LIVEKIT_URL
+                  optional: true
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LIVEKIT_API_KEY
+                  optional: true
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LIVEKIT_API_SECRET
+                  optional: true
+            - name: LIVEKIT_NOTES_STT_MODEL
+              value: "deepgram/nova-3"
           readinessProbe:
             httpGet:
               path: /api/health

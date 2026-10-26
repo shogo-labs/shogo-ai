@@ -14,10 +14,133 @@
 
 /* ── Streamdown overrides for chat markdown ── */
 
-/* Base text color — inherits the theme-aware foreground so all
-   prose elements (p, h1-h6, li, td, th, strong, em) respect dark mode. */
+/* Semantic markdown palette. Mirrors the native palette in
+   components/chat/MarkdownText.tsx: GitHub grays for structure, blue for
+   links, and body-colored text on a neutral grey chip for inline code.
+   Dark values apply under `.dark`. */
 .chat-md {
-  color: rgb(var(--color-foreground));
+  --md-text: #1f2328;
+  --md-heading: #111827;
+  --md-muted: #59636e;
+  --md-link: #0969da;
+  /* Resolves against this element's own --md-text, so inline code follows
+     the body color in both themes with no dark override to keep in sync. */
+  --md-code-text: var(--md-text);
+  --md-code-bg: #e4e4e7;
+  --md-border: #d1d9e0;
+  --md-quote-border: #d1d9e0;
+  --md-table-header-bg: #f6f8fa;
+  color: var(--md-text);
+}
+
+.dark .chat-md {
+  --md-text: #e6edf3;
+  --md-heading: #ffffff;
+  --md-muted: #8b949e;
+  --md-link: #4493f8;
+  --md-code-bg: #333333;
+  --md-border: #30363d;
+  --md-quote-border: #30363d;
+  --md-table-header-bg: #161b22;
+}
+
+.chat-md [data-streamdown="heading-1"],
+.chat-md [data-streamdown="heading-2"],
+.chat-md [data-streamdown="heading-3"],
+.chat-md [data-streamdown="heading-4"],
+.chat-md [data-streamdown="heading-5"],
+.chat-md [data-streamdown="heading-6"],
+.chat-md [data-streamdown="strong"],
+.chat-md strong {
+  color: var(--md-heading) !important;
+}
+
+.chat-md [data-streamdown="link"],
+.chat-md a {
+  color: var(--md-link) !important;
+}
+
+.chat-md [data-streamdown="inline-code"] {
+  color: var(--md-code-text) !important;
+  background-color: var(--md-code-bg) !important;
+}
+
+.chat-md a.chat-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  max-width: 100%;
+  padding: 0 0.45em;
+  border: 1px solid var(--md-border);
+  border-radius: 6px;
+  background-color: var(--md-code-bg);
+  color: var(--md-text) !important;
+  font-size: 0.92em;
+  line-height: 1.5;
+  text-decoration: none !important;
+  vertical-align: baseline;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chat-md a.chat-file-chip > svg,
+.chat-md a.chat-file-chip > .file-type-badge {
+  flex-shrink: 0;
+}
+
+.file-type-badge {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border-radius: 22%;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  user-select: none;
+}
+
+/* Absolutely positioned so the label doesn't set the chip's baseline. */
+.file-type-badge::before {
+  content: attr(data-file-icon);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-md a.chat-file-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-md a.chat-file-chip:hover {
+  border-color: var(--md-link);
+  color: var(--md-link) !important;
+}
+.chat-md del,
+.chat-md s {
+  color: var(--md-muted) !important;
+}
+
+.chat-md [data-streamdown="blockquote"] {
+  border-left: 3px solid var(--md-quote-border) !important;
+  padding-left: 12px !important;
+}
+
+.chat-md [data-streamdown="horizontal-rule"] {
+  border-color: var(--md-border) !important;
+}
+
+.chat-md [data-streamdown="table-header"] {
+  background-color: var(--md-table-header-bg) !important;
+}
+
+.chat-md [data-streamdown="table-cell"],
+.chat-md [data-streamdown="table-header-cell"] {
+  border-color: var(--md-border) !important;
 }
 
 /* Code block container — flat, minimal chrome */
@@ -209,8 +332,13 @@
   --color-input: 228 228 231;
   --color-ring: 226 121 39;
 
-  --color-sidebar: 244 244 245;
+  --color-sidebar: 232 232 235;
   --color-sidebar-foreground: 24 24 27;
+  --color-sidebar-accent: 214 214 219;
+  --color-sidebar-accent-foreground: 24 24 27;
+  --color-sidebar-border: 210 210 214;
+  --color-sidebar-panel: 248 248 249;
+  --color-sidebar-muted-foreground: 113 113 122;
 
   /* M3 surface container progression — each depth gets progressively darker */
   --color-surface-0: 255 255 255;
@@ -252,8 +380,13 @@
   --color-input: 51 51 51;
   --color-ring: 240 144 80;
 
-  --color-sidebar: 42 42 42;
-  --color-sidebar-foreground: 222 222 222;
+  --color-sidebar: 32 31 30;
+  --color-sidebar-foreground: 236 236 236;
+  --color-sidebar-accent: 58 56 54;
+  --color-sidebar-accent-foreground: 255 255 255;
+  --color-sidebar-border: 58 56 54;
+  --color-sidebar-panel: 24 23 22;
+  --color-sidebar-muted-foreground: 168 164 158;
 
   /* M3 surface container progression — each depth gets progressively lighter */
   --color-surface-0: 30 30 30;

@@ -1,0 +1,38 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: vendor-requests
+name: Vendor Requests
+summary: New vendors and tools requested, reviewed for security and cost, then set up.
+channel: operations
+board:
+  name: Vendor requests
+  itemType: approval
+  keyPrefix: VEN
+  description: Requests for new tools, suppliers and contractors.
+  columns:
+    - name: Requested
+      category: backlog
+      slaHours: 48
+    - name: Reviewing
+      category: active
+    - name: Needs approval
+      category: review
+    - name: Set up
+      category: done
+    - name: Declined
+      category: dismissed
+  fields:
+    - key: vendor
+      label: Vendor
+      type: text
+      required: true
+    - key: annualCost
+      label: Annual cost
+      type: money
+    - key: dataAccess
+      label: Touches customer data
+      type: boolean
+  requiresHumanReview: true

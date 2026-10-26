@@ -13,9 +13,12 @@
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop } from './agent-loop'
+import { createStableLoopTransform } from './stable-compaction'
 import type { ToolContext } from './gateway-tools'
 import type { TeamManager, MailboxMessage, TaskInfo } from './team-manager'
 import { teammateStorage, type TeammateContext } from './teammate-context'
+import { AUTO_MODEL_ID, inferProviderFromModel, isAutoModel } from '@shogo/model-catalog'
+import { resolveAutoTierModelId } from './available-models'
 
 const POLL_INTERVAL_MS = 500
 const AUTO_COMPACT_TOKEN_THRESHOLD = 80_000
@@ -198,10 +201,18 @@ export function startTeammateLoop(
         const iterationsPerWake = config.maxTurnsPerWake || 50
         const MAX_TEAMMATE_CONTINUATIONS = 5
         let tmContinuations = 0
+        // runAgentLoop cannot route `auto` itself, so resolve it to the
+        // standard Auto tier here and infer the provider from that model.
+        const tmRequested = config.model || modelConfig?.name || AUTO_MODEL_ID
+        const tmModel = isAutoModel(tmRequested) ? resolveAutoTierModelId('standard') : tmRequested
+        const tmProvider = isAutoModel(tmRequested)
+          ? inferProviderFromModel(tmModel, 'anthropic')
+          : config.provider || modelConfig?.provider || 'anthropic'
+        const transformContext = createStableLoopTransform(tmModel)
 
         let result = await runAgentLoop({
-          provider: config.provider || modelConfig?.provider || 'anthropic',
-          model: config.model || modelConfig?.name || 'claude-haiku-4-5-20251001',
+          provider: tmProvider,
+          model: tmModel,
           system: config.systemPrompt,
           prompt,
           history,
@@ -209,6 +220,7 @@ export function startTeammateLoop(
           maxIterations: iterationsPerWake,
           signal: workAbort.signal,
           thinkingLevel: 'low',
+          transformContext,
           onTextDelta: w ? (delta) => {
             if (!tmTextId) {
               tmTextId = `tm-text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -271,7 +283,7 @@ export function startTeammateLoop(
 
           result = await runAgentLoop({
             provider: config.provider || modelConfig?.provider || 'anthropic',
-            model: config.model || modelConfig?.name || 'claude-haiku-4-5-20251001',
+            model: tmModel,
             system: config.systemPrompt,
             prompt: contPrompt,
             history: contHistory,
@@ -279,6 +291,7 @@ export function startTeammateLoop(
             maxIterations: iterationsPerWake,
             signal: workAbort.signal,
             thinkingLevel: 'low',
+            transformContext,
           })
           if (result.newMessages) {
             allMessages.push(...result.newMessages)

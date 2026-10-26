@@ -31,7 +31,7 @@ mkdir -p "$WORKSPACE_DIR"
 if [ ! -f "$WORKSPACE_DIR/config.json" ]; then
   cat > "$WORKSPACE_DIR/config.json" << 'CONF'
 {
-  "model": { "provider": "anthropic", "name": "claude-sonnet-4-6" },
+  "model": { "provider": "anthropic", "name": "auto" },
   "activeMode": "none",
   "heartbeat": { "enabled": false, "intervalMs": 300000 },
   "channels": [],

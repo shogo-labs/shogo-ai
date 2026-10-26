@@ -11,7 +11,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { channelDispatchOf } from '@shogo/shared-app/chat'
-import { pendingExternalPromptIndex } from '../late-turn-attach'
+import { externalPromptHasResponse, pendingExternalPromptIndex } from '../late-turn-attach'
 
 const dispatch = {
   type: 'data-channel-dispatch',
@@ -37,5 +37,27 @@ describe('a channel dispatch opened before the turn exists', () => {
     ]
     expect(channelDispatchOf(messages[0])).not.toBeNull()
     expect(pendingExternalPromptIndex(messages)).toBe(0)
+  })
+})
+
+describe('a project call opened before the callee starts', () => {
+  const callPrompt = {
+    id: 'u1',
+    role: 'user',
+    content: 'summarise the backlog',
+    parts: JSON.stringify([
+      { type: 'text', text: 'summarise the backlog' },
+      { type: 'data-project-call', data: { runId: 'run_1', callerName: 'Planner' } },
+    ]),
+  }
+
+  test('the request is pending until the reply arrives', () => {
+    expect(pendingExternalPromptIndex([callPrompt])).toBe(0)
+    expect(externalPromptHasResponse([callPrompt], 0)).toBe(false)
+    expect(externalPromptHasResponse([callPrompt, { id: 'a1', role: 'assistant', content: 'done' }], 0)).toBe(true)
+  })
+
+  test('an ordinary user message is not', () => {
+    expect(pendingExternalPromptIndex([{ id: 'u2', role: 'user', content: 'hi', parts: [{ type: 'text', text: 'hi' }] }])).toBe(-1)
   })
 })

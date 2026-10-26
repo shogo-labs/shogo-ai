@@ -24,10 +24,8 @@ import { importCloudModule } from '../cloud-import'
 import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
 import { resolveExposedPorts } from '../project-ports'
 
-/** HKDF purpose label for the guest home-state key. Bump with the version. */
-export const HOME_STATE_KEY_PURPOSE = 'home-state:v1'
-/** Must match the key version the guest stamps into each archive header. */
-export const HOME_STATE_KEY_VERSION = '1'
+import { HOME_STATE_KEY_PURPOSE, HOME_STATE_KEY_VERSION } from './home-state-key'
+export { HOME_STATE_KEY_PURPOSE, HOME_STATE_KEY_VERSION }
 
 /**
  * Thrown when the project row is gone (typically deleted while a session was
@@ -68,6 +66,7 @@ export async function buildProjectEnv(
 
   const tokenStart = Date.now()
   let projectFound = false
+  let projectWorkspaceId: string | null = null
   try {
     const { prisma } = await import('../prisma')
     const project = await prisma.project.findUnique({
@@ -88,6 +87,7 @@ export async function buildProjectEnv(
     }) | null
     if (project) {
       projectFound = true
+      projectWorkspaceId = project.workspaceId ?? null
       if (project.workspaceId) env.WORKSPACE_ID = project.workspaceId
       // TEMPLATE_ID intentionally not exported. The marketplace install
       // flow pre-seeds the workspace, so the runtime no longer needs a
@@ -273,6 +273,21 @@ export async function buildProjectEnv(
   const { deriveRuntimeToken, deriveWebhookToken } = await import('../runtime-token')
   env.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
   env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
+
+  // INVERSION, not a replacement: the API authenticates *to* this pod with the
+  // workspace token (`deriveProjectRuntimeToken` → `wrt_v1_<workspaceId>_…`, see
+  // lib/project-runtime-token.ts), but the pod only held the project token, so
+  // the runtime's byte-compare fast path could never match a remote tool call,
+  // `project_call` or a preview hop — every one of them fell back to an API
+  // round-trip and a burst of 401s when that round-trip blipped (SHO-125).
+  // RUNTIME_AUTH_SECRET stays the project token because it is also the pod's
+  // *outbound* credential, and the API only accepts a workspace token on
+  // project routes for the Git LFS family (middleware/auth.ts
+  // WORKSPACE_TOKEN_PROJECT_ROUTE).
+  if (projectWorkspaceId) {
+    const { deriveWorkspaceRuntimeToken } = await import('../workspace-runtime-token')
+    env.WORKSPACE_RUNTIME_AUTH_SECRET = deriveWorkspaceRuntimeToken(projectWorkspaceId)
+  }
 
   // Per-project key for the guest's encrypted home-directory archive
   // (packages/agent-runtime/src/home-state.ts). The guest encrypts before the

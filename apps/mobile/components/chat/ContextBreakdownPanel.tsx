@@ -16,6 +16,7 @@ import React from "react"
 import { View, Text } from "react-native"
 
 import { formatTokenCount } from "./ContextTracker"
+import { ContextSummarySection } from "./ContextSummarySection"
 
 export interface ContextBreakdownCategory {
   key: string
@@ -34,6 +35,9 @@ interface ContextBreakdownPanelProps {
   /** Live conversation-only estimate — used as a fallback numerator before any breakdown has arrived. */
   inputTokens: number
   contextWindowTokens: number
+  /** Project + chat session, so the panel can offer "Summarize now" (SHO-96). */
+  projectId?: string | null
+  chatSessionId?: string | null
 }
 
 /**
@@ -54,7 +58,13 @@ function getCategoryColor(key: string): string {
   return CATEGORY_COLORS[key] ?? FALLBACK_COLOR
 }
 
-export function ContextBreakdownPanel({ breakdown, inputTokens, contextWindowTokens }: ContextBreakdownPanelProps) {
+export function ContextBreakdownPanel({
+  breakdown,
+  inputTokens,
+  contextWindowTokens,
+  projectId,
+  chatSessionId,
+}: ContextBreakdownPanelProps) {
   const categories = breakdown?.categories ?? []
   const totalTokens = breakdown?.grandEstTokens ?? inputTokens
   const percentage = contextWindowTokens > 0 ? Math.min((totalTokens / contextWindowTokens) * 100, 100) : 0
@@ -97,6 +107,8 @@ export function ContextBreakdownPanel({ breakdown, inputTokens, contextWindowTok
           Send a message to see the full context breakdown for this session.
         </Text>
       )}
+
+      <ContextSummarySection projectId={projectId} chatSessionId={chatSessionId} />
     </View>
   )
 }

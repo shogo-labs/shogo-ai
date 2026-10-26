@@ -209,6 +209,35 @@ describe('model-registry.service', () => {
     expect(new Set(getDbModelEntriesSync().map((m) => m.id)).has(CLOUD_OPUS_UUID)).toBe(false)
   })
 
+  test('a mirrored cloud model bills at the cloud pricing, not the sonnet fallback', async () => {
+    // Hoshi 2.0 is a cloud-defined DB model. Its rates live only on cloud, so
+    // the local DB has no row to price it from.
+    const CLOUD_HOSHI_UUID = '38e6339d-9135-4aff-8641-eba3ae7bebe5'
+    CLOUD_MODELS = [
+      {
+        id: CLOUD_HOSHI_UUID,
+        provider: 'custom',
+        displayName: 'Hoshi 2.0',
+        shortDisplayName: 'Hoshi 2.0',
+        tier: 'standard',
+        family: 'other',
+        maxOutputTokens: 128000,
+        pricing: { inputPerMillion: 0.15, cachedInputPerMillion: 0.001, cacheWritePerMillion: 0.15, outputPerMillion: 0.3 },
+      },
+    ]
+    await invalidateModelRegistry()
+
+    expect(getDbModelPricingSync(CLOUD_HOSHI_UUID)).toEqual({
+      inputPerMillion: 0.15,
+      cachedInputPerMillion: 0.001,
+      cacheWritePerMillion: 0.15,
+      outputPerMillion: 0.3,
+    })
+    // 1M input at $0.15/M, times the 1.20 markup.
+    const { rawUsd } = calculateUsageCost(1_000_000, 0, CLOUD_HOSHI_UUID)
+    expect(rawUsd).toBeCloseTo(0.15, 10)
+  })
+
   test('a local DB row is never clobbered by a cloud entry on id collision', async () => {
     CLOUD_MODELS = [
       {

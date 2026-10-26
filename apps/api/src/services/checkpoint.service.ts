@@ -35,7 +35,25 @@ export interface CreateCheckpointOptions {
   includeDatabase?: boolean;
   isAutomatic?: boolean;
   createdBy?: string;
+  /**
+   * Force how the snapshot is recorded, overriding the project/env rule.
+   * `ref` never touches the checked-out branch; `branch` is the historical
+   * commit-on-HEAD behaviour (local-only projects).
+   */
+  mode?: CheckpointMode;
 }
+
+/**
+ * How a checkpoint's snapshot is recorded.
+ *
+ * - `branch`: a real commit on the project branch (what every checkpoint did
+ *   before 2026-10-19). Correct for local-only projects, where the commit
+ *   history *is* the feature the user browses.
+ * - `ref`: a `commit-tree` snapshot pinned by `refs/shogo/checkpoints/**`, so
+ *   a project whose branch belongs to the user (a `GitHubConnection`) never
+ *   gains an `AI: …` commit and nothing is ever pushed for a checkpoint.
+ */
+export type CheckpointMode = 'branch' | 'ref';
 
 export interface CheckpointResult {
   id: string;
@@ -50,6 +68,10 @@ export interface CheckpointResult {
   includesDb: boolean;
   isAutomatic: boolean;
   createdAt: Date;
+  /** Where `commitSha` lives. Absent on results built by older callers. */
+  mode?: CheckpointMode;
+  /** The ref pinning a `ref`-mode snapshot; null for `branch`-mode rows. */
+  refName?: string | null;
 }
 
 export interface RollbackOptions {
@@ -87,6 +109,44 @@ export interface CheckpointDiff {
 const SHOGO_DIR = '.shogo';
 const DB_SNAPSHOT_FILE = 'database.sql.gz';
 
+/** The `ProjectCheckpoint` columns every result mapping reads. */
+type CheckpointRow = {
+  id: string;
+  commitSha: string;
+  branch: string;
+  name: string | null;
+  description: string | null;
+  commitMessage: string;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  includesDb: boolean;
+  isAutomatic: boolean;
+  createdAt: Date;
+  mode?: string | null;
+  refName?: string | null;
+};
+
+/** Map a row to the public result shape — one place, so `mode`/`refName` never drift. */
+function toCheckpointResult(c: CheckpointRow): CheckpointResult {
+  return {
+    id: c.id,
+    commitSha: c.commitSha,
+    branch: c.branch,
+    name: c.name,
+    description: c.description,
+    message: c.commitMessage,
+    filesChanged: c.filesChanged,
+    additions: c.additions,
+    deletions: c.deletions,
+    includesDb: c.includesDb,
+    isAutomatic: c.isAutomatic,
+    createdAt: c.createdAt,
+    mode: c.mode === 'ref' ? 'ref' : 'branch',
+    refName: c.refName ?? null,
+  };
+}
+
 // =============================================================================
 // Checkpoint Service
 // =============================================================================
@@ -109,6 +169,95 @@ export class CheckpointsDisabledError extends Error {
     )
     this.name = 'CheckpointsDisabledError'
   }
+}
+
+/**
+ * Typed error thrown when the project's folder is a checkout of someone else's
+ * git repository (a manual `git clone`, or any repo whose `origin` a human
+ * configured) and there is no `GitHubConnection` handing it to Shogo.
+ *
+ * Routes surface this as a 409 with `code: 'checkpoints_disabled_foreign_repo'`
+ * so the panel renders the same "use your own git" banner as external mode.
+ * Thrown BEFORE `initRepo`, so the tracked `.gitignore`, the index and
+ * `.git/config`'s `user.*` are never touched.
+ */
+export class CheckpointsDisabledForeignRepoError extends Error {
+  readonly code = 'checkpoints_disabled_foreign_repo' as const
+  readonly originUrl: string
+  constructor(originUrl: string) {
+    super(
+      `This project's folder is a checkout of another git repository (${originUrl}), ` +
+        "so Shogo won't commit into it. Use your own git — or connect the repo to Shogo " +
+        'so Shogo manages its history.',
+    )
+    this.name = 'CheckpointsDisabledForeignRepoError'
+    this.originUrl = originUrl
+  }
+}
+
+/** The project columns that decide checkpoint ownership. */
+type CheckpointOwnershipProject = {
+  workingMode?: string | null
+  githubConnection?: { id: string } | null
+  /** `Project.settings` — carries the per-project `checkpointMode` override. */
+  settings?: unknown
+} | null
+
+/**
+ * Ownership gate: Shogo only commits into a repo it owns.
+ *
+ * Ownership is decided from the repo itself, not `workingMode`. A project with
+ * no `origin` remote (every fresh `initRepo`) is ours; a project with a
+ * `GitHubConnection` row handed its repo to Shogo (`github_connect`); anything
+ * else is someone else's repo and must never be committed to.
+ *
+ * Must run BEFORE `gitService.initRepo()` — that call is not a no-op on an
+ * existing repo: it appends to the tracked `.gitignore`, `git rm --cached`s
+ * build output, and overwrites repo-local `user.name` / `user.email` (which is
+ * exactly what made auto-checkpoint commits fail the CLA check on a clone).
+ */
+async function assertRepoOwnedByShogo(
+  project: CheckpointOwnershipProject,
+  workspacePath: string,
+): Promise<void> {
+  if (project?.githubConnection) return
+  const originUrl = await gitService.getOriginRemoteUrl(workspacePath)
+  if (originUrl) throw new CheckpointsDisabledForeignRepoError(originUrl)
+}
+
+/**
+ * Decide how a checkpoint for this project should be recorded.
+ *
+ * Precedence, highest first:
+ *   1. `SHOGO_CHECKPOINT_MODE` — the operator kill switch (`branch` restores
+ *      the pre-SHO-61 behaviour everywhere without a code change);
+ *   2. `settings.checkpointMode` — a per-project override, which outranks a
+ *      caller's hint because it is the project owner's explicit choice;
+ *   3. an explicit `requested` mode from a caller that already knows the
+ *      project (the workspace auto-checkpoint passes `ref` for a connected
+ *      project);
+ *   4. the default rule: `ref` when the project has a `GitHubConnection` (the
+ *      branch is the user's, so Shogo must not commit to it), `branch`
+ *      otherwise (local-only projects keep the commit-history UX).
+ */
+export function resolveCheckpointMode(
+  project: CheckpointOwnershipProject,
+  requested?: CheckpointMode,
+): CheckpointMode {
+  const envMode = process.env.SHOGO_CHECKPOINT_MODE?.trim().toLowerCase();
+  if (envMode === 'ref' || envMode === 'branch') return envMode;
+
+  const settings = project?.settings && typeof project.settings === 'object'
+    ? (project.settings as Record<string, unknown>)
+    : null;
+  const pinned = typeof settings?.checkpointMode === 'string'
+    ? settings.checkpointMode.trim().toLowerCase()
+    : '';
+  if (pinned === 'ref' || pinned === 'branch') return pinned;
+
+  if (requested === 'ref' || requested === 'branch') return requested;
+
+  return project?.githubConnection ? 'ref' : 'branch';
 }
 
 /**
@@ -186,7 +335,7 @@ export async function createCheckpoint(
   // POST) doesn't accidentally write commits into the user's repo.
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { workingMode: true },
+    select: { workingMode: true, githubConnection: { select: { id: true } }, settings: true },
   });
   if ((project as { workingMode?: string } | null)?.workingMode === 'external') {
     throw new CheckpointsDisabledError();
@@ -196,6 +345,10 @@ export async function createCheckpoint(
   if (!existsSync(workspacePath)) {
     throw new Error(`Workspace not found: ${workspacePath}`);
   }
+
+  // Ownership gate — see assertRepoOwnedByShogo. Runs before initRepo so a
+  // repo we don't own keeps its `.gitignore`, index and `user.*` intact.
+  await assertRepoOwnedByShogo(project as CheckpointOwnershipProject, workspacePath);
 
   // Initialize git repo if needed
   const { branch } = await gitService.initRepo(workspacePath);
@@ -211,14 +364,38 @@ export async function createCheckpoint(
     await createDatabaseSnapshot(workspacePath, projectId);
   }
 
-  // Create git commit
-  const commit = await gitService.commit(workspacePath, {
-    message,
-    includeUntracked: true,
-  });
+  // Decide how to record the snapshot. `ref` projects (every project with a
+  // GitHubConnection) get a commit pinned by refs/shogo/checkpoints/**, so the
+  // branch the user has checked out never gains an "AI: …" commit and
+  // syncAfterCheckpoint has nothing new to push. `branch` keeps the historical
+  // commit-on-HEAD behaviour for local-only projects.
+  const mode = resolveCheckpointMode(project as CheckpointOwnershipProject, options.mode);
+
+  let commit: { sha: string; message: string; filesChanged: number; additions: number; deletions: number } | null =
+    null;
+  let refName: string | null = null;
+  if (mode === 'ref') {
+    const snapshot = await gitService.snapshotTree(workspacePath, { message, branch });
+    if (snapshot) {
+      refName = snapshot.refName;
+      commit = {
+        sha: snapshot.sha,
+        message: snapshot.message,
+        filesChanged: snapshot.filesChanged,
+        additions: snapshot.additions,
+        deletions: snapshot.deletions,
+      };
+    }
+  } else {
+    commit = await gitService.commit(workspacePath, {
+      message,
+      includeUntracked: true,
+    });
+  }
 
   if (!commit) {
-    // No changes to commit - get the latest commit instead
+    // No changes since HEAD (or an unchanged working tree for a ref project):
+    // reuse the latest commit rather than inventing an empty snapshot.
     const headCommit = await gitService.getCommit(workspacePath, 'HEAD');
     if (!headCommit) {
       throw new Error('No commits in repository and no changes to commit');
@@ -230,20 +407,7 @@ export async function createCheckpoint(
     });
 
     if (existingCheckpoint) {
-      return {
-        id: existingCheckpoint.id,
-        commitSha: existingCheckpoint.commitSha,
-        branch: existingCheckpoint.branch,
-        name: existingCheckpoint.name,
-        description: existingCheckpoint.description,
-        message: existingCheckpoint.commitMessage,
-        filesChanged: existingCheckpoint.filesChanged,
-        additions: existingCheckpoint.additions,
-        deletions: existingCheckpoint.deletions,
-        includesDb: existingCheckpoint.includesDb,
-        isAutomatic: existingCheckpoint.isAutomatic,
-        createdAt: existingCheckpoint.createdAt,
-      };
+      return toCheckpointResult(existingCheckpoint);
     }
 
     // Create checkpoint record for existing commit (use stats from the commit)
@@ -255,6 +419,10 @@ export async function createCheckpoint(
         commitSha: headCommit.sha,
         commitMessage: message || headCommit.message,
         branch,
+        // A HEAD commit is a real branch commit no matter which mode the
+        // project is in, so record it honestly as a `branch` row.
+        mode: 'branch',
+        refName: null,
         includesDb: includeDatabase,
         filesChanged: headCommit.filesChanged,
         additions: headCommit.additions,
@@ -267,20 +435,7 @@ export async function createCheckpoint(
     // Auto-sync to GitHub if connected (fire-and-forget)
     syncAfterCheckpoint(projectId).catch(() => {});
 
-    return {
-      id: checkpoint.id,
-      commitSha: checkpoint.commitSha,
-      branch: checkpoint.branch,
-      name: checkpoint.name,
-      description: checkpoint.description,
-      message: checkpoint.commitMessage,
-      filesChanged: checkpoint.filesChanged,
-      additions: checkpoint.additions,
-      deletions: checkpoint.deletions,
-      includesDb: checkpoint.includesDb,
-      isAutomatic: checkpoint.isAutomatic,
-      createdAt: checkpoint.createdAt,
-    };
+    return toCheckpointResult(checkpoint);
   }
 
   // Save checkpoint metadata locally
@@ -302,6 +457,8 @@ export async function createCheckpoint(
       commitSha: commit.sha,
       commitMessage: message,
       branch,
+      mode,
+      refName,
       includesDb: includeDatabase,
       filesChanged: commit.filesChanged,
       additions: commit.additions,
@@ -311,23 +468,14 @@ export async function createCheckpoint(
     },
   });
 
-  // Auto-sync to GitHub if connected (fire-and-forget)
-  syncAfterCheckpoint(projectId).catch(() => {});
+  // Auto-sync to GitHub if connected (fire-and-forget). A ref snapshot is not
+  // on the branch, so there is nothing for the push to publish — skip it
+  // entirely instead of waking the GitHub client on every chat turn.
+  if (mode === 'branch') {
+    syncAfterCheckpoint(projectId).catch(() => {});
+  }
 
-  return {
-    id: checkpoint.id,
-    commitSha: checkpoint.commitSha,
-    branch: checkpoint.branch,
-    name: checkpoint.name,
-    description: checkpoint.description,
-    message: checkpoint.commitMessage,
-    filesChanged: checkpoint.filesChanged,
-    additions: checkpoint.additions,
-    deletions: checkpoint.deletions,
-    includesDb: checkpoint.includesDb,
-    isAutomatic: checkpoint.isAutomatic,
-    createdAt: checkpoint.createdAt,
-  };
+  return toCheckpointResult(checkpoint);
 }
 
 /**
@@ -355,20 +503,7 @@ export async function listCheckpoints(
     take: limit,
   });
 
-  return checkpoints.map((c) => ({
-    id: c.id,
-    commitSha: c.commitSha,
-    branch: c.branch,
-    name: c.name,
-    description: c.description,
-    message: c.commitMessage,
-    filesChanged: c.filesChanged,
-    additions: c.additions,
-    deletions: c.deletions,
-    includesDb: c.includesDb,
-    isAutomatic: c.isAutomatic,
-    createdAt: c.createdAt,
-  }));
+  return checkpoints.map(toCheckpointResult);
 }
 
 /**
@@ -385,20 +520,7 @@ export async function getCheckpoint(
     return null;
   }
 
-  return {
-    id: checkpoint.id,
-    commitSha: checkpoint.commitSha,
-    branch: checkpoint.branch,
-    name: checkpoint.name,
-    description: checkpoint.description,
-    message: checkpoint.commitMessage,
-    filesChanged: checkpoint.filesChanged,
-    additions: checkpoint.additions,
-    deletions: checkpoint.deletions,
-    includesDb: checkpoint.includesDb,
-    isAutomatic: checkpoint.isAutomatic,
-    createdAt: checkpoint.createdAt,
-  };
+  return toCheckpointResult(checkpoint);
 }
 
 /**
@@ -416,20 +538,7 @@ export async function getCheckpointByCommit(
     return null;
   }
 
-  return {
-    id: checkpoint.id,
-    commitSha: checkpoint.commitSha,
-    branch: checkpoint.branch,
-    name: checkpoint.name,
-    description: checkpoint.description,
-    message: checkpoint.commitMessage,
-    filesChanged: checkpoint.filesChanged,
-    additions: checkpoint.additions,
-    deletions: checkpoint.deletions,
-    includesDb: checkpoint.includesDb,
-    isAutomatic: checkpoint.isAutomatic,
-    createdAt: checkpoint.createdAt,
-  };
+  return toCheckpointResult(checkpoint);
 }
 
 /**
@@ -461,6 +570,18 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
     };
   }
 
+  // Same ownership gate as createCheckpoint, and for a stronger reason: the
+  // pre-rollback checkpoint would commit, and `checkout --force` +
+  // `read-tree -u --reset` would rewrite a working tree we don't own.
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workingMode: true, githubConnection: { select: { id: true } } },
+  });
+  if ((project as { workingMode?: string } | null)?.workingMode === 'external') {
+    throw new CheckpointsDisabledError();
+  }
+  await assertRepoOwnedByShogo(project as CheckpointOwnershipProject, workspacePath);
+
   // Create a pre-rollback checkpoint to preserve current state
   let preRollbackCheckpoint: CheckpointResult | null = null;
   try {
@@ -483,38 +604,32 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
   // Make sure HEAD is on the project branch. Unlike the old flow we never
   // detach onto the checkpoint commit — keeping the branch ref at its current
   // tip is what lets us preserve the commits made after the checkpoint.
-  const result = await gitService.checkout(workspacePath, checkpoint.branch, {
-    force: true,
-  });
+  //
+  // Ref snapshots skip this: their whole point is that HEAD never moved, so
+  // forcing a checkout would drag the working tree (and a possibly different
+  // branch) around for no reason. `read-tree` below restores the tree in place.
+  if (checkpoint.mode !== 'ref') {
+    const result = await gitService.checkout(workspacePath, checkpoint.branch, {
+      force: true,
+    });
 
-  if (!result.success) {
-    return {
-      success: false,
-      previousCheckpoint: {
-        id: checkpoint.id,
-        commitSha: checkpoint.commitSha,
-        branch: checkpoint.branch,
-        name: checkpoint.name,
-        description: checkpoint.description,
-        message: checkpoint.commitMessage,
-        filesChanged: checkpoint.filesChanged,
-        additions: checkpoint.additions,
-        deletions: checkpoint.deletions,
-        includesDb: checkpoint.includesDb,
-        isAutomatic: checkpoint.isAutomatic,
-        createdAt: checkpoint.createdAt,
-      },
-      newCheckpoint: preRollbackCheckpoint,
-      error: result.error || 'Git checkout failed',
-    };
+    if (!result.success) {
+      return {
+        success: false,
+        previousCheckpoint: toCheckpointResult(checkpoint),
+        newCheckpoint: preRollbackCheckpoint,
+        error: result.error || 'Git checkout failed',
+      };
+    }
   }
 
   // Restore the working tree + index to the checkpoint's tree WITHOUT moving
   // the branch ref. `git read-tree -u --reset <sha>` performs the same index
   // and working-tree update as `git reset --hard`, but it leaves HEAD pointing
-  // at the current branch tip. The subsequent commit therefore records a single
-  // revert-to-checkpoint commit on top of the existing history, so none of the
-  // commits made after the checkpoint are deleted.
+  // at the current branch tip. For a branch checkpoint the post-rollback
+  // checkpoint then records a single revert commit on top of the existing
+  // history, so none of the commits made after the checkpoint are deleted; for
+  // a ref checkpoint it records a new snapshot and the branch tip stays put.
   try {
     execSync(`git read-tree -u --reset ${checkpoint.commitSha}`, {
       cwd: workspacePath,
@@ -523,20 +638,7 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
   } catch (err: any) {
     return {
       success: false,
-      previousCheckpoint: {
-        id: checkpoint.id,
-        commitSha: checkpoint.commitSha,
-        branch: checkpoint.branch,
-        name: checkpoint.name,
-        description: checkpoint.description,
-        message: checkpoint.commitMessage,
-        filesChanged: checkpoint.filesChanged,
-        additions: checkpoint.additions,
-        deletions: checkpoint.deletions,
-        includesDb: checkpoint.includesDb,
-        isAutomatic: checkpoint.isAutomatic,
-        createdAt: checkpoint.createdAt,
-      },
+      previousCheckpoint: toCheckpointResult(checkpoint),
       newCheckpoint: preRollbackCheckpoint,
       error: err?.message || 'Failed to restore checkpoint tree',
     };
@@ -577,20 +679,7 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
 
   return {
     success: true,
-    previousCheckpoint: {
-      id: checkpoint.id,
-      commitSha: checkpoint.commitSha,
-      branch: checkpoint.branch,
-      name: checkpoint.name,
-      description: checkpoint.description,
-      message: checkpoint.commitMessage,
-      filesChanged: checkpoint.filesChanged,
-      additions: checkpoint.additions,
-      deletions: checkpoint.deletions,
-      includesDb: checkpoint.includesDb,
-      isAutomatic: checkpoint.isAutomatic,
-      createdAt: checkpoint.createdAt,
-    },
+    previousCheckpoint: toCheckpointResult(checkpoint),
     newCheckpoint,
   };
 }
@@ -619,6 +708,14 @@ export async function getDiff(
     if (toCheckpoint) {
       toRef = toCheckpoint.commitSha;
     }
+  }
+
+  // A pre-ref (mode='branch') row points at a commit reachable only from the
+  // branch. Pin it on first touch so a later rewrite of that branch — a
+  // force-push from the user's own git, a rebase, `git gc` — cannot make the
+  // row's diff unreadable.
+  if (fromCheckpoint.mode !== 'ref' && !fromCheckpoint.refName) {
+    await gitService.ensureLegacyCheckpointRef(workspacePath, fromCheckpoint.commitSha);
   }
 
   const diff = await gitService.getDiff(workspacePath, fromCheckpoint.commitSha, toRef);
@@ -763,7 +860,7 @@ async function restoreDatabaseSnapshot(
  */
 export async function pruneCheckpoints(
   projectId: string,
-  options?: { keepCount?: number; keepDays?: number }
+  options?: { keepCount?: number; keepDays?: number; workspacePath?: string }
 ): Promise<number> {
   const { keepCount = 100, keepDays = 30 } = options || {};
 
@@ -792,6 +889,22 @@ export async function pruneCheckpoints(
 
   if (toDelete.length === 0) {
     return 0;
+  }
+
+  // Drop the refs that pinned deleted snapshots. Without this, refs/shogo/**
+  // keeps every pruned snapshot reachable and `git gc` can never reclaim the
+  // objects. Best-effort: a missing workspace or an already-deleted ref must
+  // not stop the row delete (that would re-prune the same rows forever).
+  const workspacePath = options?.workspacePath;
+  if (workspacePath) {
+    for (const row of toDelete) {
+      // A legacy (mode='branch') row has no ref of its own, but getDiff pins
+      // one under legacy/<sha> the first time it reads the row. Drop that pin
+      // too; deleting a ref that was never created is a no-op.
+      const refName = row.refName
+        ?? `${gitService.CHECKPOINT_REF_PREFIX}/legacy/${row.commitSha}`;
+      await gitService.deleteCheckpointRef(workspacePath, refName);
+    }
   }
 
   const deleteIds = toDelete.map((c) => c.id);

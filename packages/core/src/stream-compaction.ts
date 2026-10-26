@@ -13,6 +13,10 @@
  *     across steps, so merging never crosses a start);
  *   - tool-input deltas are merged per tool call, and dropped entirely once
  *     `tool-input-available` / `tool-input-error` carries the full input;
+ *   - of a tool call's `preliminary: true` outputs only the latest is kept (each
+ *     one carries the whole accumulated state, so it replaces the earlier ones),
+ *     and all of them are dropped once the call's final output or error is in
+ *     the buffer — a sub-agent streams one of these per update;
  *   - `data-turn-seq` heartbeats are dropped; the caller appends one with the
  *     exact current seq so `?fromSeq=N` reconnects stay correct.
  *
@@ -49,6 +53,8 @@ export function compactSseFrames(frames: Uint8Array[]): Uint8Array {
   const out: Entry[] = []
   const openParts = new Map<string, Chunk>()
   const openToolInputs = new Map<string, number>()
+  /** Index of the one preliminary output kept so far, per tool call. */
+  const preliminaryOutputs = new Map<string, number>()
 
   for (const event of events) {
     const chunk = parseEvent(event)
@@ -98,6 +104,15 @@ export function compactSseFrames(frames: Uint8Array[]): Uint8Array {
       openToolInputs.delete(chunk.toolCallId)
     } else if (type === 'tool-input-start') {
       openToolInputs.delete(chunk.toolCallId)
+    } else if (type === 'tool-output-available' || type === 'tool-output-error') {
+      const superseded = preliminaryOutputs.get(chunk.toolCallId)
+      if (superseded !== undefined) {
+        out[superseded] = null
+        preliminaryOutputs.delete(chunk.toolCallId)
+      }
+      if (type === 'tool-output-available' && chunk.preliminary === true) {
+        preliminaryOutputs.set(chunk.toolCallId, out.length)
+      }
     }
     out.push({ chunk })
   }

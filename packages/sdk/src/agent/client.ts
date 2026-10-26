@@ -209,7 +209,7 @@ export class AgentClient {
    * Paths are relative to workspace root; values are base64-encoded file bytes.
    */
   async getWorkspaceBundle(): Promise<WorkspaceBundle> {
-    return this.fetchJson<WorkspaceBundle>('/agent/workspace/bundle')
+    return this.fetchJson<WorkspaceBundle>('/agent/workspace/bundle', undefined, { scoped: true })
   }
 
   async readFile(path: string): Promise<string> {

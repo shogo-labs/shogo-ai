@@ -15,9 +15,21 @@
 import { describe, expect, test } from 'bun:test'
 import {
   cleanPreview,
+  requiresInactivity,
   shouldAttemptNotification,
   type ShouldAttemptArgs,
 } from '../useNotifyOnTurnComplete'
+
+describe('requiresInactivity', () => {
+  test('web waits until the tab is hidden or unfocused', () => {
+    expect(requiresInactivity('web')).toBe(true)
+  })
+
+  test('native alerts while the app is open', () => {
+    expect(requiresInactivity('ios')).toBe(false)
+    expect(requiresInactivity('android')).toBe(false)
+  })
+})
 
 function base(overrides: Partial<ShouldAttemptArgs> = {}): ShouldAttemptArgs {
   return {

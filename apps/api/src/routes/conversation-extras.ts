@@ -2,13 +2,15 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Daily-driver channel endpoints: chat settings and status, the activity
- * inbox, pins, saved items, drafts, scheduled messages, reminders, custom
- * emoji, and user groups. Mounted onto the conversations router.
+ * inbox and the sent-messages view, pins, saved items, drafts, scheduled
+ * messages, reminders, custom emoji, and user groups. Mounted onto the
+ * conversations router.
  */
 
 import type { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { readConversationFile, verifyConversationFileToken } from '../lib/conversation-files'
+import { publishConversationEvent } from '../lib/conversation-bus'
 import {
   MAX_EMOJI_BYTES,
   createEmoji,
@@ -21,6 +23,7 @@ import {
 } from '../services/chat-customization'
 import { getChatSettings, listStatuses, updateChatSettings } from '../services/chat-settings'
 import { listInbox, markInboxRead } from '../services/chat-inbox'
+import { listSentMessages } from '../services/chat-sent'
 import {
   cancelScheduled,
   createReminder,
@@ -36,6 +39,17 @@ import {
   updateReminder,
   updateScheduled,
 } from '../services/chat-items'
+import {
+  archiveSection,
+  getArchive,
+  getDoc,
+  listArchives,
+  listRevisions,
+  restoreArchive,
+  restoreRevision,
+  saveDoc,
+  setDocLocked,
+} from '../services/conversation-doc.service'
 
 export interface ExtrasHelpers {
   requireUser: (c: any) => Promise<string | Response>
@@ -57,7 +71,11 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     const auth = await h.requireWorkspace(c)
     if (auth instanceof Response) return auth
     try {
-      return c.json({ settings: await updateChatSettings(auth.workspaceId, auth.userId, await h.readJson(c)) })
+      const settings = await updateChatSettings(auth.workspaceId, auth.userId, await h.readJson(c))
+      // The person's other open tabs and devices pick the change up live; without it a tab
+      // loaded before the change keeps playing the old message tone until it reloads.
+      publishConversationEvent(auth.workspaceId, { type: 'settings.changed', settings }, [auth.userId])
+      return c.json({ settings })
     } catch (err) {
       return h.errorResponse(c, err)
     }
@@ -79,6 +97,17 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     return c.json(await listInbox(auth.workspaceId, auth.userId, {
       unreadOnly: c.req.query('filter') === 'unread',
       before: c.req.query('before') ?? null,
+      limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+    }))
+  })
+
+  router.get('/workspaces/:workspaceId/sent-messages', async (c) => {
+    const auth = await h.requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const limit = Number(c.req.query('limit'))
+    return c.json(await listSentMessages(auth.workspaceId, auth.userId, {
+      before: c.req.query('before') ?? null,
+      beforeId: c.req.query('beforeId') ?? null,
       limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     }))
   })
@@ -115,6 +144,116 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     if (userId instanceof Response) return userId
     try {
       return c.json({ messages: await listPins(c.req.param('conversationId'), userId) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  // ─── Channel doc ────────────────────────────────────────────────────────
+
+  router.get('/conversations/:conversationId/doc', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json(await getDoc(c.req.param('conversationId'), userId))
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.put('/conversations/:conversationId/doc', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      const doc = await saveDoc(c.req.param('conversationId'), userId, {
+        title: body.title,
+        content: body.content,
+        baseVersion: body.baseVersion,
+      })
+      return c.json({ doc })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.get('/conversations/:conversationId/doc/revisions', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json({ revisions: await listRevisions(c.req.param('conversationId'), userId) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversations/:conversationId/doc/revisions/:revisionId/restore', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      const doc = await restoreRevision(c.req.param('conversationId'), userId, c.req.param('revisionId'), body.baseVersion)
+      return c.json({ doc })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversations/:conversationId/doc/lock', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      return c.json({ doc: await setDocLocked(c.req.param('conversationId'), userId, body.locked !== false) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  // ─── Archived doc sections ──────────────────────────────────────────────
+
+  router.get('/conversations/:conversationId/doc/archives', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json({ archives: await listArchives(c.req.param('conversationId'), userId) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.get('/conversations/:conversationId/doc/archives/:archiveId', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json({ archive: await getArchive(c.req.param('conversationId'), userId, c.req.param('archiveId')) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversations/:conversationId/doc/archives', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      const { doc, archive } = await archiveSection(c.req.param('conversationId'), userId, {
+        section: String(body.section ?? ''),
+        baseVersion: Number.isInteger(body.baseVersion) ? body.baseVersion : undefined,
+      })
+      return c.json({ doc, archive })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversations/:conversationId/doc/archives/:archiveId/restore', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      const doc = await restoreArchive(c.req.param('conversationId'), userId, c.req.param('archiveId'), body.baseVersion)
+      return c.json({ doc })
     } catch (err) {
       return h.errorResponse(c, err)
     }

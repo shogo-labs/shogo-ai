@@ -23,9 +23,11 @@ import { askUserStreamVariant } from "./pendingQuestion"
 import { TodoRow } from "./TodoRow"
 import { ToolCallGroup } from "./ToolCallGroup"
 import { WorkGroup } from "./WorkGroup"
-import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
-import { useChatImageWidth } from "./use-chat-image-width"
+import { fitChatImage } from "./image-sizing"
+import { useNaturalImageSize } from "./image-natural-size"
+import { useMeasuredWidth } from "./use-measured-width"
 import { WorkedForGroup } from "./WorkedForGroup"
+import { ContextCompactionDivider } from "./ContextCompactionDivider"
 import { PlanningStatusLine } from "./PlanningStatusLine"
 import { useDeferredBacklog } from "./use-deferred-backlog"
 import type { MessagePart, GroupedMessagePart } from "./types"
@@ -41,6 +43,7 @@ import { useChatContextSafe } from "../ChatContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { ChatMarkdown } from "../ChatMarkdown"
 import { GenerateImageWidget } from "./GenerateImageWidget"
+import { GenerateVideoWidget } from "./GenerateVideoWidget"
 import { FileDeliveryWidget } from "./FileDeliveryWidget"
 import { GeneratedImageGallery } from "./GeneratedImageGallery"
 import { BrowserWidget } from "./BrowserWidget"
@@ -49,6 +52,8 @@ import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
 import type { PlanData } from "../PlanCard"
 import { PlanReferenceCard } from "./PlanReferenceCard"
+import { PublishUpgradeCard } from "./PublishUpgradeCard"
+import { isPublishPlanGate } from "./publish-plan-gate"
 import { extractPlanFilepath } from "./plan-tool"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
@@ -63,6 +68,8 @@ import {
 } from "../../../lib/file-change-store"
 import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
+import { useShareFileOpener } from "../share-file-context"
+import { parseInAppFileHref } from "../../../lib/share-file-links"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
@@ -182,26 +189,6 @@ export interface AssistantContentProps {
 
 const TEAM_TOOL_NAMES = new Set(["team_create"])
 
-// "Low-information" tools that render as a chrome-less, hover-highlighted
-// row with a human-readable label (e.g. "Read package.json"). Bash/exec
-// has its own dedicated widget (`ExecWidget`) which is already minimal
-// by default, so it's NOT in this set — only tools that flow through
-// `InlineToolWidget` need to be flagged here.
-const MINIMAL_TOOL_NAMES = new Set([
-  "Read",
-  "read_file",
-  "ReadLints",
-  "read_lints",
-  "Grep",
-  "grep",
-  "search",
-  "Glob",
-  "glob",
-  "WebSearch",
-  "WebFetch",
-  "Delete",
-  "exec_wait",
-])
 const GROUP_FALLING_EDGE_DELAY_MS = 1500
 
 function isItemActive(item: MessagePart): boolean {
@@ -210,11 +197,31 @@ function isItemActive(item: MessagePart): boolean {
   return false
 }
 
+/** Tools whose result card shows the produced image (same result shape as generate_image). */
+const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image"])
+
 function isGeneratedImagePart(part: GroupedMessagePart): boolean {
   return (
     part.type === "image-gallery" ||
-    (part.type === "tool" && part.tool.toolName === "generate_image")
+    (part.type === "tool" &&
+      (IMAGE_RESULT_TOOL_NAMES.has(part.tool.toolName) || part.tool.toolName === "generate_video"))
   )
+}
+
+const INSTALL_TOOL_NAMES = new Set(["connect", "tool_install", "mcp_install"])
+
+/** Parts that stay visible after the turn folds under "Worked for X": images and cards the user acts on. */
+function isPinnedWorkPart(part: GroupedMessagePart): boolean {
+  if (isGeneratedImagePart(part)) return true
+  if (part.type !== "tool") return false
+  const { toolName, state, result } = part.tool
+  if (INSTALL_TOOL_NAMES.has(toolName) && state === "success") {
+    const installResult = parseToolInstallResult(result)
+    return installResult?.authStatus === "needs_auth" && !!installResult.authUrl
+  }
+  if (toolName === "ask_user") return askUserStreamVariant(result) === "bar"
+  if (isPublishPlanGate(part.tool)) return true
+  return toolName === "create_plan" || toolName === "update_plan"
 }
 
 interface GroupSlotProps {
@@ -264,9 +271,15 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const [aspectRatio, setAspectRatio] = useState(DEFAULT_IMAGE_ASPECT)
-  const imageWidth = useChatImageWidth()
   const imageSource = useAgentImageSource(url)
+  const naturalSize = useNaturalImageSize(imageSource?.uri ?? url)
+  // The message column's width, not the window's: a side pane is narrower.
+  const column = useMeasuredWidth()
+  const box = fitChatImage({
+    naturalWidth: naturalSize.size?.width,
+    naturalHeight: naturalSize.size?.height,
+    containerWidth: column.width,
+  })
   const [contextMenu, setContextMenu] = useState<{
     x: number
     y: number
@@ -305,34 +318,34 @@ function ImageThumbnail({
 
   return (
     <>
-      <Pressable
-        onPress={handlePress}
-        {...(Platform.OS === "web"
-          ? ({ onContextMenu: handleContextMenu } as any)
-          : {})}
-        testID="image-thumbnail"
-        accessibilityRole="button"
-        accessibilityLabel={`Open image attachment ${index + 1}`}
-        accessibilityHint="Opens a larger preview."
-        className={Platform.OS === "web" ? "cursor-zoom-in" : undefined}
-      >
-        {imageSource ? (
-          <Image
-            source={imageSource}
-            className="max-w-full rounded-md"
-            resizeMode="contain"
-            accessibilityLabel={`Image attachment ${index + 1}`}
-            onError={() => setHasError(true)}
-            onLoad={(event) => {
-              const source = event.nativeEvent?.source
-              if (source?.width && source?.height) {
-                setAspectRatio(clampAspectRatio(source.width, source.height))
-              }
-            }}
-            style={{ width: imageWidth, aspectRatio }}
-          />
-        ) : null}
-      </Pressable>
+      <View onLayout={column.onLayout}>
+        <Pressable
+          onPress={handlePress}
+          {...(Platform.OS === "web"
+            ? ({ onContextMenu: handleContextMenu } as any)
+            : {})}
+          testID="image-thumbnail"
+          accessibilityRole="button"
+          accessibilityLabel={`Open image attachment ${index + 1}`}
+          accessibilityHint="Opens a larger preview."
+          className={cn(
+            "self-start",
+            Platform.OS === "web" && "cursor-zoom-in",
+          )}
+        >
+          {imageSource ? (
+            <Image
+              source={imageSource}
+              className="rounded-md"
+              resizeMode={box.cropped ? "cover" : "contain"}
+              accessibilityLabel={`Image attachment ${index + 1}`}
+              onError={() => setHasError(true)}
+              onLoad={naturalSize.onLoad}
+              style={{ width: box.width, height: box.height }}
+            />
+          ) : null}
+        </Pressable>
+      </View>
       <ImagePreviewModal
         visible={showModal}
         onClose={() => setShowModal(false)}
@@ -377,9 +390,18 @@ function FileThumbnail({
     mediaType.includes("javascript") ||
     mediaType.includes("yaml")
 
+  // A stored attachment is a file the app already serves: open it in the app's
+  // own viewer rather than a browser tab (SHO-80).
+  const openShareFile = useShareFileOpener()
+  const servedFile = useMemo(() => parseInAppFileHref(url), [url])
+  const openFile = useCallback(() => {
+    if (servedFile && openShareFile) openShareFile(servedFile)
+    else Linking.openURL(url)
+  }, [openShareFile, servedFile, url])
+
   const handlePress = useCallback(async () => {
     if (!isTextLike) {
-      Linking.openURL(url)
+      openFile()
       return
     }
     if (fileContent !== null) {
@@ -393,11 +415,11 @@ function FileThumbnail({
       setFileContent(text)
       setShowModal(true)
     } catch {
-      Linking.openURL(url)
+      openFile()
     } finally {
       setLoading(false)
     }
-  }, [url, isTextLike, fileContent])
+  }, [url, isTextLike, fileContent, openFile])
 
   return (
     <>
@@ -588,7 +610,7 @@ export const AssistantContent = memo(
     )
 
     const collapsibleWorkParts = useMemo(
-      () => workLog.filter((part) => !isGeneratedImagePart(part)),
+      () => workLog.filter((part) => !isPinnedWorkPart(part)),
       [workLog],
     )
 
@@ -624,6 +646,7 @@ export const AssistantContent = memo(
             <ChatMarkdown
               isStreaming={part.id === streamingTextPartId}
               onFilePress={chatContext?.openFile}
+              fileExists={chatContext?.fileExists}
             >
               {part.text}
             </ChatMarkdown>
@@ -659,6 +682,10 @@ export const AssistantContent = memo(
 
       if (part.type === "image-gallery") {
         return <GeneratedImageGallery key={part.id} tools={part.tools} />
+      }
+
+      if (part.type === "compaction") {
+        return <ContextCompactionDivider key={part.id} part={part} />
       }
 
       if (part.type === "tool") {
@@ -722,12 +749,20 @@ export const AssistantContent = memo(
           }
         }
 
-        if (part.tool.toolName === "generate_image") {
+        if (IMAGE_RESULT_TOOL_NAMES.has(part.tool.toolName)) {
           return <GenerateImageWidget key={part.id} tool={part.tool} />
+        }
+
+        if (part.tool.toolName === "generate_video") {
+          return <GenerateVideoWidget key={part.id} tool={part.tool} />
         }
 
         if (part.tool.toolName === "share_file") {
           return <FileDeliveryWidget key={part.id} tool={part.tool} />
+        }
+
+        if (isPublishPlanGate(part.tool)) {
+          return <PublishUpgradeCard key={part.id} tool={part.tool} />
         }
 
         if (
@@ -857,18 +892,7 @@ export const AssistantContent = memo(
           )
         }
 
-        if (MINIMAL_TOOL_NAMES.has(part.tool.toolName)) {
-          return (
-            <InlineToolWidget
-              key={part.id}
-              tool={part.tool}
-              variant="minimal"
-              isExpanded={expandedTools.has(part.id)}
-              onToggle={getToggle(part.id)}
-            />
-          )
-        }
-
+        // Generic fallback: minimal row (InlineToolWidget's default variant).
         return (
           <InlineToolWidget
             key={part.id}
@@ -911,16 +935,18 @@ export const AssistantContent = memo(
     // labels ticking as work happens; the collapse only settles once the
     // turn completes.
     const collapsedWorkLog = workLog.flatMap((part, index) =>
-      isGeneratedImagePart(part) ? [] : [{ part, index }],
+      isPinnedWorkPart(part) ? [] : [{ part, index }],
     )
-    const visibleImageWork = workLog.flatMap((part, index) =>
-      isGeneratedImagePart(part) ? [{ part, index }] : [],
+    const pinnedWork = workLog.flatMap((part, index) =>
+      isPinnedWorkPart(part) ? [{ part, index }] : [],
     )
 
     if (bare && !isStreaming) {
       return (
         <View className={cn("gap-y-1", className)}>
-          {collapsedWorkLog.map(({ part, index }) => renderPart(part, index))}
+          {workLog.map((part, index) =>
+            isGeneratedImagePart(part) ? null : renderPart(part, index),
+          )}
         </View>
       )
     }
@@ -948,7 +974,7 @@ export const AssistantContent = memo(
             .slice(hiddenWork)
             .map((part, index) => renderPart(part, hiddenWork + index))}
         {!isStreaming &&
-          visibleImageWork.map(({ part, index }) => renderPart(part, index))}
+          pinnedWork.map(({ part, index }) => renderPart(part, index))}
         {finalSegment.map((part, index) =>
           renderPart(part, workLog.length + index),
         )}

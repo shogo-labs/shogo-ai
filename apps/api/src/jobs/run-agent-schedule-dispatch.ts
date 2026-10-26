@@ -230,7 +230,12 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
   const now = new Date()
   const staleBefore = new Date(now.getTime() - SCHEDULE_STALE_AFTER_MS)
   const homeFilter = homeRegionWorkspaceWhere()
-  const workspaceFilter = homeFilter ? { workspace: homeFilter } : {}
+  // Schedules of a machine workspace run on that desktop (SHO-185); firing them
+  // here too would double every run the copy was never meant to hold.
+  const cloudOnly = { machineInstanceId: null } as const
+  const workspaceFilter = {
+    workspace: homeFilter ? { AND: [homeFilter, cloudOnly] } : cloudOnly,
+  }
 
   const capacity = MAX_CONCURRENT_SCHEDULE_RUNS - inFlightRuns.size
   if (capacity <= 0) return
@@ -249,8 +254,15 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
     take: Math.min(SCHEDULE_BATCH_SIZE, capacity),
   })
 
+  const { isWorkspaceAgentsPaused } = await import('../services/workspace-pause.service')
   for (const schedule of due) {
     if (inFlightRuns.size >= MAX_CONCURRENT_SCHEDULE_RUNS) break
+    // A workspace-wide pause skips the tick and leaves `nextRunAt` alone, so the
+    // schedule is due again the moment the pause lifts (SHO-118).
+    if (await isWorkspaceAgentsPaused(schedule.workspaceId)) {
+      console.log(`[AgentSchedule] ${schedule.id} held: agents are paused in workspace ${schedule.workspaceId}`)
+      continue
+    }
     let nextRunAt: Date
     try {
       nextRunAt = nextAgentScheduleRun(schedule.cronExpression, schedule.timezone, now)

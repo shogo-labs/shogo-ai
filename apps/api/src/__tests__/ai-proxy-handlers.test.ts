@@ -622,13 +622,36 @@ describe('AI proxy model listing and token generation', () => {
     // falls back to the current-generation static catalog (mirroring the
     // chat picker's unseeded-instance fallback) — not every id the static
     // MODEL_CATALOG has ever shipped.
-    expect(data.data.some((model: any) => model.id === 'claude-haiku-4-5-20251001' && model.available === true)).toBe(true)
+    expect(data.data.some((model: any) => model.id === 'claude-haiku-5-5' && model.available === true)).toBe(true)
     expect(data.data.some((model: any) => model.id === 'gpt-6-luna' && model.available === true)).toBe(true)
     // Legacy catalog entries are routable but no longer listed by default.
     expect(data.data.some((model: any) => model.id === 'gpt-4o-mini')).toBe(false)
     expect(data.data.some((model: any) => model.id === 'gpt-5.4-nano')).toBe(false)
     expect(data.data.some((model: any) => model.id === 'claude-3-haiku-20240307')).toBe(false)
     expect(data.data.some((model: any) => model.id === 'gpt-5.6-luna')).toBe(false)
+  })
+
+  // SHO-145: a model the plan can't run must not be listed as available — the
+  // agent runtime feeds this list to `project_configure`, so an available:false
+  // entry is what turns a silent downgrade to Auto into a clean
+  // `model_unavailable` refusal.
+  test('GET /ai/v1/models marks a model this plan cannot run unavailable', async () => {
+    const app = buildApp()
+
+    const free = await app.fetch(new Request('http://x/api/ai/v1/models', {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    }))
+    const freeModels = (await free.json() as any).data
+    expect(freeModels.some((m: any) => m.id === 'claude-opus-5-5' && m.available === false)).toBe(true)
+    // Economy models stay usable on every plan.
+    expect(freeModels.some((m: any) => m.id === 'claude-haiku-5-5' && m.available === true)).toBe(true)
+
+    const proToken = await generateProxyToken('proj-1', 'ws-pro', 'user-1')
+    const pro = await app.fetch(new Request('http://x/api/ai/v1/models', {
+      headers: { Authorization: `Bearer ${proToken}` },
+    }))
+    const proModels = (await pro.json() as any).data
+    expect(proModels.some((m: any) => m.id === 'claude-opus-5-5' && m.available === true)).toBe(true)
   })
 
   test('POST /ai/proxy/tokens validates input, project scope, and returns an expiring token', async () => {

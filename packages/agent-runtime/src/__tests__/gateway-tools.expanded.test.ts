@@ -447,35 +447,35 @@ describe('team_create / team_delete', () => {
 })
 
 describe('task_* without team context', () => {
-  test('task_create rejects without a team', async () => {
-    const d = await exec(makeCtx({ teamManager: stubTeamManager() }), 'task_create', {
+  test('team_task_create rejects without a team', async () => {
+    const d = await exec(makeCtx({ teamManager: stubTeamManager() }), 'team_task_create', {
       subject: 's', description: 'd',
     })
     expect(d.error).toContain('Not in a team context')
   })
 
-  test('task_list rejects without a team', async () => {
-    const d = await exec(makeCtx({ teamManager: stubTeamManager() }), 'task_list', {})
+  test('team_task_list rejects without a team', async () => {
+    const d = await exec(makeCtx({ teamManager: stubTeamManager() }), 'team_task_list', {})
     expect(d.error).toContain('Not in a team context')
   })
 
-  test('task_get: missing manager', async () => {
-    const d = await exec(makeCtx(), 'task_get', { task_id: 1 })
+  test('team_task_get: missing manager', async () => {
+    const d = await exec(makeCtx(), 'team_task_get', { task_id: 1 })
     expect(d.error).toContain('Team coordination not available')
   })
 
-  test('task_get: not found', async () => {
-    const d = await exec(makeCtx({ teamManager: stubTeamManager() }), 'task_get', { task_id: 999 })
+  test('team_task_get: not found', async () => {
+    const d = await exec(makeCtx({ teamManager: stubTeamManager() }), 'team_task_get', { task_id: 999 })
     expect(d.error).toContain('not found')
   })
 
-  test('task_update: missing manager', async () => {
-    const d = await exec(makeCtx(), 'task_update', { task_id: 1 })
+  test('team_task_update: missing manager', async () => {
+    const d = await exec(makeCtx(), 'team_task_update', { task_id: 1 })
     expect(d.error).toContain('Team coordination not available')
   })
 
-  test('task_update: not found', async () => {
-    const d = await exec(makeCtx({ teamManager: stubTeamManager() }), 'task_update', {
+  test('team_task_update: not found', async () => {
+    const d = await exec(makeCtx({ teamManager: stubTeamManager() }), 'team_task_update', {
       task_id: 999, status: 'completed',
     })
     expect(d.error).toContain('not found')
@@ -490,31 +490,31 @@ describe('task_* inside a team context', () => {
     return ctx
   }
 
-  test('task_create -> task_get -> task_list -> task_update happy chain', async () => {
+  test('team_task_create -> team_task_get -> team_task_list -> team_task_update happy chain', async () => {
     const ctx = await teamCtx()
-    const created = await exec(ctx, 'task_create', { subject: 'fix bug', description: 'detail' })
+    const created = await exec(ctx, 'team_task_create', { subject: 'fix bug', description: 'detail' })
     expect(created.ok).toBe(true)
     const id = created.task_id
 
-    const got = await exec(ctx, 'task_get', { task_id: id })
+    const got = await exec(ctx, 'team_task_get', { task_id: id })
     expect(got.subject).toBe('fix bug')
 
-    const listed = await exec(ctx, 'task_list', {})
+    const listed = await exec(ctx, 'team_task_list', {})
     expect(listed.tasks.length).toBeGreaterThanOrEqual(1)
 
-    const updated = await exec(ctx, 'task_update', { task_id: id, status: 'in_progress' })
+    const updated = await exec(ctx, 'team_task_update', { task_id: id, status: 'in_progress' })
     expect(updated.ok).toBe(true)
     expect(updated.status).toBe('in_progress')
 
-    const updated2 = await exec(ctx, 'task_update', { task_id: id, owner: 'agent-x' })
+    const updated2 = await exec(ctx, 'team_task_update', { task_id: id, owner: 'agent-x' })
     expect(updated2.ok).toBe(true)
     expect(updated2.owner).toBe('agent-x')
   })
 
-  test('task_create with blocked_by dependencies', async () => {
+  test('team_task_create with blocked_by dependencies', async () => {
     const ctx = await teamCtx()
-    const a = await exec(ctx, 'task_create', { subject: 'a', description: 'a' })
-    const b = await exec(ctx, 'task_create', { subject: 'b', description: 'b', blocked_by: [a.task_id] })
+    const a = await exec(ctx, 'team_task_create', { subject: 'a', description: 'a' })
+    const b = await exec(ctx, 'team_task_create', { subject: 'b', description: 'b', blocked_by: [a.task_id] })
     expect(b.ok).toBe(true)
   })
 })

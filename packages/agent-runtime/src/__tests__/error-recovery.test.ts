@@ -202,6 +202,34 @@ describe('runAgentLoop error recovery', () => {
     expect(streamed).toBe(result.text)
   })
 
+  test('usage limit on the first call (no progress) still ends with the limit notice, not a hard error', async () => {
+    let calls = 0
+    const mockStream = createFailAfterNStreamFn(
+      [],
+      '402 {"error":{"message":"Usage limit reached. Enable usage-based pricing or upgrade your plan.",' +
+        '"type":"billing_error","code":"usage_limit_reached","resetsAt":"2099-01-01T00:00:00.000Z","window":"5h"}}',
+      () => { calls++ },
+    )
+    let streamed = ''
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Build me a landing page',
+      tools: [],
+      streamFn: mockStream,
+      onTextDelta: (d) => { streamed += d },
+    })
+
+    expect(calls).toBe(1)
+    expect(result.error).toBeUndefined()
+    expect(result.usageLimit).toEqual({ resetsAt: '2099-01-01T00:00:00.000Z', window: '5h' })
+    expect(result.text).toContain("You've reached your usage limit")
+    expect(result.text).toContain('Nothing from this step was lost')
+    expect(streamed).toBe(result.text)
+  })
+
   test('non-usage-limit provider error after tool calls keeps the recoverable fallback', async () => {
     const tracker = new MockToolTracker()
     const tool = tracker.createTool('read_file', 'Read a file', { content: 'file data' })

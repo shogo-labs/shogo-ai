@@ -33,6 +33,7 @@
  */
 
 import { createHash, createHmac } from 'node:crypto'
+import type { BunFile } from 'bun'
 
 /** Everything needed to address and sign against a bucket. */
 export interface S3Target {
@@ -73,6 +74,16 @@ const SERVICE = 's3'
 
 function sha256Hex(data: string | Uint8Array): string {
   return createHash('sha256').update(data).digest('hex')
+}
+
+/**
+ * SHA-256 of a file, read in chunks. A repo archive can be gigabytes; hashing
+ * it as one buffer would pull the whole thing into the agent's heap.
+ */
+export async function sha256HexFile(file: BunFile): Promise<string> {
+  const hash = createHash('sha256')
+  for await (const chunk of file.stream()) hash.update(chunk)
+  return hash.digest('hex')
 }
 
 function hmac(key: Buffer | string, data: string): Buffer {
@@ -151,7 +162,7 @@ export function signCopyHeaders(input: {
 function signObjectPut(input: {
   target: S3Target
   key: string
-  payload: Uint8Array
+  payload: Uint8Array | { sha256: string; length: number }
   contentType?: string
   precondition?: WritePrecondition
   extraHeaders?: Record<string, string>
@@ -161,11 +172,12 @@ function signObjectPut(input: {
   const { target, key, payload, contentType, precondition, now } = input
   const url = new URL(`${target.endpoint.replace(/\/+$/, '')}${canonicalUriFor(target.bucket, key)}`)
   const { amzDate, dateStamp } = amzDates(now)
-  const payloadHash = sha256Hex(payload)
+  const payloadHash = payload instanceof Uint8Array ? sha256Hex(payload) : payload.sha256
+  const payloadLength = payload instanceof Uint8Array ? payload.byteLength : payload.length
 
   const headers: Record<string, string> = {
     host: url.host,
-    'content-length': String(payload.byteLength),
+    'content-length': String(payloadLength),
     'x-amz-content-sha256': payloadHash,
     'x-amz-date': amzDate,
   }
@@ -219,7 +231,8 @@ export function objectUrl(target: S3Target, key: string): string {
 export async function conditionalPutObject(input: {
   target: S3Target
   key: string
-  body: Uint8Array
+  /** A file body is hashed and sent from disk, never held in memory whole. */
+  body: Uint8Array | BunFile
   contentType?: string
   precondition?: WritePrecondition
   timeoutMs?: number
@@ -229,10 +242,13 @@ export async function conditionalPutObject(input: {
 }): Promise<ConditionalPutResult> {
   const contentType = input.contentType ?? 'application/octet-stream'
   const doFetch = input.fetchImpl ?? fetch
-  const headers = signPutHeaders({
+  const headers = signObjectPut({
     target: input.target,
     key: input.key,
-    payload: input.body,
+    payload:
+      input.body instanceof Uint8Array
+        ? input.body
+        : { sha256: await sha256HexFile(input.body), length: input.body.size },
     contentType,
     precondition: input.precondition,
     now: input.now ?? new Date(),

@@ -5,6 +5,11 @@
  * history into a temp SQLite file and points the API's Prisma client at it.
  * Must run before anything imports `lib/prisma`.
  *
+ * NOTE: to make `lib/prisma` build a SQLite client this sets
+ * `SHOGO_LOCAL_MODE=true` process-wide. A suite that then needs the cloud code
+ * branches (resolvers, tunnels) must import `lib/prisma` first and clear the
+ * flag afterwards — see `services/__tests__/agent-call.service.test.ts`.
+ *
  * Set CHANNELS_TEST_PG_URL (a Postgres server URL whose user can create
  * databases) to run against a throwaway Postgres database with the cloud
  * migrations instead, e.g. to exercise the full-text search SQL:

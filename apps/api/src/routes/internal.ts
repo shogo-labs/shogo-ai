@@ -723,4 +723,65 @@ app.post('/chat-providers/:provider/resume', async (c) => {
   }
 })
 
+/**
+ * POST /api/internal/huddle-notes/finals
+ *
+ * One finished line from the hidden `huddle-notes` fallback worker. The worker
+ * runs in a forked child that has no conversation bus (desktop) and must not
+ * start agent runs, so the final is written here — which is also where the
+ * huddle-wake hook lives, so a fallback line can wake the agent like any other.
+ *
+ * Auth: the per-boot `SHOGO_NOTES_WORKER_TOKEN` that `startNotesWorker` puts in
+ * the API's env before forking (children inherit it). `SHOGO_INTERNAL_SECRET` is
+ * unset on desktop, so it cannot be used for this.
+ */
+app.post('/huddle-notes/finals', async (c) => {
+  if (!hasNotesWorkerToken(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (
+    !body ||
+    typeof body.huddleId !== 'string' ||
+    typeof body.identity !== 'string' ||
+    typeof body.itemId !== 'string' ||
+    typeof body.text !== 'string' ||
+    typeof body.start !== 'number' ||
+    typeof body.end !== 'number' ||
+    !body.huddleId ||
+    !body.identity ||
+    !body.itemId ||
+    !body.text.trim() ||
+    body.itemId.length > 200 ||
+    body.identity.length > 100 ||
+    body.text.length > 4_000 ||
+    !Number.isFinite(body.start) ||
+    !Number.isFinite(body.end) ||
+    body.start < 0 ||
+    body.end < 0 ||
+    body.end > 86_400
+  ) {
+    return c.json({ error: 'Invalid final' }, 400)
+  }
+  const { appendHuddleNoteFinal } = await import('../services/huddle.service')
+  const result = await appendHuddleNoteFinal({
+    huddleId: body.huddleId,
+    identity: body.identity,
+    itemId: body.itemId,
+    text: body.text,
+    start: body.start,
+    end: body.end,
+  })
+  if (!result.ok && result.reason === 'busy') return c.json(result, 503)
+  return c.json(result)
+})
+
+/** Constant-time check of the per-boot notes-worker token (`SHOGO_NOTES_WORKER_TOKEN`). */
+function hasNotesWorkerToken(c: { req: { header(name: string): string | undefined } }): boolean {
+  const expected = process.env.SHOGO_NOTES_WORKER_TOKEN
+  const provided = c.req.header('x-shogo-notes-worker') || ''
+  if (!expected) return false
+  const a = Buffer.from(expected)
+  const b = Buffer.from(provided)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
 export default app

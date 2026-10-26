@@ -99,6 +99,11 @@ const DOWNLOAD_MIME_TYPES: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.ogv': 'video/ogg',
   '.pdf': 'application/pdf',
   '.json': 'application/json',
   '.txt': 'text/plain',
@@ -443,7 +448,7 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
     const fileName = subPath.split('/').pop() || 'download'
     const ext = extname(fileName).toLowerCase()
     const contentType = DOWNLOAD_MIME_TYPES[ext] || 'application/octet-stream'
-    const isInline = contentType.startsWith('image/') || contentType === 'application/pdf'
+    const isInline = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType === 'application/pdf'
 
     return new Response(content, {
       headers: {

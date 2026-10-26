@@ -53,6 +53,15 @@ module.exports = {
         sidebar: {
           DEFAULT: 'rgb(var(--color-sidebar) / <alpha-value>)',
           foreground: 'rgb(var(--color-sidebar-foreground) / <alpha-value>)',
+          accent: {
+            DEFAULT: 'rgb(var(--color-sidebar-accent) / <alpha-value>)',
+            foreground: 'rgb(var(--color-sidebar-accent-foreground) / <alpha-value>)',
+          },
+          border: 'rgb(var(--color-sidebar-border) / <alpha-value>)',
+          panel: 'rgb(var(--color-sidebar-panel) / <alpha-value>)',
+          muted: {
+            foreground: 'rgb(var(--color-sidebar-muted-foreground) / <alpha-value>)',
+          },
         },
         /** Shogo landing site / marketing accent (#E27927) */
         brand: {

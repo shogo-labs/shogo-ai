@@ -177,7 +177,11 @@ describe('ensureGitignoreIgnoresDeps — exercised via commit()', () => {
 
   test('does not duplicate entries when .gitignore already has them', async () => {
     writeFileSync(join(workspacePath, 'a.txt'), 'a')
-    // Pre-seed with all the entries — the helper should be a no-op.
+    // Pre-seed with every required entry — but spelled the way every repo
+    // created before 2026-10-19 spells the runtime state line: `.shogo/`.
+    // That legacy spelling must count as satisfying the `.shogo/*`
+    // requirement instead of getting a second, competing spelling appended
+    // next to it (which the rewrite then turned into two identical lines).
     writeFileSync(
       join(workspacePath, '.gitignore'),
       [
@@ -189,13 +193,21 @@ describe('ensureGitignoreIgnoresDeps — exercised via commit()', () => {
     )
     await gitService.initRepo(workspacePath)
 
-    const before = readFileSync(join(workspacePath, '.gitignore'), 'utf-8')
     writeFileSync(join(workspacePath, 'b.txt'), 'b')
     await gitService.commit(workspacePath, { message: 'add b' })
     const after = readFileSync(join(workspacePath, '.gitignore'), 'utf-8')
 
-    expect(after).toBe(before)
+    // No required entry is appended: the only thing that changes is the
+    // `.shogo` pair itself, rewritten in place.
     expect(after.match(/Added by Shogo AI/g)).toBeNull()
+    const lines = after.split('\n').map((l) => l.trim()).filter(Boolean)
+    expect(lines.filter((l) => l === '.shogo/*')).toHaveLength(1)
+    expect(lines.filter((l) => l === '!.shogo/memory-history/')).toHaveLength(1)
+    expect(lines).not.toContain('.shogo/')
+    expect(lines.indexOf('!.shogo/memory-history/')).toBe(lines.indexOf('.shogo/*') + 1)
+    for (const entry of ['node_modules/', 'dist.prev/', 'build/', '.tmp/', 'nul']) {
+      expect(lines.filter((l) => l === entry)).toHaveLength(1)
+    }
   })
 })
 

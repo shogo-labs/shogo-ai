@@ -6,7 +6,9 @@ import {
   MetalHostUnreachableError,
   MetalWarmPoolController,
   NoMetalHostError,
+  _setAgentRestartRetry,
   isAssignTimeout,
+  parseHostCounterName,
   workspaceRuntimeKey,
 } from '../metal-warm-pool-controller'
 import {
@@ -54,6 +56,7 @@ describe('MetalWarmPoolController', () => {
   })
   afterEach(() => {
     _setMetalPlacementRegistry(null)
+    _setAgentRestartRetry(null)
   })
 
   it('isolates anchored project canvases within the same workspace', () => {
@@ -341,6 +344,8 @@ describe('MetalWarmPoolController', () => {
   })
 
   it('does NOT fail over when the owner host is unreachable — its VM outlives an agent restart', async () => {
+    // Past the restart retry window (covered in metal-switchover.integration.test.ts).
+    _setAgentRestartRetry({ shortMs: 0, longMs: 0 })
     const assigns: string[] = []
     const fetchImpl = (async (url: string) => {
       const host = new URL(url).host
@@ -755,5 +760,103 @@ describe('control-plane auth headers', () => {
     expect(captured.length).toBeGreaterThan(1)
     const bare = captured.filter((c) => !c.headers.Authorization).map((c) => c.url)
     expect(bare).toEqual([])
+  })
+})
+
+describe('parseHostCounterName', () => {
+  it('passes a bare counter through', () => {
+    expect(parseHostCounterName('metal_resume_cold_miss_total')).toEqual({ counter: 'metal_resume_cold_miss_total' })
+  })
+
+  it('lifts prometheus-style labels into attributes', () => {
+    expect(parseHostCounterName('metal_stale_snapshot_skipped_by_reason_total{reason="member_data"}')).toEqual({
+      counter: 'metal_stale_snapshot_skipped_by_reason_total',
+      reason: 'member_data',
+    })
+    expect(parseHostCounterName('metal_control_unauthenticated_total{path="/vms",reason="missing"}')).toEqual({
+      counter: 'metal_control_unauthenticated_total',
+      path: '/vms',
+      reason: 'missing',
+    })
+  })
+
+  it('never lets a label overwrite the counter or host identity', () => {
+    expect(parseHostCounterName('x{counter="y",host_id="h",reason="r"}')).toEqual({ counter: 'x', reason: 'r' })
+  })
+})
+
+describe('agent restart tolerance', () => {
+  class NoSleepController extends MetalWarmPoolController {
+    slept: number[] = []
+    protected override sleep(ms: number): Promise<void> {
+      this.slept.push(ms)
+      return Promise.resolve()
+    }
+  }
+  const restarting = () => new Response('restarting', { status: 503, headers: { 'x-metal-restarting': '1' } })
+  const refused = () => Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })
+  const assigned = () => Response.json({ url: 'http://10.8.0.2:8080', mode: 'resumed', source: 'local' })
+
+  beforeEach(() => {
+    _setMetalPlacementRegistry(new MetalPlacementRegistry(() => null))
+  })
+  afterEach(() => {
+    _setMetalPlacementRegistry(null)
+    _setAgentRestartRetry(null)
+  })
+
+  it('rides out a draining agent (503 x-metal-restarting) on /assign', async () => {
+    let calls = 0
+    const c = new NoSleepController(fakeEnv(), (async () => (++calls <= 2 ? restarting() : assigned())) as any)
+    c.registerHost(REG)
+    expect(await c.getMetalProjectUrl('p1')).toBe('http://10.8.0.2:8080')
+    expect(calls).toBe(3)
+    expect(c.slept).toEqual([250, 500])
+  })
+
+  it('rides out a refused connection while the agent restarts', async () => {
+    let calls = 0
+    const c = new NoSleepController(fakeEnv(), (async () => {
+      if (++calls <= 3) throw refused()
+      return assigned()
+    }) as any)
+    c.registerHost(REG)
+    expect(await c.getMetalProjectUrl('p1')).toBe('http://10.8.0.2:8080')
+    expect(calls).toBe(4)
+  })
+
+  it('does not retry an ordinary 503 or other errors', async () => {
+    let calls = 0
+    const c = new NoSleepController(fakeEnv(), (async () => {
+      calls++
+      return new Response('nope', { status: 503 })
+    }) as any)
+    c.registerHost(REG)
+    await c.getRuntimeHostStatus('p1')
+    await c.getMetalProjectUrl('p1').catch(() => {})
+    expect(c.slept).toEqual([])
+  })
+
+  it('a host that announced its restart gets the longer budget', async () => {
+    _setAgentRestartRetry({ shortMs: 1_000, longMs: 10_000 })
+    const attempts = async (restartingHost: boolean) => {
+      let calls = 0
+      const c = new NoSleepController(fakeEnv(), (async (url: string) => {
+        if (url.endsWith('/status')) {
+          calls++
+          throw refused()
+        }
+        return assigned()
+      }) as any)
+      c.registerHost({ ...REG, ...(restartingHost ? { restarting: true } : {}) })
+      await c.getMetalProjectUrl('p1')
+      expect(await c.getRuntimeHostStatus('p1')).toBeNull()
+      return { calls, slept: c.slept.reduce((a, b) => a + b, 0) }
+    }
+    const short = await attempts(false)
+    const long = await attempts(true)
+    expect(short.slept).toBeLessThanOrEqual(1_000)
+    expect(long.slept).toBeLessThanOrEqual(10_000)
+    expect(long.calls).toBeGreaterThan(short.calls)
   })
 })

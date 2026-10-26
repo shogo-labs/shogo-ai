@@ -627,7 +627,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                                 ? `Hide compacted summary for ${session.id}`
                                 : `Show compacted summary for ${session.id}`
                             }
-                            accessibilityState={{ expanded: isExpanded }}
+                            aria-expanded={isExpanded}
                           >
                             {row}
                           </Pressable>
@@ -803,10 +803,8 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                     size="sm"
                     role="switch"
                     accessibilityLabel="Toggle periodic heartbeat check-ins"
-                    accessibilityState={{
-                      checked: hbConfig?.heartbeatEnabled ?? status.heartbeat.enabled,
-                      busy: hbToggling,
-                    }}
+                    aria-checked={hbConfig?.heartbeatEnabled ?? status.heartbeat.enabled}
+                    aria-busy={hbToggling}
                   />
                 </View>
 

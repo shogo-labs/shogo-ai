@@ -2,7 +2,7 @@
 name: dry
 description: Fast, read-only DRY review of a diff. Spawn with the diff and the plan for context. Returns a JSON findings array.
 tools: [read_file, search, exec]
-model: hoshi-2-0
+model: auto
 maxTurns: 10
 ---
 

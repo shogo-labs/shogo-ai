@@ -19,7 +19,7 @@
     "heartbeatInterval": 300,
     "heartbeatEnabled": true,
     "modelProvider": "anthropic",
-    "modelName": "claude-sonnet-4-5",
+    "modelName": "auto",
     "webEnabled": true,
     "browserEnabled": true,
     "shellEnabled": true,

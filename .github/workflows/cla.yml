@@ -24,13 +24,10 @@ jobs:
           path-to-document: CLA.md
           path-to-signatures: .github/cla-signatures.json
           branch: cla-signatures
-          custom-pr-sign-comment: |
-            Thanks for the contribution. Before we can merge this pull request,
-            please review `CLA.md` and reply with:
-
-            I have read the CLA Document and I hereby sign the CLA
+          # The action accepts a signature only when a comment equals this value
+          # exactly (case and surrounding whitespace aside), so it must be the bare
+          # phrase. The bot also quotes it under the custom-notsigned-prcomment text.
+          custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
           custom-notsigned-prcomment: |
             This pull request is waiting on the Contributor License Agreement.
-            Please read `CLA.md` and reply with:
-
-            I have read the CLA Document and I hereby sign the CLA
+            Please read `CLA.md` and reply with exactly this comment:

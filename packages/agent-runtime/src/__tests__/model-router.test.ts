@@ -288,6 +288,38 @@ describe('selectModelForSpawn', () => {
     expect(decision.highPrecisionToolDetected).toBe('deploy')
   })
 
+  test("explore's exec does not count as a high-precision tool", () => {
+    const decision = selectModelForSpawn({
+      prompt: 'find all test files',
+      subagentType: 'explore',
+      toolNames: ['read_file', 'exec', 'web', 'impact_radius'],
+      contextTokens: 1000,
+    }, opts)
+    expect(decision.highPrecisionToolDetected).toBeUndefined()
+    expect(decision.signals.highPrecisionTool).toBeUndefined()
+    expect(decision.selectedModel).toBe('gpt-5.4-nano')
+  })
+
+  test('exec still forces at least standard for other subagent types', () => {
+    const decision = selectModelForSpawn({
+      prompt: 'find all test files',
+      subagentType: 'general-purpose',
+      toolNames: ['read_file', 'exec'],
+      contextTokens: 1000,
+    }, opts)
+    expect(decision.highPrecisionToolDetected).toBe('exec')
+  })
+
+  test('explore still floors on other high-precision tools', () => {
+    const decision = selectModelForSpawn({
+      prompt: 'find all test files',
+      subagentType: 'explore',
+      toolNames: ['exec', 'deploy'],
+      contextTokens: 1000,
+    }, opts)
+    expect(decision.highPrecisionToolDetected).toBe('deploy')
+  })
+
   test('context floor exceeded bumps to at-least-standard', () => {
     const decision = selectModelForSpawn({
       prompt: 'search for patterns',
