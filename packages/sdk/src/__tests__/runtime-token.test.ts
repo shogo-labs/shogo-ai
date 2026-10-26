@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
 import { createClient } from '../client'
-import { getServerToolsClient } from '../tools/client'
+import { _resetServerToolsClientForTests, getServerToolsClient } from '../tools/client'
 import { createToolsHandlers } from '../tools/server'
 import { readRuntimeAuthSecret, WORKSPACE_RUNTIME_TOKEN_MESSAGE } from '../runtime-token'
 
@@ -33,6 +33,9 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // The server tools client is a module singleton; leave it as we found it so
+  // the next file in this `bun test` process derives its own from env.
+  _resetServerToolsClientForTests()
   for (const [key, value] of SAVED) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value

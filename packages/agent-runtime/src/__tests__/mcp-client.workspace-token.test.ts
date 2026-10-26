@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
 import * as realCatalog from '../mcp-catalog'
+import * as realSandboxExec from '../sandbox-exec'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -56,7 +57,7 @@ mock.module('../mcp-catalog', () => ({
   getPreinstalledPackages: () => [],
 }))
 
-mock.module('../sandbox-exec', () => ({ getSanitizedEnv: () => ({ ...sanitizedEnv }) }))
+mock.module('../sandbox-exec', () => ({ ...realSandboxExec, getSanitizedEnv: () => ({ ...sanitizedEnv }) }))
 mock.module('../lib/cloud-fetcher', () => ({
   shouldRouteThroughCloud: () => false,
   getCloudDispatcher: () => undefined,

@@ -183,3 +183,12 @@ export function getServerToolsClient(config?: ToolsClientConfig): ToolsClient {
   if (!config) defaultServerClient = client
   return client
 }
+
+/**
+ * Test seam: drop the memoized server client so the next call re-derives it
+ * from `process.env`. A test that exercises the singleton must reset it, or
+ * the next file in the same `bun test` process sees a stale client.
+ */
+export function _resetServerToolsClientForTests(): void {
+  defaultServerClient = null
+}
