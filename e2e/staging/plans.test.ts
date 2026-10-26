@@ -80,8 +80,10 @@ test.describe("Plans", () => {
   })
 
   test("Plans panel lists the saved plan", async () => {
-    // Click the Plans tab in the top bar — use aria-label set on the tab
-    await page.getByLabel("Plans").click({ timeout: 10_000 })
+    // The top bar's Plans tab carries `project-tab-plans`. `getByLabel("Plans")`
+    // is ambiguous: the account menu's own label, the tab, and the viewer's
+    // "Back to plans" button all match it.
+    await page.getByTestId("project-tab-plans").click({ timeout: 10_000 })
     await page.waitForTimeout(2000)
 
     const planContent = page.getByText(/Hello World File|hello/i)
