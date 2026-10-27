@@ -188,6 +188,88 @@ Day-to-day disk safety is additionally guarded at deploy time by
 `.github/scripts/check-node-disk-headroom.sh` (a pre-rollout gate) and at
 runtime by the `DiskPressure` check in `k8s/base/warm-pool-monitor.yaml`.
 
+## Node image store remediation
+
+A node keeps **every** digest it has ever pulled. Each deploy pins a new
+`shogo-runtime:<env>-<sha>` / `shogo-api` digest, and nothing used to remove
+the previous one, so a long-lived node gains roughly 10 GB of dead layers per
+deploy until its boot volume fills.
+
+That matters because the deploy gate fails a node at **80%** used while the
+kubelet's own image GC only starts at **85%** (`imageGCHighThresholdPercent`).
+A node parked between those two numbers is reclaimed by nothing: it blocks
+every rollout and the kubelet sees nothing to do. That is the 2026-10-26
+staging incident — node `10.0.24.140` sat at 80.6% holding 193 GB of images
+(13 runtime + 12 api digests) for 13 h and failed four `Build, Test, and
+Deploy` runs.
+
+**The `--image-gc-high-threshold=70 --image-gc-low-threshold=60` flags in
+`kubelet_extra_args` (SHO-136) are NOT live on any running node.** `node_metadata`
+is in the OKE pool's `lifecycle.ignore_changes`, so those flags only reach a
+node after it is recycled, and no pool has been recycled since they landed.
+`configz` on all four production-US nodes still reports `85/80`. What reclaims
+disk today is the `node-image-gc` DaemonSet
+([`k8s/base/node-image-gc.yaml`](../k8s/base/node-image-gc.yaml)), not the
+kubelet. Recycling the pools is what would make the flags real; that is a
+separate ops decision and out of scope for the SHO-233 fix.
+
+### Reading the GC
+
+The DaemonSet runs in `kube-system` on every node and logs one line per pass:
+
+```sh
+kubectl -n kube-system get pods -l app.kubernetes.io/name=node-image-gc -o wide
+kubectl -n kube-system logs -l app.kubernetes.io/name=node-image-gc --tail=50
+```
+
+```
+[node-image-gc] 10.0.24.140 disk 58% < 65% — nothing to reclaim
+[node-image-gc] 10.0.29.201 before=60% after=37% removed=10 skipped=0
+```
+
+`< 65% — nothing to reclaim` is the healthy steady state. It only prunes at or
+above `RECLAIM_PCT` (65), and it only ever removes Shogo digests that no
+container uses, that cri-o has not pinned, that sit outside the newest
+`KEEP_PER_REPO` (2) of their repo, and whose age is known. Postgres, Knative
+and OKE system images are never touched.
+
+### Pruning one node by hand
+
+Dry run first — this lists candidates and removes nothing:
+
+```sh
+kubectl debug node/<node> -it --profile=sysadmin --image=busybox:1.36 -- \
+  chroot /host /bin/sh -c \
+  'RECLAIM_PCT=0 DRY_RUN=1 ONESHOT=1 sh /run/shogo-node-image-gc/node-image-gc.sh'
+```
+
+Then for real:
+
+```sh
+kubectl debug node/<node> -it --profile=sysadmin --image=busybox:1.36 -- \
+  chroot /host /bin/sh -c \
+  'RECLAIM_PCT=0 ONESHOT=1 sh /run/shogo-node-image-gc/node-image-gc.sh'
+```
+
+If the DaemonSet is not deployed at all (a cluster that has not taken a deploy
+since SHO-233), the blunt version is cri-o's own prune — it removes every image
+no container references, in every repo:
+
+```sh
+kubectl debug node/<node> -it --profile=sysadmin --image=busybox:1.36 -- \
+  chroot /host sh -c 'crictl images | grep -E "shogo-(runtime|api)"; crictl rmi --prune; df -h /'
+```
+
+After pruning a node that was cordoned because of disk, uncordon it and let the
+next deploy through:
+
+```sh
+kubectl uncordon <node>
+gh run rerun <failed-run-id> --repo shogo-labs/shogo-ai --failed
+```
+
+Full symptom → action runbook: [`docs/runbooks/node-image-gc.md`](../docs/runbooks/node-image-gc.md).
+
 ## Configuration
 
 See `environments/*/variables.tf` for configurable options per environment.

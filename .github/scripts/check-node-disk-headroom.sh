@@ -48,6 +48,9 @@
 #                                i.e. ~85% used; 80% leaves margin to deploy)
 #   RETRY_ATTEMPTS  default 5   (total samples before giving up)
 #   RETRY_INTERVAL  default 30  (seconds between samples)
+#   KEEP_PER_REPO   default 2   (only used in the failure report: how many
+#                                digests per repo node-image-gc retains, so the
+#                                "beyond-keep" column is the stale count)
 
 set -euo pipefail
 
