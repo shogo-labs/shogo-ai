@@ -54,10 +54,12 @@ function withPushKitAppDelegate(config) {
       }
       contents = contents.replace(/^import React\s*$/m, (line) => `${line}\nimport PushKit`)
     }
+    if (!/^import RNCallKeep$/m.test(contents)) {
+      contents = contents.replace(/^import PushKit\s*$/m, (line) => `${line}\nimport RNCallKeep`)
+    }
 
     const marker = '// shogo: PushKit delegate callbacks'
-    if (!contents.includes(marker)) {
-      contents = `${contents.trimEnd()}\n\n${marker}
+    const callbacks = `${marker}
 extension AppDelegate: PKPushRegistryDelegate {
   public func pushRegistry(
     _ registry: PKPushRegistry,
@@ -68,7 +70,7 @@ extension AppDelegate: PKPushRegistryDelegate {
   }
 
   public func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
-    // The next registration reports the replacement token to the app.
+    RNVoipPushNotificationManager.didInvalidatePushToken()
   }
 
   public func pushRegistry(
@@ -77,13 +79,46 @@ extension AppDelegate: PKPushRegistryDelegate {
     for type: PKPushType,
     completion: @escaping () -> Void
   ) {
-    let completionId = payload.dictionaryPayload["huddleId"] as? String ?? ""
-    RNVoipPushNotificationManager.addCompletionHandler(completionId, completionHandler: completion)
+    let data = payload.dictionaryPayload
+    let huddleId = data["huddleId"] as? String ?? ""
+    let huddleUUID = UUID(uuidString: huddleId)
+    let callUUID = huddleUUID?.uuidString.lowercased() ?? UUID().uuidString.lowercased()
+    let caller = data["from"] as? [String: Any]
+    let callerName = caller?["name"] as? String ?? data["callerName"] as? String ?? "Someone"
+    let callerHandle = caller?["userId"] as? String ?? data["callerId"] as? String ?? callerName
+    let hasRingContext = huddleUUID != nil
+      && !(data["conversationId"] as? String ?? "").isEmpty
+      && !(data["workspaceId"] as? String ?? "").isEmpty
+
+    // CallKit must be notified from the PushKit callback itself. Waiting for
+    // the React Native bridge can miss Apple's reporting deadline on cold launch.
+    RNCallKeep.reportNewIncomingCall(
+      callUUID,
+      handle: callerHandle,
+      handleType: "generic",
+      hasVideo: false,
+      localizedCallerName: callerName,
+      supportsHolding: true,
+      supportsDTMF: true,
+      supportsGrouping: false,
+      supportsUngrouping: false,
+      fromPushKit: true,
+      payload: data,
+      withCompletionHandler: {
+        completion()
+        if !hasRingContext {
+          RNCallKeep.endCall(withUUID: callUUID, reason: 1)
+        }
+      }
+    )
     RNVoipPushNotificationManager.didReceiveIncomingPush(with: payload, forType: type.rawValue)
   }
 }
 `
-    }
+    const markerIndex = contents.indexOf(marker)
+    contents = markerIndex === -1
+      ? `${contents.trimEnd()}\n\n${callbacks}`
+      : `${contents.slice(0, markerIndex)}${callbacks}`
 
     appDelegate.contents = contents
     return config
@@ -103,6 +138,41 @@ function withVoipPushNotificationBridgingHeader(config) {
     if (!contents.includes(importStatement)) {
       contents = `${contents.trimEnd()}\n\n${importStatement}\n`
       await fs.writeFile(bridgingHeaderPath, contents)
+    }
+
+    // The upstream VoIP package has no token-invalidation event. Extend its
+    // existing registration event with an empty token so JS can clear the
+    // stale token for this Expo push subscription on the server.
+    const voipPackagePath = path.dirname(require.resolve('react-native-voip-push-notification/index.js', {
+      paths: [config.modRequest.projectRoot],
+    }))
+    const managerDirectory = path.join(voipPackagePath, 'ios', 'RNVoipPushNotification')
+    const managerHeaderPath = path.join(managerDirectory, 'RNVoipPushNotificationManager.h')
+    const managerImplementationPath = path.join(managerDirectory, 'RNVoipPushNotificationManager.m')
+    let managerHeader = await fs.readFile(managerHeaderPath, 'utf8')
+    let managerImplementation = await fs.readFile(managerImplementationPath, 'utf8')
+    const headerDeclaration = '+ (void)didInvalidatePushToken;'
+    if (!managerHeader.includes(headerDeclaration)) {
+      managerHeader = managerHeader.replace(
+        '+ (void)didUpdatePushCredentials:(PKPushCredentials *)credentials forType:(NSString *)type;',
+        `+ (void)didUpdatePushCredentials:(PKPushCredentials *)credentials forType:(NSString *)type;\n${headerDeclaration}`,
+      )
+      await fs.writeFile(managerHeaderPath, managerHeader)
+    }
+    const invalidationMethod = `+ (void)didInvalidatePushToken
+{
+    _lastVoipToken = @"";
+    RNVoipPushNotificationManager *voipPushManager = [RNVoipPushNotificationManager sharedInstance];
+    [voipPushManager sendEventWithNameWrapper:RNVoipPushRemoteNotificationsRegisteredEvent body:_lastVoipToken];
+}
+`
+    if (!managerImplementation.includes('didInvalidatePushToken')) {
+      const insertionPoint = '// --- should be called from `AppDelegate.didReceiveIncomingPushWithPayload`'
+      if (!managerImplementation.includes(insertionPoint)) {
+        throw new Error('withHuddleCalls could not patch the VoIP token invalidation callback')
+      }
+      managerImplementation = managerImplementation.replace(insertionPoint, `${invalidationMethod}\n${insertionPoint}`)
+      await fs.writeFile(managerImplementationPath, managerImplementation)
     }
     return config
   }])
