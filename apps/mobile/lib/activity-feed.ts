@@ -212,6 +212,61 @@ export function buildFeed({ inbox, tasks, activeChats, sent = [], filter = 'all'
   }
 }
 
+/** Slack groups Activity by day; so do we. */
+export type FeedSection = 'today' | 'yesterday' | 'earlier'
+
+export const SECTION_LABEL: Record<FeedSection, string> = {
+  today: 'Today',
+  yesterday: 'Yesterday',
+  earlier: 'Earlier',
+}
+
+export type FeedHeaderRow = { type: 'header'; key: string; section: FeedSection; label: string; count: number }
+export type FeedRow = FeedHeaderRow | { type: 'entry'; key: string; entry: ActivityEntry }
+
+const startOfDay = (at: number): number => {
+  const d = new Date(at)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+/** Calendar days, not 24-hour blocks: 23:00 and 01:00 are different days. */
+export function sectionFor(at: number, now = Date.now()): FeedSection {
+  const days = Math.round((startOfDay(now) - startOfDay(at)) / 86_400_000)
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  return 'earlier'
+}
+
+/**
+ * Turns the flat, newest-first list into header + entry rows. Each header
+ * carries its section's count, so the reader can see what they are skipping.
+ */
+export function groupFeed(entries: ActivityEntry[], now = Date.now()): FeedRow[] {
+  if (!entries.length) return []
+  const sections = entries.map((entry) => sectionFor(entry.at, now))
+  const counts = new Map<FeedSection, number>()
+  for (const section of sections) counts.set(section, (counts.get(section) ?? 0) + 1)
+
+  const rows: FeedRow[] = []
+  let current: FeedSection | null = null
+  entries.forEach((entry, i) => {
+    const section = sections[i]
+    if (section !== current) {
+      current = section
+      rows.push({
+        type: 'header',
+        key: `h:${section}`,
+        section,
+        label: SECTION_LABEL[section],
+        count: counts.get(section) ?? 0,
+      })
+    }
+    rows.push({ type: 'entry', key: `e:${entry.id}`, entry })
+  })
+  return rows
+}
+
 /** The Activity badge: unread inbox items plus agent work that recently failed. */
 export function activityBadge(inboxUnread: number, tasks: AgentTask[], now = Date.now()): number {
   return inboxUnread + tasks.filter((t) => taskEntry(t, now).unread).length

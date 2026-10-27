@@ -20,7 +20,7 @@ import { useOpenQuestionCount } from '../../hooks/useOpenQuestions'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { openActiveChat } from '../../lib/open-active-chat'
 import { readableAgentTaskError } from '../../lib/agent-task-ui'
-import { ACTIVITY_FILTERS, buildFeed, relativeTime, type ActivityEntry, type ActivityFilter } from '../../lib/activity-feed'
+import { ACTIVITY_FILTERS, buildFeed, groupFeed, relativeTime, type ActivityEntry, type ActivityFilter, type FeedHeaderRow } from '../../lib/activity-feed'
 import type { AgentTask } from '../../lib/api'
 import type { InboxKind } from '../../lib/team-chat-api'
 
@@ -82,13 +82,15 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
     }),
     [inbox.items, agents.tasks, agents.activeChats, sent.items, filter, unreadOnly],
   )
+  /** Day sections, so a long backlog reads as history instead of a flat wall. */
+  const rows = useMemo(() => groupFeed(feed.entries), [feed.entries])
   const loading = filter === 'sent'
     ? sent.loading && sent.items.length === 0
     : (inbox.loading && inbox.items.length === 0) || (agents.loading && agents.tasks.length === 0)
   const empty = !loading && feed.running.length === 0 && feed.entries.length === 0
   /**
-   * Both views page the same way: older items load as you reach the end, so the
-   * list is never silently capped at its first page.
+   * Paging is explicit in both views: the footer asks for the next page. The
+   * list never loads older rows on its own.
    */
   const paging = filter === 'sent'
     ? { hasMore: sent.hasMore, loadingMore: sent.loading, loadMore: sent.loadMore }
@@ -154,8 +156,8 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
 
       <FlatList
         className="flex-1"
-        data={feed.entries}
-        keyExtractor={(entry) => entry.id}
+        data={rows}
+        keyExtractor={(row) => row.key}
         contentContainerClassName="pb-28"
         refreshControl={
           <RefreshControl
@@ -191,7 +193,13 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
             {filter === 'sent' && sent.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{sent.error}</Text> : null}
           </>
         }
-        renderItem={({ item }) => <ActivityRow entry={item} compact={compact} onPress={() => open(item)} />}
+        renderItem={({ item }) =>
+          item.type === 'header' ? (
+            <FeedSectionHeader row={item} compact={compact} />
+          ) : (
+            <ActivityRow entry={item.entry} compact={compact} onPress={() => open(item.entry)} />
+          )
+        }
         ListEmptyComponent={
           empty ? (
             <Text className="px-6 pt-10 text-center text-sm text-muted-foreground">
@@ -295,6 +303,22 @@ export function AgentMark({ running = false, size = 32 }: { running?: boolean; s
       className={cn('items-center justify-center rounded-lg bg-primary/15', running && 'border border-primary/60')}
     >
       <Bot size={Math.round(size / 2)} className="text-primary" />
+    </View>
+  )
+}
+
+/** A day divider: "Today 12". Slack's Activity is grouped the same way. */
+function FeedSectionHeader({ row, compact }: { row: FeedHeaderRow; compact: boolean }) {
+  return (
+    <View
+      className={cn(
+        'flex-row items-baseline gap-1.5 border-b border-border/60 bg-muted/40',
+        compact ? 'px-3 py-1' : 'px-4 py-1.5',
+      )}
+      testID={`section-${row.section}`}
+    >
+      <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{row.label}</Text>
+      <Text className="text-[11px] text-muted-foreground/70">{row.count}</Text>
     </View>
   )
 }

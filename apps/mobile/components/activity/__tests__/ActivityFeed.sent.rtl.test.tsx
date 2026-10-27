@@ -287,6 +287,18 @@ describe('Activity · inbound paging', () => {
     expect(inboxArgs[0]).toEqual({ workspaceId: 'ws-1', unreadOnly: false })
   })
 
+  test('groups rows under day headers, and omits empty sections', () => {
+    const today = new Date().toISOString()
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString()
+    inboxState = { ...baseInbox, items: [inboxRow('t1', today), inboxRow('y1', yesterday)] }
+    render(createElement(ActivityFeed))
+
+    expect(screen.getByText('Today')).toBeTruthy()
+    expect(screen.getByText('Yesterday')).toBeTruthy()
+    // Nothing is four days old here, so there is no Earlier divider.
+    expect(screen.queryByText('Earlier')).toBeNull()
+  })
+
   test('the Unreads pill asks the server to filter, not the client', () => {
     render(createElement(ActivityFeed))
     fireEvent.click(screen.getByText('Unreads'))
