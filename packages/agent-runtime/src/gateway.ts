@@ -203,6 +203,23 @@ work visible, and communicate in concise user-facing language.
 - Do not expose internal project ids or builder mechanics unless the user asks.
 `
 
+/**
+ * The runtime's own listening ports: the SPA on `PORT` plus the API sidecar.
+ * The public preview origin serves exactly these (the SPA at its root, and
+ * `/api/*` proxied to the sidecar), so they are the only localhost ports the
+ * link rewriter may swap for it inside code spans and on `curl` lines — see
+ * `preview-link-rewrite.ts` and SHO-239.
+ */
+export function ownPreviewPorts(
+  previewManager: import('./preview-manager').PreviewManager | null | undefined,
+): number[] {
+  const ports = [parseInt(process.env.PORT || '8080', 10)]
+  const match = /:(\d+)\/?$/.exec(previewManager?.apiServerUrl ?? '')
+  const apiPort = match ? Number(match[1]) : NaN
+  if (Number.isInteger(apiPort) && apiPort > 0 && !ports.includes(apiPort)) ports.push(apiPort)
+  return ports.filter((p) => Number.isInteger(p) && p > 0)
+}
+
 function isComposioTool(name: string): boolean {
   return /^[A-Z]+_/.test(name)
 }
@@ -3819,8 +3836,14 @@ export class AgentGateway {
     const previewPublicUrl = (this.previewManager?.isLocalMode ?? detectLocalMode())
       ? ''
       : (process.env.PUBLIC_PREVIEW_URL ?? '')
+    // The runtime's own ports (the SPA on `PORT`, and the API sidecar). The
+    // public preview origin serves exactly these — the SPA at the root and
+    // `/api/*` proxied to the sidecar — so a reference to them is rewritten
+    // even inside code spans or on a `curl` line (SHO-239). Other ports and a
+    // bare `localhost` inside code stay untouched.
+    const ownPorts = ownPreviewPorts(this.previewManager)
     const shareLinkTokens = this.shareLinkTokensFor(sessionId)
-    let linkRewriter = new LocalhostLinkRewriter(previewPublicUrl, shareLinkTokens)
+    let linkRewriter = new LocalhostLinkRewriter(previewPublicUrl, shareLinkTokens, ownPorts)
 
     // Forward streamed assistant text (post-rewrite) to the chunker + UI,
     // opening a UI text block lazily on first non-empty content.
@@ -3850,7 +3873,7 @@ export class AgentGateway {
     const discardFailedStep = (retry: { attempt: number; maxAttempts?: number; reason: string; delayMs: number }) => {
       // Drop any text the rewriter was holding from the failed attempt and
       // reset its scanner state so the regenerated output starts clean.
-      linkRewriter = new LocalhostLinkRewriter(previewPublicUrl, shareLinkTokens)
+      linkRewriter = new LocalhostLinkRewriter(previewPublicUrl, shareLinkTokens, ownPorts)
       if (uiWriter && uiTextId) {
         uiWriter.write({ type: 'text-end', id: uiTextId })
         uiTextId = null
@@ -5170,7 +5193,7 @@ export class AgentGateway {
       // Mistyped share_file tokens are repaired the same way.
       if (previewPublicUrl || shareLinkTokens.size > 0) {
         const rewriteText = (text: string) =>
-          repairShareLinks(rewriteLocalhostLinks(text, previewPublicUrl), shareLinkTokens)
+          repairShareLinks(rewriteLocalhostLinks(text, previewPublicUrl, { ownPorts }), shareLinkTokens)
         const rewriteMessage = (msg: Message) => {
           if (msg.role !== 'assistant' || !Array.isArray(msg.content)) return
           for (const block of msg.content as any[]) {
