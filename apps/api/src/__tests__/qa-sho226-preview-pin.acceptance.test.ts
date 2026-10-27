@@ -198,7 +198,12 @@ async function openPreview(app: Hono, projectId: string) {
 async function ping(app: Hono, projectId: string) {
   const res = await app.request(`/api/projects/${projectId}/preview/active`, { method: 'POST' })
   expect(res.status).toBe(200)
-  return (await res.json()) as { ok: boolean; running: boolean; agentPort: number | null }
+  return (await res.json()) as {
+    ok: boolean
+    running: boolean
+    agentPort: number | null
+    status: string | null
+  }
 }
 
 const SAVED_ENV = {
@@ -299,6 +304,9 @@ describe('SHO-226 AC4 — the pinged preview is never the LRU victim', () => {
       ok: true,
       running: true,
       agentPort: rm.runtimes.get(key('p1'))!.agentPort,
+      // Round 2: the lifecycle state rides along so the client can tell
+      // "still coming up" from "was here and is gone".
+      status: 'running',
     })
     expect(rm.previewViewedAt.has(key('p1'))).toBe(true)
     // The ping is also a UI signal, so it refreshes the MRU. Put p1 back at the
@@ -342,6 +350,40 @@ describe('SHO-226 AC4 — the pinged preview is never the LRU victim', () => {
   })
 })
 
+describe('SHO-226 round 2 — a cold start is not a lost runtime', () => {
+  /**
+   * The regression three E2E jobs caught in round 1: a runtime that is merely
+   * warming up answers `running:false`, and the canvas re-resolved
+   * `/sandbox/url` under the user — which re-enters the loading gate and made
+   * the composer and "+ new chat" unreachable (machine-workspaces-live:280,
+   * project-chat-url:250). The API has to say `starting` so the client can tell
+   * a cold boot from a runtime that died.
+   */
+  test('a starting runtime answers running:false with status starting, and is not restarted', async () => {
+    const rm = newManager()
+    manager = rm
+    stubStop(rm)
+    const app = makeApp(rm)
+
+    const seeded = await rm.startProjectWorkspace('p1', { workspaceId: 'w1' })
+    const spawnsBefore = rm.doStartMergedRuntime.mock.calls.length
+    // The agent process is up on a port but has not finished booting — the
+    // state a machine workspace / a cold start sits in for tens of seconds.
+    rm.runtimes.get(key('p1'))!.status = 'starting'
+
+    const body = await ping(app, 'p1')
+
+    expect(body).toEqual({
+      ok: true,
+      running: false,
+      agentPort: seeded.agentPort,
+      status: 'starting',
+    })
+    expect(rm.runtimes.get(key('p1'))!.status).toBe('starting')
+    expect(rm.doStartMergedRuntime.mock.calls.length).toBe(spawnsBefore)
+  })
+})
+
 describe('SHO-226 AC5 — the ping is a pin, never a start', () => {
   test('it resets the worker idle slot and does not spawn anything', async () => {
     const rm = newManager()
@@ -359,6 +401,7 @@ describe('SHO-226 AC5 — the ping is a pin, never a start', () => {
       ok: true,
       running: true,
       agentPort: rm.runtimes.get(key('p1'))!.agentPort,
+      status: 'running',
     })
     // The idle reaper's own signal: a pinged runtime is not idle.
     expect(rm.agentManager.touch).toHaveBeenCalledWith(key('p1'))
@@ -380,6 +423,9 @@ describe('SHO-226 AC5 — the ping is a pin, never a start', () => {
     // route echoes back for a dead runtime can never be mistaken for a live one.
     expect(body.ok).toBe(true)
     expect(body.running).toBe(false)
+    // Round 2: `stopped` is the positive evidence the canvas needs — a canvas
+    // that never saw this runtime live still recovers on it.
+    expect(body.status).toBe('stopped')
     expect(rm.runtimes.get(key('p1'))?.status).toBe('stopped')
     expect(rm.doStartMergedRuntime.mock.calls.length).toBe(1)
   })
@@ -407,6 +453,7 @@ describe('SHO-226 AC6 — the recovery contract the canvas relies on', () => {
     const gone = await ping(app, 'p1')
     expect(gone.ok).toBe(true)
     expect(gone.running).toBe(false)
+    expect(gone.status).toBe('stopped')
 
     // `retryAgentUrl()` → `/sandbox/url` again: the runtime is restarted and the
     // response carries the port the iframe must now load.
