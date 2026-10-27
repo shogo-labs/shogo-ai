@@ -76,10 +76,15 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
-    # Measured on the first green PR run: 5m of setup (WebKit download, Metro,
-    # packages) + 20m of specs = 22m50s of wall clock. 40 leaves room for a
-    # loaded runner without letting a wedged job hold a runner for an hour.
-    timeout-minutes: 40
+    # 60, not 40 (SHO-234). Setup is normally ~1m and green runs finish in
+    # 19-23m, but a run whose apt/download leg drags spends ~18m in
+    # `Install Playwright browsers` alone (17m43s, run 40506041201) on top of
+    # ~20m of specs — which lands on a 40m cap, so the job was *cancelled*
+    # mid-spec and uploaded nothing: the PR silently got no phone coverage.
+    # The specs step is bounded at 30m, so worst case here is ~20m of setup +
+    # 30m of specs; 60 leaves room for a loaded runner on top of that. Do not
+    # lower it back without re-checking that arithmetic.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -133,13 +138,36 @@ jobs:
           key: playwright-webkit-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: playwright-webkit-${{ runner.os }}-
 
+      # Logged to the run summary (SHO-234): a slow apt/download leg here is
+      # what ate the cap on run 40506041201, and inferring it from step
+      # timestamps after the fact is not a thing anyone does.
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium webkit
+        shell: bash
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          npx playwright install --with-deps chromium webkit
+          elapsed=$(( $(date +%s) - start ))
+          {
+            echo "### Playwright browser install"
+            echo ""
+            echo "\`npx playwright install --with-deps chromium webkit\` took **${elapsed}s** ($(( elapsed / 60 ))m$(( elapsed % 60 ))s)."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Playwright install: ${elapsed}s"
+          if (( elapsed > 300 )); then
+            echo "::warning title=Slow Playwright install::took ${elapsed}s (normally ~1m); the specs step has 30m and the job 60m"
+          fi
 
       # --retries 0 is permanent here. Retries are exactly what hid the SHO-222
       # race: the badge assertion passed on the second attempt and the flake
       # never showed. If a phone spec is flaky, fix the spec.
+      # Its own bound, shorter than the job cap (SHO-234): an overrun here ends
+      # as a *failed* `E2E (phone: ...)` check with `e2e-phone-report` uploaded.
+      # A job-level cap instead *cancels* the run, and `if: failure()` does not
+      # fire for `cancelled` — so the failure was invisible and artifact-free.
       - name: Run e2e/local phone specs
+        timeout-minutes: 30
         env:
           E2E_LOCAL_START_STACK: '1'
         run: npx playwright test --config e2e/local/playwright.config.ts --project=iphone-15-pro --project=pixel-7 --retries 0
