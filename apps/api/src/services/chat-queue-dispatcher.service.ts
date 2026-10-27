@@ -10,6 +10,28 @@ import { MAX_WAKE_ATTEMPTS, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAU
 const ACTIVE_TURN_STALE_AFTER_MS = 10 * 60 * 1000
 
 /**
+ * A queued task wake older than this is history, not news. When delivery stalls
+ * (the app was closed, the API wedged) the backlog must not replay as one burst
+ * of turns the moment the queue moves again: on 2026-10-27 a desktop restart
+ * started ~100 turns in 90 s (37 for one agent) for updates up to 2.5 days old,
+ * most about cards that were already Done.
+ */
+export const STALE_TASK_WAKE_MS = 6 * 60 * 60 * 1000
+
+/** A wake about cards that are all closed now has nothing to act on after this long. */
+export const STALE_CLOSED_CARD_WAKE_MS = 30 * 60 * 1000
+
+/**
+ * Automatic wakes one agent may start per drain tick, and in total. A restart
+ * with a backlog drains it over a few ticks instead of spawning every turn at
+ * once. A person's own queued message is never held by this.
+ */
+export const MAX_WAKES_PER_AGENT_PER_TICK = 2
+export const MAX_WAKES_PER_TICK = 8
+
+const WAKE_STALE = 'stale'
+
+/**
  * `chat_queued_messages` replicates between regions, and the claim below is a
  * conditional UPDATE that only serializes writers on one database. Every queue
  * write (claim, user-message persist, turn start, delete, stuck reset) must
@@ -97,6 +119,7 @@ type QueueRow = {
   parts: string | null
   body: string
   kind?: string | null
+  createdAt?: Date | string | null
 }
 
 function parseJson<T>(value: string | null | undefined, fallback: T): T {
@@ -328,6 +351,34 @@ async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | 
   return null
 }
 
+/**
+ * Is this queued wake too old to start a turn for? Only the automatic drain
+ * asks: a person resuming or sending a row now still runs it.
+ */
+async function isStaleWake(row: QueueRow): Promise<boolean> {
+  if (taskWakeBodyResetsRun(row.body)) return false
+  const created = row.createdAt ? new Date(row.createdAt).getTime() : NaN
+  if (!Number.isFinite(created)) return false
+  const age = Date.now() - created
+  if (age > STALE_TASK_WAKE_MS) return true
+  if (age <= STALE_CLOSED_CARD_WAKE_MS) return false
+  const ids = taskWakeIds(row)
+  if (!ids.length) return false
+  const tasks: Array<{ source: string; targetRef: string }> = await (prisma as any).backgroundTask.findMany({
+    where: { id: { in: ids } },
+    select: { source: true, targetRef: true },
+  })
+  if (!tasks.length || !tasks.every((t) => t.source === 'work_item')) return false
+  const items: Array<{ archivedAt: Date | null; column: { category: string | null } | null }> =
+    await (prisma as any).workItem.findMany({
+      where: { id: { in: tasks.map((t) => t.targetRef) } },
+      select: { archivedAt: true, column: { select: { category: true } } },
+    })
+  const { isClosedCategory } = await import('./background-tasks.service')
+  return items.length === new Set(tasks.map((t) => t.targetRef)).size &&
+    items.every((item) => item.archivedAt !== null || isClosedCategory(item.column?.category))
+}
+
 /** Is every automatic agent start held in the workspace this session lives in? */
 async function sessionWorkspacePaused(chatSessionId: string): Promise<boolean> {
   const { isChatSessionWorkspacePaused } = await import('./workspace-pause.service')
@@ -460,6 +511,15 @@ async function settleSkippedWake(row: QueueRow, skip: string): Promise<string> {
     await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } }).catch(() => {})
     return 'This update has already been delivered'
   }
+  if (skip === WAKE_STALE) {
+    // Seen-by-expiry: the sweep must not queue it again, and a live card watch
+    // keeps listening for the next milestone (`consumeTasks` leaves it running).
+    const { consumeTasks } = await import('./background-tasks.service')
+    await consumeTasks(taskWakeIds(row)).catch(() => 0)
+    await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } }).catch(() => {})
+    console.log(`[ChatQueue] Dropped stale task wake ${row.id} for session ${row.sessionId}`)
+    return 'This update is too old to start a turn for'
+  }
   await (prisma as any).chatQueuedMessage.updateMany({
     where: { id: row.id, status: 'dispatching' },
     data: { status: 'failed', error: skip, body: pausedBody(row.body) },
@@ -477,7 +537,7 @@ async function settleSkippedWake(row: QueueRow, skip: string): Promise<string> {
 async function claimNextDispatchableRow(chatSessionId: string): Promise<QueueRow | null> {
   let row = await claimNext(chatSessionId)
   while (row && row.kind === 'task_notification') {
-    const skip = await taskWakeSkipReason(row)
+    const skip = (await taskWakeSkipReason(row)) ?? ((await isStaleWake(row)) ? WAKE_STALE : null)
     if (!skip) break
     await settleSkippedWake(row, skip)
     row = await claimNext(chatSessionId)
@@ -646,16 +706,43 @@ export async function resetStuckDispatching(
 
 export async function dispatchPendingSessions(): Promise<number> {
   const home = homeSessionWhere()
-  const rows = await (prisma as any).chatQueuedMessage.findMany({
+  const rows: Array<{ sessionId: string }> = await (prisma as any).chatQueuedMessage.findMany({
     where: { status: 'pending', ...(home ? { session: home } : {}) },
     distinct: ['sessionId'],
     select: { sessionId: true },
   })
-  const allowed = await cloudSessionIds(rows.map((row: { sessionId: string }) => row.sessionId))
+  const allowed = await cloudSessionIds(rows.map((row) => row.sessionId))
+  const sessionIds = rows.map((row) => row.sessionId).filter((id) => allowed.has(id))
+  if (!sessionIds.length) return 0
+  // A session with a person's message waiting is never held back by the cap.
+  const personRows: Array<{ sessionId: string }> = await (prisma as any).chatQueuedMessage.findMany({
+    where: { status: 'pending', sessionId: { in: sessionIds }, NOT: { kind: 'task_notification' } },
+    distinct: ['sessionId'],
+    select: { sessionId: true },
+  })
+  const hasPerson = new Set(personRows.map((row) => row.sessionId))
+  const sessions: Array<{ id: string; contextType: string | null; contextId: string | null; workspaceId: string | null }> =
+    await (prisma as any).chatSession.findMany({
+      where: { id: { in: sessionIds } },
+      select: { id: true, contextType: true, contextId: true, workspaceId: true },
+    })
+  const agentOf = new Map(sessions.map((s) => [
+    s.id,
+    s.contextType === 'project' && s.contextId ? `project:${s.contextId}` : `workspace:${s.workspaceId ?? s.id}`,
+  ]))
+  const perAgent = new Map<string, number>()
+  let wakes = 0
   let dispatched = 0
-  for (const row of rows) {
-    if (!allowed.has(row.sessionId)) continue
-    if (await dispatchNext(row.sessionId)) dispatched++
+  for (const sessionId of sessionIds) {
+    const person = hasPerson.has(sessionId)
+    const agent = agentOf.get(sessionId) ?? sessionId
+    if (!person && (wakes >= MAX_WAKES_PER_TICK || (perAgent.get(agent) ?? 0) >= MAX_WAKES_PER_AGENT_PER_TICK)) continue
+    if (!(await dispatchNext(sessionId))) continue
+    dispatched++
+    if (!person) {
+      wakes++
+      perAgent.set(agent, (perAgent.get(agent) ?? 0) + 1)
+    }
   }
   return dispatched
 }
