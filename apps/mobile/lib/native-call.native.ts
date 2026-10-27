@@ -247,8 +247,9 @@ function onVoipPush(payload: Record<string, unknown>): void {
   if (ring) showNativeIncomingCall(ring)
   // Apple requires every VoIP push to be reported as a call. A push that isn't a ring
   // is still completed so the system doesn't count it against us.
-  const uuid = ring ? callsByHuddle.get(ring.huddleId)?.uuid : undefined
-  voipPush?.onVoipNotificationCompleted(uuid ?? '')
+  // The AppDelegate stores PushKit's completion handler under the server huddleId.
+  const completionId = typeof payload.huddleId === 'string' ? payload.huddleId : ''
+  voipPush?.onVoipNotificationCompleted(completionId)
 }
 
 function startVoip(): void {
