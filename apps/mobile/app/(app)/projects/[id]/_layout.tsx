@@ -104,6 +104,8 @@ import {
   latchApiGate,
   previewActiveUrl,
   decidePreviewPing,
+  previewRecoveryAttempts,
+  recordPreviewRecovery,
   PREVIEW_ACTIVE_PING_MS,
   type PreviewActivePing,
 } from "../../../../lib/preview-gate";
@@ -5310,7 +5312,6 @@ function CanvasPanel({
     phase: previewPhase,
     running: previewRunning,
     apiReady,
-    statusErrors: previewStatusErrors,
   } = usePreviewPhase(agentUrl, canvasBaseUrl);
 
   // Gate the canvas iframe on the same-origin `running` signal (no cross-origin
@@ -5432,36 +5433,46 @@ function CanvasPanel({
     return () => sub.remove();
   }, []);
 
-  // Read inside the ping loop without restarting its timer on every poll
-  // failure.
-  const previewStatusErrorsRef = useRef(0);
-  useEffect(() => {
-    previewStatusErrorsRef.current = previewStatusErrors;
-  }, [previewStatusErrors]);
-  const pingFailuresRef = useRef(0);
+  // Whether this canvas has seen the project's runtime reported live. Recovery
+  // is only ever triggered by *losing* something: `running:false` on the first
+  // ping is how a sleeping machine workspace, a remote runtime and a preview
+  // that has not started yet all answer, and re-resolving on that would wake or
+  // restart a project nobody asked about.
+  const pingSeenRunningRef = useRef(false);
 
   useEffect(() => {
     if (!canvasVisible || !projectId || !API_URL || !canvasBaseUrl || !agentUrl) return;
     let cancelled = false;
 
     const ping = async () => {
+      // Offline: the request cannot reach the API, so its result would say
+      // nothing about the runtime — and treating it as "gone" used to restart a
+      // runtime that was happily mid-turn.
+      const online =
+        typeof navigator === "undefined" || navigator.onLine !== false;
       let body: PreviewActivePing | null = null;
-      try {
-        const res = await agentFetch(previewActiveUrl(API_URL!, projectId), {
-          method: "POST",
-        });
-        body = res.ok ? ((await res.json()) as PreviewActivePing) : null;
-      } catch {
-        body = null;
+      if (online) {
+        try {
+          const res = await agentFetch(previewActiveUrl(API_URL!, projectId), {
+            method: "POST",
+          });
+          body = res.ok ? ((await res.json()) as PreviewActivePing) : null;
+        } catch {
+          body = null;
+        }
       }
       if (cancelled) return;
       const verdict = decidePreviewPing({
         ping: body,
         canvasBaseUrl,
-        statusErrorStreak: previewStatusErrorsRef.current,
-        failures: pingFailuresRef.current,
+        failures: previewRecoveryAttempts(projectId),
+        seenRunning: pingSeenRunningRef.current,
+        online,
       });
-      pingFailuresRef.current = verdict.failures;
+      pingSeenRunningRef.current = verdict.seenRunning;
+      // Module scope, not a ref: recovering unmounts this canvas, so a ref
+      // would restart the count and the give-up below could never fire.
+      recordPreviewRecovery(projectId, verdict.failures);
       if (verdict.decision === "recover") {
         console.warn(
           `[preview/active] runtime gone or moved (attempt ${verdict.failures}) — re-resolving`

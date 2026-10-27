@@ -354,7 +354,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       }
       if (isCloudRuntime()) {
         // Nothing to pin: the runtime's lifetime is not this manager's.
-        return c.json({ ok: true, running: true, agentPort: null })
+        return c.json({ ok: true, running: true, agentPort: null, status: null })
       }
       runtimeManager.markPreviewActive(projectId)
       const runtime = runtimeManager.status(projectId)
@@ -362,6 +362,11 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         ok: true,
         running: runtime?.status === 'running',
         agentPort: runtime?.agentPort ?? null,
+        // The lifecycle state, so the client can tell "still coming up"
+        // (`starting`) from "was here and is gone" (`stopped`/`error`/absent).
+        // Without it a canvas treats a cold start as a lost runtime and
+        // re-resolves `/sandbox/url` — which restarts it — under the user.
+        status: runtime?.status ?? null,
       })
     } catch (error: any) {
       console.error("[Runtime] preview/active error:", error)
