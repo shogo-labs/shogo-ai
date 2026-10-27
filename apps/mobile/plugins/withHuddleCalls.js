@@ -61,6 +61,9 @@ function withPushKitAppDelegate(config) {
     const marker = '// shogo: PushKit delegate callbacks'
     const callbacks = `${marker}
 extension AppDelegate: PKPushRegistryDelegate {
+  // Swift shortens the Objective-C manager selectors when importing them:
+  // didUpdatePushCredentials:forType: becomes didUpdate(_:forType:), and
+  // didReceiveIncomingPushWithPayload:forType: becomes didReceiveIncomingPush(with:forType:).
   public func pushRegistry(
     _ registry: PKPushRegistry,
     didUpdate credentials: PKPushCredentials,
