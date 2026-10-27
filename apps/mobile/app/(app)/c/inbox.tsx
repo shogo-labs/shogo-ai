@@ -56,7 +56,7 @@ export default function TeamChatInbox() {
   const experience = useWorkspaceExperience()
   const workspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
   const [unreadOnly, setUnreadOnly] = useState(false)
-  const { items, loading, error, markRead, loadMore } = useInbox(workspaceId, unreadOnly)
+  const { items, loading, loadingMore, hasMore, error, markRead, loadMore } = useInbox(workspaceId, unreadOnly)
   const anyUnread = items.some((i) => !i.readAt)
 
   const open = (item: InboxItem) => {
@@ -151,8 +151,25 @@ export default function TeamChatInbox() {
             </Pressable>
           )
         }}
-        onEndReachedThreshold={0.4}
-        onEndReached={loadMore}
+        ListFooterComponent={
+          loadingMore ? (
+            <View className="items-center py-4">
+              <ActivityIndicator size="small" />
+            </View>
+          ) : hasMore ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Show older activity"
+              onPress={loadMore}
+              className="items-center py-4 active:bg-muted/50"
+              testID="show-older"
+            >
+              <Text className="text-xs font-medium text-muted-foreground">Show older</Text>
+            </Pressable>
+          ) : items.length > 0 ? (
+            <Text className="py-4 text-center text-xs text-muted-foreground">You&apos;re all caught up.</Text>
+          ) : null
+        }
       />
     </View>
   )

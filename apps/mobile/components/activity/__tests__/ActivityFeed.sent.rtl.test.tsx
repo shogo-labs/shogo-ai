@@ -305,12 +305,23 @@ describe('Activity · inbound paging', () => {
     expect(inboxArgs[inboxArgs.length - 1]).toEqual({ workspaceId: 'ws-1', unreadOnly: false })
   })
 
-  test('reaching the end of the list asks for the next page', () => {
+  test('reaching the end of the list does not auto-load — paging is explicit', () => {
     inboxState = { ...baseInbox, items: [inboxRow('i1', '2026-10-20T12:00:00.000Z')], hasMore: true }
     render(createElement(ActivityFeed))
 
+    // Scrolling used to page on its own, which raced the footer button and —
+    // in Unreads mode — walked the whole history. Now only the button pages.
     fireEvent.click(screen.getByTestId('list-end'))
-    expect(inboxLoadMore).toHaveBeenCalledTimes(1)
+    expect(inboxLoadMore).not.toHaveBeenCalled()
+    expect(screen.getByText('Show older')).toBeTruthy()
+  })
+
+  test('the footer says the list is exhausted instead of just vanishing', () => {
+    inboxState = { ...baseInbox, items: [inboxRow('i1', '2026-10-20T12:00:00.000Z')], hasMore: false }
+    render(createElement(ActivityFeed))
+
+    expect(screen.queryByText('Show older')).toBeNull()
+    expect(screen.getByText("You're all caught up.")).toBeTruthy()
   })
 
   test('the footer offers older items, and pressing it pages', () => {
