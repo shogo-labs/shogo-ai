@@ -74,6 +74,8 @@ export interface ToolsHandlers {
   list: (req: Request) => Promise<Response>
 }
 
+import { readRuntimeAuthSecret } from '../runtime-token.js'
+
 function json(data: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -97,7 +99,7 @@ function resolveProxyOptions(config: ToolsHandlersConfig): ToolsProxyOptions | n
     return config.proxy
   }
   if (typeof process === 'undefined' || !process.env) return null
-  const runtimeToken = process.env.RUNTIME_AUTH_SECRET
+  const runtimeToken = readRuntimeAuthSecret()
   const portRaw = process.env.RUNTIME_PORT
   if (!runtimeToken || !portRaw) return null
   const runtimePort = parseInt(portRaw, 10)

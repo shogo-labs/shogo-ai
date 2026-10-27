@@ -36,7 +36,7 @@ import {
   planContinuationLimit,
   shouldContinuePlan,
 } from './plan-continuation'
-import { interruptedTurnResumePrompt } from '@shogo/shared-runtime/interrupted-turn'
+import { interruptedTurnResumePrompt, resumeMaxAgeMinutes } from '@shogo/shared-runtime/interrupted-turn'
 import { sweepExecCwdMarkers } from './exec-cwd'
 import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
@@ -334,12 +334,6 @@ const TURN_REMOTE_REFRESH_MS = 10_000
  * session on every tool call of a long turn.
  */
 const INFLIGHT_TOOL_MARKER_MS = 2_000
-/**
- * A turn interrupted longer ago than this is left alone: the person has moved
- * on, and a resume that re-reads ancient work costs a full model call.
- * `AGENT_RESUME_MAX_AGE_MINUTES=0` disables the boot sweep.
- */
-const DEFAULT_RESUME_MAX_AGE_MINUTES = 360
 
 /**
  * How much of a tool result is searched for a `/f/<token>` share link. Share
@@ -525,6 +519,16 @@ export type VisualMode = 'canvas' | 'app' | 'none'
  * project chat or vice versa.
  */
 export type ChatContext = 'workspace' | 'project'
+
+/**
+ * What started a turn (SHO-227).
+ *
+ * Only `person` — someone actually writing in this session — clears the
+ * session's automatic restarts. The rest are the machine's own bookkeeping
+ * (`task-wake`, `resume`) or a clock (`heartbeat`), and a session that keeps
+ * restarting itself must not be able to fake any of them.
+ */
+export type TurnOrigin = 'person' | 'task-wake' | 'resume' | 'heartbeat'
 /** Separator between two prompt sections in the system prompt. */
 const SECTION_SEPARATOR = '\n\n---\n\n'
 
@@ -2469,6 +2473,8 @@ export class AgentGateway {
       chatSessionId?: string
       /** Surface this chat belongs to (workspace agent vs a project's own chat). */
       chatContext?: ChatContext
+      /** What started this turn; only a person clears the automatic-restart cap. */
+      turnOrigin?: TurnOrigin
     },
   ): Promise<void> {
     // chatSessionId is REQUIRED. The runtime's HTTP layer enforces this
@@ -2581,7 +2587,19 @@ export class AgentGateway {
 
     const dualPlan = options?.dualPlan === true
     console.log(`[Gateway][processChatMessageStream] dualPlan: ${dualPlan}, sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
-    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, dualPlan, options?.requesterTicket, options?.chatContext)
+    const response = await this.agentTurn(
+      prompt,
+      sessionId,
+      false,
+      undefined,
+      writer,
+      activeSkill,
+      images,
+      dualPlan,
+      options?.requesterTicket,
+      options?.chatContext,
+      options?.turnOrigin,
+    )
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -2846,10 +2864,14 @@ export class AgentGateway {
    * next boot posts the note without resuming: a crash loop cannot spin.
    * `AGENT_RESUME_MAX_AGE_MINUTES=0` turns the sweep off; markers older than
    * the limit are dropped unanswered because the person has moved on.
+   *
+   * `resumeAttempts` is the session's `autoResumesSinceHuman`, which survives a
+   * completed turn — so the cap holds across a watch wake or a pod restart, not
+   * only across a resume that dies (SHO-227).
    */
   async recoverInterruptedTurns(): Promise<void> {
-    const configured = Number.parseInt(process.env.AGENT_RESUME_MAX_AGE_MINUTES ?? '', 10)
-    const maxAgeMinutes = Number.isFinite(configured) ? Math.max(0, configured) : DEFAULT_RESUME_MAX_AGE_MINUTES
+    const configured = process.env.AGENT_RESUME_MAX_AGE_MINUTES
+    const maxAgeMinutes = resumeMaxAgeMinutes(configured)
     if (maxAgeMinutes === 0) return
     const maxAgeMs = maxAgeMinutes * 60_000
     const now = Date.now()
@@ -2866,9 +2888,10 @@ export class AgentGateway {
       }
       const repaired = this.sessionManager.repairInterruptedTail(sessionId)
       const toolName = marker.lastTool ?? repaired[repaired.length - 1]?.toolName
-      const resuming = marker.resumeAttempts === 0
+      // Either count saying "already restarted" is enough: the marker is what the
+      // dead turn wrote, the metadata count is what survives every turn.
+      const resuming = marker.resumeAttempts === 0 && this.autoResumesSinceHuman(sessionId) === 0
       if (resuming) {
-        this.resumeStarts.set(sessionId, marker.resumeAttempts + 1)
         console.warn(
           `${this.logPrefix} Resuming interrupted turn for session ${sessionId}` +
             `${toolName ? ` (was running ${toolName})` : ''}`,
@@ -2904,9 +2927,22 @@ export class AgentGateway {
       console.warn(`${this.logPrefix} Interrupted-turn note for ${sessionId} failed: ${res.error ?? res.status}`)
     }
     if (!resuming) return
-    void this.agentTurn(interruptedTurnResumePrompt(toolName), sessionId).catch((err: any) =>
-      console.warn(`${this.logPrefix} Resumed turn for ${sessionId} failed: ${err?.message ?? err}`),
-    )
+    // Desktop path: the runtime starts the turn itself, so it has to say what
+    // started it — otherwise the resumed turn would look like a person writing
+    // and hand the one-restart cap back (SHO-227).
+    void this.agentTurn(
+      interruptedTurnResumePrompt(toolName),
+      sessionId,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      'resume',
+    ).catch((err: any) => console.warn(`${this.logPrefix} Resumed turn for ${sessionId} failed: ${err?.message ?? err}`))
   }
 
   /**
@@ -3092,6 +3128,8 @@ export class AgentGateway {
     requesterTicket?: string,
     /** Surface this turn belongs to (workspace agent vs a project's own chat). */
     chatContext?: ChatContext,
+    /** What started this turn; only a person clears the automatic-restart cap. */
+    turnOrigin?: TurnOrigin,
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
     // reads a fully-updated session history (important for "continue" after a
@@ -3104,7 +3142,7 @@ export class AgentGateway {
     }
 
     this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
-    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, dualPlan, requesterTicket, chatContext)
+    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, dualPlan, requesterTicket, chatContext, turnOrigin)
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
@@ -3128,6 +3166,7 @@ export class AgentGateway {
     dualPlan: boolean = false,
     requesterTicket?: string,
     chatContext?: ChatContext,
+    turnOrigin?: TurnOrigin,
   ): Promise<string> {
     // Resolve the surface up front and remember it for the session, so every
     // capability decision this turn makes — tools, prompt block, the
@@ -3870,6 +3909,9 @@ export class AgentGateway {
     // Only a chat session can be resumed on boot, so only a chat session gets a
     // marker — a pipeline or `default` session would just be noise in the sweep.
     const tracksInflightTurn = !!sessionId && !isHeartbeat && isChatSessionId(sessionId)
+    // Count this turn against the session's one automatic restart before the
+    // marker below reads the count (SHO-227). A person's message clears it.
+    if (tracksInflightTurn) this.noteTurnOrigin(sessionId, turnOrigin ?? 'person')
     let inflightMarkerWrite = 0
     const stampInflightTurn = (lastTool?: string) => {
       if (!tracksInflightTurn) return
@@ -3878,9 +3920,11 @@ export class AgentGateway {
           id: inflightTurnId,
           startedAt: inflightStartedAt,
           ...(lastTool ? { lastTool } : {}),
-          // Set when this turn *is* a boot-sweep resume: if it also dies, the
-          // next boot posts the note instead of resuming again.
-          resumeAttempts: this.resumeStarts.get(sessionId) ?? 0,
+          // Automatic restarts already spent since a person last wrote: if this
+          // turn also dies, the next boot posts the note instead of resuming
+          // again. Kept on the session, not in memory, so a resume that ends
+          // normally does not hand the cap back (SHO-227).
+          resumeAttempts: this.autoResumesSinceHuman(sessionId),
         },
       })
       inflightMarkerWrite = Date.now()
@@ -5384,7 +5428,6 @@ export class AgentGateway {
       // leaves one behind for the boot sweep.
       if (tracksInflightTurn) {
         this.sessionManager.setSessionMetadata(sessionId, { inflightTurn: null })
-        this.resumeStarts.delete(sessionId)
       }
       if (this.retryWakers.get(sessionId) === retryWaker) this.retryWakers.delete(sessionId)
       if (typingInterval) clearInterval(typingInterval)
@@ -7507,12 +7550,37 @@ export class AgentGateway {
   private turnAbortControllers = new Map<string, AbortController>()
 
   /**
-   * Sessions whose next turn is a boot-sweep resume (SHO-121), mapped to the
-   * attempt number its in-flight marker should carry. Without this a resume
-   * that also dies would look like a fresh interruption on the next boot and
-   * resume forever.
+   * Automatic restarts this session has used since a person last wrote, read
+   * off the session's persisted metadata (`autoResumesSinceHuman`).
+   *
+   * It used to be an in-memory map the turn's `finally` deleted, which meant
+   * every completed resume reset the cap: resume → turn ends → watch wakes the
+   * session → pod dies → `resumeAttempts: 0` → resume again, for days (SHO-227).
+   * Persisted, it survives the turn and the boot sweep, and only a person's
+   * message clears it.
    */
-  private resumeStarts = new Map<string, number>()
+  private autoResumesSinceHuman(sessionId: string): number {
+    const value = this.sessionManager.get(sessionId)?.metadata?.autoResumesSinceHuman
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+  }
+
+  /**
+   * Record what started this turn, so the next boot knows whether this session
+   * has spent its one automatic restart. A resume counts; a person's message
+   * clears the count; a task wake or a heartbeat leaves it alone (neither is a
+   * person, and neither is a restart).
+   */
+  private noteTurnOrigin(sessionId: string, origin: TurnOrigin): void {
+    if (origin === 'resume') {
+      this.sessionManager.setSessionMetadata(sessionId, {
+        autoResumesSinceHuman: this.autoResumesSinceHuman(sessionId) + 1,
+      })
+      return
+    }
+    if (origin === 'person' && this.autoResumesSinceHuman(sessionId) !== 0) {
+      this.sessionManager.setSessionMetadata(sessionId, { autoResumesSinceHuman: 0 })
+    }
+  }
 
   /** Per-session turn lock: ensures sequential turn execution so a "continue"
    *  after stop always sees the interrupted turn's messages in the session.

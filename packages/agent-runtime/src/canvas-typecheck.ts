@@ -47,6 +47,7 @@ import { previewBuildLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { classifyCanvasError, recordCanvasTypecheckBlocked } from './canvas-slo'
+import { resolveProjectChildEnv } from './project-process-env'
 
 export interface TypecheckError {
   file: string
@@ -264,6 +265,9 @@ async function defaultRunTypecheck(
   const invocation = resolveTscInvocation(workspaceDir)
   if (!invocation) return { output: '', code: 0 }
 
+  // tsc loads the project's own tsconfig/plugins, so it gets the project's
+  // credentials — never the workspace token (SHO-228).
+  const typecheckEnv = await resolveProjectChildEnv({ cwd: workspaceDir })
   const isWindows = process.platform === 'win32'
   return await new Promise((resolve) => {
     let settled = false
@@ -276,7 +280,7 @@ async function defaultRunTypecheck(
           cwd: workspaceDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           shell: isWindows,
-          env: { ...process.env, NODE_ENV: 'development' },
+          env: { ...typecheckEnv, NODE_ENV: 'development' },
         },
       )
     } catch (err: any) {

@@ -80,7 +80,7 @@ describe('SHO-96 app: the dock can trigger it manually', () => {
   test('an idle compaction reports the numbers the ring needs', async () => {
     const calls = stubFetch(200, { compacted: true, tokensBefore: 412_000, tokensAfter: 38_000 })
     const { requestContextCompaction } = await import('../../../../lib/compact-context')
-    const result = await requestContextCompaction('proj-1', 'chat-9')
+    const result = await requestContextCompaction({ projectId: 'proj-1', chatSessionId: 'chat-9' })
     expect(result).toEqual({ compacted: true, queued: false, reason: undefined, tokensBefore: 412_000, tokensAfter: 38_000 })
     expect(calls[0].url).toContain('/api/projects/proj-1/chat/compact')
     expect(calls[0].init.method).toBe('POST')
@@ -90,7 +90,7 @@ describe('SHO-96 app: the dock can trigger it manually', () => {
   test('a live turn reports queued, not compacted', async () => {
     stubFetch(202, { compacted: false, queued: true, reason: 'turn in progress' })
     const { requestContextCompaction } = await import('../../../../lib/compact-context')
-    const result = await requestContextCompaction('proj-1', 'chat-9')
+    const result = await requestContextCompaction({ projectId: 'proj-1', chatSessionId: 'chat-9' })
     expect(result.compacted).toBe(false)
     expect(result.queued).toBe(true)
     expect(result.reason).toBe('turn in progress')
@@ -99,7 +99,7 @@ describe('SHO-96 app: the dock can trigger it manually', () => {
   test('"nothing to compact" is surfaced, never swallowed', async () => {
     stubFetch(200, { compacted: false, reason: 'nothing to compact' })
     const { requestContextCompaction } = await import('../../../../lib/compact-context')
-    const result = await requestContextCompaction('proj-1', 'chat-9')
+    const result = await requestContextCompaction({ projectId: 'proj-1', chatSessionId: 'chat-9' })
     expect(result.compacted).toBe(false)
     expect(result.reason).toBe('nothing to compact')
   })
@@ -107,7 +107,7 @@ describe('SHO-96 app: the dock can trigger it manually', () => {
   test('a failure reads the API error rather than a generic message', async () => {
     stubFetch(500, { error: 'runtime unreachable' })
     const { requestContextCompaction } = await import('../../../../lib/compact-context')
-    const result = await requestContextCompaction('proj-1', 'chat-9')
+    const result = await requestContextCompaction({ projectId: 'proj-1', chatSessionId: 'chat-9' })
     expect(result.compacted).toBe(false)
     expect(result.reason).toBe('runtime unreachable')
   })

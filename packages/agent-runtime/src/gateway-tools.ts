@@ -55,6 +55,7 @@ import { survivorHint } from './process-tree'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle, type ShellExitResult } from './sandbox-exec'
+import { resolveProjectCredentialEnv } from './project-process-env'
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { consumeExecCwdMarker, execCwdDirFor, newExecCwdMarker } from './exec-cwd'
@@ -1637,8 +1638,18 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // a soft timeout and hand the agent a run_id if it overruns.
       // GH_TOKEN is the App installation token when the project is connected,
       // so `gh` comments and git commits are the bot rather than a user PAT.
+      //
+      // On a workspace runtime the shell's cwd decides which project's
+      // credentials it gets: `RUNTIME_AUTH_SECRET` is the *workspace* token
+      // there, and anything the agent starts (an app server, a test script)
+      // must hold the cwd project's own `rt_v1_` token instead, or none.
       const STOPPED = Symbol('stopped')
       const stoppedBeforeSpawn = onAbort(signal, STOPPED)
+      const credentials = await Promise.race([
+        resolveProjectCredentialEnv({ workspaceDir: ctx.workspaceDir, cwd: currentCwd }),
+        stoppedBeforeSpawn.promise,
+      ])
+      if (credentials === STOPPED) return textResult({ error: 'Stopped before the command started.' })
       const githubEnv = await Promise.race([githubCliEnvForProject(ctx.projectId), stoppedBeforeSpawn.promise])
       stoppedBeforeSpawn.dispose()
       if (githubEnv === STOPPED) return textResult({ error: 'Stopped before the command started.' })
@@ -1655,7 +1666,8 @@ function createExecTool(ctx: ToolContext): AgentTool {
         sandboxConfig: ctx.sandbox,
         sessionId: ctx.sessionId,
         mainSessionIds: ctx.mainSessionIds,
-        extraEnv: githubEnv,
+        extraEnv: { ...githubEnv, ...credentials.env },
+        unsetEnv: credentials.unset,
       })
 
       const meta: ExecRunMetadata = {

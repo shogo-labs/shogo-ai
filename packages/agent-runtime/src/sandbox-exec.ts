@@ -313,8 +313,14 @@ export function rewriteNulRedirectsOnWindows(
 }
 
 // Project-scoped env vars that are safe for the agent to read.
-// These are derived per-project (HMAC of projectId + signing secret),
-// so even if the agent reads them, the blast radius is zero.
+//
+// RUNTIME_AUTH_SECRET is only in this list for the *single-project* runtime,
+// where it is that project's own `rt_v1_` token: derived per project (HMAC of
+// projectId + signing secret), so reading it grants nothing beyond the project
+// the agent already runs in. On a workspace runtime the same variable is the
+// **workspace** token (`wrt_v1_…`), valid for every project in the workspace —
+// it must never reach agent-spawned code, and `buildExecEnv()` replaces it with
+// the cwd project's token or drops it (SHO-228).
 const PROJECT_SCOPED_SAFE = new Set([
   'RUNTIME_AUTH_SECRET',
   'WEBHOOK_TOKEN',
@@ -499,15 +505,32 @@ export function projectScopedDatabaseUrl(
  * sanitized parent env (which already excludes every inherited DB URL),
  * overlays the workspace `.env`, then pins a single project-scoped
  * `DATABASE_URL`. This is the only place an agent shell gets a database URL.
+ *
+ * `unsetEnv` removes vars the caller knows must not be inherited (a workspace
+ * runtime passes `RUNTIME_AUTH_SECRET` so the workspace token never reaches the
+ * child), and is applied *before* `extraEnv` is overlaid. The `wrt_v1_` check
+ * below is the same rule as a backstop, for callers that cannot resolve a
+ * project token themselves.
  */
 export function buildExecEnv(
   workspaceDir: string,
-  opts: { containerWorkspace?: string; extraEnv?: Record<string, string> } = {},
+  opts: {
+    containerWorkspace?: string
+    extraEnv?: Record<string, string>
+    unsetEnv?: string[]
+  } = {},
 ): NodeJS.ProcessEnv {
   const base = stripRuntimeVars(getSanitizedEnv())
   const workspaceEnv = loadWorkspaceEnv(workspaceDir)
   const merged: NodeJS.ProcessEnv = { ...base, ...workspaceEnv }
   delete merged.PROJECTS_DATABASE_URL
+  // A workspace token is valid for every project in the workspace, so no child
+  // process may hold one. Callers that know their project overlay its own
+  // token below; this catches every path that does not.
+  if (isWorkspaceToken(merged.RUNTIME_AUTH_SECRET)) {
+    delete merged.RUNTIME_AUTH_SECRET
+  }
+  for (const key of opts.unsetEnv ?? []) delete merged[key]
   // PORT is stripped above, but commands still need the runtime's own port
   // to curl the preview API (`localhost:$RUNTIME_PORT/api/...`). Same value
   // project processes get (see resolveProjectProcessEnv in preview-manager).
@@ -635,9 +658,17 @@ export interface SandboxExecOptions {
   mainSessionIds?: string[]
   /**
    * Merged last, so these win over the workspace `.env`. Used for the
-   * GitHub App installation token (`GH_TOKEN`) and bot git identity.
+   * GitHub App installation token (`GH_TOKEN`), bot git identity, and the
+   * cwd project's own `RUNTIME_AUTH_SECRET` / `PROJECT_ID` on a workspace
+   * runtime.
    */
   extraEnv?: Record<string, string>
+  /**
+   * Vars the child must not inherit at all. Deleted from the built env before
+   * `extraEnv` is overlaid, so a caller can clear an inherited value and then
+   * set its own.
+   */
+  unsetEnv?: string[]
   /**
    * Override the shell choice for this run (tests drive the cmd.exe /
    * pipefail-less path with it; production uses the cached probe).
@@ -684,6 +715,15 @@ export function stripRuntimeVars(env: Record<string, string | undefined>): typeo
   return env
 }
 
+/**
+ * True for a workspace runtime token (`wrt_v1_<workspaceId>_<hmac>`), which is
+ * valid for every project in the workspace and therefore may never be handed to
+ * project or third-party code. A project token is `rt_v1_<projectId>_<hmac>`.
+ */
+export function isWorkspaceToken(value: string | undefined): boolean {
+  return typeof value === 'string' && value.startsWith('wrt_v1_')
+}
+
 export function shouldSandbox(opts: SandboxExecOptions): boolean {
   const config = { ...defaultSandboxConfig(), ...opts.sandboxConfig }
   if (!config.enabled) return false
@@ -726,6 +766,7 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
   for (const [key, val] of Object.entries(workspaceEnv)) {
     // DATABASE_URL is injected below, clamped to the project (container path).
     if (/^(DATABASE_URL|PROJECTS_DATABASE_URL)$/i.test(key)) continue
+    if (key === 'RUNTIME_AUTH_SECRET' && isWorkspaceToken(val)) continue
     dockerArgs.push('-e', `${key}=${val}`)
   }
   dockerArgs.push(
@@ -765,7 +806,7 @@ function nativeExec(opts: SandboxExecOptions): SandboxExecResult {
       timeout: opts.timeout || 300_000,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
-      env: buildExecEnv(opts.workspaceDir, { extraEnv: opts.extraEnv }),
+      env: buildExecEnv(opts.workspaceDir, { extraEnv: opts.extraEnv, unsetEnv: opts.unsetEnv }),
       ...(shell ? { shell } : {}),
     })
     return { stdout: stdout.trim(), stderr: '', exitCode: 0, sandboxed: false }
@@ -955,6 +996,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     for (const [key, val] of Object.entries(workspaceEnv)) {
       // DATABASE_URL is injected below, clamped to the project (container path).
       if (/^(DATABASE_URL|PROJECTS_DATABASE_URL)$/i.test(key)) continue
+      if (key === 'RUNTIME_AUTH_SECRET' && isWorkspaceToken(val)) continue
       dockerArgs.push('-e', `${key}=${val}`)
     }
     dockerArgs.push(
@@ -970,7 +1012,10 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     })
   } else {
     const choice = opts.shell ? chooseShell(opts.shell) : resolvedShellChoice()
-    const env = buildExecEnv(opts.workspaceDir, { extraEnv: opts.extraEnv })
+    const env = buildExecEnv(opts.workspaceDir, {
+      extraEnv: opts.extraEnv,
+      unsetEnv: opts.unsetEnv,
+    })
     const finalCommand = applyPipefail(
       rewriteNulRedirectsOnWindows(rewriteBunxOnWindows(opts.command), { shellLabel: choice.label }),
       choice.pipefail,

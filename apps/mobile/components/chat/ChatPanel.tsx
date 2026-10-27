@@ -8943,6 +8943,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     projectId={projectId}
                     projects={projectMentionOptions}
                     chatSessionId={currentSessionId}
+                    chatWorkspaceId={chatWorkspaceId}
                     workspaceHistorySearch={workspaceHistorySearch}
                     chatMentionables={chatMentionables}
                     ideMode={ideMode}

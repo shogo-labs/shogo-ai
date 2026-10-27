@@ -24,6 +24,19 @@
 #       — node disk exhaustion (the 2026-06-02 EU incident class): boot
 #         volume fills with stacked runtime images, kubelet evicts pods and
 #         GCs images, and the warm pool churns. Earliest clear signal.
+#   * any schedulable node is at/above DISK_CRIT_PCT (78) disk, or is at/above
+#     RECLAIM_PCT (65) and still holds more than MAX_RUNTIME_DIGESTS (4)
+#     runtime image digests
+#       — the deploy gate fails at 80% and the kubelet's own image GC does not
+#         start until 85%, so a node parked between them is reclaimed by
+#         nothing and blocks every rollout (SHO-233, staging 10.0.24.140:
+#         80.6% and 13 runtime digests for 13 h, four failed deploys). Paging
+#         at 78% / 5 digests gives ~2 points and one deploy of warning.
+#         The digest check only pages once the node is at RECLAIM_PCT, because
+#         below that node-image-gc deliberately leaves it alone and digests
+#         legitimately pile up between passes.
+#         A cordoned node is reported but never paged: it is drained on
+#         purpose and the gate skips it.
 #   * more than one studio revision has Ready pods, and the newest of them is
 #     older than ROLLOUT_GRACE_MIN
 #       — the `studio-direct` Service selects ALL studio revisions, so >1
@@ -72,6 +85,14 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list"]
+  # `nodes/proxy` is what serves `/api/v1/nodes/<n>/proxy/stats/summary` —
+  # the live nodefs/imagefs numbers behind checks 4b and 4c. Without it those
+  # calls 403, the disk line is silently skipped, and the 78% page can never
+  # fire (found while verifying SHO-233 on staging: only the digest line
+  # printed). `nodes` get/list alone is not enough.
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
   - apiGroups: ["serving.knative.dev"]
     resources: ["services", "revisions"]
     verbs: ["get", "list"]
@@ -127,6 +148,22 @@ spec:
                   value: shogo-staging-system
                 - name: WP_NS
                   value: shogo-staging-workspaces
+                # Node disk / image store thresholds (SHO-233). Spelled out
+                # here as well as in the script defaults so the two cannot
+                # drift unnoticed — the node-check test asserts they match.
+                #   DISK_WARN_PCT       warn at 70%
+                #   DISK_CRIT_PCT       page at 78%, before the 80% deploy gate
+                #   MAX_RUNTIME_DIGESTS page above 4 runtime digests…
+                #   RECLAIM_PCT         …once the node is at 65%, the level
+                #                       node-image-gc starts reclaiming at
+                - name: DISK_WARN_PCT
+                  value: "70"
+                - name: DISK_CRIT_PCT
+                  value: "78"
+                - name: MAX_RUNTIME_DIGESTS
+                  value: "4"
+                - name: RECLAIM_PCT
+                  value: "65"
               command:
                 - /bin/sh
                 - -ec
@@ -221,34 +258,88 @@ spec:
                     EXIT_RC=1
                   fi
 
-                  # 4b) Node disk approaching the reclaim line.
+                  # 4b) Node disk approaching the deploy gate, and 4c) the size
+                  # of the image store itself.
+                  #
                   # DiskPressure is a LATCHED signal: by the time it flips, the
-                  # kubelet is already evicting and the kubelet clears it only
-                  # after 5m of sustained good state. On 2026-10-21 staging had
-                  # one node at 69% with 7 `shogo-runtime` (9.95 GB) + 13
-                  # `shogo-api` (5.11 GB) digests, and the ONLY thing that ever
-                  # reclaimed any of it was the eviction itself. The kubelet now
-                  # reclaims at 70% (--image-gc-high-threshold, SHO-136), so 70%
-                  # is where the approach has to be narrated, not the arrival.
-                  # Warning only: this must not page, or a healthy node doing
-                  # exactly what it was configured to do becomes an incident.
-                  echo "--- node disk headroom (warn at ${DISK_WARN_PCT:-70}%) ---"
-                  DISK_LINES=""
-                  for node in $(kubectl get nodes -o json | jq -r '.items[] | .metadata.name'); do
-                    pct=$(kubectl get --raw "/api/v1/nodes/${node}/proxy/stats/summary" 2>/dev/null | jq -r '
+                  # kubelet is already evicting and it clears only after 5m of
+                  # sustained good state. But the opposite gap is what actually
+                  # hurt us (SHO-233, 2026-10-26): the deploy gate fails at 80%
+                  # and the kubelet's image GC does NOT start until 85%, so a
+                  # node parked at 80-85% is reclaimed by nothing at all. Staging
+                  # node 10.0.24.140 sat at 80.6% for 13 h with 13 shogo-runtime
+                  # + 12 shogo-api digests and blocked four deploys.
+                  #
+                  # (This block used to say the kubelet reclaims at 70% because
+                  # of SHO-136's --image-gc-high-threshold flags. It does not:
+                  # `node_metadata` is in the OKE pool's ignore_changes, so the
+                  # flags never reached a running node — `configz` on all four
+                  # production-US nodes still reports GC 85/80. `node-image-gc`
+                  # is what reclaims today.)
+                  #
+                  # So: WARNING at DISK_WARN_PCT (70), CRITICAL at
+                  # DISK_CRIT_PCT (78) — before the gate goes red, not after —
+                  # and CRITICAL when a node holds more than
+                  # MAX_RUNTIME_DIGESTS runtime digests, which means
+                  # `node-image-gc` is not doing its job.
+                  #
+                  # A cordoned node is reported but never paged: it is being
+                  # drained on purpose, the deploy gate skips it, and its disk
+                  # will be reclaimed before it is uncordoned.
+                  echo "--- node disk headroom (warn at ${DISK_WARN_PCT:-70}%, critical at ${DISK_CRIT_PCT:-78}%) ---"
+                  NODES_JSON=$(kubectl get nodes -o json)
+                  for node in $(echo "$NODES_JSON" | jq -r '.items[].metadata.name'); do
+                    CORDONED=$(echo "$NODES_JSON" | jq -r --arg n "$node" '
+                      .items[] | select(.metadata.name == $n) | (.spec.unschedulable // false) | tostring
+                    ')
+                    if [ "$CORDONED" = "true" ]; then
+                      SUFFIX=" (cordoned — not paged)"
+                    else
+                      SUFFIX=""
+                    fi
+                    PCT=$(kubectl get --raw "/api/v1/nodes/${node}/proxy/stats/summary" 2>/dev/null | jq -r '
                       def used($fs): ($fs.usedBytes // 0) as $u | ($fs.capacityBytes // 0) as $c
                         | if $c > 0 then (($u / $c) * 100) else 0 end;
                       [(used(.node.fs) | floor), (used(.node.runtime.imageFs // {}) | floor)] | max
                     ')
-                    if [ -n "$pct" ] && [ "$pct" != "null" ]; then
-                      echo "  $node ${pct}% used"
-                      DISK_LINES=$(printf '%s\n%s %s' "$DISK_LINES" "$node" "$pct")
+                    if [ -n "$PCT" ] && [ "$PCT" != "null" ]; then
+                      echo "  $node ${PCT}% used${SUFFIX}"
+                      if [ "$PCT" -ge "${DISK_CRIT_PCT:-78}" ]; then
+                        if [ "$CORDONED" = "true" ]; then
+                          echo "WARNING: $node at ${PCT}% disk — cordoned, not paging (the deploy gate skips it)"
+                        else
+                          echo "CRITICAL: $node at ${PCT}% disk — the deploy gate fails at 80%; reclaim before it blocks a rollout"
+                          EXIT_RC=1
+                        fi
+                      elif [ "$PCT" -ge "${DISK_WARN_PCT:-70}" ]; then
+                        echo "WARNING: $node at ${PCT}% disk"
+                      fi
+                    fi
+
+                    DIGESTS=$(echo "$NODES_JSON" | jq -r --arg n "$node" '
+                      .items[] | select(.metadata.name == $n)
+                      | [ .status.images[]?
+                          | select(((.names // []) | join(" ")) | test("/shogo-runtime|/agent-runtime"))
+                        ] | length
+                    ')
+                    echo "  $node runtime digests: ${DIGESTS}${SUFFIX}"
+                    if [ "${DIGESTS:-0}" -gt "${MAX_RUNTIME_DIGESTS:-4}" ]; then
+                      if [ "$CORDONED" = "true" ]; then
+                        echo "WARNING: $node holds ${DIGESTS} runtime digests — cordoned, not paging"
+                      elif [ "${PCT:-0}" -ge "${RECLAIM_PCT:-65}" ]; then
+                        # At/above RECLAIM_PCT the pass is supposed to have run
+                        # and taken this node back to KEEP_PER_REPO + in use, so
+                        # more than MAX means node-image-gc is not working here.
+                        echo "CRITICAL: $node holds ${DIGESTS} runtime digests at ${PCT:-?}% disk (>${MAX_RUNTIME_DIGESTS:-4}) — node-image-gc is not reclaiming on this node"
+                        EXIT_RC=1
+                      else
+                        # Below RECLAIM_PCT the DaemonSet deliberately leaves the
+                        # node alone, so digests pile up until it crosses 65%.
+                        # Real, worth narrating, not worth a page.
+                        echo "WARNING: $node holds ${DIGESTS} runtime digests (>${MAX_RUNTIME_DIGESTS:-4}) but is below RECLAIM_PCT (${RECLAIM_PCT:-65}%) — node-image-gc reclaims when it crosses"
+                      fi
                     fi
                   done
-                  NEAR=$(echo "$DISK_LINES" | awk -v t="${DISK_WARN_PCT:-70}" '$2 >= t {printf "%s (%s%%), ", $1, $2}')
-                  if [ -n "$NEAR" ]; then
-                    echo "WARNING: node(s) at/above ${DISK_WARN_PCT:-70}% disk — kubelet image GC is reclaiming: ${NEAR%, }"
-                  fi
 
                   # 5) Studio single-revision invariant.
                   # The `studio-direct` Service (see

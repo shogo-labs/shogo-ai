@@ -261,6 +261,41 @@ jobs:
           carry_forward shogo-docs "${{ steps.release.outputs.docs_changed }}" "${{ steps.release.outputs.docs_image }}"
           carry_forward shogo-runtime "${{ steps.release.outputs.runtime_changed }}" "${{ steps.release.outputs.runtime_image }}"
 
+      # Reclaim superseded Shogo image digests BEFORE anything looks at disk.
+      # Nothing else covers the 80-85% dead zone (SHO-233): the gate below
+      # fails at 80%, the kubelet's own image GC only starts at 85%, and
+      # SHO-136's 70/60 kubelet flags never reached a running node
+      # (`node_metadata` is in the OKE pool's ignore_changes). See
+      # k8s/base/node-image-gc.yaml and scripts/node-image-gc.sh.
+      # Deliberately here and not with the inotify-tuner apply after the
+      # rollout: a node that filled up between deploys has to be reclaimed
+      # before the gate samples it.
+      - name: Apply node image GC
+        run: |
+          set -euo pipefail
+          kubectl create configmap node-image-gc --namespace=kube-system \
+            --from-file=node-image-gc.sh=scripts/node-image-gc.sh \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f k8s/base/node-image-gc.yaml
+          # A changed ConfigMap updates the mounted file, but a running `sh`
+          # has already parsed it — so without this the pod keeps executing the
+          # old logic forever, which is the SHO-136 failure class one level up.
+          # The checksum goes on the POD TEMPLATE, not the DaemonSet's own
+          # metadata: only a template change triggers a rollout. An unchanged
+          # checksum is a no-op, so a redeploy with the same script does not
+          # churn every node.
+          SCRIPT_SUM=$(sha256sum scripts/node-image-gc.sh | cut -d' ' -f1)
+          cat > /tmp/node-image-gc-patch.json <<JSON
+          {"spec":{"template":{"metadata":{"annotations":{"checksum/script":"${SCRIPT_SUM}"}}}}}
+          JSON
+          kubectl --namespace=kube-system patch daemonset/node-image-gc --type=merge \
+            --patch-file /tmp/node-image-gc-patch.json
+          # The DaemonSet's pods only report Ready once their first pass has
+          # finished (startupProbe), so this waits for the reclaim rather than
+          # for the pod. Never fatal: a slow pass must not fail the deploy, the
+          # gate's own re-sampling still covers a node that stays full.
+          kubectl --namespace=kube-system rollout status daemonset/node-image-gc --timeout=600s || true
+
       # Disk telemetry FIRST, then the gate: the summary shows per-node nodefs /
       # imagefs usage, total image GB and digest counts on every run, and warns
       # at 70% — the level the kubelet now starts reclaiming at (SHO-136).

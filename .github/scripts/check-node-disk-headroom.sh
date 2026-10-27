@@ -48,12 +48,19 @@
 #                                i.e. ~85% used; 80% leaves margin to deploy)
 #   RETRY_ATTEMPTS  default 5   (total samples before giving up)
 #   RETRY_INTERVAL  default 30  (seconds between samples)
+#   KEEP_PER_REPO   default 2   (only used in the failure report: how many
+#                                digests per repo node-image-gc retains, so the
+#                                "beyond-keep" column is the stale count)
 
 set -euo pipefail
 
 THRESHOLD_PCT="${1:-${THRESHOLD_PCT:-80}}"
 RETRY_ATTEMPTS="${RETRY_ATTEMPTS:-5}"
 RETRY_INTERVAL="${RETRY_INTERVAL:-30}"
+
+# Nodes that were over threshold on the sample just taken. Reset per sample,
+# printed once when the gate finally gives up (see report_stale_digests).
+OVER_NODES=""
 
 # Evaluates current node disk headroom. Echoes human-readable per-node usage
 # and any warning annotations, and returns 0 when the cluster is healthy or
@@ -109,6 +116,7 @@ check_headroom() {
     echo "  $node: ${pct}% used (worst of nodefs/imagefs)"
     if [[ "$pct" -ge "$THRESHOLD_PCT" ]]; then
       echo "::warning::check-node-disk-headroom: node $node at ${pct}% disk (>=${THRESHOLD_PCT}%)"
+      OVER_NODES+="${node} "
       rc=1
     fi
   done
@@ -116,11 +124,35 @@ check_headroom() {
   return "$rc"
 }
 
+# Per-repo digest counts for the nodes that failed the gate, so the failure
+# names the cause instead of only the symptom. `node-image-gc` keeps the newest
+# KEEP_PER_REPO digests per repo plus everything in use or pinned, so anything
+# beyond that is stale by definition — that is the number to look at (SHO-233:
+# 13 runtime + 12 api digests on a 208 GB node, none of them reclaimable by
+# anything until this card).
+report_stale_digests() {
+  local nodes="$1" keep="${KEEP_PER_REPO:-2}"
+  echo "::group::stale Shogo digests on the failing node(s) (node-image-gc keeps newest ${keep} per repo + in use/pinned)"
+  printf '%-14s %-9s %-6s %-6s %-6s %s\n' node runtime api web docs "beyond-keep"
+  local node
+  for node in $nodes; do
+    kubectl get node "$node" -o json 2>/dev/null | jq -r '
+      def c($re): [ .status.images[]? | select(((.names // []) | join(" ")) | test($re)) ] | length;
+      "\(.metadata.name) \(c("/shogo-runtime|/agent-runtime")) \(c("/shogo-api")) \(c("/shogo-web")) \(c("/shogo-docs"))"
+    ' 2>/dev/null || true
+  done | awk -v keep="$keep" '
+    { stale = 0; for (i = 2; i <= 5; i++) if ($i > keep) stale += $i - keep
+      printf "%-14s %-9s %-6s %-6s %-6s %s\n", $1, $2, $3, $4, $5, stale }
+  '
+  echo "::endgroup::"
+}
+
 echo "Checking node disk headroom (fail at >=${THRESHOLD_PCT}% live nodefs/imagefs used; re-sampling up to ${RETRY_ATTEMPTS}x every ${RETRY_INTERVAL}s to ride out transient flaps)..."
 
 attempt=1
 while true; do
   echo "--- sample ${attempt}/${RETRY_ATTEMPTS} ---"
+  OVER_NODES=""
   if check_headroom; then
     echo "✓ all schedulable nodes have disk headroom — safe to roll out"
     exit 0
@@ -135,7 +167,8 @@ done
 
 echo "::error::check-node-disk-headroom: node(s) still over disk threshold after ${RETRY_ATTEMPTS} samples over $(( (RETRY_ATTEMPTS - 1) * RETRY_INTERVAL ))s — this is sustained, not a transient flap."
 echo "::error::Aborting before ksvc patch: a disk-starved cluster cannot roll out a new revision."
-echo "Remediate node disk first (prune stale runtime images / scale or replace nodes / raise boot volume — see terraform/README.md 'Boot volume remediation')."
+echo "Remediate node disk first: the node-image-gc DaemonSet (k8s/base/node-image-gc.yaml) prunes superseded Shogo digests at 65%, and a pass can be run by hand on one node — see terraform/README.md 'Node image store remediation'."
+report_stale_digests "$OVER_NODES"
 echo "::group::node images (largest, busiest node)"
 kubectl get nodes -o json | jq -r '
   .items

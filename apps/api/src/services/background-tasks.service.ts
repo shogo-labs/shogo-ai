@@ -950,6 +950,29 @@ export function isTaskWakeMessage(parts: string | null | undefined): boolean {
   return parseJson<Array<{ type?: string }>>(parts, []).some((p) => p?.type === 'data-task-notification')
 }
 
+/**
+ * The part types the queue writes for the machine's own bookkeeping: a task
+ * wake, and a resume after an interrupted turn.
+ *
+ * They persist as `role: 'user'` rows because that is how the queue delivers a
+ * turn, but nobody typed them — so neither may count as a person. Two rules
+ * read this: the one-resume-per-person rule (`postInterruptedResume`) and the
+ * wake pause (`consecutiveWakeWaits`). Add a new synthetic kind here, once.
+ */
+const AUTONOMOUS_USER_PART_TYPES = new Set(['data-task-notification', 'data-resume'])
+
+/**
+ * Whether a user message was written by the system rather than a person.
+ *
+ * Not the same as `isTaskWakeMessage`: a resume is autonomous but is not a
+ * wake, and before SHO-227 that difference is exactly what reset both caps.
+ */
+export function isAutonomousUserMessage(parts: string | null | undefined): boolean {
+  return parseJson<Array<{ type?: string }>>(parts, []).some(
+    (p) => typeof p?.type === 'string' && AUTONOMOUS_USER_PART_TYPES.has(p.type),
+  )
+}
+
 /** The tasks a wake message's `parts` were queued for. */
 export function taskWakeIdsFromParts(parts: string | null | undefined): string[] {
   for (const part of parseJson<Array<{ type?: string; data?: { taskIds?: unknown } }>>(parts, [])) {
@@ -1002,21 +1025,36 @@ export function taskWakeBodyResetsRun(body: string | null | undefined): boolean 
  *
  * A wake a person resumed from the composer (`wakeRunReset`) ends the run too:
  * that is the pause lifting, and the wake it delivers starts the count again.
+ *
+ * A resume after an interrupted turn is skipped rather than treated as a
+ * person (SHO-227). It reads as a user message, but nobody wrote it — and
+ * letting it end the run is what reset the pause after every restart, so a
+ * watch that re-armed itself in the resumed turn could wake forever.
  */
 export async function consecutiveWakeWaits(chatSessionId: string, limit: number): Promise<number> {
+  // Autonomous rows inside the run are skipped, so the window has to be wider
+  // than the number of wakes it must be able to see.
   const recent: Array<{ parts: string | null; createdAt: Date }> = await db.chatMessage.findMany({
     where: { sessionId: chatSessionId, role: 'user' },
     orderBy: { createdAt: 'desc' },
-    take: limit + 1,
+    take: limit * 2 + 2,
     select: { parts: true, createdAt: true },
   })
   const run: Array<{ at: Date; taskIds: string[] }> = []
+  let newestWake: string | null = null
   for (const message of recent) {
-    if (!isTaskWakeMessage(message.parts)) break
-    run.push({ at: message.createdAt, taskIds: taskWakeIdsFromParts(message.parts) })
+    if (isTaskWakeMessage(message.parts)) {
+      if (newestWake === null) newestWake = message.parts
+      run.push({ at: message.createdAt, taskIds: taskWakeIdsFromParts(message.parts) })
+      continue
+    }
+    // A resume is the machine restarting itself, not a person: it neither ends
+    // the run nor counts as a wait.
+    if (isAutonomousUserMessage(message.parts)) continue
+    break
   }
   if (!run.length) return 0
-  if (taskWakeResetsRun(recent[0]!.parts)) return 1
+  if (taskWakeResetsRun(newestWake)) return 1
 
   const ids = [...new Set(run.flatMap((wake) => wake.taskIds))]
   const rows: Array<{ id: string; createdAt: Date }> = ids.length

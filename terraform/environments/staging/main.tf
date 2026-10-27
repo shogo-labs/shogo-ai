@@ -202,6 +202,14 @@ module "oke" {
   # `node_metadata` from ignore_changes, then a canary-first node recycle —
   # verify one new node registers Ready + `configz` shows the new evictionHard
   # AND imageGC thresholds before recycling the rest. See the incident runbook.
+  #
+  # NOT LIVE (checked 2026-10-27): that recycle has never run, so every staging
+  # node still runs the kubelet defaults — no imageGC thresholds in
+  # /etc/kubernetes/kubelet-config.json and no --image-gc-* flag on the command
+  # line, on all three nodes. The 70/60 below has no effect yet. What reclaims
+  # disk today is the node-image-gc DaemonSet (k8s/base/node-image-gc.yaml),
+  # which prunes superseded Shogo digests at 65% on the nodes we already have.
+  # See terraform/README.md "Node image store remediation".
   kubelet_extra_args = "--kube-reserved=cpu=100m,memory=3Gi --system-reserved=cpu=100m,memory=512Mi --eviction-hard=memory.available<1Gi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<15%,imagefs.inodesFree<5% --eviction-soft=memory.available<2Gi --eviction-soft-grace-period=memory.available=1m --eviction-max-pod-grace-period=60 --image-gc-high-threshold=70 --image-gc-low-threshold=60"
 
   tags = local.tags

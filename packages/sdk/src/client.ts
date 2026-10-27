@@ -34,6 +34,7 @@ import {
   type ShogoLiveClient as ShogoLiveClientType,
   type TelephonyClient,
 } from '@shogo-ai/voice'
+import { readRuntimeAuthSecret } from './runtime-token.js'
 import type { ShogoClientConfig } from './types.js'
 
 export interface ShogoVoiceModule {
@@ -231,13 +232,10 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   private buildLlm(
     shogoApiKey: string | undefined | null,
   ): ShogoLlmProvider | null {
-    // Server-only: guard `typeof process` so this code never runs in a
-    // browser bundle (where `process.env.RUNTIME_AUTH_SECRET` would be
-    // undefined or, worse, inlined by a bundler).
-    const runtimeToken =
-      typeof process !== 'undefined'
-        ? process.env?.RUNTIME_AUTH_SECRET
-        : undefined
+    // Server-only: `readRuntimeAuthSecret` guards `typeof process` so this
+    // code never runs in a browser bundle, and refuses a workspace runtime
+    // token with a message that names the real fix.
+    const runtimeToken = readRuntimeAuthSecret()
     const hasRuntime = Boolean(runtimeToken)
     const hasApiKey = Boolean(shogoApiKey)
 
@@ -288,13 +286,10 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     // Runtime-token mode (pod-native). Checked first because every
     // Shogo-managed pod already has `RUNTIME_AUTH_SECRET` + `PROJECT_ID`
     // in env — the developer should not have to also mint an API key.
-    // Server-only: we guard `typeof process` so this code never runs in
-    // a browser bundle (where `process.env.RUNTIME_AUTH_SECRET` would
-    // either be undefined or, worse, inlined by a bundler).
-    const runtimeToken =
-      typeof process !== 'undefined'
-        ? process.env?.RUNTIME_AUTH_SECRET
-        : undefined
+    // Server-only: `readRuntimeAuthSecret` guards `typeof process` so this
+    // code never runs in a browser bundle, and refuses a workspace runtime
+    // token with a message that names the real fix.
+    const runtimeToken = readRuntimeAuthSecret()
     const hasRuntime = Boolean(runtimeToken && projectId)
     const hasHosted = Boolean(shogoApiKey && projectId)
     const hasDirect = Boolean(elevenlabs && twilio)
@@ -336,10 +331,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   private buildLive(
     shogoApiKey: string | undefined | null,
   ): ShogoLiveClientType | null {
-    const runtimeToken =
-      typeof process !== 'undefined'
-        ? process.env?.RUNTIME_AUTH_SECRET
-        : undefined
+    const runtimeToken = readRuntimeAuthSecret()
     if (runtimeToken) {
       return new ShogoLiveClient({
         runtimeToken,

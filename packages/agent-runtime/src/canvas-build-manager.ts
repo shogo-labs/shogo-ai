@@ -73,6 +73,7 @@ import {
 import { consumeBuildInputChange } from './build-input-fingerprint'
 import { emitBuildLine } from './preview-manager'
 import { previewBuildLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
+import { resolveProjectChildEnv } from './project-process-env'
 
 /**
  * Staging directory name owned exclusively by `CanvasBuildManager`.
@@ -407,6 +408,10 @@ export class CanvasBuildManager {
       cmd: bundler.bin,
       argsPrefix: [],
     }
+    // The bundler runs the project's own config (vite.config, app.config),
+    // i.e. user code — same credentials as the preview sidecar, never the
+    // workspace token (SHO-228).
+    const buildEnv = await resolveProjectChildEnv({ cwd: this.workspaceDir })
     try {
       await new Promise<void>((resolve, reject) => {
         const cmd = isWindows ? `"${invocation.cmd}"` : invocation.cmd
@@ -420,7 +425,7 @@ export class CanvasBuildManager {
             // shape of the spawn calls in PreviewManager.
             shell: isWindows,
             env: {
-              ...process.env,
+              ...buildEnv,
               NODE_ENV: 'development',
               // Keep Expo non-interactive so a missing dep doesn't deadlock
               // the spawn waiting on stdin.

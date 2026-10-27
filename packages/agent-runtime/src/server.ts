@@ -57,6 +57,7 @@ import {
   writePoolPreseedManifest,
 } from './workspace-pool-adopt'
 import { LiveTurnGate } from './live-turn-wait'
+import type { TurnOrigin } from './gateway'
 import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
@@ -2037,6 +2038,14 @@ app.post('/agent/chat', async (c) => {
   if (Array.isArray(wokenByTasks)) {
     agentGateway!.acknowledgeTaskNotification(chatSessionKey, wokenByTasks.filter((id): id is string => typeof id === 'string'))
   }
+  // What started this turn: only a person writing clears the session's one
+  // automatic restart (SHO-227). The queue stamps `autoResume` on the row it
+  // creates for a resume, and a wake is recognisable by the tasks it names.
+  const turnOrigin: TurnOrigin = Array.isArray(wokenByTasks)
+    ? 'task-wake'
+    : body.autoResume === true
+      ? 'resume'
+      : 'person'
   // What this session is still holding (a pause and the updates behind it) is
   // part of this turn's prompt, so read it before the prompt is assembled.
   await agentGateway!.refreshWakeState(chatSessionKey).catch(() => {})
@@ -2154,6 +2163,7 @@ app.post('/agent/chat', async (c) => {
       dualPlan,
       chatSessionId: chatSessionKey,
       chatContext,
+      turnOrigin,
     })
 
     const usage = agentGateway!.consumeLastTurnUsage()

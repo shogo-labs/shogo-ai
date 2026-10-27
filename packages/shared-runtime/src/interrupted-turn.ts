@@ -13,6 +13,28 @@
 /** Name used when the marker did not record which tool was running. */
 export const INTERRUPTED_TURN_FALLBACK_ACTION = 'while working'
 
+/**
+ * A turn interrupted longer ago than this is left alone: the person has moved
+ * on, and a resume that re-reads ancient work costs a full model call.
+ * `AGENT_RESUME_MAX_AGE_MINUTES=0` disables resuming altogether.
+ *
+ * Both sides of the resume decision read it — the runtime's boot sweep against
+ * its marker, the API against the last human message — because they must agree
+ * on when a session is too old to restart itself (SHO-227).
+ */
+export const DEFAULT_RESUME_MAX_AGE_MINUTES = 360
+
+/**
+ * `AGENT_RESUME_MAX_AGE_MINUTES` as the number both paths compare against.
+ *
+ * The raw value is passed in (rather than read here) so a browser bundle that
+ * imports this module never touches `process`.
+ */
+export function resumeMaxAgeMinutes(raw?: string | null): number {
+  const parsed = Number.parseInt(String(raw ?? ''), 10)
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : DEFAULT_RESUME_MAX_AGE_MINUTES
+}
+
 function action(toolName?: string | null): string {
   const name = typeof toolName === 'string' ? toolName.trim() : ''
   return name ? `while running \`${name}\`` : INTERRUPTED_TURN_FALLBACK_ACTION
