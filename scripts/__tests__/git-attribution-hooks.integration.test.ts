@@ -87,6 +87,8 @@ afterAll(() => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true })
 })
 
+// Every case spawns real `git` synchronously, so each declares 30 s instead of
+// inheriting bun's 5 s default — under load the heavier cases exceed 5 s (SHO-238).
 describe('agent checkout', () => {
   test('a plain commit gets exactly one canonical co-author', () => {
     const dir = repo('agent@shogo.ai')
@@ -97,7 +99,7 @@ describe('agent checkout', () => {
     expect(canonicalCount(message)).toBe(1)
     expect(message.trimEnd().endsWith(CANONICAL)).toBe(true)
     expect(git(dir, ['log', '-1', '--format=%an <%ae>']).trim()).toBe('Shogo Agent <agent@shogo.ai>')
-  })
+  }, 30_000)
 
   test('a hand-written wrong co-author is replaced, not joined by a second line', () => {
     const dir = repo('agent@shogo.ai')
@@ -114,7 +116,7 @@ describe('agent checkout', () => {
     expect(message).not.toContain('dev2@shogo.local')
     expect(message).not.toContain('noreply@shogo.ai')
     expect(canonicalCount(message)).toBe(1)
-  })
+  }, 30_000)
 
   test('a message file (-F) and a script invocation are attributed too', () => {
     const dir = repo('agent@shogo.ai')
@@ -134,7 +136,7 @@ describe('agent checkout', () => {
       env: gitEnv(),
     })
     expect(canonicalCount(commitMessage(dir))).toBe(1)
-  })
+  }, 30_000)
 
   test('refuses GIT_AUTHOR_EMAIL and --author that are not the agent identity', () => {
     const dir = repo('agent@shogo.ai')
@@ -170,7 +172,7 @@ describe('agent checkout', () => {
     expect(configOverride.stderr).toContain('russelllacour@gmail.com')
 
     expect(git(dir, ['rev-list', '--count', '--all']).trim()).toBe('0')
-  })
+  }, 30_000)
 
   test('refuses to push a --no-verify commit made with a wrong identity', () => {
     const dir = repo('agent@shogo.ai')
@@ -193,7 +195,7 @@ describe('agent checkout', () => {
     expect(push.code).not.toBe(0)
     expect(push.stderr).toContain('[pre-push] Refusing to push')
     expect(git(remote, ['for-each-ref']).trim()).toBe('')
-  })
+  }, 30_000)
 
   test('pushes a branch that merged upstream human history', () => {
     const remote = tempDir('attribution-remote')
@@ -238,7 +240,7 @@ describe('agent checkout', () => {
     expect(git(remote, ['rev-parse', 'refs/heads/base']).trim()).toBe(
       git(dir, ['rev-parse', 'HEAD']).trim(),
     )
-  })
+  }, 30_000)
 
   test('still refuses a non-canonical committer under a canonical author', () => {
     const dir = repo('agent@shogo.ai')
@@ -256,7 +258,7 @@ describe('agent checkout', () => {
     expect(push.stderr).toContain('committer')
     expect(push.stderr).toContain('dev2@shogo.local')
     expect(git(remote, ['for-each-ref']).trim()).toBe('')
-  })
+  }, 30_000)
 })
 
 describe('human checkout', () => {
@@ -274,5 +276,5 @@ describe('human checkout', () => {
     })
     expect(push.code).toBe(0)
     expect(commitMessage(dir).trim()).toBe('docs: another')
-  })
+  }, 30_000)
 })
