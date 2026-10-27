@@ -19,6 +19,7 @@ export const CAPABILITY_KEYS = [
   'heartbeatToolsEnabled',
   'imageGenEnabled',
   'videoGenEnabled',
+  'musicGenEnabled',
   'threeDGenEnabled',
   'memoryEnabled',
   'quickActionsEnabled',
@@ -71,6 +72,10 @@ export const CAPABILITY_INFO: Record<CapabilityKey, { label: string; summary: st
   videoGenEnabled: {
     label: 'Video generation',
     summary: 'Opt-in. Gates `generate_video`. Video is billed per second of output.',
+  },
+  musicGenEnabled: {
+    label: 'Music generation',
+    summary: 'Opt-in. Gates `generate_music` (Lyria full songs and 30-second clips). Billed per song.',
   },
   threeDGenEnabled: {
     label: '3D generation',
@@ -146,6 +151,7 @@ export const CAPABILITY_INFO: Record<CapabilityKey, { label: string; summary: st
 /** Off unless the stored value is exactly `true`. */
 export const OPT_IN_KEYS: ReadonlySet<CapabilityKey> = new Set<CapabilityKey>([
   'videoGenEnabled',
+  'musicGenEnabled',
   'threeDGenEnabled',
   'gitWorktreesEnabled',
   'socialMediaEnabled',

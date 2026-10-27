@@ -37,6 +37,7 @@ type BillingSessionSeam = Pick<
   | 'accumulateImageUsage'
   | 'accumulateVideoUsage'
   | 'accumulate3dUsage'
+  | 'accumulateMusicUsage'
   | 'setQualitySignals'
 >
 
@@ -109,6 +110,7 @@ export const localBillingSession: BillingSessionSeam = {
   accumulateImageUsage: async () => false,
   accumulateVideoUsage: async () => false,
   accumulate3dUsage: async () => false,
+  accumulateMusicUsage: async () => false,
   setQualitySignals: async (projectId, quality, chatSessionId) => {
     const turn = lookupLocalTurn(projectId, chatSessionId)
     if (!turn) return false
@@ -135,6 +137,9 @@ export const accumulateVideoUsage: BillingSessionSeam['accumulateVideoUsage'] = 
 // Same for 3D: a stub written before SHO-13 need not carry it.
 export const accumulate3dUsage: BillingSessionSeam['accumulate3dUsage'] = (...args) =>
   (session().accumulate3dUsage ?? localBillingSession.accumulate3dUsage)(...args)
+// Same for music: a stub written before SHO-216 need not carry it.
+export const accumulateMusicUsage: BillingSessionSeam['accumulateMusicUsage'] = (...args) =>
+  (session().accumulateMusicUsage ?? localBillingSession.accumulateMusicUsage)(...args)
 export const setQualitySignals: BillingSessionSeam['setQualitySignals'] = (...args) =>
   session().setQualitySignals(...args)
 

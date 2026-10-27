@@ -962,10 +962,11 @@ export function teamChatApi() {
     async updateChatSettings(workspaceId: string, patch: Partial<ChatSettings>): Promise<ChatSettings> {
       return (await http.patch<{ settings: ChatSettings }>(`${ws(workspaceId)}/chat-settings`, patch)).data.settings
     },
-    async inbox(workspaceId: string, opts: { unreadOnly?: boolean; before?: string; limit?: number } = {}): Promise<InboxPage> {
+    async inbox(workspaceId: string, opts: { unreadOnly?: boolean; before?: string; beforeId?: string; limit?: number } = {}): Promise<InboxPage> {
       const q = new URLSearchParams()
       if (opts.unreadOnly) q.set('filter', 'unread')
       if (opts.before) q.set('before', opts.before)
+      if (opts.beforeId) q.set('beforeId', opts.beforeId)
       if (opts.limit) q.set('limit', String(opts.limit))
       return (await http.get<InboxPage>(`${ws(workspaceId)}/inbox?${q}`)).data
     },

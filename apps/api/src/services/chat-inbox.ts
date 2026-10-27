@@ -81,18 +81,31 @@ export async function unreadInboxSnapshot(
 export async function listInbox(
   workspaceId: string,
   userId: string,
-  opts: { unreadOnly?: boolean; before?: string | null; limit?: number } = {},
+  opts: { unreadOnly?: boolean; before?: string | null; beforeId?: string | null; limit?: number } = {},
 ) {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 100)
   const before = opts.before ? new Date(opts.before) : null
+  const cursor = before && !Number.isNaN(before.getTime()) ? before : null
+  const cursorId = cursor ? opts.beforeId ?? null : null
   const rows = await db.chatInboxItem.findMany({
     where: {
       workspaceId,
       userId,
       ...(opts.unreadOnly ? { readAt: null } : {}),
-      ...(before && !Number.isNaN(before.getTime()) ? { createdAt: { lt: before } } : {}),
+      ...(cursor
+        ? {
+            OR: [
+              { createdAt: { lt: cursor } },
+              ...(cursorId ? [{ createdAt: cursor, id: { lt: cursorId } }] : []),
+              // `createdAt` alone drops rows that share the boundary
+              // millisecond — a batch mention writes several at once. The id
+              // breaks the tie; without it the whole millisecond is skipped.
+
+            ],
+          }
+        : {}),
     },
-    orderBy: { createdAt: 'desc' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: limit + 1,
   })
   const page = rows.slice(0, limit)

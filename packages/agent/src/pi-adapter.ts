@@ -95,9 +95,14 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
     return resolveModel('anthropic', modelId)
   }
 
-  if (provider === 'custom') {
+  // A DB-defined Google model (Gemini) is addressed by an opaque UUID the
+  // runtime can't classify, and the proxy is the only place that holds the
+  // Google key — so route it through the proxy's OpenAI-compatible
+  // chat-completions endpoint exactly like a custom provider. Gemini's
+  // upstream is reached from the API server (`provider: 'google'`).
+  if (provider === 'custom' || provider === 'google') {
     const baseUrl = resolveBaseUrl('openai') ?? getDefaultBaseUrl('openai')
-    const deepSeek = isDeepSeekModel(modelId)
+    const deepSeek = provider === 'custom' && isDeepSeekModel(modelId)
     return {
       id: modelId,
       name: modelId,

@@ -10,6 +10,9 @@ export const VIDEO_TOOL_NAMES = ['generate_video'] as const
 /** Tools gated by the opt-in `threeDGenEnabled`. */
 export const THREE_D_TOOL_NAMES = ['generate_3d_model', 'edit_3d_model'] as const
 
+/** Tools gated by the opt-in `musicGenEnabled`. */
+export const MUSIC_TOOL_NAMES = ['generate_music'] as const
+
 /**
  * Every media generation tool. These are called directly by the project's own
  * agent — never delegated to a subagent — and gated by the capability that
@@ -19,6 +22,7 @@ export const THREE_D_TOOL_NAMES = ['generate_3d_model', 'edit_3d_model'] as cons
 export const MEDIA_TOOL_NAMES = [
   ...IMAGE_TOOL_NAMES,
   ...VIDEO_TOOL_NAMES,
+  ...MUSIC_TOOL_NAMES,
   ...THREE_D_TOOL_NAMES,
   'list_media_models',
 ] as const

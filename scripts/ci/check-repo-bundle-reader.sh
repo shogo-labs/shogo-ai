@@ -21,7 +21,7 @@ require() {
 
 require packages/agent-runtime/src/server.ts "app.post('/pool/repo-bundles-hydrate'" "the /pool/repo-bundles-hydrate endpoint"
 require packages/agent-runtime/src/server.ts "bundles: true" "the bundles capability on the /pool/repo-hydrated probe"
-require apps/metal-agent/src/pool.ts "hydrateRepoFromBundles" "the manifest-first hydrate"
+require apps/metal-agent/src/pool.ts "prepareRepoStageFromBundles" "the manifest-first hydrate"
 require apps/api/src/services/git-repo-store.ts "hydrateFromManifest" "the manifest-first API reader"
 
 if [[ $fail -ne 0 ]]; then

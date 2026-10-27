@@ -56,6 +56,7 @@ import {
   MODEL_ALIASES,
   IMAGE_MODEL_CATALOG,
   VIDEO_MODEL_CATALOG,
+  MUSIC_MODEL_CATALOG,
   AGENT_MODE_DEFAULTS,
   OPENROUTER_MODEL_PREFIX,
   resolveAgentModeDefault,
@@ -72,6 +73,8 @@ import {
   type ModelOptionField,
   type VideoModelEntry,
   getVideoModelEntry,
+  type MusicModelEntry,
+  getMusicModelEntry,
   mergeModelOptions,
   endpointsOf,
   resolveMediaModelId,
@@ -346,10 +349,11 @@ export function resolveModelSupportsAudioInput(model: string): boolean {
 /**
  * Get the API key for a provider.
  */
-function getProviderApiKey(provider: Provider): string | null {
+export function getProviderApiKey(provider: Provider): string | null {
   switch (provider) {
     case 'anthropic':
     case 'openai':
+    case 'google':
     case 'openrouter':
       // DB-stored (admin-entered, encrypted) key first, else the env var.
       return getNativeProviderApiKeySync(provider)
@@ -1905,12 +1909,27 @@ export async function proxyAnthropicNonStream(
 // OpenAI Proxy (pass-through)
 // =============================================================================
 
-function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
+/** Google's Gemini API host. `GOOGLE_BASE_URL` may point at the OpenAI
+ *  compatibility root (`…/v1beta/openai`, what chat routing expects) or at the
+ *  bare host; native endpoints such as Lyria's Interactions API need the host. */
+function googleApiBase(): string {
+  return (process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com')
+    .replace(/\/$/, '')
+    .replace(/\/v1beta(\/openai)?$/, '')
+}
+
+export function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
   if (modelConfig.provider === 'local' && process.env.LOCAL_LLM_BASE_URL) {
     return `${process.env.LOCAL_LLM_BASE_URL.replace(/\/$/, '')}/v1/chat/completions`
   }
   if (modelConfig.provider === 'openrouter') {
     const base = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '')
+    return `${base}/chat/completions`
+  }
+  // Gemini ships an OpenAI-compatible endpoint, so a `provider: 'google'` model
+  // rides the same pass-through as OpenAI (Bearer auth, chat-completions body).
+  if (modelConfig.provider === 'google') {
+    const base = (process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/$/, '')
     return `${base}/chat/completions`
   }
   // Custom OpenAI-compatible providers (e.g. MiMo): the admin-configured
@@ -1929,6 +1948,150 @@ function isOpenRouterHost(modelConfig: ModelConfig): boolean {
 /** Hoshi stays DeepSeek-shaped for the runtime. BYOK `openrouter:` models keep OpenRouter's native payload. */
 function shouldRewriteOpenRouterReasoning(modelConfig: ModelConfig): boolean {
   return modelConfig.upstream === 'deepseek' && isOpenRouterHost(modelConfig)
+}
+
+// ---------------------------------------------------------------------------
+// Gemini thought signatures
+// ---------------------------------------------------------------------------
+
+/**
+ * Gemini 3 and newer enforce thought signatures on function calls: every
+ * `tool_call` the model emitted has to come back carrying the
+ * `extra_content.google.thought_signature` it was issued with, or the next
+ * request fails with a 400 ("Function call is missing a thought_signature in
+ * functionCall parts") and the model silently loses reasoning continuity.
+ *
+ * pi-ai's OpenAI-completions provider has no field for `extra_content`, but it
+ * does round-trip `reasoning_details` entries of `type: 'reasoning.encrypted'`,
+ * matching them back to tool calls by `id`. So the proxy carries the signature
+ * in that slot: lift it off the tool call in the response, put it back on the
+ * tool call in the next request.
+ *
+ * A call we have no signature for (history imported from another model, a
+ * trimmed conversation) gets Google's documented escape hatch rather than
+ * being sent bare.
+ */
+const GOOGLE_SKIP_SIGNATURE = 'skip_thought_signature_validator'
+
+function googleThoughtSignature(toolCall: any): string | undefined {
+  const signature = toolCall?.extra_content?.google?.thought_signature
+  return typeof signature === 'string' && signature.length > 0 ? signature : undefined
+}
+
+/**
+ * Move `tool_calls[].extra_content.google.thought_signature` onto
+ * `reasoning_details`, where the runtime will persist it. Returns true when the
+ * payload changed.
+ */
+export function liftGoogleThoughtSignatures(payload: any): boolean {
+  const choices = payload?.choices
+  if (!Array.isArray(choices)) return false
+  let changed = false
+  for (const choice of choices) {
+    for (const field of ['delta', 'message'] as const) {
+      const part = choice?.[field]
+      const toolCalls = part?.tool_calls
+      if (!Array.isArray(toolCalls)) continue
+      const details: any[] = Array.isArray(part.reasoning_details) ? [...part.reasoning_details] : []
+      let added = false
+      for (const toolCall of toolCalls) {
+        const signature = googleThoughtSignature(toolCall)
+        if (!signature) continue
+        delete toolCall.extra_content
+        const id = typeof toolCall.id === 'string' && toolCall.id ? toolCall.id : undefined
+        if (!id || details.some((detail) => detail?.id === id)) continue
+        details.push({ type: 'reasoning.encrypted', id, data: signature })
+        added = true
+      }
+      if (!added) continue
+      part.reasoning_details = details
+      changed = true
+    }
+  }
+  return changed
+}
+
+/**
+ * Put stored thought signatures back on the assistant tool calls of an outgoing
+ * request, and drop the fields Gemini's OpenAI layer has no use for.
+ */
+export function applyGoogleThoughtSignatures(messages: any[]): any[] {
+  return messages.map((message: any) => {
+    const normalized: any = { ...message }
+    if (normalized.role === 'developer') normalized.role = 'system'
+    if (normalized.role !== 'assistant') return normalized
+
+    // Gemini replays its reasoning through signatures, not reasoning text.
+    const details = Array.isArray(normalized.reasoning_details) ? normalized.reasoning_details : []
+    delete normalized.reasoning_details
+    delete normalized.reasoning_content
+    delete normalized.reasoning
+
+    if (!Array.isArray(normalized.tool_calls) || normalized.tool_calls.length === 0) return normalized
+    const signatureById = new Map<string, string>()
+    for (const detail of details) {
+      if (detail?.type === 'reasoning.encrypted' && typeof detail.id === 'string' && typeof detail.data === 'string') {
+        signatureById.set(detail.id, detail.data)
+      }
+    }
+    normalized.tool_calls = normalized.tool_calls.map((toolCall: any) => ({
+      ...toolCall,
+      extra_content: {
+        google: {
+          thought_signature: (typeof toolCall?.id === 'string' ? signatureById.get(toolCall.id) : undefined) ?? GOOGLE_SKIP_SIGNATURE,
+        },
+      },
+    }))
+    return normalized
+  })
+}
+
+/**
+ * Per-stream rewriter for Gemini SSE. A signature can arrive in the same chunk
+ * as its tool call or in a later chunk that only carries the call's `index`, so
+ * the id is remembered across lines.
+ */
+export function createGoogleSseRewriter(): (line: string) => string {
+  const idByIndex = new Map<number, string>()
+  return (line: string) => {
+    if (!line.startsWith('data: ')) return line
+    const raw = line.slice(6).trim()
+    if (!raw || raw === '[DONE]') return line
+    let parsed: any
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return line
+    }
+    const choices = Array.isArray(parsed?.choices) ? parsed.choices : []
+    let changed = false
+    for (const choice of choices) {
+      const delta = choice?.delta
+      const toolCalls = delta?.tool_calls
+      if (!Array.isArray(toolCalls)) continue
+      const found: Array<{ id: string; data: string }> = []
+      for (const toolCall of toolCalls) {
+        const index = typeof toolCall?.index === 'number' ? toolCall.index : undefined
+        const id = typeof toolCall?.id === 'string' && toolCall.id ? toolCall.id : undefined
+        if (index !== undefined && id) idByIndex.set(index, id)
+        const signature = googleThoughtSignature(toolCall)
+        if (!signature) continue
+        delete toolCall.extra_content
+        const owner = id ?? (index === undefined ? undefined : idByIndex.get(index))
+        if (!owner) continue
+        found.push({ id: owner, data: signature })
+        changed = true
+      }
+      if (found.length === 0) continue
+      const details: any[] = Array.isArray(delta.reasoning_details) ? [...delta.reasoning_details] : []
+      for (const item of found) {
+        if (details.some((detail) => detail?.id === item.id)) continue
+        details.push({ type: 'reasoning.encrypted', id: item.id, data: item.data })
+      }
+      delta.reasoning_details = details
+    }
+    return changed ? `data: ${JSON.stringify(parsed)}` : line
+  }
 }
 
 function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): Record<string, string> {
@@ -2041,6 +2204,21 @@ function buildOpenAICompatibleBody(
   // before the first tool invocation.
   if (modelConfig.provider === 'openai') {
     delete body.reasoning_effort
+  }
+
+  // Gemini's OpenAI-compatibility endpoint takes the standard chat body but
+  // rejects OpenAI-only bookkeeping fields, cannot disable thinking on 3 and
+  // newer, and enforces thought signatures on replayed function calls.
+  if (modelConfig.provider === 'google') {
+    delete body.store
+    delete body.providerOptions
+    delete body.thinking
+    delete body.reasoning_content
+    if (body.reasoning_effort === 'none') delete body.reasoning_effort
+    if (Array.isArray(body.messages)) {
+      body.messages = applyGoogleThoughtSignatures(body.messages as any[])
+    }
+    return body
   }
 
   const isDeepSeek =
@@ -2346,8 +2524,15 @@ export async function proxyOpenAIStream(
   }
 
   const rewriteReasoning = shouldRewriteOpenRouterReasoning(served)
+  // Gemini also needs a per-line rewrite: it returns the thought signature on
+  // the tool call, while the runtime persists it in `reasoning_details`.
+  const lineRewriter = rewriteReasoning
+    ? rewriteOpenRouterSseLine
+    : served.provider === 'google'
+      ? createGoogleSseRewriter()
+      : null
 
-  if (!onComplete && !rewriteReasoning) {
+  if (!onComplete && !lineRewriter) {
     return new Response(response.body, {
       headers: openAIProxyHeaders(served),
     })
@@ -2380,7 +2565,8 @@ export async function proxyOpenAIStream(
 
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      if (!rewriteReasoning) {
+      const rewrite = lineRewriter
+      if (!rewrite) {
         controller.enqueue(chunk)
         sseBuffer += decoder.decode(chunk, { stream: true })
         const lines = sseBuffer.split('\n')
@@ -2402,7 +2588,7 @@ export async function proxyOpenAIStream(
       const lines = sseBuffer.split('\n')
       sseBuffer = lines.pop() ?? ''
       for (const line of lines) {
-        const rewritten = rewriteOpenRouterSseLine(line)
+        const rewritten = rewrite(line)
         if (rewritten.startsWith('data: ')) {
           const data = rewritten.slice(6).trim()
           if (data && data !== '[DONE]') {
@@ -2417,8 +2603,9 @@ export async function proxyOpenAIStream(
       }
     },
     flush(controller) {
-      if (rewriteReasoning && sseBuffer) {
-        const rewritten = rewriteOpenRouterSseLine(sseBuffer)
+      const rewrite = lineRewriter
+      if (rewrite && sseBuffer) {
+        const rewritten = rewrite(sseBuffer)
         if (rewritten.startsWith('data: ')) {
           const data = rewritten.slice(6).trim()
           if (data && data !== '[DONE]') {
@@ -2477,6 +2664,9 @@ export async function proxyOpenAINonStream(
   }
 
   const result = await response.json()
+  if (served.provider === 'google') {
+    liftGoogleThoughtSignatures(result)
+  }
   if (shouldRewriteOpenRouterReasoning(served)) {
     rewriteOpenRouterReasoningPayload(result)
     if (typeof result?.usage?.cost === 'number') {
@@ -2581,10 +2771,10 @@ function normalizeThinkingForModel(parsed: any, apiModel: string): void {
 // Billing
 // =============================================================================
 
-import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
+import { calculateUsageCost, calculateMusicUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing-runtime'
 import { getProjectUser } from '../lib/project-user-context'
-import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, accumulate3dUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
+import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, accumulate3dUsage, accumulateMusicUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { buildUsageLimitInfo } from '../lib/usage-limit-info'
 import { invalidateAnalyticsCache } from '../lib/analytics-cache'
@@ -3153,13 +3343,13 @@ import {
  * session open, it is charged as its own usage event.
  */
 interface MediaCharge {
-  kind: 'image' | 'video' | '3d'
+  kind: 'image' | 'video' | '3d' | 'music'
   model: string
   rawUsd: number
   billedUsd: number
   /** Output seconds (video only). */
   seconds?: number
-  actionType: 'ai_image_generation' | 'ai_video_generation' | 'ai_3d_generation'
+  actionType: 'ai_image_generation' | 'ai_video_generation' | 'ai_3d_generation' | 'ai_music_generation'
   metadata: Record<string, unknown>
 }
 
@@ -3181,7 +3371,9 @@ async function recordMediaUsage(tokenPayload: ProxyTokenPayload, charge: MediaCh
         ? await accumulateVideoUsage(billingProjectId, charge.seconds ?? 0, rawUsd, billedUsd, chatSessionId)
         : kind === '3d'
           ? await accumulate3dUsage(billingProjectId, rawUsd, billedUsd, chatSessionId)
-          : await accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)
+          : kind === 'music'
+            ? await accumulateMusicUsage(billingProjectId, rawUsd, billedUsd, chatSessionId)
+            : await accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)
       if (accumulated) {
         console.log(`[AI Proxy] 🎨 Accumulated ${charge.actionType} for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId}${chatSessionId ? `, chat: ${chatSessionId}` : ''})`)
         return
@@ -3227,8 +3419,65 @@ function recordImageUsage(
   }, chatSessionId)
 }
 
-const DEFAULT_VIDEO_MODEL = 'hf-hailuo-2.3'
+/** The cheap 30-second clip; a full song is an explicit choice. */
+const DEFAULT_MUSIC_MODEL = 'lyria-3-clip'
+/** A full song renders in a minute or two; a 30-second clip in seconds. */
+const MUSIC_TIMEOUT_MS = 240_000
 
+interface LyriaAudioBlock {
+  mimeType: string
+  data: string
+}
+
+interface LyriaInteraction {
+  id?: string
+  output_text?: string
+  output_audio?: { data?: string; mime_type?: string } | Array<{ data?: string; mime_type?: string }>
+  steps?: Array<{
+    type?: string
+    content?: Array<{ type?: string; text?: string; data?: string; mime_type?: string }>
+  }>
+}
+
+/**
+ * Pull the rendered audio (plus any lyrics / timed text) out of an Interactions
+ * response. A song with interleaved lyrics returns several content blocks, so
+ * this walks the steps instead of trusting the `output_audio` convenience field
+ * — the docs warn that the convenience fields do not cover every part.
+ */
+/**
+ * Lyria has no separate lyrics or instrumental field: both are read from the
+ * prompt, lyrics as tagged sections after the style instructions.
+ */
+export function buildLyriaInput(prompt: string, opts: { lyrics?: string; instrumental?: boolean }): string {
+  if (opts.instrumental) return `${prompt}\n\nInstrumental only, no vocals.`
+  if (opts.lyrics) return `${prompt}\n\nUse exactly these lyrics:\n${opts.lyrics}`
+  return prompt
+}
+
+function readLyriaOutput(interaction: LyriaInteraction): { audio?: LyriaAudioBlock; text?: string } {
+  let audio: LyriaAudioBlock | undefined
+  const texts: string[] = []
+  for (const step of interaction.steps ?? []) {
+    for (const block of step.content ?? []) {
+      if (block.type === 'audio' && typeof block.data === 'string' && block.data.length > 0) {
+        audio ??= { mimeType: block.mime_type || 'audio/mpeg', data: block.data }
+      } else if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+        texts.push(block.text.trim())
+      }
+    }
+  }
+  if (!audio && interaction.output_audio) {
+    const first = Array.isArray(interaction.output_audio) ? interaction.output_audio[0] : interaction.output_audio
+    if (first && typeof first.data === 'string' && first.data.length > 0) {
+      audio = { mimeType: first.mime_type || 'audio/mpeg', data: first.data }
+    }
+  }
+  const text = texts.length > 0 ? texts.join('\n\n') : interaction.output_text?.trim() || undefined
+  return { audio, text }
+}
+
+const DEFAULT_VIDEO_MODEL = 'hf-hailuo-2.3'
 /** Video is Higgsfield-only; a server without its key answers 503 provider_not_configured. */
 function defaultVideoModel(): string {
   return DEFAULT_VIDEO_MODEL
@@ -3364,12 +3613,12 @@ function publicOption(field: ModelOptionField): Record<string, unknown> {
  */
 export async function listMediaModels(
   signal?: AbortSignal,
-  filter: { model?: string; kind?: 'image' | 'video' } = {},
+  filter: { model?: string; kind?: 'image' | 'video' | 'music' } = {},
 ) {
   const higgsfieldKey = getImageProviderApiKey('higgsfield')
   const wanted = filter.model ? resolveMediaModelId(filter.model) : undefined
 
-  const images = filter.kind === 'video'
+  const images = filter.kind === 'video' || filter.kind === 'music'
     ? []
     : await mapWithLimit(
         (Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[])
@@ -3446,7 +3695,7 @@ export async function listMediaModels(
   const videoEntries = (Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[])
     .filter((entry) => !!getImageProviderApiKey(entry.provider))
     .filter((entry) => !wanted || entry.id === wanted)
-  const videos = filter.kind === 'image'
+  const videos = filter.kind === 'image' || filter.kind === 'music'
     ? []
     : await mapWithLimit(videoEntries, 4, async (entry) => {
       const base = {
@@ -3530,13 +3779,36 @@ export async function listMediaModels(
       return { ...base, price: { unit: 'clip', usd: null, source: 'unknown' } }
     })
 
+  const music = filter.kind && filter.kind !== 'music'
+    ? []
+    : (Object.values(MUSIC_MODEL_CATALOG) as MusicModelEntry[])
+        .filter((entry) => !!getNativeProviderApiKeySync('google'))
+        .filter((entry) => !wanted || entry.id === wanted)
+        .map((entry) => ({
+          id: entry.id,
+          name: entry.displayName,
+          provider: entry.provider,
+          best_for: entry.bestFor,
+          max_duration_seconds: entry.maxDurationSeconds,
+          output_format: entry.outputFormat,
+          endpoints: { generate: 'POST /ai/v1/music/generations' },
+          parameters: {
+            prompt: 'required — style, mood, instruments and structure; you can ask for a length in the prompt',
+            lyrics: 'optional custom lyrics with [Verse] / [Chorus] / [Bridge] tags',
+            instrumental: 'optional boolean — no vocals; cannot be combined with lyrics',
+          },
+          price: { unit: 'song', usd: roundUsd(calculateMusicUsageCost(entry.usdPerRequest).billedUsd) },
+        }))
+
   return {
     images,
     videos,
+    music,
     currency: 'USD',
     default_image_model: defaultImageModel(),
     default_video_model: defaultVideoModel(),
-    note: 'Prices include the Shogo markup and are what the workspace is charged. Higgsfield prices are quoted by its free /estimate for the default parameters; a `null` price means the vendor must be asked at submit time (Genjutsu prices depend on the source clip). Every model lists its documented options: pass model-specific ones as `options` on generate_image / generate_video.',
+    default_music_model: DEFAULT_MUSIC_MODEL,
+    note: 'Prices include the Shogo markup and are what the workspace is charged. Higgsfield prices are quoted by its free /estimate for the default parameters; a `null` price means the vendor must be asked at submit time (Genjutsu prices depend on the source clip). Every model lists its documented options: pass model-specific ones as `options` on generate_image / generate_video / generate_music.',
   }
 }
 
@@ -3686,6 +3958,7 @@ export const CLOUD_FORWARDED_AI_PREFIXES = [
   '/ai/v1/images/',
   '/ai/v1/media/',
   '/ai/v1/videos/',
+  '/ai/v1/music/',
   '/ai/v1/3d/',
   '/ai/v1/audio/',
 ] as const
@@ -5669,9 +5942,9 @@ export function aiProxyRoutes() {
       )
     }
     const kind = c.req.query('kind')
-    if (kind !== undefined && kind !== 'image' && kind !== 'video') {
+    if (kind !== undefined && kind !== 'image' && kind !== 'video' && kind !== 'music') {
       return c.json(
-        { error: { message: "kind must be 'image' or 'video'.", type: 'invalid_request_error', code: 'invalid_kind' } },
+        { error: { message: "kind must be 'image', 'video' or 'music'.", type: 'invalid_request_error', code: 'invalid_kind' } },
         400
       )
     }
@@ -6124,6 +6397,155 @@ export function aiProxyRoutes() {
       return c.json(
         { error: { message: error.message || 'Video submission failed', type: 'server_error', code: mediaErrorCode(error, 'video_submit_error') } },
         statusCode
+      )
+    }
+  })
+
+  /**
+   * POST /ai/v1/music/generations - Lyria music generation.
+   *
+   * Music is not a chat model and does not live on chat completions: Gemini
+   * serves Lyria on the Interactions API (`POST /v1beta/interactions`), which
+   * renders the audio inline as base64 blocks instead of returning a job to
+   * poll. One call, one song, billed flat per song.
+   */
+  router.post('/ai/v1/music/generations', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!(await isTurnInFlight(c, tokenPayload))) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
+      }
+    }
+
+    const invalid = (message: string, code: string) =>
+      c.json({ error: { message, type: 'invalid_request_error', code } }, 400)
+
+    const apiKey = getNativeProviderApiKeySync('google')
+    if (!apiKey) {
+      return c.json(
+        {
+          error: {
+            message: 'Music generation needs a Google API key on the server (GOOGLE_API_KEY).',
+            type: 'provider_not_configured',
+            code: 'provider_not_configured',
+          },
+        },
+        503
+      )
+    }
+
+    const body = (await c.req.json().catch(() => null)) as {
+      prompt?: string
+      model?: string
+      /** Custom lyrics; Lyria reads them from the prompt, tagged [Verse] / [Chorus] / [Bridge]. */
+      lyrics?: string
+      instrumental?: boolean
+      /** Documented Lyria request fields (see list_media_models), passed through. */
+      options?: Record<string, unknown>
+    } | null
+    if (!body) return invalid('Body must be JSON.', 'invalid_body')
+
+    const modelId = body.model || DEFAULT_MUSIC_MODEL
+    const entry = getMusicModelEntry(modelId)
+    if (!entry) {
+      return invalid(`Music model '${modelId}' is not supported. Call list_media_models for the list.`, 'model_not_found')
+    }
+    const prompt = (body.prompt ?? '').trim()
+    if (!prompt) return invalid('prompt is required', 'missing_prompt')
+    const lyrics = typeof body.lyrics === 'string' ? body.lyrics.trim() : ''
+    if (lyrics && body.instrumental === true) {
+      return invalid('lyrics and instrumental cannot both be set.', 'invalid_body')
+    }
+    const input = buildLyriaInput(prompt, { lyrics, instrumental: body.instrumental === true })
+
+    const chatSessionId = c.req.header('x-chat-session-id') || null
+    const startedAt = Date.now()
+    try {
+      const response = await fetch(`${googleApiBase()}/v1beta/interactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          // Caller-supplied documented fields first, so model/input can't be
+          // redirected to a different model than the one we bill for.
+          ...(body.options ?? {}),
+          model: entry.apiModel,
+          input,
+        }),
+        signal: AbortSignal.timeout(MUSIC_TIMEOUT_MS),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '')
+        return c.json(
+          {
+            error: {
+              message: `Google music error (${response.status}): ${errorText.slice(0, 500)}`,
+              type: 'server_error',
+              code: 'music_generation_failed',
+            },
+          },
+          502
+        )
+      }
+
+      const interaction = (await response.json()) as LyriaInteraction
+      const { audio, text } = readLyriaOutput(interaction)
+      if (!audio) {
+        return c.json(
+          {
+            error: {
+              message: 'Google returned no audio for this prompt.',
+              type: 'server_error',
+              code: 'music_empty_response',
+            },
+          },
+          502
+        )
+      }
+
+      const charge = calculateMusicUsageCost(entry.usdPerRequest)
+      await recordMediaUsage(tokenPayload, {
+        kind: 'music',
+        model: entry.id,
+        rawUsd: charge.rawUsd,
+        billedUsd: charge.billedUsd,
+        actionType: 'ai_music_generation',
+        metadata: { prompt: prompt.slice(0, 500), ...(text ? { hasLyrics: true } : {}) },
+      }, chatSessionId)
+
+      return c.json({
+        id: interaction.id || `music_${randomUUID()}`,
+        object: 'music.generation',
+        created: Math.floor(Date.now() / 1000),
+        model: entry.id,
+        api_model: entry.apiModel,
+        elapsed_ms: Date.now() - startedAt,
+        audio: { mime_type: audio.mimeType, b64_json: audio.data },
+        ...(text ? { text } : {}),
+        usd: { raw: charge.rawUsd, billed: charge.billedUsd },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const timedOut = /abort|timeout|timed out/i.test(message)
+      console.error('[AI Proxy] Music generation error:', message)
+      return c.json(
+        {
+          error: {
+            message: `Music generation failed: ${message}`,
+            type: 'server_error',
+            code: timedOut ? 'music_timeout' : 'music_generation_failed',
+          },
+        },
+        timedOut ? 504 : 502
       )
     }
   })

@@ -36,14 +36,24 @@ function uniqueTypists(typists: Typist[]): Typist[] {
 }
 
 /**
+ * The sentence without its ellipsis — "Ana is typing", "Ana and Billing Bot are
+ * typing" — for a view that draws the three dots itself and animates them.
+ * Keep the dots out of the string so they can move without re-rendering text.
+ */
+export function typingLabelText(typists: Typist[]): string | null {
+  const names = uniqueTypists(typists).map((t) => t.name)
+  if (names.length === 0) return null
+  if (names.length === 1) return `${names[0]} is typing`
+  if (names.length === 2) return `${names[0]} and ${names[1]} are typing`
+  const rest = names.length - 2
+  return `${names[0]}, ${names[1]} and ${rest} ${rest === 1 ? 'other' : 'others'} are typing`
+}
+
+/**
  * "Ana is typing…", "Ana and Billing Bot are typing…", then past two names
  * the rest are counted: "Ana, Billing Bot and 1 other are typing…".
  */
 export function typingLabel(typists: Typist[]): string | null {
-  const names = uniqueTypists(typists).map((t) => t.name)
-  if (names.length === 0) return null
-  if (names.length === 1) return `${names[0]} is typing…`
-  if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`
-  const rest = names.length - 2
-  return `${names[0]}, ${names[1]} and ${rest} ${rest === 1 ? 'other' : 'others'} are typing…`
+  const text = typingLabelText(typists)
+  return text === null ? null : `${text}…`
 }

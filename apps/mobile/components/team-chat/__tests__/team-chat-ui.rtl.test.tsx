@@ -10,6 +10,7 @@ import { createReactNativeMock } from '../../../test/react-native-mock'
 const sentTyping: string[] = []
 const copied: string[] = []
 const pins: Array<{ id: string; pinned: boolean }> = []
+const reminders: Array<{ messageId: string; remindAt: string }> = []
 const uploaded: string[] = []
 const updates: Array<{ id: string; patch: unknown }> = []
 const decisions: Array<{ id: string; decision: string }> = []
@@ -165,6 +166,10 @@ mock.module('../../../lib/team-chat-api', () => ({
   isSelfDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'user' && p.self === true),
   teamChatApi: () => ({
     pin: async (id: string, pinned: boolean) => { pins.push({ id, pinned }) },
+    createReminder: async (_ws: string, input: { messageId: string; remindAt: string }) => {
+      reminders.push({ messageId: input.messageId, remindAt: input.remindAt })
+      return {}
+    },
     workLog: (id: string) => { workLogs.push(id); return workLogResult() },
     upload: async (_id: string, file: { name: string }) => {
       uploaded.push(file.name)
@@ -848,12 +853,56 @@ describe('MessageRow', () => {
     }
     expect(screen.queryByLabelText('More reactions')).toBeTruthy()
     fireEvent.click(screen.getByLabelText('More actions'))
-    for (const name of ['Copy link', 'Save for later', 'Remind me: in 1 hour', 'Pin to conversation', 'Edit message', 'Delete message']) {
+    for (const name of ['Copy link', 'Copy message', 'Save for later', 'Add a reminder', 'Pin to conversation', 'Edit message', 'Delete message']) {
       expect(screen.getByRole('menuitem', { name })).toBeTruthy()
     }
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete message' }))
     expect(h.onDelete).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  test('reminders are one row with a flyout, not four flat menu rows', async () => {
+    reminders.length = 0
+    const { container } = render(
+      <MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />,
+    )
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    // The four choices belong to one action, so they are not four menu rows.
+    expect(screen.queryByRole('menuitem', { name: 'Remind me: in 1 hour' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'In 1 hour' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add a reminder' }))
+    // The parent row only toggles the flyout: the menu stays open, no reminder yet.
+    expect(screen.getAllByRole('menu')).toHaveLength(2) // the menu plus its flyout
+    expect(screen.getByRole('menuitem', { name: 'In 1 hour' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Tomorrow' })).toBeTruthy()
+    expect(reminders).toHaveLength(0)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: 'In 1 hour' }))
+    })
+    expect(reminders).toHaveLength(1)
+    expect(reminders[0].messageId).toBe('m1')
+    // "In 1 hour" must land in the future, not silently schedule "now".
+    expect(Date.parse(reminders[0].remindAt)).toBeGreaterThan(Date.now() + 50 * 60_000)
+  })
+
+  test('copy message copies what the message reads as, not the stored wire tokens', async () => {
+    const { container } = render(
+      <MessageRow message={message({ text: '**hi** <@a:p:proj-1>' })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Copy message' }))
+    })
+    // Pasting outside Shogo must not hand anyone a UUID, and must not carry markup.
+    expect(copied.at(-1)).toBe('hi @Billing Bot')
+    expect(copied.at(-1)).not.toContain('p:proj-1')
+
+    fireEvent.click(screen.getByLabelText('More actions'))
+    expect(screen.getByRole('menuitem', { name: 'Message copied' })).toBeTruthy()
   })
 
   test('right-clicking a message opens the actions menu, with Delete only when permitted', () => {
@@ -955,7 +1004,28 @@ describe('MessageRow', () => {
     const chip = screen.getByLabelText('Ana Lopez, Bob Chen and 3 others reacted with 🎉')
     fireEvent.mouseEnter(chip.parentElement!)
     await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
-    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent).toContain('Ana Lopez, Bob Chen, Cid Rao, Dee Park and You reacted with :tada:')
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent)
+      .toContain('Ana Lopez, Bob Chen, Cid Rao, Dee Park and You (click to remove) reacted with :tada:')
+  })
+
+  test('the hover card says the click removes it, but only when you reacted', async () => {
+    const { rerender } = render(
+      <MessageRow message={message({ reactions: [{ emoji: '✅', count: 1, userIds: ['u-me'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    fireEvent.mouseEnter(screen.getByLabelText('You reacted with ✅').parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent)
+      .toContain('You (click to remove) reacted with :white_check_mark:')
+
+    rerender(
+      <MessageRow message={message({ reactions: [{ emoji: '✅', count: 1, userIds: ['u-ana'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    fireEvent.mouseLeave(screen.getByLabelText('Ana Lopez reacted with ✅').parentElement!)
+    fireEvent.mouseEnter(screen.getByLabelText('Ana Lopez reacted with ✅').parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    const card = document.querySelector('[data-testid="reaction-tooltip"]')!
+    expect(card.textContent).toContain('Ana Lopez reacted with :white_check_mark:')
+    expect(card.textContent).not.toContain('to remove')
   })
 
   test('a pasted markdown attachment renders as a markdown card, not a file tile', () => {
@@ -1883,7 +1953,7 @@ describe('running agents in a channel', () => {
     typingUsers.push({ id: 'pat', name: 'Billing Bot' })
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
     renderChannel()
-    expect(screen.getByText('Billing Bot is typing…')).toBeTruthy()
+    expect(screen.getByText('Billing Bot is typing')).toBeTruthy()
     expect(document.body.textContent).not.toContain('Billing Bot and Billing Bot')
     expect(shim('running-agents-dock')!.textContent).toContain('Billing Bot')
   })
@@ -1892,7 +1962,7 @@ describe('running agents in a channel', () => {
     typingUsers.push({ id: 'pat', name: 'Pat' }, { id: 'lee', name: 'Lee' })
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot'), runningReply('r2', 'proj-2', 'Support Bot')]
     renderChannel()
-    expect(screen.getByText('Pat and Lee are typing…')).toBeTruthy()
+    expect(screen.getByText('Pat and Lee are typing')).toBeTruthy()
     expect(screen.getAllByTestId(/^running-agent-row-/)).toHaveLength(2)
   })
 

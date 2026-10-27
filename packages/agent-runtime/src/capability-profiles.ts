@@ -105,7 +105,7 @@ export const CORE_TOOL_NAMES = [
   // Conversation plumbing: handing a turn to another chat (SHO-52). Both
   // profiles keep it — the tag is a chat affordance, not a team-only verb.
   'chat_handoff',
-  // Media generation; gated by imageGenEnabled / videoGenEnabled / threeDGenEnabled.
+  // Media generation; gated by imageGenEnabled / videoGenEnabled / musicGenEnabled / threeDGenEnabled.
   ...MEDIA_TOOL_NAMES,
   // Background tasks: every async source (shell, subagents, project_call, team chat, boards) shares these.
   'wait', 'task_list', 'task_cancel',

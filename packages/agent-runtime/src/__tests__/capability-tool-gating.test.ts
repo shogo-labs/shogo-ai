@@ -194,12 +194,13 @@ describe('filterDisabledCapabilityTools', () => {
 
   test('returns the same array reference when nothing is disabled (no-op fast path)', () => {
     // EVERY opt-in has to be on or its tools are gated and the fast path is
-    // skipped: worktrees, social, video, 3D, board admin, company ops, problems.
+    // skipped: worktrees, social, video, music, 3D, board admin, company ops, problems.
     // (The last three were already missing here, so this test failed on main.)
     const config = makeConfig({
       gitWorktreesEnabled: true,
       socialMediaEnabled: true,
       videoGenEnabled: true,
+      musicGenEnabled: true,
       threeDGenEnabled: true,
       boardAdminEnabled: true,
       companyOpsEnabled: true,
@@ -407,6 +408,13 @@ describe('filterSubagentOnlyTools', () => {
   test('generate_video appears only with videoGenEnabled: true', () => {
     expect(mainAgentTools(makeConfig()).has('generate_video')).toBe(false)
     expect(mainAgentTools(makeConfig({ videoGenEnabled: true })).has('generate_video')).toBe(true)
+  })
+
+  test('generate_music appears only with musicGenEnabled: true, and keeps the listing alive', () => {
+    expect(mainAgentTools(makeConfig()).has('generate_music')).toBe(false)
+    expect(mainAgentTools(makeConfig({ musicGenEnabled: true })).has('generate_music')).toBe(true)
+    const musicOnly = mainAgentTools(makeConfig({ imageGenEnabled: false, musicGenEnabled: true }))
+    expect(musicOnly.has('list_media_models')).toBe(true)
   })
 
   test('the 3D tools appear only with threeDGenEnabled: true', () => {

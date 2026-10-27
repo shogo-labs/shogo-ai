@@ -231,6 +231,17 @@ describe('list_media_models', () => {
     expect(calls.some((c) => c.url.includes('/3d/models'))).toBe(false)
   })
 
+  test('music is listed only while music generation is on', async () => {
+    const withMusic = { ...payload, music: [{ id: 'lyria-3-clip', price: { unit: 'song', usd: 0.05 } }] }
+    on(`${PROXY}/media/models`, () => json(withMusic))
+    const off = await run('list_media_models', { kind: 'music' })
+    expect(off.music).toEqual([])
+    expect(off.music_note).toContain('off')
+    const on_ = await run('list_media_models', { kind: 'music' }, ctx({ musicGenEnabled: true }))
+    expect(on_.music).toHaveLength(1)
+    expect(calls.at(-1)!.url).toContain('kind=music')
+  })
+
   test('kind "presets" lists the restyle styles instead of models', async () => {
     on(`${PROXY}/media/presets`, () => json({ presets: [{ id: 'preset-1', name: 'Anime' }] }))
     const r = await run('list_media_models', { kind: 'presets' })
@@ -396,6 +407,46 @@ describe('generate_video', () => {
 })
 
 // =========================================================================
+// generate_music
+// =========================================================================
+
+describe('generate_music', () => {
+  const MP3 = Buffer.from('ID3fake').toString('base64')
+
+  test('posts prompt, lyrics and model to the music route and saves an MP3 under audio/', async () => {
+    let body: any
+    on(`${PROXY}/music/generations`, (_u, init) => {
+      body = JSON.parse(String(init?.body))
+      return json({ model: 'lyria-3-clip', audio: { mime_type: 'audio/mpeg', b64_json: MP3 }, text: '[Verse] hi', usd: { raw: 0.04, billed: 0.05 } })
+    })
+    const r = await run('generate_music', { prompt: 'a jingle', lyrics: '[Verse] hi' })
+    expect(r.error).toBeUndefined()
+    expect(body).toEqual({ prompt: 'a jingle', lyrics: '[Verse] hi' })
+    expect(r.path).toMatch(/^audio\/music-.*\.mp3$/)
+    expect(readFileSync(join(TEST_DIR, r.path)).toString()).toBe('ID3fake')
+    expect(r.billed_usd).toBe(0.05)
+    expect(r.lyrics).toBe('[Verse] hi')
+  })
+
+  test('honours an explicit path and surfaces gateway errors', async () => {
+    on(`${PROXY}/music/generations`, () => json({ model: 'lyria-3.5', audio: { mime_type: 'audio/mpeg', b64_json: MP3 } }))
+    const saved = await run('generate_music', { prompt: 'x', model: 'lyria-3.5', path: 'public/theme.mp3' })
+    expect(saved.path).toBe('public/theme.mp3')
+
+    routes = []
+    on(`${PROXY}/music/generations`, () => json({ error: { message: 'Out of usage', code: 'usage_limit' } }, 402))
+    const failed = await run('generate_music', { prompt: 'x' })
+    expect(failed.error).toBeTruthy()
+  })
+
+  test('requires a prompt and makes no call without one', async () => {
+    const r = await run('generate_music', { prompt: '  ' })
+    expect(r.error).toContain('prompt')
+    expect(calls).toHaveLength(0)
+  })
+})
+
+// =========================================================================
 // Gating
 // =========================================================================
 
@@ -406,6 +457,11 @@ describe('capability gating', () => {
   test('generate_video is opt-in', () => {
     expect(names({})).not.toContain('generate_video')
     expect(names({ videoGenEnabled: true })).toContain('generate_video')
+  })
+
+  test('generate_music is opt-in', () => {
+    expect(names({})).not.toContain('generate_music')
+    expect(names({ musicGenEnabled: true })).toContain('generate_music')
   })
 
   test('imageGenEnabled: false removes the image tools but keeps the listing for video', () => {
