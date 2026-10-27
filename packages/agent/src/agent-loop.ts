@@ -744,6 +744,15 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
             break
           }
         }
+        if (loopDetector && !abortTriggered) {
+          const check = loopDetector.recordTurnEnd()
+          if (check.loopDetected) {
+            loopBreak = check
+            abortTriggered = true
+            abortReason = 'loop_detected'
+            agent.abort()
+          }
+        }
         if (iterations >= maxIterations && !abortTriggered) {
           maxIterationsExhausted = true
           abortTriggered = true

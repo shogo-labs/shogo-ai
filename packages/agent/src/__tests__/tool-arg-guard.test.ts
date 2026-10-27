@@ -330,9 +330,10 @@ describe('wrapToolsWithOrchestration — empty-argument guard', () => {
   })
 
   test('an empty call after the guard still counts as no progress', async () => {
-    // The reported failure mode: a model that keeps sending the empty call. The
-    // guard's error is an isError result, which agent-loop records as `{ error }`,
-    // so the existing no-progress breaker still stops it — at 5, before 10.
+    // The reported failure mode: a model that keeps sending the empty call, one
+    // per turn. The guard's error is an isError result, which agent-loop records
+    // as `{ error }`, so the no-progress breaker still stops it — at 5 turns,
+    // before 10 identical calls.
     const { tool } = makeTool('exec', execSchema)
     const { tools } = wrapToolsWithOrchestration([tool])
     const exec = toolByName(tools, 'exec')
@@ -343,7 +344,8 @@ describe('wrapToolsWithOrchestration — empty-argument guard', () => {
       const output = await exec
         .execute(`call-${i}`, { command: '' })
         .then(() => ({ details: {} }), (e: Error) => ({ error: e.message }))
-      last = detector.recordAndCheck('exec', { command: '' }, output)
+      detector.recordAndCheck('exec', { command: '' }, output)
+      last = detector.recordTurnEnd()
     }
 
     expect(last?.loopDetected).toBe(true)

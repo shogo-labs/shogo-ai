@@ -164,7 +164,7 @@ describe('agent schedule dispatcher', () => {
           inputTokens: 100,
           outputTokens: 20,
           loopDetected: true,
-          loopPattern: '5 consecutive tool calls failed with no progress toward the goal',
+          loopPattern: '5 turns in a row where every tool call failed',
         },
       },
       { type: 'data-turn-complete', data: { status: 'completed' } },
@@ -179,7 +179,7 @@ describe('agent schedule dispatcher', () => {
       runningAt: null,
     })
     expect(update?.data.lastError).toContain('stopped early by the loop detector')
-    expect(update?.data.lastError).toContain('5 consecutive tool calls failed')
+    expect(update?.data.lastError).toContain('5 turns in a row where every tool call failed')
   })
 
   test('persists ok for a streamed turn without a loop break', async () => {

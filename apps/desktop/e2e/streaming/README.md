@@ -25,7 +25,9 @@ refuses to run if the app lands on a port that another process holds.
   `long` (N numbered tokens), `hold` (wait for `release(tag)`), `tool` (text, then a
   `read_file` tool call, repeated for `rounds`, with an optional hold before a round).
   `tool` also takes `same=1` (the same arguments every round, to drive the loop
-  detector) and `empty=1` (a blank required argument, to drive the empty-argument guard).
+  detector), `empty=1` (a blank required argument, to drive the empty-argument guard)
+  and `parallel=N` (N failing `read_file` calls in the first round, in one turn, to
+  prove one batch of failures is not N retries).
   Tokens look like `t<tag>w0001`, so any view can be checked for gaps, repeats and
   reordering. It records when every token was written and when the app hung up.
 - `stream-probe.ts`: samples the page every 40 ms and records which tokens are on

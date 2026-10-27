@@ -105,11 +105,54 @@ describe('FakeLlmServer', () => {
     expect(JSON.parse(call.map((c: any) => c.function.arguments).join(''))).toEqual({ path: '' })
   })
 
+  test('tool parallel=5 fires five failing calls in the first round, one call after', async () => {
+    const user = { role: 'user', content: `${marker('tool', 'pl', 10, { ms: 1, rounds: 2, parallel: 5 })} go` }
+    const callsOf = (text: string) => {
+      const chunks = parseSse(text).flatMap((c) => c.delta.tool_calls ?? [])
+      const byIndex = new Map<number, { id?: string; name?: string; arguments: string }>()
+      for (const c of chunks) {
+        const entry = byIndex.get(c.index) ?? { arguments: '' }
+        if (c.id) entry.id = c.id
+        if (c.function?.name) entry.name = c.function.name
+        if (c.function?.arguments) entry.arguments += c.function.arguments
+        byIndex.set(c.index, entry)
+      }
+      return [...byIndex.values()]
+    }
+    const toolReplies = (round: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        role: 'tool',
+        tool_call_id: `call_pl_${round}_${i}`,
+        content: `File not found: missing-pl-${i}.txt`,
+      }))
+    const asst = (round: number, count: number) => ({
+      role: 'assistant',
+      content: null,
+      tool_calls: Array.from({ length: count }, (_, i) => ({
+        id: `call_pl_${round}_${i}`,
+        type: 'function',
+        function: { name: 'read_file', arguments: '{}' },
+      })),
+    })
+
+    const r0 = callsOf(await complete(llm.url, [user]))
+    expect(r0).toHaveLength(5)
+    expect(r0.map((c) => c.name)).toEqual(Array(5).fill('read_file'))
+    expect(r0.map((c) => JSON.parse(c.arguments))).toEqual(
+      Array.from({ length: 5 }, (_, i) => ({ path: `missing-pl-${i}.txt` })),
+    )
+
+    const r1 = callsOf(await complete(llm.url, [user, asst(0, 5), ...toolReplies(0, 5)]))
+    expect(r1).toHaveLength(1)
+  })
+
   test('marker carries the same/empty flags and nothing else', () => {
     expect(marker('tool', 'x', 10, { rounds: 2, same: true })).toContain(':same=1')
     expect(marker('tool', 'x', 10, { rounds: 2, empty: true })).toContain(':empty=1')
+    expect(marker('tool', 'x', 10, { rounds: 2, parallel: 5 })).toContain(':parallel=5')
     expect(marker('tool', 'x', 10, { rounds: 2 })).not.toContain('same=1')
     expect(marker('tool', 'x', 10, { rounds: 2 })).not.toContain('empty=1')
+    expect(marker('tool', 'x', 10, { rounds: 2 })).not.toContain('parallel=')
   })
 
   test('hold sends no tokens until released', async () => {

@@ -101,6 +101,8 @@ interface Marker {
   same?: boolean
   /** `tool`: send read_file with `path: ""` — a lost-arguments call. */
   empty?: boolean
+  /** `tool`: on the first round, fire N failing calls in ONE turn. */
+  parallel?: number
 }
 
 // Values may contain `|` so a `bg` marker can script a real pipeline
@@ -138,6 +140,8 @@ export function marker(
     same?: boolean
     /** `tool`: send read_file with `path: ""` (empty-argument-guard scenario). */
     empty?: boolean
+    /** `tool`: fire this many failing calls in the first round, in one turn. */
+    parallel?: number
   } = {},
 ): string {
   const parts = [`tag=${tag}`, `n=${n}`, `ms=${options.ms ?? 10}`]
@@ -148,6 +152,7 @@ export function marker(
   if (options.path !== undefined) parts.push(`path=${options.path}`)
   if (options.same) parts.push('same=1')
   if (options.empty) parts.push('empty=1')
+  if (options.parallel !== undefined) parts.push(`parallel=${options.parallel}`)
   return `[[e2e:${script}:${parts.join(':')}]]`
 }
 
@@ -181,6 +186,7 @@ function parseMarker(text: string): Marker | null {
     ...(params.path ? { path: params.path } : {}),
     ...(script === 'tool' && params.same === '1' ? { same: true } : {}),
     ...(script === 'tool' && params.empty === '1' ? { empty: true } : {}),
+    ...(script === 'tool' && params.parallel ? { parallel: Math.max(2, Number(params.parallel)) } : {}),
   }
 }
 
@@ -215,7 +221,21 @@ export function digestMessages(messages: any[]): RequestMessageDigest[] {
   })
 }
 
-/** The last user message, and how many tool results follow it (the tool round). */
+/** How many tool calls one assistant message carried (either wire shape). */
+function toolCallCount(message: any): number {
+  const parts = Array.isArray(message?.content) ? message.content : []
+  const fromParts = parts.filter(
+    (p: any) => p?.type === 'tool_use' || p?.type === 'tool_call' || p?.type === 'toolCall',
+  ).length
+  const fromCalls = Array.isArray(message?.tool_calls) ? message.tool_calls.length : 0
+  return fromParts + fromCalls
+}
+
+/**
+ * The last user message, and how many tool rounds follow it. A round is one
+ * assistant message that called tools — five calls in one turn are still one
+ * round, not five (SHO-235).
+ */
 function conversationState(messages: any[]): { userText: string; round: number } {
   let lastUser = -1
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -226,7 +246,9 @@ function conversationState(messages: any[]): { userText: string; round: number }
   }
   if (lastUser < 0) return { userText: '', round: 0 }
   let round = 0
-  for (let i = lastUser + 1; i < messages.length; i++) if (messages[i]?.role === 'tool') round++
+  for (let i = lastUser + 1; i < messages.length; i++) {
+    if (messages[i]?.role === 'assistant' && toolCallCount(messages[i]) > 0) round++
+  }
   return { userText: contentText(messages[lastUser].content), round }
 }
 
@@ -464,15 +486,29 @@ export class FakeLlmServer {
         : TOOL_PREFERENCE.find((n) => toolNames.includes(n))
       if (name) {
         const mode = parsed.empty ? 'empty' : parsed.same ? 'same' : undefined
-        const args = JSON.stringify(
-          background
-            ? { command: parsed.cmd, background: true }
-            : toolArgs(parsed.tag, round, parsed.path, mode),
-        )
-        const id = `call_${parsed.tag}_${round}`
-        res.write(chunk({ tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: '' } }] }))
-        res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: args.slice(0, 8) } }] }))
-        res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: args.slice(8) } }] }))
+        // `parallel` is the shape a model produces when it batches several tool
+        // calls in one turn: every call misses, but the turn is one mistake.
+        const calls =
+          parsed.parallel && round === 0
+            ? Array.from({ length: parsed.parallel }, (_, i) => ({
+                id: `call_${parsed.tag}_${round}_${i}`,
+                args: JSON.stringify({ path: `missing-${parsed.tag}-${i}.txt` }),
+              }))
+            : [
+                {
+                  id: `call_${parsed.tag}_${round}`,
+                  args: JSON.stringify(
+                    background
+                      ? { command: parsed.cmd, background: true }
+                      : toolArgs(parsed.tag, round, parsed.path, mode),
+                  ),
+                },
+              ]
+        for (const [index, call] of calls.entries()) {
+          res.write(chunk({ tool_calls: [{ index, id: call.id, type: 'function', function: { name, arguments: '' } }] }))
+          res.write(chunk({ tool_calls: [{ index, function: { arguments: call.args.slice(0, 8) } }] }))
+          res.write(chunk({ tool_calls: [{ index, function: { arguments: call.args.slice(8) } }] }))
+        }
         turn.toolCalled = name
         finish('tool_calls')
         return

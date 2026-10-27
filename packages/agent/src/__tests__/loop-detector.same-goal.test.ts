@@ -17,9 +17,10 @@ describe('LoopDetector — no-progress / same-goal heuristic', () => {
   test('varied tool calls that ALL fail on one goal are flagged as a loop', () => {
     const d = new LoopDetector()
 
-    // Six genuinely different attempts at the same unreachable endpoint. Every
-    // command differs and every error differs, so identical-call / identical-
-    // output / cycle detection cannot fire — only a no-progress heuristic can.
+    // Six genuinely different attempts at the same unreachable endpoint, one per
+    // turn. Every command differs and every error differs, so identical-call /
+    // identical-output / cycle detection cannot fire — only a no-progress
+    // heuristic can.
     const attempts = [
       { command: 'curl http://metrics.internal:9000/api/signups', stderr: 'Could not resolve host: metrics.internal' },
       { command: 'curl -v http://metrics.internal:9000/api/signups', stderr: 'Connection timed out after 3000 ms' },
@@ -31,7 +32,8 @@ describe('LoopDetector — no-progress / same-goal heuristic', () => {
 
     let last
     for (const a of attempts) {
-      last = d.recordAndCheck('exec', { command: a.command }, { exitCode: 1, stdout: '', stderr: a.stderr })
+      d.recordAndCheck('exec', { command: a.command }, { exitCode: 1, stdout: '', stderr: a.stderr })
+      last = d.recordTurnEnd()
     }
 
     expect(last?.loopDetected).toBe(true)
@@ -53,7 +55,10 @@ describe('LoopDetector — no-progress / same-goal heuristic', () => {
     ]
 
     let last
-    for (const s of steps) last = d.recordAndCheck(s.name, s.input, s.output)
+    for (const s of steps) {
+      d.recordAndCheck(s.name, s.input, s.output)
+      last = d.recordTurnEnd()
+    }
 
     expect(last?.loopDetected).toBe(false)
   })

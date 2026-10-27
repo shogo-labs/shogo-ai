@@ -22,10 +22,11 @@ export interface LoopDetectorConfig {
   /** Min cycle length to detect (default: 2, e.g. A→B→A→B) */
   minCycleLength: number
   /**
-   * Max consecutive *unproductive* (failed/errored) tool calls before
-   * triggering the no-progress breaker. Catches the case where the agent
-   * thrashes at one unreachable goal with many *different* calls, so the
-   * identical/cycle heuristics never fire (default: 5).
+   * Max consecutive *unproductive* turns before triggering the no-progress
+   * breaker. A turn is unproductive only when every tool call it made failed,
+   * so one parallel batch of failures (one mistake) counts once. Catches the
+   * case where the agent thrashes at one unreachable goal with many *different*
+   * calls, so the identical/cycle heuristics never fire (default: 5).
    */
   maxConsecutiveNoProgress: number
 }
@@ -42,6 +43,8 @@ interface ToolCallEntry {
   outputHash: string
   /** True when the output looks like a failure / error (no forward progress). */
   unproductive: boolean
+  /** Index of the turn that issued this call; parallel calls share one. */
+  turnIndex: number
 }
 
 const DEFAULT_CONFIG: LoopDetectorConfig = {
@@ -55,6 +58,10 @@ const DEFAULT_CONFIG: LoopDetectorConfig = {
 export class LoopDetector {
   private config: LoopDetectorConfig
   private history: ToolCallEntry[] = []
+  /** Index of the turn currently collecting calls; advanced by `recordTurnEnd`. */
+  private turnIndex = 0
+  /** Per closed turn that made at least one call: true when every call failed. */
+  private closedTurns: boolean[] = []
 
   constructor(config: Partial<LoopDetectorConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -63,6 +70,8 @@ export class LoopDetector {
   /**
    * Record a tool call and check for loop patterns.
    * Call this after each tool execution with the tool name, input, and output.
+   * Every call from one model turn shares a turn index, so a parallel batch is
+   * one turn — not N retries.
    */
   recordAndCheck(
     name: string,
@@ -74,15 +83,38 @@ export class LoopDetector {
       inputHash: stableHash(input),
       outputHash: stableHash(output),
       unproductive: isUnproductiveOutput(output),
+      turnIndex: this.turnIndex,
     }
     this.history.push(entry)
 
     return this.detect()
   }
 
+  /**
+   * Close the current turn and check whether the agent is making no progress
+   * across turns. Call this once per model turn, after its tool calls have all
+   * been recorded.
+   *
+   * A turn counts as unproductive only when it made at least one tool call and
+   * *every* call failed: five failures from one parallel batch are one mistake,
+   * not five retries. A turn with a single success is progress and resets the
+   * streak. Turns that made no tool calls are not counted either way.
+   */
+  recordTurnEnd(): LoopDetectorResult {
+    const calls = this.history.filter((e) => e.turnIndex === this.turnIndex)
+    if (calls.length > 0) {
+      this.closedTurns.push(calls.every((e) => e.unproductive))
+    }
+    this.turnIndex++
+
+    return this.checkNoProgress()
+  }
+
   /** Reset the detector (e.g. between agent loop runs) */
   reset(): void {
     this.history = []
+    this.closedTurns = []
+    this.turnIndex = 0
   }
 
   /** Get the number of recorded tool calls */
@@ -100,30 +132,31 @@ export class LoopDetector {
     const cycleResult = this.checkCycles()
     if (cycleResult.loopDetected) return cycleResult
 
-    const noProgressResult = this.checkNoProgress()
-    if (noProgressResult.loopDetected) return noProgressResult
-
     return { loopDetected: false }
   }
 
   /**
-   * Check for a run of consecutive unproductive (failed/errored) calls — the
-   * agent is hammering one goal with varied calls but getting nowhere. This is
-   * the gap the identical/cycle detectors miss: every call is different, yet no
+   * Check for a run of consecutive unproductive *turns* — the agent is
+   * hammering one goal with varied calls but getting nowhere. This is the gap
+   * the identical/cycle detectors miss: every call is different, yet no
    * progress is made.
+   *
+   * Counted per turn, not per call: one turn that fires five failing calls in
+   * parallel is a single mistake the model has not even been told about yet, so
+   * it must not fill the window by itself.
    */
   private checkNoProgress(): LoopDetectorResult {
     const { maxConsecutiveNoProgress } = this.config
-    if (this.history.length < maxConsecutiveNoProgress) {
+    if (this.closedTurns.length < maxConsecutiveNoProgress) {
       return { loopDetected: false }
     }
 
-    const tail = this.history.slice(-maxConsecutiveNoProgress)
-    if (tail.every((e) => e.unproductive)) {
+    const tail = this.closedTurns.slice(-maxConsecutiveNoProgress)
+    if (tail.every(Boolean)) {
       return {
         loopDetected: true,
         reason: 'no_progress',
-        pattern: `${maxConsecutiveNoProgress} consecutive tool calls failed with no progress toward the goal — stop and ask for help instead of retrying`,
+        pattern: `${maxConsecutiveNoProgress} turns in a row where every tool call failed — stop and ask for help instead of retrying`,
       }
     }
 
@@ -270,12 +303,28 @@ function isUnproductiveOutput(output: any): boolean {
 function isUnproductiveObject(output: any): boolean {
   if (Array.isArray(output)) return false
 
+  // Killed before it could answer (timeout, signal) — a failure whatever it
+  // managed to print first.
+  if (output.timedOut === true || output.killed === true) return true
+
   // Explicit success → definitely productive.
   if (output.ok === true || output.success === true || output.successful === true) return false
   if (typeof output.exitCode === 'number' && output.exitCode === 0) return false
 
+  if (typeof output.exitCode === 'number' && output.exitCode !== 0) {
+    // SIGPIPE: `cmd | head` closes the pipe once it has enough lines, and the
+    // writer reports 141. The command did its job.
+    if (output.exitCode === 141) return false
+    // Data came back, so the agent learned something whatever the exit code.
+    if (typeof output.stdout === 'string' && output.stdout.trim()) return false
+    // `grep`/`rg` with no match, `test`, `diff`, `git diff --quiet`: exit 1 with
+    // nothing on either stream is a definite "no", not a failure.
+    if (output.exitCode === 1 && !(typeof output.stderr === 'string' && output.stderr.trim())) return false
+    // 127 command-not-found, a usage error on stderr, grep's exit 2 with a message.
+    return true
+  }
+
   // Explicit failure signals.
-  if (typeof output.exitCode === 'number' && output.exitCode !== 0) return true
   if (output.ok === false || output.success === false || output.successful === false) return true
   if (typeof output.status === 'number' && output.status >= 400) return true
   if (output.error != null && output.error !== false && output.error !== '') return true

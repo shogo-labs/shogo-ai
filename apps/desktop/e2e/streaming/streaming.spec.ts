@@ -661,10 +661,35 @@ test('a model stuck on empty arguments still stops, at 5 (no progress)', async (
   await waitIdle(h.page, 180_000)
 
   const roundsSeen = toolRounds(tag)
-  const note = await pageShows(h.page, 'failed with no progress')
+  const note = await pageShows(h.page, 'every tool call failed')
   writeReport('empty-argument-no-progress', { ...roundsSeen, note })
 
   expect.soft(roundsSeen.calls, 'empty calls before the no-progress stop').toBe(5)
   expect.soft(roundsSeen.requests.length, 'model requests (stops before 10)').toBe(5)
   expect.soft(note, 'the no-progress note is in the transcript').toBe(true)
+})
+
+test('five failing tool calls in ONE turn do not stop it', async () => {
+  // SHO-235: the no-progress breaker counts turns, not calls. A model that
+  // batches five calls that all miss has made one mistake — it must see the
+  // errors and carry on.
+  const tag = 'par5'
+  const rounds = 3
+  const total = 40
+  await beginProbe(h.page, tag)
+  await send(h.page, `${marker('tool', tag, total, { rounds, parallel: 5, ms: 5 })} go`)
+  await h.llm.waitForRequestCount(tag, rounds + 1, 120_000)
+  await waitIdle(h.page, 120_000)
+
+  const roundsSeen = toolRounds(tag)
+  const settled = await settleTokens(h.page, tag)
+  const stuck = await pageShows(h.page, 'seemed to be stuck')
+  const told = roundsSeen.results[1] ?? ''
+  const reported = [0, 1, 2, 3, 4].every((i) => told.includes(`missing-${tag}-${i}.txt`))
+  writeReport('parallel-failures', { ...roundsSeen, stuck, reported, settledAfterMs: settled.settledAfterMs })
+
+  expect.soft(roundsSeen.requests.length, 'model requests (the turn carried on)').toBe(rounds + 1)
+  expect.soft(stuck, 'one parallel batch of failures was stopped as a loop').toBe(false)
+  expect.soft(reported, `every failed call came back to the model: ${JSON.stringify(told.slice(0, 400))}`).toBe(true)
+  expect.soft(isExactRun(settled.sequence, total), `reply: ${JSON.stringify(checkSequence(settled.sequence))}`).toBe(true)
 })

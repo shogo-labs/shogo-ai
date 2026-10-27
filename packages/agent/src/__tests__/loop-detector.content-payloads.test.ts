@@ -68,7 +68,8 @@ describe('LoopDetector — successful payloads whose content mentions errors', (
 
     let last
     for (const [i, [name, output]] of failures.entries()) {
-      last = d.recordAndCheck(name, { attempt: i }, output)
+      d.recordAndCheck(name, { attempt: i }, output)
+      last = d.recordTurnEnd()
     }
 
     expect(last?.loopDetected).toBe(true)
