@@ -23,6 +23,7 @@
  * it ships defaulting to observe rather than enforcing on arrival.
  */
 
+import { assignResponseBody } from './assign-response'
 import { type AuthMode, bucketPath, decideControlAuth, parseAuthMode } from './auth'
 import { config } from './config'
 import { injectE2eFault } from './e2e-faults'
@@ -190,24 +191,7 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
           rootfs === 'staged' ? await pool.openStaged(runtimeKey, env ?? {}, bind) : await pool.open(runtimeKey, env ?? {}, bind)
         if (r.mode === 'prewarmed') return Response.json(r)
         const url = await fwd.ensure(runtimeKey, r.handle.guestIp)
-        // vmClass reflects what was ACTUALLY booted, which may be 'standard'
-        // even for a docker-class request if this host doesn't support the
-        // class (pool.assign() fails closed and logs loudly) — the control
-        // plane can use a mismatch here to flag a routing bug.
-        return Response.json({
-          url,
-          mode: r.mode,
-          source: r.source,
-          readyMs: r.readyMs,
-          reused: r.reused,
-          vmClass: r.handle.vmClass,
-          phases: r.phases,
-          totalMs: r.totalMs,
-          staleReason: r.staleReason,
-          bootRootfsIdentity: r.bootRootfsIdentity,
-          repo: r.repo,
-          lateWake: r.lateWake,
-        })
+        return Response.json(assignResponseBody(r, url))
       }
 
       if (path === '/gc' && req.method === 'POST') {
