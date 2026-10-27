@@ -334,3 +334,125 @@ describe('node-image-gc — defaults are what the DaemonSet ships', () => {
     expect(deploy.split('--from-file=node-image-gc.sh=scripts/node-image-gc.sh')).toHaveLength(3)
   })
 })
+
+describe('node-image-gc — the deploy wiring that makes a script change actually run', () => {
+  // A changed ConfigMap updates the mounted file, but the pod's `sh` already
+  // parsed the old copy — so without a pod-template change the GC keeps
+  // executing stale logic forever. That is the SHO-136 failure class one level
+  // up, and QA caught it live on staging (pods still from 07:09 after a deploy
+  // that reported "configmap unchanged / daemonset unchanged").
+  const BLOCK_MARKER = '- name: Apply node image GC'
+
+  function gcBlocks(): string[] {
+    const blocks: string[] = []
+    for (const wf of ['.github/workflows/deploy-staging.yml', '.github/workflows/deploy.yml']) {
+      const lines = readFileSync(join(REPO_ROOT, wf), 'utf8').split('\n')
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].trim() !== BLOCK_MARKER) continue
+        const rest = lines.slice(i + 1)
+        const runIdx = rest.findIndex((l) => /^\s*run: \|/.test(l))
+        if (runIdx === -1) continue
+        const body: string[] = []
+        for (const line of rest.slice(runIdx + 1)) {
+          // `run: |` sits at 8 spaces; the shell body at 10. Stop at the next
+          // step (or comment) that is not part of the body.
+          if (line.trim() && !/^ {10}/.test(line)) break
+          body.push(line)
+        }
+        blocks.push(body.join('\n'))
+      }
+    }
+    return blocks
+  }
+
+  function fencedBlocks(doc: string): string[] {
+    const out: string[] = []
+    let current: string[] | null = null
+    for (const line of doc.split('\n')) {
+      if (line.trimStart().startsWith('```')) {
+        if (current) {
+          out.push(current.join('\n'))
+          current = null
+        } else {
+          current = []
+        }
+        continue
+      }
+      current?.push(line)
+    }
+    return out
+  }
+
+  it('finds the GC step in staging and both production regions', () => {
+    const blocks = gcBlocks()
+    expect(blocks).toHaveLength(3)
+    for (const block of blocks) expect(block).toContain('set -euo pipefail')
+  })
+
+  it('pins the script checksum on the pod template, after apply and before the rollout wait', () => {
+    for (const block of gcBlocks()) {
+      const applyConfigMap = block.indexOf('--from-file=node-image-gc.sh=scripts/node-image-gc.sh')
+      const applyDs = block.indexOf('kubectl apply -f k8s/base/node-image-gc.yaml')
+      const checksum = block.indexOf('checksum/script')
+      const rollout = block.indexOf('rollout status daemonset/node-image-gc')
+
+      expect(applyConfigMap).toBeGreaterThan(-1)
+      expect(applyDs).toBeGreaterThan(applyConfigMap)
+      expect(checksum).toBeGreaterThan(applyDs)
+      expect(rollout).toBeGreaterThan(checksum)
+      // The checksum has to be of the script the ConfigMap was built from.
+      expect(block).toContain('sha256sum scripts/node-image-gc.sh')
+    }
+  })
+
+  it('patches the pod template, not the DaemonSet metadata — only a template change rolls pods', () => {
+    for (const block of gcBlocks()) {
+      expect(block).toContain('patch daemonset/node-image-gc')
+      expect(block).toContain('"template"')
+      expect(block).toContain('"annotations"')
+      // `kubectl annotate daemonset/...` updates the object, not the template,
+      // and would leave every pod running the old script.
+      expect(block).not.toContain('annotate --overwrite -n kube-system daemonset/node-image-gc')
+    }
+  })
+
+  it('documents a hand-run path that exists: exec into the pod, not a host shell', () => {
+    // The ConfigMap is mounted into the pod's view of the host root, so
+    // /run/shogo-node-image-gc/ is EMPTY from a `kubectl debug node/...` shell
+    // (verified on staging 10.0.29.201). No documented command may reach for
+    // the script from a host shell.
+    const docs = [
+      'docs/runbooks/node-image-gc.md',
+      'terraform/README.md',
+      'scripts/node-image-gc.sh',
+      'k8s/base/node-image-gc.yaml',
+    ]
+    for (const doc of docs) {
+      for (const block of fencedBlocks(readFileSync(join(REPO_ROOT, doc), 'utf8'))) {
+        if (!block.includes('kubectl debug node')) continue
+        expect(block).not.toContain('node-image-gc.sh')
+      }
+    }
+
+    const runbook = readFileSync(join(REPO_ROOT, 'docs/runbooks/node-image-gc.md'), 'utf8')
+    expect(runbook).toContain('kubectl -n kube-system exec -it "$POD"')
+    expect(runbook).toContain('--field-selector spec.nodeName=<node>')
+  })
+
+  it('points every remediation message at a doc that exists', () => {
+    const gate = readFileSync(
+      join(REPO_ROOT, '.github/scripts/check-node-disk-headroom.sh'),
+      'utf8',
+    )
+    // The gate's failure text names a real section of terraform/README.md.
+    expect(gate).toContain("terraform/README.md 'Node image store remediation'")
+    const tfReadme = readFileSync(join(REPO_ROOT, 'terraform/README.md'), 'utf8')
+    expect(tfReadme).toContain('## Node image store remediation')
+
+    // The script's own messages name the runbook, which exists.
+    expect(SCRIPT_TEXT).toContain('docs/runbooks/node-image-gc.md')
+    expect(readFileSync(join(REPO_ROOT, 'docs/runbooks/node-image-gc.md'), 'utf8')).toContain(
+      '# Node image GC — runbook',
+    )
+  })
+})

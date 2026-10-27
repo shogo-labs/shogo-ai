@@ -238,25 +238,34 @@ and OKE system images are never touched.
 
 ### Pruning one node by hand
 
+The script is not on the host — the ConfigMap is mounted into the DaemonSet
+pod's view of the host root, so a `kubectl debug node/...` shell finds an empty
+`/run/shogo-node-image-gc/`. Exec into the GC pod for that node instead:
+
+```sh
+POD=$(kubectl -n kube-system get pod -l app.kubernetes.io/name=node-image-gc \
+        --field-selector spec.nodeName=<node> -o name)
+```
+
 Dry run first — this lists candidates and removes nothing:
 
 ```sh
-kubectl debug node/<node> -it --profile=sysadmin --image=busybox:1.36 -- \
-  chroot /host /bin/sh -c \
-  'RECLAIM_PCT=0 DRY_RUN=1 ONESHOT=1 sh /run/shogo-node-image-gc/node-image-gc.sh'
+kubectl -n kube-system exec -it "$POD" -- \
+  chroot /host /usr/bin/env RECLAIM_PCT=0 DRY_RUN=1 ONESHOT=1 \
+  /bin/sh /run/shogo-node-image-gc/node-image-gc.sh
 ```
 
 Then for real:
 
 ```sh
-kubectl debug node/<node> -it --profile=sysadmin --image=busybox:1.36 -- \
-  chroot /host /bin/sh -c \
-  'RECLAIM_PCT=0 ONESHOT=1 sh /run/shogo-node-image-gc/node-image-gc.sh'
+kubectl -n kube-system exec -it "$POD" -- \
+  chroot /host /usr/bin/env RECLAIM_PCT=0 ONESHOT=1 \
+  /bin/sh /run/shogo-node-image-gc/node-image-gc.sh
 ```
 
 If the DaemonSet is not deployed at all (a cluster that has not taken a deploy
-since SHO-233), the blunt version is cri-o's own prune — it removes every image
-no container references, in every repo:
+since SHO-233), the blunt version is cri-o's own prune on the node — it removes
+every image no container references, in every repo:
 
 ```sh
 kubectl debug node/<node> -it --profile=sysadmin --image=busybox:1.36 -- \

@@ -37,8 +37,10 @@
 # The script runs inside the node's own root so it uses the node's `crictl`,
 # `df` and `jq` instead of shipping copies: `chroot /host /bin/sh
 # /run/shogo-node-image-gc/node-image-gc.sh`. The ConfigMap is mounted inside
-# the hostPath mount so the same file is visible at that path, which also means
-# an operator who execs into the node can run it by hand.
+# the hostPath mount so that path resolves after the chroot — but ONLY inside
+# this pod. On the host itself (a `kubectl debug node/...` shell) the same
+# directory exists and is empty, so a hand-run has to exec into this pod; see
+# the Usage block in scripts/node-image-gc.sh.
 # =============================================================================
 apiVersion: apps/v1
 kind: DaemonSet

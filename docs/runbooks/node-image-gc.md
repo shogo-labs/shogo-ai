@@ -97,24 +97,57 @@ with a comment saying why, not with an ad-hoc `kubectl set env`.
 
 ### Run it by hand on one node
 
+The script lives in the DaemonSet pod, not on the host: the ConfigMap is
+mounted into the pod's view of the host root, so a `kubectl debug node/...`
+shell finds an empty `/run/shogo-node-image-gc/`. Exec into the GC pod for that
+node instead — it already has `chroot /host` wired up.
+
+```sh
+POD=$(kubectl -n kube-system get pod -l app.kubernetes.io/name=node-image-gc \
+        --field-selector spec.nodeName=<node> -o name)
+```
+
 Dry run first — this prints candidates and removes nothing:
 
 ```sh
-kubectl debug node/<node> -it --profile=sysadmin --image=busybox:1.36 -- \
-  chroot /host /bin/sh -c \
-  'RECLAIM_PCT=0 DRY_RUN=1 ONESHOT=1 sh /run/shogo-node-image-gc/node-image-gc.sh'
+kubectl -n kube-system exec -it "$POD" -- \
+  chroot /host /usr/bin/env RECLAIM_PCT=0 DRY_RUN=1 ONESHOT=1 \
+  /bin/sh /run/shogo-node-image-gc/node-image-gc.sh
 ```
 
 Then for real (drop `DRY_RUN`, keep `ONESHOT=1` so it exits after one pass):
 
 ```sh
-kubectl debug node/<node> -it --profile=sysadmin --image=busybox:1.36 -- \
-  chroot /host /bin/sh -c \
-  'RECLAIM_PCT=0 ONESHOT=1 sh /run/shogo-node-image-gc/node-image-gc.sh'
+kubectl -n kube-system exec -it "$POD" -- \
+  chroot /host /usr/bin/env RECLAIM_PCT=0 ONESHOT=1 \
+  /bin/sh /run/shogo-node-image-gc/node-image-gc.sh
+```
+
+A dry run on `10.0.29.201` looks like this:
+
+```
+[node-image-gc] 10.0.29.201 disk 38% >= 0% — reclaiming superseded Shogo digests (keep newest 2 per repo)
+  .../shogo/shogo-api: 3 image(s)   .../shogo/shogo-runtime: 6 image(s)
+  in use: 1  pinned: 1  unknown age (kept): 0  newest kept: 8
+[node-image-gc] 10.0.29.201 would remove .../shogo/shogo-api c50c6a3f...
+[node-image-gc] 10.0.29.201 done before=38% after=38% removed=3 skipped=0 dry_run=1
 ```
 
 `RECLAIM_PCT=0` forces the pass to consider reclaiming regardless of current
 usage — useful when you know the node is full but the sampled number disagrees.
+
+### The first deploy onto a full node may still fail the gate once
+
+A node as full as `10.0.24.140` was has ~25 removal candidates at roughly 30 s
+each. Both of the deploy's own windows can expire mid-pass:
+
+- the GC step's `kubectl rollout status … --timeout=600s` (non-fatal by design),
+- the gate's re-sampling, up to 5 × 30 s.
+
+So on a genuinely full node the first deploy after this lands can still report
+no headroom while the reclaim is running. Re-run the job; the second attempt
+samples a node that has already been reclaimed. Do not raise the gate threshold
+to work around it.
 
 ## Env reference
 

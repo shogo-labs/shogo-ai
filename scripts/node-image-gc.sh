@@ -36,8 +36,14 @@
 #   * never anything whose age is unknown — without one it cannot be shown to
 #     be older than the images we keep.
 #
-# Usage (on a node, e.g. `kubectl debug node/<name> -it --profile=sysadmin`):
-#   RECLAIM_PCT=0 DRY_RUN=1 ONESHOT=1 sh /run/shogo-node-image-gc/node-image-gc.sh
+# Usage (the script only exists inside the DaemonSet pod — the ConfigMap is
+# mounted into the pod's view of the host root, so a `kubectl debug node/...`
+# shell on the host does NOT have it. Exec into the pod instead):
+#   POD=$(kubectl -n kube-system get pod -l app.kubernetes.io/name=node-image-gc \
+#           --field-selector spec.nodeName=<node> -o name)
+#   kubectl -n kube-system exec -it "$POD" -- \
+#     chroot /host /usr/bin/env RECLAIM_PCT=0 DRY_RUN=1 ONESHOT=1 \
+#     /bin/sh /run/shogo-node-image-gc/node-image-gc.sh
 #
 # Env:
 #   RECLAIM_PCT      default 65   reclaim at/above this used% (gate is 80)
@@ -240,7 +246,7 @@ EOF
 }
 
 if ! command -v jq >/dev/null 2>&1; then
-  log "jq is not on this node — cannot select digests, refusing to prune (see terraform/README.md 'Node image store remediation')"
+  log "jq is not on this node — cannot select digests, refusing to prune (see docs/runbooks/node-image-gc.md)"
   exit 0
 fi
 if ! command -v "$CRICTL" >/dev/null 2>&1; then

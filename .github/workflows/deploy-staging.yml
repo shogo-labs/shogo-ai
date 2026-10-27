@@ -277,6 +277,19 @@ jobs:
             --from-file=node-image-gc.sh=scripts/node-image-gc.sh \
             --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply -f k8s/base/node-image-gc.yaml
+          # A changed ConfigMap updates the mounted file, but a running `sh`
+          # has already parsed it — so without this the pod keeps executing the
+          # old logic forever, which is the SHO-136 failure class one level up.
+          # The checksum goes on the POD TEMPLATE, not the DaemonSet's own
+          # metadata: only a template change triggers a rollout. An unchanged
+          # checksum is a no-op, so a redeploy with the same script does not
+          # churn every node.
+          SCRIPT_SUM=$(sha256sum scripts/node-image-gc.sh | cut -d' ' -f1)
+          cat > /tmp/node-image-gc-patch.json <<JSON
+          {"spec":{"template":{"metadata":{"annotations":{"checksum/script":"${SCRIPT_SUM}"}}}}}
+          JSON
+          kubectl --namespace=kube-system patch daemonset/node-image-gc --type=merge \
+            --patch-file /tmp/node-image-gc-patch.json
           # The DaemonSet's pods only report Ready once their first pass has
           # finished (startupProbe), so this waits for the reclaim rather than
           # for the pod. Never fatal: a slow pass must not fail the deploy, the
