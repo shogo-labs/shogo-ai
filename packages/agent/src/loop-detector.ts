@@ -25,7 +25,7 @@ export interface LoopDetectorConfig {
    * Max consecutive *unproductive* (failed/errored) tool calls before
    * triggering the no-progress breaker. Catches the case where the agent
    * thrashes at one unreachable goal with many *different* calls, so the
-   * identical/cycle heuristics never fire (default: 5).
+   * identical/cycle heuristics never fire (default: 20).
    */
   maxConsecutiveNoProgress: number
 }
@@ -49,7 +49,7 @@ const DEFAULT_CONFIG: LoopDetectorConfig = {
   maxIdenticalOutputs: 10,
   cycleWindowSize: 10,
   minCycleLength: 2,
-  maxConsecutiveNoProgress: 5,
+  maxConsecutiveNoProgress: 20,
 }
 
 export class LoopDetector {
