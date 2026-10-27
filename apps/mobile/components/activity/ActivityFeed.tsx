@@ -60,7 +60,12 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
   const focused = useFocused()
   const [filter, setFilter] = useState<ActivityFilter>('all')
   const [unreadOnly, setUnreadOnly] = useState(false)
-  const inbox = useInbox(workspaceId, false)
+  /**
+   * The server filters, not `buildFeed`. Filtering unread on the client means
+   * every page arrives mostly-read, the filtered list never fills the viewport,
+   * and `onEndReached` walks the whole history to find the unread items in it.
+   */
+  const inbox = useInbox(workspaceId, unreadOnly)
   const sent = useSentMessages(workspaceId, filter === 'sent')
   const agents = useAgentActivity({ polling: focused, light: true })
   const experience = useWorkspaceExperience()
@@ -201,25 +206,24 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
           ) : null
         }
         ListFooterComponent={
-          paging.hasMore ? (
+          paging.loadingMore ? (
+            <View className="items-center py-3">
+              <ActivityIndicator size="small" />
+            </View>
+          ) : paging.hasMore ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Show older activity"
-              disabled={paging.loadingMore}
               onPress={() => paging.loadMore()}
               className="items-center py-3 active:bg-accent/50"
               testID="show-older"
             >
-              {paging.loadingMore ? (
-                <ActivityIndicator size="small" />
-              ) : (
-                <Text className="text-xs font-medium text-muted-foreground">Show older</Text>
-              )}
+              <Text className="text-xs font-medium text-muted-foreground">Show older</Text>
             </Pressable>
+          ) : feed.entries.length > 0 && filter !== 'sent' ? (
+            <Text className="py-3 text-center text-xs text-muted-foreground">You&apos;re all caught up.</Text>
           ) : null
         }
-        onEndReached={() => { if (paging.hasMore && !paging.loadingMore) paging.loadMore() }}
-        onEndReachedThreshold={0.4}
       />
 
       {filter === 'sent' ? null : (

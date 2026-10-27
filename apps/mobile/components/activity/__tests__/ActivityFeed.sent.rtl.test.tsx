@@ -144,6 +144,8 @@ const baseInbox = {
   refresh: mock(() => {}),
 }
 let inboxState = { ...baseInbox }
+/** What the feed asks the hook for — the unread filter has to reach the server. */
+let inboxArgs: { workspaceId: string | null; unreadOnly: boolean }[] = []
 
 mock.module('../../../hooks/useActiveWorkspace', () => ({ useActiveWorkspace: () => ({ id: 'ws-1' }) }))
 mock.module('../../../hooks/useAgentActivity', () => ({
@@ -167,7 +169,10 @@ mock.module('../../../hooks/useChatPrefs', () => ({
   useInboxCounts: () => ({ unread: 0, unreadThreads: 0 }),
   useInboxUnread: () => 0,
   useInboxFeed: () => {},
-  useInbox: () => inboxState,
+  useInbox: (workspaceId: string | null, unreadOnly: boolean) => {
+    inboxArgs.push({ workspaceId, unreadOnly })
+    return inboxState
+  },
   useSentMessages: (_workspaceId: string, enabled: boolean) => {
     sentEnabledCalls.push(enabled)
     return sent
@@ -186,6 +191,7 @@ beforeEach(() => {
   inboxLoadMore.mockClear()
   inboxState = { ...baseInbox }
   sentEnabledCalls = []
+  inboxArgs = []
 })
 
 afterEach(cleanup)
@@ -275,12 +281,47 @@ describe('Activity · inbound paging', () => {
     expect(screen.getByText('mention i3')).toBeTruthy()
   })
 
-  test('reaching the end of the list asks for the next page', () => {
+  test('the default view asks for the unfiltered list', () => {
+    render(createElement(ActivityFeed))
+
+    expect(inboxArgs[0]).toEqual({ workspaceId: 'ws-1', unreadOnly: false })
+  })
+
+  test('the Unreads pill asks the server to filter, not the client', () => {
+    render(createElement(ActivityFeed))
+    fireEvent.click(screen.getByText('Unreads'))
+
+    // The regression: the panel hardcoded `false` and then filtered unread in
+    // `buildFeed`. Every page arrived mostly-read, the filtered list never
+    // filled the panel, and `onEndReached` walked the entire history.
+    expect(inboxArgs[inboxArgs.length - 1]).toEqual({ workspaceId: 'ws-1', unreadOnly: true })
+  })
+
+  test('leaving the Unreads pill asks for the unfiltered list again', () => {
+    render(createElement(ActivityFeed))
+    fireEvent.click(screen.getByText('Unreads'))
+    fireEvent.click(screen.getByText('Unreads'))
+
+    expect(inboxArgs[inboxArgs.length - 1]).toEqual({ workspaceId: 'ws-1', unreadOnly: false })
+  })
+
+  test('reaching the end of the list does not auto-load — paging is explicit', () => {
     inboxState = { ...baseInbox, items: [inboxRow('i1', '2026-10-20T12:00:00.000Z')], hasMore: true }
     render(createElement(ActivityFeed))
 
+    // Scrolling used to page on its own, which raced the footer button and —
+    // in Unreads mode — walked the whole history. Now only the button pages.
     fireEvent.click(screen.getByTestId('list-end'))
-    expect(inboxLoadMore).toHaveBeenCalledTimes(1)
+    expect(inboxLoadMore).not.toHaveBeenCalled()
+    expect(screen.getByText('Show older')).toBeTruthy()
+  })
+
+  test('the footer says the list is exhausted instead of just vanishing', () => {
+    inboxState = { ...baseInbox, items: [inboxRow('i1', '2026-10-20T12:00:00.000Z')], hasMore: false }
+    render(createElement(ActivityFeed))
+
+    expect(screen.queryByText('Show older')).toBeNull()
+    expect(screen.getByText("You're all caught up.")).toBeTruthy()
   })
 
   test('the footer offers older items, and pressing it pages', () => {
