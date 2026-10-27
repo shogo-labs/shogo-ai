@@ -123,6 +123,16 @@ function lastClosedPartIndex(entries: Entry[]): number {
   return boundary
 }
 
+/** A stable id for the turn's snapshot message, from its `data-turn-start` frame. */
+function snapshotMessageId(entries: Entry[]): string {
+  for (const entry of entries) {
+    if (!('chunk' in entry) || entry.chunk.type !== 'data-turn-start') continue
+    const turnId = (entry.chunk as { data?: { turnId?: unknown } }).data?.turnId
+    if (typeof turnId === 'string' && turnId) return `turn-${turnId}`
+  }
+  return `turn-snapshot-${crypto.randomUUID()}`
+}
+
 /**
  * Builds the replay bytes for `StreamBufferStore.createReplayStream`'s
  * `buildReplay`. Falls back to the plain compacted replay when no part has
@@ -138,6 +148,10 @@ export async function buildSnapshotReplay(frames: Uint8Array[]): Promise<Uint8Ar
   const prefix = entries.slice(0, boundary + 1)
   const message = await assembleMessage(prefix.flatMap((e) => ('chunk' in e ? [e.chunk] : [])))
   if (!message) return compacted
+  // `buffered-turn.ts` never writes a `start` chunk, so the assembled message
+  // has no id. The client folds the continuation into the snapshot by id; with
+  // an empty one it shows only the continuation — the turn's latest action.
+  if (!message.id) message.id = snapshotMessageId(entries)
 
   // Transient `data-*` chunks never reach `message.parts` — the client acts on
   // them in `onData` (process list, context usage, connectivity). They are

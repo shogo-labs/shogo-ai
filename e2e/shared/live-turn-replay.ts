@@ -86,7 +86,8 @@ export function liveTurnReplay({ stepFrames, answerLines }: LiveTurnReplayOption
       seq++
     }
   }
-  push({ type: "start", messageId: "msg_live" })
+  // No `start` frame: `buffered-turn.ts` never writes one, so a snapshot of a
+  // real turn has no message id from the stream (the 2.4.1 regression).
   push({ type: "data-turn-start", data: { turnId: TURN_ID, startedAt: Date.now() } })
   push({ type: "start-step" })
   for (let step = 0; frames.length < stepFrames; step++) {

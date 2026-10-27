@@ -8,6 +8,7 @@ import {
   foldSnapshotContinuation,
   isUnfinishedAssistant,
   withResumeReplayReset,
+  withSnapshotId,
 } from "../resume-replay-transport"
 
 function message(role: UIMessage["role"], parts: unknown[] = []): UIMessage {
@@ -296,6 +297,35 @@ describe("withResumeReplayReset message snapshot", () => {
     const out = await readAll(await wrap([snapshotChunk, ...rest], calls).reconnectToStream(request))
     expect(out).toEqual(rest)
     expect(calls).toEqual(["snapshot:m1"])
+  })
+
+  test("names an id-less snapshot after its turn, so the continuation folds into it", async () => {
+    // Runtimes before the 2.4.1 fix send the snapshot with `id: ""`.
+    const calls: string[] = []
+    const idless = {
+      ...snapshotChunk,
+      data: {
+        message: {
+          id: "",
+          role: "assistant",
+          parts: [{ type: "data-turn-start", data: { turnId: "t9" } }, { type: "text", text: "so far" }],
+        },
+      },
+    }
+    await readAll(await wrap([idless, ...rest], calls).reconnectToStream(request))
+    expect(calls).toEqual(["snapshot:turn-t9"])
+
+    const snapshot = withSnapshotId(idless.data.message as UIMessage)!
+    const continuation = { id: "sdk-generated", role: "assistant", parts: [{ type: "text", text: "latest action" }] } as UIMessage
+    const shown = foldSnapshotContinuation([message("user"), snapshot, continuation], snapshot.id)
+    expect(shown).toHaveLength(2)
+    expect(shown[1]!.parts.map((p: any) => p.text).filter(Boolean)).toEqual(["so far", "latest action"])
+  })
+
+  test("an id-less snapshot without a turn start still gets a non-empty id", () => {
+    const named = withSnapshotId({ id: "", role: "assistant", parts: [] } as UIMessage)!
+    expect(named.id).toMatch(/^turn-snapshot-/)
+    expect(withSnapshotId(snapshotMessage)).toBe(snapshotMessage)
   })
 
   test("falls back to the reset for a runtime that replays the stream", async () => {

@@ -30,7 +30,7 @@ const spawnUpdate = (i: number, text = `update ${i} `) => ({
  */
 function liveTurn(updates: number): Record<string, unknown>[] {
   return [
-    { type: 'start', messageId: 'm1' },
+    // No `start` chunk: the runtime never writes one (see resume-snapshot-display.integration.test.ts).
     { type: 'data-turn-start', data: { turnId: 't' } },
     { type: 'data-context-usage', data: { inputTokens: 1 }, transient: true },
     { type: 'start-step' },
@@ -53,7 +53,7 @@ function liveTurn(updates: number): Record<string, unknown>[] {
 }
 
 /** The closed work of `liveTurn`, as a prefix the mid-part cases build on. */
-const closedWork = () => liveTurn(0).slice(0, 14)
+const closedWork = () => liveTurn(0).slice(0, 13)
 
 /** Joined while the answer's text is still streaming. */
 const midTextDelta = () => [...closedWork(), { type: 'text-start', id: '0' }, ...deltas('text-delta', '0', 3, 'half')]
@@ -129,9 +129,15 @@ async function joinLikeClient(events: Record<string, any>[]) {
   return finalMessage(stream, snapshotOf(events)?.data.message)
 }
 
-/** The same message built the old way, chunk by chunk, from the raw buffered frames. */
-const fullReplayMessage = (chunks: Record<string, unknown>[]) =>
-  finalMessage(parseChunks(toStream(chunks.map(frame))))
+/**
+ * The same message built the old way, chunk by chunk, from the raw buffered
+ * frames. The stream carries no message id, so the snapshot names it after its
+ * turn (`data-turn-start` turnId `t`).
+ */
+const fullReplayMessage = async (chunks: Record<string, unknown>[]) => ({
+  ...(await finalMessage(parseChunks(toStream(chunks.map(frame)))))!,
+  id: 'turn-t',
+})
 
 describe('buildSnapshotReplay', () => {
   test('a live turn gets a snapshot and one sub-agent update, whatever N is', async () => {
@@ -191,7 +197,7 @@ describe('buildSnapshotReplay', () => {
   test('snapshot message holds the finished work (parts, tool call, reasoning)', async () => {
     const events = await readAll(toStream([await buildSnapshotReplay(liveTurn(50).map(frame))]))
     const parts = snapshotOf(events)!.data.message.parts as Array<Record<string, any>>
-    expect(snapshotOf(events)!.data.message.id).toBe('m1')
+    expect(snapshotOf(events)!.data.message.id).toBe('turn-t')
     expect(parts.some((p) => p.type === 'reasoning' && p.text.includes('think2'))).toBe(true)
     expect(parts.some((p) => p.type === 'text' && p.text.includes('answer2'))).toBe(true)
     expect(parts.some((p) => p.type === 'tool-exec' && p.toolCallId === 'c1' && p.state === 'output-available')).toBe(true)
@@ -206,14 +212,13 @@ describe('buildSnapshotReplay', () => {
 
   test('falls back to the compacted replay until a part closes', async () => {
     const frames = [
-      { type: 'start', messageId: 'm1' },
       { type: 'start-step' },
       { type: 'reasoning-start', id: 'r0' },
       ...deltas('reasoning-delta', 'r0', 20, 'think'),
     ].map(frame)
     const events = await readAll(toStream([await buildSnapshotReplay(frames)]))
     expect(events.map((e) => e.type)).not.toContain(MESSAGE_SNAPSHOT_EVENT_TYPE)
-    expect(events[0]!.type).toBe('start')
+    expect(events[0]!.type).toBe('start-step')
   })
 })
 
