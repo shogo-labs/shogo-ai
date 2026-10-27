@@ -207,8 +207,11 @@ Deploy` runs.
 `kubelet_extra_args` (SHO-136) are NOT live on any running node.** `node_metadata`
 is in the OKE pool's `lifecycle.ignore_changes`, so those flags only reach a
 node after it is recycled, and no pool has been recycled since they landed.
-`configz` on all four production-US nodes still reports `85/80`. What reclaims
-disk today is the `node-image-gc` DaemonSet
+Checked 2026-10-27 on all four production-US nodes and all three staging nodes:
+`/etc/kubernetes/kubelet-config.json` has no `imageGC*ThresholdPercent` key and
+the kubelet command line carries no `--image-gc-*` flag, so the kubelet
+defaults (**85/80**) are what actually apply. What reclaims disk today is the
+`node-image-gc` DaemonSet
 ([`k8s/base/node-image-gc.yaml`](../k8s/base/node-image-gc.yaml)), not the
 kubelet. Recycling the pools is what would make the flags real; that is a
 separate ops decision and out of scope for the SHO-233 fix.

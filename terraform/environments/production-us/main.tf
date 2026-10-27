@@ -208,10 +208,12 @@ module "us" {
   # remediation" has the procedure) — node_metadata is in the pool's
   # ignore_changes, so an apply alone does not reach running nodes.
   #
-  # NOT LIVE (checked 2026-10-27): that recycle has never run. `configz` on all
-  # four production-US nodes still reports GC 85/80, so the 70/60 below changes
-  # nothing yet and a node stuck between the 80% deploy gate and the 85% kubelet
-  # GC is reclaimed by nothing. What reclaims disk today is the node-image-gc
+  # NOT LIVE (checked 2026-10-27): that recycle has never run. The kubelet's
+  # effective config on all four production-US nodes has no imageGC thresholds
+  # (`/etc/kubernetes/kubelet-config.json` has no key, the command line has no
+  # flag), so the 85/80 defaults apply and the 70/60 below changes nothing yet.
+  # A node stuck between the 80% deploy gate and the 85% kubelet GC is therefore
+  # reclaimed by nothing. What reclaims disk today is the node-image-gc
   # DaemonSet (k8s/base/node-image-gc.yaml), which prunes superseded Shogo
   # digests at 65% on the nodes we already have. See terraform/README.md "Node
   # image store remediation".

@@ -170,10 +170,10 @@ module "eu" {
   # apply alone does not reach running nodes, the canary recycle does.
   #
   # NOT LIVE (checked 2026-10-27): that recycle has never run, so no EU node
-  # reports these thresholds in `configz` yet. What reclaims disk today is the
-  # node-image-gc DaemonSet (k8s/base/node-image-gc.yaml), which prunes
-  # superseded Shogo digests at 65% on the nodes we already have. See
-  # terraform/README.md "Node image store remediation".
+  # applies these thresholds yet. What reclaims disk today is the node-image-gc
+  # DaemonSet (k8s/base/node-image-gc.yaml), which prunes superseded Shogo
+  # digests at 65% on the nodes we already have. See terraform/README.md "Node
+  # image store remediation".
   kubelet_extra_args = "--image-gc-high-threshold=70 --image-gc-low-threshold=60"
 
   enable_workload_pool = false

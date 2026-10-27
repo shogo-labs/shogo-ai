@@ -10,9 +10,11 @@
 # `--image-gc-high-threshold=70 --image-gc-low-threshold=60` to
 # `kubelet_extra_args` for all three environments, but `node_metadata` is in
 # the OKE pool's `lifecycle.ignore_changes`, so those flags only reach a node
-# after a manual recycle — and no recycle has happened. `configz` on all four
-# production-US nodes still reports GC 85/80. This is the same reason
-# `k8s/base/inotify-tuner.yaml` exists, and it is built the same way.
+# after a manual recycle — and no recycle has happened. Checked 2026-10-27 on
+# all four production-US and all three staging nodes: no `imageGC*` key in
+# /etc/kubernetes/kubelet-config.json and no `--image-gc-*` flag on the kubelet
+# command line, so the 85/80 defaults are what actually apply. This is the same
+# reason `k8s/base/inotify-tuner.yaml` exists, and it is built the same way.
 #
 # The 2026-10-26 staging incident (SHO-233): node 10.0.24.140 held 193 GB of
 # images (50 images, 13 runtime + 12 api digests) on a 202 GB boot volume and
