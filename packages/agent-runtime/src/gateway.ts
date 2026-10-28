@@ -37,6 +37,8 @@ import {
   shouldContinuePlan,
 } from './plan-continuation'
 import { interruptedTurnResumePrompt, resumeMaxAgeMinutes } from '@shogo/shared-runtime/interrupted-turn'
+import { heartbeatSessionIdFor } from '@shogo/shared-runtime/heartbeat-session'
+import { formatHeartbeatModelLog, resolveHeartbeatModel } from './heartbeat-model'
 import { sweepExecCwdMarkers } from './exec-cwd'
 import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
@@ -2176,6 +2178,9 @@ export class AgentGateway {
     quietHours: { start: '', end: '', timezone: 'UTC' },
   }
 
+  /** Makes each tick's session id distinct within this process (SHO-178). */
+  private heartbeatTickSeq = 0
+
   /** Reload the cached schedule from the project config API (best effort). */
   async refreshHeartbeatSnapshot(): Promise<void> {
     const projectId = projectScopedId(this.projectId) ?? projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
@@ -2224,9 +2229,18 @@ export class AgentGateway {
     console.log('[AgentGateway] Running heartbeat...')
     this.emitLog('Running heartbeat...')
 
+    // A tick starts from an empty transcript (SHO-178). Every tick used to run
+    // in one shared `heartbeat` session, so in production a single turn key
+    // stayed open for ten days, re-sent its whole history every firing, and
+    // billed ~$467 in 24h. The per-tick id is namespaced by project so two
+    // attached projects can never read each other's history and analytics can
+    // attribute the spend to the project the tick was for (SHO-182).
+    const sessionId = heartbeatSessionIdFor(this.heartbeatTickProjectId(opts.projectId), this.nextHeartbeatTickId())
+
+    // What the tick used to get for free from the shared transcript.
     let pendingSection = ''
     if (this.pendingEvents.length > 0) {
-      pendingSection = `\n\n[Pending Events]\n${this.pendingEvents.join('\n')}`
+      pendingSection = this.pendingEvents.join('\n')
       this.pendingEvents = []
     }
 
@@ -2237,11 +2251,14 @@ export class AgentGateway {
         ? ` for project ${opts.projectId} (its files are under \`${opts.projectId}/\`)`
         : ''
 
-    const response = await this.agentTurn(
-      `[HEARTBEAT]\nYou are performing a scheduled heartbeat check${projectLine}. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}${pendingSection}`,
-      'heartbeat',
-      true
-    )
+    const response = await this.runHeartbeatTurn({
+      sessionId,
+      projectId: opts.projectId,
+      projectDir,
+      prompt:
+        `[HEARTBEAT]\nYou are performing a scheduled heartbeat check${projectLine}. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}` +
+        this.heartbeatStateBlock(projectDir, pendingSection),
+    })
 
     await this.hookEmitter.emit(
       HookEmitter.createEvent('heartbeat', 'tick', 'heartbeat', {
@@ -2276,6 +2293,131 @@ export class AgentGateway {
 
   async triggerHeartbeat(opts: { projectId?: string; projectDir?: string } = {}): Promise<string> {
     return this.heartbeatTick(opts)
+  }
+
+  /**
+   * Run the tick's turn on a session that exists only for this tick, then
+   * forget it. The model is pinned before the turn starts so the Auto router
+   * never sees the tick (SHO-178 Part 2), and the cleanup in `finally` keeps a
+   * per-tick id from turning every session-keyed map in this class into an
+   * unbounded one.
+   */
+  private async runHeartbeatTurn(input: {
+    sessionId: string
+    projectId?: string
+    projectDir: string
+    prompt: string
+  }): Promise<string> {
+    const agent = await this.heartbeatAgentModelSnapshot(input.projectId)
+    const choice = resolveHeartbeatModel({
+      agentModelName: agent?.modelName,
+      agentModelProvider: agent?.modelProvider,
+      runtimeModel: this.config.model,
+      economyTier: this.autoTierOverride?.economy,
+    })
+    const modelLog = formatHeartbeatModelLog(choice)
+    console.log(`${this.logPrefix} ${modelLog}`)
+    this.emitLog(modelLog)
+
+    const session = this.sessionManager.getOrCreate(input.sessionId)
+    session.modelOverride = choice.id
+    session.modelProvider = choice.provider
+    session.modelDisplayName = undefined
+    // Subagents and tool-driven turns this tick spawns infer the same provider.
+    rememberProviderHint(choice.id, choice.provider)
+
+    try {
+      return await this.agentTurn(input.prompt, input.sessionId, true)
+    } finally {
+      await this.disposeHeartbeatSession(input.sessionId)
+    }
+  }
+
+  /**
+   * The project a tick's session id names. Analytics attributes heartbeat spend
+   * by this segment (SHO-182), so it must be the project whose checklist ran —
+   * not the runtime's anchor when the tick was for an attached project.
+   */
+  private heartbeatTickProjectId(projectId?: string): string {
+    return (
+      projectScopedId(projectId) ??
+      projectScopedId(this.projectId) ??
+      projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID) ??
+      'runtime'
+    )
+  }
+
+  /** Monotonic within this process; sortable, and free of `:` so the id splits cleanly. */
+  private nextHeartbeatTickId(): string {
+    this.heartbeatTickSeq += 1
+    return `${Date.now().toString(36)}-${this.heartbeatTickSeq.toString(36)}`
+  }
+
+  /**
+   * The state a tick needs, spelled out instead of inherited from a transcript:
+   * what the last checks concluded, and anything that arrived since.
+   */
+  private heartbeatStateBlock(projectDir: string, pendingEvents: string): string {
+    let block = ''
+    const logTail = this.readHeartbeatLogTail(projectDir)
+    if (logTail) {
+      block += `\n\n## Recent heartbeat results\nYour own last checks, oldest first. Do not repeat work they already finished.\n${logTail}`
+    }
+    if (pendingEvents) {
+      block += `\n\n## Pending Events\n${pendingEvents}`
+    }
+    return block
+  }
+
+  /** A project's heartbeat log entries. `appendHeartbeatLog` already caps it at 20. */
+  private readHeartbeatLogTail(dir: string): string {
+    const logPath = join(dir, 'HEARTBEAT_LOG.md')
+    if (!existsSync(logPath)) return ''
+    try {
+      return readFileSync(logPath, 'utf-8')
+        .split('\n')
+        .filter((line) => line.startsWith('- ['))
+        .join('\n')
+    } catch {
+      return ''
+    }
+  }
+
+  /** `AgentConfig.modelName` for the project this tick is for, best effort. */
+  private async heartbeatAgentModelSnapshot(projectId?: string): Promise<AgentModelSnapshot | null> {
+    const id =
+      projectScopedId(projectId) ??
+      projectScopedId(this.projectId) ??
+      projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
+    if (!id) return null
+    try {
+      const res = await getProjectConfig(id, 3_000)
+      return res.ok ? (res.data?.agent as AgentModelSnapshot | null | undefined) ?? null : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Forget a finished tick's session and everything this class keys by it. A
+   * per-tick id is the point (SHO-178), so nothing may outlive the tick or the
+   * maps that used to hold one `heartbeat` entry grow by one entry per firing.
+   * SHO-137's keep-history behaviour is untouched — it governs real chat
+   * sessions, and a tick's transcript is never one.
+   */
+  private async disposeHeartbeatSession(sessionId: string): Promise<void> {
+    await this.sessionManager.deleteSession(sessionId)
+    this.sessionChatContexts.delete(sessionId)
+    this.contentReplacementStates.delete(sessionId)
+    this.sessionImageMaxDimensions.delete(sessionId)
+    this.turnCounters.delete(sessionId)
+    this.turnPrefixes.delete(sessionId)
+    this.turnReachable.delete(sessionId)
+    this.turnPause.delete(sessionId)
+    this.wakeStates.delete(sessionId)
+    this.shellCwd.delete(sessionId)
+    this.queueState.delete(sessionId)
+    this.disposeSessionState(sessionId)
   }
 
   queuePendingEvent(text: string): void {
