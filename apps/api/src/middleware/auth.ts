@@ -30,6 +30,7 @@
 import type { Context, Next } from "hono"
 import { auth } from "../auth"
 import { prisma } from "../lib/prisma"
+import { LOCAL_USER_HEADER } from "../lib/machine-identity"
 import { resolveApiKey } from "../routes/api-keys"
 import { verifyRuntimeToken } from "../lib/runtime-token"
 import { verifyWorkspaceRuntimeToken } from "../lib/workspace-runtime-token"
@@ -209,6 +210,18 @@ async function tunnelPrincipalId(cloudUserId: string): Promise<string> {
   }
 }
 
+function announceLocalUser(c: Context, userId: string): void {
+  const res = c.res
+  if (!res) return
+  try {
+    res.headers.set(LOCAL_USER_HEADER, userId)
+  } catch {
+    const headers = new Headers(res.headers)
+    headers.set(LOCAL_USER_HEADER, userId)
+    c.res = new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+  }
+}
+
 /**
  * Auth middleware that extracts session from Better Auth.
  * Sets c.get("auth") with user info for downstream handlers.
@@ -308,8 +321,9 @@ export async function authMiddleware(c: Context, next: Next) {
   //    - External requests can't reach this header without going through the tunnel
   const tunnelUserId = c.req.header("x-tunnel-auth-user-id")
   if (tunnelUserId) {
+    const userId = await tunnelPrincipalId(tunnelUserId)
     c.set("auth", {
-      userId: await tunnelPrincipalId(tunnelUserId),
+      userId,
       email: c.req.header("x-tunnel-auth-email") || undefined,
       name: c.req.header("x-tunnel-auth-name") || undefined,
       isAuthenticated: true,
@@ -317,6 +331,8 @@ export async function authMiddleware(c: Context, next: Next) {
       via: 'tunnel',
     })
     await next()
+    // The cloud swaps this id for the owner's cloud one in what it relays back.
+    if (userId !== tunnelUserId) announceLocalUser(c, userId)
     return
   }
 

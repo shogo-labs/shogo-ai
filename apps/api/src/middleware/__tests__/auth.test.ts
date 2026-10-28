@@ -320,6 +320,15 @@ describe('authMiddleware — runtime-token path', () => {
 })
 
 describe('authMiddleware — tunnel path', () => {
+  const previous = process.env.SHOGO_LOCAL_MODE
+  beforeEach(() => {
+    delete process.env.SHOGO_LOCAL_MODE
+  })
+  afterAll(() => {
+    if (previous === undefined) delete process.env.SHOGO_LOCAL_MODE
+    else process.env.SHOGO_LOCAL_MODE = previous
+  })
+
   it('sets auth from x-tunnel-auth-user-id with optional headers', async () => {
     const c = makeContext({
       headers: {
@@ -348,20 +357,17 @@ describe('authMiddleware — tunnel path', () => {
   })
 
   describe('on the desktop', () => {
-    const previous = process.env.SHOGO_LOCAL_MODE
-    beforeAll(() => {
+    beforeEach(() => {
       process.env.SHOGO_LOCAL_MODE = 'true'
     })
-    afterAll(() => {
-      if (previous === undefined) delete process.env.SHOGO_LOCAL_MODE
-      else process.env.SHOGO_LOCAL_MODE = previous
-    })
 
-    it("acts as the machine's local owner for a cloud account it has no user for", async () => {
+    it("acts as the machine's local owner for a cloud account it has no user for, and says so", async () => {
       const c = makeContext({ headers: { 'x-tunnel-auth-user-id': 'cloud-owner-a' } })
+      c.res = new Response('{}', { headers: { 'content-type': 'application/json' } })
       await authMiddleware(c, next)
       expect(c.get('auth').userId).toBe('local-owner')
       expect(c.get('auth').via).toBe('tunnel')
+      expect(c.res.headers.get('x-shogo-local-user-id')).toBe('local-owner')
     })
 
     it('keeps an id the desktop has a user for', async () => {

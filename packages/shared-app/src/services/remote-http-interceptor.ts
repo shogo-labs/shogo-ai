@@ -319,6 +319,13 @@ export function rewriteMachineWorkspaceBody<T>(body: T, localWorkspaceId: string
 }
 
 /**
+ * Sent with a read of a machine workspace's cloud copy: the machine workspace it
+ * is for. Kept in step with `MACHINE_WORKSPACE_HEADER` in the API's
+ * `lib/machine-identity`.
+ */
+export const MACHINE_WORKSPACE_HEADER = 'x-shogo-machine-workspace'
+
+/**
  * What a machine-workspace request may come back with, and what the UI should do
  * about it (SHO-185). The codes are the ones the cloud's machine routes emit; a
  * screen that maps them once cannot drift into showing "Machine is offline" for a
@@ -553,14 +560,30 @@ export function createRemoteAwareHttpClient(
               machineWorkspaceId: config.machineWorkspaceId,
               isRead: false,
             })
-          const cloudArgs = readsMachineRows ? [...args] : args
+          let cloudResult: any
           if (readsMachineRows) {
-            cloudArgs[0] = rewriteMachineWorkspacePath(
+            const copyPath = rewriteMachineWorkspacePath(
               rewriteMachineWorkspaceParam(originalPath, config.machineWorkspaceId!),
               config.machineWorkspaceId!,
             )
+            // Names the copy for the cloud, which then reads it as the machine's
+            // own account for you (the copy's rows carry the machine's user id,
+            // not your cloud one) and answers in your cloud id. A read by
+            // resource id (`/api/conversations/<id>/messages`) names no
+            // workspace otherwise.
+            const copyHeaders = { [MACHINE_WORKSPACE_HEADER]: config.machineWorkspaceId! }
+            if (prop === 'get') {
+              cloudResult = target.request(copyPath, { method: 'GET', searchParams: args[1], headers: copyHeaders })
+            } else {
+              const options = args[1] && typeof args[1] === 'object' ? args[1] : {}
+              cloudResult = (original as Function).call(target, copyPath, {
+                ...options,
+                headers: { ...(options.headers || {}), ...copyHeaders },
+              })
+            }
+          } else {
+            cloudResult = (original as Function).apply(target, args)
           }
-          const cloudResult = (original as Function).apply(target, cloudArgs)
           // A read of a machine workspace the cloud has no copy of comes back
           // `409 machine_copy_pending`. Read it from the machine instead of
           // showing "No access to this workspace" (SHO-241). One retry, and only

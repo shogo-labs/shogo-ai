@@ -15,6 +15,7 @@ import {
   rewriteMachineWorkspaceBody,
   rewriteMachineWorkspacePath,
   createRemoteAwareHttpClient,
+  MACHINE_WORKSPACE_HEADER,
 } from '../remote-http-interceptor'
 
 describe('shouldRouteToRemote', () => {
@@ -418,7 +419,7 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
       },
       patch: async () => ({ data: {} }),
       delete: async () => ({ data: {} }),
-      request: async () => ({ data: {} }),
+      request: async function (this: any, path: string) { return this.get(path) },
     } as any
 
     const proxy = createRemoteAwareHttpClient(http, () => ({
@@ -449,7 +450,7 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
       post: async () => ({ data: {} }),
       patch: async () => ({ data: {} }),
       delete: async () => ({ data: {} }),
-      request: async () => ({ data: {} }),
+      request: async function (this: any, path: string) { return this.get(path) },
     } as any
 
     const proxy = createRemoteAwareHttpClient(http, () => ({
@@ -474,7 +475,7 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
       },
       patch: async () => ({ data: {} }),
       delete: async () => ({ data: {} }),
-      request: async () => ({ data: {} }),
+      request: async function (this: any, path: string) { return this.get(path) },
     } as any
 
     const proxy = createRemoteAwareHttpClient(http, () => ({
@@ -506,22 +507,36 @@ describe('createRemoteAwareHttpClient: a cloud-copy read names the machine works
   // its activity — on screen under the machine's name.
   function proxied() {
     const calls: string[] = []
+    const named: Array<string | undefined> = []
     const http = {
       get: async (path: string) => {
         calls.push(path)
+        named.push(undefined)
         return { data: {} }
       },
       post: async () => ({ data: {} }),
       patch: async () => ({ data: {} }),
       delete: async () => ({ data: {} }),
-      request: async () => ({ data: {} }),
+      request: async (path: string, init?: { headers?: Record<string, string> }) => {
+        calls.push(path)
+        named.push(init?.headers?.[MACHINE_WORKSPACE_HEADER])
+        return { data: {} }
+      },
     } as any
     const proxy = createRemoteAwareHttpClient(http, () => ({
       remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1',
       machineWorkspaceId: 'lw-1',
     }))
-    return { proxy, calls }
+    return { proxy, calls, named }
   }
+
+  it('names the machine workspace on a copy read, so the cloud can read it as the machine owner', async () => {
+    const { proxy, named } = proxied()
+    await proxy.get('/api/workspaces/ws-cloud/conversations')
+    await proxy.get('/api/conversations/conv-1/messages')
+    await proxy.get('/api/billing/summary?workspaceId=ws-cloud')
+    expect(named).toEqual(['lw-1', 'lw-1', undefined])
+  })
 
   it('swaps the cloud id in the path and the query, and stays on the cloud', async () => {
     const { proxy, calls } = proxied()
