@@ -110,7 +110,13 @@ function scriptedExec(outputs: any[]): { tool: AgentTool; seen: any[] } {
   return { tool, seen }
 }
 
-function run(streamFn: StreamFn, tool: AgentTool) {
+/**
+ * The no-progress stop is off by default (round 2); every test in this file that
+ * expects a stop opts in at the historical threshold of 5 turns.
+ */
+const OPT_IN = { maxConsecutiveNoProgress: 5 } as const
+
+function run(streamFn: StreamFn, tool: AgentTool, loopDetection = OPT_IN) {
   return runAgentLoop({
     model: 'claude-sonnet-4-5',
     system: 'test',
@@ -119,6 +125,7 @@ function run(streamFn: StreamFn, tool: AgentTool) {
     tools: [tool],
     streamFn,
     maxIterations: 30,
+    loopDetection,
   })
 }
 
@@ -283,7 +290,8 @@ describe('SHO-235 AC 5 / AC 6 — what must not change', () => {
   test('the no-progress check is no longer reachable from recordAndCheck alone', () => {
     // A consumer that records calls but never closes a turn gets the per-call
     // detectors only — this is what moved, and it must not silently come back.
-    const d = new LoopDetector()
+    // Opted in, so the assertion means something even with the stop off by default.
+    const d = new LoopDetector({ maxConsecutiveNoProgress: 1 })
     for (let i = 0; i < 6; i++) {
       expect(d.recordAndCheck('exec', { command: `attempt ${i}` }, { exitCode: 7, stderr: 'Could not resolve host' }).loopDetected).toBe(false)
     }

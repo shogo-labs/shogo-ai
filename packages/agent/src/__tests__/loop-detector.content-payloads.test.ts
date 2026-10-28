@@ -57,7 +57,8 @@ describe('LoopDetector — successful payloads whose content mentions errors', (
   })
 
   test('structured and leading-text tool failures still trip the breaker', () => {
-    const d = new LoopDetector()
+    // Opted in: the no-progress stop is off by default.
+    const d = new LoopDetector({ maxConsecutiveNoProgress: 5 })
     const failures: Array<[string, unknown]> = [
       ['exec', { error: '{"error":"Tool exec not found"}' }],
       ['execute', '{"error":"Tool execute not found"}'],

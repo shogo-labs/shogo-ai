@@ -22,7 +22,9 @@
  *       (R=0 is the first request), and gap=ms to delay each continuation.
  *       same=1 sends the SAME read_file args every round (drives the loop
  *       detector); empty=1 sends read_file with path "" (drives the
- *       empty-argument guard). Both keep distinct tokens per round.
+ *       empty-argument guard). Both keep distinct tokens per round, and both
+ *       are stopped by the identical-call detector at 10 — the no-progress
+ *       breaker is off by default (SHO-235 round 2).
  *
  * Every token is `t<tag>w<NNNN>` so any view can be checked for gaps,
  * repeats and reordering just by parsing its text (see stream-probe.ts).

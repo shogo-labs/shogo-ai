@@ -27,7 +27,9 @@ refuses to run if the app lands on a port that another process holds.
   `tool` also takes `same=1` (the same arguments every round, to drive the loop
   detector), `empty=1` (a blank required argument, to drive the empty-argument guard)
   and `parallel=N` (N failing `read_file` calls in the first round, in one turn, to
-  prove one batch of failures is not N retries).
+  prove one batch of failures is not N retries). `same=1` and `empty=1` are both
+  stopped at **10** by the identical-call detector: the no-progress breaker is off
+  by default (SHO-235 round 2), so nothing stops a turn at 5 any more.
   Tokens look like `t<tag>w0001`, so any view can be checked for gaps, repeats and
   reordering. It records when every token was written and when the app hung up.
 - `stream-probe.ts`: samples the page every 40 ms and records which tokens are on

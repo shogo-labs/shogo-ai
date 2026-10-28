@@ -24,9 +24,12 @@ export interface LoopDetectorConfig {
   /**
    * Max consecutive *unproductive* turns before triggering the no-progress
    * breaker. A turn is unproductive only when every tool call it made failed,
-   * so one parallel batch of failures (one mistake) counts once. Catches the
-   * case where the agent thrashes at one unreachable goal with many *different*
-   * calls, so the identical/cycle heuristics never fire (default: 5).
+   * so one parallel batch of failures (one mistake) counts once.
+   *
+   * **0 (default) = off.** Nothing stops a turn for making no progress unless a
+   * caller opts in: `loopDetection: { maxConsecutiveNoProgress: 5 }`. When it is
+   * on, it catches an agent thrashing at one unreachable goal with many
+   * *different* calls, which the identical/cycle heuristics never see.
    */
   maxConsecutiveNoProgress: number
 }
@@ -52,7 +55,7 @@ const DEFAULT_CONFIG: LoopDetectorConfig = {
   maxIdenticalOutputs: 10,
   cycleWindowSize: 10,
   minCycleLength: 2,
-  maxConsecutiveNoProgress: 5,
+  maxConsecutiveNoProgress: 0,
 }
 
 export class LoopDetector {
@@ -144,9 +147,16 @@ export class LoopDetector {
    * Counted per turn, not per call: one turn that fires five failing calls in
    * parallel is a single mistake the model has not even been told about yet, so
    * it must not fill the window by itself.
+   *
+   * Off by default. `0` means off, and so does `Infinity` — the guard below has
+   * to come first, because `slice(-0)` is the whole array and would otherwise
+   * trip on the first failed turn.
    */
   private checkNoProgress(): LoopDetectorResult {
     const { maxConsecutiveNoProgress } = this.config
+    if (!Number.isFinite(maxConsecutiveNoProgress) || maxConsecutiveNoProgress <= 0) {
+      return { loopDetected: false }
+    }
     if (this.closedTurns.length < maxConsecutiveNoProgress) {
       return { loopDetected: false }
     }

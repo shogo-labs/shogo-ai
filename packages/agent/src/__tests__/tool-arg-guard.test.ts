@@ -333,11 +333,11 @@ describe('wrapToolsWithOrchestration — empty-argument guard', () => {
     // The reported failure mode: a model that keeps sending the empty call, one
     // per turn. The guard's error is an isError result, which agent-loop records
     // as `{ error }`, so the no-progress breaker still stops it — at 5 turns,
-    // before 10 identical calls.
+    // before 10 identical calls. Opted in: the stop is off by default.
     const { tool } = makeTool('exec', execSchema)
     const { tools } = wrapToolsWithOrchestration([tool])
     const exec = toolByName(tools, 'exec')
-    const detector = new LoopDetector()
+    const detector = new LoopDetector({ maxConsecutiveNoProgress: 5 })
 
     let last
     for (let i = 0; i < 5; i++) {

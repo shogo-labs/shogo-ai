@@ -14,9 +14,15 @@
 import { describe, test, expect } from 'bun:test'
 import { LoopDetector } from '../loop-detector'
 
+/**
+ * The no-progress stop is off by default (round 2). These tests opt into
+ * round 1's threshold so the turn-counting path keeps its coverage.
+ */
+const OPT_IN = { maxConsecutiveNoProgress: 5 }
+
 /** Five turns, one call each, all with the same output shape. */
 function tripsAfterFiveTurns(output: any): boolean {
-  const d = new LoopDetector()
+  const d = new LoopDetector(OPT_IN)
   let last
   for (let i = 0; i < 5; i++) {
     d.recordAndCheck('exec', { command: `attempt ${i}` }, output)
@@ -27,7 +33,7 @@ function tripsAfterFiveTurns(output: any): boolean {
 
 describe('LoopDetector — no-progress counts turns, not calls', () => {
   test('five failing calls in ONE turn do not stop it; four more failing turns do', () => {
-    const d = new LoopDetector()
+    const d = new LoopDetector(OPT_IN)
 
     // One mistake the model has not even been told about yet: five parallel
     // calls that all fail validation.
@@ -58,7 +64,7 @@ describe('LoopDetector — no-progress counts turns, not calls', () => {
   })
 
   test('a turn with one success among four failures resets the streak', () => {
-    const d = new LoopDetector()
+    const d = new LoopDetector(OPT_IN)
 
     for (let turn = 0; turn < 4; turn++) {
       d.recordAndCheck('exec', { command: `curl http://metrics.internal/${turn}` }, { exitCode: 7, stderr: 'Could not resolve host' })
@@ -80,7 +86,7 @@ describe('LoopDetector — no-progress counts turns, not calls', () => {
   })
 
   test('a turn that made no tool calls neither counts nor resets', () => {
-    const d = new LoopDetector()
+    const d = new LoopDetector(OPT_IN)
 
     for (let turn = 0; turn < 3; turn++) {
       d.recordAndCheck('exec', { command: `curl http://metrics.internal/${turn}` }, { exitCode: 7, stderr: 'Could not resolve host' })
@@ -123,7 +129,7 @@ describe('LoopDetector — ordinary shell exits are progress, not thrash', () =>
 
 describe('LoopDetector — replays of the stopped turns', () => {
   test('session 38c77ea0: grep + sed + three `| head` runs, one call per turn, no stop', () => {
-    const d = new LoopDetector()
+    const d = new LoopDetector(OPT_IN)
 
     // The ten calls the workspace agent made, in order.
     const calls: Array<{ name: string; input: Record<string, any>; output: any }> = [
@@ -149,7 +155,7 @@ describe('LoopDetector — replays of the stopped turns', () => {
   })
 
   test('#content batch: five parallel calls that all fail validation do not stop the turn', () => {
-    const d = new LoopDetector()
+    const d = new LoopDetector(OPT_IN)
 
     // work_item_update ×2, work_item_comment ×2, work_item_bulk_update — every
     // one used `key` instead of `item`.
@@ -175,6 +181,51 @@ describe('LoopDetector — replays of the stopped turns', () => {
   })
 })
 
+describe('LoopDetector — the no-progress stop is OFF by default (round 2)', () => {
+  test('20 fully failed turns never trip it with the default config', () => {
+    const d = new LoopDetector()
+
+    // Varied inputs and varied failures, so identical_calls / identical_outputs /
+    // cycle cannot fire either: only a no-progress heuristic could stop this.
+    for (let turn = 0; turn < 20; turn++) {
+      d.recordAndCheck(
+        'exec',
+        { command: `curl http://metrics.internal:${9000 + turn}/api/signups` },
+        { exitCode: 7, stdout: '', stderr: `Could not resolve host (attempt ${turn})` },
+      )
+      const check = d.recordTurnEnd()
+      expect(check.loopDetected).toBe(false)
+    }
+  })
+
+  test('0 and Infinity both mean off, and 0 does not trip on the first failed turn', () => {
+    for (const maxConsecutiveNoProgress of [0, Infinity]) {
+      const d = new LoopDetector({ maxConsecutiveNoProgress })
+
+      // The bug the guard prevents: `slice(-0)` is the whole array, so a naive
+      // threshold of 0 would report a loop on the very first closed turn.
+      d.recordAndCheck('exec', { command: 'curl http://x' }, { exitCode: 7, stderr: 'Could not resolve host' })
+      expect(d.recordTurnEnd().loopDetected).toBe(false)
+
+      for (let turn = 1; turn < 8; turn++) {
+        d.recordAndCheck('exec', { command: `curl http://x/${turn}` }, { exitCode: 7, stderr: 'Could not resolve host' })
+        expect(d.recordTurnEnd().loopDetected).toBe(false)
+      }
+    }
+  })
+
+  test('opting in with 5 is the only way to get the stop back', () => {
+    const d = new LoopDetector({ maxConsecutiveNoProgress: 5 })
+    let last
+    for (let turn = 0; turn < 5; turn++) {
+      d.recordAndCheck('exec', { command: `curl http://x/${turn}` }, { exitCode: 7, stderr: 'Could not resolve host' })
+      last = d.recordTurnEnd()
+    }
+    expect(last?.loopDetected).toBe(true)
+    expect(last?.reason).toBe('no_progress')
+  })
+})
+
 describe('LoopDetector — per-call detectors are unchanged', () => {
   test('identical_calls still fires at 10 inside one turn', () => {
     const d = new LoopDetector()
@@ -184,6 +235,30 @@ describe('LoopDetector — per-call detectors are unchanged', () => {
     }
     expect(last?.loopDetected).toBe(true)
     expect(last?.reason).toBe('identical_calls')
+  })
+
+  test('SHO-223 with the default config: 12 identical blank calls stop at 10 via identical_calls', () => {
+    // The empty-argument model used to be stopped at 5 by the no-progress
+    // breaker. That is off now, so the identical-call detector is what ends it —
+    // and it ends it at 10, not 12.
+    const d = new LoopDetector()
+    const guardError = { error: "read_file: required argument 'path' was empty" }
+
+    let last
+    let fired = 0
+    for (let turn = 0; turn < 12; turn++) {
+      last = d.recordAndCheck('read_file', { path: '' }, guardError)
+      const turnEnd = d.recordTurnEnd()
+      expect(turnEnd.loopDetected).toBe(false) // no_progress is off
+      if (last.loopDetected) {
+        fired = turn + 1
+        break
+      }
+    }
+
+    expect(fired).toBe(10)
+    expect(last?.reason).toBe('identical_calls')
+    expect(last?.pattern).toBe('read_file called 10 times with identical input')
   })
 
   test('the cycle detector still fires at the window size', () => {
@@ -203,7 +278,7 @@ describe('LoopDetector — per-call detectors are unchanged', () => {
   })
 
   test('reset clears the turn window as well as the call history', () => {
-    const d = new LoopDetector()
+    const d = new LoopDetector(OPT_IN)
     for (let turn = 0; turn < 4; turn++) {
       d.recordAndCheck('exec', { command: `curl http://x/${turn}` }, { exitCode: 7, stderr: 'Could not resolve host' })
       d.recordTurnEnd()

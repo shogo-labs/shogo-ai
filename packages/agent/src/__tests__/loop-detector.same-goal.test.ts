@@ -15,7 +15,9 @@ import { LoopDetector } from '../loop-detector'
 
 describe('LoopDetector — no-progress / same-goal heuristic', () => {
   test('varied tool calls that ALL fail on one goal are flagged as a loop', () => {
-    const d = new LoopDetector()
+    // The no-progress stop is off by default; this test opts in at the
+    // historical threshold of 5 consecutive unproductive turns.
+    const d = new LoopDetector({ maxConsecutiveNoProgress: 5 })
 
     // Six genuinely different attempts at the same unreachable endpoint, one per
     // turn. Every command differs and every error differs, so identical-call /
@@ -66,7 +68,8 @@ describe('LoopDetector — no-progress / same-goal heuristic', () => {
   test('regression guard: the identical-call detector still fires at 10', () => {
     const d = new LoopDetector()
     let last
-    // Successful outputs on purpose: 5 failing ones would trip no_progress first.
+    // Successful outputs on purpose: the identical-call detector is what this
+    // test guards, not the (default-off) no-progress heuristic.
     for (let i = 0; i < 10; i++) {
       last = d.recordAndCheck('exec', { command: 'curl http://x' }, { exitCode: 0, stdout: 'ok' })
     }

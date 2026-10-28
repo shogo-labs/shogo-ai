@@ -108,7 +108,11 @@ function failingReadTool(): { tool: AgentTool; calls: any[] } {
   return { tool, calls }
 }
 
-function run(streamFn: StreamFn, tool: AgentTool) {
+function run(
+  streamFn: StreamFn,
+  tool: AgentTool,
+  loopDetection?: { maxConsecutiveNoProgress: number },
+) {
   return runAgentLoop({
     model: 'claude-sonnet-4-5',
     system: 'test',
@@ -117,10 +121,14 @@ function run(streamFn: StreamFn, tool: AgentTool) {
     tools: [tool],
     streamFn,
     maxIterations: 20,
+    ...(loopDetection ? { loopDetection } : {}),
   })
 }
 
-describe('runAgentLoop — no_progress counts turns', () => {
+/** The no-progress stop is off by default (round 2); these tests opt in. */
+const OPT_IN = { maxConsecutiveNoProgress: 5 }
+
+describe('runAgentLoop — no_progress counts turns (opted in)', () => {
   test('five failing calls in ONE turn reach the model and the turn carries on', async () => {
     const { tool, calls } = failingReadTool()
     const result = await run(
@@ -129,6 +137,7 @@ describe('runAgentLoop — no_progress counts turns', () => {
         { text: 'those files do not exist' },
       ]),
       tool,
+      OPT_IN,
     )
 
     expect(result.loopBreak).toBeUndefined()
@@ -150,6 +159,7 @@ describe('runAgentLoop — no_progress counts turns', () => {
         { text: 'never reached' },
       ]),
       tool,
+      OPT_IN,
     )
 
     expect(result.loopBreak?.reason).toBe('no_progress')
@@ -181,9 +191,23 @@ describe('runAgentLoop — no_progress counts turns', () => {
         { text: 'found AGENTS.md' },
       ]),
       tool,
+      OPT_IN,
     )
 
     expect(result.loopBreak).toBeUndefined()
     expect(result.text).toBe('found AGENTS.md')
+  })
+
+  test('by default the same ten failing turns never stop the loop', async () => {
+    const { tool, calls } = failingReadTool()
+    const turns = Array.from({ length: 10 }, (_, i) => ({
+      calls: [{ name: 'read_file', arguments: { path: `missing-${i}.txt` } }],
+    }))
+    const result = await run(scriptedStream([...turns, { text: 'still trying' }]), tool)
+
+    expect(result.loopBreak).toBeUndefined()
+    expect(result.error).toBeUndefined()
+    expect(calls).toHaveLength(10)
+    expect(result.text).toBe('still trying')
   })
 })

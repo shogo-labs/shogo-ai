@@ -651,7 +651,10 @@ test('a lost required argument comes back as an error and the turn goes on', asy
   expect.soft(onScreen, 'the guard error is visible in the transcript').toBe(true)
 })
 
-test('a model stuck on empty arguments still stops, at 5 (no progress)', async () => {
+test('a model stuck on empty arguments stops at 10 (identical calls), not 5 (no progress)', async () => {
+  // SHO-235 round 2: the no-progress stop is off by default, so the
+  // empty-argument model is no longer stopped at 5. What ends it is the
+  // identical-call detector, because every round sends the same blank call.
   const tag = 'empty5'
   const rounds = 12
   const total = 130
@@ -661,12 +664,16 @@ test('a model stuck on empty arguments still stops, at 5 (no progress)', async (
   await waitIdle(h.page, 180_000)
 
   const roundsSeen = toolRounds(tag)
-  const note = await pageShows(h.page, 'every tool call failed')
-  writeReport('empty-argument-no-progress', { ...roundsSeen, note })
+  const stuck = await pageShows(h.page, 'seemed to be stuck')
+  const named = await pageShows(h.page, 'identical input')
+  const noProgress = await pageShows(h.page, 'every tool call failed')
+  writeReport('empty-argument-no-progress', { ...roundsSeen, stuck, named, noProgress })
 
-  expect.soft(roundsSeen.calls, 'empty calls before the no-progress stop').toBe(5)
-  expect.soft(roundsSeen.requests.length, 'model requests (stops before 10)').toBe(5)
-  expect.soft(note, 'the no-progress note is in the transcript').toBe(true)
+  expect.soft(roundsSeen.calls, 'empty calls before the identical-call stop').toBe(10)
+  expect.soft(roundsSeen.requests.length, 'model requests (no 11th round after the stop)').toBe(10)
+  expect.soft(stuck, 'the stuck note is in the transcript').toBe(true)
+  expect.soft(named, 'the note names the pattern (identical input)').toBe(true)
+  expect.soft(noProgress, 'the no-progress note is gone').toBe(false)
 })
 
 test('five failing tool calls in ONE turn do not stop it', async () => {
