@@ -14,6 +14,8 @@ import * as realFilePreview from "../../project/panels/ide/FilePreview"
 
 const readFile = mock(async (_path: string): Promise<string> => "")
 const readFileBlob = mock(async (_path: string): Promise<Blob> => new Blob(["x"]))
+/** Every `baseUrl` the viewer built a client for, in order. */
+const clientBases: string[] = []
 
 // The shared mock passes `onPress` through to a <button>, where React ignores it.
 // Forward it as `onClick` so the close button can be clicked in jsdom-style tests.
@@ -25,6 +27,9 @@ const Pressable = ({ onPress, children, ...rest }: Record<string, unknown> & { o
 mock.module("react-native", () => createReactNativeMock({ Pressable: Pressable as never }))
 mock.module("@shogo-ai/sdk/agent", () => ({
   AgentClient: class {
+    constructor(options: { baseUrl?: string } = {}) {
+      if (options.baseUrl) clientBases.push(options.baseUrl)
+    }
     readFile(path: string) {
       return readFile(path)
     }
@@ -33,6 +38,7 @@ mock.module("@shogo-ai/sdk/agent", () => ({
     }
   },
 }))
+mock.module("../../../lib/api-url", () => ({ API_URL: "https://api.example" }))
 mock.module("../../../lib/agent-fetch", () => ({ agentFetch: () => Promise.reject(new Error("unused")) }))
 mock.module("../../../contexts/theme", () => ({ useResolvedTheme: () => "dark" }))
 mock.module("expo-clipboard", () => ({ setStringAsync: async () => {} }))
@@ -90,6 +96,7 @@ function byAccessibilityLabel(label: string): HTMLElement | null {
 beforeEach(() => {
   readFile.mockClear()
   readFileBlob.mockClear()
+  clientBases.length = 0
   readFile.mockImplementation(async () => "")
   readFileBlob.mockImplementation(async () => new Blob(["x"]))
   revoked.length = 0
@@ -106,6 +113,25 @@ afterEach(() => {
 function open(path: string, onClose = () => {}) {
   return render(
     <WorkspaceFileViewer agentUrl="https://agent.example" path={path} nonce={1} onClose={onClose} />,
+  )
+}
+
+/** A file the workspace agent wrote in another project (SHO-247). */
+function openInProject(
+  path: string,
+  project: { id: string; name?: string },
+  relayBase?: string | null,
+) {
+  return render(
+    <WorkspaceFileViewer
+      agentUrl="https://agent.example"
+      path={path}
+      projectId={project.id}
+      projectName={project.name ?? null}
+      relayBase={relayBase ?? null}
+      nonce={1}
+      onClose={() => {}}
+    />,
   )
 }
 
@@ -211,6 +237,64 @@ describe("WorkspaceFileViewer", () => {
     const missing = await findByTestId("workspace-file-missing")
     expect(missing.textContent).toContain("File not found")
     expect(missing.textContent).toContain("gone/notes.md")
+    expect(missing.textContent).toContain("Looked in the workspace folder")
+  })
+
+  test("reads a file in another project from that project's own runtime", async () => {
+    // The workspace runtime does not have a project that is not mounted.
+    readFile.mockImplementation(async (path: string) => {
+      if (path.startsWith("d80288dd-aac3-41ed-bc9d-6ee251c44374/")) {
+        throw new Error("Agent readFile 404: not found")
+      }
+      return "# Sealed marketplace"
+    })
+    openInProject("plans/sealed.md", { id: "d80288dd-aac3-41ed-bc9d-6ee251c44374", name: "Shogo Planner" })
+
+    await screen.findByTestId("markdown-body")
+    expect(clientBases.at(-1)).toBe(
+      "https://api.example/api/projects/d80288dd-aac3-41ed-bc9d-6ee251c44374/agent-proxy",
+    )
+    // The path is that project's own, so it is what the project runtime reads.
+    expect(readFile).toHaveBeenLastCalledWith("plans/sealed.md")
+  })
+
+  test("a mounted project's file still comes from the workspace runtime", async () => {
+    // A mounted project is a folder under the workspace's merged root, so
+    // `<projectId>/<path>` is served there — unchanged behaviour (SHO-247).
+    readFile.mockImplementation(async () => "# Mounted plan")
+    openInProject("plans/mounted.md", { id: "proj-1", name: "Shogo Planner" })
+
+    await screen.findByTestId("markdown-body")
+    expect(readFile).toHaveBeenCalledTimes(1)
+    expect(readFile).toHaveBeenCalledWith("proj-1/plans/mounted.md")
+    expect(clientBases).toEqual(["https://agent.example"])
+  })
+
+  test("a paired desktop's project is read through the machine relay", async () => {
+    readFile.mockImplementation(async (path: string) => {
+      if (path.startsWith("proj-1/")) throw new Error("Agent readFile 404: not found")
+      return "# Sealed marketplace"
+    })
+    openInProject(
+      "plans/sealed.md",
+      { id: "proj-1" },
+      "https://api.example/api/machines/inst-1/w/lw-1",
+    )
+
+    await screen.findByTestId("markdown-body")
+    expect(clientBases.at(-1)).toBe(
+      "https://api.example/api/machines/inst-1/w/lw-1/api/projects/proj-1/agent-proxy",
+    )
+  })
+
+  test("the not-found message names the project it looked in", async () => {
+    readFile.mockImplementation(async () => {
+      throw new Error("Agent readFile 404: not found")
+    })
+    openInProject("plans/sealed.md", { id: "proj-1", name: "Shogo Planner" })
+
+    const missing = await findByTestId("workspace-file-missing")
+    expect(missing.textContent).toContain("Looked in Shogo Planner")
   })
 
   test("shows the error message for other failures", async () => {

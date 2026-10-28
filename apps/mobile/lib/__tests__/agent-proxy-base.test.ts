@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from "bun:test";
-import { agentProxyBase } from "../agent-proxy-base";
+import { agentProxyBase, projectAgentProxyBase } from "../agent-proxy-base";
 
 describe("agentProxyBase", () => {
   test("prefers an explicit local runtime", () => {
@@ -81,5 +81,29 @@ describe("agentProxyBase", () => {
 
   test("no runtime to talk to", () => {
     expect(agentProxyBase({ apiUrl: "https://shogo.example" })).toBeNull();
+  });
+});
+
+describe("projectAgentProxyBase", () => {
+  test("reaches another project of the workspace", () => {
+    expect(
+      projectAgentProxyBase({ projectId: "proj_1", apiUrl: "https://shogo.example/" }),
+    ).toBe("https://shogo.example/api/projects/proj_1/agent-proxy");
+  });
+
+  test("a machine's workspace reaches the project on that machine", () => {
+    expect(
+      projectAgentProxyBase({
+        projectId: "proj_1",
+        relayBase: "https://shogo.example/api/machines/inst-1/w/lw-1",
+        apiUrl: "https://shogo.example",
+      }),
+    ).toBe("https://shogo.example/api/machines/inst-1/w/lw-1/api/projects/proj_1/agent-proxy");
+  });
+
+  test("no project, or no origin, means no URL", () => {
+    expect(projectAgentProxyBase({ projectId: null, apiUrl: "https://shogo.example" })).toBeNull();
+    expect(projectAgentProxyBase({ projectId: "  ", apiUrl: "https://shogo.example" })).toBeNull();
+    expect(projectAgentProxyBase({ projectId: "proj_1", apiUrl: "" })).toBeNull();
   });
 });

@@ -555,6 +555,12 @@ export interface ChatPanelProps {
    */
   onOpenFilePath?: (path: string) => void
   /**
+   * Agent base URL for another project of this workspace, so a file the agent
+   * wrote there with `project: "<name>"` can be shown as a chip (SHO-247).
+   * Omit when this chat cannot reach other projects' runtimes.
+   */
+  projectAgentUrl?: (projectId: string) => string | null
+  /**
    * Shows another project (or one of its chats) beside this chat. Only set by
    * hosts with room for a side pane; otherwise cards navigate to the project.
    */
@@ -1016,6 +1022,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onOpenPlan,
   onOpenFile,
   onOpenFilePath,
+  projectAgentUrl,
   onOpenProjectPane,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
@@ -1078,6 +1085,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
       .loadAll(workspaceProjectFilter(workspaceId))
       .catch(() => {})
   }, [projectCollection, workspaceId])
+  // A turn recorded before a remote file result named its project only carries
+  // the project's *name*, so the chat resolves it against this list (SHO-247).
+  const resolveProjectRef = useCallback(
+    (ref: string) => {
+      const trimmed = ref.trim()
+      if (!trimmed) return null
+      const all = projectCollection.all as Array<{ id?: string; name?: string }>
+      const byId = all.find((project) => project.id === trimmed)
+      if (byId?.id) return byId.id
+      const lowered = trimmed.toLowerCase()
+      const byName = all.find(
+        (project) => (project.name ?? "").trim().toLowerCase() === lowered,
+      )
+      return byName?.id ?? null
+    },
+    [projectCollection],
+  )
   // The current project's workspace: prefer the workspace-scope prop, else
   // recover it from the loaded collection so we only offer true siblings.
   const currentWorkspaceId =
@@ -8017,6 +8041,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     resolvedAgentUrl,
     projectId ?? focusedProjectId ?? null,
     isStreaming,
+    { projectAgentUrl },
   )
 
   const contextValue = useMemo<ChatContextValue>(
@@ -8038,6 +8063,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       openPlan: onOpenPlan,
       openFile,
       fileExists,
+      resolveProjectRef,
       workspaceId: workspaceId ?? null,
       openProjectPane: onOpenProjectPane,
       openTaskThread,
@@ -8061,6 +8087,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       onOpenPlan,
       openFile,
       fileExists,
+      resolveProjectRef,
       workspaceId,
       onOpenProjectPane,
       openTaskThread,

@@ -40,3 +40,24 @@ export function agentProxyBase(opts: {
   if (opts.workspaceId) return `${apiUrl}/api/workspaces/${opts.workspaceId}/agent-proxy`
   return null
 }
+
+/**
+ * Another project's runtime, reached from a chat that belongs to the workspace
+ * rather than to that project — a file the workspace agent wrote there with
+ * `project: "<name>"`, for one (SHO-247).
+ *
+ * `relayBase` is a paired desktop's relay prefix when the workspace lives on
+ * that machine, so the call lands on the runtime that owns the files.
+ */
+export function projectAgentProxyBase(opts: {
+  projectId: string | null | undefined
+  /** `${apiUrl}/api/machines/<id>/w/<localId>` when a machine owns the workspace. */
+  relayBase?: string | null
+  apiUrl: string
+}): string | null {
+  const projectId = opts.projectId?.trim()
+  if (!projectId) return null
+  const origin = (opts.relayBase ?? opts.apiUrl).replace(/\/+$/, "")
+  if (!origin) return null
+  return `${origin}/api/projects/${projectId}/agent-proxy`
+}

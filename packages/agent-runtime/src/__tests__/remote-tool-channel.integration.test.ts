@@ -127,6 +127,64 @@ describe('remote tool routing (unit)', () => {
     }
   })
 
+  test('a remote file result says which project it ran in; a local result is unchanged', async () => {
+    const saved = snapshotEnv()
+    const originalFetch = globalThis.fetch
+    const originalSearchFlag = process.env.SHOGO_SEARCH_ENABLED
+    const dir = mkdtempSync(join('/tmp', 'shogo-remote-chatpath-'))
+    const remoteDetails = { path: 'plans/x.md', bytes: 12 }
+    try {
+      process.env.PROJECT_ID = PROJECT_A
+      process.env.WORKSPACE_ID = WORKSPACE_ID
+      process.env.SHOGO_API_URL = 'http://api.test'
+      process.env.SHOGO_SEARCH_ENABLED = '1'
+      delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+      resetRemoteTargetCache()
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith('/projects/graph')) return Response.json({ projects: GRAPH })
+        if (url.includes('/remote-tool')) {
+          const body = JSON.parse(String(init?.body ?? '{}')) as { tool?: string }
+          const details =
+            body.tool === 'search'
+              ? { query: 'plan', results: [{ path: 'plans/x.md', chunk: 'body', score: 0.9 }], count: 1 }
+              : remoteDetails
+          return Response.json({
+            ok: true,
+            result: { content: [{ type: 'text', text: JSON.stringify(details, null, 2) }], details },
+          })
+        }
+        return Response.json({ ok: false, error: 'unexpected call' }, { status: 500 })
+      }) as typeof fetch
+
+      const tools = createTools(toolCtx(dir))
+      const write = toolNamed(tools, 'write_file')
+      const search = toolNamed(tools, 'search')
+
+      const remote = await write.execute('w1', { path: 'plans/x.md', content: 'x', project: 'Beta' })
+      expect((remote.details as any).project).toEqual({ id: PROJECT_B, name: 'Beta' })
+      expect((remote.details as any).chatPath).toBe(`${PROJECT_B}/plans/x.md`)
+      // The model reads `content`, not `details`, so the path it quotes is there too.
+      expect(JSON.stringify(remote.content)).toContain(`${PROJECT_B}/plans/x.md`)
+
+      const hits = await search.execute('s1', { query: 'plan', project: PROJECT_B })
+      expect((hits.details as any).project).toEqual({ id: PROJECT_B, name: 'Beta' })
+      expect((hits.details as any).results[0].chatPath).toBe(`${PROJECT_B}/plans/x.md`)
+
+      const local = await write.execute('w2', { path: 'local.md', content: 'y' })
+      expect((local.details as any).project).toBeUndefined()
+      expect((local.details as any).chatPath).toBeUndefined()
+      expect(readFileSync(join(dir, 'local.md'), 'utf-8')).toBe('y')
+    } finally {
+      globalThis.fetch = originalFetch
+      if (originalSearchFlag === undefined) delete process.env.SHOGO_SEARCH_ENABLED
+      else process.env.SHOGO_SEARCH_ENABLED = originalSearchFlag
+      restoreEnv(saved)
+      resetRemoteTargetCache()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('stopping the turn cancels an in-flight remote call', async () => {
     const saved = snapshotEnv()
     const originalFetch = globalThis.fetch

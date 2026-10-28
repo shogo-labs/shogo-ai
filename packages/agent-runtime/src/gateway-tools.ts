@@ -798,7 +798,9 @@ function createUnmountProjectTool(ctx: ToolContext): AgentTool {
 // ---------------------------------------------------------------------------
 
 const REMOTE_PROJECT_PARAM_DESCRIPTION =
-  'Run this tool in another project of this workspace (project id or name). Omit for the current project.'
+  'Run this tool in another project of this workspace (project id or name). Omit for the current project. ' +
+  'A file tool that ran in another project answers with `project` and `chatPath` (`<projectId>/<path>`); ' +
+  'when you mention that file in a reply, write its `chatPath`, not the bare path.'
 
 type RemoteTarget = { local: true } | { local: false; id: string; name: string } | { error: string; code: string }
 
@@ -902,6 +904,107 @@ function remoteFailure(err: unknown, project: { id: string; name: string }): Age
 }
 
 /**
+ * File tools whose result names one file the caller may want to open. Only
+ * these are in `REMOTE_TOOL_ALLOWLIST`; `share_file` is not remotable, so its
+ * result never needs placing.
+ */
+const REMOTE_FILE_PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'delete_file'])
+
+/**
+ * The fields that say which project a remote file result belongs to.
+ *
+ * A remote call answers with the target project's own relative path, so the
+ * caller reads `plans/x.md` and quotes it — which resolves nowhere in the
+ * runtime that made the call, so the chat renders no chip and the file viewer
+ * 404s (SHO-247). `chatPath` is that path prefixed with the project it lives
+ * in, which the chat can open. Result fields only: no new tool, no new
+ * parameter.
+ */
+function remoteProjectFileFields(
+  tool: string,
+  args: Record<string, unknown>,
+  details: Record<string, any>,
+  project: { id: string; name: string },
+): Record<string, any> | null {
+  const chatPath = (path: string) => `${project.id}/${path.replace(/^\/+/, '')}`
+  if (tool === 'search') {
+    const hits = Array.isArray(details.results) ? details.results : []
+    if (hits.length === 0) return null
+    return {
+      project,
+      results: hits.map((hit) =>
+        hit && typeof hit === 'object' && typeof hit.path === 'string'
+          ? { ...hit, chatPath: chatPath(hit.path) }
+          : hit,
+      ),
+    }
+  }
+  if (!REMOTE_FILE_PATH_TOOLS.has(tool)) return null
+  const path =
+    typeof details.path === 'string'
+      ? details.path
+      : typeof args.path === 'string'
+        ? args.path
+        : typeof args.filepath === 'string'
+          ? args.filepath
+          : null
+  if (!path) return null
+  return { project, chatPath: chatPath(path) }
+}
+
+/**
+ * Re-serialize the text part that carried `before`, so the model reads the
+ * added fields too — it sees `content`, not `details`. An image read carries
+ * the JSON as its last text part; anything we cannot find is appended.
+ */
+function withAnnotatedText(
+  content: AgentToolResult<any>['content'],
+  before: Record<string, any>,
+  after: Record<string, any>,
+  extra: Record<string, any>,
+): AgentToolResult<any>['content'] {
+  const parts = Array.isArray(content) ? [...content] : []
+  const serialized = JSON.stringify(before)
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index] as { type?: string; text?: unknown }
+    if (part?.type !== 'text' || typeof part.text !== 'string') continue
+    try {
+      if (JSON.stringify(JSON.parse(part.text)) !== serialized) continue
+    } catch {
+      continue
+    }
+    parts[index] = { ...part, text: JSON.stringify(after, null, 2) } as (typeof parts)[number]
+    return parts
+  }
+  parts.push({ type: 'text', text: JSON.stringify(extra, null, 2) } as (typeof parts)[number])
+  return parts
+}
+
+/**
+ * A remote file result, repeated with the project it ran in. Every other
+ * result — a failed call, exec, an unrecognised shape — comes back untouched.
+ */
+function withRemoteProjectResult(
+  tool: string,
+  args: Record<string, unknown>,
+  result: AgentToolResult<any>,
+  project: { id: string; name: string },
+): AgentToolResult<any> {
+  const details = result?.details
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return result
+  const record = details as Record<string, any>
+  if (record.error) return result
+  const extra = remoteProjectFileFields(tool, args, record, project)
+  if (!extra) return result
+  const annotated = { ...record, ...extra }
+  return {
+    ...result,
+    content: withAnnotatedText(result.content, record, annotated, extra),
+    details: annotated,
+  }
+}
+
+/**
  * Add the optional `project` parameter to a remotable tool. Without it the
  * tool runs exactly as before; with another project it runs in that
  * project's own runtime and returns that runtime's result.
@@ -925,7 +1028,11 @@ export function withRemoteProject(tool: AgentTool, ctx: ToolContext): AgentTool 
       if (target.local) return tool.execute(toolCallId, args as any, signal, onUpdate)
       try {
         const result = await callRemoteTool(target.id, tool.name, args, signal)
-        return tool.name === 'exec' ? mirrorRemoteExecTask(ctx, target, args, result) : result
+        const annotated = withRemoteProjectResult(tool.name, args, result, {
+          id: target.id,
+          name: target.name,
+        })
+        return tool.name === 'exec' ? mirrorRemoteExecTask(ctx, target, args, annotated) : annotated
       } catch (err) {
         return remoteFailure(err, { id: target.id, name: target.name })
       }
