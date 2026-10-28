@@ -216,12 +216,17 @@ describe('workspace tools talk to a real API with a real project id', () => {
     writeFileSync(join(dir, 'report.pdf'), 'pdf')
     const ctx = workspace(dir)
     mode = 'share'
-    // `report.pdf` sits at the merged root, outside every mounted project, so
-    // only the workspace route can serve it — a project route reads the same
-    // path from the project root (SHO-67).
+    // `report.pdf` sits at the anchored runtime's working folder — the merged
+    // root — outside every mount, so it exists only there and the anchor's own
+    // runtime serves it. The link is minted for the anchor project with the
+    // merged-root-relative path; a workspace link read a root that does not
+    // hold it (SHO-242). `publish` below uses the same anchor id.
     const shared = await tool(ctx, 'share_file').execute('t', { path: 'report.pdf' })
     expect(shared.details.url).toBe('https://files.test/report')
-    expect(hits.some((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')).toBe(true)
+    expect(shared.details.projectId).toBe('proj-anchor')
+    expect(shared.details.path).toBe('report.pdf')
+    expect(hits.some((h) => h.url === '/api/internal/projects/proj-anchor/shared-files')).toBe(true)
+    expect(hits.some((h) => h.url === '/api/internal/workspaces/ws-int/shared-files')).toBe(false)
     expect(hits.some((h) => h.url.includes('/projects/ws:'))).toBe(false)
 
     const timeouts: number[] = []
