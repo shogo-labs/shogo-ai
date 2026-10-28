@@ -67,6 +67,7 @@ test.describe("Team chat thread pane: closing a thread opened from a running age
   let seed: TeamNavSeed
   let seeder: Page
   let rootId: string
+  let settledReplyId: string
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(180_000)
@@ -80,6 +81,24 @@ test.describe("Team chat thread pane: closing a thread opened from a running age
     const list = await api(seeder, "GET", `/api/conversations/${seed.channelId}/messages`)
     rootId = (list.json?.messages ?? []).find((m: any) => !m.threadRootId && m.text === rootText)?.id
     expect(rootId, "seeded thread root message").toBeTruthy()
+
+    // A thread reply that is already settled, for the "channel left pointing at a
+    // thread reply" case: it needs no agent run, so no shard can outlive it.
+    const secondRootText = `close-thread second root ${seed.suffix}`
+    await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, { text: secondRootText })
+    const withSecond = await api(seeder, "GET", `/api/conversations/${seed.channelId}/messages`)
+    const secondRootId = (withSecond.json?.messages ?? []).find(
+      (m: any) => !m.threadRootId && m.text === secondRootText,
+    )?.id
+    expect(secondRootId, "seeded second thread root").toBeTruthy()
+    const settledText = `settled thread reply ${seed.suffix}`
+    await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, {
+      text: settledText,
+      threadRootId: secondRootId,
+    })
+    const secondThread = await api(seeder, "GET", `/api/conversations/${seed.channelId}/messages?threadRootId=${secondRootId}`)
+    settledReplyId = (secondThread.json?.messages ?? []).find((m: any) => m.text === settledText)?.id
+    expect(settledReplyId, "seeded settled thread reply").toBeTruthy()
   })
 
   test.afterAll(async () => {
@@ -100,8 +119,10 @@ test.describe("Team chat thread pane: closing a thread opened from a running age
    */
   async function startStreamingReply(): Promise<string> {
     const reply = `Reading the build logs now: three flakes, all from the same checkout timeout (${seed.suffix}).`
-    // 2000ms per streamed chunk keeps the run open for the length of the test.
-    writeScript(seed, 2000, { [seed.idleAgent]: [{ reply }] })
+    // The scripted runner emits two chunks with `delayMs` before each, so a run
+    // lasts about 2 × delayMs. It has to outlive a slow shard's page load, or the
+    // run is done by the time the thread renders and the dock row never appears.
+    writeScript(seed, 60_000, { [seed.idleAgent]: [{ reply }] })
     const mention = `<@a:p:${seed.idleAgentProjectId}> read the build logs`
     await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, { text: mention, threadRootId: rootId })
 
@@ -122,6 +143,19 @@ test.describe("Team chat thread pane: closing a thread opened from a running age
     return replyId!
   }
 
+  /** The run is the point of the link: if it ended, the press is no longer the case under test. */
+  async function expectStillRunning(replyId: string) {
+    await expect
+      .poll(
+        async () => {
+          const thread = await api(seeder, "GET", `/api/conversations/${seed.channelId}/messages?threadRootId=${rootId}`)
+          return (thread.json?.messages ?? []).find((m: any) => m.id === replyId)?.agentStatus
+        },
+        { message: "the scripted run ended before the press", timeout: 5_000, intervals: [250] },
+      )
+      .toBe("running")
+  }
+
   test("the X closes it and the pane stays closed", async ({ page }) => {
     test.setTimeout(180_000)
     const replyId = await startStreamingReply()
@@ -131,6 +165,7 @@ test.describe("Team chat thread pane: closing a thread opened from a running age
     await expect(closeButton(page)).toBeVisible({ timeout: 60_000 })
     await expect(page.getByLabel(`Jump to ${seed.idleAgent}'s reply`)).toBeVisible({ timeout: 30_000 })
 
+    await expectStillRunning(replyId)
     await watchForReopen(page)
     await closeButton(page).click()
 
@@ -143,10 +178,9 @@ test.describe("Team chat thread pane: closing a thread opened from a running age
 
   test("a channel left pointing at a thread reply does not open the thread by itself", async ({ page }) => {
     test.setTimeout(180_000)
-    const replyId = await startStreamingReply()
 
     // What `router.back()` lands on when the thread was pushed on top of a running-agent link.
-    await page.goto(`/c/${seed.channelId}?msg=${replyId}`)
+    await page.goto(`/c/${seed.channelId}?msg=${settledReplyId}`)
     await expect(page.getByText(`close-thread root ${seed.suffix}`, { exact: false }).first()).toBeVisible({ timeout: 60_000 })
     await page.waitForTimeout(2_500)
 
