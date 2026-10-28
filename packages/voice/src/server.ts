@@ -1103,6 +1103,15 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     }
 
     const raw = await readJson(req)
+    if (raw && typeof raw === 'object' && (raw as { provider?: unknown }).provider === 'google') {
+      return json(
+        {
+          error: 'provider_unavailable',
+          detail: 'Lyria music runs through the Shogo API; this BYO handler only has an ElevenLabs key',
+        },
+        400,
+      )
+    }
     const parsed = parseMusicBody(raw)
     if ('error' in parsed) return json({ error: parsed.error }, 400)
 
@@ -1193,6 +1202,16 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
       }
 
       if (op.call === 'composeMusic') {
+        if (fields.provider === 'google') {
+          return json(
+            {
+              error: 'provider_unavailable',
+              detail:
+                'Lyria music runs through the Shogo API; this BYO handler only has an ElevenLabs key',
+            },
+            400,
+          )
+        }
         const { audio, contentType } = await el.composeMusic({
           ...(typeof fields.prompt === 'string' ? { prompt: fields.prompt } : {}),
           ...(fields.compositionPlan
