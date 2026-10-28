@@ -23,6 +23,7 @@ import {
   mentionTargetFromHref,
   pathFromFileHref,
   rewriteWorkspaceMedia,
+  resolveRelativeLinks,
   type MentionTarget,
 } from "./file-links";
 import { MarkdownMediaNative } from "./MarkdownMediaNative";
@@ -544,7 +545,10 @@ export const MarkdownText = memo(function MarkdownText({
 
   const value = useMemo(() => {
     const normalized = withHardBreaks(rewriteWorkspaceMedia(normalizeRichTextPaste(children || "")));
-    const fileLinked = onFilePress ? linkifyFilePaths(normalized) : normalized;
+    // A bare relative href has no opener on a device; resolve it before the
+    // markdown parser turns it into a link nothing can open.
+    const resolved = resolveRelativeLinks(normalized, { fileLinks: !!onFilePress });
+    const fileLinked = onFilePress ? linkifyFilePaths(resolved) : resolved;
     return linkifyBareUrls(fileLinked);
   }, [children, onFilePress]);
   const mentionColors = useMemo(

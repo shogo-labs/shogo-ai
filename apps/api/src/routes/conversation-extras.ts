@@ -9,7 +9,7 @@
 
 import type { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
-import { readConversationFile, verifyConversationFileToken } from '../lib/conversation-files'
+import { readConversationFile, readConversationFileStream, verifyConversationFileToken, wantsInlineBytes } from '../lib/conversation-files'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import {
   MAX_EMOJI_BYTES,
@@ -476,7 +476,18 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     if (!row) return c.json({ error: { code: 'not_found', message: 'Emoji not found' } }, 404)
     try {
       const file = await readConversationFile(row.storageKey)
-      if (file.kind === 'redirect') return c.redirect(file.url, 302)
+      if (file.kind === 'redirect') {
+        if (!wantsInlineBytes(c)) return c.redirect(file.url, 302)
+        const stream = await readConversationFileStream(row.storageKey)
+        return new Response(stream.body as any, {
+          headers: {
+            'Content-Type': row.mimeType,
+            ...(stream.contentLength !== null ? { 'Content-Length': String(stream.contentLength) } : {}),
+            'Cache-Control': 'private, max-age=86400',
+            'X-Content-Type-Options': 'nosniff',
+          },
+        })
+      }
       return new Response(file.bytes as any, {
         headers: {
           'Content-Type': row.mimeType,

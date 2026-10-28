@@ -16,7 +16,7 @@ import { mkdirSync } from 'fs'
 import { readFile, writeFile, rm } from 'fs/promises'
 import { dirname, join, normalize } from 'path'
 import { homedir } from 'os'
-import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getArtifactBucket, getArtifactPresignedReadUrl, getArtifactS3Client } from './s3'
 
 export const MAX_CONVERSATION_FILE_BYTES = 50 * 1024 * 1024
@@ -191,6 +191,56 @@ export async function readConversationFile(
     kind: 'redirect',
     url: await getArtifactPresignedReadUrl(key, { expiresIn: 300, responseContentDisposition }),
   }
+}
+
+export interface ConversationFileStream {
+  /** The object's bytes, still on the wire. Never buffered. */
+  body: ReadableStream<Uint8Array>
+  contentLength: number | null
+  contentType: string | null
+}
+
+/**
+ * Cloud read for a caller that has to receive the bytes itself.
+ *
+ * A script `fetch` cannot follow the presigned redirect: the bucket answers
+ * `Access-Control-Allow-Origin: *`, which a browser refuses for a credentialed
+ * cross-origin request, so the object is streamed through the API instead.
+ * Cloud only — in local mode `readConversationFile` hands the route the bytes
+ * and this is never reached.
+ */
+export async function readConversationFileStream(
+  key: string,
+  options: { range?: { start: number; end: number } | null } = {},
+): Promise<ConversationFileStream> {
+  const response = await getArtifactS3Client().send(new GetObjectCommand({
+    Bucket: getArtifactBucket(),
+    Key: key,
+    ...(options.range ? { Range: `bytes=${options.range.start}-${options.range.end}` } : {}),
+  }))
+  const body = response.Body as { transformToWebStream?: () => ReadableStream<Uint8Array> } | undefined
+  if (typeof body?.transformToWebStream !== 'function') {
+    throw new Error('Object storage returned no readable body')
+  }
+  return {
+    body: body.transformToWebStream(),
+    contentLength: typeof response.ContentLength === 'number' ? response.ContentLength : null,
+    contentType: response.ContentType ?? null,
+  }
+}
+
+/**
+ * True when the request is a script read (`fetch`/XHR) that will consume the
+ * bytes itself, rather than something that can follow a redirect on its own.
+ *
+ * Only those break on the cross-origin 302 to object storage. An `<img>`,
+ * `<video>`, iframe or link click sends `navigate`/`no-cors`, and a native
+ * client or server-to-server call sends no `Sec-Fetch-Mode` at all — all of
+ * them keep the cheap redirect.
+ */
+export function wantsInlineBytes(c: { req: { header: (name: string) => string | undefined } }): boolean {
+  const mode = (c.req.header('sec-fetch-mode') ?? '').trim().toLowerCase()
+  return mode === 'cors' || mode === 'same-origin'
 }
 
 /** The file's bytes, following the presigned redirect in cloud mode. */

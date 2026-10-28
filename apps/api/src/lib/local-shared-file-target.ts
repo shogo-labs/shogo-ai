@@ -77,13 +77,27 @@ async function projectFileTarget(root: string, path: string): Promise<string | n
 }
 
 /**
- * Real path of a file in a workspace runtime's merged root
- * (`.workspace-roots/<workspaceId>`), or null when the path leaves it. Member
- * projects are mounted there as `<projectId>` symlinks; a file inside one is
- * allowed only when that project belongs to the same workspace.
+ * Real path of a file under a merged root in `.workspace-roots/<rootName>`,
+ * or null when the path leaves it. A workspace runtime's root
+ * (`<workspaceId>`) and a project runtime's root (`proj-<projectId>`) have the
+ * same shape: member projects mounted as `<projectId>` symlinks, so a file
+ * inside one is allowed only when that project belongs to the same workspace.
  */
-async function workspaceFileTarget(workspaceId: string, path: string, workspacesDir: string): Promise<string | null> {
-  const root = await realpath(join(workspacesDir, '.workspace-roots', workspaceId))
+async function workspaceFileTarget(
+  rootName: string,
+  workspaceId: string,
+  path: string,
+  workspacesDir: string,
+): Promise<string | null> {
+  let root: string
+  try {
+    root = await realpath(join(workspacesDir, '.workspace-roots', rootName))
+  } catch (error: any) {
+    // A runtime that never started has no merged root yet. That is a missing
+    // file, not a failure: the caller answers "not found".
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null
+    throw error
+  }
   const candidate = resolve(root, path)
   if (!isWithinRoot(root, candidate)) return null
   const target = await realpath(candidate)
@@ -100,8 +114,10 @@ async function workspaceFileTarget(workspaceId: string, path: string, workspaces
  * Resolve the file a shared-file link names, plus the path to sign for it.
  * Project-scoped links resolve against the project root; a redundant
  * `<projectId>/` prefix is stripped so links already minted for a workspace
- * runtime keep working. Returns null when no path resolves, so the caller can
- * answer "not found" instead of 500.
+ * runtime keep working, and a file that only exists in the project runtime's
+ * merged root (`.workspace-roots/proj-<projectId>`) is found there — cloud
+ * already reads an unscoped path from that root. Returns null when no path
+ * resolves, so the caller can answer "not found" instead of 500.
  */
 export async function resolveLocalSharedFileTarget(
   input: LocalSharedFileTargetInput,
@@ -120,10 +136,25 @@ export async function resolveLocalSharedFileTarget(
         const retried = await projectFileTarget(project.root, stripped)
         if (retried) return { target: retried, normalizedPath: stripped }
       }
-      return null
+
+      // A project agent's working folder is the merged root, so a file it
+      // writes at the root (`plans/`, `memory/`, `research/`) lives only
+      // there — never in the project directory (SHO-242).
+      const merged = await workspaceFileTarget(
+        `proj-${input.projectId}`,
+        project.workspaceId,
+        input.path,
+        input.workspacesDir,
+      )
+      return merged ? { target: merged, normalizedPath: input.path } : null
     }
 
-    const target = await workspaceFileTarget(input.workspaceId, input.path, input.workspacesDir)
+    const target = await workspaceFileTarget(
+      input.workspaceId,
+      input.workspaceId,
+      input.path,
+      input.workspacesDir,
+    )
     return target ? { target, normalizedPath: input.path } : null
   } catch (error: any) {
     if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null

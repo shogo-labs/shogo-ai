@@ -111,6 +111,9 @@ export function filePathCandidate(
   const trimmed = raw.trim().replace(/^[('"]+|[)'",.;:]+$/g, "")
   if (!trimmed || /\s/.test(trimmed) || isUrl(trimmed)) return null
   const normalized = trimmed.replace(/\\/g, "/")
+  // `../x.md` climbs out of the workspace: it never names a file we can serve,
+  // and the file routes reject it anyway (SHO-242).
+  if (normalized.split("/").some((segment) => segment === "..")) return null
   const looksLikeFile =
     FILE_WITH_EXT.test(normalized) || ABS_FILE_WITH_EXT.test(normalized)
   if (!looksLikeFile) return null
@@ -170,6 +173,74 @@ export function linkifyFilePaths(markdown: string): string {
   text = unmask(text, links, "LINK")
   text = unmask(text, fences, "FENCE")
   return text
+}
+
+const MARKDOWN_LINK_RE = /(!?)\[([^\]\n]*)\]\(\s*(<[^>\n]+>|[^)\s]+)((?:\s+"[^"\n]*")?)\s*\)/g
+const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i
+
+/**
+ * True when a link target names something inside the workspace rather than a
+ * URL or an app route: no scheme, and not rooted (`/`, `//`) or a fragment.
+ */
+function isWorkspaceRelativeHref(href: string): boolean {
+  if (!href) return false
+  if (SCHEME_RE.test(href)) return false
+  if (href.startsWith("/") || href.startsWith("#")) return false
+  if (
+    href.startsWith(FILE_HREF_PREFIX) ||
+    href.startsWith(IMAGE_SRC_PREFIX) ||
+    isMentionHref(href)
+  ) {
+    return false
+  }
+  return true
+}
+
+export interface ResolveRelativeLinksOptions {
+  /** Turn a workspace-relative path into a `/shogo-file` link; false unwraps it. */
+  fileLinks: boolean
+}
+
+/**
+ * Resolve markdown links whose href is a workspace-relative path.
+ *
+ * A renderer cannot open a bare `plans/x.md`: Streamdown's link hardener
+ * rejects any relative href that does not start with `/`, `./` or `../` and
+ * prints `[blocked]` in its place, and a native tap hands the path to a URL
+ * opener. So a link we wrote is rewritten to `fileHref(path)` when the host
+ * can open files, and otherwise unwrapped to its text (as inline code when the
+ * text is the path). `../` never becomes a file link — it leaves the workspace.
+ * Fences and inline code are masked, so neither is touched.
+ */
+export function resolveRelativeLinks(
+  markdown: string,
+  opts: ResolveRelativeLinksOptions,
+): string {
+  if (!markdown.includes("](")) return markdown
+  const fences: string[] = []
+  const inlineCode: string[] = []
+  let text = mask(markdown, FENCE_RE, fences, "FENCE")
+  text = mask(text, INLINE_CODE_RE, inlineCode, "CODE")
+
+  text = text.replace(
+    MARKDOWN_LINK_RE,
+    (full, image: string, label: string, target: string, title: string) => {
+      if (image) return full
+      const href = target.startsWith("<") ? target.slice(1, -1).trim() : target
+      if (!isWorkspaceRelativeHref(href)) return full
+
+      const bare = href.replace(/^\.\//, "")
+      const path = href.startsWith("../") ? null : filePathCandidate(bare, { requireSlash: false })
+      if (opts.fileLinks && path) return `[${label}](${fileHref(path)}${title})`
+
+      const shown = label.trim()
+      if (!shown) return ""
+      return shown === href || shown === bare ? `\`${shown}\`` : label
+    },
+  )
+
+  text = unmask(text, inlineCode, "CODE")
+  return unmask(text, fences, "FENCE")
 }
 
 function hasUnmatchedOpening(value: string, opening: string, closing: string): boolean {

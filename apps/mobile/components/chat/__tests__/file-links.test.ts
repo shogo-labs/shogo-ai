@@ -11,6 +11,7 @@ import {
   mentionTargetFromHref,
   pathFromFileHref,
   resolveChatFilePath,
+  resolveRelativeLinks,
 } from "../file-links"
 
 const PROJECT = "6c2a5faf-9683-4cf1-b3d1-bfdab2e912a9"
@@ -116,6 +117,91 @@ describe("linkifyFilePaths", () => {
     expect(linkifyFilePaths("see apps/x/file.test.ts")).toBe(
       `see [apps/x/file.test.ts](${fileHref("apps/x/file.test.ts")})`,
     )
+  })
+})
+
+describe("resolveRelativeLinks", () => {
+  const fileLink = (path: string) => `[${path}](${fileHref(path)})`
+
+  test("turns a relative path link into a file link the host can open", () => {
+    expect(resolveRelativeLinks("[plans/a.md](plans/a.md)", { fileLinks: true })).toBe(
+      fileLink("plans/a.md"),
+    )
+    // Streamdown's hardener blocks this href, so the renderer used to print
+    // the text followed by `[blocked]` (SHO-242).
+    expect(resolveRelativeLinks("[plans/a.md](plans/a.md)", { fileLinks: true })).not.toContain(
+      "](plans/a.md)",
+    )
+  })
+
+  test("unwraps to inline code when the link text is the path and nothing can open it", () => {
+    expect(resolveRelativeLinks("[plans/a.md](plans/a.md)", { fileLinks: false })).toBe(
+      "`plans/a.md`",
+    )
+    expect(resolveRelativeLinks("[`plans/a.md`](plans/a.md)", { fileLinks: false })).toBe(
+      "`plans/a.md`",
+    )
+  })
+
+  test("unwraps a link whose text is prose", () => {
+    expect(resolveRelativeLinks("[see plan](docs/p.md)", { fileLinks: false })).toBe("see plan")
+    expect(resolveRelativeLinks("[see plan](docs/p.md)", { fileLinks: true })).toBe(
+      fileLink("docs/p.md").replace("[docs/p.md]", "[see plan]"),
+    )
+  })
+
+  test("strips a leading ./ from the path it links", () => {
+    expect(resolveRelativeLinks("[x](./a/b.ts)", { fileLinks: true })).toBe(
+      "[x](/shogo-file?path=a%2Fb.ts)",
+    )
+    expect(pathFromFileHref("/shogo-file?path=a%2Fb.ts")).toBe("a/b.ts")
+  })
+
+  test("never links a path that climbs out of the workspace", () => {
+    expect(resolveRelativeLinks("[x](../secret.txt)", { fileLinks: true })).toBe("x")
+    expect(resolveRelativeLinks("[../secret.txt](../secret.txt)", { fileLinks: true })).toBe(
+      "`../secret.txt`",
+    )
+    // The linkifier runs straight after, so an unwrapped `../` must not be
+    // picked back up as a file path either — end to end it is never a link.
+    for (const input of ["[../secret.txt](../secret.txt)", "[x](../a/b.ts)", "../secret.txt"]) {
+      const resolved = resolveRelativeLinks(input, { fileLinks: true })
+      expect(linkifyFilePaths(resolved)).not.toContain("shogo-file")
+    }
+  })
+
+  test("leaves urls, rooted paths, fragments, schemes and app hrefs alone", () => {
+    const untouched = [
+      "[docs](https://example.com/a.md)",
+      "[abs](/abs/page)",
+      "[frag](#section)",
+      "[mail](mailto:dev@shogo.ai)",
+      "[mention](/shogo-mention/a/ws)",
+      "[file](/shogo-file?path=plans%2Fa.md)",
+      "[img](/shogo-image?path=brand%2Fx.png)",
+    ]
+    for (const input of untouched) {
+      expect(resolveRelativeLinks(input, { fileLinks: true })).toBe(input)
+      expect(resolveRelativeLinks(input, { fileLinks: false })).toBe(input)
+    }
+  })
+
+  test("leaves images, fences and inline code alone", () => {
+    const image = "![shot](plans/a.png)"
+    expect(resolveRelativeLinks(image, { fileLinks: true })).toBe(image)
+
+    const fenced = ["```", "[plans/a.md](plans/a.md)", "```"].join("\n")
+    expect(resolveRelativeLinks(fenced, { fileLinks: true })).toBe(fenced)
+
+    const code = "use `[plans/a.md](plans/a.md)` here"
+    expect(resolveRelativeLinks(code, { fileLinks: true })).toBe(code)
+  })
+
+  test("keeps a link title and leaves text without a link untouched", () => {
+    expect(resolveRelativeLinks('[x](plans/a.md "the plan")', { fileLinks: true })).toBe(
+      '[x](/shogo-file?path=plans%2Fa.md "the plan")',
+    )
+    expect(resolveRelativeLinks("no links here", { fileLinks: true })).toBe("no links here")
   })
 })
 

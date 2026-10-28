@@ -11,7 +11,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -112,5 +112,113 @@ describe('desktop shared-file mint → download', () => {
     })
     expect(minted.status).toBe(400)
     expect((await minted.json()).error.code).toBe('file_not_found')
+  })
+})
+
+// A project agent's working folder is the runtime's merged root
+// (`.workspace-roots/proj-<projectId>`), so `plans/`, `memory/` and `research/`
+// files it writes live only there — never in `workspaces/<projectId>`. Cloud
+// already reads an unscoped path from that root; desktop said
+// `file_not_found` for a file that exists (SHO-242).
+describe('desktop shared-file mint from a project runtime merged root', () => {
+  const anchorRoot = () => join(workspacesDir, '.workspace-roots', 'proj-proj-a')
+
+  beforeAll(() => {
+    mkdirSync(join(anchorRoot(), 'plans'), { recursive: true })
+    writeFileSync(join(anchorRoot(), 'plans', 'a.md'), '# the plan\n')
+  })
+
+  it('mints and serves a file that exists only in the merged root', async () => {
+    const { download, mint } = apps()
+    const minted = await mint.request('/projects/proj-a/shared-files', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: 'plans/a.md' }),
+    })
+    expect(minted.status).toBe(200)
+    const { url, path } = await minted.json() as { url: string; path: string }
+    expect(path).toBe('plans/a.md')
+
+    const served = await download.fetch(new Request(`http://localhost/api/f/${url.split('/f/')[1]}`))
+    expect(served.status).toBe(200)
+    expect(await served.text()).toBe('# the plan\n')
+  })
+
+  it('prefers the project root when the file is in both places', async () => {
+    const { mint } = apps()
+    mkdirSync(join(workspaceProjectDir(), 'plans'), { recursive: true })
+    writeFileSync(join(workspaceProjectDir(), 'plans', 'both.md'), 'project copy')
+    mkdirSync(join(anchorRoot(), 'plans'), { recursive: true })
+    writeFileSync(join(anchorRoot(), 'plans', 'both.md'), 'merged copy')
+
+    const minted = await mint.request('/projects/proj-a/shared-files', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: 'plans/both.md' }),
+    })
+    expect(minted.status).toBe(200)
+
+    const resolved = await resolveLocalSharedFileTarget({
+      projectId: 'proj-a',
+      workspaceId: 'ws-1',
+      path: 'plans/both.md',
+      workspacesDir,
+    })
+    expect(resolved?.target).toBe(realpathSync(join(workspaceProjectDir(), 'plans', 'both.md')))
+  })
+
+  it('treats a project with no merged root as not found instead of failing', async () => {
+    projects['proj-b'] = { workspaceId: 'ws-1' }
+    const resolved = await resolveLocalSharedFileTarget({
+      projectId: 'proj-b',
+      workspaceId: 'ws-1',
+      path: 'plans/b.md',
+      workspacesDir,
+    })
+    expect(resolved).toBeNull()
+
+    const { mint } = apps()
+    const minted = await mint.request('/projects/proj-b/shared-files', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: 'plans/b.md' }),
+    })
+    expect(minted.status).toBe(400)
+    expect((await minted.json()).error.code).toBe('file_not_found')
+  })
+
+  it('refuses a merged-root symlink into another workspace', async () => {
+    mkdirSync(join(workspacesDir, 'other-proj'), { recursive: true })
+    writeFileSync(join(workspacesDir, 'other-proj', 'notes.md'), 'other workspace')
+    projects['other-proj'] = { workspaceId: 'ws-2' }
+    symlinkSync(join(workspacesDir, 'other-proj'), join(anchorRoot(), 'other-proj'))
+
+    expect(
+      await resolveLocalSharedFileTarget({
+        projectId: 'proj-a',
+        workspaceId: 'ws-1',
+        path: 'other-proj/notes.md',
+        workspacesDir,
+      }),
+    ).toBeNull()
+  })
+
+  it('refuses a merged-root symlink that points outside it', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'shared-file-outside-'))
+    writeFileSync(join(outside, 'secret.txt'), 'not yours')
+    symlinkSync(outside, join(anchorRoot(), 'escape'))
+
+    try {
+      expect(
+        await resolveLocalSharedFileTarget({
+          projectId: 'proj-a',
+          workspaceId: 'ws-1',
+          path: 'escape/secret.txt',
+          workspacesDir,
+        }),
+      ).toBeNull()
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 })
