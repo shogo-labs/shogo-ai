@@ -225,6 +225,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   WorkItemSubscription: { decision: 'exclude', reason: 'One device or one person\'s ephemeral state, meaningless on restore.' },
   WorkspaceEvent: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   WorkspaceGrant: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
+  WorkspaceMove: { decision: 'exclude', reason: 'The log of how this copy got here (phase cursors, id map, handover). The target records its own; carrying it across would describe a move that never happened.' },
 }
 
 /**
