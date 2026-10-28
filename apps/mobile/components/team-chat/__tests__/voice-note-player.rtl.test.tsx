@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * The voice-note player as a reader meets it: play/pause, the waveform it
- * draws, the clock, and the speed menu.
+ * draws, the clock, download, scrubbing, and the speed menu.
  *
  * The audio engine is faked, so this asserts on what the player asks the
  * store to do rather than on any platform audio API.
@@ -23,8 +23,16 @@ const engine = {
   seeks: [] as number[],
   rates: [] as number[],
 }
+const downloads: Array<{ url: string; name: string }> = []
+const testDir = import.meta.dir
 
-mock.module(resolve(import.meta.dir, "../../../lib/voice-playback-engine"), () => ({
+mock.module(resolve(testDir, "../../../lib/attachment-download"), () => ({
+  downloadAttachment: async (url: string, name: string) => {
+    downloads.push({ url, name })
+  },
+}))
+
+mock.module(resolve(testDir, "../../../lib/voice-playback-engine"), () => ({
   createVoicePlaybackEngine: () => ({
     load: (url: string) => engine.loaded.push(url),
     play: () => {
@@ -48,6 +56,12 @@ mock.module("@shogo/shared-ui/primitives", () => ({
 // drives it, which is what lets the waveform be measured before a tap. A DOM
 // click carries no touch position either, so the test sets one.
 const layoutHandlers = new WeakMap<Element, (event: unknown) => void>()
+type PressHandler = (event: { nativeEvent: { locationX: number; pageX: number; pageY: number } }) => void
+const pressHandlers = new WeakMap<Element, {
+  onPressIn?: PressHandler
+  onPressMove?: PressHandler
+  onPressOut?: PressHandler
+}>()
 let nextTapLocationX: number | undefined
 
 mock.module("react-native", () =>
@@ -64,22 +78,39 @@ mock.module("react-native", () =>
       accessibilityLabel,
       children,
       onPress,
+      onPressIn,
+      onPressMove,
+      onPressOut,
       onLayout,
+      onAccessibilityAction: _onAccessibilityAction,
+      accessibilityActions: _accessibilityActions,
+      accessibilityValue: _accessibilityValue,
+      accessibilityRole,
+      delayPressIn: _delayPressIn,
       ...props
     }: {
       accessibilityLabel?: string
+      accessibilityRole?: string
+      accessibilityActions?: unknown
+      accessibilityValue?: unknown
+      onAccessibilityAction?: unknown
+      delayPressIn?: number
       children?: ReactNode
       onPress?: (event: unknown) => void
+      onPressIn?: PressHandler
+      onPressMove?: PressHandler
+      onPressOut?: PressHandler
       onLayout?: (event: unknown) => void
     }) =>
       createElement(
         "div",
         {
           ...props,
-          role: "button",
+          role: accessibilityRole === "adjustable" ? "slider" : "button",
           "aria-label": accessibilityLabel,
           ref: (node: Element) => {
             if (node && onLayout) layoutHandlers.set(node, onLayout)
+            if (node) pressHandlers.set(node, { onPressIn, onPressMove, onPressOut })
           },
           // A DOM event carries no RN touch position, so the test supplies one.
           onClick: () => onPress?.({ nativeEvent: { locationX: nextTapLocationX } }),
@@ -94,6 +125,7 @@ mock.module("react-native", () =>
 mock.module("lucide-react-native", () => ({
   Play: () => createElement("span", null, "play-icon"),
   Pause: () => createElement("span", null, "pause-icon"),
+  Download: () => createElement("span", null, "download-icon"),
 }))
 
 const { VoiceNotePlayer } = await import("../VoiceNotePlayer")
@@ -118,6 +150,7 @@ beforeEach(() => {
   engine.pauses = 0
   engine.seeks = []
   engine.rates = []
+  downloads.length = 0
 })
 
 afterEach(cleanup)
@@ -152,6 +185,21 @@ describe('what the player shows before it is played', () => {
   test('shows the current speed', () => {
     renderPlayer()
     expect(screen.getByLabelText("Playback speed 1x")).toBeDefined()
+  })
+
+  test('labels a missing duration as unknown until metadata arrives', () => {
+    renderPlayer({ durationMs: null })
+    expect(screen.getByText('--:--')).toBeDefined()
+  })
+})
+
+describe('downloading', () => {
+  test('passes the signed attachment URL and file name to the download helper', async () => {
+    renderPlayer()
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Download Voice note.m4a'))
+    })
+    expect(downloads).toEqual([{ url: CLIP.url, name: CLIP.name }])
   })
 })
 
@@ -220,6 +268,58 @@ describe('seeking', () => {
     fireEvent.click(screen.getByLabelText("Seek Voice note.m4a"), { nativeEvent: { locationX: 50 } })
     nextTapLocationX = undefined
     expect(engine.seeks).toEqual([])
+  })
+
+  test('does not start audio when a touch turns into a vertical scroll', () => {
+    renderPlayer()
+    const track = measure(200)
+    const handlers = pressHandlers.get(track)!
+    act(() => {
+      handlers.onPressIn?.({ nativeEvent: { locationX: 40, pageX: 100, pageY: 100 } })
+      handlers.onPressMove?.({ nativeEvent: { locationX: 43, pageX: 103, pageY: 130 } })
+      handlers.onPressOut?.({ nativeEvent: { locationX: 43, pageX: 103, pageY: 130 } })
+    })
+    nextTapLocationX = 43
+    fireEvent.click(track)
+    nextTapLocationX = undefined
+    expect(engine.loaded).toEqual([])
+    expect(engine.seeks).toEqual([])
+  })
+
+  test('scrubs after a horizontal drag and does not seek twice on release', () => {
+    renderPlayer()
+    const track = measure(200)
+    const handlers = pressHandlers.get(track)!
+    act(() => {
+      handlers.onPressIn?.({ nativeEvent: { locationX: 20, pageX: 100, pageY: 100 } })
+      handlers.onPressMove?.({ nativeEvent: { locationX: 100, pageX: 180, pageY: 101 } })
+      handlers.onPressMove?.({ nativeEvent: { locationX: 150, pageX: 230, pageY: 102 } })
+      handlers.onPressOut?.({ nativeEvent: { locationX: 175, pageX: 255, pageY: 102 } })
+    })
+    nextTapLocationX = 175
+    fireEvent.click(track)
+    nextTapLocationX = undefined
+    expect(engine.plays).toBe(1)
+    expect(engine.seeks).toEqual([5, 7.5, 8.75])
+  })
+
+  test('uses the release position when the web click has no locationX', () => {
+    renderPlayer()
+    const track = measure(200)
+    const handlers = pressHandlers.get(track)!
+    act(() => {
+      handlers.onPressIn?.({ nativeEvent: { locationX: 50, pageX: 100, pageY: 100 } })
+      handlers.onPressOut?.({ nativeEvent: { locationX: 50, pageX: 100, pageY: 100 } })
+    })
+    fireEvent.click(track)
+    expect(engine.seeks).toEqual([2.5])
+  })
+
+  test('seeks five seconds with the keyboard', () => {
+    renderPlayer()
+    const track = measure(200)
+    fireEvent.keyDown(track, { key: 'ArrowRight' })
+    expect(engine.seeks).toEqual([5])
   })
 })
 

@@ -420,6 +420,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           plusMenuExtras={plusMenuExtras}
           onVoiceStart={onVoiceStart}
           voiceStartLabel="Record a voice note"
+          voiceStartIcon="audio-lines"
           inputTestID="team-composer-input"
           inputAccessibilityLabel="Message"
         />

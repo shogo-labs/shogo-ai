@@ -92,6 +92,7 @@ import {
   MessageCircleQuestion,
   Check,
   Mic,
+  AudioLines,
   Sparkles,
   Languages,
   Play,
@@ -618,6 +619,8 @@ export interface ChatInputProps {
   onVoiceStart?: () => void | Promise<void>;
   /** What the mic announces when `onVoiceStart` is set. */
   voiceStartLabel?: string;
+  /** Icon for a caller-provided voice action; defaults to the dictation mic. */
+  voiceStartIcon?: "mic" | "audio-lines";
   /** Rotating "Ask Shogo to …" placeholder while the input is empty. */
   typingPlaceholder?: boolean;
   /** Shows a spinner on send and locks the input. */
@@ -682,6 +685,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   plusMenuExtras,
   onVoiceStart,
   voiceStartLabel,
+  voiceStartIcon = "mic",
   typingPlaceholder = false,
   submitting = false,
   completions,
@@ -692,6 +696,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   inputTestID = "project-composer-input",
   inputAccessibilityLabel = "Chat message input",
 }: ChatInputProps, ref) {
+  const VoiceStartIcon = voiceStartIcon === "audio-lines" ? AudioLines : Mic;
   const composer = agentControls
     ? composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER
     : MESSAGING_COMPOSER;
@@ -3621,14 +3626,20 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     }
                     className={cn(
                       "rounded-full items-center justify-center active:opacity-70",
-                      isNative && !useProminentComposer
-                        ? NATIVE_COMPOSER_MIC_IDLE_CLASS
-                        : sendChrome.sizeClassName
+                      voiceStartIcon === "audio-lines" && !isNative && !useProminentComposer
+                        ? "h-8 w-8"
+                        : isNative && !useProminentComposer
+                          ? NATIVE_COMPOSER_MIC_IDLE_CLASS
+                          : sendChrome.sizeClassName
                     )}
                   >
-                    <Mic
+                    <VoiceStartIcon
                       className={cn(
-                        useProminentComposer ? "h-[18px] w-[18px]" : "h-4 w-4",
+                        voiceStartIcon === "audio-lines"
+                          ? "h-6 w-6"
+                          : useProminentComposer
+                            ? "h-[18px] w-[18px]"
+                            : "h-4 w-4",
                         !useProminentComposer &&
                           (disabled || isProcessingFiles
                             ? "text-muted-foreground/40"
@@ -3646,7 +3657,15 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                           ? NATIVE_PHONE_ICON_STROKE
                           : undefined
                       }
-                      size={useProminentComposer ? 20 : isNative ? 18 : 14}
+                      size={
+                        voiceStartIcon === "audio-lines"
+                          ? 24
+                          : useProminentComposer
+                            ? 20
+                            : isNative
+                              ? 18
+                              : 14
+                      }
                     />
                   </Pressable>
                 ) : null}

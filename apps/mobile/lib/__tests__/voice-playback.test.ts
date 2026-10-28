@@ -47,6 +47,7 @@ const {
   PLAYBACK_SPEEDS,
   readVoicePlayback,
   seekVoiceNote,
+  seekVoiceNoteByMs,
   setVoiceNoteSpeed,
   stopVoiceNote,
   toggleVoiceNote,
@@ -138,8 +139,29 @@ describe('progress and seeking', () => {
     expect(snapshot()).toMatchObject({ activeId: 'a', isPlaying: true, positionMs: 2_500 })
   })
 
-  test('does not seek when the clip length is unknown', () => {
+  test('applies a waveform seek once an older clip reports its length', () => {
+    const olderNote = { id: 'c', url: 'https://api.test/c', durationMs: null }
+    seekVoiceNote(olderNote, 0.5)
+    expect(calls.seeks).toEqual([])
+    handlers.onProgress(0, 10_000)
+    expect(calls.seeks).toEqual([5])
+    expect(snapshot()).toMatchObject({ positionMs: 5_000, durationMs: 10_000 })
+  })
+
+  test('moves by five seconds after metadata loads, including repeated key presses', () => {
+    const olderNote = { id: 'c', url: 'https://api.test/c', durationMs: null }
+    seekVoiceNoteByMs(olderNote, 5_000)
+    seekVoiceNoteByMs(olderNote, 5_000)
+    expect(calls.seeks).toEqual([])
+    handlers.onProgress(0, 20_000)
+    expect(calls.seeks).toEqual([10])
+    expect(snapshot().positionMs).toBe(10_000)
+  })
+
+  test('drops a pending seek when another clip starts', () => {
     seekVoiceNote({ id: 'c', url: 'https://api.test/c', durationMs: null }, 0.5)
+    toggleVoiceNote(noteA)
+    handlers.onProgress(0, 10_000)
     expect(calls.seeks).toEqual([])
   })
 
