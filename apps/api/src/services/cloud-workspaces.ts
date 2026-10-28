@@ -50,12 +50,37 @@ async function load(): Promise<Stored> {
   try {
     if (row?.value) parsed = { ...parsed, ...JSON.parse(row.value) }
   } catch {}
-  parsed.workspaces = parsed.workspaces.map((w) => ({ ...w, kind: w.kind === 'personal' ? 'personal' : 'team' }))
+  parsed.workspaces = await withoutLocalWorkspaces(
+    parsed.workspaces.map((w) => ({ ...w, kind: w.kind === 'personal' ? 'personal' : 'team' })),
+  )
   cache = parsed
   return parsed
 }
 
+/**
+ * A workspace that exists in this desktop's SQLite is local, whatever the cloud
+ * says: the cloud's machine copy of it (SHO-185) carries the same id, and
+ * treating it as a cloud workspace relays this machine's own writes to that
+ * read-only copy.
+ */
+async function withoutLocalWorkspaces(workspaces: CloudWorkspaceEntry[]): Promise<CloudWorkspaceEntry[]> {
+  if (!workspaces.length || !localDb.workspace?.findMany) return workspaces
+  let local: Array<{ id: string }> = []
+  try {
+    local = await localDb.workspace.findMany({
+      where: { id: { in: workspaces.map((w) => w.id) } },
+      select: { id: true },
+    })
+  } catch {
+    return workspaces
+  }
+  if (!local.length) return workspaces
+  const localIds = new Set(local.map((w) => w.id))
+  return workspaces.filter((w) => !localIds.has(w.id))
+}
+
 async function save(next: Stored): Promise<void> {
+  next = { ...next, workspaces: await withoutLocalWorkspaces(next.workspaces) }
   cache = next
   const value = JSON.stringify(next)
   await localDb.localConfig.upsert({ where: { key: CONFIG_KEY }, update: { value }, create: { key: CONFIG_KEY, value } })

@@ -10,7 +10,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'b
 import { Hono } from 'hono'
 
 const configRows = new Map<string, string>()
+const localWorkspaceIds = new Set(['local-ws'])
 const prisma = {
+  workspace: {
+    findMany: async ({ where }: any) =>
+      (where.id.in as string[]).filter((id) => localWorkspaceIds.has(id)).map((id) => ({ id })),
+  },
   localConfig: {
     findUnique: async ({ where }: any) => (configRows.has(where.key) ? { key: where.key, value: configRows.get(where.key) } : null),
     upsert: async ({ where, create, update }: any) => {
@@ -367,6 +372,40 @@ describe('workspace list and status', () => {
     expect(await cloudWorkspaces.cloudWorkspaceKey('ws-acme')).toBe('shogo_sk_acme')
     expect(await cloudWorkspaces.cloudWorkspaceKey('ws-new')).toBe('shogo_sk_new')
     expect(await cloudWorkspaces.cloudWorkspaceKey('ws-beta')).toBeNull()
+  })
+
+  test("the cloud's machine copy of a local workspace never becomes a cloud workspace", async () => {
+    syncResponse = {
+      ok: true,
+      workspaces: [
+        { workspace: { id: 'ws-acme', name: 'Acme', slug: 'acme' } },
+        { workspace: { id: 'local-ws', name: 'Local', slug: 'local-m-inst1234' }, key: 'shogo_sk_copy' },
+      ],
+      removed: [],
+    }
+    const res = await app.request('/api/local/cloud-workspaces/sync', { method: 'POST' })
+    expect((await res.json()).workspaces.map((w: any) => w.id)).toEqual(['ws-acme'])
+    expect(await cloudWorkspaces.cloudWorkspaceKey('local-ws')).toBeNull()
+    const local = await (await app.request('/api/workspaces/local-ws')).json()
+    expect(local.data.source).toBe('local')
+  })
+
+  test('a list stored by an earlier build drops the local workspace on load', async () => {
+    configRows.set(
+      'SHOGO_CLOUD_WORKSPACES',
+      JSON.stringify({
+        enabled: true,
+        user: null,
+        syncedAt: null,
+        workspaces: [
+          { id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team', key: 'shogo_sk_acme' },
+          { id: 'local-ws', name: 'Local', slug: 'local-m-inst1234', kind: 'team', key: 'shogo_sk_copy' },
+        ],
+      }),
+    )
+    cloudWorkspaces._resetCloudWorkspacesForTests()
+    expect(await cloudWorkspaces.cloudWorkspaceKey('local-ws')).toBeNull()
+    expect(await cloudWorkspaces.cloudWorkspaceKey('ws-acme')).toBe('shogo_sk_acme')
   })
 
   test('a sign-in from before per-workspace keys backfills its list on sync', async () => {
