@@ -9480,6 +9480,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       `"accounts" lists the connected accounts and their ids; ` +
       `"post" publishes or schedules one post to one or more accounts (content, account_ids, media, scheduled_for/publish_now/draft); ` +
       `"posts" lists posts, "calendar" the schedule and "analytics" the numbers; ` +
+      `"delete" takes a post_id and removes a draft, a scheduled or failed post, or a published one — it unpublishes each target the provider can remove, and returns the ones the person has to remove in the Instagram / TikTok / Snapchat app with their links; ` +
       `"inbox" lists DM threads (kind "dms") or comments (kind "comments"); ` +
       `"reply" takes conversation_id + text; "comment_reply" takes comment_id + text; ` +
       `"automate" manages comment→DM automations (automation_action create/list/pause/resume/delete). ` +
@@ -9501,12 +9502,13 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           Type.Literal('accounts'),
           Type.Literal('post'),
           Type.Literal('posts'),
+          Type.Literal('delete'),
           Type.Literal('calendar'),
           Type.Literal('analytics'),
         ],
         {
           description:
-            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | calendar | analytics',
+            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | delete | calendar | analytics',
         },
       ),
       platform: Type.Optional(socialPlatformSchema(platforms)),
@@ -9579,6 +9581,15 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       draft: Type.Optional(
         Type.Boolean({ description: 'For action "post": save as a draft and publish nothing.' }),
       ),
+      post_id: Type.Optional(
+        Type.String({ description: 'For action "delete": the post id from action "posts" or "calendar".' }),
+      ),
+      allow_duplicate: Type.Optional(
+        Type.Boolean({
+          description:
+            'For action "post": publish even though the same content, accounts and media went out in the last 15 minutes. Leave it off — a repeated "post" call for a retry returns the first post instead of publishing a second copy.',
+        }),
+      ),
       tiktok: Type.Optional(
         Type.String({
           description:
@@ -9636,6 +9647,8 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         scheduled_for?: unknown
         publish_now?: unknown
         draft?: unknown
+        post_id?: unknown
+        allow_duplicate?: unknown
         tiktok?: unknown
         expected_username?: unknown
         force_reauth?: unknown
@@ -9662,6 +9675,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         'accounts',
         'post',
         'posts',
+        'delete',
         'calendar',
         'analytics',
       ])
@@ -9813,16 +9827,80 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           ...(params.publish_now === true ? { publishNow: true } : {}),
           ...(isDraft ? { draft: true } : {}),
           ...(tiktok ? { tiktok } : {}),
+          ...(params.allow_duplicate === true ? { allowDuplicate: true } : {}),
         })
         if (!created.ok) return textResult({ error: created.error, suggestion: created.suggestion })
+        const createdPost = created.data?.post
+        // A publish that ran out of budget may already be live. Saying "retry"
+        // here is what produced a second copy of a reel on every account, so the
+        // tool tells the agent to look instead.
+        if (createdPost?.outcome === 'unconfirmed') {
+          return textResult({
+            post: summarizeSocialPost(createdPost),
+            outcome: 'unconfirmed',
+            note:
+              'The publish is not confirmed yet — the provider did not answer in time, and it may well have gone out. ' +
+              'Do NOT post again. Run action "posts" in a minute to see whether it published; if it did, do nothing, and if the person wants it gone use action "delete".',
+          })
+        }
         return textResult({
-          post: summarizeSocialPost(created.data?.post),
+          post: summarizeSocialPost(createdPost),
+          outcome: createdPost?.outcome ?? 'confirmed',
+          ...(createdPost?.deduped === true ? { deduped: true } : {}),
           media_uploaded: media.urls.length,
-          note: isDraft
-            ? 'Saved as a draft: nothing is published until it is scheduled or sent.'
-            : scheduledFor
-              ? `Scheduled for ${scheduledFor}.`
-              : 'Publishing now: check each target below for its own result.',
+          note:
+            createdPost?.deduped === true
+              ? 'This is the post that already went out for the same content, accounts and media in the last 15 minutes — nothing was published again. Pass allow_duplicate: true only if the person really wants a second copy.'
+              : isDraft
+                ? 'Saved as a draft: nothing is published until it is scheduled or sent.'
+                : scheduledFor
+                  ? `Scheduled for ${scheduledFor}.`
+                  : 'Publishing now: check each target below for its own result.',
+        })
+      }
+
+      if (action === 'delete') {
+        const postId = String(params.post_id ?? '').trim()
+        if (!postId) {
+          return textResult({
+            error: 'post_id is required: run action "posts" to find the post id.',
+          })
+        }
+        const result = await socialInternalCall(ctx, 'DELETE', `/social/posts/${encodeURIComponent(postId)}`)
+        if (!result.ok) {
+          return textResult({
+            error: result.error,
+            code: result.code,
+            suggestion:
+              result.code === 'post_in_flight'
+                ? 'The publish is still in flight. Do NOT post again — run action "posts" in a minute, then delete it if it went out.'
+                : result.suggestion,
+          })
+        }
+        const removed: any[] = Array.isArray(result.data?.removed) ? result.data.removed : []
+        const manual: any[] = Array.isArray(result.data?.manual) ? result.data.manual : []
+        const deleted = result.data?.deleted === true
+        return textResult({
+          deleted,
+          kept: result.data?.kept === true,
+          post: summarizeSocialPost(result.data?.post),
+          removed: removed.map((entry: any) => ({
+            platform: entry.platform,
+            account: entry.account ?? null,
+            url: entry.url ?? null,
+          })),
+          manual: manual.map((entry: any) => ({
+            platform: entry.platform,
+            account: entry.account ?? null,
+            url: entry.url ?? null,
+            reason: entry.reason ?? null,
+          })),
+          note: deleted
+            ? 'Deleted. Nothing was live at the provider, so there was nothing to take down.'
+            : `Removed ${removed.length} live target(s).` +
+              (manual.length
+                ? ` ${manual.length} still has to be removed by hand: give the person each link below and say which app to open.`
+                : ' Every live target is down.'),
         })
       }
 

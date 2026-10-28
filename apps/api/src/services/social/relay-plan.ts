@@ -214,10 +214,18 @@ export function planRelayRequest(args: {
     const missing = needsProfile(args.profile)
     if (missing) return missing
     if (method === 'GET') {
+      // The scope is pinned to this workspace's profile; the filters below only
+      // narrow what that profile already owns, so a reconciling read can ask for
+      // its own recent posts instead of the whole page.
+      const query: Record<string, string> = { profileId: args.profile!.zernioProfileId }
+      for (const key of ['limit', 'sortBy', 'fromDate', 'toDate', 'search', 'status', 'page', 'offset']) {
+        const value = args.query[key]
+        if (typeof value === 'string' && value) query[key] = value
+      }
       return {
         kind: 'forward',
         path: '/posts',
-        query: { profileId: args.profile!.zernioProfileId },
+        query,
       }
     }
     if (method === 'POST') {
@@ -230,6 +238,25 @@ export function planRelayRequest(args: {
       }
     }
     return deny(405, 'method_not_allowed', `${method} /posts is not relayed`)
+  }
+
+  // Unpublish takes one target of a published post down. The post has to be this
+  // workspace's, and so does the account whose copy is being removed.
+  if (seg[0] === 'posts' && seg.length === 3 && seg[2] === 'unpublish') {
+    const missing = needsProfile(args.profile)
+    if (missing) return missing
+    if (method !== 'POST') return deny(405, 'method_not_allowed', `${method} /posts/:id/unpublish is not relayed`)
+    const platform = typeof args.body?.platform === 'string' ? args.body.platform : ''
+    if (!platform) return deny(400, 'invalid_body', 'unpublish needs the platform to remove the post from')
+    const accountId = typeof args.body?.accountId === 'string' ? args.body.accountId : ''
+    return {
+      kind: 'forward',
+      path: `/posts/${encodeURIComponent(seg[1]!)}/unpublish`,
+      query: { profileId: args.profile!.zernioProfileId },
+      body: { platform, ...(accountId ? { accountId } : {}) },
+      verifyPostId: seg[1]!,
+      ...(accountId ? { verifyAccountId: accountId } : {}),
+    }
   }
 
   if (seg[0] === 'posts' && seg.length === 2) {

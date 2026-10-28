@@ -105,6 +105,48 @@ describe('relay scoping', () => {
     expect((result as any).body).toMatchObject({ profileId: 'zernio_profile_1' })
   })
 
+  test('unpublishing one target is pinned to the post and the account', () => {
+    const result = plan({
+      method: 'POST',
+      path: '/posts/zernio_post_9/unpublish',
+      body: { platform: 'twitter', accountId: 'zernio_x' },
+    })
+    expect(result).toMatchObject({
+      kind: 'forward',
+      path: '/posts/zernio_post_9/unpublish',
+      body: { platform: 'twitter', accountId: 'zernio_x' },
+      verifyPostId: 'zernio_post_9',
+      verifyAccountId: 'zernio_x',
+    })
+    expect((result as any).query.profileId).toBe('zernio_profile_1')
+  })
+
+  test('an unpublish without a platform is refused before the provider is called', () => {
+    expect(plan({ method: 'POST', path: '/posts/zernio_post_9/unpublish', body: {} })).toMatchObject({
+      kind: 'deny',
+      status: 400,
+      code: 'invalid_body',
+    })
+    expect(plan({ method: 'GET', path: '/posts/zernio_post_9/unpublish' })).toMatchObject({
+      kind: 'deny',
+      status: 405,
+    })
+  })
+
+  test('a post list read keeps the scope pin and passes only its own filters', () => {
+    const result = plan({
+      path: '/posts',
+      query: { profileId: 'someone_else', limit: '50', sortBy: 'created-desc', accountId: 'x' },
+    })
+    expect(result).toMatchObject({
+      kind: 'forward',
+      path: '/posts',
+      query: { profileId: 'zernio_profile_1', limit: '50', sortBy: 'created-desc' },
+    })
+    // An unlisted parameter is dropped rather than forwarded.
+    expect((result as any).query.accountId).toBeUndefined()
+  })
+
   test('anything outside the allowlist is denied by default', () => {
     for (const path of ['/analytics', '/webhooks/settings', '/', '/profiles/1/2']) {
       expect(plan({ path, method: 'POST' })).toMatchObject({

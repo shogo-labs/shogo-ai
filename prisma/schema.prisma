@@ -5416,7 +5416,7 @@ model SocialAccount {
 model SocialPost {
   id              String    @id @default(uuid())
   workspaceId     String
-  /// draft | scheduled | queued | publishing | published | partial | failed
+  /// draft | scheduled | queued | publishing | published | partial | failed | cancelled
   status          String    @default("draft")
   content         String
   /// JSON array of public media URLs.
@@ -5449,7 +5449,7 @@ model SocialPostTarget {
   platform        String
   customContent   String?
   mediaJson       Json?
-  /// pending | publishing | published | failed | skipped
+  /// pending | publishing | published | failed | skipped | cancelled
   status          String   @default("pending")
   platformPostId  String?
   platformPostUrl String?

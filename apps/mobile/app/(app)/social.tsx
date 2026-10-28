@@ -18,6 +18,8 @@
 import { useCallback, useState } from 'react'
 import {
   ActivityIndicator,
+  Alert,
+  Linking,
   Platform,
   Pressable,
   RefreshControl,
@@ -289,7 +291,9 @@ export default function SocialScreen() {
             />
           ) : null}
           {tab === 'compose' ? <ComposeTab accounts={accounts} call={call} onSent={() => void load(true)} /> : null}
-          {tab === 'calendar' ? <CalendarTab posts={calendar} /> : null}
+          {tab === 'calendar' ? (
+            <CalendarTab posts={calendar} call={call} onChanged={() => void loadTab('calendar')} />
+          ) : null}
           {tab === 'inbox' ? (
             <InboxTab
               conversations={conversations}
@@ -560,7 +564,62 @@ function ComposeTab({
   )
 }
 
-function CalendarTab({ posts }: { posts: any[] }) {
+function CalendarTab({
+  posts,
+  call,
+  onChanged,
+}: {
+  posts: any[]
+  call: (path: string, init?: { method?: string; body?: unknown }) => Promise<any>
+  onChanged: () => void
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const [manual, setManual] = useState<any[]>([])
+
+  const remove = async (id: string) => {
+    if (busyId) return
+    setBusyId(id)
+    setNote(null)
+    setManual([])
+    try {
+      const res = await call(`/posts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      const removed = Array.isArray(res?.removed) ? res.removed : []
+      const left = Array.isArray(res?.manual) ? res.manual : []
+      setManual(left)
+      setNote(
+        res?.deleted
+          ? 'Deleted — nothing was live, so there was nothing to take down.'
+          : `Removed from ${removed.length} target${removed.length === 1 ? '' : 's'}.`,
+      )
+      onChanged()
+    } catch (cause) {
+      setNote(errorMessage(cause, 'Could not delete the post'))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const confirmRemove = (post: any) => {
+    // A published post is live on someone's account, so the dialog says what
+    // will happen to it rather than asking a bare "delete?".
+    const live = post.status === 'published' || post.status === 'partial'
+    const targets: any[] = Array.isArray(post.targets) ? post.targets : []
+    const stuck = targets
+      .filter((target) => target.status === 'published')
+      .map((target) => target.platform)
+    Alert.alert(
+      live ? 'Take this post down?' : 'Delete this post?',
+      live
+        ? `It is published on ${stuck.join(', ') || 'its accounts'}. It comes down wherever the platform allows it; Instagram, TikTok and Snapchat posts have to be removed in the app.`
+        : 'This removes it here and at the provider, so it will not publish.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: live ? 'Take down' : 'Delete', style: 'destructive', onPress: () => void remove(post.id) },
+      ],
+    )
+  }
+
   if (posts.length === 0) {
     return (
       <Card>
@@ -571,11 +630,39 @@ function CalendarTab({ posts }: { posts: any[] }) {
   }
   return (
     <>
+      {note ? <Text className="text-xs text-muted-foreground">{note}</Text> : null}
+      {manual.map((entry, index) => (
+        <Card key={`manual-${index}`}>
+          <Text className="text-foreground text-sm font-medium">
+            Remove this in {entry.platform}
+            {entry.account ? ` (@${entry.account})` : ''}
+          </Text>
+          <Text className="text-xs text-muted-foreground">{entry.reason}</Text>
+          {entry.url ? (
+            <Pressable onPress={() => void Linking.openURL(entry.url)} className="mt-1">
+              <Text className="text-xs text-primary" numberOfLines={1}>
+                {entry.url}
+              </Text>
+            </Pressable>
+          ) : null}
+        </Card>
+      ))}
       {posts.map((post) => (
         <Card key={post.id}>
           <View className="flex-row items-center gap-2">
             <CalendarDays size={14} className="text-muted-foreground" />
             <Text className="text-foreground text-sm font-medium">{post.status}</Text>
+            <View className="flex-1" />
+            <Pressable
+              onPress={() => confirmRemove(post)}
+              disabled={busyId === post.id}
+              className="flex-row items-center gap-1 px-2 py-1 rounded-lg border border-border"
+            >
+              <Trash2 size={12} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">
+                {busyId === post.id ? 'Working…' : 'Delete'}
+              </Text>
+            </Pressable>
           </View>
           <Text className="text-xs text-muted-foreground">
             {post.scheduledFor ? new Date(post.scheduledFor).toLocaleString() : 'Published'}
