@@ -851,7 +851,8 @@ describeIfInfra('a real desktop and two real cloud pods', () => {
     const beat = await fetch(`${podB(topology)}/api/instances/heartbeat`, {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${topology.deviceKey}`,
+        // The heartbeat authenticates with the device key itself, not a session.
+        'x-api-key': topology.deviceKey,
         'content-type': 'application/json',
         'x-shogo-kind': 'desktop',
       },
