@@ -31,8 +31,7 @@ import { MentionNudgeCard } from './MentionNudgeCard'
 import { EphemeralNotice } from './EphemeralNotice'
 import { AddToChannelConfirmHost, confirmsAddToChannel } from './AddToChannelConfirm'
 import { LinkPreviewConsentHost } from './LinkPreviewConsent'
-import { CHROME_SIZE, GlassChip } from './FloatingChrome'
-import { PaneCloseButton } from '../chat/PaneCloseButton'
+import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
 import { MakeCardSheet } from '../boards/MakeCardSheet'
@@ -271,9 +270,14 @@ export function TimelinePane(props: TimelinePaneProps) {
     const id = highlight
     void (async () => {
       if (await seekOlder((messages) => messages.some((m) => m.id === id))) return
-      // Too far back to load into the timeline: show it on its own in the thread view.
       const message = await api.message(id).catch(() => null)
-      if (message && props.onOpenThread) props.onOpenThread(message)
+      if (!message || !props.onOpenThread) return
+      // A thread reply only ever arrives as `?thread=<root>&msg=<reply>` (the link to a running
+      // agent's answer). This pane cannot show one, and re-opening the thread the reader just
+      // closed is not a seek — so a reply whose thread is not open is left alone.
+      if (message.threadRootId) return
+      // Too far back to load into the timeline: show it on its own in the thread view.
+      props.onOpenThread(message)
     })()
   }, [highlight, highlightLoaded, timeline.loading, threadRootId, seekOlder, props.onOpenThread])
 
@@ -544,9 +548,9 @@ export function TimelinePane(props: TimelinePaneProps) {
             style={{ top: topInset, paddingTop: topInset ? 0 : insets.top + 6 }}
             testID="floating-thread-header"
           >
-            <PaneCloseButton variant="glass" label="Back to conversation" onClose={() => props.onClose?.()}>
+            <GlassButton label="Back to conversation" onPress={props.onClose}>
               <ChevronLeft size={22} className="text-foreground" />
-            </PaneCloseButton>
+            </GlassButton>
             <GlassChip className="min-w-0 flex-shrink justify-center px-4" style={{ height: CHROME_SIZE }}>
               <Text className="text-[15px] font-semibold text-foreground" numberOfLines={1}>
                 {crumbs[crumbs.length - 1]?.label ?? 'Thread'}
@@ -608,9 +612,9 @@ export function TimelinePane(props: TimelinePaneProps) {
             }))}
           />
           {props.onClose && (
-            <PaneCloseButton label="Close thread" onClose={props.onClose}>
+            <Pressable onPress={props.onClose} accessibilityLabel="Close thread" className="rounded-md p-1.5 active:bg-muted hover:bg-muted">
               <X size={16} className="text-muted-foreground" />
-            </PaneCloseButton>
+            </Pressable>
           )}
         </View>
       )}

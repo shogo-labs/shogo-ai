@@ -247,7 +247,10 @@ export default function ConversationScreen() {
       router.back()
       return
     }
-    router.setParams({ thread: undefined } as any)
+    // `msg` belongs to the thread it came with (`?thread=<root>&msg=<reply>` — the link to a
+    // running agent's answer). Left behind, it points the channel at a reply it cannot show,
+    // and the seek fallback re-opened the pane on the next frame.
+    router.setParams({ thread: undefined, msg: undefined } as any)
   }, [navigation, router, conversationId])
   const openProjectPane = useCallback(
     (projectId: string) => router.setParams({ project: projectId, thread: undefined, files: undefined, doc: undefined } as any),

@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The thread pane's X closes the thread while an agent is still replying
- * (SHO-243).
+ * A thread opened from a *running* agent (SHO-243) arrives as
+ * `/c/<id>?thread=<root>&msg=<runningReplyId>` — see `openActiveChat` in
+ * `lib/open-active-chat.ts`. The X closed the pane and it came back one frame
+ * later, because `closeThread` cleared `thread` and left `msg`: the channel then
+ * had a highlight it cannot show (the reply is a *thread* reply), and
+ * `TimelinePane`'s seek fallback answered that by re-opening the thread.
  *
- * The press is taken from the pointer gesture, not only from RN-web's
- * `onPress`: the browser drops the synthetic `click` when the button's DOM node
- * is replaced between mousedown and mouseup, and a reply streaming into the
- * pane re-renders the header on every delta. So the last two tests press the
- * button *without* a click, which is exactly the case `onPress` alone loses.
+ * So these tests assert the pane stays closed — sampled every animation frame
+ * for 2.5s after the press, which is the window the one-frame reappearance
+ * shows through — and that a channel left pointing at a thread reply does not
+ * open the thread on its own.
  *
  *   npx playwright test --config e2e/local/playwright.config.ts \
  *     team-chat-thread-close-streaming --project chromium --retries 0
@@ -20,11 +23,7 @@ import { dirname } from "path"
 import { expect, test, type Page } from "@playwright/test"
 import { activateTeamWorkspace, api, cleanupTeamNav, seedTeamNav, signIn, SCRIPT_PATH, type TeamNavSeed } from "./team-nav-seed"
 
-/**
- * The scripted agent's stream speed is global, so a test that has to stay open
- * while the pane is closed gets a slow one — and the seed's own script is put
- * back in `finally`.
- */
+/** The scripted agent's stream speed is global, so a test that needs the run open gets a slow one. */
 function writeScript(seed: TeamNavSeed, delayMs: number, extra: Record<string, unknown[]>) {
   mkdirSync(dirname(SCRIPT_PATH), { recursive: true })
   writeFileSync(
@@ -39,43 +38,35 @@ function writeScript(seed: TeamNavSeed, delayMs: number, extra: Record<string, u
   )
 }
 
-const closeButton = (page: Page) => page.getByRole("button", { name: "Close thread" })
+const closeButton = (page: Page) => page.getByLabel("Close thread")
 
 /**
- * A press with no `click` after it: pointerdown on the button, pointerup on the
- * document — the gesture a browser leaves behind when it decides the two
- * landed on different nodes. `release` moves the pointer off the button first.
+ * Records every frame in which the URL has `?thread=` again *after* it first
+ * dropped it — the reappearance Russell saw, which a single assertion at the
+ * moment of the press cannot catch.
  */
-async function pressWithoutClick(page: Page, label: string, release?: { x: number; y: number }) {
-  await page.getByRole("button", { name: label }).evaluate((element, releasePoint) => {
-    const box = element.getBoundingClientRect()
-    const start = { x: box.left + box.width / 2, y: box.top + box.height / 2 }
-    const at = (x: number, y: number, buttons: number) => ({
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      pointerId: 1,
-      pointerType: "mouse",
-      isPrimary: true,
-      button: 0,
-      buttons,
-      clientX: x,
-      clientY: y,
-    })
-    element.dispatchEvent(new PointerEvent("pointerdown", at(start.x, start.y, 1)))
-    document.dispatchEvent(
-      new PointerEvent("pointerup", at(releasePoint?.x ?? start.x, releasePoint?.y ?? start.y, 0)),
-    )
-  }, release)
+async function watchForReopen(page: Page) {
+  await page.evaluate(() => {
+    const w = window as any
+    w.__reopens = [] as Array<{ ms: number; url: string }>
+    const start = performance.now()
+    let closed = false
+    const sample = () => {
+      const hasThread = location.search.includes("thread=")
+      if (!hasThread) closed = true
+      else if (closed) w.__reopens.push({ ms: Math.round(performance.now() - start), url: location.href })
+      if (performance.now() - start < 2_500) requestAnimationFrame(sample)
+    }
+    requestAnimationFrame(sample)
+  })
 }
 
-test.describe("Team chat thread pane: closing while an agent replies", () => {
+test.describe("Team chat thread pane: closing a thread opened from a running agent", () => {
   test.describe.configure({ mode: "serial" })
 
   let seed: TeamNavSeed
   let seeder: Page
   let rootId: string
-  let rootText: string
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(180_000)
@@ -84,7 +75,7 @@ test.describe("Team chat thread pane: closing while an agent replies", () => {
     await signIn(seeder)
     seed = await seedTeamNav(seeder)
 
-    rootText = `close-thread root ${seed.suffix}`
+    const rootText = `close-thread root ${seed.suffix}`
     await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, { text: rootText })
     const list = await api(seeder, "GET", `/api/conversations/${seed.channelId}/messages`)
     rootId = (list.json?.messages ?? []).find((m: any) => !m.threadRootId && m.text === rootText)?.id
@@ -100,142 +91,66 @@ test.describe("Team chat thread pane: closing while an agent replies", () => {
   test.beforeEach(async ({ page }) => {
     await signIn(page)
     await activateTeamWorkspace(page, seed.workspaceId)
-    // The wide layout puts the thread in a side pane, with the header X.
     await page.setViewportSize({ width: 1280, height: 720 })
   })
 
   /**
-   * Opens the thread and starts a reply that is still streaming when the test
-   * presses the X. Returns once the pane shows the agent's run.
+   * Starts a reply in the thread that is still streaming when the test presses
+   * the X, and returns that reply's id — the `msg` of a running-agent link.
    */
-  async function openThreadWithRunningReply(page: Page): Promise<string> {
+  async function startStreamingReply(): Promise<string> {
     const reply = `Reading the build logs now: three flakes, all from the same checkout timeout (${seed.suffix}).`
     // 2000ms per streamed chunk keeps the run open for the length of the test.
     writeScript(seed, 2000, { [seed.idleAgent]: [{ reply }] })
-
-    await page.goto(`/c/${seed.channelId}?thread=${rootId}`)
-    // By accessible name: `main`'s X has no `accessibilityRole`, and every
-    // assertion below should be about the press, not about the role.
-    await expect(page.getByLabel("Close thread")).toBeVisible({ timeout: 60_000 })
-
     const mention = `<@a:p:${seed.idleAgentProjectId}> read the build logs`
     await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, { text: mention, threadRootId: rootId })
-    await expect(page.getByLabel(`Jump to ${seed.idleAgent}'s reply`)).toBeVisible({ timeout: 30_000 })
-    return reply
+
+    let replyId: string | undefined
+    await expect
+      .poll(
+        async () => {
+          const thread = await api(seeder, "GET", `/api/conversations/${seed.channelId}/messages?threadRootId=${rootId}`)
+          const running = (thread.json?.messages ?? []).find(
+            (m: any) => m.authorAgent?.name === seed.idleAgent && m.agentStatus === "running",
+          )
+          replyId = running?.id
+          return Boolean(running)
+        },
+        { timeout: 60_000, intervals: [500, 1000, 2000] },
+      )
+      .toBe(true)
+    return replyId!
   }
 
-  test("the X closes the thread while the reply is streaming", async ({ page }) => {
+  test("the X closes it and the pane stays closed", async ({ page }) => {
     test.setTimeout(180_000)
-    await openThreadWithRunningReply(page)
+    const replyId = await startStreamingReply()
 
-    await page.getByLabel("Close thread").click()
+    // Exactly the link a running agent's "running now" card opens.
+    await page.goto(`/c/${seed.channelId}?thread=${rootId}&msg=${replyId}`)
+    await expect(closeButton(page)).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByLabel(`Jump to ${seed.idleAgent}'s reply`)).toBeVisible({ timeout: 30_000 })
 
-    await expect(page).not.toHaveURL(/thread=/, { timeout: 15_000 })
-    await expect(closeButton(page)).toHaveCount(0)
+    await watchForReopen(page)
+    await closeButton(page).click()
 
-    // The deltas that arrive afterwards must not put the pane back.
-    await page.waitForTimeout(5_000)
+    await page.waitForTimeout(2_600)
+    const reopens = await page.evaluate(() => (window as any).__reopens)
+    expect(reopens, `thread= came back at ${JSON.stringify(reopens)}`).toEqual([])
     await expect(page).not.toHaveURL(/thread=/)
     await expect(closeButton(page)).toHaveCount(0)
-    writeScript(seed, 100, {})
   })
 
-  test("the X closes when the browser drops the click", async ({ page }) => {
+  test("a channel left pointing at a thread reply does not open the thread by itself", async ({ page }) => {
     test.setTimeout(180_000)
-    await openThreadWithRunningReply(page)
+    const replyId = await startStreamingReply()
 
-    await pressWithoutClick(page, "Close thread")
+    // What `router.back()` lands on when the thread was pushed on top of a running-agent link.
+    await page.goto(`/c/${seed.channelId}?msg=${replyId}`)
+    await expect(page.getByText(`close-thread root ${seed.suffix}`, { exact: false }).first()).toBeVisible({ timeout: 60_000 })
+    await page.waitForTimeout(2_500)
 
-    await expect(page).not.toHaveURL(/thread=/, { timeout: 15_000 })
+    await expect(page).not.toHaveURL(/thread=/)
     await expect(closeButton(page)).toHaveCount(0)
-    writeScript(seed, 100, {})
-  })
-
-  test("a press that leaves the button does not close the thread", async ({ page }) => {
-    test.setTimeout(180_000)
-    await openThreadWithRunningReply(page)
-
-    // Drag off the header before releasing: not a press on the X.
-    await pressWithoutClick(page, "Close thread", { x: 4, y: 4 })
-    await page.waitForTimeout(1_000)
-
-    await expect(page).toHaveURL(new RegExp(`thread=${rootId}`))
-    await expect(closeButton(page)).toBeVisible()
-    writeScript(seed, 100, {})
-  })
-
-  /**
-   * The mechanism the report points at (SHO-243 hypothesis b), reproduced.
-   *
-   * RN-web's `PressResponder` terminates the gesture when a `selectionchange`
-   * with a live selection lands while the pointer is down
-   * (react-native-web/dist/modules/usePressEvents/PressResponder.js:274), and
-   * its `click` handler then calls `preventDefault` instead of `onPress`
-   * (:311) — no error, nothing in the DOM, the press is simply gone. A reply
-   * streaming into the pane re-renders it on every delta, which is what moves a
-   * live selection; an idle pane does not re-render, which is why the X works
-   * again once the agent is done.
-   *
-   * Measured on `main` before the fix: the click's `defaultPrevented` is true
-   * and the pane stays open. With the pointer fallback the release still closes
-   * it.
-   */
-  test("a live selection that moves during the press does not swallow the close", async ({ page }) => {
-    test.setTimeout(180_000)
-    await openThreadWithRunningReply(page)
-
-    // A person's selection, made before they reach for the X: the thread's root
-    // message. (Selecting the streaming reply itself does not work — the delta
-    // that replaces its text node collapses the selection, which is invalid to
-    // RN-web and terminates nothing.)
-    await page.evaluate((needle) => {
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-      let node: Text | null = null
-      while (walker.nextNode()) {
-        const text = walker.currentNode as Text
-        if (text.nodeValue?.includes(needle)) {
-          node = text
-          break
-        }
-      }
-      if (!node) throw new Error(`no text node containing ${needle}`)
-      const range = document.createRange()
-      range.selectNodeContents(node)
-      const selection = window.getSelection()
-      if (!selection) throw new Error("no selection")
-      selection.removeAllRanges()
-      selection.addRange(range)
-    }, "close-thread root")
-    await expect
-      .poll(() => page.evaluate(() => window.getSelection()?.toString().length ?? 0))
-      .toBeGreaterThan(0)
-
-    // By its accessible name, not its role: on `main` the X is a Pressable with
-    // no `accessibilityRole`, so this locator has to find the same node on both
-    // sides for the failure below to be about the press.
-    const box = await page.getByLabel("Close thread").boundingBox()
-    expect(box, "the X is laid out").toBeTruthy()
-    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2)
-    await page.mouse.down()
-
-    // The reply keeps streaming and the selection moves under the press.
-    await page.evaluate(() => {
-      const selection = window.getSelection()
-      const range = selection?.getRangeAt(0)
-      if (!selection || !range) throw new Error("selection was dropped")
-      const node = range.startContainer as Text
-      range.setEnd(node, Math.max(1, node.length - 1))
-      selection.removeAllRanges()
-      selection.addRange(range)
-    })
-    // `selectionchange` is dispatched in its own task, so the release has to
-    // come after the browser has delivered it — a real press outlives a frame.
-    await page.waitForTimeout(250)
-
-    await page.mouse.up()
-
-    await expect(page).not.toHaveURL(/thread=/, { timeout: 15_000 })
-    await expect(closeButton(page)).toHaveCount(0)
-    writeScript(seed, 100, {})
   })
 })

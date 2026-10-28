@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react"
-import { ActivityIndicator, ScrollView, Text, View } from "react-native"
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native"
 import { X } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { ConversationDetail, Mentionables } from "../../../lib/team-chat-api"
@@ -20,7 +20,6 @@ import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 import { linkLabel, type TaskLink } from "../../../lib/task-link"
 import type { TaskThreadTarget } from "../../../lib/task-thread-pane-store"
 import { TimelinePane } from "../../team-chat/TimelinePane"
-import { PaneCloseButton } from "../PaneCloseButton"
 import { ProjectChatView } from "../../project/ProjectChatView"
 
 const api = teamChatApi()
@@ -44,9 +43,15 @@ function Header({ target, label, subtitle, onClose }: { target: TaskThreadTarget
         </Text>
       </View>
       {target.loading ? <ActivityIndicator size="small" /> : null}
-      <PaneCloseButton label="Close task thread" onClose={onClose} hitSlop={8} className="rounded p-1 active:opacity-60">
+      <Pressable
+        onPress={onClose}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel="Close task thread"
+        className="rounded p-1 active:opacity-60"
+      >
         <X size={14} className="text-muted-foreground" />
-      </PaneCloseButton>
+      </Pressable>
     </View>
   )
 }
