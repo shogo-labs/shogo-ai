@@ -7,11 +7,16 @@ import {
   getChatAttachmentReadUrl,
   verifyAttachmentToken,
 } from '../lib/chat-attachments'
+import { readConversationFileStream, wantsInlineBytes } from '../lib/conversation-files'
 
 /**
  * Attachment URLs are capability URLs. Image/video elements and native image
  * loaders cannot reliably attach the normal session credential, so the HMAC
  * query token is the credential for this read-only redirect.
+ *
+ * A script fetch cannot follow that redirect across origins — the bucket's
+ * wildcard ACAO is refused for a credentialed request — so for those the bytes
+ * are streamed back through the API instead.
  */
 export function chatAttachmentRoutes(): Hono {
   const router = new Hono()
@@ -28,6 +33,17 @@ export function chatAttachmentRoutes(): Hono {
     }
 
     try {
+      if (wantsInlineBytes(c)) {
+        const stream = await readConversationFileStream(key)
+        return new Response(stream.body as any, {
+          headers: {
+            'Content-Type': stream.contentType ?? 'application/octet-stream',
+            ...(stream.contentLength !== null ? { 'Content-Length': String(stream.contentLength) } : {}),
+            'Cache-Control': 'private, max-age=300',
+            'X-Content-Type-Options': 'nosniff',
+          },
+        })
+      }
       const url = await getChatAttachmentReadUrl(key)
       return c.redirect(url, 302)
     } catch (error: any) {

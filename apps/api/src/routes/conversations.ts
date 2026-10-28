@@ -22,7 +22,9 @@ import {
   parseByteRange,
   putConversationFile,
   readConversationFile,
+  readConversationFileStream,
   verifyAttachmentToken,
+  wantsInlineBytes,
 } from '../lib/conversation-files'
 import {
   ConversationError,
@@ -1061,8 +1063,6 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       // so following one of those links would open the file rather than save
       // it — this is what makes the card's download actually download.
       const download = c.req.query('dl') === '1'
-      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined)
-      if (file.kind === 'redirect') return c.redirect(file.url, 302)
       const inline = !download && (/^(image|video|audio)\//.test(row.mimeType) || row.mimeType === 'application/pdf')
       const disposition = `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`
       const baseHeaders = {
@@ -1071,8 +1071,37 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         'Cache-Control': 'private, max-age=300',
         'Accept-Ranges': 'bytes',
       }
+      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined)
+      if (file.kind === 'redirect') {
+        // An <img>, <video>, iframe or link click follows the redirect to object
+        // storage happily, and a native client does too. A script fetch does
+        // not: the bucket's wildcard ACAO is refused for a credentialed
+        // cross-origin request, so the bytes come back through the API instead.
+        if (!wantsInlineBytes(c)) return c.redirect(file.url, 302)
+        const range = row.size > 0 ? parseByteRange(c.req.header('range'), row.size) : { kind: 'none' as const }
+        if (range.kind === 'unsatisfiable') {
+          return new Response(null, {
+            status: 416,
+            headers: { ...baseHeaders, 'Content-Range': `bytes */${row.size}` },
+          })
+        }
+        const stream = await readConversationFileStream(row.storageKey, {
+          range: range.kind === 'range' ? range : null,
+        })
+        return new Response(stream.body as any, {
+          status: range.kind === 'range' ? 206 : 200,
+          headers: {
+            ...baseHeaders,
+            'X-Content-Type-Options': 'nosniff',
+            ...(stream.contentLength !== null ? { 'Content-Length': String(stream.contentLength) } : {}),
+            ...(range.kind === 'range'
+              ? { 'Content-Range': `bytes ${range.start}-${range.end}/${row.size}` }
+              : {}),
+          },
+        })
+      }
       // Served locally the whole file is in memory, so a range is a slice of
-      // it. Cloud mode redirects to S3 above, which handles ranges itself.
+      // it.
       const bytes = file.bytes as Uint8Array
       const range = parseByteRange(c.req.header('range'), bytes.byteLength)
       if (range.kind === 'unsatisfiable') {
