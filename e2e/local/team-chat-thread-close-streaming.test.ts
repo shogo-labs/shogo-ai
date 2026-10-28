@@ -114,7 +114,9 @@ test.describe("Team chat thread pane: closing while an agent replies", () => {
     writeScript(seed, 2000, { [seed.idleAgent]: [{ reply }] })
 
     await page.goto(`/c/${seed.channelId}?thread=${rootId}`)
-    await expect(closeButton(page)).toBeVisible({ timeout: 60_000 })
+    // By accessible name: `main`'s X has no `accessibilityRole`, and every
+    // assertion below should be about the press, not about the role.
+    await expect(page.getByLabel("Close thread")).toBeVisible({ timeout: 60_000 })
 
     const mention = `<@a:p:${seed.idleAgentProjectId}> read the build logs`
     await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, { text: mention, threadRootId: rootId })
@@ -126,7 +128,7 @@ test.describe("Team chat thread pane: closing while an agent replies", () => {
     test.setTimeout(180_000)
     await openThreadWithRunningReply(page)
 
-    await closeButton(page).click()
+    await page.getByLabel("Close thread").click()
 
     await expect(page).not.toHaveURL(/thread=/, { timeout: 15_000 })
     await expect(closeButton(page)).toHaveCount(0)
@@ -159,6 +161,81 @@ test.describe("Team chat thread pane: closing while an agent replies", () => {
 
     await expect(page).toHaveURL(new RegExp(`thread=${rootId}`))
     await expect(closeButton(page)).toBeVisible()
+    writeScript(seed, 100, {})
+  })
+
+  /**
+   * The mechanism the report points at (SHO-243 hypothesis b), reproduced.
+   *
+   * RN-web's `PressResponder` terminates the gesture when a `selectionchange`
+   * with a live selection lands while the pointer is down
+   * (react-native-web/dist/modules/usePressEvents/PressResponder.js:274), and
+   * its `click` handler then calls `preventDefault` instead of `onPress`
+   * (:311) — no error, nothing in the DOM, the press is simply gone. A reply
+   * streaming into the pane re-renders it on every delta, which is what moves a
+   * live selection; an idle pane does not re-render, which is why the X works
+   * again once the agent is done.
+   *
+   * Measured on `main` before the fix: the click's `defaultPrevented` is true
+   * and the pane stays open. With the pointer fallback the release still closes
+   * it.
+   */
+  test("a live selection that moves during the press does not swallow the close", async ({ page }) => {
+    test.setTimeout(180_000)
+    await openThreadWithRunningReply(page)
+
+    // A person's selection, made before they reach for the X: the thread's root
+    // message. (Selecting the streaming reply itself does not work — the delta
+    // that replaces its text node collapses the selection, which is invalid to
+    // RN-web and terminates nothing.)
+    await page.evaluate((needle) => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+      let node: Text | null = null
+      while (walker.nextNode()) {
+        const text = walker.currentNode as Text
+        if (text.nodeValue?.includes(needle)) {
+          node = text
+          break
+        }
+      }
+      if (!node) throw new Error(`no text node containing ${needle}`)
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      const selection = window.getSelection()
+      if (!selection) throw new Error("no selection")
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }, "close-thread root")
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString().length ?? 0))
+      .toBeGreaterThan(0)
+
+    // By its accessible name, not its role: on `main` the X is a Pressable with
+    // no `accessibilityRole`, so this locator has to find the same node on both
+    // sides for the failure below to be about the press.
+    const box = await page.getByLabel("Close thread").boundingBox()
+    expect(box, "the X is laid out").toBeTruthy()
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2)
+    await page.mouse.down()
+
+    // The reply keeps streaming and the selection moves under the press.
+    await page.evaluate(() => {
+      const selection = window.getSelection()
+      const range = selection?.getRangeAt(0)
+      if (!selection || !range) throw new Error("selection was dropped")
+      const node = range.startContainer as Text
+      range.setEnd(node, Math.max(1, node.length - 1))
+      selection.removeAllRanges()
+      selection.addRange(range)
+    })
+    // `selectionchange` is dispatched in its own task, so the release has to
+    // come after the browser has delivered it — a real press outlives a frame.
+    await page.waitForTimeout(250)
+
+    await page.mouse.up()
+
+    await expect(page).not.toHaveURL(/thread=/, { timeout: 15_000 })
+    await expect(closeButton(page)).toHaveCount(0)
     writeScript(seed, 100, {})
   })
 })
