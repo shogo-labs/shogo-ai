@@ -29,6 +29,8 @@ import {
   readWorkspaceFile,
   readAllSrcCodeFromDisk,
   listSrcFilePathsFromDisk,
+  configuredRecurringReminder,
+  fileWrites,
 } from './eval-helpers'
 import { buildSkillServerSchema } from '../workspace-defaults'
 
@@ -116,7 +118,7 @@ function canvasCodeFetches(r: EvalResult): boolean {
 }
 
 function subagentWasSpawned(r: EvalResult): boolean {
-  return usedTool(r, 'task') || usedTool(r, 'agent_spawn')
+  return usedTool(r, 'task') || usedTool(r, 'agent_spawn') || usedTool(r, 'agent_create')
 }
 
 function countSubagentSpawns(r: EvalResult): number {
@@ -448,13 +450,15 @@ const PHASE_1: AgentEval = {
     // --- Interaction phase: validate the agent asks good questions ---
     {
       id: 'asked-about-deadlines',
-      description: 'Agent asked for specific grant deadline dates',
+      description: 'Agent asked for specific grant deadline dates (ask_user or directly in the reply)',
       points: 3,
       phase: 'interaction',
       validate: (r) => {
         const allText = (toolCallsJson(r) + ' ' + r.responseText).toLowerCase()
-        return allText.includes('ask_user') &&
+        const askedViaTool = allText.includes('ask_user') &&
           (allText.includes('deadline') || allText.includes('date') || allText.includes('when'))
+        const askedInReply = /(exact|specific|precise)[^.?!\n]{0,40}(due )?(dates?|deadlines?)|which (day|date)s?|what (day|date)s?|(send|tell|give) me[^.?!\n]{0,40}(dates?|deadlines?)/i.test(r.responseText)
+        return askedViaTool || askedInReply
       },
     },
     {
@@ -497,10 +501,10 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'heartbeat-configured',
-      description: 'Configured heartbeat or recurring reminders for deadlines',
+      description: 'Configured reminders for deadlines (heartbeat, schedule, or recurring calendar event)',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
+      validate: (r) => configuredRecurringReminder(r),
     },
     {
       id: 'deadline-mention',
@@ -911,11 +915,12 @@ const PHASE_4: AgentEval = {
     },
     {
       id: 'grant-report-data',
-      description: 'Response references enrollment/attendance and outcomes',
+      description: 'A turn\'s response or a written report references enrollment/attendance and outcomes',
       points: 5,
       phase: 'execution',
       validate: (r) => {
-        const t = r.responseText.toLowerCase()
+        const report = fileWrites(r).filter(w => /report|gates/i.test(w.path)).map(w => w.content).join('\n')
+        const t = ((r.allResponseText || r.responseText) + '\n' + report).toLowerCase()
         const a = t.includes('enrollment') || t.includes('attendance')
         const b = t.includes('outcome') || t.includes('improvement') || t.includes('grade')
         return a && b

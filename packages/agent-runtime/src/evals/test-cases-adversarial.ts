@@ -25,7 +25,9 @@ import {
   toolCallCount,
   responseContains,
   toolCallsJson,
+  fileWrites,
 } from './eval-helpers'
+import { buildSkillServerSchema } from '../workspace-defaults'
 
 // ---------------------------------------------------------------------------
 // Shared canvas v2 config
@@ -44,30 +46,20 @@ const V2_CONFIG = JSON.stringify({
 // ---------------------------------------------------------------------------
 
 function isCodeFile(path: string): boolean {
-  return /^src\/.*\.(tsx?|jsx?)$/.test(path)
+  return /(^|\/)src\/.*\.(tsx?|jsx?)$/.test(path)
 }
 
+/** Wrote or edited canvas source by any route (write_file, edit_file, exec heredoc…). */
 function wroteCanvasFile(r: EvalResult): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    const path = String((t.input as any).path ?? '')
-    return isCodeFile(path)
-  })
+  return fileWrites(r).some(w => isCodeFile(w.path))
 }
 
-function wroteCanvasFileInFinalTurn(r: EvalResult): boolean {
-  return r.finalTurnToolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    const path = String((t.input as any).path ?? '')
-    return isCodeFile(path)
-  })
-}
 
+/** Canvas code the agent wrote this eval (writes only — seeded files must not pass criteria for free). */
 function allCanvasCode(r: EvalResult): string {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => isCodeFile(String((t.input as any).path ?? '')))
-    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
+  return fileWrites(r)
+    .filter(w => isCodeFile(w.path))
+    .map(w => w.content)
     .join('\n')
     .toLowerCase()
 }
@@ -76,30 +68,73 @@ function anyCanvasCodeContains(r: EvalResult, term: string): boolean {
   return allCanvasCode(r).includes(term.toLowerCase())
 }
 
+/**
+ * True if the reply declines the pivot itself ("I can't switch — the CRM is
+ * already built"). Unrelated "can't" (e.g. a missing dependency) doesn't count.
+ */
 function responseRefusesPivot(r: EvalResult): boolean {
   const t = r.responseText.toLowerCase()
-  return (
-    (t.includes("can't") || t.includes('cannot') || t.includes('unable')) &&
-    (t.includes('already') || t.includes('crm') || t.includes('built'))
-  ) || (t.includes('unable') && t.includes('switch'))
+  return /\b(can'?t|cannot|unable to|won'?t|not able to)\b[^.!?\n]{0,40}\b(switch|pivot|replace|scrap|discard|forget|throw away|start over|change (it|direction|course)|build (you )?(a|the) (project )?tracker)/.test(t) ||
+    /\b(already (built|invested|made)|we'?ve already)\b[^.!?\n]{0,60}\b(so|instead|rather than|keep|stick with)\b[^.!?\n]{0,40}\b(crm)\b/.test(t)
+}
+
+/**
+ * True if the agent asked a scoping question (ask_user, or a question in the
+ * reply) before writing any canvas code. Building after the user answered is fine.
+ */
+function askedBeforeBuilding(r: EvalResult): boolean {
+  const firstWrite = r.toolCalls.findIndex(t => fileWrites(r, [t]).some(w => isCodeFile(w.path)))
+  const firstAsk = r.toolCalls.findIndex(t => t.name === 'ask_user')
+  if (firstAsk >= 0 && (firstWrite < 0 || firstAsk < firstWrite)) return true
+  return firstWrite < 0 && r.responseText.includes('?')
+}
+
+/** Deterministic PRNG so the fixture (and its expected totals) is stable across runs. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
 }
 
 function generateLargeSalesCsv(rows: number): string {
+  const random = mulberry32(500)
   const regions = ['Northeast', 'Southeast', 'Midwest', 'West', 'Southwest']
   const products = ['Widget A', 'Widget B', 'Gadget X', 'Gadget Y', 'Service Plan']
   const salespeople = ['Alice', 'Bob', 'Carol', 'Dave', 'Eve', 'Frank']
   const lines = ['date,product,amount,region,salesperson']
   for (let i = 0; i < rows; i++) {
-    const month = String(Math.floor(Math.random() * 12) + 1).padStart(2, '0')
-    const day = String(Math.floor(Math.random() * 28) + 1).padStart(2, '0')
+    const month = String(Math.floor(random() * 12) + 1).padStart(2, '0')
+    const day = String(Math.floor(random() * 28) + 1).padStart(2, '0')
     const date = `2026-${month}-${day}`
     const product = products[i % products.length]
-    const amount = Math.floor(Math.random() * 10000) + 500
+    const amount = Math.floor(random() * 10000) + 500
     const region = regions[i % regions.length]
     const salesperson = salespeople[i % salespeople.length]
     lines.push(`${date},${product},${amount},${region},${salesperson}`)
   }
   return lines.join('\n')
+}
+
+const LARGE_SALES_CSV = generateLargeSalesCsv(500)
+const LARGE_SALES_TOTAL = LARGE_SALES_CSV.split('\n').slice(1)
+  .reduce((sum, line) => sum + Number(line.split(',')[2]), 0)
+
+/** Dollar amounts in `text` ("$2.78M", "$2,781,234", "2.78 million"), in dollars. */
+function dollarAmounts(text: string): number[] {
+  const out: number[] = []
+  for (const m of text.matchAll(/\$?\s?(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s?(m\b|mm\b|million|k\b|thousand)?/gi)) {
+    let n = Number(m[1].replace(/,/g, ''))
+    const unit = (m[2] || '').toLowerCase()
+    if (unit.startsWith('m')) n *= 1_000_000
+    else if (unit.startsWith('k') || unit === 'thousand') n *= 1_000
+    out.push(n)
+  }
+  return out
 }
 
 const DIRTY_CLIENTS_CSV = [
@@ -127,6 +162,123 @@ const REVENUE_Q1_V2 = [
   'February,41000,28000',
   'March,55000,35000',
 ].join('\n')
+
+const CRM_COMPONENT = [
+  'import { useState } from "react"',
+  '',
+  'type Client = { id: string; company: string; contact: string; email: string; notes: string }',
+  '',
+  'export function CRM() {',
+  '  const [clients, setClients] = useState<Client[]>([',
+  '    { id: "c1", company: "Acme Corp", contact: "John Smith", email: "john@acme.com", notes: "Renewal in Q3" },',
+  '    { id: "c2", company: "Bloom Beauty", contact: "Sarah Lee", email: "sarah@bloom.com", notes: "" },',
+  '  ])',
+  '  const [company, setCompany] = useState("")',
+  '  const addClient = () => {',
+  '    if (!company.trim()) return',
+  '    setClients(cs => [...cs, { id: crypto.randomUUID(), company, contact: "", email: "", notes: "" }])',
+  '    setCompany("")',
+  '  }',
+  '  return (',
+  '    <section className="space-y-3">',
+  '      <h2 className="text-lg font-semibold">Clients</h2>',
+  '      <div className="flex gap-2">',
+  '        <input className="border rounded px-2 py-1" value={company} onChange={e => setCompany(e.target.value)} placeholder="Company" />',
+  '        <button className="border rounded px-3" onClick={addClient}>Add</button>',
+  '      </div>',
+  '      <ul className="divide-y">',
+  '        {clients.map(c => (',
+  '          <li key={c.id} className="py-2"><b>{c.company}</b> — {c.contact} {c.email}</li>',
+  '        ))}',
+  '      </ul>',
+  '    </section>',
+  '  )',
+  '}',
+].join('\n')
+
+const PROJECT_TRACKER_COMPONENT = [
+  'import { useState } from "react"',
+  '',
+  'type Project = { id: string; name: string; client: string; status: "todo" | "active" | "done" }',
+  '',
+  'export function ProjectTracker() {',
+  '  const [projects] = useState<Project[]>([',
+  '    { id: "p1", name: "Website redesign", client: "Acme Corp", status: "active" },',
+  '    { id: "p2", name: "Spring campaign", client: "Bloom Beauty", status: "todo" },',
+  '    { id: "p3", name: "Onboarding kit", client: "Acme Corp", status: "done" },',
+  '  ])',
+  '  return (',
+  '    <section className="space-y-3">',
+  '      <h2 className="text-lg font-semibold">Projects</h2>',
+  '      {(["todo", "active", "done"] as const).map(s => (',
+  '        <div key={s}>',
+  '          <h3 className="font-medium capitalize">{s}</h3>',
+  '          <ul>{projects.filter(p => p.status === s).map(p => <li key={p.id}>{p.name} ({p.client})</li>)}</ul>',
+  '        </div>',
+  '      ))}',
+  '    </section>',
+  '  )',
+  '}',
+].join('\n')
+
+const CRM_SCHEMA_MODELS = `model Client {
+  id        String   @id @default(cuid())
+  company   String
+  contact   String
+  email     String
+  notes     String   @default("")
+  createdAt DateTime @default(now())
+}`
+
+const PROJECT_SCHEMA_MODELS = `model Project {
+  id        String   @id @default(cuid())
+  name      String
+  client    String
+  status    String   @default("todo")
+  createdAt DateTime @default(now())
+}`
+
+/** Workspace where the CRM from the conversation history actually exists. */
+function crmWorkspace(): Record<string, string> {
+  return {
+    'config.json': V2_CONFIG,
+    'src/components/CRM.tsx': CRM_COMPONENT,
+    'src/App.tsx': [
+      'import { CRM } from "./components/CRM"',
+      'export default function App() {',
+      '  return <main className="p-4"><CRM /></main>',
+      '}',
+    ].join('\n'),
+    'prisma/schema.prisma': buildSkillServerSchema(CRM_SCHEMA_MODELS),
+  }
+}
+
+/** Workspace with both apps from the history: CRM + project tracker, unrelated (project.client is free text). */
+function crmAndTrackerWorkspace(): Record<string, string> {
+  return {
+    'config.json': V2_CONFIG,
+    'src/components/CRM.tsx': CRM_COMPONENT,
+    'src/components/ProjectTracker.tsx': PROJECT_TRACKER_COMPONENT,
+    'src/App.tsx': [
+      'import { useState } from "react"',
+      'import { CRM } from "./components/CRM"',
+      'import { ProjectTracker } from "./components/ProjectTracker"',
+      'export default function App() {',
+      '  const [tab, setTab] = useState<"crm" | "tracker">("crm")',
+      '  return (',
+      '    <main className="p-4 space-y-4">',
+      '      <nav className="flex gap-2">',
+      '        <button onClick={() => setTab("crm")}>CRM</button>',
+      '        <button onClick={() => setTab("tracker")}>Projects</button>',
+      '      </nav>',
+      '      {tab === "crm" ? <CRM /> : <ProjectTracker />}',
+      '    </main>',
+      '  )',
+      '}',
+    ].join('\n'),
+    'prisma/schema.prisma': buildSkillServerSchema(CRM_SCHEMA_MODELS + '\n\n' + PROJECT_SCHEMA_MODELS),
+  }
+}
 
 function minimalCanvasWorkspace(extra: Record<string, string> = {}): Record<string, string> {
   return {
@@ -192,7 +344,7 @@ const ADV_BUILD_THEN_PIVOT: AgentEval = {
     },
   ],
   input: "Actually no, I need a project tracker instead. Forget the CRM.",
-  workspaceFiles: minimalCanvasWorkspace(),
+  workspaceFiles: crmWorkspace(),
   toolMocks: ADVERSARIAL_MOCKS,
   initialMode: 'canvas' as const,
   useRuntimeTemplate: true,
@@ -204,7 +356,7 @@ const ADV_BUILD_THEN_PIVOT: AgentEval = {
       description: 'Wrote or updated canvas source for the new direction',
       points: 5,
       phase: 'execution',
-      validate: (r) => wroteCanvasFile(r) || toolCallCount(r, 'edit_file') > 0,
+      validate: (r) => wroteCanvasFile(r),
     },
     {
       id: 'project-tracker-semantics',
@@ -246,7 +398,7 @@ const ADV_COMBINE_APPS: AgentEval = {
   ],
   input:
     'Now combine them into one app — I want to see clients and their projects together in one view',
-  workspaceFiles: minimalCanvasWorkspace(),
+  workspaceFiles: crmAndTrackerWorkspace(),
   toolMocks: ADVERSARIAL_MOCKS,
   initialMode: 'canvas' as const,
   useRuntimeTemplate: true,
@@ -258,7 +410,7 @@ const ADV_COMBINE_APPS: AgentEval = {
       description: 'Wrote canvas code files for the combined experience',
       points: 4,
       phase: 'execution',
-      validate: (r) => wroteCanvasFile(r) || toolCallCount(r, 'edit_file') > 0,
+      validate: (r) => wroteCanvasFile(r),
     },
     {
       id: 'client-and-project-surfaces',
@@ -545,7 +697,7 @@ const ADV_HUGE_CSV: AgentEval = {
   level: 3,
   input: "Show me trends in this sales data — it's in the files folder",
   workspaceFiles: minimalCanvasWorkspace({
-    'files/sales.csv': generateLargeSalesCsv(500),
+    'files/sales.csv': LARGE_SALES_CSV,
   }),
   toolMocks: ADVERSARIAL_MOCKS,
   initialMode: 'canvas' as const,
@@ -562,12 +714,13 @@ const ADV_HUGE_CSV: AgentEval = {
     },
     {
       id: 'trend-visualization',
-      description: 'Code uses charting or explicit trend analysis (recharts/chart/trend)',
+      description: 'Charted the trends in code, or reported trends computed from the real file (total within 2%)',
       points: 6,
       phase: 'execution',
       validate: (r) => {
         const code = allCanvasCode(r)
-        return code.includes('chart') || code.includes('recharts') || code.includes('trend')
+        if (code.includes('chart') || code.includes('recharts') || code.includes('trend')) return true
+        return dollarAmounts(r.responseText).some(n => Math.abs(n - LARGE_SALES_TOTAL) / LARGE_SALES_TOTAL <= 0.02)
       },
     },
   ],
@@ -632,22 +785,23 @@ const ADV_VAGUE_DASHBOARD: AgentEval = {
   level: 3,
   input: 'Build me a dashboard',
   workspaceFiles: {},
+  useRuntimeTemplate: true,
   toolMocks: ADVERSARIAL_MOCKS,
   maxScore: 10,
   validationCriteria: [
     {
       id: 'asks-clarifying-question',
-      description: 'Response includes a clarifying question',
+      description: 'Asked a clarifying question (ask_user or in the reply)',
       points: 7,
       phase: 'interaction',
-      validate: (r) => r.responseText.includes('?'),
+      validate: (r) => usedTool(r, 'ask_user') || (r.responseText.includes('?') && !wroteCanvasFile(r)),
     },
     {
       id: 'no-immediate-canvas-hallucination',
-      description: 'Did not write canvas code files on the final turn without requirements',
+      description: 'Did not write canvas code before asking what the dashboard should show',
       points: 3,
       phase: 'execution',
-      validate: (r) => !wroteCanvasFileInFinalTurn(r),
+      validate: (r) => askedBeforeBuilding(r),
     },
   ],
   antiPatterns: [
@@ -663,22 +817,23 @@ const ADV_VAGUE_TRACKER: AgentEval = {
   level: 2,
   input: 'Make me something that tracks... you know... the things',
   workspaceFiles: {},
+  useRuntimeTemplate: true,
   toolMocks: ADVERSARIAL_MOCKS,
   maxScore: 8,
   validationCriteria: [
     {
       id: 'asks-what-to-track',
-      description: 'Response asks what to track (question mark)',
+      description: 'Asked what to track (ask_user or a question in the reply)',
       points: 5,
       phase: 'interaction',
-      validate: (r) => r.responseText.includes('?'),
+      validate: (r) => usedTool(r, 'ask_user') || (r.responseText.includes('?') && !wroteCanvasFile(r)),
     },
     {
       id: 'no-premature-build',
-      description: 'Did not write canvas app code without scoping what to track',
+      description: 'Did not write canvas app code before scoping what to track',
       points: 3,
       phase: 'execution',
-      validate: (r) => !wroteCanvasFile(r),
+      validate: (r) => askedBeforeBuilding(r),
     },
   ],
   antiPatterns: [

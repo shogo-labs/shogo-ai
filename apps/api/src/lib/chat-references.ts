@@ -20,7 +20,8 @@
 
 import { prisma } from './prisma'
 import { accessibleProjectsWhere, loadAccess } from './authz'
-import { readWorkspacePlan, renderWorkspaceTranscript } from './history-search'
+import { readWorkspacePlan } from './history-search'
+import { readChatTranscript, describeChatForUser } from './chat-mentionables'
 
 /** Max projects to enumerate in a workspace reference summary. */
 const MAX_WORKSPACE_PROJECTS = 50
@@ -188,15 +189,28 @@ export async function enrichProjectReferences(
 /**
  * Validate history references and inline bounded data before it reaches a
  * runtime that may not have the referenced project's files mounted.
+ *
+ * Chat references resolve across every workspace the acting user can open, so
+ * a chat in another workspace can be attached as context; refs the user
+ * cannot open are dropped. Plan references stay workspace-scoped (a plan is a
+ * file in one workspace's tree).
+ *
+ * `mode: 'pointer'` (the workspace chat, SHO-191) names the chat and how to
+ * read it instead of inlining its transcript: there, tagging a chat is context,
+ * not a send, so the agent goes and reads it itself with `read_history`.
  */
+export interface EnrichChatReferencesOptions {
+  mode?: 'inline' | 'pointer'
+}
+
 export async function enrichChatReferences(
   parsedBody: any,
   actingUserId: string | undefined,
-  runtimeProjectId: string | undefined,
   runtimeWorkspaceId: string | undefined,
+  options: EnrichChatReferencesOptions = {},
 ): Promise<boolean> {
   const refs = parsedBody?.references
-  if (!Array.isArray(refs) || !refs.length || !actingUserId || !runtimeWorkspaceId) return false
+  if (!Array.isArray(refs) || !refs.length || !actingUserId) return false
   let changed = false
   const next: any[] = []
   for (const ref of refs) {
@@ -206,13 +220,30 @@ export async function enrichChatReferences(
     }
     try {
       if (ref.type === 'chat' && typeof ref.id === 'string') {
-        const transcript = await renderWorkspaceTranscript(ref.id, {
-          workspaceId: runtimeWorkspaceId,
-          userId: actingUserId,
-          limit: 100,
-          maxBytes: 64 * 1024,
-        })
-        if (!transcript || (runtimeProjectId && transcript.projectId && transcript.projectId !== runtimeProjectId)) {
+        if (options.mode === 'pointer') {
+          const chat = await describeChatForUser(actingUserId, ref.id)
+          if (!chat) {
+            changed = true
+            continue
+          }
+          const pointer = {
+            type: 'chat',
+            id: chat.id,
+            name: chat.title,
+            label: ref.label || chat.title,
+            ...(chat.projectId ? { projectId: chat.projectId, projectName: chat.projectName } : {}),
+            workspaceId: chat.workspaceId,
+            workspaceName: chat.workspaceName,
+            messageCount: chat.messageCount,
+            lastActivityAt: chat.lastActivityAt,
+            pointer: true,
+          }
+          next.push(pointer)
+          if (JSON.stringify(pointer) !== JSON.stringify(ref)) changed = true
+          continue
+        }
+        const transcript = await readChatTranscript(actingUserId, ref.id, { limit: 100, maxBytes: 64 * 1024 })
+        if (!transcript) {
           changed = true
           continue
         }
@@ -221,14 +252,16 @@ export async function enrichChatReferences(
           id: ref.id,
           name: transcript.title,
           label: ref.label || transcript.title,
-          projectId: transcript.projectId,
+          ...(transcript.projectId ? { projectId: transcript.projectId } : {}),
           transcript: transcript.messages.map((message) => `${message.role}: ${message.text}`).join('\n'),
         })
         if (JSON.stringify(next[next.length - 1]) !== JSON.stringify(ref)) changed = true
       } else if (ref.type === 'plan') {
         const id = typeof ref.planId === 'string' ? ref.planId : typeof ref.id === 'string' ? ref.id : ''
-        const plan = id ? await readWorkspacePlan(id, { workspaceId: runtimeWorkspaceId, userId: actingUserId }) : null
-        if (!plan || (runtimeProjectId && plan.projectId && plan.projectId !== runtimeProjectId)) {
+        const plan = id && runtimeWorkspaceId
+          ? await readWorkspacePlan(id, { workspaceId: runtimeWorkspaceId, userId: actingUserId })
+          : null
+        if (!plan) {
           changed = true
           continue
         }

@@ -103,6 +103,16 @@ async function authorizeLfs(c: Context, projectId: string, permission: Permissio
   return null
 }
 
+/**
+ * Origin the client can call back on. Behind the ingress the request URL
+ * carries the in-cluster host, which metal guests cannot resolve.
+ */
+function publicOrigin(c: Context): string {
+  const configured = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
+  if (configured) return configured.replace(/\/+$/, '')
+  return new URL(c.req.url).origin
+}
+
 function parseBatchObjects(input: unknown): BatchObjectRequest[] | null {
   if (!Array.isArray(input)) return null
   const out: BatchObjectRequest[] = []
@@ -157,8 +167,7 @@ export function gitLfsRoutes(_config: GitLfsRoutesConfig) {
       return lfsError('objects must be an array of {oid, size}', 422)
     }
 
-    const verifyHref =
-      `${new URL(c.req.url).origin}/api/projects/${projectId}/git/info/lfs/objects/verify`
+    const verifyHref = `${publicOrigin(c)}/api/projects/${projectId}/git/info/lfs/objects/verify`
 
     const responseObjects = await Promise.all(
       objects.map(async (obj) => {

@@ -24,11 +24,15 @@ interface ExpoPushMessage {
   to: string
   title?: string
   body?: string
+  /** Wakes the app in the background without showing anything (iOS `content-available`). */
+  _contentAvailable?: boolean
   data?: Record<string, unknown>
   priority?: 'high' | 'default'
   channelId?: string
   /** Notification category registered on the phone; it decides which action buttons show. */
   categoryId?: string
+  /** `default` plays the system sound; `null` (or omitted) keeps the push silent. */
+  sound?: 'default' | null
 }
 
 type InvalidTokenCleanup = (tokens: string[]) => Promise<unknown>
@@ -112,8 +116,9 @@ const DEFAULT_USER_PUSH_TYPE = 'chat-complete'
 export async function sendPushToUser(
   userId: string,
   payload: {
-    title: string
-    body: string
+    /** Omitted for `dataOnly` pushes, which never show a banner. */
+    title?: string
+    body?: string
     data?: Record<string, unknown>
     priority?: 'high' | 'default'
     /** Value written to `data.type` on the push payload. Defaults to `chat-complete`. */
@@ -128,11 +133,26 @@ export async function sendPushToUser(
     audience?: 'agent' | 'chat'
     /** Shows the action buttons of this category on the notification (e.g. `agent-approval`). */
     categoryId?: string
+    /** `default` plays the system sound. Omitted or `null` keeps the push silent. */
+    sound?: 'default' | null
+    /** Only these devices (Expo push tokens). Omitted means every device of the user. */
+    pushTokens?: string[]
+    /**
+     * A silent, data-only push: no banner or sound. The app handles it in the
+     * background (Android data message, iOS `content-available`), e.g. to
+     * start or cancel a call screen.
+     */
+    dataOnly?: boolean
   },
 ): Promise<void> {
   try {
+    if (payload.pushTokens && payload.pushTokens.length === 0) return
     const subs = await prisma.mobilePushSubscription.findMany({
-      where: { userId, ...(payload.audience === 'chat' ? {} : { agentTurns: true }) },
+      where: {
+        userId,
+        ...(payload.audience === 'chat' ? {} : { agentTurns: true }),
+        ...(payload.pushTokens ? { pushToken: { in: payload.pushTokens } } : {}),
+      },
       select: { pushToken: true },
     })
     if (subs.length === 0) return
@@ -143,12 +163,14 @@ export async function sendPushToUser(
     await sendExpoMessages(
       subs.map((sub) => ({
         to: sub.pushToken,
-        title: payload.title,
-        body: payload.body,
+        ...(payload.dataOnly
+          ? { _contentAvailable: true }
+          : { title: payload.title, body: payload.body }),
         data: { ...(payload.data ?? {}), type: pushType },
         priority: payload.priority ?? 'high',
         channelId,
         ...(payload.categoryId ? { categoryId: payload.categoryId } : {}),
+        ...(payload.sound && !payload.dataOnly ? { sound: payload.sound } : {}),
       })),
       subs.map((sub) => sub.pushToken),
     )

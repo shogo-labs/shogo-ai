@@ -22,6 +22,7 @@ import {
   XCircle,
 } from "lucide-react-native";
 import type { ToolCallData } from "../tools/types";
+import { ChatMarkdown } from "../ChatMarkdown";
 import { useChatContextSafe } from "../ChatContext";
 import { AgentAvatar } from "../../team-chat/AgentAvatar";
 
@@ -139,12 +140,88 @@ function StatusIcon({ status }: { status: CallStatus }) {
   return <Clock className="w-3.5 h-3.5 text-muted-foreground" size={14} />;
 }
 
+/**
+ * Collapsed heights of the card's markdown bodies: a whole number of card body
+ * lines (12/18 in `global.css` and `MarkdownText`'s card styles). A height that
+ * is not a multiple of 18 leaves the last visible line a chopped row of glyphs.
+ */
+const CARD_LINE_HEIGHT = 18;
+export const REQUEST_MAX_HEIGHT = 2 * CARD_LINE_HEIGHT;
+export const REPLY_MAX_HEIGHT = 4 * CARD_LINE_HEIGHT;
+
+const LONG_BODY_CHARS = 220;
+
+/**
+ * Raw-text fallback for "this body cannot fit the clamped preview". Rendered
+ * height is measured too (markdown has no `numberOfLines`), but the heuristic
+ * keeps long single-line bodies expandable before the first layout pass.
+ */
+export function bodyOverflowsPreview(text: string, maxLines: number): boolean {
+  return text.length > LONG_BODY_CHARS || text.split("\n").length > maxLines;
+}
+
+/**
+ * Markdown has no `numberOfLines`, so the preview is clamped by height. The
+ * inner view measures the full body, which is how the card knows to offer
+ * "Show more" even when the raw text is short enough to pass the heuristic.
+ */
+function ClampedMarkdown({
+  text,
+  maxHeight,
+  expanded,
+  onMeasure,
+  onFilePress,
+  fileExists,
+  testID,
+}: {
+  text: string;
+  maxHeight: number;
+  expanded: boolean;
+  onMeasure: (height: number) => void;
+  onFilePress?: (path: string) => void;
+  fileExists?: (path: string) => boolean;
+  testID: string;
+}) {
+  return (
+    <View
+      style={expanded ? undefined : { maxHeight, overflow: "hidden" }}
+      testID={`${testID}-clamp`}
+    >
+      <View
+        testID={`${testID}-body`}
+        onLayout={(event) => onMeasure(event.nativeEvent.layout.height)}
+      >
+        <ChatMarkdown
+          isStreaming={false}
+          variant="card"
+          onFilePress={onFilePress}
+          fileExists={fileExists}
+        >
+          {text}
+        </ChatMarkdown>
+      </View>
+    </View>
+  );
+}
+
+function ExpandToggle({ expanded, onPress }: { expanded: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} accessibilityRole="button">
+      <Text className="text-[11px] text-primary">{expanded ? "Show less" : "Show more"}</Text>
+    </Pressable>
+  );
+}
+
 export function ProjectCallCard({ tool, className }: ProjectCallCardProps) {
   const router = useRouter();
   const chatContext = useChatContextSafe();
   const openPane = chatContext?.openProjectPane;
   const [elapsed, setElapsed] = useState(0);
+  const [requestExpanded, setRequestExpanded] = useState(false);
   const [replyExpanded, setReplyExpanded] = useState(false);
+  const [errorExpanded, setErrorExpanded] = useState(false);
+  const [requestHeight, setRequestHeight] = useState(0);
+  const [replyHeight, setReplyHeight] = useState(0);
 
   const view = useMemo(() => parseProjectCall(tool), [tool.args, tool.result, tool.error, tool.state]);
   const status = statusOf(tool, view);
@@ -176,7 +253,10 @@ export function ProjectCallCard({ tool, className }: ProjectCallCardProps) {
 
   const canOpen = !!view.projectId;
   const canOpenChat = canOpen && !!view.chatSessionId;
-  const body = view.error ?? view.reply;
+  const requestOverflows =
+    requestHeight > REQUEST_MAX_HEIGHT || bodyOverflowsPreview(view.message, 2);
+  const replyOverflows =
+    !!view.reply && (replyHeight > REPLY_MAX_HEIGHT || bodyOverflowsPreview(view.reply, 4));
 
   return (
     <View
@@ -211,35 +291,52 @@ export function ProjectCallCard({ tool, className }: ProjectCallCardProps) {
         </View>
 
         {view.message ? (
-          <View className="gap-0.5">
+          <View className="gap-0.5" testID="project-call-request">
             <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">Request</Text>
-            <Text className="text-[11px] text-foreground" numberOfLines={2}>
-              {view.message}
-            </Text>
+            <ClampedMarkdown
+              text={view.message}
+              maxHeight={REQUEST_MAX_HEIGHT}
+              expanded={requestExpanded}
+              onMeasure={(height) => setRequestHeight((prev) => (prev === height ? prev : height))}
+              onFilePress={chatContext?.openFile}
+              fileExists={chatContext?.fileExists}
+              testID="project-call-request"
+            />
+            {requestOverflows ? (
+              <ExpandToggle expanded={requestExpanded} onPress={() => setRequestExpanded((v) => !v)} />
+            ) : null}
           </View>
         ) : null}
 
-        {body ? (
+        {view.error ? (
           <View className="gap-0.5">
+            <Text className="text-[9px] font-medium uppercase tracking-wide text-destructive">Error</Text>
             <Text
-              className={cn(
-                "text-[9px] font-medium uppercase tracking-wide",
-                view.error ? "text-destructive" : "text-muted-foreground",
-              )}
-            >
-              {view.error ? "Error" : "Reply"}
-            </Text>
-            <Text
-              className={cn("text-[11px]", view.error ? "text-destructive" : "text-foreground")}
-              numberOfLines={replyExpanded ? undefined : 4}
+              className="text-[11px] text-destructive"
+              numberOfLines={errorExpanded ? undefined : 4}
               selectable
+              testID="project-call-error"
             >
-              {body}
+              {view.error}
             </Text>
-            {body.length > 220 || body.split("\n").length > 4 ? (
-              <Pressable onPress={() => setReplyExpanded((v) => !v)} accessibilityRole="button">
-                <Text className="text-[11px] text-primary">{replyExpanded ? "Show less" : "Show more"}</Text>
-              </Pressable>
+            {bodyOverflowsPreview(view.error, 4) ? (
+              <ExpandToggle expanded={errorExpanded} onPress={() => setErrorExpanded((v) => !v)} />
+            ) : null}
+          </View>
+        ) : view.reply ? (
+          <View className="gap-0.5" testID="project-call-reply">
+            <Text className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground">Reply</Text>
+            <ClampedMarkdown
+              text={view.reply}
+              maxHeight={REPLY_MAX_HEIGHT}
+              expanded={replyExpanded}
+              onMeasure={(height) => setReplyHeight((prev) => (prev === height ? prev : height))}
+              onFilePress={chatContext?.openFile}
+              fileExists={chatContext?.fileExists}
+              testID="project-call-reply"
+            />
+            {replyOverflows ? (
+              <ExpandToggle expanded={replyExpanded} onPress={() => setReplyExpanded((v) => !v)} />
             ) : null}
           </View>
         ) : null}

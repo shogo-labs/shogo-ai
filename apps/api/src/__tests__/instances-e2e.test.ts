@@ -14,6 +14,7 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test'
 import { Hono } from 'hono'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
+import { matchesWhere } from './helpers/prisma-where'
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -48,11 +49,7 @@ const mockPrisma = {
     }),
     findMany: mock(async (args: any) => {
       return [...instancesById.values()]
-        .filter(
-          (i: any) =>
-            i.workspaceId === args.where.workspaceId &&
-            (args.where.userId === undefined || i.userId === args.where.userId),
-        )
+        .filter((i: any) => matchesWhere(i, args.where))
         .map((i) => ({ ...i }))
     }),
     update: mock(async (args: any) => {

@@ -173,17 +173,17 @@ describe('proxyModelToBillingModel', () => {
 })
 
 describe('calculateImageUsageCost', () => {
-  test('dall-e-3 standard 1024x1024 is base × markup', () => {
-    const base = IMAGE_USD_CONFIG['dall-e-3'].base
+  test('dall-e-3 standard 1024x1024 is the square/medium ladder price × markup', () => {
+    const base = IMAGE_USD_CONFIG['dall-e-3'].prices.square.medium
     const r = calculateImageUsageCost('dall-e-3', 'standard', '1024x1024')
     expect(r.rawUsd).toBeCloseTo(base, PRECISION)
     expect(r.billedUsd).toBeCloseTo(base * MARKUP_MULTIPLIER, PRECISION)
   })
 
-  test('hd quality applies the hdMultiplier', () => {
-    const cfg = IMAGE_USD_CONFIG['dall-e-3']
+  test('hd quality prices the high tier', () => {
+    const cfg = IMAGE_USD_CONFIG['dall-e-3'].prices
     const r = calculateImageUsageCost('dall-e-3', 'hd', '1024x1024')
-    expect(r.rawUsd).toBeCloseTo(cfg.base * cfg.hdMultiplier, PRECISION)
+    expect(r.rawUsd).toBeCloseTo(cfg.square.high, PRECISION)
   })
 
   test('"high" is treated as hd', () => {
@@ -192,18 +192,20 @@ describe('calculateImageUsageCost', () => {
     expect(high).toBeCloseTo(hd, PRECISION)
   })
 
-  test('large landscape/portrait sizes apply the largeSizeMultiplier', () => {
-    const cfg = IMAGE_USD_CONFIG['dall-e-3']
-    for (const size of ['1792x1024', '1024x1792', '1536x1024', '1024x1536']) {
-      const r = calculateImageUsageCost('dall-e-3', 'standard', size).rawUsd
-      expect(r).toBeCloseTo(cfg.base * cfg.largeSizeMultiplier, PRECISION)
+  test('large landscape/portrait sizes price their own column', () => {
+    const prices = IMAGE_USD_CONFIG['dall-e-3'].prices
+    for (const size of ['1792x1024', '1536x1024']) {
+      expect(calculateImageUsageCost('dall-e-3', 'standard', size).rawUsd).toBeCloseTo(prices.landscape.medium, PRECISION)
+    }
+    for (const size of ['1024x1792', '1024x1536']) {
+      expect(calculateImageUsageCost('dall-e-3', 'standard', size).rawUsd).toBeCloseTo(prices.portrait.medium, PRECISION)
     }
   })
 
-  test('hd + large size composes both multipliers', () => {
-    const cfg = IMAGE_USD_CONFIG['dall-e-3']
+  test('hd + large size composes quality and size', () => {
+    const prices = IMAGE_USD_CONFIG['dall-e-3'].prices
     const r = calculateImageUsageCost('dall-e-3', 'hd', '1792x1024').rawUsd
-    expect(r).toBeCloseTo(cfg.base * cfg.hdMultiplier * cfg.largeSizeMultiplier, PRECISION)
+    expect(r).toBeCloseTo(prices.landscape.high, PRECISION)
   })
 
   // dall-e-3 is retired (OpenAI, 2026-09); the fallback moved to the

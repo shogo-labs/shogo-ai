@@ -24,9 +24,13 @@
 
 import { prisma } from '../lib/prisma'
 import { resolveModelLabels } from './model-registry.service'
+import { PROJECT_CALL_MESSAGE_AGENT } from '@shogo/shared-runtime/project-call-chat'
 import {
   activeDaySet,
+  classifyAudience,
+  computeCards,
   computeEngagement,
+  computeRecentWork,
   computeStreaks,
   computeWorkTotals,
   emptyRaw,
@@ -34,7 +38,11 @@ import {
   makeZoneClock,
   resolveActivityWindow,
   type ApprovalRow,
+  type CardEventRow,
+  type ChatPromptRow,
   type EngagementStats,
+  type MemberCard,
+  type MessageRow,
   type RawActivity,
   type WorkTotals,
 } from '../lib/engagement-compute'
@@ -126,7 +134,28 @@ export async function collectActivity(
   const createdAt = { gte: from, lte: to }
   const user = scope.userId
 
-  const [usageEvents, toolCalls, messages, approvalMessages, goalEvents, tasks, meetings] = await Promise.all([
+  // ChatSession scope: a session belongs to the workspace directly, or
+  // through the project it runs in. Named for `session` — `chatSession` is the
+  // relation name on `ToolCallLog`, not here.
+  const sessionScope = {
+    OR: [
+      { workspaceId: { in: workspaceIds } },
+      { project: { workspaceId: { in: workspaceIds } } },
+    ],
+  }
+
+  const [
+    usageEvents,
+    toolCalls,
+    messages,
+    approvalMessages,
+    goalEvents,
+    tasks,
+    meetings,
+    chatPrompts,
+    unattributedPromptCount,
+    cardEvents,
+  ] = await Promise.all([
     prisma.usageEvent.findMany({
       where: {
         workspaceId: { in: workspaceIds },
@@ -172,7 +201,16 @@ export async function collectActivity(
         deletedAt: null,
         createdAt,
       },
-      select: { authorUserId: true, createdAt: true },
+      select: {
+        id: true,
+        authorUserId: true,
+        createdAt: true,
+        conversationId: true,
+        threadRootId: true,
+        text: true,
+        conversation: { select: { kind: true } },
+        mentions: { select: { targetType: true, targetUserId: true, projectId: true } },
+      },
     }),
     // Approval cards are agent-authored; the decider lives inside `blocks`.
     prisma.conversationMessage.findMany({
@@ -222,6 +260,82 @@ export async function collectActivity(
         createdAt,
       },
       select: { userId: true, createdAt: true },
+    }),
+    // Prompts a person typed into an agent chat. The author is stamped at
+    // write time; rows written before that column existed fall back to the
+    // session owner, and a shared chat with no owner is counted, not guessed.
+    prisma.chatMessage.findMany({
+      where: {
+        role: 'user',
+        agent: { not: PROJECT_CALL_MESSAGE_AGENT },
+        createdAt,
+        AND: [
+          { session: sessionScope },
+          user
+            ? {
+                OR: [
+                  { authorUserId: user },
+                  { authorUserId: null, session: { createdByUserId: user } },
+                ],
+              }
+            : {
+                OR: [
+                  { authorUserId: { not: null } },
+                  { authorUserId: null, session: { createdByUserId: { not: null } } },
+                ],
+              },
+        ],
+      },
+      select: {
+        id: true,
+        authorUserId: true,
+        createdAt: true,
+        content: true,
+        sessionId: true,
+        session: {
+          select: { name: true, inferredName: true, createdByUserId: true, contextType: true, contextId: true },
+        },
+      },
+    }),
+    // User prompts in a chat whose sender is unknowable: no stamped author and
+    // no session owner (project chats are shared).
+    prisma.chatMessage.count({
+      where: {
+        role: 'user',
+        agent: { not: PROJECT_CALL_MESSAGE_AGENT },
+        authorUserId: null,
+        createdAt,
+        session: {
+          AND: [sessionScope, { createdByUserId: null }],
+        },
+      },
+    }),
+    // Board actions. Agent actions carry `actorAgentRef` and no user, so the
+    // `actorUserId` filter alone keeps them out.
+    prisma.workItemEvent.findMany({
+      where: {
+        workspaceId: { in: workspaceIds },
+        actorUserId: user ?? { not: null },
+        createdAt,
+      },
+      select: {
+        id: true,
+        actorUserId: true,
+        type: true,
+        eventData: true,
+        createdAt: true,
+        workItemId: true,
+        workItem: {
+          select: {
+            key: true,
+            title: true,
+            conversationId: true,
+            threadRootMessageId: true,
+            board: { select: { name: true } },
+            column: { select: { name: true, category: true } },
+          },
+        },
+      },
     }),
   ])
 
@@ -282,7 +396,7 @@ export async function collectActivity(
       chatSessionId: t.chatSessionId,
       createdAt: t.createdAt,
     })),
-    messages: messages.map((m) => ({ userId: m.authorUserId as string, createdAt: m.createdAt })),
+    messages: await classifyMessages(messages, workspaceIds),
     approvals,
     tasks: tasks.map((t) => ({
       userId: t.userId,
@@ -295,6 +409,149 @@ export async function collectActivity(
       resultSummary: t.resultSummary,
     })),
     meetings: meetings.map((m) => ({ userId: m.userId as string, createdAt: m.createdAt })),
+    chatPrompts: chatPrompts.map((r) => ({
+      userId: (r.authorUserId ?? r.session?.createdByUserId) as string,
+      createdAt: r.createdAt,
+      id: r.id,
+      sessionId: r.sessionId,
+      sessionName: r.session?.name ?? r.session?.inferredName ?? null,
+      projectId:
+        r.session?.contextType === 'project' ? (r.session.contextId ?? null) : null,
+      text: r.content,
+    })),
+    cardEvents: cardEvents.map(toCardEventRow),
+    unattributedChatPrompts: unattributedPromptCount,
+  }
+}
+
+/**
+ * Attach an audience to every message a person wrote. The two extra lookups —
+ * thread roots and DM membership — are batched: one query each for the whole
+ * window, not one per message.
+ */
+async function classifyMessages(
+  rows: readonly any[],
+  workspaceIds: string[],
+): Promise<MessageRow[]> {
+  if (rows.length === 0) return []
+
+  const threadRootIds = [
+    ...new Set(rows.map((m) => m.threadRootId).filter((id: string | null): id is string => !!id)),
+  ]
+  const dmIds = [
+    ...new Set(
+      rows
+        .filter((m) => m.conversation?.kind === 'dm' || m.conversation?.kind === 'group_dm')
+        .map((m) => m.conversationId as string),
+    ),
+  ]
+
+  const [threadRoots, dmMembers, cardThreads] = await Promise.all([
+    threadRootIds.length
+      ? prisma.conversationMessage.findMany({
+          where: { id: { in: threadRootIds } },
+          select: { id: true, authorType: true },
+        })
+      : Promise.resolve([] as { id: string; authorType: string }[]),
+    dmIds.length
+      ? prisma.conversationMember.findMany({
+          where: { conversationId: { in: dmIds } },
+          select: { conversationId: true, memberType: true, userId: true },
+        })
+      : Promise.resolve([] as { conversationId: string; memberType: string; userId: string | null }[]),
+    // A card's own thread is how a message becomes attributable to a card.
+    prisma.workItem.findMany({
+      where: {
+        workspaceId: { in: workspaceIds },
+        threadRootMessageId: { in: [...threadRootIds, ...rows.map((m) => m.id as string)] },
+      },
+      select: { key: true, threadRootMessageId: true },
+    }),
+  ])
+
+  const rootAuthorType = new Map(threadRoots.map((r) => [r.id, r.authorType]))
+  const membersByConversation = new Map<string, { memberType: string; userId: string | null }[]>()
+  for (const m of dmMembers) {
+    const list = membersByConversation.get(m.conversationId) ?? []
+    list.push({ memberType: m.memberType, userId: m.userId })
+    membersByConversation.set(m.conversationId, list)
+  }
+  const cardKeyByThread = new Map(
+    cardThreads
+      .filter((c) => !!c.threadRootMessageId)
+      .map((c) => [c.threadRootMessageId as string, c.key]),
+  )
+
+  return rows.map((m) => {
+    const kind: string = m.conversation?.kind ?? 'public'
+    const mentions: { targetType: string }[] = m.mentions ?? []
+    const others =
+      kind === 'dm' || kind === 'group_dm'
+        ? (membersByConversation.get(m.conversationId) ?? [])
+            .filter((x) => !x.userId || x.userId !== m.authorUserId)
+            .map((x) => x.memberType)
+        : null
+    const threadRootId: string | null = m.threadRootId ?? null
+    return {
+      userId: m.authorUserId as string,
+      createdAt: m.createdAt,
+      id: m.id,
+      conversationId: m.conversationId,
+      threadRootId,
+      text: m.text,
+      workItemKey: cardKeyByThread.get(threadRootId ?? m.id) ?? null,
+      audience: classifyAudience({
+        conversationKind: kind,
+        hasPersonMention: mentions.some((x) => x.targetType === 'user' || x.targetType === 'group'),
+        hasAgentMention: mentions.some((x) => x.targetType === 'agent'),
+        otherMemberTypes: others,
+        threadRootAuthorType: threadRootId ? rootAuthorType.get(threadRootId) ?? null : null,
+      }),
+    }
+  })
+}
+
+/** One card event as a person's own action, with a line a reader can quote. */
+function toCardEventRow(e: any): CardEventRow {
+  const data = parseJson(e.eventData) ?? {}
+  const movedTo = e.type === 'moved' ? parseJson(data.to) : null
+  const item = e.workItem ?? {}
+  return {
+    userId: e.actorUserId as string,
+    at: e.createdAt,
+    type: e.type,
+    id: e.id,
+    workItemId: e.workItemId,
+    key: item.key ?? undefined,
+    title: item.title ?? undefined,
+    board: item.board?.name ?? null,
+    column: (movedTo?.column as string | undefined) ?? item.column?.name ?? null,
+    category: (movedTo?.category as string | undefined) ?? item.column?.category ?? null,
+    threadId: item.conversationId ?? null,
+    label: cardEventLabel(e.type, data),
+  }
+}
+
+function cardEventLabel(type: string, data: Record<string, any>): string {
+  switch (type) {
+    case 'created':
+      return 'created the card'
+    case 'moved': {
+      const to = typeof data.to === 'object' && data.to ? data.to : null
+      return to?.column ? `moved to ${to.column}` : 'moved the card'
+    }
+    case 'assigned':
+      return data.label ? `assigned ${data.label}` : 'changed the assignee'
+    case 'commented':
+      return 'commented'
+    case 'updated': {
+      const changed = Array.isArray(data.changed) ? data.changed.filter((c: unknown) => typeof c === 'string') : []
+      return changed.length ? `updated ${changed.join(', ')}` : 'updated the card'
+    }
+    case 'linked':
+      return data.kind ? `linked ${data.kind}` : 'linked'
+    default:
+      return type.replace(/_/g, ' ')
   }
 }
 
@@ -455,6 +712,8 @@ export interface MemberWorkActivity {
   recent: EngagementStats['recent']
   topTools: EngagementStats['topTools']
   models: EngagementStats['modelShare']
+  /** The cards this person touched in the window, newest first. */
+  cards: MemberCard[]
 }
 
 /**
@@ -467,18 +726,29 @@ export async function getMemberWorkActivity(
   member: WorkspaceMemberRef,
   input: { range?: string | null; since?: string | null; until?: string | null; tz?: string | null },
   now: Date = new Date(),
+  options: { boardOnly?: boolean } = {},
 ): Promise<MemberWorkActivity> {
   const tz = makeZoneClock(input.tz).tz
   const { from, to, label } = resolveActivityWindow({ ...input, tz }, now)
-  const stats = await getEngagementStatsForWindow({ workspaceId, userId: member.userId }, { from, to }, tz)
+  const raw = await collectActivity({ workspaceId, userId: member.userId }, { from, to })
+  const labels = await resolveModelLabels(raw.usage.map((u) => u.model))
+  const stats = computeEngagement(raw, { from, to }, tz, {
+    modelLabel: (model) => labels.get(model) ?? model,
+  })
+  // `detail: 'board'` answers "what did they do on the board?" — only the card
+  // events, so the reader is not scrolling past chat.
+  const recent = options.boardOnly
+    ? computeRecentWork({ ...emptyRaw(), cardEvents: raw.cardEvents })
+    : stats.recent
   return {
     user: member,
     window: { from: from.toISOString(), to: to.toISOString(), tz, label },
     totals: stats.totals,
     streak: stats.streak,
     peakHour: stats.peakHour,
-    recent: stats.recent,
+    recent,
     topTools: stats.topTools.slice(0, 5),
     models: stats.modelShare.slice(0, 3),
+    cards: computeCards(raw),
   }
 }

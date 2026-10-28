@@ -6,7 +6,7 @@
  * place, and how runs of routine status posts collapse into one row.
  * Mirrors the API's `conversation-message-kind`.
  */
-import type { ChatMessage } from './team-chat-api'
+import type { ChatMessage, PollBlock, QuestionBlock } from './team-chat-api'
 
 export type MessageKind = 'status' | 'result' | 'decision' | 'alert'
 export type CardStatus = 'working' | 'blocked' | 'done' | 'failed'
@@ -33,6 +33,33 @@ export function statusCardOf(message: Pick<ChatMessage, 'blocks'>): StatusCard |
   const blocks = message.blocks as { type?: unknown; card?: StatusCard } | null
   if (blocks?.type !== 'status_card' || !blocks.card || typeof blocks.card.title !== 'string') return null
   return blocks.card
+}
+
+/** A board card's post in a channel; see the API's `workItemBlock()`. */
+export interface WorkItemBlock {
+  id: string
+  key: string
+  /** The full card title, not the clipped one in `card.title`. */
+  title: string
+  boardId?: string
+  boardName?: string | null
+  column?: { name: string; category: string } | null
+  priority?: string
+  assignee?: { kind: 'user' | 'agent'; name: string } | null
+  dueAt?: string | null
+  path?: string
+  note?: string
+}
+
+/**
+ * The board card a message is about, if it carries one. Author-agnostic: board
+ * posts come from `system`. Blocks posted before cards carried a title have no
+ * `title` and are left to the plain-text fallback.
+ */
+export function workItemOf(message: Pick<ChatMessage, 'blocks'>): WorkItemBlock | null {
+  const block = (message.blocks as { workItem?: WorkItemBlock } | null)?.workItem
+  if (!block || typeof block.id !== 'string' || typeof block.key !== 'string' || typeof block.title !== 'string') return null
+  return block
 }
 
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired'
@@ -74,7 +101,7 @@ export interface Question {
   hint?: 'number' | 'url'
   secretName?: string
   status: QuestionStatus
-  answer?: { text: string; by: { userId: string; name: string }; at: string }
+  answer?: { text: string; by: { userId: string; name: string }; at: string; relayedAt?: string }
   closedReason?: string
   closedAt?: string
   source: 'agent' | 'inferred'
@@ -214,4 +241,32 @@ export function connectRequestsOf(message: Pick<ChatMessage, 'blocks'>): Connect
 export function workOf(message: Pick<ChatMessage, 'blocks'>): AgentWork | null {
   const work = (message.blocks as { work?: AgentWork } | null)?.work
   return work && typeof work.chatMessageId === 'string' && typeof work.startedAt === 'number' ? work : null
+}
+
+// ─── Polls and Q&A (posted in a huddle's thread) ─────────────────────────────
+
+/** The poll a message carries, if it is one. */
+export function pollOf(message: Pick<ChatMessage, 'blocks'>): PollBlock | null {
+  const block = (message.blocks as { poll?: PollBlock } | null)?.poll
+  if (!block || typeof block.question !== 'string' || !Array.isArray(block.options)) return null
+  return { ...block, tally: block.tally ?? {}, voters: block.voters ?? {} }
+}
+
+/** The audience question a message carries, if it is one. */
+export function audienceQuestionOf(message: Pick<ChatMessage, 'blocks'>): QuestionBlock | null {
+  const block = (message.blocks as { question?: QuestionBlock } | null)?.question
+  if (!block || typeof block !== 'object' || typeof block.answered !== 'boolean') return null
+  return { ...block, upvotes: block.upvotes ?? 0, upvoters: block.upvoters ?? [] }
+}
+
+/** Questions first by upvotes, answered ones last. */
+export function sortQuestions<T extends { id: string; blocks: Record<string, unknown> | null; createdAt: string }>(messages: T[]): T[] {
+  const score = (m: T) => audienceQuestionOf(m)?.upvotes ?? 0
+  const answered = (m: T) => (audienceQuestionOf(m)?.answered ? 1 : 0)
+  return [...messages].sort((a, b) => answered(a) - answered(b) || score(b) - score(a) || a.createdAt.localeCompare(b.createdAt))
+}
+
+/** Total votes cast, counting each person once. */
+export function pollVoterCount(poll: PollBlock): number {
+  return new Set(Object.values(poll.voters).flat()).size
 }

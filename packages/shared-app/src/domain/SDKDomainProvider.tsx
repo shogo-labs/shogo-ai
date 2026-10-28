@@ -28,6 +28,23 @@ import {
   createRemoteAwareHttpClient,
   type RemoteInterceptorConfig,
 } from '../services/remote-http-interceptor'
+import { machineWorkspaceState } from '../services/machine-workspace-state'
+
+/**
+ * The interceptor reports every machine-workspace outcome here, and this is the
+ * only place that decides what it means: a null report is a request that came
+ * back (so the machine is up), anything else goes through the classifier, which
+ * ignores ordinary errors.
+ */
+function withMachineStateReporting(config: RemoteInterceptorConfig): RemoteInterceptorConfig {
+  return {
+    ...config,
+    onMachineState: (error) => {
+      if (error === null) machineWorkspaceState.markOk()
+      else machineWorkspaceState.report(error)
+    },
+  }
+}
 
 let moduleRawHttpClient: HttpClient | null = null
 let moduleProxiedHttpClient: HttpClient | null = null
@@ -104,7 +121,7 @@ function getOrCreateStore(
   // goes through the interceptor and routes to desktop when connected.
   moduleProxiedHttpClient = createRemoteAwareHttpClient(
     moduleRawHttpClient,
-    () => moduleRemoteConfigRef!.current,
+    () => withMachineStateReporting(moduleRemoteConfigRef!.current),
   )
 
   const env: ISDKEnvironment = {
@@ -179,6 +196,13 @@ export interface SDKDomainProviderProps {
    */
   remoteProxyBaseUrl?: string | null
   /**
+   * The desktop's own workspace id, when `remoteProxyBaseUrl` targets a
+   * machine workspace (`/api/machines/<id>/w/<localWorkspaceId>`). Lets the
+   * interceptor swap the cloud `workspaceId` on a request for the machine's
+   * id — the two live in different databases.
+   */
+  machineWorkspaceId?: string | null
+  /**
    * Called when a remote-routed request fails (e.g. desktop disconnected).
    * Can be used to show a toast or auto-disconnect.
    */
@@ -192,6 +216,7 @@ export function SDKDomainProvider({
   credentials,
   getAuthCookie,
   remoteProxyBaseUrl,
+  machineWorkspaceId,
   onRemoteError,
   children,
 }: SDKDomainProviderProps) {
@@ -209,6 +234,7 @@ export function SDKDomainProvider({
   // collection actions (getEnv(self).http).
   const remoteConfigRef = useRef<RemoteInterceptorConfig>({
     remoteProxyBaseUrl: remoteProxyBaseUrl ?? null,
+    machineWorkspaceId: machineWorkspaceId ?? null,
   })
 
   const handleRemoteError = useCallback(
@@ -224,6 +250,7 @@ export function SDKDomainProvider({
   // Update the ref whenever the remote config changes
   remoteConfigRef.current = {
     remoteProxyBaseUrl: remoteProxyBaseUrl ?? null,
+    machineWorkspaceId: machineWorkspaceId ?? null,
     protocolVersion: 3,     // matches TUNNEL_PROTOCOL_VERSION
     syncVersion: 1,         // sync event schema version
     clientVersion: '0.1.0',
@@ -327,6 +354,56 @@ export function useSDKHttp(): HttpClient {
   return ctx.http
 }
 
+/**
+ * Same client as `useSDKHttp`, but `null` when there is no provider above —
+ * for components that render both inside and outside the domain tree (a
+ * workspace switcher in a popover, a shared row). Callers already have to
+ * cope with "no data yet", so they should degrade to their empty state
+ * instead of crashing the shell with a provider error.
+ */
+export function useSDKHttpOptional(): HttpClient | null {
+  return useContext(SDKDomainContext)?.http ?? null
+}
+
+/**
+ * The provider's client, without React context.
+ *
+ * Some shell chrome renders through a portal that sits outside the provider
+ * tree (the desktop workspace/account popover), where a context read yields
+ * nothing. This returns the same singleton instance the provider created, or
+ * `null` before it has mounted — so a caller that cannot see the context can
+ * still make an authenticated request instead of silently doing nothing.
+ */
+export function getSDKHttpClient(): HttpClient | null {
+  return moduleProxiedHttpClient
+}
+
+/**
+ * `useSDKDomain` for components that also render outside the provider (see
+ * `getSDKHttpClient`). Returns `null` instead of throwing.
+ */
+export function useSDKDomainOptional(): IDomainStore | null {
+  return useContext(SDKDomainContext)?.store ?? null
+}
+
+export function useWorkspaceCollectionOptional() {
+  return useSDKDomainOptional()?.workspaceCollection ?? null
+}
+
+/**
+ * The provider's store without React context, or `null` before it mounts.
+ * Same rationale as `getSDKHttpClient`: a popover host mounted above the
+ * provider still has to read and mutate the one real store.
+ */
+export function getSDKDomainStore(): IDomainStore | null {
+  return moduleStore
+}
+
+/** `useDomainActions` without context — `null` until the provider has a store. */
+export function getDomainActions(): ReturnType<typeof createDomainActions> | null {
+  return moduleStore ? createDomainActions(moduleStore) : null
+}
+
 export function useSDKReady() {
   const ctx = useContext(SDKDomainContext)
   if (!ctx) throw new Error('useSDKReady must be used within SDKDomainProvider')
@@ -427,4 +504,10 @@ import { createDomainActions } from '@shogo/domain-stores/domain-actions'
 export function useDomainActions() {
   const store = useSDKDomain() as IDomainStore
   return useMemo(() => createDomainActions(store), [store])
+}
+
+/** `useDomainActions` for trees that may render outside the provider; `null` there. */
+export function useDomainActionsOptional() {
+  const store = useSDKDomainOptional()
+  return useMemo(() => (store ? createDomainActions(store) : null), [store])
 }

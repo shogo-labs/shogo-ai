@@ -51,10 +51,13 @@ export function isAvailableModel(id: string): boolean {
 /** Short text for tool descriptions, built from the currently cached list. */
 export function availableModelsHint(): string {
   if (models === null || models.length === 0) {
-    return 'Use "auto" (recommended).'
+    return 'Use "auto" (recommended). Call list_models for the other model ids.'
   }
-  const ids = models.slice(0, MAX_LISTED_IN_PROMPT).map((m) => `"${m.id}"`).join(', ')
-  const more = models.length > MAX_LISTED_IN_PROMPT ? ', ...' : ''
+  const ids = models
+    .slice(0, MAX_LISTED_IN_PROMPT)
+    .map((m) => (m.displayName && m.displayName !== m.id ? `"${m.id}" (${m.displayName})` : `"${m.id}"`))
+    .join(', ')
+  const more = models.length > MAX_LISTED_IN_PROMPT ? '; call list_models for the full list' : ''
   return `Use "auto" (recommended). Other available model ids: ${ids}${more}.`
 }
 

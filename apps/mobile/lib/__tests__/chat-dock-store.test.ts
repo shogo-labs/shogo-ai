@@ -87,6 +87,20 @@ describe("createChatDockStore registerPanel", () => {
     expect(calls).toBe(1)
   })
 
+  test("a bumped revision notifies even when the header text is unchanged", () => {
+    const store = createChatDockStore()
+    store.registerPanel(baseDescriptor({ revision: 0 }))
+
+    let calls = 0
+    store.subscribe(() => calls++)
+
+    // A panel whose body changed (a row started its exit animation) but whose
+    // title/summary did not — e.g. "1 running · 1 finished" both ways round.
+    store.registerPanel(baseDescriptor({ revision: 1 }))
+
+    expect(calls).toBe(1)
+  })
+
   test("switching kind between status and blocking does notify subscribers", () => {
     const store = createChatDockStore()
     store.registerPanel(

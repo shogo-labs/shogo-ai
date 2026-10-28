@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react'
 import { Platform } from 'react-native'
 import { useWorkspaceCollection } from '../contexts/domain'
 import { API_URL, createHttpClient } from './api'
+import { workspaceHttp } from './workspace-http'
 import { authClient } from './auth-client'
 import { usePlatformConfig } from './platform-config'
 import { localFilePart } from './upload-part'
@@ -81,6 +82,8 @@ export function usePersonalMeetingsWorkspaceId(): string | null {
   useEffect(() => {
     if (fromCollection || !localMode) return
     let cancelled = false
+    // `/api/local/*` is this computer's own API, never a workspace's, so it
+    // stays on the bare client.
     createHttpClient()
       .get<{ workspaceId: string | null }>('/api/local/meetings/workspace')
       .then((res) => {
@@ -96,7 +99,9 @@ export function usePersonalMeetingsWorkspaceId(): string | null {
 }
 
 export function meetingsApi(workspaceId: string) {
-  const http = createHttpClient()
+  // `/api/workspaces/:id/meetings` is the workspace's own record, so it follows
+  // the workspace in view — including a paired computer's (SHO-108).
+  const http = workspaceHttp()
   const base = `/api/workspaces/${encodeURIComponent(workspaceId)}/meetings`
   return {
     async list(): Promise<MeetingSummary[]> {
@@ -193,15 +198,21 @@ export class LiveTranscriptionError extends Error {
 export async function postLiveChunk(
   workspaceId: string,
   recordingId: string,
-  chunk: { wav: Blob; start: number; seq: number },
+  chunk: { wav: ArrayBuffer; start: number; seq: number },
 ): Promise<LiveChunkResponse> {
-  const form = new FormData()
-  form.append('audio', chunk.wav, `live-${chunk.seq}.wav`)
-  form.append('start', String(chunk.start))
-  form.append('seq', String(chunk.seq))
   const res = await fetch(
     `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/meetings/recordings/${encodeURIComponent(recordingId)}/live`,
-    { method: 'POST', body: form, headers: liveAuthHeaders(), credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+    {
+      method: 'POST',
+      body: new Uint8Array(chunk.wav),
+      headers: {
+        ...liveAuthHeaders(),
+        'Content-Type': 'audio/wav',
+        'X-Live-Start': String(chunk.start),
+        'X-Live-Seq': String(chunk.seq),
+      },
+      credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    },
   )
   const body = await res.json().catch(() => ({}))
   if (!res.ok) throw new LiveTranscriptionError(body?.error?.message || `Live transcription failed (${res.status})`, res.status)

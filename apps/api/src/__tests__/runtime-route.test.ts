@@ -115,6 +115,8 @@ beforeEach(() => {
   rmStartMock.mockImplementation(async () => ({}))
   rmStopMock.mockReset()
   rmStopMock.mockImplementation(async () => {})
+  rmMarkPreviewActiveMock.mockReset()
+  rmMarkPreviewActiveMock.mockImplementation(() => {})
 
   delete process.env.KUBERNETES_SERVICE_HOST
 })
@@ -618,6 +620,99 @@ describe('POST /projects/:projectId/runtime/restart', () => {
     expect((await res.json()).error.message).toContain(
       'Failed to restart runtime for project proj-9',
     )
+  })
+})
+
+// ─── POST /preview/active (SHO-226) ───────────────────────────────────────
+
+describe('POST /projects/:projectId/preview/active', () => {
+  test('host mode: pins the preview and reports the live runtime port', async () => {
+    rmStatusMock.mockImplementation(
+      () => ({ status: 'running', agentPort: 9010, port: 8010 }) as any,
+    )
+    const res = await makeApp().request('/api/projects/proj-1/preview/active', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, running: true, agentPort: 9010, status: 'running' })
+    // The pin is the whole point: this is the UI signal that keeps the preview
+    // out of the warm-preview LRU.
+    expect(rmMarkPreviewActiveMock).toHaveBeenCalledWith('proj-1')
+  })
+
+  test('reports running:false for a stopped runtime and never starts one', async () => {
+    rmStatusMock.mockImplementation(() => null as any)
+    const res = await makeApp().request('/api/projects/proj-1/preview/active', {
+      method: 'POST',
+    })
+    expect(await res.json()).toEqual({ ok: true, running: false, agentPort: null, status: null })
+    // A ping must not be able to wake a project by itself — the client decides
+    // to re-resolve `/sandbox/url`, which is the path that restarts it.
+    expect(rmStartMock).not.toHaveBeenCalled()
+    expect(rmMarkPreviewActiveMock).toHaveBeenCalledWith('proj-1')
+  })
+
+  test('reports a cold start as `status: starting`, not as a lost runtime', async () => {
+    // The client must be able to tell "still coming up" from "was here and is
+    // gone": re-resolving a `starting` runtime restarts it and drops the whole
+    // project screen back to its loading gate (SHO-226 QA round 2).
+    rmStatusMock.mockImplementation(
+      () => ({ status: 'starting', agentPort: 9012, port: 8012 }) as any,
+    )
+    const res = await makeApp().request('/api/projects/proj-1/preview/active', {
+      method: 'POST',
+    })
+    expect(await res.json()).toEqual({
+      ok: true,
+      running: false,
+      agentPort: 9012,
+      status: 'starting',
+    })
+    expect(rmStartMock).not.toHaveBeenCalled()
+  })
+
+  test('404 for an unknown project', async () => {
+    projectFindUnique.mockImplementation(async () => null)
+    const res = await makeApp().request('/api/projects/nope/preview/active', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(404)
+    expect(rmMarkPreviewActiveMock).not.toHaveBeenCalled()
+  })
+
+  test('cloud (k8s/metal) is a harmless no-op that never touches the host manager', async () => {
+    // The agent pod that runs this suite has SHOGO_LOCAL_MODE set; cloud never
+    // does, so clear it for the duration of the case.
+    const prevLocal = process.env.SHOGO_LOCAL_MODE
+    delete process.env.SHOGO_LOCAL_MODE
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    try {
+      const res = await makeApp().request('/api/projects/proj-1/preview/active', {
+        method: 'POST',
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true, running: true, agentPort: null, status: null })
+      expect(rmMarkPreviewActiveMock).not.toHaveBeenCalled()
+    } finally {
+      if (prevLocal !== undefined) process.env.SHOGO_LOCAL_MODE = prevLocal
+    }
+  })
+
+  test('SHOGO_LOCAL_MODE wins over a Kubernetes service host (desktop in k8s dev)', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    const prevLocal = process.env.SHOGO_LOCAL_MODE
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    try {
+      rmStatusMock.mockImplementation(() => ({ status: 'running', agentPort: 9011 }) as any)
+      const res = await makeApp().request('/api/projects/proj-1/preview/active', {
+        method: 'POST',
+      })
+      expect(await res.json()).toEqual({ ok: true, running: true, agentPort: 9011, status: 'running' })
+      expect(rmMarkPreviewActiveMock).toHaveBeenCalledWith('proj-1')
+    } finally {
+      if (prevLocal === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = prevLocal
+    }
   })
 })
 

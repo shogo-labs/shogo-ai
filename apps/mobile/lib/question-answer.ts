@@ -8,7 +8,8 @@
 import { haptics } from './haptics'
 import { newClientMsgId, teamChatApi } from './team-chat-api'
 
-export type QuestionOutcome = { ok: true } | { ok: false; message: string }
+/** `relay` on an answer: `held` while the person still has questions open on the same card. */
+export type QuestionOutcome = { ok: true; relay?: 'sent' | 'held' } | { ok: false; message: string }
 
 type Listener = (event: { messageId: string; questionId: string }) => void
 const listeners = new Set<Listener>()
@@ -24,15 +25,16 @@ export function questionErrorMessage(err: any): string {
 }
 
 async function run(messageId: string, questionId: string, send: () => Promise<unknown>): Promise<QuestionOutcome> {
+  let result: { relay?: 'sent' | 'held' } | undefined
   try {
-    await send()
+    result = (await send()) as { relay?: 'sent' | 'held' } | undefined
   } catch (err) {
     haptics.error()
     return { ok: false, message: questionErrorMessage(err) }
   }
   haptics.success()
   for (const listener of [...listeners]) listener({ messageId, questionId })
-  return { ok: true }
+  return { ok: true, relay: result?.relay }
 }
 
 export function answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<QuestionOutcome> {

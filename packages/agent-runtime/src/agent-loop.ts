@@ -18,6 +18,7 @@ export type {
   AgentLoopOptions,
   ToolCallRecord,
   AgentLoopResult,
+  PerCallUsage,
   RetryClassification,
   RetryReason,
 } from '@shogo-ai/sdk/agent-loop'

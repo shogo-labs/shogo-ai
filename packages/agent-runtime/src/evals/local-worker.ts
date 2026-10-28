@@ -16,6 +16,7 @@ import { resolve, join } from 'path'
 import { tmpdir } from 'os'
 import { encodeSecurityPolicy } from '../permission-engine'
 import { type DockerWorker, REPO_ROOT } from './docker-worker'
+import { evalWorkspaceEnv, type EvalWorkerEnv } from './workspace-runtime-env'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,11 +31,72 @@ export interface LocalWorkerConfig {
   envOverrides?: Record<string, string>
 }
 
+export interface LocalWorkerStartOptions {
+  workspaceDir?: string
+  /**
+   * Workspace-runtime env for the eval this worker is about to run (SHO-195).
+   * Applied over the inherited `process.env`, after its identity keys are
+   * stripped — a developer running evals from inside a workspace runtime must
+   * not leak that workspace's identity into the worker.
+   */
+  workspaceEnv?: EvalWorkerEnv
+}
+
 // ---------------------------------------------------------------------------
 // Process tracking
 // ---------------------------------------------------------------------------
 
 const _processes = new Map<number, Subprocess>()
+
+// ---------------------------------------------------------------------------
+// Credential isolation
+// ---------------------------------------------------------------------------
+
+/**
+ * Host variables that would let the agent's shell act as the developer
+ * running the evals. Tokens are already redacted from `exec`, but these
+ * point CLIs and git at the developer's own logins.
+ */
+const HOST_CREDENTIAL_VARS = [
+  'SSH_AUTH_SOCK',
+  'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN',
+  'GITLAB_TOKEN', 'GLAB_TOKEN',
+  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_PROFILE',
+  'STRIPE_API_KEY', 'STRIPE_SECRET_KEY',
+]
+
+/**
+ * Point gh, git, aws, stripe, gcloud and friends at empty config so a
+ * local eval worker runs logged out, the way a fresh cloud workspace does.
+ * Without this, `gh` in an eval uses the developer's keychain login.
+ */
+export function isolatedCredentialEnv(root: string): Record<string, string> {
+  mkdirSync(join(root, 'config', 'gh'), { recursive: true })
+  mkdirSync(join(root, 'aws'), { recursive: true })
+  const gitconfig = join(root, 'gitconfig')
+  writeFileSync(gitconfig, [
+    '[user]',
+    '\tname = Shogo Eval',
+    '\temail = eval@shogo.local',
+    '[credential]',
+    '\thelper =',
+    '[init]',
+    '\tdefaultBranch = main',
+    '',
+  ].join('\n'))
+  return {
+    XDG_CONFIG_HOME: join(root, 'config'),
+    GH_CONFIG_DIR: join(root, 'config', 'gh'),
+    AWS_CONFIG_FILE: join(root, 'aws', 'config'),
+    AWS_SHARED_CREDENTIALS_FILE: join(root, 'aws', 'credentials'),
+    CLOUDSDK_CONFIG: join(root, 'config', 'gcloud'),
+    AZURE_CONFIG_DIR: join(root, 'config', 'azure'),
+    GIT_CONFIG_GLOBAL: gitconfig,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_SSH_COMMAND: 'ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes',
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Worker lifecycle
@@ -43,7 +105,7 @@ const _processes = new Map<number, Subprocess>()
 export async function startLocalWorker(
   id: number,
   config: LocalWorkerConfig,
-  opts?: { workspaceDir?: string },
+  opts?: LocalWorkerStartOptions,
 ): Promise<DockerWorker> {
   const port = config.baseHostPort + id
   const name = `${config.containerPrefix}-${id}`
@@ -72,10 +134,19 @@ export async function startLocalWorker(
     }, null, 2))
   }
 
+  // Strip the parent process's workspace/project identity first (SHO-195). A
+  // developer running evals from inside their own workspace runtime has
+  // WORKSPACE_RUNTIME / WORKSPACE_ID / WORKSPACE_MOUNTS in `process.env`, and
+  // this spread would otherwise hand every eval that identity.
+  const workerEnv = opts?.workspaceEnv ?? evalWorkspaceEnv(undefined)
+  const inheritedEnv = { ...(process.env as Record<string, string | undefined>) }
+  for (const key of workerEnv.unset) delete inheritedEnv[key]
+
   const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+    ...(inheritedEnv as Record<string, string>),
     NODE_ENV: 'development',
     PORT: String(port),
+    WORKING_MODE: 'managed',
     WORKSPACE_DIR: dir,
     AGENT_DIR: dir,
     PROJECT_DIR: dir,
@@ -83,11 +154,21 @@ export async function startLocalWorker(
     AGENT_MODEL: config.model,
     SKILL_SERVER_PORT: String(skillPort),
     SECURITY_POLICY: encodeSecurityPolicy({ mode: 'full_autonomy' }),
+    // Cloud runtimes run in UTC; the developer's own timezone would leak into
+    // the system prompt and answer questions the evals expect the agent to ask.
+    TZ: 'UTC',
   }
+
+  Object.assign(env, isolatedCredentialEnv(resolve(tmpdir(), `${name}-creds`)))
+  for (const key of HOST_CREDENTIAL_VARS) delete env[key]
 
   if (config.envOverrides) {
     Object.assign(env, config.envOverrides)
   }
+
+  // The eval's workspace env wins over every default above (it carries the
+  // workspace `PROJECT_ID` / `WORKSPACE_*` when the eval boots as one).
+  Object.assign(env, workerEnv.set)
 
   const runtimeDir = resolve(REPO_ROOT, 'packages/agent-runtime')
   const proc = spawn(['bun', 'run', 'src/server.ts'], {

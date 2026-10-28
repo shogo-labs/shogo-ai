@@ -21,6 +21,7 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { Hono } from 'hono'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
+import { matchesWhere } from './helpers/prisma-where'
 
 // Enable local-mode + a stored cloud credential before instances.ts loads.
 process.env.SHOGO_LOCAL_MODE = 'true'
@@ -32,6 +33,7 @@ process.env.SHOGO_CLOUD_URL = 'https://cloud.test'
 type Instance = {
   id: string
   workspaceId: string
+  userId: string
   hostname: string
   name: string
   os: string | null
@@ -56,7 +58,7 @@ const mockPrisma = {
       return inst ? { ...inst } : null
     },
     findMany: async (args: any) =>
-      [...instancesById.values()].filter((i) => i.workspaceId === args.where.workspaceId),
+      [...instancesById.values()].filter((i) => matchesWhere(i as any, args.where)),
     update: async (args: any) => {
       const inst = instancesById.get(args.where.id)
       if (!inst) throw new Error('not found')
@@ -127,6 +129,7 @@ function seedLocalInstance(overrides: Partial<Instance> = {}): Instance {
   const inst: Instance = {
     id: 'local-i-1',
     workspaceId: 'ws-1',
+    userId: 'u-1',
     hostname: 'mac',
     name: 'Local Mac',
     os: 'darwin',

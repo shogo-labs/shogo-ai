@@ -41,6 +41,33 @@ export interface RunningProcess {
   elapsedMs: number
   /** True if restored from a snapshot after a runtime restart (state unknown). */
   stale?: boolean
+  /** Task id (same as runId). */
+  id?: string
+  /** shell | subagent | project_call | agent_reply | work_item */
+  source?: string
+  title?: string
+  status?: 'running' | 'completed' | 'failed' | 'cancelled'
+  /** Workspace-relative output log. */
+  outputFile?: string
+  /** The agent is woken when it finishes. */
+  notify?: boolean
+  /** Status comes from the API or another project's runtime. */
+  remote?: boolean
+}
+
+/** `data-task-update` SSE part: the full running task list (replaces `data-process-update`). */
+export interface TaskUpdateEvent {
+  tasks: RunningProcess[]
+}
+
+/** `data-task-wait` SSE part: the agent is blocked in `wait` (active) or just stopped waiting. */
+export interface TaskWaitEvent {
+  toolCallId: string
+  taskIds: string[]
+  until?: string
+  timeoutMs: number
+  startedAt: number
+  active: boolean
 }
 
 /**

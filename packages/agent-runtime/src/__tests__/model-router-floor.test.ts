@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Auto routing floor (#1082): plan-mode turns never run on the economy tier
+ * Auto routing floor (#1082): a `floorTier` keeps a turn off the economy tier
  * unless the session ceiling is economy.
  */
 import { describe, expect, test } from 'bun:test'
 import { buildAutoTierMap, selectModelForSpawn, type SpawnClassificationInput } from '../model-router'
-import { autoFloorTierFor } from '../plan-mode-prompt'
 
 const tiers = { economy: 'claude-haiku-4-5', standard: 'claude-sonnet-4-6', premium: 'claude-opus-4-6' }
 
@@ -63,16 +62,16 @@ describe('model router floorTier', () => {
     expect(hp.selectedModel).not.toBe(tiers.economy)
   })
 
-  test('end to end: plan mode floors to standard, agent mode keeps economy', () => {
-    const plan = selectModelForSpawn(shortFix, { ceilingModel: tiers.premium, availableModels: tiers, floorTier: autoFloorTierFor('plan') })
-    const agent = selectModelForSpawn(shortFix, { ceilingModel: tiers.premium, availableModels: tiers, floorTier: autoFloorTierFor('agent') })
+  test("end to end: a 'standard' floor lifts economy, no floor keeps it", () => {
+    const plan = selectModelForSpawn(shortFix, { ceilingModel: tiers.premium, availableModels: tiers, floorTier: 'standard' })
+    const agent = selectModelForSpawn(shortFix, { ceilingModel: tiers.premium, availableModels: tiers, floorTier: undefined })
     expect(plan.selectedModel).toBe(tiers.standard)
     expect(agent.selectedModel).toBe(tiers.economy)
   })
 
   test('end to end with the default Auto tier map', () => {
     const auto = buildAutoTierMap()
-    const plan = selectModelForSpawn(shortFix, { ceilingModel: auto.premium, availableModels: auto, floorTier: autoFloorTierFor('plan') })
+    const plan = selectModelForSpawn(shortFix, { ceilingModel: auto.premium, availableModels: auto, floorTier: 'standard' })
     expect(plan.selectedModel).toBe(auto.standard)
   })
 })

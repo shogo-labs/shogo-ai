@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+import { sanitizeChatMentionLabel } from "./chat-mention-text";
+
 /** Same cap as the live IDE selection context the runtime renders. */
 export const MAX_SELECTION_CHARS = 24_000;
 
@@ -111,7 +113,7 @@ export function baseMentionLabel(ref: ChatReferenceInput): string {
     case "project":
       return `@${slugifyMention(ref.name)}`;
     case "chat":
-      return `@chat:${ref.id}`;
+      return `@${sanitizeChatMentionLabel(ref.name)}`;
     case "plan":
       return `@plan:${slugifyMention(ref.name)}`;
     case "workspace":

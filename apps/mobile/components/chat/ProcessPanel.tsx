@@ -14,6 +14,7 @@ import { useState, useEffect, useRef } from "react"
 import { View, Text, Pressable, ActivityIndicator } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown, ChevronUp, Terminal, X, Clock } from "lucide-react-native"
+import type { TaskLink } from "../../lib/task-link"
 
 export interface RunningProcess {
   runId: string
@@ -23,6 +24,26 @@ export interface RunningProcess {
   containerName?: string
   startedAt: number
   stale?: boolean
+  /** Task id (same as runId). */
+  id?: string
+  /** shell | subagent | project_call | agent_reply | work_item */
+  source?: string
+  title?: string
+  status?: string
+  outputFile?: string
+  /** The agent is woken when it finishes. */
+  notify?: boolean
+  remote?: boolean
+  /** Set once the task settled; the row then shows a frozen duration. */
+  finishedAt?: number
+  elapsedMs?: number
+  /** Where the task's work is happening, so pressing the row opens it. */
+  link?: TaskLink
+  /**
+   * The task is finished but its update is still queued behind a wake pause:
+   * the dock shows it as waiting on the person rather than done.
+   */
+  waiting?: boolean
 }
 
 export interface ProcessPanelProps {

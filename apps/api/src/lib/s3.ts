@@ -356,6 +356,13 @@ export interface PresignOptions {
   expiresIn?: number
   /** Content type for PUT requests */
   contentType?: string
+  /**
+   * `Content-Disposition` for the response. Only signed read URLs can carry
+   * this, because S3 answers the request itself — a header added by the caller
+   * after the redirect would never reach the browser. Used to make a download
+   * link save the file instead of displaying it.
+   */
+  responseContentDisposition?: string
 }
 
 /**
@@ -698,7 +705,11 @@ export async function getArtifactPresignedReadUrl(
   const bucket = options.bucket || getArtifactBucket()
   const expiresIn = options.expiresIn || 3600
 
-  const command = new GetObjectCommand({ Bucket: bucket, Key: key })
+  const command = new GetObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ...(options.responseContentDisposition ? { ResponseContentDisposition: options.responseContentDisposition } : {}),
+  })
   return getSignedUrl(client, command, { expiresIn })
 }
 

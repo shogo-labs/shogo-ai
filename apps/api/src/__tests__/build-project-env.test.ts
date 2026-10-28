@@ -205,6 +205,30 @@ describe('buildProjectEnv — always-present fields', () => {
     expect(deriveRuntimeTokenMock).toHaveBeenCalledTimes(1)
     expect(deriveWebhookTokenMock).toHaveBeenCalledTimes(1)
   })
+
+  // SHO-125 §4b: the API calls a project's runtime with the WORKSPACE token, so
+  // the pod must hold that exact token or its byte-compare fast path can never
+  // match. RUNTIME_AUTH_SECRET stays the project token because it is also the
+  // pod's outbound credential (see the comment in build-project-env.ts).
+  test('adds the workspace token the API authenticates with, without displacing the project token', async () => {
+    const { deriveWorkspaceRuntimeToken } = await import('../lib/workspace-runtime-token')
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-42',
+      name: null,
+      settings: null,
+      cloudSyncMode: null,
+      workspace: null,
+    }))
+    const env = await buildProjectEnv('proj-9')
+    expect(env.WORKSPACE_RUNTIME_AUTH_SECRET).toBe(deriveWorkspaceRuntimeToken('ws-42'))
+    expect(env.WORKSPACE_RUNTIME_AUTH_SECRET.startsWith('wrt_v1_ws-42_')).toBe(true)
+    expect(env.RUNTIME_AUTH_SECRET).toBe('runtime-token-stub')
+  })
+
+  test('omits the workspace token when the project has no workspace', async () => {
+    const env = await buildProjectEnv('proj-10')
+    expect(env.WORKSPACE_RUNTIME_AUTH_SECRET).toBeUndefined()
+  })
 })
 
 // ─── proxy URLs ────────────────────────────────────────────────────────────

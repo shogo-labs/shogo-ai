@@ -16,7 +16,11 @@
     { "i": "assign_mix",     "x": 0, "y": 18, "w": 6, "h": 5 },
     { "i": "host_errors",    "x": 6, "y": 18, "w": 6, "h": 5 },
     { "i": "liveness_mix",     "x": 0, "y": 23, "w": 6, "h": 5 },
-    { "i": "liveness_by_host", "x": 6, "y": 23, "w": 6, "h": 5 }
+    { "i": "liveness_by_host", "x": 6, "y": 23, "w": 6, "h": 5 },
+    { "i": "time_to_ready", "x": 0, "y": 28, "w": 6, "h": 5 },
+    { "i": "wake_phase_p95", "x": 6, "y": 28, "w": 6, "h": 5 },
+    { "i": "repo_hydrate_mode", "x": 0, "y": 33, "w": 6, "h": 5 },
+    { "i": "repo_hydrate_deferred", "x": 6, "y": 33, "w": 6, "h": 5 }
   ],
   "widgets": [
     {
@@ -146,6 +150,43 @@
       "query": { "queryType": "promql", "promql": [
         { "query": "max by (host_id) (metal_host_app_active)", "legend": "{{host_id}} app" },
         { "query": "max by (host_id) (metal_host_agent_active)", "legend": "{{host_id}} agent" }
+      ] }
+    },
+    {
+      "id": "time_to_ready",
+      "title": "Time to ready (by host, ms)",
+      "panelTypes": "graph",
+      "description": "How long a user waits from the first /assign attempt for a project until one returns a ready URL. Unlike wake latency, this includes assign timeouts and retries.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "histogram_quantile(0.50, sum by (le, host_id) (rate(metal_time_to_ready_ms_bucket[5m])))", "legend": "{{host_id}} p50" },
+        { "query": "histogram_quantile(0.95, sum by (le, host_id) (rate(metal_time_to_ready_ms_bucket[5m])))", "legend": "{{host_id}} p95" }
+      ] }
+    },
+    {
+      "id": "wake_phase_p95",
+      "title": "Wake phase p95 (API + host, ms)",
+      "panelTypes": "graph",
+      "description": "Where each /assign spends its time: api.* is lease/placement/env, host.* is the metal-agent phase breakdown (restore, source, data, git history).",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "histogram_quantile(0.95, sum by (le, phase) (rate(metal_wake_phase_ms_bucket[5m])))", "legend": "{{phase}}" }
+      ] }
+    },
+    {
+      "id": "repo_hydrate_mode",
+      "title": "Git history restore at open (by mode)",
+      "panelTypes": "graph",
+      "description": "foreground = the open waited for the history download; deferred = the open returned on the source's .git and the download finished in the background; failed = fell back to the source's .git. Reported by the API per open.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "sum by (mode) (increase(metal_repo_hydrate[5m]))", "legend": "{{mode}}" }
+      ] }
+    },
+    {
+      "id": "repo_hydrate_deferred",
+      "title": "Deferred history restores (by outcome)",
+      "panelTypes": "graph",
+      "description": "How background git history downloads ended on the hosts: adopted, busy (workspace in use, stayed on the source's .git), failed, abandoned (VM went away). Host counters come from the heartbeat as metal.host.counter (cumulative, one series per API replica), hence max by host then delta.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "sum by (outcome) (clamp_min(max by (host_id, outcome) (delta(metal_host_counter{counter=\"metal_repo_hydrate_deferred_total\"}[5m])), 0))", "legend": "{{outcome}}" }
       ] }
     }
   ]

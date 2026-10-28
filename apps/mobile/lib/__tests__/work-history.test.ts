@@ -26,6 +26,10 @@ describe('describeEvent', () => {
   test('agents are named from mentionables', () => {
     expect(describeEvent(event('assigned', { label: 'Support bot' }, { actorAgentRef: 'project:p1' }), mentionables)).toBe('Support bot assigned it to Support bot')
     expect(describeEvent(event('agent_woken', { agentRef: 'project:p1', reason: 'assigned' }), mentionables)).toBe('Support bot picked it up (assigned)')
+    expect(describeEvent(event('agent_wake_queued', { agentRef: 'project:p1' }), mentionables))
+      .toBe('Support bot is still working here, so the next wake waits for that reply')
+    expect(describeEvent(event('agent_wake_deferred', { agentRef: 'project:p1', reason: 'moved to In progress' }), mentionables))
+      .toBe('Support bot picks it up in a moment unless it is tagged here first')
   })
 
   test('edits, occurrences and quiet events', () => {

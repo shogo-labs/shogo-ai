@@ -8,18 +8,18 @@ import {
   TRANSLATOR_CONTEXT_MARKER,
   TRANSLATOR_LIVE_CONVERSATION_PROMPT,
   SEND_TO_CHAT_PARAMS,
-  SET_MODE_PARAMS,
 } from '../voice-mode/translator-persona'
 
 describe('translator-persona', () => {
   test('system prompt mentions both tools by name', () => {
     expect(TRANSLATOR_SYSTEM_PROMPT).toContain('send_to_chat')
-    expect(TRANSLATOR_SYSTEM_PROMPT).toContain('set_mode')
+    expect(TRANSLATOR_SYSTEM_PROMPT).toContain('get_recent_activity')
+    expect(TRANSLATOR_SYSTEM_PROMPT).not.toContain('set_mode')
   })
 
-  test('ElevenLabs tools declare send_to_chat, set_mode, and get_recent_activity as client tools', () => {
+  test('ElevenLabs tools declare send_to_chat and get_recent_activity as client tools', () => {
     const names = TRANSLATOR_ELEVENLABS_TOOLS.map((t) => t.name).sort()
-    expect(names).toEqual(['get_recent_activity', 'send_to_chat', 'set_mode'])
+    expect(names).toEqual(['get_recent_activity', 'send_to_chat'])
     for (const t of TRANSLATOR_ELEVENLABS_TOOLS) {
       expect(t.type).toBe('client')
       expect(t.expects_response).toBe(true)
@@ -27,15 +27,9 @@ describe('translator-persona', () => {
     }
   })
 
-  test('set_mode ElevenLabs spec restricts mode to agent | plan', () => {
-    const setMode = TRANSLATOR_ELEVENLABS_TOOLS.find((t) => t.name === 'set_mode')!
-    const params = setMode.parameters as { properties: { mode: { enum: string[] } } }
-    expect(params.properties.mode.enum.sort()).toEqual(['agent', 'plan'])
-  })
-
   test('AI SDK tool map mirrors ElevenLabs tool names', () => {
     expect(Object.keys(TRANSLATOR_AI_SDK_TOOLS).sort()).toEqual(
-      ['get_recent_activity', 'send_to_chat', 'set_mode'],
+      ['get_recent_activity', 'send_to_chat'],
     )
   })
 
@@ -46,11 +40,8 @@ describe('translator-persona', () => {
     }
   })
 
-  test('Zod schemas reject invalid modes and empty text', () => {
+  test('Zod schemas reject empty text', () => {
     expect(SEND_TO_CHAT_PARAMS.safeParse({ text: '' }).success).toBe(false)
     expect(SEND_TO_CHAT_PARAMS.safeParse({ text: 'hello' }).success).toBe(true)
-    expect(SET_MODE_PARAMS.safeParse({ mode: 'ask' }).success).toBe(false)
-    expect(SET_MODE_PARAMS.safeParse({ mode: 'agent' }).success).toBe(true)
-    expect(SET_MODE_PARAMS.safeParse({ mode: 'plan' }).success).toBe(true)
   })
 })

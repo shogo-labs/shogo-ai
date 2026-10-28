@@ -36,6 +36,6 @@ describe('useTypingUsers', () => {
       emit({ type: 'typing', conversationId: 'c1', threadRootId: null, userId: 'me', name: 'Me' })
       emit({ type: 'typing', conversationId: 'c1', threadRootId: null, userId: 'pat', name: 'Pat' })
     })
-    expect(result.current).toEqual(['Pat'])
+    expect(result.current).toEqual([{ id: 'pat', name: 'Pat' }])
   })
 })

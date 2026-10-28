@@ -38,8 +38,6 @@ import { CommitDetailPanel } from "./CommitDetailPanel";
 import { relativeTime } from "./gitAvatar";
 import { ROW_HEIGHT, type DisplayRow } from "./types";
 
-const PUBLISH_DOMAIN = "shogo.one";
-
 type Selection = { kind: "wip" } | { kind: "commit"; sha: string } | null;
 
 export function GraphView({
@@ -66,7 +64,7 @@ export function GraphView({
     rollback,
     createCheckpoint,
     isMutating,
-    disabledForExternalMode: checkpointsDisabled,
+    disabledReason: checkpointsDisabledReason,
     refetch: refetchCheckpoints,
   } = useCheckpoints(projectId, {
     baseUrl: API_URL,
@@ -163,7 +161,7 @@ export function GraphView({
     [createCheckpoint, graph, refetchCheckpoints],
   );
 
-  const liveUrl = publish.subdomain ? `https://${publish.subdomain}.${PUBLISH_DOMAIN}` : null;
+  const liveUrl = publish.subdomain ? `https://${publish.subdomain}.${publish.publishDomain}` : null;
 
   const handleViewLive = useCallback(() => {
     if (liveUrl) Linking.openURL(liveUrl);
@@ -186,7 +184,14 @@ export function GraphView({
     }
   }, [isRepublishing, http, projectId, publish, graph, refetchCheckpoints]);
 
-  const canCreate = !graph.disabledForExternalMode && !checkpointsDisabled;
+  // One banner covers both "Shogo doesn't manage this repo" cases: a
+  // folder-linked project (external mode) and a folder that is a checkout of
+  // someone else's repository. `useGitGraph`'s 409 only fires for external
+  // mode today, so it narrows to 'external'.
+  const disabledReason: "external" | "foreign_repo" | null =
+    checkpointsDisabledReason ?? (graph.disabledForExternalMode ? "external" : null);
+
+  const canCreate = !disabledReason;
 
   const lowerQuery = query.trim().toLowerCase();
   const matches = useCallback(
@@ -225,6 +230,7 @@ export function GraphView({
           <PublishStrip
             isPublished={publish.isPublished}
             subdomain={publish.subdomain}
+            publishDomain={publish.publishDomain}
             liveUrl={liveUrl}
             aheadOfLive={aheadOfLive}
             isRepublishing={isRepublishing}
@@ -233,8 +239,8 @@ export function GraphView({
           />
         )}
 
-        {graph.disabledForExternalMode ? (
-          <ExternalModeState />
+        {disabledReason ? (
+          <ExternalModeState reason={disabledReason} />
         ) : graph.isLoading && graph.commits.length === 0 ? (
           <Centered>
             <Loader2 size={18} className="animate-spin" /> Loading commit graph…
@@ -382,6 +388,7 @@ function Header({
 function PublishStrip({
   isPublished,
   subdomain,
+  publishDomain,
   liveUrl,
   aheadOfLive,
   isRepublishing,
@@ -390,6 +397,8 @@ function PublishStrip({
 }: {
   isPublished: boolean;
   subdomain: string | null;
+  /** Apex the API publishes to (`staging.shogo.one` on staging). */
+  publishDomain: string;
   liveUrl: string | null;
   aheadOfLive: boolean;
   isRepublishing: boolean;
@@ -411,7 +420,7 @@ function PublishStrip({
             title="Open the live site"
             className="flex items-center gap-1 font-medium text-[color:var(--ide-text-strong)] hover:underline"
           >
-            {subdomain}.{PUBLISH_DOMAIN}
+            {subdomain}.{publishDomain}
             <ExternalLink size={11} className="text-[color:var(--ide-muted)]" />
           </button>
           <span className="flex-1" />
@@ -507,7 +516,21 @@ function Centered({ children }: { children: React.ReactNode }) {
   );
 }
 
-function ExternalModeState() {
+function ExternalModeState({ reason }: { reason: "external" | "foreign_repo" }) {
+  if (reason === "foreign_repo") {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center text-[color:var(--ide-muted)]">
+        <GitBranch size={24} />
+        <div className="text-[14px] font-semibold text-[color:var(--ide-text-strong)]">
+          Shogo doesn't manage this repo
+        </div>
+        <div className="text-[12px]">
+          This project's folder is a checkout of another git repository — Shogo won't commit into
+          it. Use your own git.
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center text-[color:var(--ide-muted)]">
       <GitBranch size={24} />

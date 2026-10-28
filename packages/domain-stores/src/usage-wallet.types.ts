@@ -17,6 +17,10 @@ export interface UsageWalletType {
   overageHardLimitUsd?: number
   overageAccumulatedUsd: number
   overageBilledUsd: number
+  overagePaidBlocks: number
+  overageOutstandingInvoiceId?: string
+  overageOutstandingUsd: number
+  overageOutstandingInvoiceUrl?: string
   alertsSentThisPeriod?: Record<string, unknown>
   stripeMeteredItemId?: string
   anniversaryDay: number
@@ -26,6 +30,10 @@ export interface UsageWalletType {
   fiveHourUsedUsd: number
   weeklyWindowStart?: Date
   weeklyUsedUsd: number
+  promoCreditUsd: number
+  promoCreditGrantedUsd: number
+  promoCreditExpiresAt?: Date
+  promoCreditStage: number
   createdAt: Date
   updatedAt: Date
 }
@@ -40,6 +48,10 @@ export interface UsageWalletCreateInput {
   overageHardLimitUsd?: number
   overageAccumulatedUsd?: number
   overageBilledUsd?: number
+  overagePaidBlocks?: number
+  overageOutstandingInvoiceId?: string
+  overageOutstandingUsd?: number
+  overageOutstandingInvoiceUrl?: string
   alertsSentThisPeriod?: Record<string, unknown>
   stripeMeteredItemId?: string
   anniversaryDay: number
@@ -49,6 +61,10 @@ export interface UsageWalletCreateInput {
   fiveHourUsedUsd?: number
   weeklyWindowStart?: Date
   weeklyUsedUsd?: number
+  promoCreditUsd?: number
+  promoCreditGrantedUsd?: number
+  promoCreditExpiresAt?: Date
+  promoCreditStage?: number
 }
 
 export interface UsageWalletUpdateInput {
@@ -61,6 +77,10 @@ export interface UsageWalletUpdateInput {
   overageHardLimitUsd?: number
   overageAccumulatedUsd?: number
   overageBilledUsd?: number
+  overagePaidBlocks?: number
+  overageOutstandingInvoiceId?: string
+  overageOutstandingUsd?: number
+  overageOutstandingInvoiceUrl?: string
   alertsSentThisPeriod?: Record<string, unknown>
   stripeMeteredItemId?: string
   anniversaryDay?: number
@@ -70,4 +90,8 @@ export interface UsageWalletUpdateInput {
   fiveHourUsedUsd?: number
   weeklyWindowStart?: Date
   weeklyUsedUsd?: number
+  promoCreditUsd?: number
+  promoCreditGrantedUsd?: number
+  promoCreditExpiresAt?: Date
+  promoCreditStage?: number
 }

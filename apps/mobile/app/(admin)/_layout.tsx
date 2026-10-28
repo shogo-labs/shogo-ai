@@ -60,16 +60,16 @@ import {
   Clapperboard,
   Activity,
   Wallet,
+  ShieldAlert,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useAuth } from '../../contexts/auth'
-import { DomainProvider, useDomainHttp } from '../../contexts/domain'
+import { DomainProvider } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
-import { api, API_URL } from '../../lib/api'
+import { API_URL } from '../../lib/api'
 import { usePlatformConfig } from '../../lib/platform-config';
 import { densityFor } from "../../lib/phone-density"
-
-type UserRole = 'user' | 'super_admin'
+import { adminPageTitle, isAdminNavActive } from '../../lib/admin-nav'
+import { useAdminCheck } from '../../hooks/useAdminCheck'
 
 /**
  * Nav item access markers:
@@ -107,16 +107,17 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
   {
     title: 'Growth & Marketing',
     items: [
-      { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics', scopes: ['analytics:read', 'marketing:read'] },
+      { href: '/(admin)/admin/analytics', icon: BarChart3, label: 'Marketing Analytics', scopes: ['analytics:read', 'marketing:read'] },
       { href: '/(admin)/creators', icon: Sparkles, label: 'Creators', scopes: ['creators:read', 'creators:write'] },
       { href: '/(admin)/affiliate-content', icon: Clapperboard, label: 'Affiliate CPM', scope: 'creators:write' },
       { href: '/(admin)/affiliate-payouts', icon: Wallet, label: 'Affiliate payouts', scope: 'creators:write' },
+      { href: '/(admin)/signup-risk', icon: ShieldAlert, label: 'Signup risk', scope: 'creators:write' },
     ],
   },
   {
     title: 'Marketplace',
     items: [
-      { href: '/(admin)/marketplace', icon: Store, label: 'Marketplace' },
+      { href: '/(admin)/admin/marketplace', icon: Store, label: 'Marketplace' },
     ],
   },
   {
@@ -124,7 +125,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
     items: [
       { href: '/(admin)/users', icon: Users, label: 'Users' },
       { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
-      { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
+      { href: '/(admin)/admin/projects', icon: FolderKanban, label: 'Projects' },
     ],
   },
   {
@@ -147,7 +148,7 @@ const NAV_SECTIONS: readonly AdminNavSection[] = [
       { href: '/(admin)/ai-analytics', icon: Activity, label: 'AI Analytics', scopes: ['analytics:read', 'ai:read'] },
       { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
       { href: '/(admin)/general', icon: Settings, label: 'General' },
-      { href: '/(admin)/settings', icon: BrainCircuit, label: 'AI' },
+      { href: '/(admin)/admin/settings', icon: BrainCircuit, label: 'AI' },
     ],
   },
 ]
@@ -165,8 +166,8 @@ function canSeeNavItem(item: AdminNavItem, isSuperAdmin: boolean, scopes: string
 }
 
 const LOCAL_MAIN_ITEMS = [
-  { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
-  { href: '/(admin)/analytics', icon: BarChart3, label: 'Marketing Analytics' },
+  { href: '/(admin)/admin/projects', icon: FolderKanban, label: 'Projects' },
+  { href: '/(admin)/admin/analytics', icon: BarChart3, label: 'Marketing Analytics' },
   { href: '/(admin)/ai-analytics', icon: Activity, label: 'AI Analytics' },
   { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
@@ -174,53 +175,11 @@ const LOCAL_MAIN_ITEMS = [
 
 const LOCAL_SETTINGS_ITEMS = [
   { href: '/(admin)/general' as const, icon: Settings, label: 'General' },
-  { href: '/(admin)/meetings' as const, icon: Mic, label: 'Meetings' },
+  { href: '/(admin)/admin/meetings' as const, icon: Mic, label: 'Meetings' },
   { href: '/(admin)/logs' as const, icon: ScrollText, label: 'Logs' },
-  { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' },
+  { href: '/(admin)/admin/settings' as const, icon: BrainCircuit, label: 'AI' },
 ] as const
 
-function useAdminCheck() {
-  const { user, isAuthenticated, isLoading: authLoading } = useAuth()
-  const http = useDomainHttp()
-  const [role, setRole] = useState<UserRole | null>(null)
-  const [scopes, setScopes] = useState<string[]>([])
-  const [checking, setChecking] = useState(true)
-
-  useEffect(() => {
-    if (authLoading) return
-    if (!isAuthenticated) {
-      setChecking(false)
-      return
-    }
-    let cancelled = false
-    setChecking(true)
-    api.getMe(http)
-      .then((data) => {
-        if (!cancelled && data.ok && data.data?.role) {
-          setRole(data.data.role as UserRole)
-          setScopes(Array.isArray(data.data.adminScopes) ? data.data.adminScopes : [])
-        }
-      })
-      .catch((e) => console.error('[AdminLayout] Failed to verify admin role:', e))
-      .finally(() => {
-        if (!cancelled) setChecking(false)
-      })
-    return () => { cancelled = true }
-  }, [http, isAuthenticated, authLoading, user?.id])
-
-  const isSuperAdmin = role === 'super_admin'
-
-  return {
-    isSuperAdmin,
-    scopes,
-    // Portal access: full super admins OR users granted at least one scope.
-    hasAdminAccess: isSuperAdmin || scopes.length > 0,
-    isPending: authLoading || checking,
-    isAuthenticated,
-    userEmail: user?.email,
-    userName: user?.name,
-  }
-}
 
 type HealthStatus = 'healthy' | 'degraded' | 'critical' | 'unknown'
 
@@ -254,15 +213,6 @@ function useInfraHealth(enabled: boolean): HealthStatus {
   }, [enabled])
 
   return status
-}
-
-function isNavActive(pathname: string, href: string): boolean {
-  if (href === '/(admin)') {
-    return ( pathname === '/' || pathname === '' || pathname === '/(admin)' || pathname === '/index'
-    )
-  }
-  const clean = href.replace('/(admin)', '')
-  return pathname.startsWith(clean)
 }
 
 const HEALTH_DOT_COLOR: Record<HealthStatus, string> = {
@@ -311,7 +261,7 @@ function AdminSidebar({
 
   const renderNavRow = (item: AdminNavItem | { href: string; icon: any; label: string }) => {
     const Icon = item.icon
-    const active = isNavActive(pathname, item.href)
+    const active = isAdminNavActive(pathname, item.href)
     return (
       <Pressable
         key={item.href}
@@ -539,36 +489,6 @@ function DesktopContextHeader({ title }: { title: string }) {
   )
 }
 
-function getPageTitle(pathname: string): string {
-  if (pathname.startsWith('/users/')) return 'User Detail'
-  if (pathname.startsWith('/users') || pathname === '/users') return 'Users'
-  if (pathname.startsWith('/workspaces/')) return 'Workspace Detail'
-  if (pathname.includes('workspaces')) return 'Workspaces'
-  if (pathname.startsWith('/grants/')) return 'Grant Detail'
-  if (pathname.includes('grants')) return 'Credit grants'
-  if (pathname.startsWith('/marketplace/listing/')) return 'Listing Detail'
-  if (pathname.startsWith('/marketplace/payouts')) return 'Marketplace Payouts'
-  if (pathname.startsWith('/marketplace/listings')) return 'Marketplace Listings'
-  if (pathname.startsWith('/marketplace')) return 'Marketplace Review'
-  if (pathname.startsWith('/projects/')) return 'Project Detail'
-  if (pathname.includes('projects')) return 'Projects'
-  if (pathname.includes('ai-analytics')) return 'AI Analytics'
-  if (pathname.includes('analytics')) return 'Marketing Analytics'
-  if (pathname.startsWith('/creators/')) return 'Creator Profile'
-  if (pathname.includes('creators')) return 'Creators'
-  if (pathname.includes('affiliate-payouts')) return 'Affiliate Payouts'
-  if (pathname.includes('affiliate-content')) return 'Affiliate CPM'
-  if (pathname.includes('infrastructure')) return 'Infrastructure'
-  if (pathname.includes('heartbeats')) return 'Heartbeats'
-  if (pathname.startsWith('/evals/')) return 'Eval Detail'
-  if (pathname.includes('evals')) return 'Evals'
-  if (pathname.includes('/logs')) return 'Logs'
-  if (pathname.includes('meetings')) return 'Meetings'
-  if (pathname.includes('general')) return 'General'
-  if (pathname.includes('settings')) return 'AI Settings'
-  return 'Dashboard'
-}
-
 export default function AdminLayout() {
   return (
     <DomainProvider>
@@ -576,6 +496,16 @@ export default function AdminLayout() {
     </DomainProvider>
   )
 }
+
+/**
+ * The URL the document was opened at, captured while the bundle evaluates —
+ * before the router can rewrite history. `null` on native, where there is no
+ * address bar.
+ */
+const ENTRY_PATHNAME: string | null =
+  Platform.OS === 'web' && typeof window !== 'undefined'
+    ? window.location?.pathname ?? null
+    : null
 
 function AdminLayoutInner() {
   const router = useRouter()
@@ -587,8 +517,8 @@ function AdminLayoutInner() {
   const isWide = !isNativeApp && width >= ADMIN_WEB_WIDE_MIN_WIDTH
   const nativeSheetDrawer =
     isNativeApp || (Platform.OS === 'web' && width <= WEB_PHONE_MAX_WIDTH)
-  const { isSuperAdmin, scopes, hasAdminAccess, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
-  const { localMode } = usePlatformConfig()
+  const { isSuperAdmin, scopes, hasAdminAccess, gate, localMode, isAuthenticated, userEmail, userName } = useAdminCheck()
+  const isPending = gate === 'loading'
   const infraHealth = useInfraHealth(isSuperAdmin)
   const drawer = useNativeSheetDrawer({
     windowWidth: width,
@@ -607,12 +537,15 @@ function AdminLayoutInner() {
     scopes,
   } as const
 
-  // Portal entry: must be authenticated AND have some admin access.
+  // Portal entry: must be authenticated AND have some admin access. `gate`
+  // holds at `loading` while the session resolves — and, locally, while
+  // auto-sign-in is still in flight — so a cold admin deep link is never
+  // forwarded to `/(app)` before the answer is known (SHO-116).
   useEffect(() => {
-    if (!isPending && (!isAuthenticated || !hasAdminAccess)) {
+    if (gate === 'redirect') {
       router.replace('/(app)')
     }
-  }, [isPending, isAuthenticated, hasAdminAccess, router])
+  }, [gate, router])
 
   // Per-route guard: a partial admin who deep-links to a page they lack
   // permission for is bounced to their first permitted page (the backend
@@ -622,26 +555,31 @@ function AdminLayoutInner() {
     const permitted = ALL_NAV_ITEMS.filter((item) =>
       canSeeNavItem(item, isSuperAdmin, scopes),
     )
-    const onPermitted = permitted.some((item) => isNavActive(pathname, item.href))
+    const onPermitted = permitted.some((item) => isAdminNavActive(pathname, item.href))
     if (!onPermitted && permitted.length > 0) {
       router.replace(permitted[0].href as any)
     }
   }, [isPending, isAuthenticated, hasAdminAccess, isSuperAdmin, localMode, scopes, pathname, router])
 
+  // Local mode has no console index, so the console root hops to Projects. It
+  // must only do that when the console root is where the visitor *arrived*:
+  // expo-router publishes its initial navigation state as `/` on a cold load
+  // before it applies the URL the document was opened at, so `usePathname()`
+  // briefly reads `/` on every deep link. Acting on that frame is what turned a
+  // cold `/admin/settings` into `/admin/projects` (SHO-116).
   useEffect(() => {
-    if (localMode && !isPending && hasAdminAccess) {
-      const p = pathname
-      if (p === '/' || p === '' || p === '/(admin)' || p === '/index') {
-        router.replace('/(admin)/projects' as any)
-      }
-    }
+    if (!localMode || isPending || !hasAdminAccess) return
+    const p = pathname
+    if (p !== '/' && p !== '' && p !== '/(admin)' && p !== '/index') return
+    if (ENTRY_PATHNAME !== null && ENTRY_PATHNAME !== '/' && ENTRY_PATHNAME !== '') return
+    router.replace('/(admin)/admin/projects' as any)
   }, [localMode, isPending, hasAdminAccess, pathname, router])
 
   useEffect(() => {
     if (isWide) resetDrawer()
   }, [isWide, resetDrawer])
 
-  if (isPending) {
+  if (gate === 'loading') {
     return (
       <SafeAreaView className="flex-1 bg-background">
         <View className="flex-1 items-center justify-center">
@@ -654,7 +592,7 @@ function AdminLayoutInner() {
     )
   }
 
-  if (!isAuthenticated || !hasAdminAccess) return null
+  if (gate !== 'render') return null
 
   return (
     <NativeSheetDrawerShell
@@ -677,11 +615,11 @@ function AdminLayoutInner() {
       }
       header={
         isWide ? (
-          <DesktopContextHeader title={getPageTitle(pathname)} />
+          <DesktopContextHeader title={adminPageTitle(pathname)} />
         ) : (
           <MobileHeader
             onMenuPress={toggleDrawer}
-            title={getPageTitle(pathname)}
+            title={adminPageTitle(pathname)}
             menuOpen={drawerOpen}
             isNative={nativeSheetDrawer}
           />

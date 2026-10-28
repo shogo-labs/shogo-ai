@@ -241,6 +241,36 @@ describe('createS3SyncForProject', () => {
     const sync = createS3SyncForProject(TEST_DIR, 'proj-1')
     expect(sync).not.toBeNull()
   })
+
+  // Regression (SHO-212): the import / marketplace-install seed path creates a
+  // *fresh* instance for a brand-new project id and uploads immediately — it
+  // never calls `downloadAll()`, so its lineage is 'unknown'. It must opt out of
+  // the guard through this factory, or every k8s import fails at syncToS3 with
+  // "downloadAll() was never called on this instance".
+  test('allowUnconditionalWrite lets a fresh seed instance write the archive', async () => {
+    process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    writeFileSync(join(TEST_DIR, 'seed.txt'), 'SEED')
+
+    const sync = createS3SyncForProject(TEST_DIR, 'seed-proj', { allowUnconditionalWrite: true })
+    expect(sync).not.toBeNull()
+    const stats = await sync!.uploadAll(false)
+
+    expect(stats.errors).toEqual([])
+    expect(s3Store.has('test-bucket/seed-proj/project-src.tar.gz')).toBe(true)
+    sync!.shutdown()
+  })
+
+  test('without allowUnconditionalWrite the same fresh seed instance is refused', async () => {
+    process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
+    writeFileSync(join(TEST_DIR, 'seed.txt'), 'SEED')
+
+    const sync = createS3SyncForProject(TEST_DIR, 'seed-proj')
+    const stats = await sync!.uploadAll(false)
+
+    expect(stats.errors.join()).toContain('downloadAll() was never called')
+    expect(s3Store.has('test-bucket/seed-proj/project-src.tar.gz')).toBe(false)
+    sync!.shutdown()
+  })
 })
 
 describe('initializeS3Sync', () => {
@@ -553,6 +583,25 @@ describe('packProjectArchive (metal host-side export)', () => {
     expect(statSync(dest).size).toBe(res!.bytes)
     // pack must NOT touch S3 (the metal agent uploads the bytes itself).
     expect(s3Store.has('test-bucket/test-prefix/project-src.tar.gz')).toBe(false)
+  })
+
+  test('keeps source files named like an excluded directory', async () => {
+    mkdirSync(join(TEST_DIR, 'src'), { recursive: true })
+    writeFileSync(join(TEST_DIR, 'src', 'chat-files.ts'), 'export const CHAT_FILES_DIR = "chat-files"\n')
+    writeFileSync(join(TEST_DIR, '.npmrc'), 'registry=https://registry.npmjs.org/\n')
+    mkdirSync(join(TEST_DIR, 'chat-files', 'sales'), { recursive: true })
+    writeFileSync(join(TEST_DIR, 'chat-files', 'sales', 'q3.pdf'), 'pdf')
+    const sync = mkSync({ suppressProjectArchive: true })
+    const dest = join(tmpdir(), `s3-sync-pack-${process.pid}-${Date.now()}.tar.gz`)
+    try {
+      expect(await sync.packProjectArchive(dest)).not.toBeNull()
+      const entries = spawnSync('tar', ['-tzf', dest], { encoding: 'utf-8' }).stdout.split('\n').filter(Boolean)
+      expect(entries).toContain('src/chat-files.ts')
+      expect(entries).toContain('.npmrc')
+      expect(entries.some((e) => e.startsWith('chat-files'))).toBe(false)
+    } finally {
+      rmSync(dest, { force: true })
+    }
   })
 
   test('returns null for an empty workspace (nothing to back up)', async () => {
@@ -1100,8 +1149,37 @@ describe('private helper branches', () => {
     expect(s('node_modules')).toBe(true)          // exact
     expect(s('dist/index.js')).toBe(true)         // startsWith pattern/
     expect(s('apps/api/node_modules/x')).toBe(true) // includes /pattern/
-    expect(s('apps/api/dist')).toBe(true)         // includes /pattern (no slash)
+    expect(s('apps/api/dist')).toBe(true)         // endsWith /pattern
     expect(s('src/index.ts')).toBe(false)         // no match
+  })
+
+  test('shouldExclude matches whole path segments, not name prefixes', () => {
+    const sync = mkSync()
+    const s = (sync as any).shouldExclude.bind(sync)
+    // Source files that share a prefix with a default pattern must survive.
+    expect(s('packages/agent-runtime/src/chat-files.ts')).toBe(false)
+    expect(s('chat-files.ts')).toBe(false)
+    expect(s('src/__tests__/chat-files.test.ts')).toBe(false)
+    expect(s('.npmrc')).toBe(false)
+    expect(s('apps/web/.npmrc')).toBe(false)
+    expect(s('.bunfig.toml')).toBe(false)
+    expect(s('src/.cache-utils.ts')).toBe(false)
+    expect(s('test-results-parser.ts')).toBe(false)
+    expect(s('project/node_modules-shim.js')).toBe(false)
+    // The directories themselves, at any depth, are still excluded.
+    expect(s('chat-files')).toBe(true)
+    expect(s('chat-files/sales/q3.pdf')).toBe(true)
+    expect(s('apps/x/chat-files/a.pdf')).toBe(true)
+    expect(s('.npm/_cacache/index')).toBe(true)
+    expect(s('apps/web/.cache')).toBe(true)
+    expect(s('examples/crm/test-results/.last-run.json')).toBe(true)
+    expect(s('project/node_modules/react/index.js')).toBe(true)
+    expect(s('.DS_Store')).toBe(true)
+    expect(s('src/.DS_Store')).toBe(true)
+    expect(s('server.log')).toBe(true)
+    // Windows separators.
+    expect(s('src\\chat-files.ts')).toBe(false)
+    expect(s('apps\\x\\chat-files\\a.pdf')).toBe(true)
   })
 
   test('countFiles + countFilesExcluding ignore missing directories cleanly', async () => {

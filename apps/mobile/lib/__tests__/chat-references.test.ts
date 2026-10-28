@@ -47,7 +47,7 @@ describe("baseMentionLabel", () => {
   test("keeps the existing @ menu labels", () => {
     expect(baseMentionLabel({ type: "file", path: "a/b.ts", name: "b.ts" })).toBe("@b.ts")
     expect(baseMentionLabel({ type: "project", id: "p", name: "My App" })).toBe("@my-app")
-    expect(baseMentionLabel({ type: "chat", id: "c1", name: "x" })).toBe("@chat:c1")
+    expect(baseMentionLabel({ type: "chat", id: "c1", name: "Fix  <the> bug" })).toBe("@Fix the bug")
     expect(baseMentionLabel({ type: "plan", planId: "p", filename: "f.plan.md", name: "Fix Auth" })).toBe("@plan:fix-auth")
   })
 })

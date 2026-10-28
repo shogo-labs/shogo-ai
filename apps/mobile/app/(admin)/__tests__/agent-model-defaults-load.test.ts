@@ -6,7 +6,7 @@
  * (`onunhandledrejection`, culprit `_ShogoError.fromStatus` →
  * `HttpClient#executeRequest`).
  *
- * Root cause: the admin settings screen (`app/(admin)/settings.tsx`) loads the
+ * Root cause: the admin settings screen (`app/(admin)/admin/settings.tsx`) loads the
  * agent-model defaults on mount:
  *
  *     platform.getAgentModelDefaults().then(...).finally(...)   // no .catch!

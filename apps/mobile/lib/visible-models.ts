@@ -260,6 +260,7 @@ export function resolveFamily(id: string): string {
   if (lower.includes('sonnet')) return 'sonnet'
   if (lower.includes('haiku')) return 'haiku'
   if (lower.includes('gpt')) return 'gpt'
+  if (lower.includes('gemini')) return 'gemini'
   return 'other'
 }
 

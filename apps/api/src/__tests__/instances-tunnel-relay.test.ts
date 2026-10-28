@@ -166,12 +166,17 @@ describe('sendTunnelRequest', () => {
       .rejects.toThrow(/Empty relay response/)
   })
 
-  test('relay throws "Cross-pod relay timed out" → evicts + rethrows', async () => {
+  test('relay throws "Cross-pod relay timed out" after a good probe → does NOT evict, throws a typed timeout', async () => {
     getTunnelOwnerResult = 'pod-other'
     relayThrows = new Error('Cross-pod relay timed out')
-    await expect(sendTunnelRequest('inst-timeout', { requestId: 'r1' } as any))
-      .rejects.toThrow(/Cross-pod relay timed out/)
-    expect(evictCalls).toContain('inst-timeout')
+    // The owner pod passed verifyPodAlive above, so it is alive: the machine was
+    // slow, not the pod dead. Evicting here deleted a live tunnel's owner key and
+    // EXPIRE could not restore it, so every later call 503'd "Machine is offline"
+    // for the life of the socket (SHO-185).
+    const err = await sendTunnelRequest('inst-timeout', { requestId: 'r1' } as any).catch((e) => e)
+    expect(err.code).toBe('machine_timeout')
+    expect(err.message).toMatch(/did not answer/)
+    expect(evictCalls).not.toContain('inst-timeout')
   })
 
   test('relay throws unrelated error → does NOT evict, rethrows', async () => {

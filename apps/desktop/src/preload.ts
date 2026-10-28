@@ -130,6 +130,12 @@ ipcRenderer.on('shogo:chat:open-with-context', (_event, payload: { markdown?: st
   window.dispatchEvent(new CustomEvent('shogo:chat:open-with-context', { detail: payload }))
 })
 
+// A file link the window refused to open (no second window, no system
+// browser) comes back here so the app shows it in its own pane.
+ipcRenderer.on('shogo:open-file', (_event, payload: { href?: string }) => {
+  window.dispatchEvent(new CustomEvent('shogo:open-file', { detail: payload }))
+})
+
 contextBridge.exposeInMainWorld('shogoDesktop', {
   platform: process.platform,
   isDesktop: true,
@@ -164,8 +170,29 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     },
     deliverText: (text: string) => ipcRenderer.invoke('dictation:deliver-text', text),
   },
+  /**
+   * Huddles run in their own always-on-top window on desktop. The app window
+   * opens it, mirrors its state, and sends it commands.
+   */
+  huddle: {
+    open: (request: unknown): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('huddle:open', request),
+    command: (command: unknown): void => ipcRenderer.send('huddle:command', command),
+    focus: (mode?: 'expanded' | 'mini'): void => ipcRenderer.send('huddle:focus', mode),
+    onState: (cb: (snapshot: unknown) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, snapshot: unknown) => cb(snapshot)
+      ipcRenderer.on('huddle:state', listener)
+      return () => {
+        ipcRenderer.removeListener('huddle:state', listener)
+      }
+    },
+  },
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
+  // Machine limits for the commands an agent runs (SHO-203). `set` writes both
+  // config.json and host-limits.json, so it lands on a running app.
+  getHostRuntimeConfig: () => ipcRenderer.invoke('get-host-runtime-config'),
+  setHostRuntimeConfig: (patch: { execMemoryMB?: number | 'auto' }) =>
+    ipcRenderer.invoke('set-host-runtime-config', patch),
   setIslandConfig: (config: Partial<IslandConfig>) => ipcRenderer.invoke('set-island-config', config),
   onIslandConfigChanged: (callback: (config: IslandConfig) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, config: IslandConfig) => callback(config)
@@ -240,7 +267,48 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   dismissUpdate: () => ipcRenderer.invoke('dismiss-update'),
-  installUpdate: () => ipcRenderer.invoke('install-update'),
+  /**
+   * Restart to install (SHO-181). With no options this only *asks*: the main
+   * process answers `{ needsChoice: true, activity }` when agent runs are live,
+   * and restarts straight away when nothing is. `mode: 'now'` is the explicit
+   * "interrupt them"; `mode: 'when-idle'` drains and restarts once the counts
+   * settle.
+   */
+  installUpdate: (options?: { mode?: 'now' | 'when-idle' }): Promise<{
+    ok: boolean
+    mode?: 'now' | 'when-idle' | 'immediate'
+    needsChoice?: boolean
+    message?: string
+    activity?: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null
+    error?: string
+  }> => ipcRenderer.invoke('install-update', options),
+  cancelIdleRestart: (): Promise<{ ok: boolean; cancelled: boolean }> =>
+    ipcRenderer.invoke('cancel-idle-restart'),
+  getLiveActivity: (): Promise<{
+    ok: boolean
+    total: number
+    activity: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null
+  }> => ipcRenderer.invoke('get-live-activity'),
+  /** "Restarting when idle — N working", and the counts under it. */
+  onRestartDrain: (
+    callback: (data: { active: boolean; activity: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null }) => void,
+  ) => {
+    ipcRenderer.on('desktop-restart-drain', (_event, data) => callback(data))
+  },
+  removeRestartDrainListener: () => {
+    ipcRenderer.removeAllListeners('desktop-restart-drain')
+  },
+  /** The one line the last deliberate stop owes the user (SHO-181). */
+  getInterruptedNotice: (): Promise<{ notice: string | null }> =>
+    ipcRenderer.invoke('get-interrupted-notice'),
+  dismissInterruptedNotice: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('dismiss-interrupted-notice'),
+  onInterruptedNotice: (callback: (data: { notice: string | null }) => void) => {
+    ipcRenderer.on('desktop-interrupted-notice', (_event, data) => callback(data))
+  },
+  removeInterruptedNoticeListener: () => {
+    ipcRenderer.removeAllListeners('desktop-interrupted-notice')
+  },
   onUpdateStatus: (
     callback: (data: { status: string; releaseName: string | null; availableVersion: string | null; channel?: 'stable' | 'beta' }) => void,
   ) => {
@@ -284,6 +352,10 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.removeAllListeners('notification-clicked')
   },
   isWindowFocused: () => ipcRenderer.invoke('get-window-focused'),
+  requestAttention: (args: {
+    dockBounce?: 'off' | 'once' | 'until-focused'
+    flashTaskbar?: boolean
+  }): Promise<{ ok: boolean; attention?: boolean }> => ipcRenderer.invoke('request-attention', args),
 
   // Cloud login (replaces the old paste-API-key flow)
   getDeviceInfo: (): Promise<{ id: string; name: string; platform: string; appVersion: string }> =>
@@ -325,6 +397,44 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.on('system-suspend', listener)
     return () => ipcRenderer.removeListener('system-suspend', listener)
   },
+
+  // The desktop app's local API child can be killed from userland (SHO-26) and
+  // is now respawned in-process — see `LocalApiSupervisor` in
+  // `apps/desktop/src/local-server.ts`. While it is down every loopback
+  // request fails, so the renderer needs to know when it is back (refetch /
+  // re-drain) and when the app has given up on restarting it.
+  onLocalServerRestarted: (
+    callback: (info: { attempt: number; pid?: number }) => void,
+  ): (() => void) => {
+    const listener = (_event: unknown, info: { attempt: number; pid?: number }) => callback(info)
+    ipcRenderer.on('local-server:restarted', listener)
+    return () => ipcRenderer.removeListener('local-server:restarted', listener)
+  },
+  onLocalServerUnavailable: (callback: (info: { error: string }) => void): (() => void) => {
+    const listener = (_event: unknown, info: { error: string }) => callback(info)
+    ipcRenderer.on('local-server:unavailable', listener)
+    return () => ipcRenderer.removeListener('local-server:unavailable', listener)
+  },
+  // SHO-60: a wedged API (alive but not serving) is now detected by the
+  // supervisor's `/health` watchdog and recovered through the same restart
+  // loop, so the banner needs the attempt that is under way, and the user
+  // needs a way out when the loop gives up.
+  onLocalServerRestarting: (
+    callback: (info: { attempt: number; maxAttempts: number; delayMs: number }) => void,
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      info: { attempt: number; maxAttempts: number; delayMs: number },
+    ) => callback(info)
+    ipcRenderer.on('local-server:restarting', listener)
+    return () => ipcRenderer.removeListener('local-server:restarting', listener)
+  },
+  /** Start a fresh API child without relaunching the app (banner's Retry). */
+  restartLocalServer: (): Promise<{ ok: boolean; pid?: number; error?: string }> =>
+    ipcRenderer.invoke('local-server:restart-now'),
+  /** Reveal `api-supervisor.log` in the OS file manager (banner's Open log). */
+  openLocalServerLog: (): Promise<{ ok: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('local-server:open-log'),
 
   // Local filesystem fast-path for the IDE Monaco file tree + file reads.
   // Bypasses the loopback HTTP round-trip to per-project agent-runtimes so
@@ -731,6 +841,10 @@ exposeShogoDesktopPortsBridge()
 
 import { exposeShogoIslandBridge } from './preload-island'
 exposeShogoIslandBridge()
+
+// Exposes window.shogoHuddleHost, only in the huddle window.
+import { exposeShogoHuddleHostBridge } from './preload-huddle'
+exposeShogoHuddleHostBridge()
 
 if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
   contextBridge.exposeInMainWorld('shogoTesting', {

@@ -15,6 +15,8 @@
  * every file listed here exists.
  */
 export const CRITICAL_PATH_SPECS: readonly string[] = [
+  // Team onboarding's "What do you want to build?" opens a planning workspace agent chat.
+  "onboarding-build-prompt.test.ts",
   // Sign up + create project + first chat turn + preview iframe.
   "project-preview-smoke.test.ts",
   // Agent hands users a public preview URL, never localhost.

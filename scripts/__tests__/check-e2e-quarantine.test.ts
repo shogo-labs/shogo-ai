@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, it } from 'bun:test'
-import { validateCriticalPath, validateQuarantine } from '../check-e2e-quarantine'
+import {
+  daysUntilExpiry,
+  describeExpiringEntry,
+  quarantineWarningAnnotations,
+  quarantineWarnings,
+  validateCriticalPath,
+  validateQuarantine,
+} from '../check-e2e-quarantine'
 import { CRITICAL_PATH_SPECS } from '../../e2e/staging/critical-path'
 import { QUARANTINE, quarantineGrepInvert } from '../../e2e/staging/quarantine'
 
@@ -45,6 +52,61 @@ describe('validateQuarantine', () => {
 
   it('the checked-in registry is valid today', () => {
     expect(validateQuarantine(QUARANTINE)).toEqual([])
+  })
+})
+
+describe('quarantineWarnings', () => {
+  const at = (expires: string) => quarantineWarnings([{ ...entry, expires }], { today })
+
+  it('stays quiet 8 days out', () => {
+    expect(at('2026-10-06')).toEqual([])
+  })
+
+  it('warns at the 7-day and 1-day boundaries', () => {
+    expect(at('2026-10-05').length).toBe(1)
+    expect(at('2026-09-29').length).toBe(1)
+  })
+
+  it('does not warn on the expiry day — that is an error', () => {
+    expect(at('2026-09-28')).toEqual([])
+    expect(check({ expires: '2026-09-28' })[0]).toContain('expired')
+  })
+
+  it('warns every entry that is about to expire, in registry order', () => {
+    const entries = [
+      { ...entry, title: 'a', expires: '2026-09-30' },
+      { ...entry, title: 'b', expires: '2026-10-20' },
+      { ...entry, title: 'c', expires: '2026-10-04' },
+    ]
+    expect(quarantineWarnings(entries, { today }).map((e) => e.title)).toEqual(['a', 'c'])
+  })
+
+  it('honours a custom warnDays window', () => {
+    expect(quarantineWarnings([{ ...entry, expires: '2026-10-06' }], { today, warnDays: 10 }).length).toBe(1)
+  })
+
+  it('ignores unparseable expiry dates (validateQuarantine reports those)', () => {
+    expect(at('soon')).toEqual([])
+  })
+
+  it('an empty registry produces no warnings', () => {
+    expect(quarantineWarnings([], { today })).toEqual([])
+  })
+
+  it('counts whole days from UTC midnight', () => {
+    expect(daysUntilExpiry('2026-10-05', today)).toBe(7)
+    expect(daysUntilExpiry('2026-09-28', new Date('2026-09-28T23:59:59Z'))).toBe(0)
+  })
+
+  it('emits a GitHub warning annotation naming the file, title, expiry and owner', () => {
+    expect(quarantineWarningAnnotations([{ ...entry, expires: '2026-10-05' }], today)).toEqual([
+      '::warning file=e2e/staging/quarantine.ts,title=e2e quarantine expiring::' +
+        'a.test.ts › flaky thing expires 2026-10-05 (7 days, owner @someone)',
+    ])
+  })
+
+  it('says "day" not "days" on the last day', () => {
+    expect(describeExpiringEntry({ ...entry, expires: '2026-09-29' }, today)).toContain('(1 day, owner @someone)')
   })
 })
 

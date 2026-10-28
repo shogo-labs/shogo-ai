@@ -50,7 +50,7 @@ function stopButton(page: Page) {
  * auth).
  */
 async function ensureAuthenticated(page: Page, user: TestUser): Promise<void> {
-  await page.goto("/")
+  await page.goto("/home")
   const home = page.getByText("What are we building", { exact: false }).first()
   const signUpTab = page.getByRole("tab", { name: "Sign Up" })
   await Promise.race([
@@ -79,7 +79,7 @@ test("new project boots and the preview iframe shows the template", async ({ pag
   await ensureAuthenticated(page, TEST_USER)
 
   // Create a project from the home composer.
-  await page.goto("/")
+  await page.goto("/home")
   await page.waitForSelector("text=What are we building", { timeout: 30_000 })
   const input = homeComposerInput(page)
   await input.click()

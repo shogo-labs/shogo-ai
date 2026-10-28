@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../prisma'
 import { shouldCapture } from './consent'
-import { enqueueArchiveRecord, enqueueBlob, enqueueMedia } from './archive-writer'
+import { enqueueArchiveRecord, enqueueBlob, enqueueMedia, trackPersist, writeChainNode, type ArchiveFormat } from './archive-writer'
 import { normalizeCapture, scrubHeaders } from './normalize'
 import { wrapCaptureStream } from './reassemble'
 import type {
@@ -22,9 +22,18 @@ function bytes(value: unknown): number {
   }
 }
 
-function archivePrefix(now = new Date()): string {
+function archivePrefix(format: ArchiveFormat, now = new Date()): string {
   const region = process.env.REGION_ID || process.env.S3_REGION || process.env.AWS_REGION || 'unknown'
-  return `v1/region=${region}/date=${now.toISOString().slice(0, 10)}/hour=${now.toISOString().slice(11, 13)}`
+  return `${format}/region=${region}/date=${now.toISOString().slice(0, 10)}/hour=${now.toISOString().slice(11, 13)}`
+}
+
+// One release writes both layouts, so the v1 archive keeps working for every
+// reader while v2 fills from the same traffic.
+function archiveFormats(): ArchiveFormat[] {
+  const requested = (process.env.PROXY_CAPTURE_ARCHIVE_FORMAT || 'both').trim().toLowerCase()
+  if (requested === 'v1') return ['v1']
+  if (requested === 'v2') return ['v2']
+  return ['v1', 'v2']
 }
 
 function usageValue(value: number | undefined): number {
@@ -37,6 +46,7 @@ async function writeTurnSummary(
   usage: CaptureUsage | undefined,
   errorType: string | null | undefined,
   truncated: boolean,
+  format: ArchiveFormat,
 ): Promise<void> {
   const db = (prisma as any).proxyTurn
   if (!db) return
@@ -58,10 +68,11 @@ async function writeTurnSummary(
     cacheWriteTokens: usageValue(usage?.cacheWriteTokens),
     reasoningTokens: usageValue(usage?.reasoningTokens),
     errorCount: errorType ? 1 : 0,
-    userText: normalized.userText?.slice(0, 8_000) || null,
-    assistantText: normalized.assistantText?.slice(0, 16_000) || null,
+    // The analytics views read LEFT(userText, 1000) and RIGHT(assistantText, 1000).
+    userText: normalized.userText?.slice(0, 1_000) || null,
+    assistantText: normalized.assistantText ? normalized.assistantText.slice(-1_000) : null,
     toolNames: normalized.toolNames,
-    archivePrefix: archivePrefix(now),
+    archivePrefix: archivePrefix(format, now),
     hadError: Boolean(errorType),
     truncated,
   }
@@ -95,10 +106,12 @@ export async function beginCapture(metadata: ProxyCaptureMetadata): Promise<Prox
   let response: CaptureResponse | null = null
   let finished = false
 
-  const persist = (capture: CaptureResponse): void => {
+  const persist = async (capture: CaptureResponse): Promise<void> => {
     if (finished) return
     finished = true
     const now = new Date()
+    const formats = archiveFormats()
+    const wantsChains = formats.includes('v2')
     const normalized = normalizeCapture(
       {
         authKind: metadata.tokenPayload.authKind,
@@ -114,13 +127,16 @@ export async function beginCapture(metadata: ProxyCaptureMetadata): Promise<Prox
       metadata.requestBody,
       capture.body,
       enqueueBlob,
+      wantsChains ? writeChainNode : undefined,
     )
     for (const item of normalized.media) enqueueMedia(item.hash, item.mime, item.bytes)
 
-    const requestBytes = bytes(metadata.requestBody)
-    const responseBytes = bytes(capture.body)
-    const tooLarge = requestBytes + responseBytes > MAX_PAYLOAD_BYTES
-    const record = {
+    // A record may only point at chain nodes once every one of their uploads
+    // landed, including uploads another record started.
+    const chainResults = await Promise.allSettled(normalized.chainWrites)
+    const chained = wantsChains && chainResults.every((result) => result.status === 'fulfilled')
+
+    const base = {
       id: randomUUID(),
       ts: now.toISOString(),
       source: normalized.source,
@@ -142,31 +158,48 @@ export async function beginCapture(metadata: ProxyCaptureMetadata): Promise<Prox
       responseHeaders: scrubHeaders(capture.headers || {}),
       reasoningEffort: normalized.reasoningEffort,
       latencyMs: Math.max(0, Date.now() - startedAt),
-      request: normalized.request,
-      response: normalized.response,
-      truncated: Boolean(capture.truncated || tooLarge),
+    }
+    // The size cap applies to what is stored, so a long history no longer
+    // truncates a record whose own messages and response are small.
+    const toRecord = (request: unknown): Record<string, unknown> => {
+      const requestBytes = bytes(request)
+      const responseBytes = bytes(normalized.response)
+      const tooLarge = requestBytes + responseBytes > MAX_PAYLOAD_BYTES
+      return {
+        ...base,
+        request: tooLarge ? { truncated: true, bytes: requestBytes } : request,
+        response: tooLarge ? { truncated: true, bytes: responseBytes } : normalized.response,
+        truncated: Boolean(capture.truncated || tooLarge),
+      }
     }
 
-    if (tooLarge) {
-      record.request = { truncated: true, bytes: requestBytes }
-      record.response = { truncated: true, bytes: responseBytes }
-    }
-    enqueueArchiveRecord(record, now)
-    void writeTurnSummary(normalized, metadata, capture.usage, capture.errorType, Boolean(capture.truncated || tooLarge))
+    const inlineRecord = formats.includes('v1') ? toRecord(normalized.requestInline) : null
+    const chainedRecord = formats.includes('v2') ? toRecord(chained ? normalized.request : normalized.requestInline) : null
+    if (inlineRecord) enqueueArchiveRecord(inlineRecord, now, 'v1')
+    if (chainedRecord) enqueueArchiveRecord(chainedRecord, now, 'v2')
+    const primary = chainedRecord || inlineRecord
+    if (!primary) return
+    void writeTurnSummary(normalized, metadata, capture.usage, capture.errorType, Boolean(primary.truncated), chainedRecord ? 'v2' : 'v1')
       .catch((error) => console.error('[ProxyCapture] ProxyTurn write failed:', error))
+  }
+
+  const startPersist = (capture: CaptureResponse): void => {
+    trackPersist(persist(capture).catch((error) => {
+      console.error('[ProxyCapture] Capture persist failed:', error)
+    }))
   }
 
   return {
     recordResponse(capture) {
       response = capture
-      persist(capture)
+      startPersist(capture)
     },
     wrapStream(upstream, format) {
-      return wrapCaptureStream(upstream, format, persist)
+      return wrapCaptureStream(upstream, format, startPersist)
     },
     finish(extra) {
       if (finished) return
-      persist({
+      startPersist({
         status: response?.status || 200,
         body: response?.body || null,
         format: response?.format || 'json',

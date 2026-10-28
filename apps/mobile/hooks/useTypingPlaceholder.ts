@@ -7,7 +7,7 @@ const DELETING_SPEED = 25
 const PAUSE_AFTER_TYPING = 2200
 const PAUSE_AFTER_DELETING = 400
 
-/** Shown before the rotating typewriter suggestions in Agent mode on the home composer. */
+/** Shown before the rotating typewriter suggestions on the home composer. */
 export const AGENT_PLACEHOLDER_PREFIX = "Ask Shogo to "
 
 const DEFAULT_SUGGESTIONS = [

@@ -374,6 +374,8 @@ describe('getCheckpointByCommit', () => {
       includesDb: false,
       isAutomatic: false,
       createdAt,
+      mode: 'branch',
+      refName: null,
     })
   })
 })

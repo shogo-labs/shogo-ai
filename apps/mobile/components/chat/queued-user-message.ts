@@ -36,3 +36,35 @@ export function appendQueuedUserMessage<T extends UIMessage>(messages: T[], user
   if (messages.some((m) => m.id === userMessage.id)) return messages
   return [...messages, userMessage as T]
 }
+
+/**
+ * Appends a dispatched-but-unattached head's bubble to the transcript.
+ *
+ * Still-queued rows are deliberately *not* part of this: a message that the
+ * server has not started a turn for belongs to the dock alone, so a delete, an
+ * edit or a reload can never leave a bubble behind in the transcript. The
+ * dispatched head is the only pending message here — it is already saved
+ * server-side, and it is painted from here just for the gap before the panel
+ * attaches to its turn.
+ */
+export function appendQueuedUserMessages<T extends UIMessage>(
+  messages: T[],
+  pending: UIMessage[],
+): T[] {
+  if (pending.length === 0) return messages
+  let next = messages
+  for (const userMessage of pending) next = appendQueuedUserMessage(next, userMessage)
+  return next
+}
+
+/**
+ * Whether the reply to `queuedUserMessage` can be attached as-is: its message
+ * is on screen *and* nothing landed after it, so the reply belongs at the end.
+ * A message that is on screen but no longer last came from a reload of a
+ * transcript that has moved on — attaching there would write the reply over a
+ * later turn, so that path reloads history instead.
+ */
+export function canAttachQueuedTurn(messages: UIMessage[], queuedUserMessage: UIMessage): boolean {
+  const index = messages.findIndex((m) => m.id === queuedUserMessage.id)
+  return index !== -1 && index === messages.length - 1
+}

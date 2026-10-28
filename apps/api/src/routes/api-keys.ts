@@ -38,6 +38,7 @@ import {
   hashApiKey,
   mintDeviceApiKey,
 } from '../lib/api-keys-mint'
+import { normalizeDeviceVersion, recordDeviceVersionEvent } from '../lib/device-version-events'
 import { getAccess } from '../lib/authz'
 
 export function apiKeyRoutes() {
@@ -301,7 +302,16 @@ export function apiKeyRoutes() {
     const keyHash = await hashApiKey(body.key)
     const apiKey = await prisma.apiKey.findUnique({
       where: { keyHash },
-      select: { id: true, revokedAt: true, expiresAt: true, kind: true },
+      select: {
+        id: true,
+        revokedAt: true,
+        expiresAt: true,
+        kind: true,
+        deviceId: true,
+        devicePlatform: true,
+        deviceAppVersion: true,
+        lastSeenAt: true,
+      },
     })
     if (!apiKey || apiKey.revokedAt) {
       return c.json({ ok: false, error: 'Key not found or revoked' }, 401)
@@ -310,16 +320,109 @@ export function apiKeyRoutes() {
       return c.json({ ok: false, error: 'Key expired' }, 401)
     }
 
-    const data: Record<string, unknown> = { lastSeenAt: new Date() }
-    if (apiKey.kind === 'device' && typeof body.deviceAppVersion === 'string') {
-      data.deviceAppVersion = body.deviceAppVersion.slice(0, 32)
+    const now = new Date()
+    // Non-device keys keep their old behaviour here: the heartbeat always
+    // refreshed `lastSeenAt`, throttled like every other touch.
+    const touch = planApiKeyTouch(
+      { ...apiKey, lastUsedAt: null },
+      {
+        now,
+        reportedVersion: typeof body.deviceAppVersion === 'string' ? body.deviceAppVersion : null,
+        touchLastUsed: false,
+        alwaysTouchLastSeen: true,
+      },
+    )
+
+    if (touch.data) {
+      await prisma.apiKey.update({ where: { id: apiKey.id }, data: touch.data }).catch(() => {})
     }
 
-    await prisma.apiKey.update({ where: { id: apiKey.id }, data }).catch(() => {})
+    if (touch.recordVersion) {
+      await recordDeviceVersionEvent({
+        deviceId: apiKey.deviceId,
+        version: touch.version,
+        platform: apiKey.devicePlatform,
+        seenAt: now,
+      })
+    }
+
     return c.json({ ok: true })
   })
 
   return router
+}
+
+/** Minimum gap between `lastUsedAt` / `lastSeenAt` writes for one key (SHO-160). */
+export const API_KEY_TOUCH_INTERVAL_MS = 60_000
+/** Minimum gap between `device_version_events` upserts for an unchanged version (SHO-160). */
+export const DEVICE_VERSION_EVENT_INTERVAL_MS = 5 * 60_000
+
+/**
+ * Decide what an authenticated call should write back for its key.
+ *
+ * Every request used to rewrite `api_keys` and upsert `device_version_events`
+ * (~364k writes/day in prod, mostly the same few keys). Timestamps are now
+ * refreshed at most once per {@link API_KEY_TOUCH_INTERVAL_MS}, a changed app
+ * version is written immediately, and a version event is recorded when the
+ * version changes or once per {@link DEVICE_VERSION_EVENT_INTERVAL_MS} window.
+ * The stored timestamps are the throttle, so it holds across replicas.
+ *
+ * History is written only for a request that actually carried a version
+ * (SHO-126). Most callers send none — no client sets
+ * `X-Shogo-Device-App-Version`, only the desktop heartbeat and the mint do — and
+ * stamping the key's *stored* version would refresh a stale sibling key's row.
+ * A device holds one key per workspace, so that write outranked the version the
+ * device really reported and flipped install analytics back to it. The read
+ * model treats the newest row as the truth, so a caller with no version in hand
+ * must not create one.
+ */
+export function planApiKeyTouch(
+  stored: {
+    kind: string
+    deviceAppVersion: string | null
+    lastUsedAt?: Date | null
+    lastSeenAt?: Date | null
+  },
+  opts: {
+    now: Date
+    reportedVersion?: string | null
+    /** `resolveApiKey` tracks `lastUsedAt`; the heartbeat only tracks `lastSeenAt`. */
+    touchLastUsed: boolean
+    /** Refresh `lastSeenAt` for any key kind (the heartbeat's historical behaviour). */
+    alwaysTouchLastSeen?: boolean
+  },
+): { data: Record<string, unknown> | null; recordVersion: boolean; version: string | null } {
+  const now = opts.now.getTime()
+  const stale = (at: Date | null | undefined, interval: number) => at == null || now - at.getTime() >= interval
+  const isDevice = stored.kind === 'device'
+
+  const data: Record<string, unknown> = {}
+  if (opts.touchLastUsed && stale(stored.lastUsedAt, API_KEY_TOUCH_INTERVAL_MS)) {
+    data.lastUsedAt = opts.now
+  }
+
+  const reported = normalizeDeviceVersion(opts.reportedVersion)
+  const versionChanged = isDevice && reported !== null && reported !== stored.deviceAppVersion
+  if (versionChanged) data.deviceAppVersion = reported
+
+  if ((isDevice || opts.alwaysTouchLastSeen) && (versionChanged || stale(stored.lastSeenAt, API_KEY_TOUCH_INTERVAL_MS))) {
+    data.lastSeenAt = opts.now
+  }
+
+  // `lastSeenAt` advances every minute on an active device, so "older than 5
+  // min" would never fire again; record when this write enters a new window.
+  const windowOf = (t: number) => Math.floor(t / DEVICE_VERSION_EVENT_INTERVAL_MS)
+  const recordVersion = isDevice && reported !== null && (
+    versionChanged ||
+    stored.lastSeenAt == null ||
+    ('lastSeenAt' in data && windowOf(stored.lastSeenAt.getTime()) !== windowOf(now))
+  )
+
+  return {
+    data: Object.keys(data).length > 0 ? data : null,
+    recordVersion,
+    version: reported,
+  }
 }
 
 /**
@@ -361,7 +464,11 @@ export async function resolveApiKey(
       expiresAt: true,
       kind: true,
       deviceId: true,
+      devicePlatform: true,
+      deviceAppVersion: true,
       installId: true,
+      lastUsedAt: true,
+      lastSeenAt: true,
     },
   })
 
@@ -370,18 +477,27 @@ export async function resolveApiKey(
   if (apiKey.kind === 'app' && !opts?.allowAppTokens) return null
 
   const now = new Date()
-  const data: Record<string, unknown> = { lastUsedAt: now }
-  if (apiKey.kind === 'device') {
-    data.lastSeenAt = now
-    if (opts?.deviceAppVersion && typeof opts.deviceAppVersion === 'string') {
-      data.deviceAppVersion = opts.deviceAppVersion.slice(0, 32)
-    }
+  const touch = planApiKeyTouch(apiKey, {
+    now,
+    reportedVersion: typeof opts?.deviceAppVersion === 'string' ? opts.deviceAppVersion : null,
+    touchLastUsed: true,
+  })
+
+  if (touch.data) {
+    prisma.apiKey.update({
+      where: { id: apiKey.id },
+      data: touch.data,
+    }).catch(() => {})
   }
 
-  prisma.apiKey.update({
-    where: { id: apiKey.id },
-    data,
-  }).catch(() => {})
+  if (touch.recordVersion) {
+    recordDeviceVersionEvent({
+      deviceId: apiKey.deviceId,
+      version: touch.version,
+      platform: apiKey.devicePlatform,
+      seenAt: now,
+    }).catch(() => {})
+  }
 
   return {
     workspaceId: apiKey.workspaceId,

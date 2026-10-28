@@ -8,7 +8,7 @@
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Image, Platform, Pressable, Text, View } from 'react-native'
-import { AlarmClock, Check, Clock, Smile, Users } from 'lucide-react-native'
+import { AlarmClock, AudioLines, Check, Clock, Hash, Smile, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   ChatInput,
@@ -26,18 +26,24 @@ import { PHONE_DENSITY } from '../../lib/phone-density'
 import type { Mentionables } from '../../lib/team-chat-api'
 import { teamChatApi } from '../../lib/team-chat-api'
 import { sendTyping } from '../../lib/team-chat-connection'
-import { bytesPart, type UploadPart } from '../../lib/upload-part'
+import { bytesPart, localFilePart, type UploadPart } from '../../lib/upload-part'
+import { useVoiceNoteRecorder } from '../../lib/use-voice-note'
+import { RecordingBar } from './RecordingBar'
 import {
+  activeChannelQuery,
   activeMentionQuery,
+  channelCandidates,
   decodeMentions,
   encodeMentions,
   filterCandidates,
   isRemindCommand,
   mentionCandidates,
   scheduleOptions,
+  type ChannelCandidateSource,
   type MentionCandidate,
 } from '../../lib/team-chat-state'
 import type { SendInput } from '../../hooks/useTeamChat'
+import { resolveLinkPreviewOptOuts } from '../../lib/link-preview-consent'
 import { useDraft } from '../../hooks/useChatItems'
 import { useCustomEmoji } from '../../hooks/useCustomEmoji'
 import { activeEmojiQuery, replaceFinishedShortcode, searchEmoji } from '../../lib/emoji-data'
@@ -62,6 +68,8 @@ export interface ComposerProps {
   onEditLast?: () => boolean
   /** This conversation's members, for a channel only: flags @-mention candidates who aren't in it. */
   channelMemberIds?: Set<string> | null
+  /** Channels this reader can see, for typing `#` to reference one. */
+  channels?: ChannelCandidateSource[] | null
 }
 
 export interface ComposerHandle {
@@ -70,12 +78,14 @@ export interface ComposerHandle {
 }
 
 function mentionReference(c: MentionCandidate): ChatReference {
-  return { type: 'mention', id: c.token, name: c.display, label: `@${c.display}` }
+  const label = c.kind === 'channel' ? `#${c.display}` : `@${c.display}`
+  return { type: 'mention', id: c.token, name: c.display, label }
 }
 
 function MentionIcon({ candidate, workspaceId }: { candidate: MentionCandidate; workspaceId: string }) {
   if (candidate.kind === 'agent') return <AgentAvatar name={candidate.display} projectId={candidate.projectId ?? null} workspaceId={workspaceId} size={20} />
   if (candidate.kind === 'user') return <PresenceDot userId={candidate.userId} />
+  if (candidate.kind === 'channel') return <Hash size={14} className="text-muted-foreground" />
   return <Users size={14} className="text-muted-foreground" />
 }
 
@@ -100,11 +110,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     () => mentionCandidates(mentionables, me, props.channelMemberIds),
     [mentionables, me, props.channelMemberIds],
   )
-  const byToken = useMemo(() => new Map(candidates.map((c) => [c.token, c])), [candidates])
+  /** `#` references: only channels this reader can see, never the one they're in. */
+  const channelChoices = useMemo(
+    () => channelCandidates(props.channels, conversationId),
+    [props.channels, conversationId],
+  )
+  // Draft restore re-encodes whatever tokens it decoded, so both kinds resolve here.
+  const byAnyToken = useMemo(
+    () => new Map([...candidates, ...channelChoices].map((c) => [c.token, c])),
+    [candidates, channelChoices],
+  )
   const picksFrom = useCallback(
     (refs: ChatReference[] | undefined) =>
-      (refs ?? []).flatMap((r) => (r.type === 'mention' && byToken.has(r.id) ? [byToken.get(r.id)!] : [])),
-    [byToken],
+      (refs ?? []).flatMap((r) => (r.type === 'mention' && byAnyToken.has(r.id) ? [byAnyToken.get(r.id)!] : [])),
+    [byAnyToken],
   )
 
   const completions = useMemo<ComposerCompletionSource[]>(
@@ -120,6 +139,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             trailing: c.kind === 'user' && c.inChannel === false ? 'Not in channel' : undefined,
             icon: <MentionIcon candidate={c} workspaceId={workspaceId} />,
             insert: `@${c.display}`,
+            reference: mentionReference(c),
+          })),
+      },
+      {
+        id: 'channels',
+        detect: activeChannelQuery,
+        items: (query) =>
+          filterCandidates(channelChoices, query).map((c) => ({
+            key: c.token,
+            label: c.display,
+            subtitle: c.subtitle,
+            icon: <MentionIcon candidate={c} workspaceId={workspaceId} />,
+            insert: `#${c.display}`,
             reference: mentionReference(c),
           })),
       },
@@ -146,7 +178,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         },
       },
     ],
-    [candidates, customEmoji],
+    [candidates, customEmoji, channelChoices, workspaceId],
   )
 
   const draft = useDraft(conversationId, threadRootId)
@@ -226,7 +258,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         if (files?.length) {
           setUploading(true)
           try {
-            const uploaded = await Promise.all(files.map(async (f) => api.upload(conversationId, await uploadable(f))))
+            const uploaded = await Promise.all(
+              files.map(async (f) =>
+                api.upload(conversationId, await uploadable(f), {
+                  durationMs: f.durationMs ?? null,
+                  peaks: f.peaks ?? null,
+                }),
+              ),
+            )
             attachmentIds = uploaded.map((a) => a.id)
           } catch (err) {
             setError(err instanceof Error ? err.message : 'Upload failed')
@@ -236,7 +275,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             setUploading(false)
           }
         }
-        await onSend({ text: wire, attachmentIds, alsoSentToChannel: toChannel })
+        // Sharing a link out of a closed conversation asks first. Best-effort:
+        // a failure here must never stop the message going out.
+        let linkPreviewsOff: string[] = []
+        try {
+          linkPreviewsOff = await resolveLinkPreviewOptOuts(wire, conversationId)
+        } catch {}
+        // Only carry the field when the sender actually declined something, so
+        // an ordinary message keeps the shape it always had.
+        await onSend({
+          text: wire,
+          attachmentIds,
+          alsoSentToChannel: toChannel,
+          ...(linkPreviewsOff.length ? { linkPreviewsOff } : {}),
+        })
       })()
     },
     [picksFrom, threadRootId, alsoToChannel, saveDraft, draftKey, workspaceId, conversationId, onSend],
@@ -247,6 +299,46 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     sendAtRef.current = at
     inputRef.current?.submit()
   }, [])
+
+  // ---- voice notes ----------------------------------------------------------
+  const recorder = useVoiceNoteRecorder()
+  const [recordingError, setRecordingError] = useState<string | null>(null)
+  // Files staged from a recording, so "send" hands them to the shared uploader.
+  // Triggered from the left-hand clip button — the mic on the right stays
+  // dictation, the same as every other composer in the product.
+  const startVoiceNote = useCallback(async () => {
+    setError(null)
+    setNotice(null)
+    setRecordingError(null)
+    try {
+      await recorder.start()
+    } catch (err: any) {
+      setRecordingError(err?.message ?? 'Could not start recording')
+    }
+  }, [recorder])
+
+  const onVoiceCancel = useCallback(() => {
+    recorder.cancel()
+  }, [recorder])
+
+  const onVoiceStop = useCallback(async () => {
+    try {
+      const note = await recorder.stop()
+      if (!note) return
+      inputRef.current?.addAttachment({
+        dataUrl: note.dataUrl,
+        uri: note.uri,
+        name: `Voice note.${note.mimeType === 'audio/mp4' ? 'm4a' : 'webm'}`,
+        type: note.mimeType,
+        // Base64 is 4/3 of the bytes; only used for the size guard.
+        size: note.dataUrl ? Math.round((note.dataUrl.length * 3) / 4) : 0,
+        durationMs: note.durationMs,
+        peaks: note.peaks,
+      })
+    } catch (err: any) {
+      setRecordingError(err?.message ?? 'Could not finish the recording')
+    }
+  }, [recorder])
 
   const insertEmoji = useCallback((code: string) => {
     setEmojiOpen(false)
@@ -274,7 +366,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     <Pressable
       onPress={() => setAlsoToChannel((v) => !v)}
       accessibilityRole="checkbox"
-      accessibilityState={{ checked: alsoToChannel }}
+      aria-checked={alsoToChannel}
       className="flex-row items-center gap-1.5 rounded-md px-1.5 py-1"
     >
       <View className={cn('h-3.5 w-3.5 rounded border', alsoToChannel ? 'border-primary bg-primary' : 'border-border')} />
@@ -286,6 +378,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     <View className="flex-row items-center gap-1">
       <Pressable onPress={() => setEmojiOpen((v) => !v)} accessibilityLabel="Emoji" className="rounded-md p-1 active:bg-muted hover:bg-muted">
         <Smile size={14} className="text-muted-foreground" />
+      </Pressable>
+      <Pressable onPress={() => void startVoiceNote()} accessibilityLabel="Record a voice note" className="rounded-md p-1 active:bg-muted hover:bg-muted">
+        <AudioLines size={14} className="text-muted-foreground" />
       </Pressable>
       {alsoToChannelToggle}
     </View>
@@ -315,7 +410,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         <Pressable
           onPress={() => setAlsoToChannel((v) => !v)}
           accessibilityRole="checkbox"
-          accessibilityState={{ checked: alsoToChannel }}
+          aria-checked={alsoToChannel}
           accessibilityLabel="Also send to channel"
           className="min-h-12 flex-row items-center gap-3 border-b border-border/40 px-3 py-3 active:bg-muted/50"
         >
@@ -332,26 +427,35 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <View style={phoneLayout ? { paddingBottom: nativePhoneComposerRestPad(chrome.overlay) } : undefined}>
-      <ChatInput
-        key={draftKey}
-        ref={inputRef}
-        onSubmit={onSubmit}
-        placeholder={props.placeholder}
-        presentation="agent"
-        agentControls={false}
-        submitting={uploading}
-        completions={completions}
-        transformText={replaceFinishedShortcode}
-        onTextChange={onTextChange}
-        onKeyPress={onKeyPress}
-        restoreDraftRequest={restore?.draftKey === draftKey ? restore : null}
-        maxFileSizeBytes={MAX_FILE_BYTES}
-        leadingControls={leadingControls}
-        trailingControls={trailingControls}
-        plusMenuExtras={plusMenuExtras}
-        inputTestID="team-composer-input"
-        inputAccessibilityLabel="Message"
-      />
+      {recorder.isRecording ? (
+        <RecordingBar
+          level={recorder.level}
+          elapsedMs={recorder.elapsedMs}
+          onCancel={onVoiceCancel}
+          onFinish={onVoiceStop}
+        />
+      ) : (
+        <ChatInput
+          key={draftKey}
+          ref={inputRef}
+          onSubmit={onSubmit}
+          placeholder={props.placeholder}
+          presentation="agent"
+          agentControls={false}
+          submitting={uploading}
+          completions={completions}
+          transformText={replaceFinishedShortcode}
+          onTextChange={onTextChange}
+          onKeyPress={onKeyPress}
+          restoreDraftRequest={restore?.draftKey === draftKey ? restore : null}
+          maxFileSizeBytes={MAX_FILE_BYTES}
+          leadingControls={leadingControls}
+          trailingControls={trailingControls}
+          plusMenuExtras={plusMenuExtras}
+          inputTestID="team-composer-input"
+          inputAccessibilityLabel="Message"
+        />
+      )}
       <View className="px-4">
         {emojiOpen && <EmojiPicker workspaceId={workspaceId} onPick={insertEmoji} className="mb-2" />}
         {laterOpen && canSendLater && (
@@ -372,6 +476,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           </View>
         ) : null}
         {uploading ? <Text className="mb-2 text-xs text-muted-foreground">Uploading…</Text> : null}
+        {recordingError ? <Text className="mb-2 text-xs text-destructive">{recordingError}</Text> : null}
         {notice && !error ? <Text className="mb-2 text-xs text-muted-foreground">{notice}</Text> : null}
         {error ? <Text className="mb-2 text-xs text-destructive">{error}</Text> : null}
       </View>
@@ -382,6 +487,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 /** Composer attachments are data URLs; the upload endpoint takes a file. */
 async function uploadable(file: FileAttachment): Promise<File | UploadPart> {
   const type = file.type || 'application/octet-stream'
+  // A voice note recorded on a phone is already a file on disk; streaming it
+  // avoids base64ing a few megabytes through the JS thread.
+  if (file.uri && Platform.OS !== 'web') return localFilePart(file.uri, file.name, type)
   const base64 = file.dataUrl.slice(file.dataUrl.indexOf(',') + 1)
   const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
   if (Platform.OS === 'web') return new File([bytes], file.name, { type })

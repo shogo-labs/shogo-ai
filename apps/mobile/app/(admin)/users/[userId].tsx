@@ -44,6 +44,7 @@ import { Heading } from '@/components/ui/heading'
 import { Text as UIText } from '@/components/ui/text'
 import { Button, ButtonText } from '@/components/ui/button'
 import { API_URL, type AdminScopeDef } from '../../../lib/api'
+import { resolveAvatarUrl } from "../../../lib/chat-attachment-url"
 import { usePlatformConfig } from '../../../lib/platform-config'
 
 const API_BASE = `${API_URL}/api/admin`
@@ -298,7 +299,7 @@ export default function AdminUserDetailPage() {
             >
               {user.image ? (
                 <Image
-                  source={{ uri: user.image }}
+                  source={{ uri: resolveAvatarUrl(user.image) ?? undefined }}
                   className={cn(isWide ? 'h-16 w-16' : 'h-14 w-14', 'rounded-full')}
                 />
               ) : (

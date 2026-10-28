@@ -8,7 +8,6 @@
  * - Rounded container with subtle border
  * - Clean TextInput with "Ask Shogo..." placeholder
  * - Bottom toolbar with action buttons
- * - Agent mode selector via popover dropdown
  *
  * Supports image attachments via file picker, drag-and-drop, and paste (web).
  * Native: Expo ImagePicker + DocumentPicker (AttachSourceSheet + native-attachment-picker).
@@ -23,7 +22,6 @@ import React, {
   useMemo,
   useRef,
   useState,
-  type ComponentType,
   type ReactNode,
 } from "react";
 import {
@@ -43,7 +41,10 @@ import {
   NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO,
 } from "../../lib/native-phone-layout";
-import { chatColumn, chatColumnStyle } from "../../lib/chat-column";
+import { composerColumnStyle } from "../../lib/chat-column";
+import {
+  encodeChatMentionTokens,
+} from "../../lib/chat-mention-text";
 import { useIsInsideChatColumn } from "./ChatColumn";
 import {
   Popover,
@@ -67,12 +68,11 @@ import {
   type WorkspaceExperienceComposer,
 } from "@shogo/shared-app";
 
-/** Full composer (model picker + interaction modes, no forced mode) — the default for any caller that doesn't pass `composer`. */
+/** Full composer (model picker shown) — the default for any caller that doesn't pass `composer`. */
 const DEFAULT_CHAT_INPUT_COMPOSER: WorkspaceExperienceComposer =
   workspaceExperience("team").composer;
 const MESSAGING_COMPOSER: WorkspaceExperienceComposer = {
   showModelPicker: false,
-  showInteractionModes: false,
 };
 import {
   Plus,
@@ -85,11 +85,9 @@ import {
   Bot,
   Cpu,
   ClipboardList,
-  MessageCircleQuestion,
   Check,
   Mic,
   Sparkles,
-  Languages,
   Play,
   Cloud,
   SlidersHorizontal,
@@ -131,6 +129,7 @@ import {
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
 } from "./useProminentComposerExpansion";
+import { AUTO_MODEL_ID } from "@shogo/model-catalog";
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext";
 import { AgentClient, type AgentHistoryResult } from "@shogo-ai/sdk/agent";
 import { agentFetch } from "../../lib/agent-fetch";
@@ -141,8 +140,7 @@ import {
   useTypingPlaceholder,
 } from "../../hooks/useTypingPlaceholder";
 
-export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6";
-export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001";
+export const DEFAULT_MODEL: string = AUTO_MODEL_ID;
 
 import { EnvironmentPicker } from "./EnvironmentPicker";
 import {
@@ -152,7 +150,6 @@ import {
 } from "../../lib/composer-phone";
 import { executeNativeAttachAction } from "../../lib/native-attachment-picker";
 import {
-  ComposerPlusModeList,
   ComposerPlusSection,
   ComposerPlusSheet,
   compactNativeModelLabel,
@@ -165,6 +162,7 @@ import {
   MAX_FILES,
   useComposerAttachments,
 } from "../../lib/composer-attachments";
+import { formatClipDuration } from "../../lib/voice-note";
 import {
   ComposerPlusTrigger,
   ComposerSendButton,
@@ -173,38 +171,6 @@ import {
   useComposerLayoutMode,
   useProminentComposerHeight,
 } from "./composer";
-
-export type InteractionMode = "agent" | "plan" | "ask";
-
-export interface InteractionModeConfig {
-  id: InteractionMode;
-  label: string;
-  description: string;
-  Icon: ComponentType<{ size?: number; className?: string }>;
-}
-
-export const INTERACTION_MODES: InteractionModeConfig[] = [
-  {
-    id: "agent",
-    label: "Agent",
-    description: "Full autonomous mode — reads, writes, executes",
-    Icon: Bot,
-  },
-  {
-    id: "plan",
-    label: "Plan",
-    description: "Research and create a plan before making changes",
-    Icon: ClipboardList,
-  },
-  {
-    id: "ask",
-    label: "Ask",
-    description: "Just answer questions, no tools or changes",
-    Icon: MessageCircleQuestion,
-  },
-];
-
-const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"];
 
 /**
  * Show a native browser tooltip on hover (web only). Wraps children in a
@@ -218,6 +184,28 @@ export interface FileAttachment {
   dataUrl: string;
   name: string;
   type: string;
+  /** Declared size in bytes, when the picker knew it. */
+  size?: number;
+  /** Native: the picked file on disk, uploaded without a base64 read. */
+  uri?: string;
+  /** Web: the picked `File`, so a large attachment uploads without base64. */
+  file?: File;
+  /**
+   * Web: object URL over `file` for a pick that has no inline bytes. The chip
+   * and the optimistic bubble paint from it until the upload returns a
+   * workspace URL (SHO-213).
+   */
+  previewUrl?: string;
+  /**
+   * Workspace path of an already-uploaded attachment. Rebuilt from a persisted
+   * message part on a resend, so the turn reuses the file on the runtime
+   * instead of uploading it again.
+   */
+  savedPath?: string;
+  /** Voice notes: clip length in ms. */
+  durationMs?: number;
+  /** Voice notes: waveform levels 0-100, space separated. */
+  peaks?: string;
 }
 
 export type { ChatReference, ChatReferenceInput } from "../../lib/chat-references";
@@ -263,12 +251,26 @@ export interface ChatInputHandle {
   submit: () => void;
   /** Stage files (web `File`s, e.g. dropped elsewhere on the screen). */
   addFiles: (files: File[]) => void;
+  /** Stage an attachment built by the caller, e.g. a recorded voice note. */
+  addAttachment: (attachment: FileAttachment & { size: number }) => void;
 }
 
 /** Lightweight sibling-project shape the composer needs for the "@" menu. */
 export interface ProjectMentionOption {
   id: string;
   name: string;
+}
+
+/** A chat the "@" menu can address, from any workspace the user belongs to. */
+export interface ChatMentionable {
+  id: string;
+  title: string;
+  contextType?: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  workspaceId?: string;
+  workspaceName?: string;
+  lastActiveAt?: string;
 }
 
 /** One selectable row in the "@" menu (files first, then projects). */
@@ -281,6 +283,8 @@ type MentionItem =
       id: string;
       name: string;
       projectId?: string;
+      projectName?: string;
+      workspaceName?: string;
       result: AgentHistoryResult;
     }
   | {
@@ -343,6 +347,19 @@ export type QueuedMessage = {
   references?: ChatReference[];
   status?: string;
   error?: string;
+  /**
+   * `task_wake` is the agent's own background update, not something a person
+   * typed: it is never rendered as a queued chat message. While a wake pause
+   * holds it back it shows as one "N updates waiting" chip with a Resume.
+   *
+   * `agent_wake` is a team-chat message waiting behind a reply: its queue is
+   * the durable `AgentWake` row, and the dock reaches it through the
+   * agent-wake routes rather than the session's own queue.
+   */
+  kind?: "message" | "task_wake" | "agent_wake";
+  /** For an `agent_wake` row: the channel and author it came from ("#shogo-dev · Russell"). */
+  source?: string;
+  paused?: boolean;
   /** True when queued because a send failed on a network error, rather than
    * because it was typed while a turn was streaming. Rendered with a
    * distinct "waiting for connection" style so it's obvious nothing was
@@ -359,6 +376,12 @@ export interface ChatInputProps {
   ) => void;
   disabled?: boolean;
   placeholder?: string;
+  /**
+   * Set while an attachment's bytes are uploading. The composer's chips are
+   * cleared the moment the turn is submitted, so this is the only place the
+   * user can see a 200 MB upload moving.
+   */
+  uploadStatus?: { name: string; fraction: number } | null;
   isStreaming?: boolean;
   onStop?: () => void;
   selectedModel?: string;
@@ -373,17 +396,20 @@ export interface ChatInputProps {
   ) => void;
   onEditQueuedMessage?: (messageId: string) => void;
   onSendQueuedMessageNow?: (messageId: string) => void;
-  interactionMode?: InteractionMode;
-  onInteractionModeChange?: (mode: InteractionMode) => void;
+  /** Send a team-chat wake now (its own queue, its own route). The dock's row
+   *  awaits this so the server's refusal is shown on the row itself. */
+  onSendAgentWakeNow?: (wakeId: string) => void | Promise<void>;
+  /** Take a team-chat wake off the queue. */
+  onRemoveAgentWake?: (wakeId: string) => void | Promise<void>;
+  /** Deliver the updates a paused session is holding (the waiting chip's Resume). */
+  onResumeTaskWakes?: (messageId: string) => void;
   /**
    * Composer capability descriptor (`workspaceExperience(kind).composer`).
-   * Defaults to the full composer (model picker + interaction modes shown).
-   * Pass `workspaceExperience('personal').composer` to hide plan/ask and
-   * model controls for the companion shell.
+   * Defaults to the full composer (model picker shown). Pass
+   * `workspaceExperience('personal').composer` to hide the model controls for
+   * the companion shell.
    */
   composer?: WorkspaceExperienceComposer;
-  dualPlan?: boolean;
-  onDualPlanChange?: (enabled: boolean) => void;
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null;
   /** Per-turn category rollup from `data-prompt-breakdown`, shown in the popover opened by clicking the context ring. Null before the first turn. */
   contextBreakdown?: ContextBreakdownData | null;
@@ -421,10 +447,24 @@ export interface ChatInputProps {
    */
   projects?: ProjectMentionOption[];
   chatSessionId?: string | null;
+  /**
+   * Workspace id when this chat is workspace-scoped. The context dock's
+   * "Summarize now" has to reach the workspace runtime that owns the session,
+   * which only this id can address (SHO-230).
+   */
+  chatWorkspaceId?: string | null;
   workspaceHistorySearch?: (
     query: string,
     kind?: "chat" | "plan"
   ) => Promise<AgentHistoryResult[]>;
+  /**
+   * Chats the user can tag from the "@" menu, from every workspace they belong
+   * to (server-checked). Selecting one inserts `<@c:ID>` and adds a chat
+   * reference. In a workspace chat that reference is context — the agent is
+   * told which chat it is and reads it with `read_history` — while a project
+   * chat still hands the message to the tagged chat when it is sent.
+   */
+  chatMentionables?: (query: string) => Promise<ChatMentionable[]>;
   ideMode?: boolean;
   ideContext?: IdeContextState;
   ideFileSearch?: (query?: string) => Promise<IdeFileResult[]>;
@@ -476,6 +516,8 @@ export interface ChatInputProps {
   plusMenuExtras?: ReactNode;
   /** Replaces dictation on the empty-composer mic button. */
   onVoiceStart?: () => void | Promise<void>;
+  /** What the mic announces when `onVoiceStart` is set. */
+  voiceStartLabel?: string;
   /** Rotating "Ask Shogo to …" placeholder while the input is empty. */
   typingPlaceholder?: boolean;
   /** Shows a spinner on send and locks the input. */
@@ -498,6 +540,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onSubmit,
   disabled = false,
   placeholder = "Ask Shogo...",
+  uploadStatus = null,
   isStreaming = false,
   onStop,
   selectedModel: controlledModel,
@@ -509,11 +552,10 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onReorderQueuedMessage,
   onEditQueuedMessage,
   onSendQueuedMessageNow,
-  interactionMode: controlledInteractionMode,
-  onInteractionModeChange,
+  onSendAgentWakeNow,
+  onRemoveAgentWake,
+  onResumeTaskWakes,
   composer: composerProp,
-  dualPlan = false,
-  onDualPlanChange,
   contextUsage,
   contextBreakdown,
   quickActions = [],
@@ -525,7 +567,9 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   projectId,
   projects = [],
   chatSessionId,
+  chatWorkspaceId,
   workspaceHistorySearch,
+  chatMentionables,
   ideMode = false,
   ideContext,
   ideFileSearch,
@@ -539,6 +583,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   trailingControls,
   plusMenuExtras,
   onVoiceStart,
+  voiceStartLabel,
   typingPlaceholder = false,
   submitting = false,
   completions,
@@ -618,12 +663,16 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     handleRemovePastedText,
     handleUpdatePastedText,
     processFiles,
+    addAttachment,
     resetAttachments,
   } = useComposerAttachments({
     maxFileSizeBytes,
     onReferenceDrop: (refs, skipped) => referenceDropRef.current(refs, skipped),
   });
   const fileSizeLimit = maxFileSizeBytes ?? MAX_FILE_SIZE;
+  const uploadPercent = uploadStatus
+    ? Math.max(0, Math.min(100, Math.round(uploadStatus.fraction * 100)))
+    : 0;
   // Coalesced-flush scaffolding for `handleChangeText` (declared here, ahead
   // of `composerDisplayValue` below, so the rendered TextInput can always
   // show the freshest typed text even on a render that fires BEFORE the
@@ -662,7 +711,6 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     inputHeightRef.current = nextHeight;
     setInputHeight(nextHeight);
   }, []);
-  const [interactionModeOpen, setInteractionModeOpen] = useState(false);
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [plusExpandedId, setPlusExpandedId] = useState<string | null>(null);
@@ -671,9 +719,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     inputValueRef.current = inputValue;
   }, [inputValue]);
 
-  const [internalModel, setInternalModel] = useState<string>(
-    effectiveIsPro ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
-  );
+  const [internalModel, setInternalModel] = useState<string>(DEFAULT_MODEL);
   const currentModelId = controlledModel ?? internalModel;
 
   const handleModelChange = useCallback(
@@ -691,35 +737,6 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       }
     },
     [onModelChange, effectiveIsPro, onUpgradeClick]
-  );
-
-  const [internalInteractionMode, setInternalInteractionMode] =
-    useState<InteractionMode>("agent");
-  const interactionMode = controlledInteractionMode ?? internalInteractionMode;
-
-  const handleInteractionModeChange = useCallback(
-    (mode: InteractionMode) => {
-      if (onInteractionModeChange) {
-        onInteractionModeChange(mode);
-      } else {
-        setInternalInteractionMode(mode);
-      }
-    },
-    [onInteractionModeChange]
-  );
-
-  const cycleInteractionMode = useCallback(() => {
-    if (disabled) return;
-    const currentIndex = INTERACTION_MODE_ORDER.indexOf(interactionMode);
-    const nextIndex = (currentIndex + 1) % INTERACTION_MODE_ORDER.length;
-    handleInteractionModeChange(INTERACTION_MODE_ORDER[nextIndex]);
-  }, [disabled, handleInteractionModeChange, interactionMode]);
-
-  const currentInteractionConfig = useMemo(
-    () =>
-      INTERACTION_MODES.find((m) => m.id === interactionMode) ||
-      INTERACTION_MODES[0],
-    [interactionMode]
   );
 
   const [quickActionsOpen, setQuickActionsOpen] = useState(false);
@@ -801,6 +818,9 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const [historyResults, setHistoryResults] = useState<AgentHistoryResult[]>(
     []
   );
+  const [chatMentionableResults, setChatMentionableResults] = useState<
+    ChatMentionable[]
+  >([]);
   // Per-project cache of the workspace file list, so name matching as the user
   // types is instant and doesn't refetch the tree on every keystroke.
   const treeFilesRef = useRef<{
@@ -1101,6 +1121,28 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     ideMode,
   ]);
 
+  // Chats from every workspace the user belongs to. The server decides what is
+  // openable; this only mirrors it into the menu next to same-workspace history.
+  useEffect(() => {
+    if (!showMentionMenu || ideMode || !chatMentionables) {
+      setChatMentionableResults([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const results = await chatMentionables(mentionQuery.trim());
+        if (!cancelled) setChatMentionableResults(results);
+      } catch {
+        if (!cancelled) setChatMentionableResults([]);
+      }
+    }, 180);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [showMentionMenu, mentionQuery, chatMentionables, ideMode]);
+
   const filteredProjects = useMemo(() => {
     if (ideMode) return [];
     const q = mentionQuery.trim().toLowerCase();
@@ -1115,28 +1157,52 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     return matched.slice(0, MAX_MENTION_PROJECT_RESULTS);
   }, [projects, mentionQuery, ideMode]);
 
-  const historyItems = useMemo<MentionItem[]>(
-    () =>
-      historyResults.map((result) =>
-        result.kind === "chat"
-          ? {
-              kind: "chat",
-              id: result.id,
-              name: result.title,
-              projectId: result.projectId,
-              result,
-            }
-          : {
-              kind: "plan",
-              id: result.id,
-              name: result.title,
-              filename: result.filename || result.id,
-              projectId: result.projectId,
-              result,
-            }
-      ),
-    [historyResults]
-  );
+  const historyItems = useMemo<MentionItem[]>(() => {
+    const fromHistory = historyResults.map((result) =>
+      result.kind === "chat"
+        ? {
+            kind: "chat" as const,
+            id: result.id,
+            name: result.title,
+            projectId: result.projectId,
+            projectName: result.projectName,
+            result,
+          }
+        : {
+            kind: "plan" as const,
+            id: result.id,
+            name: result.title,
+            filename: result.filename || result.id,
+            projectId: result.projectId,
+            result,
+          }
+    );
+    // Cross-workspace chats the history search cannot see. Same-workspace
+    // results win: their transcript is already inlined for context.
+    const seen = new Set(fromHistory.map((item) => item.id));
+    const fromMentionables = chatMentionableResults
+      .filter((chat) => chat.id !== chatSessionId && !seen.has(chat.id))
+      .map((chat) => ({
+        kind: "chat" as const,
+        id: chat.id,
+        name: chat.title,
+        projectId: chat.projectId ?? undefined,
+        projectName: chat.projectName ?? undefined,
+        workspaceName: chat.workspaceName,
+        result: {
+          kind: "chat" as const,
+          id: chat.id,
+          title: chat.title,
+          snippet: "",
+          score: 0,
+          projectId: chat.projectId ?? undefined,
+          projectName: chat.projectName ?? undefined,
+          createdAt: chat.lastActiveAt ?? "",
+          lastActivityAt: chat.lastActiveAt ?? "",
+        },
+      }));
+    return [...fromHistory, ...fromMentionables];
+  }, [historyResults, chatMentionableResults, chatSessionId]);
 
   // Flat, ordered list backing keyboard navigation (files, projects, chats, plans).
   const mentionItems = useMemo<MentionItem[]>(
@@ -1392,6 +1458,21 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     onTranscript: appendTranscriptToInput,
   });
 
+  /**
+   * The dictation mic stays on screen where speech recognition is missing
+   * (Firefox ships no Web Speech API): a missing button reads as a bug, a
+   * disabled one that says why reads as a limitation. `onVoiceStart` replaces
+   * dictation outright, so it is never unavailable.
+   */
+  const voiceMicUnavailable = !onVoiceStart && !voiceInput.canRecord;
+  const voiceMicLabel = onVoiceStart
+    ? (voiceStartLabel ?? "Start voice project creation")
+    : voiceInput.canRecord
+      ? "Start voice recording"
+      : isNative
+        ? "Voice typing isn't available on this device."
+        : "Voice typing isn't supported in this browser. Try Chrome, Edge, or Safari.";
+
   // Inline "@mention" highlight overlay. Mirror EXACTLY what the TextInput
   // shows (including the live voice transcript) so the pills line up with the
   // real text painted on top. Falls back to `pendingTextChangeRef` (read live
@@ -1537,13 +1618,26 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         dataUrl: f.dataUrl,
         name: f.name,
         type: f.type,
+        ...(f.size ? { size: f.size } : {}),
+        ...(f.uri ? { uri: f.uri } : {}),
+        ...(f.file ? { file: f.file } : {}),
+        ...(f.previewUrl ? { previewUrl: f.previewUrl } : {}),
       })),
       ...pastedAttachments,
     ];
     const fileData = combinedFiles.length > 0 ? combinedFiles : undefined;
     const refData = references.length > 0 ? references : undefined;
 
-    onSubmit(trimmedContent, fileData, currentModelId, refData);
+    // A tagged chat travels as `<@c:ID>` in place of its "@Title" label, so the
+    // chip renders and a reader never sees an id. What that token means is the
+    // surface's call: a reference the agent reads (workspace chat, SHO-191) or
+    // an address the message is handed to (project chat, SHO-52).
+    onSubmit(
+      encodeChatMentionTokens(trimmedContent, refData),
+      fileData,
+      currentModelId,
+      refData
+    );
     // Drop any still-pending coalesced text-change flush (see
     // `handleChangeText`) so it can't fire AFTER this clear and resurrect
     // text the user already sent.
@@ -1724,25 +1818,22 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       insertText,
       submit: () => handleSubmitRef.current(),
       addFiles: (files: File[]) => processFiles(files),
+      addAttachment: (attachment: FileAttachment & { size: number }) => addAttachment(attachment),
     }),
-    [insertText, processFiles]
+    [insertText, processFiles, addAttachment]
   );
 
   const removeReference = useCallback((key: string) => {
     setReferences((prev) => prev.filter((ref) => referenceKey(ref) !== key));
   }, []);
   const insideChatColumn = useIsInsideChatColumn();
-  const outerColumnStyle: ViewStyle | undefined =
-    flush || insideChatColumn
-      ? undefined
-      : useProminentComposer
-      ? chatColumnStyle({ presentation, phone: true })
-      : {
-          paddingHorizontal: chatColumn({
-            presentation,
-            phone: isPhoneChrome,
-          }).gutter,
-        };
+  const outerColumnStyle: ViewStyle | undefined = composerColumnStyle({
+    presentation,
+    phone: isPhoneChrome,
+    prominent: useProminentComposer,
+    flush,
+    insideChatColumn,
+  });
   return (
     <View
       // Vertical padding only. Horizontal placement comes from the shared
@@ -1887,10 +1978,16 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         onReorderQueuedMessage={onReorderQueuedMessage}
         onEditQueuedMessage={onEditQueuedMessage}
         onSendQueuedMessageNow={onSendQueuedMessageNow}
+        onSendAgentWakeNow={onSendAgentWakeNow}
+        onRemoveAgentWake={onRemoveAgentWake}
+        onResumeTaskWakes={onResumeTaskWakes}
       />
       <ContextUsageDockPanel
         contextUsage={contextUsage}
         contextBreakdown={contextBreakdown}
+        projectId={projectId}
+        workspaceId={chatWorkspaceId}
+        chatSessionId={chatSessionId}
       />
 
       {/* Dropdown + input layer.
@@ -2055,14 +2152,28 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                             >
                               {chat.name}
                             </Text>
-                            {chat.result.projectName && (
-                              <Text
-                                className="text-[10px] text-muted-foreground"
-                                numberOfLines={1}
-                              >
-                                {chat.result.projectName}
-                              </Text>
-                            )}
+                            {(() => {
+                              // Which workspace this chat lives in is the one
+                              // thing the id/name cannot tell you — without it a
+                              // duplicate title looks like the same chat twice.
+                              const detail = [
+                                chat.workspaceName,
+                                chat.result.projectName &&
+                                chat.result.projectName !== chat.workspaceName
+                                  ? chat.result.projectName
+                                  : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ");
+                              return detail ? (
+                                <Text
+                                  className="text-[10px] text-muted-foreground"
+                                  numberOfLines={1}
+                                >
+                                  {detail}
+                                </Text>
+                              ) : null;
+                            })()}
                           </View>
                         </Pressable>
                       );
@@ -2271,6 +2382,38 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               </View>
             )}
 
+            {/* Upload progress — the chips are cleared on submit, so this is
+                where a large attachment's bytes are visible going up. */}
+            {uploadStatus && (
+              <View
+                className="px-3 pt-2"
+                testID="chat-upload-status"
+                accessibilityRole="progressbar"
+                accessibilityLabel={`Uploading ${uploadStatus.name}, ${uploadPercent}%`}
+              >
+                <View className="flex-row items-center justify-between gap-2">
+                  <Text
+                    className="text-[11px] text-muted-foreground flex-1 min-w-0"
+                    numberOfLines={1}
+                  >
+                    {`Uploading ${uploadStatus.name}`}
+                  </Text>
+                  <Text className="text-[11px] text-muted-foreground">
+                    {`${uploadPercent}%`}
+                  </Text>
+                </View>
+                <View
+                  className="mt-1 w-full overflow-hidden rounded-full bg-muted"
+                  style={{ height: 2 }}
+                >
+                  <View
+                    className="rounded-full bg-foreground/50"
+                    style={{ height: 2, width: `${uploadPercent}%` }}
+                  />
+                </View>
+              </View>
+            )}
+
             {/* File attachment previews — compact thumbnails inside the input box */}
             {(pendingFiles.length > 0 || isProcessingFiles) && (
               <ScrollView
@@ -2287,13 +2430,26 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                 {pendingFiles.map((file) => {
                   const isImage = file.type.startsWith("image/");
                   const isVideo = file.type.startsWith("video/");
+                  const isAudio = file.type.startsWith("audio/");
                   return (
                     <View key={file.id} className="relative">
-                      {isImage ? (
+                      {isAudio ? (
+                        <View
+                          className="flex-row items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2"
+                          style={{ height: 36, maxWidth: 180 }}
+                        >
+                          <Mic size={14} className="text-muted-foreground flex-shrink-0" />
+                          <Text className="text-xs text-foreground" numberOfLines={1}>
+                            {file.durationMs
+                              ? formatClipDuration(file.durationMs)
+                              : file.name}
+                          </Text>
+                        </View>
+                      ) : isImage ? (
                         <Pressable
                           onPress={() =>
                             setPreviewImageFile({
-                              url: file.dataUrl,
+                              url: file.dataUrl || file.previewUrl || "",
                               name: file.name,
                             })
                           }
@@ -2305,7 +2461,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                             style={{ width: 72, height: 72 }}
                           >
                             <Image
-                              source={{ uri: file.dataUrl }}
+                              source={{ uri: file.dataUrl || file.previewUrl }}
                               style={{ width: 72, height: 72 }}
                               resizeMode="cover"
                             />
@@ -2315,7 +2471,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                         <Pressable
                           onPress={() =>
                             setPreviewVideoFile({
-                              url: file.dataUrl,
+                              url: file.dataUrl || file.previewUrl || "",
                               name: file.name,
                             })
                           }
@@ -2425,7 +2581,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                       <Text
                         key={idx}
                         className={cn(
-                          "rounded bg-primary/20",
+                          "rounded bg-yellow-300/70 dark:bg-yellow-400/35",
                           mobileChatText
                             ? "text-base leading-6"
                             : "text-sm leading-5"
@@ -2550,16 +2706,6 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                   }
                   if (onKeyPressProp?.(e, inputValueRef.current)) {
                     e.preventDefault?.();
-                    return;
-                  }
-                  if (
-                    composer.showInteractionModes &&
-                    Platform.OS === "web" &&
-                    e.nativeEvent.key === "Tab" &&
-                    e.nativeEvent.shiftKey
-                  ) {
-                    e.preventDefault();
-                    cycleInteractionMode();
                     return;
                   }
                   if (
@@ -2704,24 +2850,6 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                         />
                       </ComposerPlusSection>
                     ) : null}
-                    {composer.showInteractionModes ? (
-                      <ComposerPlusSection
-                        id="mode"
-                        label="Mode"
-                        value={currentInteractionConfig.label}
-                        Icon={currentInteractionConfig.Icon}
-                      >
-                        <ComposerPlusModeList
-                          modes={INTERACTION_MODES}
-                          selectedId={interactionMode}
-                          onSelect={handleInteractionModeChange}
-                          dualPlan={dualPlan}
-                          onDualPlanChange={onDualPlanChange}
-                          dualPlanDisabled={disabled}
-                          dualPlanTestId="dual-plan-toggle"
-                        />
-                      </ComposerPlusSection>
-                    ) : null}
                     {agentControls ? (
                       <ComposerPlusSection
                         id="environment"
@@ -2779,9 +2907,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                 <>
                   {leadingControls}
                   {presentation === "agent" &&
-                  (composer.showInteractionModes ||
-                    showModelPicker ||
-                    quickActions.length > 0) ? (
+                  (showModelPicker || quickActions.length > 0) ? (
                     <Popover
                       placement="top"
                       size="xs"
@@ -2815,43 +2941,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     >
                       <PopoverBackdrop />
                       <PopoverContent className="w-[248px] p-2">
-                        {composer.showInteractionModes ? (
-                          <>
-                            <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Mode
-                            </Text>
-                            <View className="flex-row gap-1">
-                              {INTERACTION_MODES.map((mode) => (
-                                <Pressable
-                                  key={mode.id}
-                                  onPress={() => {
-                                    handleInteractionModeChange(mode.id);
-                                    setAgentControlsOpen(false);
-                                  }}
-                                  className={cn(
-                                    "flex-1 items-center rounded-md px-1.5 py-1.5",
-                                    interactionMode === mode.id
-                                      ? "bg-primary/12"
-                                      : "bg-muted/50"
-                                  )}
-                                >
-                                  <Text
-                                    className={cn(
-                                      "text-xs",
-                                      interactionMode === mode.id
-                                        ? "text-primary"
-                                        : "text-muted-foreground"
-                                    )}
-                                  >
-                                    {mode.label}
-                                  </Text>
-                                </Pressable>
-                              ))}
-                            </View>
-                          </>
-                        ) : null}
                         {showModelPicker ? (
-                          <View className="mt-2 border-t border-border/60 pt-2">
+                          <View className="border-t border-border/60 pt-2">
                             <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                               Model
                             </Text>
@@ -2893,187 +2984,32 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                       </PopoverContent>
                     </Popover>
                   ) : null}
-                  {composer.showInteractionModes && presentation !== "agent" ? (
-                    <>
-                      {/* Interaction mode selector (Agent / Plan / Ask) */}
-                      <Popover
-                        placement="top"
-                        size="xs"
-                        isOpen={interactionModeOpen}
-                        onOpen={() => setInteractionModeOpen(true)}
-                        onClose={() => setInteractionModeOpen(false)}
-                        trigger={(triggerProps) => (
-                          <WebTooltip
-                            label={`Mode: ${currentInteractionConfig.label}`}
-                          >
-                            <Pressable
-                              {...triggerProps}
-                              hitSlop={isNative ? 6 : undefined}
-                              disabled={disabled}
-                              accessibilityLabel={`Mode: ${currentInteractionConfig.label}`}
-                              className={cn(
-                                isNative
-                                  ? "h-8 w-8 items-center justify-center rounded-lg"
-                                  : "h-[22px] w-[22px] items-center justify-center rounded-md",
-                                interactionMode === "agent" && "bg-muted/50",
-                                interactionMode === "plan" &&
-                                  "border border-amber-500/45 bg-amber-500/12",
-                                interactionMode === "ask" &&
-                                  "border border-emerald-500/45 bg-emerald-500/12"
-                              )}
-                              testID="interaction-mode-trigger"
-                            >
-                              <currentInteractionConfig.Icon
-                                className={cn(
-                                  "h-3.5 w-3.5",
-                                  interactionMode === "agent" &&
-                                    "text-muted-foreground",
-                                  interactionMode === "plan" &&
-                                    "text-amber-400",
-                                  interactionMode === "ask" &&
-                                    "text-emerald-400"
-                                )}
-                                size={isNative ? 16 : 14}
-                              />
-                            </Pressable>
-                          </WebTooltip>
-                        )}
-                      >
-                        <PopoverBackdrop />
-                        <PopoverContent className="w-[140px] p-0">
-                          <View className="py-1">
-                            {INTERACTION_MODES.map((mode) => {
-                              const isSelected = mode.id === interactionMode;
-                              return (
-                                <Pressable
-                                  key={mode.id}
-                                  testID={`interaction-mode-option-${mode.id}`}
-                                  onPress={() => {
-                                    handleInteractionModeChange(mode.id);
-                                    setInteractionModeOpen(false);
-                                  }}
-                                  className={cn(
-                                    "flex-row items-center p-1 rounded-lg mb-1",
-                                    isSelected &&
-                                      mode.id === "agent" &&
-                                      "bg-accent",
-                                    isSelected &&
-                                      mode.id === "plan" &&
-                                      "border border-amber-500/35 bg-amber-500/12",
-                                    isSelected &&
-                                      mode.id === "ask" &&
-                                      "border border-emerald-500/35 bg-emerald-500/12"
-                                  )}
-                                >
-                                  <View className="w-8 items-center">
-                                    <mode.Icon
-                                      className={cn(
-                                        "h-3.5 w-3.5",
-                                        isSelected &&
-                                          mode.id === "plan" &&
-                                          "text-amber-400",
-                                        isSelected &&
-                                          mode.id === "ask" &&
-                                          "text-emerald-400",
-                                        (!isSelected || mode.id === "agent") &&
-                                          "text-muted-foreground"
-                                      )}
-                                      size={6}
-                                    />
-                                  </View>
-                                  <View className="flex-1">
-                                    <Text
-                                      className={cn(
-                                        "text-xs",
-                                        isSelected &&
-                                          mode.id === "plan" &&
-                                          "text-amber-400",
-                                        isSelected &&
-                                          mode.id === "ask" &&
-                                          "text-emerald-400",
-                                        (!isSelected || mode.id === "agent") &&
-                                          "text-foreground"
-                                      )}
-                                    >
-                                      {mode.label}
-                                    </Text>
-                                  </View>
-                                </Pressable>
-                              );
-                            })}
-                            {ezAvailable && (
-                              <>
-                                <View className="h-px bg-border/50 mx-2 my-1" />
-                                <Pressable
-                                  testID="ez-mode-toggle"
-                                  onPress={() => {
-                                    bridge?.toggleEzMode();
-                                    setInteractionModeOpen(false);
-                                  }}
-                                  className={cn(
-                                    "flex-row items-center p-1 rounded-lg mb-1",
-                                    ezActive &&
-                                      "border border-violet-500/35 bg-violet-500/12"
-                                  )}
-                                >
-                                  <View className="w-8 items-center">
-                                    <Sparkles
-                                      className={cn(
-                                        "h-3.5 w-3.5",
-                                        ezActive
-                                          ? "text-violet-400"
-                                          : "text-muted-foreground"
-                                      )}
-                                      size={6}
-                                    />
-                                  </View>
-                                  <View className="flex-1">
-                                    <Text
-                                      className={cn(
-                                        "text-xs",
-                                        ezActive
-                                          ? "text-violet-400"
-                                          : "text-foreground"
-                                      )}
-                                    >
-                                      EZ Mode
-                                    </Text>
-                                  </View>
-                                </Pressable>
-                              </>
-                            )}
-                          </View>
-                        </PopoverContent>
-                      </Popover>
-                    </>
-                  ) : null}
-
-                  {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
-                per-device preference: once on, every plan generated in Plan
-                mode also produces a stakeholder summary. */}
-                  {interactionMode === "plan" &&
-                    presentation !== "agent" &&
-                    agentControls && (
-                    <WebTooltip label="Also generate a stakeholder summary">
+                  {/* EZ Mode — voice-first overlay toggle (web only). */}
+                  {ezAvailable && presentation !== "agent" && (
+                    <WebTooltip
+                      label={ezActive ? "Leave EZ Mode" : "Switch to EZ Mode"}
+                    >
                       <Pressable
-                        testID="dual-plan-toggle"
+                        testID="ez-mode-toggle"
                         hitSlop={isNative ? 6 : undefined}
                         disabled={disabled}
-                        onPress={() => onDualPlanChange?.(!dualPlan)}
-                        accessibilityLabel="Also generate a stakeholder summary"
+                        onPress={() => bridge?.toggleEzMode()}
+                        accessibilityLabel={
+                          ezActive ? "Leave EZ Mode" : "Switch to EZ Mode"
+                        }
                         className={cn(
                           isNative
                             ? "h-8 w-8 items-center justify-center rounded-lg"
                             : "h-[22px] w-[22px] items-center justify-center rounded-md",
-                          dualPlan
-                            ? "border border-sky-500/45 bg-sky-500/12"
+                          ezActive
+                            ? "border border-violet-500/45 bg-violet-500/12"
                             : "bg-muted/50"
                         )}
                       >
-                        <Languages
+                        <Sparkles
                           className={cn(
                             "h-3.5 w-3.5",
-                            dualPlan ? "text-sky-400" : "text-muted-foreground"
+                            ezActive ? "text-violet-400" : "text-muted-foreground"
                           )}
                           size={isNative ? 16 : 14}
                         />
@@ -3427,55 +3363,54 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                         : undefined
                     }
                   />
-                ) : voiceInput.canRecord || onVoiceStart ? (
-                  <Pressable
-                    onPress={() => {
-                      voiceInput.clearError();
-                      if (onVoiceStart) {
-                        void Promise.resolve(onVoiceStart()).catch(() => {});
-                        return;
-                      }
-                      voiceInput.toggleRecording().catch(() => {});
-                    }}
-                    hitSlop={isNative ? 4 : undefined}
-                    disabled={disabled || isProcessingFiles}
-                    role="button"
-                    accessibilityLabel={
-                      onVoiceStart
-                        ? "Start voice project creation"
-                        : "Start voice recording"
-                    }
-                    className={cn(
-                      "rounded-full items-center justify-center active:opacity-70",
-                      isNative && !useProminentComposer
-                        ? NATIVE_COMPOSER_MIC_IDLE_CLASS
-                        : sendChrome.sizeClassName
-                    )}
-                  >
-                    <Mic
+                ) : (
+                  <WebTooltip label={voiceMicLabel}>
+                    <Pressable
+                      onPress={() => {
+                        voiceInput.clearError();
+                        if (onVoiceStart) {
+                          void Promise.resolve(onVoiceStart()).catch(() => {});
+                          return;
+                        }
+                        voiceInput.toggleRecording().catch(() => {});
+                      }}
+                      hitSlop={isNative ? 4 : undefined}
+                      disabled={disabled || isProcessingFiles || voiceMicUnavailable}
+                      role="button"
+                      accessibilityLabel={voiceMicLabel}
+                      accessibilityState={{ disabled: voiceMicUnavailable }}
                       className={cn(
-                        useProminentComposer ? "h-[18px] w-[18px]" : "h-4 w-4",
-                        !useProminentComposer &&
-                          (disabled || isProcessingFiles
-                            ? "text-muted-foreground/40"
-                            : "text-muted-foreground")
+                        "rounded-full items-center justify-center active:opacity-70",
+                        isNative && !useProminentComposer
+                          ? NATIVE_COMPOSER_MIC_IDLE_CLASS
+                          : sendChrome.sizeClassName
                       )}
-                      color={
-                        useProminentComposer
-                          ? disabled || isProcessingFiles
-                            ? chatgptComposer.placeholder
-                            : chatgptComposer.icon
-                          : undefined
-                      }
-                      strokeWidth={
-                        useProminentComposer
-                          ? NATIVE_PHONE_ICON_STROKE
-                          : undefined
-                      }
-                      size={useProminentComposer ? 20 : isNative ? 18 : 14}
-                    />
-                  </Pressable>
-                ) : null}
+                    >
+                      <Mic
+                        className={cn(
+                          useProminentComposer ? "h-[18px] w-[18px]" : "h-4 w-4",
+                          !useProminentComposer &&
+                            (disabled || isProcessingFiles || voiceMicUnavailable
+                              ? "text-muted-foreground/40"
+                              : "text-muted-foreground")
+                        )}
+                        color={
+                          useProminentComposer
+                            ? disabled || isProcessingFiles || voiceMicUnavailable
+                              ? chatgptComposer.placeholder
+                              : chatgptComposer.icon
+                            : undefined
+                        }
+                        strokeWidth={
+                          useProminentComposer
+                            ? NATIVE_PHONE_ICON_STROKE
+                            : undefined
+                        }
+                        size={useProminentComposer ? 20 : isNative ? 18 : 14}
+                      />
+                    </Pressable>
+                  </WebTooltip>
+                )}
               </View>
             )}
           </View>

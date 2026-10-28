@@ -10,7 +10,7 @@
 #
 # Connection budget (platform-pg max_connections = 400 in US):
 #   pooler server conns  = instances(2) x default_pool_size(40)  = 80
-#   dedicated lock conns  (direct, ADVISORY_LOCK_POOL_SIZE)      ~ pods x 6
+#   dedicated lock conns  (direct, ADVISORY_LOCK_POOL_SIZE)      <= pods(20) x 8 = 160
 #   migrations / CNPG / monitoring / logical-replication senders ~ 60
 #   ---------------------------------------------------------------------
 #   < 400 with headroom

@@ -13,12 +13,12 @@ import {
 // ---------------------------------------------------------------------------
 
 function taskCreateCount(r: EvalResult): number {
-  return r.toolCalls.filter(tc => tc.name === 'task_create').length
+  return r.toolCalls.filter(tc => tc.name === 'team_task_create').length
 }
 
 function hasBlockedByDep(r: EvalResult): boolean {
   return r.toolCalls
-    .filter(tc => tc.name === 'task_create')
+    .filter(tc => tc.name === 'team_task_create')
     .some(tc => {
       const input = JSON.stringify(tc.input).toLowerCase()
       return input.includes('blocked_by') || input.includes('blockedby')
@@ -72,7 +72,7 @@ function messagesHaveContent(r: EvalResult): boolean {
 }
 
 function taskUpdateCount(r: EvalResult): number {
-  return r.toolCalls.filter(tc => tc.name === 'task_update').length
+  return r.toolCalls.filter(tc => tc.name === 'team_task_update').length
 }
 
 function hasShutdownRequest(r: EvalResult): boolean {
@@ -114,7 +114,7 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'tasks-created',
-      description: 'task_create called 3 times for the three tasks',
+      description: 'team_task_create called 3 times for the three tasks',
       points: 5,
       phase: 'intention',
       validate: (r) => taskCreateCount(r) >= 3,
@@ -128,10 +128,10 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'tasks-listed',
-      description: 'task_list called to verify dependency chain',
+      description: 'team_task_list called to verify dependency chain',
       points: 5,
       phase: 'execution',
-      validate: (r) => usedTool(r, 'task_list'),
+      validate: (r) => usedTool(r, 'team_task_list'),
     },
   ],
   tags: ['teammate-coordination'],
@@ -174,10 +174,10 @@ const PHASE_2: AgentEval = {
     },
     {
       id: 'task-list-checked',
-      description: 'task_list called to check available tasks',
+      description: 'team_task_list called to check available tasks',
       points: 4,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'task_list'),
+      validate: (r) => usedTool(r, 'team_task_list'),
     },
     {
       id: 'distinct-roles',
@@ -271,12 +271,12 @@ const PHASE_4: AgentEval = {
   validationCriteria: [
     {
       id: 'task-completed',
-      description: 'task_update called to mark audit task completed',
+      description: 'team_task_update called to mark audit task completed',
       points: 7,
       phase: 'intention',
       validate: (r) => {
         return r.toolCalls
-          .filter(tc => tc.name === 'task_update')
+          .filter(tc => tc.name === 'team_task_update')
           .some(tc => {
             const input = JSON.stringify(tc.input).toLowerCase()
             return input.includes('completed') || input.includes('done') || input.includes('complete')
@@ -285,19 +285,19 @@ const PHASE_4: AgentEval = {
     },
     {
       id: 'tasks-checked',
-      description: 'task_list called to check availability after completion',
+      description: 'team_task_list called to check availability after completion',
       points: 5,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'task_list'),
+      validate: (r) => usedTool(r, 'team_task_list'),
     },
     {
       id: 'task-in-progress',
-      description: 'task_update called to mark design task in_progress',
+      description: 'team_task_update called to mark design task in_progress',
       points: 7,
       phase: 'intention',
       validate: (r) => {
         return r.toolCalls
-          .filter(tc => tc.name === 'task_update')
+          .filter(tc => tc.name === 'team_task_update')
           .some(tc => {
             const input = JSON.stringify(tc.input).toLowerCase()
             return input.includes('in_progress') || input.includes('in-progress') || input.includes('inprogress')
@@ -306,13 +306,13 @@ const PHASE_4: AgentEval = {
     },
     {
       id: 'dag-resolution',
-      description: 'DAG resolution works — task_list called between the two task_updates',
+      description: 'DAG resolution works — team_task_list called between the two task_updates',
       points: 6,
       phase: 'execution',
       validate: (r) => {
         const calls = r.toolCalls.map((tc, i) => ({ ...tc, idx: i }))
-        const updates = calls.filter(tc => tc.name === 'task_update')
-        const lists = calls.filter(tc => tc.name === 'task_list')
+        const updates = calls.filter(tc => tc.name === 'team_task_update')
+        const lists = calls.filter(tc => tc.name === 'team_task_list')
         if (updates.length < 2 || lists.length < 1) return false
         return lists.some(l => l.idx > updates[0].idx && l.idx < updates[updates.length - 1].idx)
       },

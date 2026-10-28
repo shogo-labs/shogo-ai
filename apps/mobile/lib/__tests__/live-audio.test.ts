@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { encodeWav16, pickCutIndex, resampleTo16k, rms, startLiveCapture } from '../live-audio'
+import { createChunker, encodeWav16, pickCutIndex, resampleTo16k, rms, startLiveCapture } from '../live-audio'
 
 const RATE = 48000
 
@@ -41,6 +41,31 @@ describe('live-audio', () => {
 
   test('silence has near-zero RMS', () => {
     expect(rms(new Float32Array(RATE))).toBe(0)
+  })
+})
+
+describe('createChunker on React Native', () => {
+  test('cuts chunks without building a Blob from an ArrayBuffer', async () => {
+    const OriginalBlob = globalThis.Blob
+    // React Native's BlobManager rejects binary parts (Sentry SHOGO-ANDROID-W).
+    ;(globalThis as any).Blob = class {
+      constructor(parts: unknown[] = []) {
+        if (parts.some((p) => p instanceof ArrayBuffer || ArrayBuffer.isView(p))) {
+          throw new Error("Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not supported")
+        }
+      }
+    }
+    try {
+      const sent: ArrayBuffer[] = []
+      const chunker = createChunker(RATE, async (chunk) => {
+        sent.push(chunk.wav)
+      })
+      chunker.push(tone(9))
+      expect(await chunker.finish()).toEqual({ complete: true, chunks: 2, seconds: 9 })
+      expect(sent.map((wav) => new TextDecoder().decode(wav.slice(0, 4)))).toEqual(['RIFF', 'RIFF'])
+    } finally {
+      globalThis.Blob = OriginalBlob
+    }
   })
 })
 

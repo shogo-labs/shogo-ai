@@ -152,7 +152,6 @@ describe("server-side chat queue", () => {
             body: JSON.stringify({
               text: content,
               agentMode: "auto",
-              interactionMode: "agent",
             }),
           },
           userId,

@@ -3,6 +3,7 @@
 
 import { prisma } from '../lib/prisma'
 import { createRuntimeManager, setRuntimeManager } from '../lib/runtime'
+import { machineSyncSeqHeader } from '../lib/machine-sync/local-sync'
 import { createApp } from './create-app'
 import { deriveApiProfile } from './profile'
 import { runtimeRoutes } from '../routes/runtime'
@@ -20,6 +21,7 @@ import { projectExportImportRoutes } from '../routes/project-export-import'
 import { projectChatRoutes } from '../routes/project-chat'
 import { workspaceChatRoutes } from '../routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from '../routes/workspace-agent'
+import { workspaceExportRoutes } from '../routes/workspace-export'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace-meetings'
 import { conversationRoutes } from '../routes/conversations'
 import { workBoardRoutes } from '../routes/work-boards'
@@ -34,13 +36,16 @@ import { checkpointRoutes } from '../routes/checkpoints'
 import { aiProxyRoutes } from '../routes/ai-proxy'
 import { aiLiveRoutes } from '../routes/ai-live'
 import { voiceRoutes } from '../routes/voice'
+import { voiceMediaRoutes } from '../routes/voice-media'
 import { rbacRoutes } from '../routes/rbac'
 import { chatRoutes } from '../routes/chat'
 import { createChatMessageEditRoutes } from '../routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from '../routes/chat-message-feedback'
 import { createChatSessionForkRoutes } from '../routes/chat-session-fork'
 import { chatQueuedMessageActionsRoutes } from '../routes/chat-queued-message-actions'
+import { agentWakeRoutes } from '../routes/agent-wakes'
 import { toolsProxyRoutes } from '../routes/tools-proxy'
+import { socialEventRoutes, socialRoutes } from '../routes/social'
 import { techStackRoutes } from '../routes/tech-stacks'
 import { apiKeyRoutes } from '../routes/api-keys'
 import { integrationRoutes } from '../routes/integrations'
@@ -50,12 +55,17 @@ import { localUserRoutes } from '../routes/local-user'
 import { localProjectsRoutes } from '../routes/local-projects'
 import { localRemoteHostsRoutes } from '../routes/local-remote-hosts'
 import { localLogsRoutes } from '../routes/local-logs'
+import { localMachineRoutes } from '../routes/local-machine'
 import { meetingRoutes } from '../routes/meetings'
 import { historyRoutes } from '../routes/history'
+import { chatMentionRoutes } from '../routes/chat-mentions'
+import { scopedAnalyticsRoutes } from '../routes/scoped-analytics'
+import { costAnalyticsRoutes } from '../routes/cost-analytics'
 import { localSystemRoutes } from '../routes/local-system'
 import { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } from '../routes/local-cloud-proxy'
 import { localPlatformRoutes } from '../routes/local-platform'
 import { localSharedFileRoutes } from '../routes/local-shared-files'
+import { resolveLocalSharedFileTarget } from '../lib/local-shared-file-target'
 import { marketplaceRoutes } from '../routes/marketplace'
 import { appActionsRoutes } from '../routes/app-actions'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
@@ -94,6 +104,11 @@ export function createLocalApp(): LocalAppBundle {
     health: (c) => c.json({ ok: true, redis: { healthy: true, latencyMs: 0, degraded: false } }),
   })
 
+  // Stamps `x-shogo-sync-seq` on this process's mutations so the cloud can wait
+  // for the machine copy to catch up before answering the Studio (SHO-185).
+  // Registered first, so it wraps every route below.
+  app.use('/api/*', machineSyncSeqHeader())
+
   app.route('/api', localPlatformRoutes())
   app.route('/api', localSystemRoutes())
   app.use('/api/workspaces', cloudWorkspaceListMiddleware)
@@ -116,9 +131,11 @@ export function createLocalApp(): LocalAppBundle {
       authenticate: authenticateRuntimeToken,
       loadProjectLifecycle: () => import('../services/project-lifecycle.service'),
       loadAgentCall: () => import('../services/agent-call.service'),
+      resolveSharedFileTarget: (scope) => resolveLocalSharedFileTarget({ ...scope, workspacesDir }),
     }),
   )
   app.route('/api/local', localLogsRoutes())
+  app.route('/api/local', localMachineRoutes())
   app.route('/api/local', localRemoteHostsRoutes({ runtimeManager }))
   app.route('/api', localAuthRoutes())
   app.route('/api', localUserRoutes())
@@ -129,7 +146,7 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', localTerminalRoutes({ runtimeManager, workspacesDir }))
   app.route('/api', localIdeRoutes())
   app.route('/api', localPreviewRoutes({ runtimeManager }))
-  app.route('/api', localWorkspaceRoutes())
+  app.route('/api', localWorkspaceRoutes({ runtimeManager, workspacesDir }))
   app.route('/api', localThumbnailRoutes())
   app.route('/api', localProjectMetadataRoutes())
   app.route('/api', localHeartbeatRoutes())
@@ -143,6 +160,9 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', projectChatRoutes({ runtimeManager }))
   app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager }))
   app.route('/api', workspaceAgentRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
+  // Workspace-level export/import — the desktop must answer this too, or the
+  // "Backup & export" tab works in the cloud and 404s locally.
+  app.route('/api/workspaces', workspaceExportRoutes())
   app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
   app.route('/api', sharedMeetingRoutes())
   const scriptedChannelAgents = scriptedAgentInvokeFromEnv()
@@ -158,6 +178,11 @@ export function createLocalApp(): LocalAppBundle {
   })
   app.route('/api', createAgentTaskRoutes({ runtimeManager }))
   app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
+  app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
+  // Usage and Cost Optimizer on the desktop. server.ts mounts these for cloud
+  // only; without these two lines every local analytics call 404s.
+  app.route('/api', scopedAnalyticsRoutes())
+  app.route('/api', costAnalyticsRoutes())
   app.route('/api', diagnosticsRoutes({ workspacesDir }))
   app.route('/api', testsRoutes({ workspacesDir }))
   app.route('/api', securityRoutes({ workspacesDir }))
@@ -167,9 +192,34 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', aiProxyRoutes())
   app.route('/api', aiLiveRoutes())
   app.route('/api', voiceRoutes())
+  // The desktop composer must serve hosted TTS too. `server.ts` (cloud) mounts
+  // this next to `voiceRoutes()`, but this composer is the one desktop boots
+  // (`entry.ts` → `local-server.ts` → `createLocalApp()`), so without it
+  // `POST /api/voice/tts` — and with it every pod-shaped TTS call that the SDK
+  // proxy forwards here — 404s on desktop.
+  //
+  // `voiceMediaRoutes()` is the *single* owner of the hosted media paths
+  // (`/voice/tts`, `/voice/music`, `/voice/op/*`): `voiceRoutes()` registers
+  // none of them, so mounting both here does not duplicate a route (SHO-73).
+  app.route('/api', voiceMediaRoutes())
   app.route('/api', rbacRoutes())
   app.route('/api', chatRoutes())
   app.route('/api', toolsProxyRoutes())
+  // Social management: the desktop owns its own account/post rows and forwards
+  // every Zernio call to the cloud relay inside services/social/client.ts.
+  app.route('/api', socialRoutes({ resolveUserId: getAuthUserId }))
+  // Relayed Zernio events for a local scope: the cloud verified and routed
+  // them, and this applies them here, idempotent on the provider's event id.
+  app.route(
+    '/api',
+    socialEventRoutes({
+      authorize: async (c) => {
+        const identity = await authenticateRuntimeToken(c)
+        if (!identity) return null
+        return identity.kind === 'workspace' ? { workspaceId: identity.workspaceId } : {}
+      },
+    }),
+  )
   app.route('/api', techStackRoutes())
   app.route('/api', apiKeyRoutes())
   // Settings > Integrations is shown on desktop; the routes forward to cloud
@@ -184,6 +234,8 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api/v1', appActionsRoutes())
   app.route('/api/chat-messages', createChatMessageEditRoutes())
   app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
+  // The queue of team-chat wakes waiting behind a live reply (SHO-167).
+  app.route('/api', agentWakeRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api/chat-messages', createChatMessageFeedbackRoutes())
   app.route('/api/chat-sessions', createChatSessionFeedbackRoutes())
   app.route('/api/chat-sessions', createChatSessionForkRoutes())

@@ -340,6 +340,18 @@ export async function publishListing(listingId: string, creatorId: string): Prom
   if (existing.status !== 'draft' && existing.status !== 'in_review') {
     throw new Error('Only draft or in-review listings can be published');
   }
+  // Publishing a pack validates it here as well as at version push: `pack.yaml`
+  // may have been edited on disk since the snapshot, and an invalid pack must
+  // never reach the catalogue.
+  const { readProjectPack } = await import('./marketplace-pack.service')
+  const pack = readProjectPack(existing.projectId)
+  if (pack.status === 'invalid') throw new Error(`invalid_pack: ${pack.errors.join('; ')}`)
+  if (pack.status === 'ok') {
+    await prisma.marketplaceListingVersion.updateMany({
+      where: { listingId, version: existing.currentVersion },
+      data: { systemPack: pack.pack as unknown as object },
+    })
+  }
   const now = new Date();
   return prisma.marketplaceListing.update({
     where: { id: listingId },

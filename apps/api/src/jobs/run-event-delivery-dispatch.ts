@@ -268,12 +268,21 @@ export async function dispatchDueDeliveries(runtimeManager?: RuntimeManager): Pr
     },
     orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }],
     take: Math.min(BATCH_SIZE, capacity),
-    select: { id: true, status: true, attempts: true, runningAt: true },
+    select: { id: true, status: true, attempts: true, runningAt: true, subscription: { select: { workspaceId: true } } },
   })
 
+  const { isWorkspaceAgentsPaused } = await import('../services/workspace-pause.service')
   let started = 0
   for (const row of due) {
     if (inFlight.size >= MAX_CONCURRENT_DELIVERIES) break
+    // A paused workspace's trigger is skipped, not failed: the row stays pending
+    // with its `nextAttemptAt` untouched, so it runs on the first tick after the
+    // pause lifts (SHO-118).
+    const workspaceId = row.subscription?.workspaceId
+    if (workspaceId && (await isWorkspaceAgentsPaused(workspaceId))) {
+      console.log(`[EventDelivery] ${row.id} held: agents are paused in workspace ${workspaceId}`)
+      continue
+    }
     const runningAt = new Date()
     const claimed = await db.eventDelivery.updateMany({
       where: {

@@ -209,6 +209,36 @@ describe('buildWorkspaceEnv', () => {
     expect(k8s.SHOGO_DURABILITY_HOST_MEDIATED).toBeUndefined()
   })
 
+  describe('home-state key', () => {
+    const savedKey = process.env.SECRETS_ENCRYPTION_KEY
+    afterEach(() => {
+      if (savedKey === undefined) delete process.env.SECRETS_ENCRYPTION_KEY
+      else process.env.SECRETS_ENCRYPTION_KEY = savedKey
+    })
+
+    it('forMetal derives a key per runtime key and names the runtime in HOME_STATE_ID', async () => {
+      process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
+      const session = await buildWorkspaceEnv('ws-1', [], { ...seams, forMetal: true } as any)
+      const anchored = await buildWorkspaceEnv('ws-1', ['p1'], { ...seams, forMetal: true, anchorProjectId: 'p1' } as any)
+      expect(session.HOME_STATE_ID).toBe('ws:ws-1')
+      expect(anchored.HOME_STATE_ID).toBe('ws:proj:p1')
+      expect(Buffer.from(session.HOME_STATE_KEY, 'base64').length).toBe(32)
+      expect(session.HOME_STATE_KEY_VERSION).toBe('1')
+      expect(session.HOME_STATE_KEY).not.toBe(anchored.HOME_STATE_KEY)
+      const again = await buildWorkspaceEnv('ws-1', ['p1'], { ...seams, forMetal: true, anchorProjectId: 'p1' } as any)
+      expect(again.HOME_STATE_KEY).toBe(anchored.HOME_STATE_KEY)
+    })
+
+    it('no key without a master key, or off metal', async () => {
+      delete process.env.SECRETS_ENCRYPTION_KEY
+      const metal = await buildWorkspaceEnv('ws-1', [], { ...seams, forMetal: true } as any)
+      expect(metal.HOME_STATE_KEY).toBeUndefined()
+      expect(metal.HOME_STATE_ID).toBeUndefined()
+      process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
+      expect((await buildWorkspaceEnv('ws-1', [], seams as any)).HOME_STATE_KEY).toBeUndefined()
+    })
+  })
+
   describe('metal single-runtime invariant', () => {
     const catalogSeams = {
       ...seams,

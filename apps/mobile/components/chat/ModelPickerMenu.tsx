@@ -152,7 +152,7 @@ export function ModelPickerMenu({
           testID={`model-option-${model.id}`}
           accessibilityRole="button"
           accessibilityLabel={`${model.shortDisplayName ?? model.displayName}${isLocked ? ", requires Pro" : ""}`}
-          accessibilityState={{ selected: isSelected }}
+          aria-selected={isSelected}
           onHoverIn={isWeb ? () => setHoveredId(model.id) : undefined}
           onHoverOut={isWeb ? () => setHoveredId((id) => (id === model.id ? null : id)) : undefined}
           className={cn(
@@ -264,7 +264,7 @@ export function ModelPickerMenu({
             router.push(
               usesMobileWorkspaceChrome
                 ? ("/(app)/ai-models" as any)
-                : ("/(admin)/settings" as any)
+                : ("/(admin)/admin/settings" as any)
             )
           }}
           onHoverIn={isWeb ? () => setHoveredId(null) : undefined}

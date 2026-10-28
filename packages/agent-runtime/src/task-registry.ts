@@ -1,0 +1,1680 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * TaskRegistry — per-session bookkeeping for background tasks.
+ *
+ * A task is anything the agent started that keeps running after the tool
+ * call returned: a shell command (`exec` with `background: true` or past its
+ * soft timeout), a background subagent, or a remote task tracked by the API
+ * (a `project_call` run, a tagged agent's reply, a card change). Every source
+ * has the same shape, the same `t_xxxx` id, the same output file format, and
+ * the same completion note, so the agent only has to learn one rule:
+ * `wait` on the id, or end the turn and get a `[Task update]`.
+ *
+ * The registry also feeds the UI (`listRunning` / `listVisible` / `onChange`)
+ * and persists a snapshot so the list survives restarts. Finished entries
+ * linger for ~10 minutes so a late `wait` can still read the result.
+ */
+
+import { randomBytes } from 'crypto'
+import { existsSync } from 'fs'
+import { join, relative } from 'path'
+import type { CommandHandle } from './sandbox-exec'
+import type { ProcessMember } from './process-tree'
+import {
+  TaskOutputWriter,
+  readTaskOutput,
+  tailLines,
+  taskOutputBody,
+  type TaskOutputRow,
+} from './task-output'
+
+/** How long to keep finished entries around so a post-hoc `wait` works. */
+export const COMPLETED_RETENTION_MS = 10 * 60 * 1000
+/**
+ * How long a finished entry whose result nobody has read is kept. Retention is
+ * a lease released by `markConsumed`, not an eviction: the short window only
+ * applies once the agent that started the task has seen the result. This bound
+ * stops the map growing without limit, and the output file outlives it.
+ */
+export const UNREAD_RETENTION_MS = 24 * 60 * 60 * 1000
+/** How long a shell command must run before it is shown in the chat dock. */
+export const UI_VISIBLE_AFTER_MS = 30_000
+/** Rolling in-memory output window per non-shell task, used by `until` matching. */
+const RECENT_OUTPUT_CHARS = 256 * 1024
+/** Polling interval for `until` regex checks. */
+const UNTIL_POLL_MS = 250
+/** Upper bound on a single remote long-poll request. */
+const REMOTE_POLL_SLICE_MS = 25_000
+/** A client that answers before `waitMs` must not turn the wait into a hot loop. */
+const REMOTE_MIN_POLL_GAP_MS = 500
+
+export type TaskSource = 'shell' | 'subagent' | 'project_call' | 'agent_reply' | 'work_item'
+/**
+ * A task's outcome. `interrupted` is a task the runtime killed under itself —
+ * a restart or shutdown sweep — and it is deliberately NOT `completed`: the
+ * process never chose to exit, so no exit code can say it succeeded (SHO-141).
+ */
+export type TaskStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+
+/** Every status a task can never leave. */
+export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'cancelled', 'interrupted']
+
+export function isTerminalStatus(status: TaskStatus | undefined): boolean {
+  return !!status && status !== 'running'
+}
+
+/** What every notice and tool result says about a runtime-killed task. */
+export const INTERRUPTED_SUMMARY = 'interrupted — the runtime restarted while it was running'
+
+/** The line a notice prints about the output file, when the file is gone. */
+export const OUTPUT_REMOVED_NOTE = 'output log was removed by the restart — the verdict and its last output are all that survive'
+
+/**
+ * The one decision about how a task ended, extracted from the `handle.done`
+ * closure so it can be read and tested on its own.
+ *
+ * The bug this exists to prevent (SHO-141, #1634): a task killed by a runtime
+ * restart was reported `completed (exit code 0)` because the verdict was
+ * inferred from `result.exitCode === 0` — and for `cmd | tail -25` that 0 was
+ * `tail`'s, not the command's. Intent decides the verdict; the number can only
+ * ever describe an exit the process took on its own.
+ */
+export function settleOutcome(input: {
+  /** The user pressed Stop (`entry.status === 'cancelled'`). */
+  cancelRequested?: boolean
+  /** The runtime is shutting down or restarting (`killAll()`). */
+  runtimeShutdown?: boolean
+  /** Shogo signalled it: a memory kill, an external signal. Not a free exit. */
+  killed?: boolean
+  exitCode?: number
+  /** False when a shell without pipefail reported its last stage instead of the command. */
+  exitCodeReliable?: boolean
+  shellLabel?: string
+}): { status: Exclude<TaskStatus, 'running'>; exitCode?: number; summary: string } {
+  if (input.cancelRequested) return { status: 'cancelled', summary: 'cancelled' }
+  // A restart is not an outcome the command produced. It carries no exit code:
+  // 137 from SIGKILL and 0 from a masked pipeline both describe the killer.
+  if (input.runtimeShutdown) return { status: 'interrupted', summary: INTERRUPTED_SUMMARY }
+  if (input.killed) {
+    return {
+      status: 'failed',
+      summary: input.exitCode === undefined ? 'killed' : `killed (signal ${input.exitCode})`,
+      ...(input.exitCode === undefined ? {} : { exitCode: input.exitCode }),
+    }
+  }
+  if (input.exitCodeReliable === false) {
+    const shell = input.shellLabel ?? 'this shell'
+    return {
+      status: input.exitCode === 0 ? 'completed' : 'failed',
+      summary: `pipeline status unavailable — ${shell} cannot report a pipeline's exit code`,
+    }
+  }
+  const code = input.exitCode ?? 1
+  return { status: code === 0 ? 'completed' : 'failed', exitCode: code, summary: `exit code ${code}` }
+}
+
+/**
+ * Where a task's work is actually happening. The chat dock opens this instead
+ * of the runtime-local log, so pressing a background row lands on the agent's
+ * thread (a channel thread, a card, a project session) rather than an empty
+ * file. `log` is the local output file, used by shell commands.
+ */
+export type TaskLink =
+  | { kind: 'log'; path?: string }
+  | { kind: 'project_session'; projectId: string; chatSessionId?: string; name?: string }
+  | { kind: 'subagent'; projectId?: string; chatSessionId?: string; toolCallId: string }
+  | { kind: 'channel_thread'; workspaceId?: string; conversationId: string; threadRootId: string; title?: string }
+  | {
+      kind: 'card'
+      workspaceId?: string
+      conversationId: string
+      threadRootId: string
+      itemId: string
+      itemKey: string
+      board: string
+    }
+
+export interface TaskResult {
+  exitCode?: number
+  summary: string
+  /** False when the number belongs to the last stage of a pipeline, not the command. */
+  exitCodeReliable?: boolean
+  pipelineStatus?: 'last-stage'
+  /** The shell that ran it, named in the "status unavailable" message. */
+  shellLabel?: string
+  /** Kept for a row whose log the restart deleted: the evidence that survives. */
+  tail?: string
+}
+
+type ShellFinalResult = {
+  exitCode: number
+  stdout: string
+  stderr: string
+  killed: boolean
+  killReason?: string
+  exitCodeReliable?: boolean
+  pipelineStatus?: 'last-stage'
+  shellLabel?: string
+}
+
+export interface TaskEntry {
+  id: string
+  /** Alias of `id`, kept for the legacy shell-run vocabulary. */
+  runId: string
+  source: TaskSource
+  title: string
+  /** Shell tasks: the exact command. Other sources: same as `title`. */
+  command: string
+  status: TaskStatus
+  startedAt: number
+  finishedAt?: number
+  result?: TaskResult
+  /** Wake the agent when this task finishes (default true). */
+  notify: boolean
+  /** The agent already saw the final result through `wait`. */
+  consumed: boolean
+  /** The agent was told this task runs in the background. Only these produce notes. */
+  backgrounded?: boolean
+  /** Restored after a runtime restart; the local process is gone. */
+  stale?: boolean
+  /**
+   * It was in the dock before the restart. A restored terminal row has no live
+   * duration to compare against the visibility delay, so it says so directly.
+   */
+  shown?: boolean
+  /** Status comes from a client (the API, or another project's runtime); this entry mirrors it. */
+  remote?: boolean
+  /** Tracked by the API, which also wakes the agent itself when it finishes. */
+  apiTracked?: boolean
+  /** Its completion was handed to the API to wake an idle session. */
+  reported?: boolean
+  /** Not tracked yet: hidden and silent until the agent first waits on it. */
+  dormant?: boolean
+  /** Source-specific reference (subagent instance id, remote target, ...). */
+  ref?: string
+  /** Where this task's work is happening, for the dock's "open the thread" action. */
+  link?: TaskLink
+  /** Wake text the API formatted for this task, when it finished. */
+  remoteNote?: string
+  /** Absolute path of the output file, when output files are enabled. */
+  outputFile?: string
+  /** Shell tasks only. */
+  handle?: CommandHandle
+  finalResult?: ShellFinalResult
+  /** The runtime is sweeping this task on shutdown: it ends `interrupted`, never `completed`. */
+  runtimeShutdown?: boolean
+  /** Rebuilt from its output file after its entry was evicted. */
+  recovered?: boolean
+  /** Arms the retention window for this entry's finished result. */
+  retentionTimer?: ReturnType<typeof setTimeout>
+  /** Resolves when the task leaves the `running` state. */
+  done: Promise<void>
+  visibilityTimer?: ReturnType<typeof setTimeout>
+}
+
+/** Shell entries always carry a process handle. */
+export type CommandEntry = TaskEntry & { handle: CommandHandle }
+
+/**
+ * What `kill()` can honestly report (SHO-144). `survivors` is non-empty when
+ * the tree outlived the kill — a `setsid` escapee, a Windows process started
+ * outside the job — and then the caller must not report `cancelled`.
+ */
+export interface TaskCancelResult {
+  found: boolean
+  survivors: ProcessMember[]
+}
+
+/** Live view of a task for tools and the UI. */
+export interface RunningProcess {
+  id: string
+  runId: string
+  source: TaskSource
+  title: string
+  command: string
+  status: TaskStatus
+  pid: number | undefined
+  sandboxed: boolean
+  containerName?: string
+  startedAt: number
+  elapsedMs: number
+  finishedAt?: number
+  outputFile?: string
+  notify: boolean
+  remote?: boolean
+  stale?: boolean
+  /** Where the task's work is happening (thread, card, project session, log). */
+  link?: TaskLink
+  /**
+   * Finished, but its update is still queued behind a paused wake: the session
+   * has not been given it yet. Set by the gateway from the API's wake state.
+   */
+  waiting?: boolean
+}
+
+/** Serializable subset persisted into session metadata so the list survives restart. */
+export interface RunningProcessSnapshot {
+  runId: string
+  command: string
+  pid: number | undefined
+  sandboxed: boolean
+  containerName?: string
+  startedAt: number
+  source?: TaskSource
+  title?: string
+  remote?: boolean
+  ref?: string
+  outputFile?: string
+  /** Where the task's work is happening; survives a restart with the row. */
+  link?: TaskLink
+  /** Terminal rows keep their outcome and freeze so a restart still lists them. */
+  status?: TaskStatus
+  finishedAt?: number
+  /**
+   * The verdict, plus the last output when the log itself may not survive the
+   * restart. A cloud VM is re-assigned by swapping `<workspace>/.shogo` for a
+   * per-VM overlay, so task logs are disposable; sessions.db (which holds this
+   * snapshot) is the durable copy (SHO-141).
+   */
+  result?: TaskResult
+  /** The snapshot was taken from a row the dock was showing. */
+  shown?: boolean
+  /** The agent has seen this result; a restart must not turn an unread one read. */
+  consumed?: boolean
+  /** The agent was told it runs in the background (only these own their result). */
+  backgrounded?: boolean
+}
+
+export interface TaskNotification {
+  taskId: string
+  source: TaskSource
+  title: string
+  status: TaskStatus
+  exitCode?: number
+  outputFile?: string
+  /** The log this task pointed at no longer exists: do not print its path. */
+  outputMissing?: boolean
+  /** Its exit code is the last stage's, not the command's. */
+  exitCodeReliable?: boolean
+  pipelineStatus?: 'last-stage'
+  shellLabel?: string
+  tail: string
+  remote?: boolean
+  /**
+   * The note carries its own ownership flags. The entry that produced it can be
+   * evicted while the note is still pending (`forget`), and a guard that reads
+   * the entry then fails open and hands an API-owned note to the API as a local
+   * task — which the API turns back into a wake, forever (SHO-196).
+   */
+  apiTracked?: boolean
+  reported?: boolean
+  /** When the task settled; a turn only injects notes that finished after it started. */
+  finishedAt?: number
+}
+
+/** API-side task state, as returned by the internal task routes. */
+export interface RemoteTaskState {
+  id: string
+  status: TaskStatus
+  output?: string
+  result?: TaskResult
+  matched?: boolean
+  /** Where the API says the task's work is happening. */
+  link?: TaskLink
+  /** The API's formatted wake text, when the task has settled. */
+  note?: string
+}
+
+/** Transport for remote tasks; implemented over the internal API by the gateway. */
+export interface RemoteTaskClient {
+  get(id: string, opts?: { waitMs?: number; until?: string }): Promise<RemoteTaskState | null>
+  cancel(id: string): Promise<void>
+  consume(ids: string[]): Promise<void>
+}
+
+export interface WaitOutcome {
+  kind: 'finished' | 'matched' | 'timeout'
+  task?: TaskEntry
+  matched?: string
+}
+
+export interface TaskHandle {
+  entry: TaskEntry
+  append(chunk: string): void
+  finish(status: Exclude<TaskStatus, 'running'>, result: TaskResult): void
+}
+
+type ChangeListener = (running: RunningProcess[]) => void
+type NotificationListener = (notification: TaskNotification) => void
+
+export interface TaskRegistryOptions {
+  uiVisibleAfterMs?: number
+  /** Directory for per-task output files. Omit to disable output files. */
+  outputDir?: string
+  /** Workspace root, used to report output files as workspace-relative paths. */
+  workspaceDir?: string
+  remote?: RemoteTaskClient
+  /** How long a finished result the agent already read is kept. */
+  retentionMs?: number
+  /** How long a finished result nobody read is kept. */
+  unreadRetentionMs?: number
+  /** How many unread finished results may sit in memory before the oldest go. */
+  maxUnconsumed?: number
+  /**
+   * Find a task's log after its entry was evicted, so `resolveFinished` can
+   * rebuild the result instead of reporting the task as unknown.
+   */
+  resolveOutputRow?: (id: string) => TaskOutputRow | null
+}
+
+export function newTaskId(): string {
+  return `t_${randomBytes(4).toString('hex')}`
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
+}
+
+export function formatTaskNotification(n: TaskNotification): string {
+  const outcome =
+    n.status === 'cancelled'
+      ? 'was cancelled'
+      : n.status === 'interrupted'
+        // Never "completed" and never a number: the restart, not the command,
+        // decided this.
+        ? INTERRUPTED_SUMMARY
+        : n.exitCodeReliable === false
+          ? `${n.status} (pipeline status unavailable — ${n.shellLabel ?? 'this shell'} cannot report a pipeline's exit code)`
+          : n.exitCode !== undefined
+            ? `${n.status} (exit code ${n.exitCode})`
+            : n.status
+  const lines = [`[Task update] ${n.title} (${n.taskId}) ${outcome}.`]
+  // A report that points at a deleted file is worse than no report.
+  if (n.outputFile) lines.push(`Output: ${n.outputFile}`)
+  else if (n.outputMissing) lines.push(OUTPUT_REMOVED_NOTE)
+  if (n.tail.trim()) lines.push('Last output:', n.tail)
+  return lines.join('\n')
+}
+
+export class TaskRegistry {
+  private entries = new Map<string, TaskEntry>()
+  private aliases = new Map<string, string>()
+  private writers = new Map<string, TaskOutputWriter>()
+  private recent = new Map<string, string>()
+  private resolvers = new Map<string, () => void>()
+  private cancels = new Map<string, () => void | Promise<void>>()
+  private clients = new Map<string, RemoteTaskClient>()
+  private listeners = new Set<ChangeListener>()
+  private notificationListeners = new Set<NotificationListener>()
+  private pendingWaits = new Map<string, number>()
+  private completionNotes = new Map<string, TaskNotification>()
+  private readonly uiVisibleAfterMs: number
+  private readonly outputDir?: string
+  private readonly workspaceDir?: string
+  private readonly retentionMs: number
+  private readonly unreadRetentionMs: number
+  private readonly maxUnconsumed: number
+  private readonly findOutputRow?: (id: string) => TaskOutputRow | null
+  remote?: RemoteTaskClient
+
+  constructor(options: TaskRegistryOptions = {}) {
+    this.uiVisibleAfterMs = options.uiVisibleAfterMs ?? UI_VISIBLE_AFTER_MS
+    this.outputDir = options.outputDir
+    this.workspaceDir = options.workspaceDir
+    this.remote = options.remote
+    this.retentionMs = options.retentionMs ?? COMPLETED_RETENTION_MS
+    this.unreadRetentionMs = options.unreadRetentionMs ?? UNREAD_RETENTION_MS
+    this.maxUnconsumed = options.maxUnconsumed ?? 20
+    this.findOutputRow = options.resolveOutputRow
+  }
+
+  // ---------------------------------------------------------------------------
+  // Registration
+  // ---------------------------------------------------------------------------
+
+  /** Register a freshly spawned shell command. */
+  register(command: string, handle: CommandHandle, opts: { title?: string; notify?: boolean; cwd?: string; link?: TaskLink } = {}): CommandEntry {
+    const id = newTaskId()
+    let resolveDone!: () => void
+    const done = new Promise<void>((r) => { resolveDone = r })
+    const entry: CommandEntry = {
+      id,
+      runId: id,
+      source: 'shell',
+      title: opts.title ?? command,
+      command,
+      status: 'running',
+      startedAt: handle.startedAt,
+      notify: opts.notify ?? true,
+      consumed: false,
+      handle,
+      link: opts.link,
+      done,
+    }
+    this.entries.set(id, entry)
+    this.resolvers.set(id, resolveDone)
+
+    const writer = this.createWriter(entry, {
+      command,
+      cwd: opts.cwd,
+      pid: handle.pid,
+      container: handle.containerName,
+    })
+    const unsubscribe = writer && handle.onData ? handle.onData((chunk) => writer.append(chunk)) : undefined
+
+    const visibilityTimer = setTimeout(() => {
+      entry.visibilityTimer = undefined
+      if (!handle.exited()) this.emitChange()
+    }, this.uiVisibleAfterMs)
+    entry.visibilityTimer = visibilityTimer
+    ;(visibilityTimer as any)?.unref?.()
+
+    handle.done.then((result) => {
+      unsubscribe?.()
+      entry.finalResult = result
+      const decision = settleOutcome({
+        cancelRequested: entry.status === 'cancelled',
+        runtimeShutdown: entry.runtimeShutdown,
+        killed: result.killed,
+        exitCode: result.exitCode,
+        exitCodeReliable: result.exitCodeReliable,
+        shellLabel: result.shellLabel,
+      })
+      this.settle(entry, decision.status, {
+        exitCode: decision.exitCode,
+        summary: result.killReason ?? decision.summary,
+        ...(result.exitCodeReliable === false
+          ? { exitCodeReliable: false, pipelineStatus: result.pipelineStatus, shellLabel: result.shellLabel }
+          : {}),
+      })
+    }).catch(() => {
+      unsubscribe?.()
+      this.settle(entry, 'failed', { summary: 'process error' })
+    })
+
+    this.emitChange()
+    return entry
+  }
+
+  /** Register a non-shell task (subagent, ...). The caller drives it via the returned handle. */
+  registerTask(opts: {
+    source: TaskSource
+    title: string
+    ref?: string
+    notify?: boolean
+    backgrounded?: boolean
+    cancel?: () => void | Promise<void>
+    id?: string
+    dormant?: boolean
+    link?: TaskLink
+  }): TaskHandle {
+    const id = opts.id ?? newTaskId()
+    let resolveDone!: () => void
+    const done = new Promise<void>((r) => { resolveDone = r })
+    const entry: TaskEntry = {
+      id,
+      runId: id,
+      source: opts.source,
+      title: opts.title,
+      command: opts.title,
+      status: 'running',
+      startedAt: Date.now(),
+      notify: opts.notify ?? true,
+      consumed: false,
+      backgrounded: opts.backgrounded,
+      ref: opts.ref,
+      link: opts.link,
+      dormant: opts.dormant || undefined,
+      done,
+    }
+    this.entries.set(id, entry)
+    this.resolvers.set(id, resolveDone)
+    if (opts.ref) this.aliases.set(opts.ref, id)
+    if (opts.cancel) this.cancels.set(id, opts.cancel)
+    if (!opts.dormant) {
+      this.createWriter(entry, { ref: opts.ref })
+      this.emitChange()
+    }
+    return {
+      entry,
+      append: (chunk: string) => this.appendOutput(id, chunk, this.writers.get(id)),
+      finish: (status, result) => this.settle(entry, status, result),
+    }
+  }
+
+  /** Start tracking a dormant task: it gets an output file, shows up, and notifies. */
+  activate(id: string): void {
+    const entry = this.get(id)
+    if (!entry?.dormant) return
+    entry.dormant = undefined
+    entry.notify = true
+    this.createWriter(entry, { ref: entry.ref })
+    this.emitChange()
+  }
+
+  /** Let `ref` (e.g. a subagent instance id) resolve to task `id`. */
+  addAlias(ref: string, id: string): void {
+    const entry = this.entries.get(id)
+    if (!entry) return
+    entry.ref = ref
+    this.aliases.set(ref, id)
+  }
+
+  /** Mirror an API-tracked task. Its status is refreshed through `remote`. */
+  registerRemote(opts: {
+    id: string
+    source: TaskSource
+    title: string
+    ref?: string
+    notify?: boolean
+    startedAt?: number
+    /** Per-task transport. Defaults to the registry's API client. */
+    client?: RemoteTaskClient
+    /** The API holds the task (wakes the session, records consumption). Default: no per-task client. */
+    apiTracked?: boolean
+    dormant?: boolean
+    /** Where the task's work is happening; shown as the dock row's destination. */
+    link?: TaskLink
+  }): TaskEntry {
+    const existing = this.entries.get(opts.id)
+    if (existing) {
+      if (opts.link && !existing.link) existing.link = opts.link
+      return existing
+    }
+    const handle = this.registerTask({
+      id: opts.id,
+      source: opts.source,
+      title: opts.title,
+      ref: opts.ref,
+      notify: opts.notify,
+      backgrounded: true,
+      dormant: opts.dormant,
+      link: opts.link,
+    })
+    handle.entry.remote = true
+    handle.entry.apiTracked = opts.apiTracked ?? !opts.client
+    if (opts.client) this.clients.set(opts.id, opts.client)
+    if (opts.startedAt) handle.entry.startedAt = opts.startedAt
+    return handle.entry
+  }
+
+  private createWriter(entry: TaskEntry, extra: Record<string, string | number | undefined>): TaskOutputWriter | undefined {
+    if (!this.outputDir) return undefined
+    const path = join(this.outputDir, `${entry.id}.log`)
+    const writer = new TaskOutputWriter(path, {
+      taskId: entry.id,
+      source: entry.source,
+      title: entry.title,
+      startedAt: entry.startedAt,
+      extra,
+    })
+    entry.outputFile = path
+    this.writers.set(entry.id, writer)
+    return writer
+  }
+
+  private clientFor(entry: TaskEntry): RemoteTaskClient | undefined {
+    if (!entry.remote) return undefined
+    return this.clients.get(entry.id) ?? this.remote
+  }
+
+  private appendOutput(id: string, chunk: string, writer?: TaskOutputWriter): void {
+    if (!chunk) return
+    writer?.append(chunk)
+    const prev = this.recent.get(id) ?? ''
+    const next = prev + chunk
+    this.recent.set(id, next.length > RECENT_OUTPUT_CHARS ? next.slice(-RECENT_OUTPUT_CHARS) : next)
+  }
+
+  private settle(entry: TaskEntry, status: TaskStatus, result: TaskResult): void {
+    if (isTerminalStatus(entry.status) && entry.finishedAt) return
+    if (entry.visibilityTimer) {
+      clearTimeout(entry.visibilityTimer)
+      entry.visibilityTimer = undefined
+    }
+    // A cancel the user asked for outranks whatever the signal reports.
+    const decided = entry.status === 'cancelled' ? 'cancelled' : status
+    entry.status = decided
+    entry.finishedAt = Date.now()
+    // An interrupted row is the one whose log may vanish with the machine, so
+    // its last output is captured into the snapshot while it is still in memory.
+    const tail = decided === 'interrupted' ? tailLines(stripAnsi(this.readOutput(entry))) : undefined
+    entry.result = tail ? { ...result, tail } : result
+    this.writers.get(entry.id)?.finish({
+      status: entry.status,
+      exitCode: result.exitCode,
+      elapsedMs: entry.finishedAt - entry.startedAt,
+    })
+    this.writers.delete(entry.id)
+    this.cancels.delete(entry.id)
+    this.queueNote(entry)
+    this.resolvers.get(entry.id)?.()
+    this.resolvers.delete(entry.id)
+    this.emitChange()
+    this.armRetention(entry)
+  }
+
+  /**
+   * The result belongs to whoever started the task until they read it. A task
+   * the agent was told about in the background keeps its entry (and so a late
+   * `wait`) until `markConsumed`; everything else gets the short window.
+   */
+  private wantsUnreadResult(entry: TaskEntry): boolean {
+    return !!entry.backgrounded && !entry.consumed && !entry.stale
+  }
+
+  /** (Re)arm the retention window from the entry's finish time. */
+  private armRetention(entry: TaskEntry): void {
+    if (entry.retentionTimer) {
+      clearTimeout(entry.retentionTimer)
+      entry.retentionTimer = undefined
+    }
+    const finishedAt = entry.finishedAt ?? Date.now()
+    const deadline = finishedAt + (this.wantsUnreadResult(entry) ? this.unreadRetentionMs : this.retentionMs)
+    const timer = setTimeout(() => {
+      entry.retentionTimer = undefined
+      this.expire(entry.id)
+    }, Math.max(0, deadline - Date.now()))
+    ;(timer as any)?.unref?.()
+    entry.retentionTimer = timer
+    this.enforceUnconsumedCap()
+  }
+
+  /**
+   * Drop a finished entry from memory once its lease is up. An unread result
+   * that still has lease left is re-armed instead (a restore from a snapshot or
+   * a log comes back with a fresh window), and memory stays bounded by evicting
+   * the oldest entries — their output files still hold the result.
+   */
+  private expire(id: string): void {
+    const entry = this.entries.get(id)
+    if (!entry || entry.status === 'running' || entry.stale) return
+    if (this.wantsUnreadResult(entry)) {
+      const deadline = (entry.finishedAt ?? Date.now()) + this.unreadRetentionMs
+      if (Date.now() < deadline) {
+        this.armRetention(entry)
+        return
+      }
+    }
+    this.forget(id)
+    this.enforceUnconsumedCap()
+  }
+
+  /** Keep at most `maxUnconsumed` unread results in memory, oldest first. */
+  private enforceUnconsumedCap(): void {
+    const finished = [...this.entries.values()].filter((e) => e.status !== 'running' && !e.stale)
+    const unread = finished.filter((e) => this.wantsUnreadResult(e))
+    let excess = unread.length - this.maxUnconsumed
+    if (excess <= 0) return
+    const oldestFirst = (a: TaskEntry, b: TaskEntry) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0)
+    // Read results are free to drop and keep the map small; only then does an
+    // unread one go, and it is rebuildable from its log.
+    for (const entry of finished.filter((e) => !this.wantsUnreadResult(e)).sort(oldestFirst)) {
+      if (excess <= 0) break
+      this.forget(entry.id)
+      excess -= 1
+    }
+    for (const entry of unread.sort(oldestFirst)) {
+      if (excess <= 0) break
+      this.forget(entry.id)
+      excess -= 1
+    }
+  }
+
+  private forget(id: string): void {
+    const entry = this.entries.get(id)
+    if (!entry || entry.status === 'running') return
+    if (entry.retentionTimer) {
+      clearTimeout(entry.retentionTimer)
+      entry.retentionTimer = undefined
+    }
+    // A note the API owns dies with its entry: the API re-arms the row and wakes
+    // the session itself, so a note left behind here is a stale mirror that
+    // nothing can consume. A local unread note survives — it is the agent's only
+    // copy of the result — and it now carries its own flags (SHO-196).
+    if (entry.apiTracked || entry.reported) this.completionNotes.delete(id)
+    this.entries.delete(id)
+    this.recent.delete(id)
+    if (entry.ref && this.aliases.get(entry.ref) === id) this.aliases.delete(entry.ref)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Notes / consumption
+  // ---------------------------------------------------------------------------
+
+  private queueNote(entry: TaskEntry): void {
+    if (!entry.backgrounded || !entry.notify || entry.consumed || entry.stale) return
+    if (this.pendingWaits.has(entry.id)) return
+    const note = this.buildNotification(entry)
+    this.completionNotes.set(entry.id, note)
+    for (const listener of this.notificationListeners) {
+      try { listener(note) } catch { /* ignore */ }
+    }
+  }
+
+  buildNotification(entry: TaskEntry): TaskNotification {
+    // The log of a task the runtime killed may have gone with the machine (a
+    // cloud VM re-assignment swaps `.shogo` for a per-VM overlay). Printing a
+    // path that is not there sends the reader to an empty file.
+    const outputFile = this.existingOutputPath(entry.outputFile)
+    return {
+      taskId: entry.id,
+      source: entry.source,
+      title: entry.title,
+      status: entry.status,
+      exitCode: entry.result?.exitCode,
+      outputFile: outputFile ? this.displayPath(outputFile) : undefined,
+      outputMissing: !outputFile && !!entry.outputFile,
+      exitCodeReliable: entry.result?.exitCodeReliable,
+      pipelineStatus: entry.result?.pipelineStatus,
+      shellLabel: entry.result?.shellLabel,
+      tail: entry.result?.tail || tailLines(stripAnsi(this.readOutput(entry))),
+      remote: entry.remote,
+      apiTracked: entry.apiTracked || undefined,
+      reported: entry.reported || undefined,
+      finishedAt: entry.finishedAt,
+    }
+  }
+
+  /** Mark a task as one the agent was told runs in the background. */
+  markBackgrounded(id: string): void {
+    const entry = this.get(id)
+    if (!entry) return
+    const wasVisible = this.dockVisible(entry, Date.now())
+    entry.backgrounded = true
+    if (entry.status !== 'running') {
+      this.queueNote(entry)
+      return
+    }
+    // A shell command that only just started is still below the visibility
+    // delay when it registers, so `register()`'s change was a no-op for the
+    // dock. Announcing it now is what puts the row on screen at all — without
+    // this the first frame a client ever sees for a background task is the one
+    // written when it settles (or after the 30 s timer).
+    if (!wasVisible) this.emitChange()
+  }
+
+  /**
+   * Mark a wait call as observing a task. Completion during this window is
+   * returned by the wait itself rather than injected as a duplicate note.
+   */
+  beginWait(id: string): () => void {
+    const resolved = this.resolveId(id)
+    this.pendingWaits.set(resolved, (this.pendingWaits.get(resolved) ?? 0) + 1)
+    this.completionNotes.delete(resolved)
+    return () => {
+      const n = (this.pendingWaits.get(resolved) ?? 1) - 1
+      if (n <= 0) this.pendingWaits.delete(resolved)
+      else this.pendingWaits.set(resolved, n)
+    }
+  }
+
+  /** The agent has seen the final result; never notify about it again. */
+  markConsumed(ids: string[]): void {
+    const apiIds = new Set<string>()
+    for (const raw of ids) {
+      const resolved = this.resolveId(raw)
+      // Cleared before the entry lookup: a wake turn's ack must retire the note
+      // even when the entry that queued it has been evicted. Leaving it is what
+      // makes an orphan note survive every ack (SHO-196).
+      const note = this.completionNotes.get(resolved)
+      this.completionNotes.delete(resolved)
+      if (note?.apiTracked || note?.reported) apiIds.add(resolved)
+      const entry = this.entries.get(resolved)
+      if (!entry || entry.consumed) continue
+      entry.consumed = true
+      // Reading the result ends its unread lease: the short window applies now.
+      if (entry.finishedAt) this.armRetention(entry)
+      if (entry.apiTracked || entry.reported) apiIds.add(entry.id)
+    }
+    if (apiIds.size > 0 && this.remote) {
+      void this.remote.consume([...apiIds]).catch(() => {})
+    }
+  }
+
+  /**
+   * Take pending notifications (formatted) and mark them consumed.
+   *
+   * `filter` lets a caller take only the notes it is actually reporting — a
+   * wake turn must not swallow another queued task's note, or that task's own
+   * wake is dropped as already-consumed and its result never reaches the
+   * transcript.
+   */
+  consumeCompletionNotes(filter?: (n: TaskNotification) => boolean): string[] {
+    return this.takeNotifications(filter).map(formatTaskNotification)
+  }
+
+  /** Take pending notifications and mark their tasks consumed. */
+  takeNotifications(filter?: (n: TaskNotification) => boolean): TaskNotification[] {
+    const taken: TaskNotification[] = []
+    for (const [id, note] of this.completionNotes) {
+      if (filter && !filter(note)) continue
+      taken.push(note)
+      this.completionNotes.delete(id)
+    }
+    if (taken.length > 0) this.markConsumed(taken.map((n) => n.taskId))
+    return taken
+  }
+
+  hasPendingNotifications(): boolean {
+    return this.completionNotes.size > 0
+  }
+
+  /** Stop notifying about every task that is running now (used on user Stop). */
+  muteRunning(): void {
+    const apiIds: string[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.status !== 'running') continue
+      entry.notify = false
+      if (entry.apiTracked) apiIds.push(entry.id)
+    }
+    for (const note of this.completionNotes.values()) {
+      const entry = this.entries.get(note.taskId)
+      if (entry?.reported) apiIds.push(entry.id)
+    }
+    this.completionNotes.clear()
+    if (apiIds.length > 0 && this.remote) {
+      void this.remote.consume(apiIds).catch(() => {})
+    }
+  }
+
+  /** Notes for these tasks were handed to the API to wake the session; consumption must be reported back. */
+  markReported(ids: string[]): void {
+    for (const id of ids) {
+      const resolved = this.resolveId(id)
+      // The note is flagged too, so a pending one is not handed over again after
+      // its entry is evicted (SHO-196).
+      const note = this.completionNotes.get(resolved)
+      if (note) note.reported = true
+      const entry = this.entries.get(resolved)
+      if (entry) entry.reported = true
+    }
+  }
+
+  /** Pending notes, without taking them. */
+  peekNotifications(): TaskNotification[] {
+    return [...this.completionNotes.values()]
+  }
+
+  /** Fires whenever a completion note is queued. */
+  onNotification(listener: NotificationListener): () => void {
+    this.notificationListeners.add(listener)
+    return () => { this.notificationListeners.delete(listener) }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lookup
+  // ---------------------------------------------------------------------------
+
+  private resolveId(id: string): string {
+    return this.entries.has(id) ? id : (this.aliases.get(id) ?? id)
+  }
+
+  get(id: string): TaskEntry | undefined {
+    return this.entries.get(this.resolveId(id))
+  }
+
+  /** Number of entries (running + recently finished). For tests/diagnostics. */
+  size(): number {
+    return this.entries.size
+  }
+
+  /** Output text for `until` matching and notification tails. */
+  readOutput(entry: TaskEntry): string {
+    if (entry.handle) {
+      const h = entry.handle
+      const recent = h.recentOutput()
+      return recent || `${h.stdout()}\n${h.stderr()}`
+    }
+    const mem = this.recent.get(entry.id)
+    if (mem) return mem
+    return stripFrontMatter(readTaskOutput(entry.outputFile))
+  }
+
+  /** Workspace-relative output path for tool results and notes. */
+  displayPath(path: string | undefined): string | undefined {
+    if (!path) return undefined
+    if (!this.workspaceDir) return path
+    const rel = relative(this.workspaceDir, path)
+    return rel && !rel.startsWith('..') ? rel : path
+  }
+
+  /** The output file, or undefined when the restart took it. */
+  private existingOutputPath(path: string | undefined): string | undefined {
+    if (!path) return undefined
+    try {
+      return existsSync(path) ? path : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Workspace-relative output path for a tool result, or undefined when the file
+   * is gone. A result must never point the agent at a log that does not exist.
+   */
+  displayExistingPath(path: string | undefined): string | undefined {
+    return this.displayPath(this.existingOutputPath(path))
+  }
+
+  /** True when the task's log is gone (the restart took it). */
+  outputMissing(path: string | undefined): boolean {
+    return !!path && !this.existingOutputPath(path)
+  }
+
+  /** The log `id` would have written, when output files are enabled. */
+  outputPathFor(id: string): string | undefined {
+    if (!this.outputDir) return undefined
+    return this.displayPath(join(this.outputDir, `${id}.log`))
+  }
+
+  /**
+   * A finished task's entry, rebuilt from its output file when the in-memory
+   * one was evicted. The log is the durable copy: as long as it is there the
+   * result is readable, and only a missing log means the task is really gone.
+   */
+  async resolveFinished(id: string): Promise<TaskEntry | null> {
+    const resolved = this.resolveId(id)
+    const existing = this.entries.get(resolved)
+    if (existing) return existing
+    const row = this.findOutputRow?.(resolved)
+    if (!row?.status) return null
+    const body = taskOutputBody(readTaskOutput(row.path))
+    if (body.trim()) this.recent.set(row.taskId, tailLines(body, 400, 200_000))
+    const entry: TaskEntry = {
+      id: row.taskId,
+      runId: row.taskId,
+      source: (row.source as TaskSource) ?? 'shell',
+      title: row.title,
+      command: row.title,
+      status: row.status,
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt ?? row.modifiedAt,
+      result: { exitCode: row.exitCode, summary: row.status },
+      notify: false,
+      consumed: false,
+      recovered: true,
+      outputFile: row.path,
+      done: Promise.resolve(),
+    }
+    this.entries.set(entry.id, entry)
+    this.armRetention(entry)
+    return entry
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wait
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Block until any of `ids` finishes, `until` matches its output, or the
+   * timeout elapses. With no ids this is a plain bounded sleep.
+   */
+  async wait(ids: string[], opts: { timeoutMs: number; until?: RegExp; signal?: AbortSignal }): Promise<WaitOutcome> {
+    const entries = ids.map((id) => this.get(id)).filter((e): e is TaskEntry => !!e)
+    for (const entry of entries) this.activate(entry.id)
+    const timeoutMs = Math.max(0, opts.timeoutMs)
+
+    const matchesUntil = (entry: TaskEntry): boolean => {
+      if (!opts.until) return false
+      const text = stripAnsi(this.readOutput(entry))
+      opts.until.lastIndex = 0
+      return opts.until.test(text)
+    }
+
+    const immediate = (): WaitOutcome | undefined => {
+      for (const entry of entries) {
+        if (entry.status !== 'running') {
+          this.markConsumed([entry.id])
+          return { kind: 'finished', task: entry }
+        }
+        if (!entry.remote && matchesUntil(entry)) return { kind: 'matched', task: entry, matched: opts.until!.source }
+      }
+      return undefined
+    }
+
+    const first = immediate()
+    if (first) return first
+    if (entries.length === 0 && ids.length > 0) return { kind: 'timeout' }
+
+    if (timeoutMs === 0) {
+      // Non-blocking check: one status refresh for remote tasks, then report.
+      if (entries.some((e) => this.clientFor(e))) {
+        await Promise.all(entries.filter((e) => this.clientFor(e)).map(async (entry) => {
+          try {
+            const state = await this.clientFor(entry)!.get(entry.id, { waitMs: 0, until: opts.until?.source })
+            if (state) this.applyRemoteState(entry, state)
+          } catch { /* keep last known */ }
+        }))
+        const after = immediate()
+        if (after) return after
+      }
+      return { kind: 'timeout' }
+    }
+
+    const endWaits = entries.map((e) => this.beginWait(e.id))
+    const cleanups: Array<() => void> = []
+    try {
+      const racers: Array<Promise<WaitOutcome>> = []
+
+      racers.push(new Promise((resolve) => {
+        const t = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs)
+        ;(t as any)?.unref?.()
+        cleanups.push(() => clearTimeout(t))
+      }))
+
+      if (opts.signal) {
+        racers.push(new Promise((resolve) => {
+          if (opts.signal!.aborted) return resolve({ kind: 'timeout' })
+          const onAbort = () => resolve({ kind: 'timeout' })
+          opts.signal!.addEventListener('abort', onAbort, { once: true })
+          cleanups.push(() => opts.signal!.removeEventListener('abort', onAbort))
+        }))
+      }
+
+      const local = entries.filter((e) => !e.remote)
+      for (const entry of local) {
+        racers.push(entry.done.then(() => ({ kind: 'finished' as const, task: entry })))
+      }
+      if (opts.until && local.length > 0) {
+        racers.push(new Promise((resolve) => {
+          let timer: ReturnType<typeof setTimeout> | undefined
+          const tick = () => {
+            for (const entry of local) {
+              if (entry.status === 'running' && matchesUntil(entry)) {
+                resolve({ kind: 'matched', task: entry, matched: opts.until!.source })
+                return
+              }
+            }
+            timer = setTimeout(tick, UNTIL_POLL_MS)
+            ;(timer as any)?.unref?.()
+          }
+          tick()
+          cleanups.push(() => { if (timer) clearTimeout(timer) })
+        }))
+      }
+
+      const remote = entries.filter((e) => this.clientFor(e))
+      if (remote.length > 0) {
+        const deadline = Date.now() + timeoutMs
+        let stopped = false
+        cleanups.push(() => { stopped = true })
+        for (const entry of remote) {
+          racers.push(this.pollRemote(entry, deadline, opts.until, () => stopped))
+        }
+      }
+
+      const outcome = await Promise.race(racers)
+      if (outcome.kind === 'finished' && outcome.task) this.markConsumed([outcome.task.id])
+      return outcome
+    } finally {
+      for (const c of cleanups) c()
+      for (const end of endWaits) end()
+    }
+  }
+
+  private async pollRemote(
+    entry: TaskEntry,
+    deadline: number,
+    until: RegExp | undefined,
+    stopped: () => boolean,
+  ): Promise<WaitOutcome> {
+    let first = true
+    while (!stopped()) {
+      const waitMs = first ? Math.max(0, Math.min(REMOTE_POLL_SLICE_MS, deadline - Date.now())) : Math.min(REMOTE_POLL_SLICE_MS, deadline - Date.now())
+      if (!first && waitMs <= 0) break
+      first = false
+      const polledAt = Date.now()
+      let state: RemoteTaskState | null = null
+      try {
+        state = await this.clientFor(entry)!.get(entry.id, { waitMs, until: until?.source })
+      } catch {
+        await new Promise((r) => setTimeout(r, 1000))
+        continue
+      }
+      if (!state) break
+      this.applyRemoteState(entry, state)
+      if (entry.status !== 'running') return { kind: 'finished', task: entry }
+      if (state.matched && until) return { kind: 'matched', task: entry, matched: until.source }
+      if (deadline - Date.now() <= 0) break
+      const early = REMOTE_MIN_POLL_GAP_MS - (Date.now() - polledAt)
+      if (early > 0) await new Promise((r) => setTimeout(r, early))
+    }
+    return new Promise(() => {}) // the timeout racer wins
+  }
+
+  /** Apply API state to a mirrored remote entry. */
+  applyRemoteState(entry: TaskEntry, state: RemoteTaskState): void {
+    if (state.link && !entry.link) entry.link = state.link
+    if (state.note) entry.remoteNote = state.note
+    if (state.output !== undefined) {
+      const prev = this.recent.get(entry.id) ?? ''
+      if (state.output.length > prev.length && state.output.startsWith(prev)) {
+        this.appendOutput(entry.id, state.output.slice(prev.length), this.writers.get(entry.id))
+      } else if (state.output !== prev) {
+        this.recent.set(entry.id, state.output.slice(-RECENT_OUTPUT_CHARS))
+        this.writers.get(entry.id)?.append(state.output)
+      }
+    }
+    if (state.status !== 'running' && entry.status === 'running') {
+      this.settle(entry, state.status, state.result ?? { summary: state.status })
+    }
+  }
+
+  /** Refresh every running remote task from the API (one non-blocking get each). */
+  async refreshRemote(): Promise<void> {
+    await this.refreshWhere((e) => !!this.clientFor(e))
+  }
+
+  /** Refresh running remote tasks matching `filter`. */
+  async refreshWhere(filter: (entry: TaskEntry) => boolean): Promise<void> {
+    const running = [...this.entries.values()].filter((e) => e.remote && !e.dormant && e.status === 'running' && filter(e))
+    await Promise.all(running.map(async (entry) => {
+      try {
+        const state = await this.clientFor(entry)!.get(entry.id, { waitMs: 0 })
+        if (state) this.applyRemoteState(entry, state)
+      } catch { /* keep last known state */ }
+    }))
+  }
+
+  hasRunningRemote(filter: (entry: TaskEntry) => boolean = () => true): boolean {
+    for (const e of this.entries.values()) if (e.remote && !e.dormant && e.status === 'running' && filter(e)) return true
+    return false
+  }
+
+  /** Running tasks that will wake the agent when they finish. */
+  pendingNotifyCount(): number {
+    let n = 0
+    for (const e of this.entries.values()) {
+      if (e.status === 'running' && !e.stale && !e.dormant && e.backgrounded && e.notify) n++
+    }
+    return n
+  }
+
+  /**
+   * Counts for "is this runtime busy?", which is a different question from
+   * "will anything wake the agent?".
+   *
+   * `pendingNotifyCount()` only counts backgrounded, notify-enabled, non-stale
+   * tasks — so a foreground `exec` still running, a task the agent was told it
+   * would `wait` on, or a restored row whose process may still be alive all
+   * read as idle, and the host would kill the runtime out from under them
+   * (SHO-143). Here every running task counts, and so does every live child
+   * process, whether or not its row is fresh.
+   */
+  activeWorkCounts(): { tasks: number; children: number } {
+    let tasks = 0
+    let children = 0
+    for (const e of this.entries.values()) {
+      if (e.dormant) continue
+      if (this.isRunning(e)) tasks++
+      // A live handle is a live child process even when its row was marked
+      // stale by a gateway restart — the work is really still running.
+      if (e.handle && !e.handle.exited()) children++
+    }
+    return { tasks, children }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Listing / UI
+  // ---------------------------------------------------------------------------
+
+  onChange(listener: ChangeListener): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  private emitChange(): void {
+    if (this.listeners.size === 0) return
+    const running = this.listRunning()
+    for (const listener of this.listeners) {
+      try { listener(running) } catch { /* ignore */ }
+    }
+  }
+
+  private toView(entry: TaskEntry, now: number): RunningProcess {
+    return {
+      id: entry.id,
+      runId: entry.id,
+      source: entry.source,
+      title: entry.title,
+      command: entry.command,
+      status: entry.status,
+      pid: entry.handle?.pid,
+      sandboxed: entry.handle?.sandboxed ?? false,
+      containerName: entry.handle?.containerName,
+      startedAt: entry.startedAt,
+      elapsedMs: (entry.finishedAt ?? now) - entry.startedAt,
+      finishedAt: entry.finishedAt,
+      outputFile: this.displayPath(entry.outputFile),
+      notify: entry.notify && !!entry.backgrounded,
+      remote: entry.remote || undefined,
+      stale: entry.stale || undefined,
+      link: entry.link,
+    }
+  }
+
+  private isRunning(entry: TaskEntry): boolean {
+    // A terminal row is never running, stale or not: an interrupted task came
+    // back from the dead gateway with its verdict, not as a live process.
+    if (isTerminalStatus(entry.status)) return false
+    if (entry.stale) return true
+    if (entry.handle) return !entry.handle.exited() && entry.status === 'running'
+    return entry.status === 'running'
+  }
+
+  /** Currently-running (or stale) tasks. Finished entries are excluded. */
+  listRunning(): RunningProcess[] {
+    const now = Date.now()
+    const out: RunningProcess[] = []
+    for (const entry of this.entries.values()) {
+      if (!entry.dormant && this.isRunning(entry)) out.push(this.toView(entry, now))
+    }
+    return out
+  }
+
+  /** Running tasks plus recently finished ones (for `task_list`). */
+  listAll(): RunningProcess[] {
+    const now = Date.now()
+    return [...this.entries.values()].filter((e) => !e.dormant).map((e) => this.toView(e, now))
+  }
+
+  /**
+   * Tasks eligible for display in the chat dock. Shell commands appear after
+   * the visibility delay (short commands would just flicker); every other
+   * task, and any shell command the agent was told about, shows at once.
+   */
+  listVisible(): RunningProcess[] {
+    const now = Date.now()
+    const out: RunningProcess[] = []
+    for (const entry of this.entries.values()) {
+      if (this.isRunning(entry) && this.dockVisible(entry, now)) out.push(this.toView(entry, now))
+    }
+    return out
+  }
+
+  /**
+   * Everything the chat dock shows: what is running (or stale) plus what
+   * finished inside the retention window, running first and then the newest
+   * finish. `task_list` keeps its running-only `listVisible()`; this list is
+   * for the dock only, so a row can settle in place instead of vanishing.
+   */
+  listDock(): RunningProcess[] {
+    const now = Date.now()
+    const running: RunningProcess[] = []
+    const finished: RunningProcess[] = []
+    for (const entry of this.entries.values()) {
+      if (!this.dockVisible(entry, now)) continue
+      if (this.isRunning(entry)) {
+        running.push(this.toView(entry, now))
+      } else if (entry.finishedAt && now - entry.finishedAt <= COMPLETED_RETENTION_MS) {
+        finished.push(this.toView(entry, now))
+      }
+    }
+    finished.sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0))
+    return [...running, ...finished]
+  }
+
+  /** Would this entry be shown in the dock at all (running or finished)? */
+  private dockVisible(entry: TaskEntry, now: number): boolean {
+    if (entry.dormant) return false
+    if (entry.stale) return true
+    if (entry.shown) return true
+    if (entry.source !== 'shell') return true
+    if (entry.backgrounded) return true
+    return (entry.finishedAt ?? now) - entry.startedAt >= this.uiVisibleAfterMs
+  }
+
+  /**
+   * Serializable snapshot for persistence: every running task plus the
+   * recently finished rows the dock was showing, and any finished row whose
+   * result its owner has not read yet. Running entries are taken from
+   * `listRunning()`, not `listDock()`, because a shell command still inside the
+   * dock visibility delay is invisible but must survive a restart; an unread
+   * result joins them for the same reason — the dock's 10-minute window is not
+   * its lease.
+   */
+  snapshot(): RunningProcessSnapshot[] {
+    const now = Date.now()
+    const persisted = new Map<string, RunningProcess>()
+    for (const p of this.listRunning()) persisted.set(p.id, p)
+    for (const p of this.listDock()) if (!persisted.has(p.id)) persisted.set(p.id, p)
+    for (const entry of this.entries.values()) {
+      if (persisted.has(entry.id) || entry.dormant) continue
+      if (entry.status === 'running' || this.wantsUnreadResult(entry)) persisted.set(entry.id, this.toView(entry, now))
+    }
+    return [...persisted.values()].map((p) => {
+      const entry = this.entries.get(p.id)
+      return {
+        runId: p.id,
+        command: p.command,
+        pid: p.pid,
+        sandboxed: p.sandboxed,
+        containerName: p.containerName,
+        startedAt: p.startedAt,
+        source: p.source,
+        title: p.title,
+        remote: entry?.apiTracked || undefined,
+        ref: entry?.ref,
+        outputFile: entry?.outputFile,
+        link: entry?.link,
+        // A settled task keeps its outcome across a restart, so it comes back
+        // as a finished row for the rest of its retention window.
+        status: p.status,
+        finishedAt: p.finishedAt,
+        // The verdict travels with the row: `interrupted` (and the last output
+        // that justified it) must survive a restart even though the task log
+        // itself lives on a disk the next VM assignment throws away.
+        result: entry?.result,
+        shown: true,
+        // Whether the agent read the result decides the lease it comes back
+        // with; a restart must not turn an unread result into a read one.
+        consumed: entry?.consumed,
+        backgrounded: entry?.backgrounded,
+      }
+    })
+  }
+
+  /**
+   * Re-seed from a persisted snapshot after a runtime restart. Local tasks
+   * that were running belonged to the dead gateway: they come back
+   * `interrupted` and `stale` (dismissable only, never pollable). Remote tasks
+   * are still tracked by the API and come back live; tasks that had already
+   * settled come back finished.
+   */
+  restoreStale(snapshots: RunningProcessSnapshot[]): void {
+    if (!snapshots?.length) return
+    const now = Date.now()
+    let changed = false
+    for (const snap of snapshots) {
+      if (!snap?.runId || this.entries.has(snap.runId)) continue
+      if (snap.remote && snap.source) {
+        this.registerRemote({
+          id: snap.runId,
+          source: snap.source,
+          title: snap.title ?? snap.command,
+          ref: snap.ref,
+          startedAt: snap.startedAt,
+          link: snap.link,
+        })
+        changed = true
+        continue
+      }
+      // A snapshot that still says `running` describes a process that is gone:
+      // the runtime that owned it died before its shutdown sweep could settle
+      // the row (the substrate stops the host hard), so the last snapshot
+      // written is the one from before the kill. Nothing can poll that child
+      // any more, so the verdict is `interrupted` — the same one a footer-less
+      // log gets — and never a live row whose only affordance is Dismiss
+      // (SHO-141: a task the runtime died under is not still running).
+      if (this.restoreTerminal(snap, now)) {
+        changed = true
+        continue
+      }
+      this.entries.set(snap.runId, {
+        id: snap.runId,
+        runId: snap.runId,
+        source: snap.source ?? 'shell',
+        title: snap.title ?? snap.command,
+        command: snap.command,
+        status: 'interrupted',
+        startedAt: snap.startedAt,
+        finishedAt: now,
+        notify: false,
+        consumed: true,
+        stale: true,
+        shown: true,
+        result: { summary: INTERRUPTED_SUMMARY },
+        outputFile: snap.outputFile,
+        link: snap.link,
+        done: Promise.resolve(),
+      })
+      changed = true
+    }
+    if (changed) this.emitChange()
+  }
+
+  /**
+   * Restore what the per-task output logs say ran in this session. Used when
+   * no snapshot survived (first run after the snapshot existed, or metadata
+   * pruned): a log with a footer is a finished row, one without is a task the
+   * previous runtime died under — `interrupted`, because the process never
+   * chose to exit and no exit code exists to read.
+   */
+  restoreFromOutputRows(rows: TaskOutputRow[]): void {
+    if (!rows?.length) return
+    const now = Date.now()
+    let changed = false
+    for (const row of rows) {
+      if (!row?.taskId || this.entries.has(row.taskId)) continue
+      const snap: RunningProcessSnapshot = {
+        runId: row.taskId,
+        command: row.title,
+        pid: undefined,
+        sandboxed: false,
+        startedAt: row.startedAt,
+        source: (row.source as TaskSource) ?? 'shell',
+        title: row.title,
+        outputFile: row.path,
+        status: row.status,
+        finishedAt: row.finishedAt,
+        ...(row.exitCode === undefined ? {} : { result: { exitCode: row.exitCode, summary: `exit code ${row.exitCode}` } }),
+      }
+      if (this.restoreTerminal(snap, now)) {
+        changed = true
+        continue
+      }
+      if (now - row.startedAt > COMPLETED_RETENTION_MS) continue
+      // No footer: the runtime died while this was running. Keep `stale` for
+      // the "cannot be polled" affordance, but the verdict is `interrupted` —
+      // a footer-less log must never come back as a live row.
+      this.entries.set(row.taskId, {
+        id: row.taskId,
+        runId: row.taskId,
+        source: snap.source ?? 'shell',
+        title: row.title,
+        command: row.title,
+        status: 'interrupted',
+        startedAt: row.startedAt,
+        finishedAt: row.modifiedAt,
+        notify: false,
+        consumed: true,
+        stale: true,
+        shown: true,
+        result: { summary: INTERRUPTED_SUMMARY },
+        outputFile: row.path,
+        link: snap.link,
+        done: Promise.resolve(),
+      })
+      changed = true
+    }
+    if (changed) this.emitChange()
+  }
+
+  /** Restore one settled row; false when it is unknown/too old to keep.  */
+  private restoreTerminal(snap: RunningProcessSnapshot, now: number): boolean {
+    if (!isTerminalStatus(snap.status) || !snap.finishedAt) return false
+    const entry: TaskEntry = {
+      id: snap.runId,
+      runId: snap.runId,
+      source: snap.source ?? 'shell',
+      title: snap.title ?? snap.command,
+      command: snap.command,
+      status: snap.status!,
+      startedAt: snap.startedAt,
+      finishedAt: snap.finishedAt,
+      notify: false,
+      // A snapshot from before this field existed assumed the row was read.
+      consumed: snap.consumed ?? true,
+      backgrounded: snap.backgrounded,
+      shown: snap.shown,
+      outputFile: snap.outputFile,
+      link: snap.link,
+      // The verdict travels with the row, so a restored `interrupted` still
+      // explains itself and cannot be re-derived into `completed`.
+      result: snap.result ?? { summary: snap.status === 'interrupted' ? INTERRUPTED_SUMMARY : snap.status! },
+      done: Promise.resolve(),
+    }
+    const lease = this.wantsUnreadResult(entry) ? this.unreadRetentionMs : this.retentionMs
+    if (snap.finishedAt + lease - now <= 0) return true
+    this.entries.set(snap.runId, entry)
+    this.armRetention(entry)
+    return true
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cancel
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Kill (or dismiss, if stale) one task. Returns true if a matching id
+   * existed.
+   *
+   * The process tree is swept in the background: use `cancel()` when the caller
+   * needs to know whether anything outlived the kill.
+   */
+  kill(id: string): boolean {
+    if (!this.get(id)) return false
+    void this.cancel(id).catch(() => {})
+    return true
+  }
+
+  /**
+   * Cancel a running task, or dismiss a stale placeholder.
+   *
+   * `found: false` means no task with that id existed. For a local task the
+   * call does not come back until the tree has been killed *and checked*
+   * (SHO-144): `survivors` is what is still running afterwards, and it is the
+   * only honest answer to "did it stop?".
+   */
+  async cancel(id: string): Promise<TaskCancelResult> {
+    const entry = this.get(id)
+    if (!entry) return { found: false, survivors: [] }
+    if (entry.stale) {
+      this.entries.delete(entry.id)
+      this.emitChange()
+      return { found: true, survivors: [] }
+    }
+    if (entry.status !== 'running') return { found: true, survivors: [] }
+    entry.status = 'cancelled'
+    entry.consumed = true
+    this.completionNotes.delete(entry.id)
+    if (entry.handle) {
+      if (!entry.handle.exited()) {
+        try { entry.handle.kill('SIGKILL') } catch { /* already gone */ }
+      }
+      if (entry.handle.killTree) {
+        try {
+          const { survivors } = await entry.handle.killTree({ graceMs: 0 })
+          return { found: true, survivors }
+        } catch {
+          // A failed verification is reported as "nothing confirmed": the
+          // caller must not claim the tree is empty on the strength of a throw.
+          return { found: true, survivors: [] }
+        }
+      }
+      return { found: true, survivors: [] }
+    }
+    const cancel = this.cancels.get(entry.id)
+    const client = this.clientFor(entry)
+    if (client) void client.cancel(entry.id).catch(() => {})
+    try { void cancel?.() } catch { /* ignore */ }
+    this.settle(entry, 'cancelled', { summary: 'cancelled' })
+    return { found: true, survivors: [] }
+  }
+
+  /**
+   * Forcefully terminate every local task. Used on session shutdown and on a
+   * runtime restart.
+   *
+   * The sweep marks before it kills (SHO-141, #1634): an entry swept here ends
+   * `interrupted`, whatever number the signal produces. Without the mark the
+   * settle path judged it by `result.exitCode` — 137 on POSIX, or 0 when the
+   * last stage of a pipeline was `tail` — and reported a task that merged
+   * nothing as `completed (exit code 0)`.
+   *
+   * The settled rows are then emitted (which is what persists the snapshot) and
+   * deliberately left in place: clearing them wiped `runningProcesses` to `[]`,
+   * so the restart had no verdict left to restore. `clear` is the other path —
+   * "forget this session" — where the settles are written and the rows are then
+   * dropped, so a fresh registry does not re-hydrate a session the user wiped.
+   */
+  async killAll(opts: { clear?: boolean } = {}): Promise<void> {
+    for (const entry of this.entries.values()) {
+      if (entry.visibilityTimer) {
+        clearTimeout(entry.visibilityTimer)
+        entry.visibilityTimer = undefined
+      }
+      if (entry.stale || entry.remote) continue
+      if (entry.status !== 'running') {
+        // A finished shell can leave behind processes it detached (`cmd &`) in its process group.
+        if (entry.handle) try { entry.handle.kill('SIGKILL') } catch { /* already gone */ }
+        continue
+      }
+      // Mark first, kill second: the flag is what turns the kill into
+      // `interrupted` instead of an exit the command chose.
+      entry.runtimeShutdown = true
+      entry.notify = false
+      if (entry.handle) {
+        try { entry.handle.kill('SIGKILL') } catch { /* already gone */ }
+      } else {
+        try { void this.cancels.get(entry.id)?.() } catch { /* ignore */ }
+      }
+    }
+
+    // Settle synchronously, before the process that owns this registry goes
+    // away: the footer (`status: interrupted`, no exit_code) has to be on disk
+    // and the row has to be in the snapshot. A late `handle.done` is a no-op.
+    for (const entry of [...this.entries.values()]) {
+      if (entry.status !== 'running' || entry.stale || entry.remote) continue
+      this.settle(entry, 'interrupted', { summary: INTERRUPTED_SUMMARY })
+    }
+    for (const writer of this.writers.values()) writer.flush()
+    this.emitChange()
+    this.aliases.clear()
+    this.completionNotes.clear()
+
+    // The trees are swept from a snapshot taken before the rows are dropped:
+    // `clear` is a wipe, not a reason to stop waiting for what we killed.
+    const sweeps = [...this.entries.values()]
+      .filter((entry) => !entry.stale && !entry.remote)
+      .map((entry) => entry.handle?.killTree?.({ graceMs: 0 }))
+      .filter((sweep): sweep is Promise<{ survivors: { pid: number; name: string }[] }> => Boolean(sweep))
+    if (opts.clear) {
+      this.entries.clear()
+      this.emitChange()
+    }
+    if (sweeps.length === 0) return
+
+    // Only now, with every verdict already on disk and in the snapshot, wait
+    // for the trees to actually go away (SHO-144). Bounded: a shutdown that
+    // waits on a wedged process is a shutdown that never finishes, and the
+    // survivors are logged for the next boot's sweep.
+    await Promise.race([
+      Promise.allSettled(sweeps).then((results) => {
+        for (const result of results) {
+          if (result.status !== 'fulfilled' || result.value.survivors.length === 0) continue
+          const list = result.value.survivors.map((s) => `${s.name}(${s.pid})`).join(', ')
+          console.warn(`[task-registry] killAll left survivors: ${list}`)
+        }
+      }),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 3_000)
+        ;(timer as any)?.unref?.()
+      }),
+    ])
+  }
+}
+
+function stripFrontMatter(text: string): string {
+  if (!text.startsWith('---\n')) return text
+  const end = text.indexOf('\n---\n', 4)
+  if (end !== -1) return text.slice(end + 5)
+  // A settled task's log can end exactly at the closing delimiter, with no
+  // body written at all. Returning the header would make the output viewer
+  // look blank, so report the empty body instead.
+  const close = text.lastIndexOf('\n---')
+  if (close !== -1 && text.slice(close + 4).trim() === '') return ''
+  return text
+}

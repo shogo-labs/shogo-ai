@@ -18,6 +18,8 @@ import { prisma } from '../lib/prisma'
 import { registerAfterPostHook } from './conversation-pipeline'
 import { onMessageTextSettled } from './conversation.service'
 import { plainText } from './conversation-agent-relevance'
+import { agentDisplayName } from './conversation.service'
+import { renderMentionsAsText } from './conversation-mentions'
 import {
   normalizeQuestionDrafts,
   questionsOf,
@@ -39,11 +41,20 @@ const db = prisma as any
 const MAX_MESSAGE_CHARS = 6_000
 const MAX_OPEN_IN_PROMPT = 20
 
+/** Someone the message tags: `u:<userId>`, `a:p:<projectId>` or `a:ws`. */
+export interface TaggedTarget {
+  key: string
+  name: string
+  kind: 'person' | 'agent'
+}
+
 export interface DesignRequest {
   agentName: string
   text: string
-  /** Who the questions would go to, and how they were picked. */
+  /** Who a question goes to when it isn't addressed to anyone in particular, and how they were picked. */
   recipients: { names: string[]; via: QuestionRecipients['via']; anyone: boolean }
+  /** People and agents tagged in the message, so each question can go to the one it's addressed to. */
+  tagged?: TaggedTarget[]
   open: Array<{ id: string; header: string; prompt: string }>
 }
 
@@ -108,28 +119,50 @@ header: a 1-4 word label (max 40 chars), e.g. "Alert destination".
 prompt: the question rewritten so it stands alone (max 200 chars), ending with "?".
 One entry per distinct decision, at most 4.
 
+to: who the question is addressed to, as keys from the tagged list ("u:..." people, "a:..." agents). When it names or tags particular people, list only them, so a question for one person doesn't land with everyone tagged. When it is addressed to an agent, give that agent's key. Leave to empty when the question isn't addressed to anyone in particular.
+
 If a question repeats one of the open questions listed, set sameAs to that question's id. List in moot the ids of open questions this message says are no longer needed, already resolved, or superseded.
 
 Reply with JSON only:
-{"questions":[{"header":"","prompt":"","interaction":"choice","options":[{"label":"","description":""}],"multiSelect":false,"hint":null,"secretName":null,"sameAs":null}],"moot":[]}`
+{"questions":[{"header":"","prompt":"","interaction":"choice","options":[{"label":"","description":""}],"multiSelect":false,"hint":null,"secretName":null,"to":[],"sameAs":null}],"moot":[]}`
 
-function buildPrompt(request: DesignRequest): string {
+/** The message with mention tokens as names, so the model can tell who is addressed. */
+function readableText(text: string, tagged: TaggedTarget[]): string {
+  const name = (key: string) => tagged.find((t) => t.key === key)
+  const users = new Map<string, string>()
+  const projects = new Map<string, string>()
+  for (const t of tagged) {
+    if (t.key.startsWith('u:')) users.set(t.key.slice(2), t.name)
+    else if (t.key.startsWith('a:p:')) projects.set(t.key.slice(4), `${t.name} (agent)`)
+  }
+  const ws = name('a:ws')
+  return renderMentionsAsText(text, { users, projects, workspaceAgentName: ws ? `${ws.name} (agent)` : undefined })
+}
+
+export function buildPrompt(request: DesignRequest): string {
+  const tagged = request.tagged ?? []
   const who = request.recipients.anyone
     ? 'anyone in the channel'
     : `${request.recipients.names.join(', ') || 'someone'} (${request.recipients.via === 'mention' ? 'tagged in the message' : 'the person the agent is working for'})`
+  const tags = tagged.length ? tagged.map((t) => `- ${t.key}: ${t.name} (${t.kind})`).join('\n') : 'nobody'
   const open = request.open.length
     ? request.open.map((q) => `- id: ${q.id}\n  header: ${q.header}\n  prompt: ${q.prompt}`).join('\n')
     : 'none'
   return [
     `Agent: ${request.agentName}`,
-    `Questions would go to: ${who}`,
+    `Tagged in the message:\n${tags}`,
+    `A question not addressed to anyone in particular goes to: ${who}`,
     `Open questions in this conversation:\n${open}`,
-    `Message:\n${request.text.slice(0, MAX_MESSAGE_CHARS)}`,
+    `Message:\n${readableText(request.text, tagged).slice(0, MAX_MESSAGE_CHARS)}`,
   ].join('\n\n')
 }
 
-/** The design out of a model reply; null when it isn't usable JSON. */
-export function parseDesign(raw: string, openIds: Set<string>): DesignResult | null {
+/**
+ * The design out of a model reply; null when it isn't usable JSON. A question
+ * addressed only to tagged agents is left out; one addressed to tagged people
+ * goes to just them. Keys not in `tagged` are ignored.
+ */
+export function parseDesign(raw: string, openIds: Set<string>, tagged: TaggedTarget[] = []): DesignResult | null {
   const match = raw.match(/\{[\s\S]*\}/)
   if (!match) return null
   let value: any
@@ -140,8 +173,15 @@ export function parseDesign(raw: string, openIds: Set<string>): DesignResult | n
   }
   const listed = Array.isArray(value?.questions) ? value.questions.filter((q: unknown) => q && typeof q === 'object') : []
   const kept: Array<{ draft: QuestionDraft; sameAs: string | null }> = []
+  const byKey = new Map(tagged.map((t) => [t.key, t]))
   for (const q of listed) {
-    const [draft] = normalizeQuestionDrafts([{ ...q, userIds: undefined }])
+    const to = (Array.isArray(q.to) ? q.to : []).flatMap((key: unknown) => {
+      const target = typeof key === 'string' ? byKey.get(key) : undefined
+      return target ? [target] : []
+    }) as TaggedTarget[]
+    if (to.length && to.every((t) => t.kind === 'agent')) continue
+    const userIds = to.flatMap((t) => (t.kind === 'person' ? [t.key.slice(2)] : []))
+    const [draft] = normalizeQuestionDrafts([{ ...q, userIds }])
     if (!draft) continue
     kept.push({ draft, sameAs: typeof q.sameAs === 'string' && openIds.has(q.sameAs) ? q.sameAs : null })
   }
@@ -161,7 +201,7 @@ export const modelDesigner: QuestionDesigner = async (request) => {
     maxTokens: 900,
     fallbackModelIds: [DESIGNER_FALLBACK_MODEL],
   })
-  return parseDesign(result.text, new Set(request.open.map((q) => q.id)))
+  return parseDesign(result.text, new Set(request.open.map((q) => q.id)), request.tagged)
 }
 
 let designer: QuestionDesigner = modelDesigner
@@ -195,6 +235,33 @@ async function recipientNames(recipients: QuestionRecipients): Promise<string[]>
   return users.map((u: any) => u.name || u.email)
 }
 
+/** People (including those a tagged group expands to) and agents the message tags. */
+async function taggedIn(row: any): Promise<TaggedTarget[]> {
+  const mentions = await db.conversationMention.findMany({
+    where: { messageId: row.id, targetType: { in: ['user', 'agent'] } },
+    select: { targetType: true, targetUserId: true, projectId: true },
+  })
+  const userIds = mentions.flatMap((m: any) => (m.targetType === 'user' && m.targetUserId ? [m.targetUserId] : []))
+  const projectIds = mentions.flatMap((m: any) => (m.targetType === 'agent' && m.projectId ? [m.projectId] : []))
+  const [users, projects] = await Promise.all([
+    userIds.length ? db.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, email: true } }) : [],
+    projectIds.length ? db.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, name: true } }) : [],
+  ])
+  const userName = new Map<string, string>(users.map((u: any) => [u.id, u.name || u.email]))
+  const projectName = new Map<string, string>(projects.map((p: any) => [p.id, p.name]))
+  const tagged: TaggedTarget[] = []
+  for (const m of mentions as any[]) {
+    if (m.targetType === 'user' && m.targetUserId) {
+      tagged.push({ key: `u:${m.targetUserId}`, name: userName.get(m.targetUserId) ?? 'someone', kind: 'person' })
+    } else if (m.targetType === 'agent' && m.projectId) {
+      tagged.push({ key: `a:p:${m.projectId}`, name: projectName.get(m.projectId) ?? 'agent', kind: 'agent' })
+    } else if (m.targetType === 'agent') {
+      tagged.push({ key: 'a:ws', name: await agentDisplayName(row.workspaceId, null), kind: 'agent' })
+    }
+  }
+  return [...new Map(tagged.map((t) => [t.key, t])).values()]
+}
+
 /**
  * Look at one finished agent message and attach the questions it asks.
  * Never throws: a failed model call leaves the message as it was.
@@ -217,6 +284,7 @@ export async function designQuestionsFor(messageId: string): Promise<void> {
       agentName,
       text: row.text,
       recipients: { names: await recipientNames(recipients), via: recipients.via, anyone: !!recipients.anyone },
+      tagged: await taggedIn(row),
       open: open.slice(0, MAX_OPEN_IN_PROMPT).map((o) => ({ id: o.question.id, header: o.question.header, prompt: o.question.prompt })),
     })
     if (!result) return

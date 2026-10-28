@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { publishRequestTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
 import { requesterTicketHeaders } from './credential-scope'
+import type { TaskLink } from './task-registry'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
@@ -16,9 +17,26 @@ export function deriveApiUrl(): string | null {
       return `${url.protocol}//${url.host}`
     } catch { /* invalid URL */ }
   }
+  // The cluster-DNS fallback only resolves inside Kubernetes. Elsewhere (a
+  // standalone/local runtime with no API configured) return null so callers
+  // fail fast with NO_API_URL_ERROR instead of an ENOTFOUND DNS lookup.
+  if (!isInKubernetes()) return null
   const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-system'
   return `http://api.${systemNs}.svc.cluster.local`
 }
+
+function isInKubernetes(): boolean {
+  if (process.env.KUBERNETES_SERVICE_HOST) return true
+  try {
+    return existsSync(SA_TOKEN_PATH)
+  } catch {
+    return false
+  }
+}
+
+/** Error returned by internal-API calls when `deriveApiUrl()` is null. */
+export const NO_API_URL_ERROR =
+  'Not available in this environment: no Shogo API is configured (SHOGO_API_URL is unset).'
 
 /**
  * Public-facing API URL for URLs that end up in browser-facing contexts
@@ -40,6 +58,29 @@ export function derivePublicApiUrl(): string | null {
 export function projectScopedId(projectId: string | null | undefined): string | undefined {
   if (!projectId || projectId === '__POOL__' || projectId.startsWith('ws:')) return undefined
   return projectId
+}
+
+/**
+ * True when `projectId` is one of the projects this process actually serves.
+ *
+ * A runtime is told which project(s) it serves by `PROJECT_ID` /
+ * `WORKSPACE_ANCHOR_PROJECT_ID`. When those are set and name something else —
+ * a test fixture, or a `projectId` left over from another process — a
+ * project-scoped internal call would pull a stranger's settings into this
+ * runtime's `config.json`. With neither env id set there is nothing to compare
+ * against, so the call is allowed (unchanged behaviour for callers that pass an
+ * explicit id).
+ */
+export function runtimeServesProjectId(
+  projectId: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const scoped = projectScopedId(projectId)
+  if (!scoped) return false
+  const served = [projectScopedId(env.PROJECT_ID), projectScopedId(env.WORKSPACE_ANCHOR_PROJECT_ID)]
+    .filter((id): id is string => !!id)
+  if (served.length === 0) return true
+  return served.includes(scoped)
 }
 
 /**
@@ -88,6 +129,7 @@ export interface AgentCostMetricPayload {
   inputTokens: number
   outputTokens: number
   cachedInputTokens: number
+  cacheWriteTokens?: number
   toolCalls: number
   creditCost: number
   wallTimeMs: number
@@ -98,6 +140,40 @@ export interface AgentCostMetricPayload {
   responseEmpty?: boolean
   /** Free-form correlation, e.g. `{ pipelineRunId }` for cross-project pipeline runs. */
   metadata?: Record<string, unknown>
+}
+
+/**
+ * Point this project's `ProjectCheckpoint` rows at the commits a
+ * `repairCheckpointRepo` history rewrite produced (SHO-105 / #1597). A rewrite
+ * changes every descendant's sha, so without this the rows the pod recorded
+ * before the repair would stop resolving. Best-effort — a failure leaves the
+ * repo repaired and the rows stale, which the next successful call fixes.
+ */
+export async function postCheckpointShaRemap(
+  projectId: string,
+  remap: Map<string, string>,
+): Promise<boolean> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl || !projectScopedId(projectId) || remap.size === 0) return false
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/checkpoints/remap`,
+      {
+        method: 'POST',
+        headers: getInternalHeaders(),
+        body: JSON.stringify({ remap: Object.fromEntries(remap) }),
+        signal: AbortSignal.timeout(30_000),
+      },
+    )
+    if (!res.ok) {
+      console.warn(`[Runtime] postCheckpointShaRemap HTTP ${res.status} for ${projectId}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn('[Runtime] postCheckpointShaRemap failed:', err?.message ?? err)
+    return false
+  }
 }
 
 /**
@@ -179,6 +255,41 @@ export async function postWorktreeStatus(
     return true
   } catch (err: any) {
     console.warn('[Runtime] postWorktreeStatus failed:', err?.message ?? err)
+    return false
+  }
+}
+
+/**
+ * Mirror a compaction summary back to the product DB (SHO-137 round 3, R4).
+ *
+ * The runtime's own summary lives in `sessions.db`; losing that file must not
+ * lose the summary, and the runtime's compaction sees tool steps the API's
+ * stored rows do not. Best-effort; never throws.
+ */
+export async function postContextSummary(
+  chatSessionId: string,
+  summary: string,
+): Promise<boolean> {
+  if (!summary.trim()) return false
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return false
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/chat-sessions/${encodeURIComponent(chatSessionId)}/context-summary`,
+      {
+        method: 'POST',
+        headers: getInternalHeaders(),
+        body: JSON.stringify({ summary }),
+        signal: AbortSignal.timeout(5_000),
+      },
+    )
+    if (!res.ok) {
+      console.warn(`[Runtime] postContextSummary HTTP ${res.status} for ${chatSessionId}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn('[Runtime] postContextSummary failed:', err?.message ?? err)
     return false
   }
 }
@@ -274,6 +385,8 @@ export interface CheckpointCallResult<T> {
   /** The card someone has to approve, when `code` is `approval_pending`. */
   approvalId?: string
   expiresAt?: string
+  /** Extra fields the API sent with the error (e.g. `over_by` on `doc_full`). */
+  details?: Record<string, any>
 }
 
 async function checkpointFetch<T>(
@@ -281,7 +394,7 @@ async function checkpointFetch<T>(
   init: RequestInit & { parse?: (json: any) => T },
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   try {
     const res = await fetch(`${apiUrl}${path}`, {
       headers: getInternalHeaders(),
@@ -362,6 +475,8 @@ export interface GitHubPullRequestOptions {
   body?: string
   draft?: boolean
   runId?: string
+  /** Card key to link the PR to; absent → derived from the branch or title. */
+  workItem?: string
 }
 
 export interface GitHubPullRequestResult {
@@ -369,6 +484,8 @@ export interface GitHubPullRequestResult {
   url: string
   htmlUrl?: string
   author?: string
+  /** The card this PR was linked to, when its title/branch (or `workItem`) named one. */
+  workItem?: string
   /** `github-app` (App bot), `user-token` (the connection's stored user token), or `requester` (the person who asked). */
   mode?: 'github-app' | 'user-token' | 'requester'
   /** Which account the write used, for the tool call's "as …" label. */
@@ -568,7 +685,7 @@ async function publishFetch<T>(
   timeoutMs = 120_000,
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   try {
     const res = await fetch(`${apiUrl}${path}`, {
       headers: getInternalHeaders(),
@@ -593,6 +710,45 @@ export async function getPublishState(projectId: string): Promise<CheckpointCall
     method: 'GET',
     parse: (j) => j as PublishState,
   })
+}
+
+/**
+ * Tell the workspace's user that something needs them (SHO-180). Goes through
+ * the same internal route as `notify_user`, which resolves the recipient
+ * (the workspace owner) server-side — a runtime has no user id to name.
+ *
+ * Best-effort by design: this reports a durability problem, so it must never
+ * throw into the durability path that reported it.
+ */
+export async function postWorkspaceNotification(input: {
+  workspaceId: string
+  title: string
+  body: string
+  actionUrl?: string
+}): Promise<boolean> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl || !input.workspaceId) return false
+  try {
+    const res = await fetch(`${apiUrl}/api/internal/reminders/notify`, {
+      method: 'POST',
+      headers: getInternalHeaders(),
+      body: JSON.stringify({
+        workspaceId: input.workspaceId,
+        title: input.title,
+        body: input.body,
+        ...(input.actionUrl ? { actionUrl: input.actionUrl } : {}),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) {
+      console.warn(`[internal-api] notify returned HTTP ${res.status}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn(`[internal-api] notify failed: ${err?.message ?? err}`)
+    return false
+  }
 }
 
 export async function publishProject(
@@ -628,6 +784,18 @@ export async function createSharedFileLink(
   })
 }
 
+/** Download link for a file in a workspace runtime with no single owning project. */
+export async function createWorkspaceSharedFileLink(
+  workspaceId: string,
+  opts: SharedFileOptions,
+): Promise<CheckpointCallResult<SharedFileResult>> {
+  return publishFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/shared-files`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    parse: (j) => j as SharedFileResult,
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Project lifecycle wrappers — back the `project_*` / `system_apply` tools
 // (project-tools.ts). Routes live in apps/api/src/routes/internal.ts under
@@ -647,7 +815,7 @@ async function lifecycleFetch<T>(
   },
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   const { parse, timeoutMs, keepalive, ...rest } = init
   try {
     const res = await fetch(`${apiUrl}${path}`, {
@@ -740,6 +908,9 @@ export interface AgentSchedule {
   cronExpression: string
   timezone: string
   enabled: boolean
+  /** Team chat channel the result is posted in, when the schedule posts. */
+  notifyConversationId: string | null
+  notifyThreadRootId?: string | null
   nextRunAt: string
   lastRunAt: string | null
   lastRunStatus: string | null
@@ -779,7 +950,7 @@ async function personalFetch<T>(
   init: RequestInit & { parse?: (json: any) => T } = {},
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   const { parse, ...rest } = init
   try {
     const res = await fetch(`${apiUrl}${path}`, {
@@ -791,7 +962,16 @@ async function personalFetch<T>(
     if (!res.ok) {
       const err = json?.error
       const message = typeof err === 'string' ? err : err?.message
-      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+      const details = err && typeof err === 'object'
+        ? Object.fromEntries(Object.entries(err).filter(([k]) => k !== 'code' && k !== 'message'))
+        : undefined
+      return {
+        ok: false,
+        status: res.status,
+        error: message ?? `HTTP ${res.status}`,
+        code: err?.code,
+        ...(details && Object.keys(details).length ? { details } : {}),
+      }
     }
     return { ok: true, status: res.status, data: parse ? parse(json) : (json as T) }
   } catch (err: any) {
@@ -1056,8 +1236,17 @@ export async function postAgentChannelMessage(
     kind?: AgentMessageKind
     card?: AgentStatusCard
     questions?: AgentQuestion[]
+    /** Files from `uploadAgentFile` to attach to the post. */
+    attachmentIds?: string[]
+    /** Return a background task per agent this post hands work to. */
+    trackReplies?: boolean
   },
-): Promise<CheckpointCallResult<{ id: string; conversationId: string; threadId: string; runId: string | null; url: string | null }>> {
+): Promise<CheckpointCallResult<{
+  id: string; conversationId: string; threadId: string; runId: string | null; url: string | null
+  tasks?: Array<{ task_id: string; title: string; status: 'running' }>
+  /** Plain `@Name`s the server left unresolved because more than one person or agent answers to them. */
+  mention_warnings?: string[]
+}>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages`), {
     method: 'POST',
     body: JSON.stringify({
@@ -1070,6 +1259,8 @@ export async function postAgentChannelMessage(
       kind: input.kind,
       card: input.card,
       questions: input.questions,
+      attachmentIds: input.attachmentIds?.length ? input.attachmentIds : undefined,
+      trackReplies: input.trackReplies || undefined,
     }),
     parse: (j) => ({
       id: j?.message?.id,
@@ -1077,6 +1268,9 @@ export async function postAgentChannelMessage(
       threadId: j?.message?.threadRootId ?? j?.message?.id,
       runId: j?.message?.runId ?? null,
       url: j?.message?.url ?? null,
+      ...(Array.isArray(j?.message?.tasks) ? { tasks: j.message.tasks } : {}),
+      // Plain `@Name`s the server could not resolve (more than one person or agent answers to them).
+      ...(Array.isArray(j?.mention_warnings) && j.mention_warnings.length ? { mention_warnings: j.mention_warnings } : {}),
     }),
   })
 }
@@ -1113,6 +1307,128 @@ export async function agentBoardsRequest<T = any>(
     method,
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   })
+}
+
+export interface AgentChatHandoffInput {
+  chat: string
+  message: string
+  sourceChatId?: string
+}
+
+/**
+ * Deliver a message into another chat as the requester (the `chat_handoff`
+ * tool). The API resolves the target chat against that person's access; the
+ * receiving chat's own runtime starts the turn.
+ */
+export async function deliverAgentChatHandoff(
+  workspaceId: string,
+  input: AgentChatHandoffInput,
+): Promise<CheckpointCallResult<{ delivered?: { id: string; title: string; started: boolean } }>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/chat-handoff`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+/**
+ * Which of these chats the acting person can open, per the API's own access
+ * rule. Feeds the "other chats" prompt section so it never advertises a chat
+ * `chat_handoff` would refuse; callers fail open when this returns nothing.
+ */
+export async function fetchReachableChats(
+  workspaceId: string,
+  ids: string[],
+  opts: { timeoutMs?: number } = {},
+): Promise<CheckpointCallResult<{ reachable: string[] }>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
+  if (!ids.length) return { ok: true, status: 200, data: { reachable: [] } }
+  const params = new URLSearchParams({ ids: ids.slice(0, 20).join(',') })
+  const timeoutMs = opts.timeoutMs ?? 500
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}/chat-reachable?${params}`,
+      { headers: getInternalHeaders(), signal: AbortSignal.timeout(timeoutMs) },
+    )
+    const json = (await res.json().catch(() => null)) as { reachable?: unknown } | null
+    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` }
+    const reachable = Array.isArray(json?.reachable)
+      ? json!.reachable.filter((id): id is string => typeof id === 'string')
+      : []
+    return { ok: true, status: res.status, data: { reachable } }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
+/**
+ * The workspace-wide agent pause, if one is in force. Read once per turn so a
+ * woken agent can be told to report and stop instead of starting work; a failed
+ * read means "not paused" (the API enforces the pause, the prompt only explains
+ * it).
+ */
+export async function fetchWorkspacePause(
+  workspaceId: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<CheckpointCallResult<{ paused: WorkspaceAgentsPause | null }>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
+  try {
+    const res = await fetch(`${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agents-paused`, {
+      headers: getInternalHeaders(),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 500),
+    })
+    const json = (await res.json().catch(() => null)) as { paused?: WorkspaceAgentsPause | null } | null
+    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` }
+    return { ok: true, status: res.status, data: { paused: json?.paused ?? null } }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
+export interface AgentUploadedFile {
+  id: string
+  name: string
+  mimeType: string
+  size: number
+  /** Signed URL that loads without a session (`/api/conversation-files/<id>?t=`). */
+  url: string
+}
+
+/**
+ * Upload a file as this agent. `path` is an agent upload route under the
+ * workspace: `/agent-channels/<channel>/attachments`,
+ * `/agent-boards/<board>/attachments` or `/agent-work-items/<item>/attachments`.
+ */
+export async function uploadAgentFile(
+  workspaceId: string,
+  path: string,
+  file: { bytes: Uint8Array; name: string; mimeType: string },
+  fields: Record<string, string | null | undefined> = {},
+): Promise<CheckpointCallResult<AgentUploadedFile>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
+  const form = new FormData()
+  form.set('file', new Blob([file.bytes as Uint8Array<ArrayBuffer>], { type: file.mimeType }), file.name)
+  for (const [k, v] of Object.entries(fields)) if (v) form.set(k, v)
+  const { 'Content-Type': _json, ...headers } = getInternalHeaders()
+  try {
+    const res = await fetch(`${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}${path}`, {
+      method: 'POST',
+      headers,
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    })
+    const json = await res.json().catch(() => null) as any
+    if (!res.ok) {
+      const err = json?.error
+      const message = typeof err === 'string' ? err : err?.message
+      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    return { ok: true, status: res.status, data: json?.attachment as AgentUploadedFile }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
 }
 
 /** The value a person entered for one of this agent's `secret` questions. */
@@ -1168,6 +1484,94 @@ export async function addAgentChannelMembers(
   })
 }
 
+export interface RunningAgent {
+  messageId: string
+  agent: string
+  projectId: string | null
+  channel: { id: string; name: string | null; kind: string | null }
+  threadRootId: string | null
+  startedAt: string
+  preview: string
+  canStop: boolean
+  /**
+   * `running` = working now, `waiting` = parked on a tool (a `wait`, a `exec_wait`,
+   * a subagent), holding no slot, `queued` = in line for a slot and not started.
+   */
+  state?: 'queued' | 'running' | 'waiting'
+  /** Place in line, for a queued run. */
+  position?: number | null
+  queuedAt?: string | null
+}
+
+/** A workspace-wide pause, as `agent_run_stop`/`agent_runs_list` report it. */
+export interface WorkspaceAgentsPause {
+  at: string
+  by: string | null
+  reason?: string
+}
+
+export interface RunningAgentList extends Array<RunningAgent> {
+  /** The workspace pause in force, or null. */
+  paused: WorkspaceAgentsPause | null
+}
+
+export async function listRunningAgents(
+  workspaceId: string,
+  filter: { channel?: string; threadRootId?: string; sessionId?: string } = {},
+): Promise<CheckpointCallResult<RunningAgentList>> {
+  const params = new URLSearchParams()
+  if (filter.channel) params.set('channel', filter.channel)
+  if (filter.threadRootId) params.set('threadRootId', filter.threadRootId)
+  if (filter.sessionId) params.set('sessionId', filter.sessionId)
+  return personalFetch(channelsPath(workspaceId, `/running-agents?${params}`), {
+    method: 'GET',
+    parse: (j) => {
+      const runs = (j?.runs ?? []) as RunningAgent[]
+      return Object.assign(runs, { paused: (j?.paused ?? null) as WorkspaceAgentsPause | null })
+    },
+  })
+}
+
+export async function stopRunningAgents(
+  workspaceId: string,
+  input: {
+    messageId?: string
+    channel?: string
+    threadRootId?: string
+    sessionId?: string
+    scope?: 'workspace'
+    resume?: boolean
+    reason?: string
+  },
+): Promise<
+  CheckpointCallResult<{
+    stopped: RunningAgent[]
+    skipped: Array<{ messageId: string; reason: string }>
+    paused?: WorkspaceAgentsPause | null
+    resumed?: boolean
+  }>
+> {
+  return personalFetch(channelsPath(workspaceId, '/running-agents/stop'), {
+    method: 'POST',
+    body: JSON.stringify(input),
+    parse: (j) => ({
+      stopped: j?.stopped ?? [],
+      skipped: j?.skipped ?? [],
+      paused: j?.paused ?? null,
+      resumed: j?.resumed === true,
+    }),
+  })
+}
+
+/** How full a channel doc is (see the API's `conversation-doc.service`). */
+export interface AgentDocBudget {
+  chars: number
+  limit: number
+  /** Percent used, one decimal. */
+  pct: number
+  level: 'ok' | 'warn' | 'critical'
+}
+
 /** A channel's shared markdown doc (see the API's `conversation-doc.service`). */
 export interface AgentChannelDoc {
   id: string
@@ -1176,22 +1580,50 @@ export interface AgentChannelDoc {
   content: string
   version: number
   locked: boolean
+  budget?: AgentDocBudget
   updatedBy: { type: 'user' | 'agent'; id: string | null; name: string } | null
   updatedAt: string
 }
 
-export type AgentDocMode = 'replace' | 'append' | 'patch_section'
+/** A section archived out of a channel doc. `content` is only on a single-archive read. */
+export interface AgentDocArchive {
+  id: string
+  conversationId: string
+  title: string
+  heading: string
+  chars: number
+  content?: string
+  archivedBy: { type: 'user' | 'agent'; id: string | null; name: string } | null
+  createdAt: string
+}
+
+export type AgentDocMode = 'replace' | 'append' | 'patch_section' | 'archive_section'
 
 export async function readAgentChannelDoc(
   workspaceId: string,
   channel: string,
   identity: AgentChannelIdentity,
-): Promise<CheckpointCallResult<{ channel: { id: string; name: string | null }; doc: AgentChannelDoc | null; url: string | null }>> {
+  options: { includeArchive?: boolean; archiveId?: string } = {},
+): Promise<CheckpointCallResult<{
+  channel: { id: string; name: string | null }
+  doc: AgentChannelDoc | null
+  url: string | null
+  archives?: AgentDocArchive[]
+  archive?: AgentDocArchive
+}>> {
   const params = new URLSearchParams()
   if (identity.projectId) params.set('projectId', identity.projectId)
+  if (options.includeArchive) params.set('include_archive', '1')
+  if (options.archiveId) params.set('archive_id', options.archiveId)
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/doc?${params}`), {
     method: 'GET',
-    parse: (j) => ({ channel: j?.channel, doc: j?.doc ?? null, url: j?.url ?? null }),
+    parse: (j) => ({
+      channel: j?.channel,
+      doc: j?.doc ?? null,
+      url: j?.url ?? null,
+      ...(j?.archives ? { archives: j.archives } : {}),
+      ...(j?.archive ? { archive: j.archive } : {}),
+    }),
   })
 }
 
@@ -1201,12 +1633,13 @@ export async function updateAgentChannelDoc(
   input: {
     identity: AgentChannelIdentity
     mode: AgentDocMode
-    content: string
+    content?: string
     title?: string
     section?: string
     baseVersion?: number
+    force?: boolean
   },
-): Promise<CheckpointCallResult<{ doc: AgentChannelDoc; url: string | null }>> {
+): Promise<CheckpointCallResult<{ doc: AgentChannelDoc; url: string | null; archive?: AgentDocArchive }>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/doc`), {
     method: 'PUT',
     body: JSON.stringify({
@@ -1216,8 +1649,9 @@ export async function updateAgentChannelDoc(
       title: input.title,
       section: input.section,
       baseVersion: input.baseVersion,
+      force: input.force || undefined,
     }),
-    parse: (j) => ({ doc: j?.doc, url: j?.url ?? null }),
+    parse: (j) => ({ doc: j?.doc, url: j?.url ?? null, ...(j?.archive ? { archive: j.archive } : {}) }),
   })
 }
 
@@ -1297,6 +1731,11 @@ export interface MemberActivityQuery {
   since?: string
   until?: string
   timezone?: string
+  /** summary (default) | messages | board */
+  detail?: 'summary' | 'messages' | 'board'
+  audience?: 'person' | 'agent' | 'mixed' | 'channel'
+  cursor?: string
+  limit?: number
 }
 
 /** Admin-only summary of what one teammate did in a window; the API enforces who may ask. */
@@ -1309,9 +1748,15 @@ export async function getMemberActivity(
   if (query.since) params.set('since', query.since)
   if (query.until) params.set('until', query.until)
   if (query.timezone) params.set('tz', query.timezone)
-  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/member-activity?${params}`, {
+  if (query.audience) params.set('audience', query.audience)
+  if (query.cursor) params.set('cursor', query.cursor)
+  if (query.limit) params.set('limit', String(query.limit))
+  // `messages` is the records route; `board` narrows the summary on the same one.
+  const path = query.detail === 'messages' ? 'member-activity/messages' : 'member-activity'
+  if (query.detail === 'board') params.set('detail', 'board')
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/${path}?${params}`, {
     method: 'GET',
-    parse: (j) => (j?.activity ?? {}) as Record<string, unknown>,
+    parse: (j) => (query.detail === 'messages' ? j : (j?.activity ?? {})) as Record<string, unknown>,
   })
 }
 
@@ -1431,7 +1876,7 @@ export async function downloadAgentChatFile(
   fileId: string,
 ): Promise<CheckpointCallResult<{ bytes: Uint8Array; name: string; folder: string; mimeType: string }>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   const params = fileParams(identity, {})
   try {
     const res = await fetch(`${apiUrl}${channelsPath(workspaceId, `/files/${encodeURIComponent(fileId)}/content?${params}`)}`, {
@@ -1632,7 +2077,7 @@ export async function uploadAgentAvatar(
   contentType = 'image/png',
 ): Promise<CheckpointCallResult<PersonalProfile>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   try {
     const res = await fetch(
       `${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-avatar`,
@@ -1685,6 +2130,24 @@ export async function createProject(
     body: JSON.stringify(req),
     parse: (j) => j?.project as ProjectSummary,
     timeoutMs: 30_000,
+  })
+}
+
+/**
+ * Every project in the workspace the caller can reach, without the
+ * attachment graph. `system_apply` uses it to resolve a locked project id
+ * that the live graph does not return (the project exists, it simply is not
+ * visible/mounted to this runtime) — so it becomes a configure, never a
+ * duplicate create.
+ */
+export async function listWorkspaceProjects(
+  workspaceId: string,
+  opts: { userId?: string } = {},
+): Promise<CheckpointCallResult<ProjectSummary[]>> {
+  const qs = opts.userId ? `?userId=${encodeURIComponent(opts.userId)}` : ''
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/projects${qs}`, {
+    method: 'GET',
+    parse: (j) => (j?.projects ?? []) as ProjectSummary[],
   })
 }
 
@@ -1747,6 +2210,8 @@ export async function detachProject(
 export interface ProjectConfigPatch {
   name?: string
   description?: string | null
+  /** One-way flip to `external` (folder-linked); `external → managed` is refused. */
+  workingMode?: 'managed' | 'external'
   settings?: Record<string, unknown>
   slackEnabled?: boolean
   agent?: {
@@ -1764,8 +2229,18 @@ export interface ProjectConfigSnapshot {
   id: string
   name: string
   description: string | null
+  workingMode: string
   settings: unknown
   slackEnabled: boolean
+  /**
+   * The project's most-called tools over the last 30 days (SHO-97), used to
+   * learn which tool definitions to keep advertised. Additive — older APIs omit
+   * it and the runtime falls back to its static ranking.
+   */
+  toolUsage?: {
+    totalCalls: number
+    tools: Array<{ name: string; calls: number }>
+  }
   agent: {
     heartbeatEnabled: boolean
     heartbeatInterval: number
@@ -1795,6 +2270,23 @@ export async function getProjectConfig(
   })
 }
 
+/**
+ * The project's most-called tools over the last 30 days, for the advertised
+ * tool set (SHO-97). Null when the API does not report it.
+ */
+export async function getProjectToolUsage(
+  projectId: string,
+  timeoutMs = 3_000,
+): Promise<{ order: string[]; totalCalls: number } | null> {
+  const res = await getProjectConfig(projectId, timeoutMs)
+  const usage = res.ok ? res.data?.toolUsage : undefined
+  if (!usage || !Array.isArray(usage.tools)) return null
+  return {
+    totalCalls: usage.totalCalls ?? 0,
+    order: usage.tools.map((t) => t.name).filter((n): n is string => typeof n === 'string'),
+  }
+}
+
 export async function configureProject(
   projectId: string,
   patch: ProjectConfigPatch,
@@ -1803,6 +2295,44 @@ export async function configureProject(
     method: 'PATCH',
     body: JSON.stringify(patch),
     parse: (j) => j?.project as ProjectConfigSnapshot,
+  })
+}
+
+/**
+ * The workspace agent's own settings (`Workspace.settings`), not a project's.
+ * A workspace runtime serves both surfaces, so its capability toggles live
+ * here while a project chat keeps `Project.settings`.
+ */
+export interface WorkspaceConfigSnapshot {
+  id: string
+  name: string
+  kind: string
+  settings: unknown
+}
+
+export interface WorkspaceConfigPatch {
+  settings?: Record<string, unknown>
+}
+
+export async function getWorkspaceConfig(
+  workspaceId: string,
+  timeoutMs?: number,
+): Promise<CheckpointCallResult<WorkspaceConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/config`, {
+    method: 'GET',
+    timeoutMs,
+    parse: (j) => j?.workspace as WorkspaceConfigSnapshot,
+  })
+}
+
+export async function configureWorkspace(
+  workspaceId: string,
+  patch: WorkspaceConfigPatch,
+): Promise<CheckpointCallResult<WorkspaceConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/config`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+    parse: (j) => j?.workspace as WorkspaceConfigSnapshot,
   })
 }
 
@@ -1817,15 +2347,21 @@ export interface AgentCallRequest {
   /** Reply timeout in ms when waiting (default 5 min, max 20 min). */
   timeoutMs?: number
   callerProjectId?: string
+  /** With `wait: false`, record the outcome so it can be waited on as a background task. */
+  track?: boolean
 }
 
 export interface AgentCallResult {
   status: 'completed' | 'accepted'
+  /** The API records the outcome under `runId` (wait: false, track: true). */
+  tracked?: boolean
   reply?: string
   runId?: string
   sessionId?: string
   /** The project chat (API ChatSession id) that records this call, when persisted. */
   chatSessionId?: string
+  /** Present when the callee reports why it could not run or reply. */
+  error?: { code?: string; message: string }
 }
 
 interface TrackedAgentCall {
@@ -1903,7 +2439,23 @@ export async function callProjectAgent(
   })
   if (!started.ok || !started.data) return started
   // An API without tracking already started the turn untracked; its reply lands in the project chat.
-  if (started.data.tracked !== true) return { ...started, data: { ...started.data, runId } }
+  if (started.data.tracked !== true) {
+    // `202 accepted` means the request was taken for processing, not that a turn
+    // ran (RFC 9110 §15.3.3) — and with no tracking we cannot poll for a reply,
+    // so reporting this as success hands the caller an empty answer.
+    if (!started.data.reply) {
+      const chat = started.data.chatSessionId ? ` in project chat ${started.data.chatSessionId}` : ''
+      return {
+        ok: false,
+        status: 502,
+        code: 'call_not_followed',
+        error:
+          'The call was accepted but not followed (this API cannot track calls), so its reply cannot be read ' +
+          `here. Read it${chat}, or call again without \`wait\` once the target API supports tracked calls.`,
+      }
+    }
+    return { ...started, data: { ...started.data, runId } }
+  }
 
   const deadline = Date.now() + timeoutMs
   let failures = 0
@@ -1948,6 +2500,147 @@ export async function callProjectAgent(
       return { ok: false, status: 502, error: record.error?.message ?? 'Project agent call failed', code: record.error?.code }
     }
   }
+}
+
+// ─── Background tasks ────────────────────────────────────────────────────────
+
+export type BackgroundTaskSource = 'project_call' | 'agent_reply' | 'work_item'
+
+export interface BackgroundTaskState {
+  id: string
+  source: string
+  title: string
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  output?: string
+  result?: { summary?: string; exitCode?: number } | null
+  matched?: boolean
+  startedAt?: string
+  /** Where the task's work is happening (channel thread, card, project session, log). */
+  link?: TaskLink | null
+  /** The wake text the API formatted, once the task has settled. */
+  note?: string | null
+}
+
+/** A finished local task (shell, subagent) whose session is idle and should be woken. */
+export interface TaskNotificationPayload {
+  id: string
+  source: string
+  title: string
+  status: string
+  text: string
+}
+
+const tasksPath = '/api/internal/tasks'
+
+export async function createBackgroundTask(input: {
+  id: string
+  chatSessionId: string
+  source: BackgroundTaskSource
+  targetRef: string
+  title: string
+  until?: string
+  link?: TaskLink
+}): Promise<CheckpointCallResult<BackgroundTaskState>> {
+  return lifecycleFetch(tasksPath, {
+    method: 'POST',
+    body: JSON.stringify(input),
+    parse: (j) => j.task as BackgroundTaskState,
+    timeoutMs: 10_000,
+  })
+}
+
+export async function getBackgroundTask(
+  id: string,
+  opts: { waitMs?: number; until?: string } = {},
+): Promise<CheckpointCallResult<BackgroundTaskState>> {
+  const waitMs = Math.max(0, Math.min(opts.waitMs ?? 0, 25_000))
+  const query = new URLSearchParams({ waitMs: String(waitMs) })
+  if (opts.until) query.set('until', opts.until)
+  return lifecycleFetch(`${tasksPath}/${encodeURIComponent(id)}?${query}`, {
+    method: 'GET',
+    parse: (j) => j.task as BackgroundTaskState,
+    keepalive: waitMs > 0,
+    timeoutMs: waitMs + 15_000,
+  })
+}
+
+export async function cancelBackgroundTask(id: string): Promise<CheckpointCallResult<BackgroundTaskState>> {
+  return lifecycleFetch(`${tasksPath}/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    parse: (j) => j.task as BackgroundTaskState,
+    timeoutMs: 10_000,
+  })
+}
+
+export async function consumeBackgroundTasks(ids: string[]): Promise<CheckpointCallResult<{ consumed: number }>> {
+  return lifecycleFetch(`${tasksPath}/consume`, {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+    timeoutMs: 10_000,
+  })
+}
+
+/** One undelivered background update a paused session is holding. */
+export interface WakingTask {
+  taskId: string
+  source: string
+  title: string
+  finishedAt: string | null
+}
+
+/**
+ * What a session is waiting to be told. `paused` means it woke itself too many
+ * times in a row and is waiting for a person; `waiting` is what the queued
+ * wakes are for.
+ */
+export interface SessionWakeState {
+  paused: boolean
+  wakesInARow: number
+  limit: number
+  waiting: WakingTask[]
+}
+
+export async function listBackgroundTasks(
+  chatSessionId: string,
+): Promise<CheckpointCallResult<{ tasks: BackgroundTaskState[]; wake?: SessionWakeState }>> {
+  return lifecycleFetch(`${tasksPath}?chatSessionId=${encodeURIComponent(chatSessionId)}`, { method: 'GET', timeoutMs: 10_000 })
+}
+
+/** The session's wake state on its own; used at turn start to tell the agent what is waiting. */
+export async function getSessionWakeState(chatSessionId: string): Promise<SessionWakeState | null> {
+  const res = await listBackgroundTasks(chatSessionId).catch(() => null)
+  if (!res?.ok) return null
+  return res.data?.wake ?? null
+}
+
+/** Hand finished local tasks to the API so it wakes the (idle) session with one queued message. */
+export async function notifyTaskCompletions(
+  chatSessionId: string,
+  tasks: TaskNotificationPayload[],
+): Promise<CheckpointCallResult<{ queued: boolean }>> {
+  return lifecycleFetch(`${tasksPath}/notify`, {
+    method: 'POST',
+    body: JSON.stringify({ chatSessionId, tasks }),
+    timeoutMs: 10_000,
+  })
+}
+
+/**
+ * Tell the API a turn was interrupted mid-work, so it can say so in the
+ * transcript and (first attempt only) queue the resumed turn (SHO-121).
+ *
+ * The note and the resume prompt are built API-side from `toolName`, so the
+ * cloud and desktop paths cannot drift apart.
+ */
+export async function postInterruptedResume(
+  chatSessionId: string,
+  input: { toolName?: string | null; resume?: boolean },
+): Promise<CheckpointCallResult<{ noted: boolean; queued: boolean }>> {
+  return lifecycleFetch(`/api/internal/chat/${encodeURIComponent(chatSessionId)}/resume`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+    timeoutMs: 10_000,
+  })
 }
 
 export async function postCostMetric(payload: AgentCostMetricPayload): Promise<void> {

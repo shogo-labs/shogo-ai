@@ -13,7 +13,7 @@ import { authClient } from '../lib/auth-client'
 import { clearActiveWorkspaceId } from '../lib/workspace-store'
 import { clearTeamChatCache } from '../lib/team-chat-cache'
 
-export { useAuth } from '@shogo/shared-app/auth'
+export { useAuth, useAuthOptional, getAuthUserSnapshot } from '@shogo/shared-app/auth'
 export type { AuthUser, AuthContextValue } from '@shogo/shared-app/auth'
 
 function onSignOut(): void {

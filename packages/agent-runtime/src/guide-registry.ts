@@ -18,6 +18,7 @@ import {
   OPTIMIZED_MEMORY_GUIDE,
   SELF_EVOLUTION_GUIDE,
   BROWSER_TOOL_GUIDE,
+  MEDIA_GUIDE,
 } from './optimized-prompts'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
 
@@ -124,6 +125,7 @@ export function buildGuideRegistry(promptOverrides?: Map<string, string>): Map<s
     ['integrations', mcpGuide + TRUNCATED_OUTPUT_GUIDE],
     ['subagent', SUBAGENT_GUIDE],
     ['browser', BROWSER_TOOL_GUIDE],
+    ['media', MEDIA_GUIDE],
     ['constraint-awareness', constraintGuide],
     ['personality', PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide],
     ['skill-matching', skillMatchingGuide],
@@ -148,36 +150,47 @@ export interface CapabilitiesIndexFlags {
   integrations?: boolean
   /** Channel connection / messaging line (default: true) */
   channels?: boolean
-  /** Media (image generation / audio) line (default: true) */
-  media?: boolean
-  /** Devops / heartbeat scheduling line (default: true) */
-  devops?: boolean
   /**
-   * Whether media (generate_image/transcribe_audio) is reached via the media
-   * subagent (default: true) or called directly. Personal-companion
-   * workspaces have no subagent orchestration at all, so `generate_image`/
-   * `transcribe_audio` are kept directly callable there (see gateway.ts's
-   * `SUBAGENT_ONLY_TOOLS` filtering) — pass `false` so the index says so
-   * instead of pointing at an `agent_spawn` call the model can't make.
+   * Whether the image tools are on (`imageGenEnabled`, default: true). The
+   * media line itself is shown while ANY generation capability is on; this
+   * flag decides whether it names the image tools.
    */
-  mediaDelegated?: boolean
+  media?: boolean
+  /** Whether the media line advertises video generation (default: false) */
+  video?: boolean
+  /** Whether the media line advertises music generation (default: false) */
+  music?: boolean
+  /** Whether the media line advertises the 3D tools (default: false) */
+  threeD?: boolean
+  /** Heartbeat scheduling line (default: true) */
+  heartbeat?: boolean
+  /**
+   * Whether this runtime can spawn subagents at all (default: true). False
+   * for personal workspaces and the workspace agent: the subagent and
+   * browser lines go, and the rest name the directly callable tools.
+   */
+  subagents?: boolean
 }
 
 /**
  * Build the Capabilities Index embedded in the system prompt. The coding /
  * orchestration capabilities are always present; the Shogo-platform lines
- * (integrations, channel, media, devops) are gated by `flags` so they can be
+ * (integrations, channel, media, heartbeat) are gated by `flags` so they can be
  * stripped without dropping the whole index.
  */
 export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): string {
   const integrations = flags.integrations !== false
   const channels = flags.channels !== false
   const media = flags.media !== false
-  const mediaDelegated = flags.mediaDelegated !== false
-  const devops = flags.devops !== false
+  const video = flags.video === true
+  const music = flags.music === true
+  const threeD = flags.threeD === true
+  const subagents = flags.subagents !== false
+  const heartbeat = flags.heartbeat !== false
 
   // The subagent line advertises delegated agent types; only list the ones
   // whose surface is still enabled so we don't point at unavailable paths.
+  // Media is not one of them: the project's own agent calls the media tools.
   const subagentTypes = [
     'explore',
     'general-purpose',
@@ -185,8 +198,6 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
     'browser',
     ...(integrations ? ['integration'] : []),
     ...(channels ? ['channel'] : []),
-    ...(media && mediaDelegated ? ['media'] : []),
-    ...(devops ? ['devops'] : []),
     'fork mode',
     'and team swarm',
   ].join(', ')
@@ -202,9 +213,13 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
       '- **integrations**: Discovery and lifecycle for managed OAuth integrations (Google, Slack, GitHub, etc.), bundled skills, and MCP protocol servers via the unified `search_integrations` / `connect` / `disconnect` surface. Also covers CLI-first tools when the user provides a token. Read before installing or searching for tools.',
     )
   }
+  if (subagents) {
+    lines.push(
+      `- **subagent**: Agent orchestration — ${subagentTypes}. Read before delegating tasks.`,
+      '- **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use `agent_spawn({ type: "browser", prompt: "..." })`. The `web` tool for HTTP fetching is available directly. Read the guide before first browser delegation.',
+    )
+  }
   lines.push(
-    `- **subagent**: Agent orchestration — ${subagentTypes}. Read before delegating tasks.`,
-    '- **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use `agent_spawn({ type: "browser", prompt: "..." })`. The `web` tool for HTTP fetching is available directly. Read the guide before first browser delegation.',
     '- **constraint-awareness**: Track and enforce user constraints (budgets, dates, requirements). Read when user states explicit constraints.',
     '- **personality**: Rules for updating AGENTS.md identity/personality. Read before modifying personality, tone, or role.',
     '- **skill-matching**: Skill discovery, trigger matching, and management in .shogo/skills/. Read before skill operations.',
@@ -212,21 +227,43 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
     '- **tool-planning**: Batching tool calls and handling uploaded files in files/. Reference when planning complex multi-step tool sequences.',
     '- **memory**: When to save/skip memory entries in MEMORY.md. Read when deciding whether to persist information.',
   )
-  if (media) {
+  if (media || video || music || threeD) {
+    const kinds: string[] = []
+    const direct: string[] = []
+    if (media) {
+      kinds.push('Image generation', 'image editing')
+      direct.push('`generate_image`')
+    }
+    if (video) {
+      kinds.push('video generation')
+      direct.push('`generate_video`')
+    }
+    if (music) {
+      kinds.push('music generation')
+      direct.push('`generate_music`')
+    }
+    if (threeD) {
+      kinds.push('3D model generation')
+      direct.push('`generate_3d_model`', '`edit_3d_model`')
+    }
+    kinds.push('audio transcription')
+    direct.push('`list_media_models`', '`transcribe_audio`')
+    const lastKind = kinds.pop() as string
+    const what = kinds.length > 0 ? `${kinds.join(', ')} and ${lastKind}` : lastKind
     lines.push(
-      mediaDelegated
-        ? '- **media**: Image generation and audio transcription. Delegated — use `agent_spawn({ type: "media", prompt: "..." })`.'
-        : '- **media**: Image generation and audio transcription. Call `generate_image` / `transcribe_audio` directly — subagent delegation is not available in this workspace.',
+      `- **media**: ${what}. Call ${direct.join(' / ')} directly — the tool picks the workspace default model.`,
     )
   }
   if (channels) {
     lines.push(
-      '- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Delegated — use `agent_spawn({ type: "channel", prompt: "..." })`.',
+      subagents
+        ? '- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Delegated — use `agent_spawn({ type: "channel", prompt: "..." })`.'
+        : '- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Call `channel_connect` / `channel_list` / `send_message` directly.',
     )
   }
-  if (devops) {
+  if (heartbeat) {
     lines.push(
-      '- **devops**: Heartbeat scheduling, monitoring, and skill server sync. Delegated — use `agent_spawn({ type: "devops", prompt: "..." })`.',
+      '- **heartbeat**: Heartbeat scheduling and monitoring. Call `heartbeat_configure` / `heartbeat_status` directly.',
     )
   }
 

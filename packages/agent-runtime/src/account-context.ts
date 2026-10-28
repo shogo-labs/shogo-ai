@@ -16,18 +16,58 @@ export interface AccountContext {
   modelDisplayName?: string
   planId?: string
   canPublishSubdomain?: boolean
+  /**
+   * Names of the caller's Team workspaces, stamped only on a Personal-workspace
+   * chat (see apps/api/src/lib/stamp-team-workspace-names.ts). Software work
+   * happens in a Team workspace, so the companion has to be able to say which
+   * one to switch to (SHO-221). Present-but-empty means "this account has no
+   * Team workspace yet"; absent means the field was never stamped.
+   */
+  teamWorkspaceNames?: string[]
 }
+
+const MAX_TEAM_WORKSPACE_NAMES = 5
 
 export function parseAccountContext(body: Record<string, unknown>): AccountContext {
   const name = typeof body.modelDisplayName === 'string'
-    ? body.modelDisplayName.replace(/[\r\n`*]/g, ' ').trim().slice(0, 80)
+    ? sanitizeModelDisplayName(body.modelDisplayName)
     : ''
   const plan = typeof body.planId === 'string' && /^[a-z_]{1,24}$/.test(body.planId) ? body.planId : undefined
+  const teamWorkspaceNames = parseTeamWorkspaceNames(body.teamWorkspaceNames)
   return {
     ...(name ? { modelDisplayName: name } : {}),
     ...(plan ? { planId: plan } : {}),
     ...(typeof body.canPublishSubdomain === 'boolean' ? { canPublishSubdomain: body.canPublishSubdomain } : {}),
+    ...(teamWorkspaceNames ? { teamWorkspaceNames } : {}),
   }
+}
+
+/**
+ * Workspace names come from a DB row the user named, and get printed in the
+ * prompt in bold — so they go through the same flattening as the model name,
+ * and the list is bounded (five names, each 80 chars).
+ */
+export function parseTeamWorkspaceNames(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const names: string[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue
+    const name = sanitizeModelDisplayName(entry)
+    if (name) names.push(name)
+    if (names.length >= MAX_TEAM_WORKSPACE_NAMES) break
+  }
+  return names
+}
+
+/**
+ * A model name goes into the system prompt as markdown, in bold. Anything that
+ * could break out of that line — a newline, a stray backtick or asterisk — is
+ * flattened, and the name is bounded. One rule for every path that prints it:
+ * the value the API stamps on the request, and the name the runtime resolves
+ * for the turn (which can come from a DB row an admin typed into).
+ */
+export function sanitizeModelDisplayName(raw: string): string {
+  return raw.replace(/[\r\n`*]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
 }
 
 export function buildAccountContextPrompt(ctx: AccountContext): string | null {
@@ -41,12 +81,24 @@ export function buildAccountContextPrompt(ctx: AccountContext): string | null {
     const plan = ctx.planId.charAt(0).toUpperCase() + ctx.planId.slice(1)
     if (ctx.canPublishSubdomain === false) {
       lines.push(
-        `- Workspace plan: **${plan}**. Publishing to a \`*.shogo.one\` subdomain requires Pro or higher, which this workspace does not have. Say so BEFORE starting any deploy/publish work, and offer what works on this plan instead: the preview URL for the app, or **share_file** for a single file.`,
+        `- Workspace plan: **${plan}**. Publishing to a \`*.shogo.one\` subdomain requires Pro or higher, which this workspace does not have. Say so BEFORE starting any deploy/publish work, and also at the start of building something the user clearly means to put online (a website, landing page, portfolio, or app to share) — mention it once, briefly, then carry on. Offer what works on this plan instead: the preview URL for the app, or **share_file** for a single file. If \`publish\` returns \`plan_not_allowed\`, the chat shows the user an Upgrade button; tell them their work is saved and they can publish once they upgrade.`,
       )
     } else if (ctx.canPublishSubdomain === true) {
       lines.push(`- Workspace plan: **${plan}**. Publishing to a \`*.shogo.one\` subdomain is available.`)
     } else {
       lines.push(`- Workspace plan: **${plan}**.`)
+    }
+  }
+  if (ctx.teamWorkspaceNames) {
+    const names = ctx.teamWorkspaceNames
+    if (names.length > 0) {
+      lines.push(
+        `- The user's Team workspace${names.length > 1 ? 's' : ''} for building: ${names.map((n) => `**${n}**`).join(', ')}. Software work happens there, not in this Personal workspace — when they ask for an app, site, dashboard, tool or script, name the workspace to switch to.`,
+      )
+    } else {
+      lines.push(
+        `- The user has no Team workspace yet. Building happens in a Team workspace, which they can create from the workspace switcher in the sidebar.`,
+      )
     }
   }
   return lines.length > 0 ? `## Account\n${lines.join('\n')}` : null

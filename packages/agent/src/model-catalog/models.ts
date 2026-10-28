@@ -10,6 +10,10 @@
  * continue to work without code changes.
  */
 
+import { HIGGSFIELD_IMAGE_MODELS, HIGGSFIELD_VIDEO_MODELS } from './media-catalog.generated'
+
+export { HIGGSFIELD_LEGACY_MODEL_ALIASES } from './media-overlay'
+
 /** Special model ID that enables the intelligent model router. */
 export const AUTO_MODEL_ID = 'auto' as const
 
@@ -21,15 +25,17 @@ export type Provider = 'anthropic' | 'openai' | 'google' | 'local' | 'openrouter
  * `inferProviderFromModel` route requests without colliding with native
  * Anthropic/OpenAI model names. */
 export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
-export type ImageProvider = 'openai' | 'google' | 'local'
+export type ImageProvider = 'openai' | 'google' | 'local' | 'higgsfield'
+export type VideoProvider = 'higgsfield'
 export type ModelTier = 'economy' | 'standard' | 'premium'
-export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'other'
+export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'gemini' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
 export type ModelKind = 'chat' | 'live'
 export type BillingModel =
   | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus' | 'claude-fable-5-1'
   | 'gpt-6-astra' | 'gpt-6-sol' | 'gpt-6-luna' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
   | 'claude-opus-5-5' | 'claude-haiku-5-5'
+  | 'gemini-3-1-pro' | 'gemini-3-8-flash' | 'gemini-3-5-flash-lite' | 'gemini-4-argon'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -115,12 +121,164 @@ export interface ModelEntry {
   thinkingApi?: 'adaptive' | 'budget'
 }
 
+export interface ImageModelCapabilities {
+  textToImage: boolean
+  /** Accepts reference images (edits, character/style references). */
+  imageToImage: boolean
+  /** Most reference images one request accepts. 0 when `imageToImage` is false. */
+  maxReferenceImages: number
+}
+
+/**
+ * One request field a media endpoint documents, with the constraints the
+ * vendor's schema states. Generated from `docs/vendors/higgsfield/catalog.json`,
+ * never hand-written, so `generate_image` / `generate_video` can advertise and
+ * validate every knob a model has instead of a hardcoded subset.
+ */
+export interface ModelOptionField {
+  name: string
+  /** `string`, `integer`, `number`, `boolean`, `array`, `object` or `any`. */
+  type: string
+  /** Required by at least one endpoint that declares it. */
+  required?: boolean
+  /** Allowed values, when the vendor restricts them. */
+  enum?: readonly string[]
+  minimum?: number
+  maximum?: number
+  multipleOf?: number
+  default?: string | number | boolean
+  title?: string
+  /** Array item type, for `type: "array"`. */
+  items?: string
+  /** Item schema, for arrays of objects (`multi_prompt[]`). */
+  itemFields?: Readonly<Record<string, ModelOptionField>>
+  minItems?: number
+  maxItems?: number
+  maxLength?: number
+  /** Endpoints that declare this field — a grouped model has several. */
+  endpoints?: readonly string[]
+}
+
 export interface ImageModelEntry {
   id: string
   provider: ImageProvider
   apiModel: string
   displayName: string
+  /** Endpoint for requests with reference images, when it differs from `apiModel`. */
+  editApiModel?: string
+  capabilities: ImageModelCapabilities
+  /** One line telling an agent when to pick this model. */
+  bestFor?: string
+  /** Retired upstream: kept so old ids still resolve and bill, hidden from model lists. */
+  retired?: boolean
+  /**
+   * Still routable but superseded: dropped from the tool descriptions agents
+   * read, still listed (flagged) by `list_media_models`. `replacement` names
+   * the model to use instead.
+   */
+  deprecated?: boolean
+  replacement?: string
+  /**
+   * Upstream list price for one generation, in USD, for providers that price
+   * per request (Higgsfield). The exact amount billed is the `/estimate`
+   * captured at submit time; this is the display fallback.
+   */
+  usdPerRequest?: number
+  /** Every endpoint this model can submit to (`apiModel`, plus `editApiModel`). */
+  endpoints?: readonly string[]
+  /** The documented field that carries reference images, when the model takes them. */
+  referenceField?: { name: string; multiple: boolean }
+  /**
+   * The model's quality vocabulary when it is not the generic tier order —
+   * e.g. Ideogram's `rendering_speed` DEFAULT/QUALITY.
+   */
+  quality?: { field: string; standard: string; hd: string }
+  /** Documented request fields, keyed by endpoint id. */
+  optionsByEndpoint?: Readonly<Record<string, readonly ModelOptionField[]>>
 }
+
+export interface VideoModelEntry {
+  id: string
+  provider: VideoProvider
+  displayName: string
+  /** Text-to-video endpoint. Absent on image-to-video-only families. */
+  textToVideoApiModel?: string
+  /** Image-to-video endpoint (animates `start_image`). */
+  imageToVideoApiModel?: string
+  /** Durations in seconds the model accepts. Empty when the clip follows a source video. */
+  durations: readonly number[]
+  defaultDuration: number
+  /** Aspect ratios the model takes as a parameter. Empty: output framing is fixed or follows the start image. */
+  aspectRatios: readonly string[]
+  /** Upstream list price per generated second, in USD (per-second priced providers). */
+  usdPerSecond?: number
+  /** Price per second when native audio is on. Absent when the model has no audio. */
+  usdPerSecondWithAudio?: number
+  /** Upstream list price for one clip, in USD (per-request priced providers: Higgsfield). */
+  usdPerRequest?: number
+  /**
+   * Price per source second by resolution tier (Genjutsu). These workflows
+   * quote no `usd` from `/estimate` — the vendor answers with a prose
+   * description of the rate card — so the numbers here are the vendor's
+   * published rates and the proxy bills `rate(resolution) × source seconds`.
+   */
+  usdPerSecondByResolution?: Record<string, number>
+  /** Most reference images (character/object elements) one request accepts. */
+  maxReferenceImages: number
+  bestFor?: string
+  /** Still routable but superseded — see `ImageModelEntry.deprecated`. */
+  deprecated?: boolean
+  replacement?: string
+  /** Resolution tiers the model accepts (`480p` / `720p` / `1080p`). Empty when fixed. */
+  resolutions?: readonly string[]
+  defaultResolution?: string
+  /** Takes a source video and edits it (Genjutsu workflows) instead of generating from scratch. */
+  sourceVideo?: boolean
+  /**
+   * Genjutsu workflow this entry runs. `restyle` additionally requires a
+   * `preset_id` from the restyle preset catalog.
+   */
+  genjutsu?: 'motion_transfer' | 'object_swap' | 'restyle'
+  /** Minimum source-video duration in seconds (Genjutsu). */
+  minSourceSeconds?: number
+  /** Maximum source-video duration in seconds before the provider trims it (Genjutsu). */
+  maxSourceSeconds?: number
+  /** Minimum source pixels per frame (width × height), when the workflow requires it. */
+  minSourcePixels?: number
+  /** Maximum source-video size in bytes (Genjutsu restyle caps this at 200 MiB). */
+  maxSourceBytes?: number
+  /** Every endpoint this model can submit to (`textToVideoApiModel`, plus `imageToVideoApiModel`). */
+  endpoints?: readonly string[]
+  /** Documented request fields, keyed by endpoint id. */
+  optionsByEndpoint?: Readonly<Record<string, readonly ModelOptionField[]>>
+  /** Native audio: the endpoint declares `sound` or `generate_audio`. */
+  audio?: boolean
+}
+
+export type MusicProvider = 'google'
+
+/**
+ * One music-generation model (Google Lyria). Unlike image/video these are
+ * priced per generated track, not per second or per resolution tier, and they
+ * are called through Google's Interactions API rather than `:predict`.
+ */
+export interface MusicModelEntry {
+  id: string
+  provider: MusicProvider
+  apiModel: string
+  displayName: string
+  /** One line telling an agent when to pick this model. */
+  bestFor?: string
+  /** Fixed track length in seconds; absent when the prompt controls it. */
+  durationSeconds?: number
+  /** Longest track the model will produce, in seconds. */
+  maxDurationSeconds: number
+  /** Upstream list price for one track, in USD. */
+  usdPerRequest: number
+  /** Container the model returns. */
+  outputFormat: 'mp3'
+}
+
 
 // ---------------------------------------------------------------------------
 // Chat Model Catalog — single source of truth
@@ -142,6 +300,11 @@ export const MODEL_CATALOG = {
     // cheaper on cache reads (see MODEL_DOLLAR_COSTS['claude-opus-5-5']),
     // so it can't reuse the shared 'opus' bucket.
     billingModel: 'claude-opus-5-5',
+    // Same 1M-token window as the rest of the current generation. Without this
+    // the threshold fell back to the 200k *window* (≈168k after reserve) while
+    // the provider happily accepted 400k — one opus-5-5 turn grew that large
+    // with nothing summarized (SHO-96).
+    contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     // Released 2026-09-22. Not yet run through the subagent-smoke eval —
     // unrated until verified (see `ModelCapabilities` doc comment above).
@@ -468,6 +631,78 @@ export const MODEL_CATALOG = {
     capabilities: { supportsAudioInput: true },
   },
 
+  // Google — current generation. Reached through the AI proxy's
+  // OpenAI-compatible Gemini endpoint (`/v1beta/openai/chat/completions`), so
+  // every surface (pod, desktop, cloud) needs only a Google key on the API
+  // server, never in the runtime.
+  //
+  // `contextWindow` is 200k on 3.1 Pro even though Google serves 1M: its price
+  // steps up above 200k input tokens ($4/$18 per 1M vs $2/$12) and
+  // `MODEL_DOLLAR_COSTS` is a flat per-bucket table, so serving the long
+  // context would be billed at the short-context rate. Cap it instead.
+  'gemini-4-argon': {
+    id: 'gemini-4-argon',
+    provider: 'google',
+    apiModel: 'gemini-4-argon',
+    displayName: 'Gemini 4 Argon',
+    shortDisplayName: 'Argon',
+    tier: 'premium',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-4-argon',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 1_048_576,
+    reasoningEffort: 'high',
+    description: 'Google\'s flagship reasoner: complex software engineering, deep maths and long-decode generation up to 1M tokens.',
+  },
+  'gemini-3.1-pro-preview': {
+    id: 'gemini-3.1-pro-preview',
+    provider: 'google',
+    apiModel: 'gemini-3.1-pro-preview',
+    displayName: 'Gemini 3.1 Pro',
+    shortDisplayName: 'Gemini 3.1 Pro',
+    tier: 'premium',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-3-1-pro',
+    contextWindow: 200_000,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'high',
+    description: 'Google\'s flagship reasoning model: long-horizon agentic work, large-codebase analysis and multimodal input.',
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
+  },
+  'gemini-3.8-flash': {
+    id: 'gemini-3.8-flash',
+    provider: 'google',
+    apiModel: 'gemini-3.8-flash',
+    displayName: 'Gemini 3.8 Flash',
+    shortDisplayName: 'Gemini 3.8 Flash',
+    tier: 'standard',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-3-8-flash',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'medium',
+    description: 'The current Gemini Flash: fast and cheap enough for everyday agent turns, with a 1M-token window.',
+  },
+  'gemini-3.5-flash-lite': {
+    id: 'gemini-3.5-flash-lite',
+    provider: 'google',
+    apiModel: 'gemini-3.5-flash-lite',
+    displayName: 'Gemini 3.5 Flash-Lite',
+    shortDisplayName: 'Flash-Lite 3.5',
+    tier: 'economy',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-3-5-flash-lite',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'minimal',
+    description: 'The cheapest Gemini: high-volume translation, extraction and simple data processing.',
+  },
+
   // OpenAI — legacy
   'gpt-5.6-sol': {
     id: 'gpt-5.6-sol',
@@ -606,15 +841,74 @@ export type ModelId = keyof typeof MODEL_CATALOG
 // Image Model Catalog
 // ---------------------------------------------------------------------------
 
+const TEXT_ONLY = { textToImage: true, imageToImage: false, maxReferenceImages: 0 } as const
+const GPT_IMAGE = { textToImage: true, imageToImage: true, maxReferenceImages: 16 } as const
+
+
+/**
+ * Higgsfield is the only image/video provider: its models are generated from the
+ * vendor snapshot (`media-catalog.generated.ts`, built by
+ * `scripts/generate-media-catalog.ts`), so a model the vendor documents cannot
+ * be missing and one it dropped cannot linger. Ids from the retired fal catalog
+ * still resolve through `HIGGSFIELD_LEGACY_MODEL_ALIASES`.
+ */
 export const IMAGE_MODEL_CATALOG = {
-  'dall-e-3':       { id: 'dall-e-3',       provider: 'openai',  apiModel: 'dall-e-3',                          displayName: 'DALL-E 3' },
-  'dall-e-2':       { id: 'dall-e-2',       provider: 'openai',  apiModel: 'dall-e-2',                          displayName: 'DALL-E 2' },
-  'gpt-image-1':    { id: 'gpt-image-1',    provider: 'openai',  apiModel: 'gpt-image-1',                      displayName: 'GPT Image 1' },
-  'gpt-image-1.5':  { id: 'gpt-image-1.5',  provider: 'openai',  apiModel: 'gpt-image-1.5',                    displayName: 'GPT Image 1.5' },
-  'gpt-image-2.5-flare': { id: 'gpt-image-2.5-flare', provider: 'openai', apiModel: 'gpt-image-2.5-flare',      displayName: 'GPT Image 2.5 Flare' },
-  'imagen-4':       { id: 'imagen-4',       provider: 'google',  apiModel: 'imagen-4.0-generate-001',          displayName: 'Imagen 4' },
-  'imagen-4-ultra': { id: 'imagen-4-ultra', provider: 'google',  apiModel: 'imagen-4.0-ultra-generate-001',    displayName: 'Imagen 4 Ultra' },
-  'imagen-4-fast':  { id: 'imagen-4-fast',  provider: 'google',  apiModel: 'imagen-4.0-fast-generate-001',     displayName: 'Imagen 4 Fast' },
+  ...HIGGSFIELD_IMAGE_MODELS,
+  'dall-e-3':       { id: 'dall-e-3',       provider: 'openai',  apiModel: 'dall-e-3',                          displayName: 'DALL-E 3', capabilities: TEXT_ONLY, retired: true },
+  'dall-e-2':       { id: 'dall-e-2',       provider: 'openai',  apiModel: 'dall-e-2',                          displayName: 'DALL-E 2', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 }, retired: true },
+  'gpt-image-1':    { id: 'gpt-image-1',    provider: 'openai',  apiModel: 'gpt-image-1',                      displayName: 'GPT Image 1', capabilities: GPT_IMAGE },
+  'gpt-image-1.5':  { id: 'gpt-image-1.5',  provider: 'openai',  apiModel: 'gpt-image-1.5',                    displayName: 'GPT Image 1.5', capabilities: GPT_IMAGE },
+  'gpt-image-2':    { id: 'gpt-image-2',    provider: 'openai',  apiModel: 'gpt-image-2',                      displayName: 'GPT Image 2', capabilities: GPT_IMAGE, bestFor: 'Detailed prompt following and clean game or UI art' },
+  'gpt-image-2.5-flare': { id: 'gpt-image-2.5-flare', provider: 'openai', apiModel: 'gpt-image-2.5-flare',      displayName: 'GPT Image 2.5 Flare', capabilities: GPT_IMAGE, bestFor: 'General-purpose default; strong prompt following and edits' },
+  'imagen-4':       { id: 'imagen-4',       provider: 'google',  apiModel: 'imagen-4.0-generate-001',          displayName: 'Imagen 4', capabilities: TEXT_ONLY },
+  'imagen-4-ultra': { id: 'imagen-4-ultra', provider: 'google',  apiModel: 'imagen-4.0-ultra-generate-001',    displayName: 'Imagen 4 Ultra', capabilities: TEXT_ONLY },
+  'imagen-4-fast':  { id: 'imagen-4-fast',  provider: 'google',  apiModel: 'imagen-4.0-fast-generate-001',     displayName: 'Imagen 4 Fast', capabilities: TEXT_ONLY },
 } as const satisfies Record<string, ImageModelEntry>
 
 export type ImageModelId = keyof typeof IMAGE_MODEL_CATALOG
+
+// ---------------------------------------------------------------------------
+// Video Model Catalog
+// ---------------------------------------------------------------------------
+
+export const VIDEO_MODEL_CATALOG = {
+  ...HIGGSFIELD_VIDEO_MODELS,
+} as const satisfies Record<string, VideoModelEntry>
+
+export type VideoModelId = keyof typeof VIDEO_MODEL_CATALOG
+
+// ---------------------------------------------------------------------------
+// Music Model Catalog
+// ---------------------------------------------------------------------------
+
+/**
+ * Google Lyria, through the Interactions API. Prices are Google's published
+ * per-track rates (ai.google.dev/gemini-api/docs/pricing, Oct 2026): the Clip
+ * model is a fixed 30-second draft, Lyria 3.5 writes a full song whose length
+ * the prompt controls.
+ */
+export const MUSIC_MODEL_CATALOG = {
+  'lyria-3-clip': {
+    id: 'lyria-3-clip',
+    provider: 'google',
+    apiModel: 'lyria-3-clip-preview',
+    displayName: 'Lyria 3 Clip',
+    bestFor: 'A 30-second draft, loop or sting — cheapest way to audition an idea',
+    durationSeconds: 30,
+    maxDurationSeconds: 30,
+    usdPerRequest: 0.04,
+    outputFormat: 'mp3',
+  },
+  'lyria-3.5': {
+    id: 'lyria-3.5',
+    provider: 'google',
+    apiModel: 'lyria-3.5',
+    displayName: 'Lyria 3.5',
+    bestFor: 'A full song with verses, choruses and vocals, up to about 3 minutes',
+    maxDurationSeconds: 180,
+    usdPerRequest: 0.08,
+    outputFormat: 'mp3',
+  },
+} as const satisfies Record<string, MusicModelEntry>
+
+export type MusicModelId = keyof typeof MUSIC_MODEL_CATALOG

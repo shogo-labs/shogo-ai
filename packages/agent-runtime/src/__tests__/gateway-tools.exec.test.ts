@@ -12,10 +12,11 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, readFileSync, rmSync, existsSync } from 'fs'
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
+import { resetHomeWatch } from '../home-state-watch'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 const TEST_DIR = '/tmp/test-gw-exec-tool'
@@ -63,7 +64,7 @@ describe('createExecTool', () => {
     const result = await run(ctx, 'exec', { command: 'true' })
     expect(result.exitCode).toBe(0)
     expect(result.cwd).toBe(TEST_DIR)
-    expect(result.run_id).toMatch(/^cmd_/)
+    expect(result.run_id).toMatch(/^t_/)
     expect(typeof result.durationMs).toBe('number')
     expect(result.durationMs).toBeGreaterThanOrEqual(0)
   })
@@ -72,7 +73,7 @@ describe('createExecTool', () => {
     const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
     const result = await run(ctx, 'exec', { command: 'false' })
     expect(result.exitCode).toBe(1)
-    expect(result.run_id).toMatch(/^cmd_/)
+    expect(result.run_id).toMatch(/^t_/)
   })
 
   test('sudo is not blocked by the exec tool', async () => {
@@ -81,11 +82,21 @@ describe('createExecTool', () => {
     expect(String(result.error ?? '')).not.toContain('Blocked command')
   })
 
-  test('blocked command (recursive-star-remove) is rejected before spawn', async () => {
-    const ctx = makeCtx()
-    const blocked = 'cd /tmp && ' + ['r','m',' -','r','f',' *'].join('')
-    const result = await run(ctx, 'exec', { command: blocked })
-    expect(result.error).toContain('Blocked command')
+  test('a recursive remove of an absolute path is not rejected before spawn', async () => {
+    const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+    const nested = join(TEST_DIR, 'nested')
+    mkdirSync(nested, { recursive: true })
+    const result = await run(ctx, 'exec', { command: `rm -r ${nested}` })
+    expect(String(result.error ?? '')).not.toContain('Blocked command')
+    expect(existsSync(nested)).toBe(false)
+  })
+
+  test('a recursive-star remove is not rejected before spawn', async () => {
+    const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+    writeFileSync(join(TEST_DIR, 'stale.log'), 'x')
+    const result = await run(ctx, 'exec', { command: 'rm -rf *.log' })
+    expect(String(result.error ?? '')).not.toContain('Blocked command')
+    expect(existsSync(join(TEST_DIR, 'stale.log'))).toBe(false)
   })
 
   test('soft-timeout returns status:running with run_id, pid, and a hint string', async () => {
@@ -93,10 +104,11 @@ describe('createExecTool', () => {
     const ctx = makeCtx({ commandRegistry: registry })
     const result = await run(ctx, 'exec', { command: 'sleep 5', timeout: 50 })
     expect(result.status).toBe('running')
-    expect(result.run_id).toMatch(/^cmd_/)
+    expect(result.run_id).toMatch(/^t_/)
     expect(result.pid).toBeGreaterThan(0)
     expect(typeof result.hint).toBe('string')
-    expect(result.hint).toContain(result.run_id)
+    expect(result.hint).toContain('wait')
+    expect(result.task_id).toBe(result.run_id)
     try { registry.get(result.run_id)?.handle.kill('SIGKILL') } catch { /* ignore */ }
   })
 
@@ -151,5 +163,56 @@ describe('createExecTool', () => {
     const result = await run(ctx, 'exec', { command: 'true' })
     expect(result.exitCode).toBe(0)
     expect(result.cwdReset).toBeUndefined()
+  })
+
+  describe('homeNotPersisted', () => {
+    const HOME = join(TEST_DIR, 'home')
+    const KEYS = ['SHOGO_DURABILITY_HOST_MEDIATED', 'PROJECT_ID', 'HOME_STATE_KEY', 'SHOGO_HOME_STATE_DIR'] as const
+    const saved: Record<string, string | undefined> = {}
+
+    beforeEach(() => {
+      mkdirSync(HOME, { recursive: true })
+      for (const k of KEYS) saved[k] = process.env[k]
+      resetHomeWatch()
+    })
+    afterEach(() => {
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k]
+        else process.env[k] = saved[k]
+      }
+      resetHomeWatch()
+    })
+
+    const enable = () => {
+      process.env.SHOGO_DURABILITY_HOST_MEDIATED = '1'
+      process.env.PROJECT_ID = 'p1'
+      process.env.HOME_STATE_KEY = Buffer.alloc(32, 3).toString('base64')
+      process.env.SHOGO_HOME_STATE_DIR = HOME
+    }
+
+    test('a command that creates an unsaved home folder gets a note, once', async () => {
+      enable()
+      const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+      const first = await run(ctx, 'exec', { command: `mkdir ${join(HOME, '.openart')}` })
+      expect(first.exitCode).toBe(0)
+      expect(first.homeNotPersisted).toContain('~/.openart')
+      expect(first.homeNotPersisted).toContain('~/.config/openart')
+      const second = await run(ctx, 'exec', { command: 'true' })
+      expect(second.homeNotPersisted).toBeUndefined()
+    })
+
+    test('saved paths get no note', async () => {
+      enable()
+      const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+      const result = await run(ctx, 'exec', { command: `mkdir -p ${join(HOME, '.config', 'openart')}` })
+      expect(result.homeNotPersisted).toBeUndefined()
+    })
+
+    test('no note where home persistence is off', async () => {
+      for (const k of KEYS) delete process.env[k]
+      const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+      const result = await run(ctx, 'exec', { command: `mkdir ${join(HOME, '.openart')}` })
+      expect(result.homeNotPersisted).toBeUndefined()
+    })
   })
 })

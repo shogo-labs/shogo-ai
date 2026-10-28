@@ -15,6 +15,16 @@ const db = prisma as any
 export const NOTIFY_LEVELS = ['all', 'mentions', 'none'] as const
 export type NotifyLevel = (typeof NOTIFY_LEVELS)[number]
 export const DIGEST_MODES = ['off', 'daily'] as const
+export const MESSAGE_SOUNDS = ['default', 'subtle', 'off'] as const
+export type MessageSound = (typeof MESSAGE_SOUNDS)[number]
+/** Which sound a chat message plays on web and desktop. */
+export const MESSAGE_TONES = ['knock', 'chirp', 'pristine', 'definite', 'juntos', 'confirmation', 'question', 'glass'] as const
+export type MessageTone = (typeof MESSAGE_TONES)[number]
+export const HUDDLE_SOUNDS = ['ring', 'chime', 'off'] as const
+export type HuddleSound = (typeof HUDDLE_SOUNDS)[number]
+/** When a phone push goes out: right away, or only after the person stays away. */
+export const MOBILE_PUSH_DELAYS = ['immediate', 'inactive', 'inactive_5m', 'inactive_10m'] as const
+export type MobilePushDelay = (typeof MOBILE_PUSH_DELAYS)[number]
 const QUIET_HOURS_RE = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/
 const MAX_KEYWORDS = 20
 const MAX_KEYWORD_CHARS = 40
@@ -29,6 +39,12 @@ export interface ChatSettings {
   notifyDefault: NotifyLevel
   keywords: string[]
   emailDigest: 'off' | 'daily'
+  messageSound: MessageSound
+  messageTone: MessageTone
+  huddleSound: HuddleSound
+  dmInActivity: boolean
+  threadRepliesInBadge: boolean
+  mobilePushDelay: MobilePushDelay
 }
 
 export interface UserStatus {
@@ -48,6 +64,12 @@ const DEFAULTS: ChatSettings = {
   notifyDefault: 'mentions',
   keywords: [],
   emailDigest: 'off',
+  messageSound: 'default',
+  messageTone: 'knock',
+  huddleSound: 'ring',
+  dmInActivity: false,
+  threadRepliesInBadge: true,
+  mobilePushDelay: 'inactive',
 }
 
 export function parseKeywords(raw: string | null | undefined): string[] {
@@ -79,6 +101,12 @@ export function serializeSettings(row: any, now = new Date()): ChatSettings {
     notifyDefault: (NOTIFY_LEVELS as readonly string[]).includes(row.notifyDefault) ? row.notifyDefault : 'mentions',
     keywords: parseKeywords(row.keywords),
     emailDigest: row.emailDigest === 'daily' ? 'daily' : 'off',
+    messageSound: (MESSAGE_SOUNDS as readonly string[]).includes(row.messageSound) ? row.messageSound : 'default',
+    messageTone: (MESSAGE_TONES as readonly string[]).includes(row.messageTone) ? row.messageTone : 'knock',
+    huddleSound: (HUDDLE_SOUNDS as readonly string[]).includes(row.huddleSound) ? row.huddleSound : 'ring',
+    dmInActivity: row.dmInActivity === true,
+    threadRepliesInBadge: row.threadRepliesInBadge !== false,
+    mobilePushDelay: (MOBILE_PUSH_DELAYS as readonly string[]).includes(row.mobilePushDelay) ? row.mobilePushDelay : 'inactive',
   }
 }
 
@@ -166,6 +194,19 @@ export function validateTimezone(tz: string): boolean {
   }
 }
 
+/**
+ * The clock time in `timezone` as `HH:MM` (24h), or null when the zone is
+ * missing or unknown. Used to show a teammate their own local time, so the
+ * reader's clock never decides what their day looks like.
+ */
+export function timeInZone(now: Date, timezone: string | null | undefined): string | null {
+  if (!timezone || !validateTimezone(timezone)) return null
+  const minutes = minutesInZone(now, timezone)
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
 export async function updateChatSettings(
   workspaceId: string,
   userId: string,
@@ -211,6 +252,38 @@ export async function updateChatSettings(
       throw new ConversationError(400, 'invalid_settings', 'emailDigest must be off or daily')
     }
     data.emailDigest = patch.emailDigest
+  }
+  if ('messageSound' in patch) {
+    if (!(MESSAGE_SOUNDS as readonly unknown[]).includes(patch.messageSound)) {
+      throw new ConversationError(400, 'invalid_settings', 'messageSound must be default, subtle, or off')
+    }
+    data.messageSound = patch.messageSound
+  }
+  if ('messageTone' in patch) {
+    if (!(MESSAGE_TONES as readonly unknown[]).includes(patch.messageTone)) {
+      throw new ConversationError(400, 'invalid_settings', `messageTone must be one of ${MESSAGE_TONES.join(', ')}`)
+    }
+    data.messageTone = patch.messageTone
+  }
+  if ('huddleSound' in patch) {
+    if (!(HUDDLE_SOUNDS as readonly unknown[]).includes(patch.huddleSound)) {
+      throw new ConversationError(400, 'invalid_settings', 'huddleSound must be ring, chime, or off')
+    }
+    data.huddleSound = patch.huddleSound
+  }
+  if ('dmInActivity' in patch) {
+    if (typeof patch.dmInActivity !== 'boolean') throw new ConversationError(400, 'invalid_settings', 'dmInActivity must be true or false')
+    data.dmInActivity = patch.dmInActivity
+  }
+  if ('threadRepliesInBadge' in patch) {
+    if (typeof patch.threadRepliesInBadge !== 'boolean') throw new ConversationError(400, 'invalid_settings', 'threadRepliesInBadge must be true or false')
+    data.threadRepliesInBadge = patch.threadRepliesInBadge
+  }
+  if ('mobilePushDelay' in patch) {
+    if (!(MOBILE_PUSH_DELAYS as readonly unknown[]).includes(patch.mobilePushDelay)) {
+      throw new ConversationError(400, 'invalid_settings', 'mobilePushDelay must be immediate, inactive, inactive_5m, or inactive_10m')
+    }
+    data.mobilePushDelay = patch.mobilePushDelay
   }
 
   const row = await db.chatUserSettings.upsert({

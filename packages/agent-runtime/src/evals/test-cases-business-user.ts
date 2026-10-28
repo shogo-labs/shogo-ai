@@ -405,10 +405,10 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'heartbeat-configured',
-      description: 'Configured heartbeat for daily check-ins',
+      description: 'Configured a heartbeat or schedule for daily check-ins',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
+      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure') || usedToolAnywhere(r, 'schedule_create'),
     },
     {
       id: 'quiet-hours',
@@ -549,11 +549,10 @@ const PHASE_2: AgentEval = {
       points: 4,
       phase: 'execution',
       validate: (r) => {
-        const code = allCanvasCode(r)
-        const json = toolCallsJson(r)
-        const hasNames = (code.match(/['"][A-Z][a-z]+/g) || []).length >= 5 ||
-                         (json.match(/['"][A-Z][a-z]+/g) || []).length >= 5
-        return hasNames
+        // Case-sensitive: allCanvasCode/toolCallsJson are lower-cased.
+        const raw = JSON.stringify(r.toolCalls) + '\n' + readAllSrcCodeFromDisk(r)
+        const names = new Set(raw.match(/\b[A-Z][a-z]+ [A-Z][a-z]+\b/g) || [])
+        return names.size >= 5
       },
     },
     // Full-stack wiring
@@ -888,7 +887,7 @@ const PHASE_4: AgentEval = {
       points: 5,
       phase: 'intention',
       validate: (r) => {
-        const usedScheduling = usedToolAnywhere(r, 'heartbeat_configure') || usedTool(r, 'write_file')
+        const usedScheduling = usedToolAnywhere(r, 'heartbeat_configure') || usedToolAnywhere(r, 'schedule_create') || usedTool(r, 'write_file')
         const text = r.responseText.toLowerCase()
         const mentionsSchedule = text.includes('friday') || text.includes('weekly') ||
                                   text.includes('automat') || text.includes('schedule')

@@ -72,7 +72,28 @@ export interface PinnedResponse {
   body: Uint8Array
 }
 
-type Transport = (url: URL, address: string, opts: { headers: Record<string, string>; maxBytes: number; signal: AbortSignal }) => Promise<PinnedResponse>
+/**
+ * Decides when a response read has what it came for: a hard byte ceiling, and
+ * optionally an early stop once `stopAt` has been seen. A marker can straddle
+ * two chunks, so the tail of the previous chunk is carried into the next test.
+ */
+export function makeReadLimiter(opts: { maxBytes: number; stopAt?: string }) {
+  const marker = opts.stopAt ? Buffer.from(opts.stopAt) : null
+  let tail: Buffer = Buffer.alloc(0)
+  let size = 0
+  return {
+    /** Feed one chunk; returns true once the read should stop. */
+    push(chunk: Buffer): boolean {
+      size += chunk.byteLength
+      if (!marker?.byteLength) return size >= opts.maxBytes
+      const window = tail.byteLength ? Buffer.concat([tail, chunk]) : chunk
+      tail = chunk.subarray(Math.max(0, chunk.byteLength - (marker.byteLength - 1)))
+      return window.includes(marker) || size >= opts.maxBytes
+    },
+  }
+}
+
+type Transport = (url: URL, address: string, opts: { headers: Record<string, string>; maxBytes: number; signal: AbortSignal; stopAt?: string }) => Promise<PinnedResponse>
 
 /** One HTTP request that connects only to `address`, reading at most `maxBytes`. */
 export const requestPinned: Transport = (url, address, opts) => new Promise((resolve, reject) => {
@@ -89,7 +110,7 @@ export const requestPinned: Transport = (url, address, opts) => new Promise((res
     signal: opts.signal,
   }, (res) => {
     const chunks: Buffer[] = []
-    let size = 0
+    const limiter = makeReadLimiter({ maxBytes: opts.maxBytes, ...(opts.stopAt ? { stopAt: opts.stopAt } : {}) })
     let settled = false
     const finish = () => {
       if (settled) return
@@ -99,8 +120,7 @@ export const requestPinned: Transport = (url, address, opts) => new Promise((res
     }
     res.on('data', (chunk: Buffer) => {
       chunks.push(chunk)
-      size += chunk.byteLength
-      if (size >= opts.maxBytes) {
+      if (limiter.push(chunk)) {
         finish()
         res.destroy()
       }
@@ -130,9 +150,14 @@ export interface SafeFetchResult {
   body: string
 }
 
+/**
+ * Same guard as {@link requestPinned}, following redirects. `stopAt` ends the
+ * read as soon as the marker appears, so a caller that only wants the document
+ * head does not pay for the body behind it.
+ */
 export async function safeFetchText(
   raw: string,
-  opts: { maxBytes?: number; timeoutMs?: number; maxRedirects?: number; accept?: string } = {},
+  opts: { maxBytes?: number; timeoutMs?: number; maxRedirects?: number; accept?: string; stopAt?: string } = {},
 ): Promise<SafeFetchResult> {
   const maxBytes = opts.maxBytes ?? 512 * 1024
   const deadline = AbortSignal.timeout(opts.timeoutMs ?? 5_000)
@@ -142,6 +167,7 @@ export async function safeFetchText(
     const res = await transport(url, address, {
       signal: deadline,
       maxBytes,
+      ...(opts.stopAt ? { stopAt: opts.stopAt } : {}),
       headers: {
         'User-Agent': 'ShogoBot/1.0 (+https://shogo.ai; link previews)',
         Accept: opts.accept ?? 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.1',

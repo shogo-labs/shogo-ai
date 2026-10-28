@@ -7,6 +7,7 @@ export { FollowCreatorButton } from './FollowCreatorButton'
 export { HorizontalRail } from './HorizontalRail'
 export { IntegrationStrip } from './IntegrationStrip'
 export { AppConsentSheet, type AppConsent } from './AppConsentSheet'
+export { PackInstallSheet, type PackQuestion, type PackPreviewResponse } from './PackInstallSheet'
 export { MarketplaceHero } from './MarketplaceHero'
 export {
   PriceTag,

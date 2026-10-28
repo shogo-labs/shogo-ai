@@ -11,16 +11,33 @@ import {
   useWindowDimensions,
   View,
   type ColorValue,
+  type ImageStyle,
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { linkifyBareUrls, linkifyFilePaths, pathFromFileHref } from "./file-links";
+import { FileTypeIcon } from "./FileTypeIcon";
+import {
+  isMentionHref,
+  linkifyBareUrls,
+  linkifyFilePaths,
+  mentionTargetFromHref,
+  pathFromFileHref,
+  rewriteWorkspaceMedia,
+  resolveRelativeLinks,
+  type MentionTarget,
+} from "./file-links";
+import { MarkdownMediaNative } from "./MarkdownMediaNative";
+import { useShareFileOpener, type ShareFileTarget } from "./share-file-context";
+import { parseInAppFileHref } from "../../lib/share-file-links";
+import { withHardBreaks } from "../../lib/markdown-breaks";
+import { normalizeRichTextPaste } from "../../lib/rich-text-paste";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
 
 /**
  * Semantic markdown palette. Light and dark values follow the GitHub gray
- * scale for structure, with an orange for inline code as the one accent.
+ * scale for structure, with color as the only accent: inline code reads as
+ * body text on a neutral grey chip rather than as its own accent color.
  * Keep in sync with the `.chat-md` variables in `global.css` (web path).
  */
 interface ThemeColors {
@@ -28,14 +45,15 @@ interface ThemeColors {
   heading: ColorValue;
   muted: ColorValue;
   link: ColorValue;
-  codeText: ColorValue;
   codeBg: ColorValue;
   border: ColorValue;
   quoteBorder: ColorValue;
   tableHeaderBg: ColorValue;
+  mentionBg: ColorValue;
+  mentionText: ColorValue;
 }
 
-export type MarkdownVariant = "default" | "thinking";
+export type MarkdownVariant = "default" | "thinking" | "card";
 
 export interface MarkdownTextProps {
   children: string;
@@ -44,8 +62,14 @@ export interface MarkdownTextProps {
   variant?: MarkdownVariant;
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void;
+  /** Mentioned paths that pass this check render as file chips. */
+  fileExists?: (path: string) => boolean;
   /** Return true to handle a link in the app instead of opening it in a browser. */
   onLinkPress?: (href: string) => boolean;
+  /** Opens a person's or agent's profile when their @-mention is tapped. */
+  onMentionPress?: (target: MentionTarget) => void;
+  /** Opens a file the API serves in the app's own viewer. */
+  onShareFilePress?: (target: ShareFileTarget) => void;
 }
 
 const baseStyles: MarkedStyles = {
@@ -113,16 +137,36 @@ const thinkingStyles: MarkedStyles = {
   image: { borderRadius: 6 },
 };
 
+/**
+ * Compact body copy for markdown inside a tool card (a `project_call` request
+ * or reply). The chat sizes — 16/24 on a phone — are wrong for a three-line
+ * card, so headings, code padding and rules shrink to card scale while the
+ * 12/18 body copy stays as it is.
+ */
+const cardStyles: MarkedStyles = {
+  ...baseStyles,
+  code: {
+    borderRadius: 6,
+    padding: 8,
+  },
+  h1: { fontSize: 16, lineHeight: 22, fontWeight: "bold", marginBottom: 4 },
+  h2: { fontSize: 15, lineHeight: 21, fontWeight: "bold", marginBottom: 4 },
+  h3: { fontSize: 14, lineHeight: 20, fontWeight: "600", marginBottom: 3 },
+  h4: { fontSize: 13, lineHeight: 19, fontWeight: "500" },
+  hr: { height: 1, marginVertical: 6 },
+};
+
 const lightColors: ThemeColors = {
   text: "#1f2328",
   heading: "#111827",
   muted: "#59636e",
   link: "#0969da",
-  codeText: "#b45309",
-  codeBg: "#f6f8fa",
+  codeBg: "#e4e4e7",
   border: "#d1d9e0",
   quoteBorder: "#d1d9e0",
   tableHeaderBg: "#f6f8fa",
+  mentionBg: "#fef08a",
+  mentionText: "#422006",
 };
 
 const darkColors: ThemeColors = {
@@ -130,11 +174,12 @@ const darkColors: ThemeColors = {
   heading: "#ffffff",
   muted: "#8b949e",
   link: "#4493f8",
-  codeText: "#fb923c",
-  codeBg: "#161b22",
+  codeBg: "#333333",
   border: "#30363d",
   quoteBorder: "#30363d",
   tableHeaderBg: "#161b22",
+  mentionBg: "rgba(250, 204, 21, 0.3)",
+  mentionText: "#fef9c3",
 };
 
 // Thinking blocks are de-emphasized, so the palette is desaturated and the
@@ -144,11 +189,12 @@ const lightThinkingColors: ThemeColors = {
   heading: "#525252",
   muted: "#a3a3a3",
   link: "#6b9bd2",
-  codeText: "#737373",
   codeBg: "#f0f0f0",
   border: "#e0e0e0",
   quoteBorder: "#e0e0e0",
   tableHeaderBg: "#f5f5f5",
+  mentionBg: "#fef08a",
+  mentionText: "#422006",
 };
 
 const darkThinkingColors: ThemeColors = {
@@ -156,11 +202,12 @@ const darkThinkingColors: ThemeColors = {
   heading: "#c4c4c4",
   muted: "#737373",
   link: "#7ba8d4",
-  codeText: "#a0a0a0",
   codeBg: "#252525",
   border: "#444444",
   quoteBorder: "#444444",
   tableHeaderBg: "#2a2a2a",
+  mentionBg: "rgba(250, 204, 21, 0.3)",
+  mentionText: "#fef9c3",
 };
 
 /**
@@ -181,7 +228,7 @@ function withColors(sizes: MarkedStyles, c: ThemeColors): MarkedStyles {
     h2: { ...sizes.h2, color: c.heading },
     h3: { ...sizes.h3, color: c.heading },
     h4: { ...sizes.h4, color: c.heading },
-    codespan: { ...sizes.codespan, color: c.codeText, backgroundColor: c.codeBg },
+    codespan: { ...sizes.codespan, color: c.text, backgroundColor: c.codeBg },
     blockquote: {
       ...sizes.blockquote,
       borderLeftWidth: 3,
@@ -211,8 +258,13 @@ class NativePhoneMarkdownRenderer extends Renderer {
   constructor(
     private readonly tableWidth: number,
     private readonly tableHeaderBg: ColorValue,
+    private readonly mentionColors: { bg: ColorValue; text: ColorValue },
+    private readonly chipColors: { bg: ColorValue; text: ColorValue },
     private readonly onFilePress?: (path: string) => void,
     private readonly onLinkPress?: (href: string) => boolean,
+    private readonly fileExists?: (path: string) => boolean,
+    private readonly onMentionPress?: (target: MentionTarget) => void,
+    private readonly onShareFilePress?: (target: ShareFileTarget) => void,
   ) {
     super();
   }
@@ -223,7 +275,94 @@ class NativePhoneMarkdownRenderer extends Renderer {
     styles?: TextStyle,
     title?: string,
   ): ReactNode {
+    if (isMentionHref(href)) {
+      const mentionStyle = [
+        styles,
+        {
+          textDecorationLine: "none" as const,
+          fontWeight: "600" as const,
+          color: this.mentionColors.text,
+          backgroundColor: this.mentionColors.bg,
+          borderRadius: 4,
+        },
+      ];
+      const target = this.onMentionPress ? mentionTargetFromHref(href) : null;
+      const openMention = this.onMentionPress;
+      if (!target || !openMention) {
+        return (
+          <Text selectable testID="chat-mention" key={this.getKey()} style={mentionStyle}>
+            {children}
+          </Text>
+        );
+      }
+      return (
+        <Text
+          selectable
+          testID="chat-mention"
+          accessibilityRole="button"
+          accessibilityLabel={typeof children === "string" ? children : undefined}
+          key={this.getKey()}
+          onPress={() => openMention(target)}
+          style={mentionStyle}
+        >
+          {children}
+        </Text>
+      );
+    }
+    const servedFile = parseInAppFileHref(href);
+    if (servedFile && this.onShareFilePress) {
+      const open = this.onShareFilePress;
+      const { bg, text } = this.chipColors;
+      return (
+        <Text
+          accessibilityRole="link"
+          accessibilityLabel={servedFile.name}
+          testID="chat-file-chip"
+          key={this.getKey()}
+          onPress={() => open(servedFile)}
+          style={[
+            styles,
+            {
+              textDecorationLine: "none",
+              fontWeight: "500",
+              color: text,
+              backgroundColor: bg,
+              borderRadius: 6,
+            },
+          ]}
+        >
+          <FileTypeIcon path={servedFile.name} size={14} />
+          {` ${servedFile.name} `}
+        </Text>
+      );
+    }
     const path = pathFromFileHref(href);
+    if (path && this.onFilePress && this.fileExists?.(path)) {
+      const open = this.onFilePress;
+      const { bg, text } = this.chipColors;
+      return (
+        <Text
+          accessibilityRole="link"
+          accessibilityLabel={path}
+          testID="chat-file-chip"
+          key={this.getKey()}
+          onPress={() => open(path)}
+          style={[
+            styles,
+            {
+              textDecorationLine: "none",
+              fontWeight: "500",
+              color: text,
+              backgroundColor: bg,
+              borderRadius: 6,
+            },
+          ]}
+        >
+          <FileTypeIcon path={path} size={14} />
+          {` ${path.split("/").pop() || path} `}
+        </Text>
+      );
+    }
     if (path && this.onFilePress) {
       const open = this.onFilePress;
       return (
@@ -257,6 +396,10 @@ class NativePhoneMarkdownRenderer extends Renderer {
       );
     }
     return super.link(children, href, styles, title);
+  }
+
+  override image(uri: string, alt?: string, _style?: ImageStyle, _title?: string): ReactNode {
+    return <MarkdownMediaNative key={this.getKey()} src={uri} alt={alt} />;
   }
 
   override table(
@@ -341,7 +484,10 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.className !== next.className) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.onFilePress !== next.onFilePress) return false;
+  if (prev.fileExists !== next.fileExists) return false;
   if (prev.onLinkPress !== next.onLinkPress) return false;
+  if (prev.onShareFilePress !== next.onShareFilePress) return false;
+  if (prev.onMentionPress !== next.onMentionPress) return false;
   const a = prev.children || "";
   const b = next.children || "";
   return a.length === b.length && a === b;
@@ -351,14 +497,20 @@ export const MarkdownText = memo(function MarkdownText({
   children,
   variant = "default",
   onFilePress,
+  fileExists,
   onLinkPress,
+  onMentionPress,
+  onShareFilePress,
 }: MarkdownTextProps) {
+  const contextOpener = useShareFileOpener();
+  const shareFileOpener = onShareFilePress ?? contextOpener ?? undefined;
   const { colorScheme } = useColorScheme();
   const { width } = useWindowDimensions();
   const isPhoneLayout = usePhoneLayout();
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
 
   const isThinking = variant === "thinking";
+  const isCard = variant === "card";
   const colors =
     colorScheme === "dark"
       ? isThinking
@@ -367,7 +519,9 @@ export const MarkdownText = memo(function MarkdownText({
       : isThinking
       ? lightThinkingColors
       : lightColors;
-  const sizeStyles = isThinking
+  const sizeStyles = isCard
+    ? cardStyles
+    : isThinking
     ? thinkingStyles
     : isPhoneLayout || usesMobileWorkspaceChrome
     ? phoneChatStyles
@@ -390,18 +544,45 @@ export const MarkdownText = memo(function MarkdownText({
   );
 
   const value = useMemo(() => {
-    const fileLinked = onFilePress ? linkifyFilePaths(children || "") : children || "";
+    const normalized = withHardBreaks(rewriteWorkspaceMedia(normalizeRichTextPaste(children || "")));
+    // A bare relative href has no opener on a device; resolve it before the
+    // markdown parser turns it into a link nothing can open.
+    const resolved = resolveRelativeLinks(normalized, { fileLinks: !!onFilePress });
+    const fileLinked = onFilePress ? linkifyFilePaths(resolved) : resolved;
     return linkifyBareUrls(fileLinked);
   }, [children, onFilePress]);
+  const mentionColors = useMemo(
+    () => ({ bg: colors.mentionBg, text: colors.mentionText }),
+    [colors.mentionBg, colors.mentionText],
+  );
+  const chipColors = useMemo(
+    () => ({ bg: colors.codeBg, text: colors.text }),
+    [colors.codeBg, colors.text],
+  );
   const renderer = useMemo(
     () =>
       new NativePhoneMarkdownRenderer(
         width,
         colors.tableHeaderBg,
+        mentionColors,
+        chipColors,
         onFilePress,
         onLinkPress,
+        fileExists,
+        onMentionPress,
+        shareFileOpener,
       ),
-    [width, colors.tableHeaderBg, onFilePress, onLinkPress],
+    [
+      width,
+      colors.tableHeaderBg,
+      mentionColors,
+      chipColors,
+      onFilePress,
+      onLinkPress,
+      fileExists,
+      onMentionPress,
+      shareFileOpener,
+    ],
   );
 
   return (

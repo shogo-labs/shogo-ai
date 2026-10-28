@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { buildCodeAgentGeneralGuide, CODE_AGENT_GENERAL_GUIDE } from '../code-agent-prompt'
-import { isSearchEnabled } from '../search-flag'
+import { buildCodeAgentGeneralGuide } from '../code-agent-prompt'
 
-const off = buildCodeAgentGeneralGuide({ searchEnabled: false })
-const on = buildCodeAgentGeneralGuide({ searchEnabled: true })
+const off = buildCodeAgentGeneralGuide(false)
+const on = buildCodeAgentGeneralGuide(true)
 
 describe('coding guide', () => {
   test('without search: no search() examples; exact search goes through exec + rg', () => {
@@ -20,7 +19,7 @@ describe('coding guide', () => {
     expect(on).toContain('### search — Semantic Workspace Search')
     expect(on).toContain('search({ query:')
     expect(on).toContain('When NOT to use search (use `exec` with `rg` instead)')
-    expect(on).toContain('Use `read_file`, `search` and `exec`')
+    expect(on).toContain('Use `search`, `read_file`, and `exec`')
     expect(on).not.toContain('\\`search\\`')
   })
 
@@ -64,9 +63,5 @@ describe('coding guide', () => {
     ]) {
       expect(off).toContain(item)
     }
-  })
-
-  test('the constant matches the process-wide search flag', () => {
-    expect(CODE_AGENT_GENERAL_GUIDE).toBe(buildCodeAgentGeneralGuide({ searchEnabled: isSearchEnabled() }))
   })
 })

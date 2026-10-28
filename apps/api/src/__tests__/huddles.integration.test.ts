@@ -97,7 +97,8 @@ describe('joining and leaving', () => {
     expect(claims.video).toMatchObject({
       roomJoin: true,
       room: row.roomName,
-      canPublishData: false,
+      canPublishData: true,
+      canUpdateOwnMetadata: true,
       canPublishSources: ['microphone', 'camera', 'screen_share', 'screen_share_audio'],
     })
 
@@ -218,6 +219,33 @@ describe('ringing in DMs', () => {
     expect(events.some((e) => e.event.type === 'huddle.ring')).toBe(false)
     await huddles.leaveHuddle(dm.id, seed.member)
     await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('the ring push is a sounding call on its own channel by default', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    const ringPush = pushes.find((p) => p.payload.type === 'huddle-ring')
+    expect(ringPush?.payload).toMatchObject({
+      channelId: 'huddle-calls',
+      categoryId: 'huddle-call',
+      priority: 'high',
+      sound: 'default',
+    })
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('huddleSound off sends the ring push silent', async () => {
+    await db.chatUserSettings.create({ data: { workspaceId: seed.workspaceId, userId: seed.member, huddleSound: 'off' } })
+    try {
+      const dm = await freshDm()
+      await huddles.joinHuddle(dm.id, seed.owner)
+      const ringPush = pushes.find((p) => p.payload.type === 'huddle-ring')
+      expect(ringPush?.payload.channelId).toBe('huddle-calls')
+      expect(ringPush?.payload.sound).toBeNull()
+      await huddles.leaveHuddle(dm.id, seed.owner)
+    } finally {
+      await db.chatUserSettings.deleteMany({ where: { workspaceId: seed.workspaceId, userId: seed.member } })
+    }
   })
 
   test('channels, muted DMs, and Do Not Disturb do not ring', async () => {
@@ -350,5 +378,351 @@ describe('LiveKit webhooks', () => {
     )
     expect((await db.huddle.findUnique({ where: { id: row.id } })).endedAt).toBeNull()
     await huddles.leaveHuddle(conv.id, seed.owner)
+  })
+
+  // The notes fallback is a LiveKit agent in every huddle that has notes on. It
+  // is not a person: writing it into the roster made it show up as "Someone".
+  test('the hidden notes agent never becomes a participant', async () => {
+    const conv = await channel(`huddle-agent-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    liveRooms.set(row.roomName, [seed.owner, 'huddle-notes', 'huddle-notes-2'])
+
+    for (const identity of ['huddle-notes', 'huddle-notes-2']) {
+      const result = await huddles.handleLiveKitWebhook(
+        await signedWebhook({ event: 'participant_joined', room: { name: row.roomName }, participant: { identity } }),
+      )
+      expect(result.status).toBe(200)
+    }
+
+    // Not one row written, for either agent identity.
+    expect(await db.huddleParticipant.count({ where: { huddleId: row.id } })).toBe(1)
+    const view = await huddles.getHuddle(conv.id, seed.owner)
+    expect(view?.participants.map((p) => p.userId)).toEqual([seed.owner])
+    expect(view?.participants.some((p) => p.name === 'Someone')).toBe(false)
+  })
+
+  // Rows written before the webhook learned to skip agents are already in
+  // production huddles, so the roster has to refuse them too.
+  test('a roster row for an identity that is not a user is never shown', async () => {
+    const conv = await channel(`huddle-legacy-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    await db.huddleParticipant.create({ data: { huddleId: row.id, userId: 'agent-legacy-xyz' } })
+    liveRooms.set(row.roomName, [seed.owner])
+
+    const view = await huddles.getHuddle(conv.id, seed.owner)
+
+    // Fresh enough to be inside the connect grace window, so reconcile leaves it
+    // alone: only the roster filter keeps it off the screen.
+    expect(await db.huddleParticipant.count({ where: { huddleId: row.id, userId: 'agent-legacy-xyz', leftAt: null } })).toBe(1)
+    expect(view?.participants.map((p) => p.userId)).toEqual([seed.owner])
+    expect(view?.participants.some((p) => p.name === 'Someone')).toBe(false)
+  })
+
+  // Left open, an agent row counts as somebody still here, so the huddle never
+  // ends once the last person leaves.
+  test('reconcile closes an agent row even while the agent is in the room', async () => {
+    const conv = await channel(`huddle-agent-end-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    await db.huddleParticipant.create({ data: { huddleId: row.id, userId: 'huddle-notes' } })
+    liveRooms.set(row.roomName, [seed.owner, 'huddle-notes'])
+
+    const view = await huddles.getHuddle(conv.id, seed.owner)
+
+    expect(await db.huddleParticipant.count({ where: { huddleId: row.id, userId: 'huddle-notes', leftAt: null } })).toBe(0)
+    expect(view?.participants.map((p) => p.userId)).toEqual([seed.owner])
+  })
+
+  // `announce` serializes without reconciling, so this is the window where an
+  // agent row is still open: it must not be counted as someone in the call's chat.
+  test('an agent is never a member of the huddle chat', async () => {
+    const conv = await channel(`huddle-agent-chat-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    await db.huddleParticipant.create({ data: { huddleId: row.id, userId: 'huddle-notes' } })
+    events = []
+
+    // A real person joining announces the view; no reconcile runs on this path.
+    await huddles.handleLiveKitWebhook(
+      await signedWebhook({ event: 'participant_joined', room: { name: row.roomName }, participant: { identity: seed.member } }),
+    )
+
+    const announced = events.filter((e) => e.event.type === 'huddle.updated').at(-1)
+    expect(announced?.event.huddle?.chatMembers).not.toContain('huddle-notes')
+    expect(announced?.event.huddle?.chatMembers).toContain(seed.member)
+  })
+})
+describe('huddle presence badge', () => {
+  const announcements = () => events.filter((e) => e.event.type === 'huddle.presence')
+  const forUser = (userId: string) => announcements().filter((e) => e.event.userId === userId)
+
+  // `huddleUserIds` is workspace-wide, so a huddle left live by an earlier test
+  // would keep its participants "in a huddle" for the next one.
+  beforeEach(async () => {
+    await db.huddleParticipant.deleteMany({})
+    await db.huddle.deleteMany({ where: { workspaceId: seed.workspaceId } })
+  })
+
+  test('joining announces the badge to the whole workspace', async () => {
+    const conv = await channel(`huddle-badge-${crypto.randomUUID().slice(0, 6)}`)
+    await huddles.joinHuddle(conv.id, seed.owner)
+
+    expect(announcements().at(-1).event).toMatchObject({ type: 'huddle.presence', userId: seed.owner, inHuddle: true })
+    // Workspace-wide, like presence: the badge has to show wherever the name does.
+    expect(announcements().at(-1).audience).toBeNull()
+    expect([...(await huddles.huddleUserIds(seed.workspaceId, [seed.owner]))]).toEqual([seed.owner])
+  })
+
+  test('leaving clears only the person who left', async () => {
+    const conv = await channel(`huddle-badge-${crypto.randomUUID().slice(0, 6)}`)
+    await huddles.joinHuddle(conv.id, seed.owner)
+    await huddles.joinHuddle(conv.id, seed.member)
+    events = []
+
+    await huddles.leaveHuddle(conv.id, seed.owner)
+
+    expect(forUser(seed.owner).at(-1).event).toMatchObject({ userId: seed.owner, inHuddle: false })
+    expect(forUser(seed.member)).toHaveLength(0)
+    expect([...(await huddles.huddleUserIds(seed.workspaceId, [seed.member]))]).toEqual([seed.member])
+  })
+
+  test('the last person out still clears their own badge', async () => {
+    const conv = await channel(`huddle-badge-${crypto.randomUUID().slice(0, 6)}`)
+    await huddles.joinHuddle(conv.id, seed.owner)
+    await huddles.joinHuddle(conv.id, seed.member)
+    events = []
+
+    await huddles.leaveHuddle(conv.id, seed.owner)
+    await huddles.leaveHuddle(conv.id, seed.member)
+
+    expect(forUser(seed.member).at(-1).event).toMatchObject({ userId: seed.member, inHuddle: false })
+    expect(await huddles.huddleUserIds(seed.workspaceId, [seed.owner, seed.member])).toEqual(new Set())
+  })
+
+  test('someone in two huddles keeps the badge when one of them ends', async () => {
+    const a = await channel(`huddle-two-a-${crypto.randomUUID().slice(0, 6)}`)
+    const b = await channel(`huddle-two-b-${crypto.randomUUID().slice(0, 6)}`)
+    await huddles.joinHuddle(a.id, seed.owner)
+    await huddles.joinHuddle(b.id, seed.owner)
+    events = []
+
+    await huddles.leaveHuddle(a.id, seed.owner)
+
+    // The state is re-read after the mutation, so leaving one huddle does not
+    // claim they are off every call.
+    expect(forUser(seed.owner).at(-1).event).toMatchObject({ userId: seed.owner, inHuddle: true })
+    expect([...(await huddles.huddleUserIds(seed.workspaceId, [seed.owner]))]).toEqual([seed.owner])
+  })
+
+  test('a LiveKit drop clears the badge too', async () => {
+    const conv = await channel(`huddle-badge-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    await huddles.joinHuddle(conv.id, seed.member)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    events = []
+
+    liveRooms.set(row.roomName, [seed.member])
+    await huddles.handleLiveKitWebhook(
+      await signedWebhook({ event: 'participant_left', room: { name: row.roomName }, participant: { identity: seed.owner } }),
+    )
+
+    expect(forUser(seed.owner).at(-1).event).toMatchObject({ userId: seed.owner, inHuddle: false })
+  })
+})
+
+
+describe('ringing each device, and cancelling rings', () => {
+  const IOS_VOIP = 'ab'.repeat(32)
+  let voipCalls: Array<{ token: string; payload: any }> = []
+  let voipResult: { sent: boolean; dead: boolean; status: number; reason?: string } = { sent: true, dead: false, status: 200 }
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 25))
+
+  beforeAll(() => {
+    huddles._setVoipSenderForTests(async (token, payload) => {
+      voipCalls.push({ token, payload })
+      return voipResult
+    })
+  })
+
+  beforeEach(async () => {
+    voipCalls = []
+    voipResult = { sent: true, dead: false, status: 200 }
+    await db.mobilePushSubscription.deleteMany({ where: { userId: seed.member } })
+  })
+
+  afterAll(async () => {
+    huddles._setVoipSenderForTests(null)
+    await db.mobilePushSubscription.deleteMany({ where: { userId: seed.member } })
+  })
+
+  async function registerDevices(devices: Array<{ pushToken: string; platform: 'ios' | 'android'; voipToken?: string }>) {
+    for (const d of devices) {
+      await db.mobilePushSubscription.create({ data: { userId: seed.member, pushToken: d.pushToken, platform: d.platform, voipToken: d.voipToken ?? null } })
+    }
+  }
+
+  async function freshDm() {
+    await db.conversation.deleteMany({ where: { workspaceId: seed.workspaceId, kind: 'dm' } })
+    return service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+  }
+
+  test('an iPhone with a VoIP token gets a call, not an alert; Android gets a data push; other devices get the alert', async () => {
+    await registerDevices([
+      { pushToken: 'ExponentPushToken[ios-voip]', platform: 'ios', voipToken: IOS_VOIP },
+      { pushToken: 'ExponentPushToken[android]', platform: 'android' },
+      { pushToken: 'ExponentPushToken[ios-no-voip]', platform: 'ios' },
+    ])
+    const dm = await freshDm()
+    const joined = await huddles.joinHuddle(dm.id, seed.owner)
+    await settle()
+
+    expect(voipCalls).toEqual([
+      {
+        token: IOS_VOIP,
+        payload: { huddleId: joined.huddle.id, conversationId: dm.id, workspaceId: seed.workspaceId, kind: 'dm', from: expect.objectContaining({ userId: seed.owner }) },
+      },
+    ])
+    const dataPushes = pushes.filter((p) => p.payload.dataOnly)
+    expect(dataPushes).toEqual([
+      expect.objectContaining({
+        userId: seed.member,
+        payload: expect.objectContaining({ type: 'huddle-ring', priority: 'high', pushTokens: ['ExponentPushToken[android]'] }),
+      }),
+    ])
+    const alerts = pushes.filter((p) => p.payload.type === 'huddle-ring' && !p.payload.dataOnly)
+    expect(alerts).toEqual([
+      expect.objectContaining({
+        userId: seed.member,
+        payload: expect.objectContaining({ pushTokens: ['ExponentPushToken[ios-no-voip]'], channelId: 'huddle-calls', sound: 'default' }),
+      }),
+    ])
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('when APNs does not take the call, the iPhone still gets the alert', async () => {
+    await registerDevices([{ pushToken: 'ExponentPushToken[ios-voip]', platform: 'ios', voipToken: IOS_VOIP }])
+    voipResult = { sent: false, dead: false, status: 503, reason: 'ServiceUnavailable' }
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    await settle()
+
+    expect(pushes).toEqual([
+      expect.objectContaining({
+        userId: seed.member,
+        payload: expect.objectContaining({ type: 'huddle-ring', pushTokens: ['ExponentPushToken[ios-voip]'] }),
+      }),
+    ])
+    const kept = await db.mobilePushSubscription.findUnique({ where: { pushToken: 'ExponentPushToken[ios-voip]' } })
+    expect(kept.voipToken).toBe(IOS_VOIP)
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('a dead VoIP token is cleared from the device record', async () => {
+    await registerDevices([{ pushToken: 'ExponentPushToken[ios-voip]', platform: 'ios', voipToken: IOS_VOIP }])
+    voipResult = { sent: false, dead: true, status: 410, reason: 'Unregistered' }
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    await settle()
+
+    const row = await db.mobilePushSubscription.findUnique({ where: { pushToken: 'ExponentPushToken[ios-voip]' } })
+    expect(row.voipToken).toBeNull()
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('huddleSound off: no call and no data push, only a silent alert to every device', async () => {
+    await db.chatUserSettings.create({ data: { workspaceId: seed.workspaceId, userId: seed.member, huddleSound: 'off' } })
+    try {
+      await registerDevices([
+        { pushToken: 'ExponentPushToken[ios-voip]', platform: 'ios', voipToken: IOS_VOIP },
+        { pushToken: 'ExponentPushToken[android]', platform: 'android' },
+      ])
+      const dm = await freshDm()
+      await huddles.joinHuddle(dm.id, seed.owner)
+      await settle()
+
+      expect(voipCalls).toEqual([])
+      expect(pushes.some((p) => p.payload.dataOnly)).toBe(false)
+      const alert = pushes.find((p) => p.payload.type === 'huddle-ring')
+      expect(alert?.payload.sound).toBeNull()
+      expect(alert?.payload.pushTokens).toEqual(expect.arrayContaining(['ExponentPushToken[ios-voip]', 'ExponentPushToken[android]']))
+      await huddles.leaveHuddle(dm.id, seed.owner)
+    } finally {
+      await db.chatUserSettings.deleteMany({ where: { workspaceId: seed.workspaceId, userId: seed.member } })
+    }
+  })
+
+  test('the caller joining does not cancel their own ring', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    expect(pushes.some((p) => p.payload.type === 'huddle-ring-cancel')).toBe(false)
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('answering on another device cancels the ring on every rung device', async () => {
+    await registerDevices([{ pushToken: 'ExponentPushToken[android]', platform: 'android' }])
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    pushes = []
+
+    await huddles.joinHuddle(dm.id, seed.member)
+    expect(pushes).toEqual([
+      expect.objectContaining({
+        userId: seed.member,
+        payload: expect.objectContaining({ type: 'huddle-ring-cancel', dataOnly: true, priority: 'high' }),
+      }),
+    ])
+    await huddles.leaveHuddle(dm.id, seed.member)
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+
+  test('declining stops the decliner\'s other devices from ringing', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    pushes = []
+
+    await huddles.declineHuddle(dm.id, seed.member)
+    expect(pushes.some((p) => p.userId === seed.member && p.payload.type === 'huddle-ring-cancel')).toBe(true)
+  })
+
+  test('ending the huddle cancels the ring for everyone rung', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    pushes = []
+
+    await huddles.leaveHuddle(dm.id, seed.owner)
+    expect(pushes).toEqual([expect.objectContaining({ userId: seed.member, payload: expect.objectContaining({ type: 'huddle-ring-cancel' }) })])
+  })
+
+  test('the ring window passing cancels the ring, and a cancelled ring cancels only once', async () => {
+    const dm = await freshDm()
+    await huddles.joinHuddle(dm.id, seed.owner)
+    pushes = []
+
+    await huddles._expireRingsForTests()
+    await huddles._expireRingsForTests()
+    expect(pushes.filter((p) => p.payload.type === 'huddle-ring-cancel')).toHaveLength(1)
+    await huddles.leaveHuddle(dm.id, seed.owner)
+  })
+})
+
+describe('routeRingDevices', () => {
+  const ios = (pushToken: string, voipToken: string | null = null) => ({ pushToken, platform: 'ios', voipToken })
+  const android = (pushToken: string) => ({ pushToken, platform: 'android', voipToken: null })
+
+  test('DMs route iPhones with VoIP to calls and Android to data pushes; the rest to alerts', async () => {
+    const { routeRingDevices } = huddles
+    const routed = routeRingDevices([ios('a', 'v'), ios('b'), android('c'), { pushToken: 'd', platform: 'web', voipToken: null }], { oneToOne: true, silent: false })
+    expect(routed.voip.map((d) => d.pushToken)).toEqual(['a'])
+    expect(routed.data.map((d) => d.pushToken)).toEqual(['c'])
+    expect(routed.alert.map((d) => d.pushToken).sort()).toEqual(['b', 'd'])
+  })
+
+  test('group calls and silent huddles only use alerts', async () => {
+    const devices = [ios('a', 'v'), android('c')]
+    expect(huddles.routeRingDevices(devices, { oneToOne: false, silent: false }).alert).toHaveLength(2)
+    expect(huddles.routeRingDevices(devices, { oneToOne: true, silent: true }).alert).toHaveLength(2)
   })
 })

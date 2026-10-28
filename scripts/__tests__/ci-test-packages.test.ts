@@ -20,7 +20,6 @@ const ROOT = resolve(import.meta.dir, '../..')
  * is debt: fix the suite and move the package into TEST_PACKAGES.
  */
 const NOT_IN_PR_CI: Record<string, string> = {
-  'apps/desktop': 'in TEST_PACKAGES but has no test script, so the runner skips it; 8 failing tests',
   'packages/canvas-runtime': 'suite fails: react / react-dom version mismatch in the test env',
   'packages/cli': 'suite has a failing test; not run anywhere yet',
   'packages/shogo-worker': '39 failing tests (git/PATH/sqlite fixtures rotted while unrun)',

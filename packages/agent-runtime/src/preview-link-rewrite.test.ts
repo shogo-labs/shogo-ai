@@ -64,7 +64,78 @@ describe('rewriteLocalhostLinks', () => {
   })
 })
 
+describe('rewriteLocalhostLinks — own ports inside code and curl lines (SHO-239)', () => {
+  // Mirrors `LOCALHOST_RE` in e2e/staging/agent-chat.ts — the assertion the
+  // staging critical-path gate makes on the agent's own reply text.
+  const LOCALHOST_RE =
+    /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?|(?:\blocalhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d{2,5}/i
+  const OWN_PORTS = [8080, 37256]
+
+  test('the reply that failed the staging gate comes out clean', () => {
+    const input = [
+      'Verified:',
+      '  Build clean (built in 1337ms), no type/lint errors',
+      '  `localhost:8080` → 200, public URL → 200',
+      `  Preview URL: ${ORIGIN}`,
+    ].join('\n')
+    const out = rewriteLocalhostLinks(input, ORIGIN, { ownPorts: OWN_PORTS })
+    expect(out).not.toMatch(LOCALHOST_RE)
+    expect(out).toBe(
+      [
+        'Verified:',
+        '  Build clean (built in 1337ms), no type/lint errors',
+        `  \`${ORIGIN}\` → 200, public URL → 200`,
+        `  Preview URL: ${ORIGIN}`,
+      ].join('\n'),
+    )
+  })
+
+  test('rewrites an own-port URL inside a fence, preserving the path', () => {
+    const input = ['```', 'http://127.0.0.1:8080/x', '```'].join('\n')
+    expect(rewriteLocalhostLinks(input, ORIGIN, { ownPorts: OWN_PORTS })).toBe(
+      ['```', `${ORIGIN}/x`, '```'].join('\n'),
+    )
+  })
+
+  test('rewrites the API sidecar port on a curl line', () => {
+    const input = 'I ran curl -s http://localhost:37256/api/todos'
+    expect(rewriteLocalhostLinks(input, ORIGIN, { ownPorts: OWN_PORTS })).toBe(
+      `I ran curl -s ${ORIGIN}/api/todos`,
+    )
+  })
+
+  test('leaves other ports in code untouched', () => {
+    const input = [
+      'connect with `postgres://u@localhost:5432/db`',
+      '```',
+      'localhost:5173',
+      '```',
+    ].join('\n')
+    expect(rewriteLocalhostLinks(input, ORIGIN, { ownPorts: OWN_PORTS })).toBe(input)
+  })
+
+  test('leaves a bare localhost in code untouched', () => {
+    const input = "set `host: 'localhost'` in the config"
+    expect(rewriteLocalhostLinks(input, ORIGIN, { ownPorts: OWN_PORTS })).toBe(input)
+  })
+
+  test('is byte-identical locally even with own ports set', () => {
+    const input = 'Verified: `localhost:8080` → 200\ncurl -s http://localhost:37256/api/todos'
+    expect(rewriteLocalhostLinks(input, '', { ownPorts: OWN_PORTS })).toBe(input)
+    expect(rewriteLocalhostLinks(input, undefined, { ownPorts: OWN_PORTS })).toBe(input)
+  })
+})
+
 describe('LocalhostLinkRewriter (streaming)', () => {
+  test('rewrites an own port split across deltas and keeps code parity', () => {
+    const rw = new LocalhostLinkRewriter(ORIGIN, undefined, [8080, 37256])
+    let out = ''
+    out += rw.push('`localhost:80')
+    out += rw.push('80` → 200, then http://localhost:8080/live')
+    out += rw.flush()
+    expect(out).toBe(`\`${ORIGIN}\` → 200, then ${ORIGIN}/live`)
+  })
+
   test('rewrites a localhost URL split across deltas', () => {
     const rw = new LocalhostLinkRewriter(ORIGIN)
     let out = ''

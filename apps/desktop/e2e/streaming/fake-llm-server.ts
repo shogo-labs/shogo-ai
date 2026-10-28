@@ -20,6 +20,11 @@
  *       calls the model again, which continues with the next segment. Add
  *       holdAt=R to wait for release(tag) before round R's segment starts
  *       (R=0 is the first request), and gap=ms to delay each continuation.
+ *       same=1 sends the SAME read_file args every round (drives the loop
+ *       detector); empty=1 sends read_file with path "" (drives the
+ *       empty-argument guard). Both keep distinct tokens per round, and both
+ *       are stopped by the identical-call detector at 10 — the no-progress
+ *       breaker is off by default (SHO-235 round 2).
  *
  * Every token is `t<tag>w<NNNN>` so any view can be checked for gaps,
  * repeats and reordering just by parsing its text (see stream-probe.ts).
@@ -30,7 +35,7 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 
-export type Script = 'long' | 'hold' | 'tool' | 'plain'
+export type Script = 'long' | 'hold' | 'tool' | 'bg' | 'plain'
 
 /** One request the app made to the model. */
 export interface FakeTurn {
@@ -47,20 +52,64 @@ export interface FakeTurn {
   finishedAt?: number
   /** Name of the tool called at the end of this request, if any. */
   toolCalled?: string
+  /** The tool-result text this request carried (round > 0), as the agent sent it. */
+  toolResults?: string
   userText: string
+  /**
+   * The whole request body as sent. `userText` is only the last user message,
+   * so a spec that has to prove what *history* reached the model (a restored
+   * session, a summary block) reads `messages` from here.
+   */
+  body?: any
+  /**
+   * The request body's `messages`, digested: role, tool names and content
+   * length per message. A spec uses it to assert what the model was actually
+   * shown — e.g. that turn 2 carried turn 1's tool calls and results verbatim
+   * instead of `[Tool output processed — N chars]` (SHO-122).
+   */
+  messages: RequestMessageDigest[]
+}
+
+export interface RequestMessageDigest {
+  role: string
+  /** Tool names on an assistant message's tool calls, in order. */
+  toolNames: string[]
+  /** Characters of text content in this message. */
+  chars: number
+  /** First 200 characters of that text, for shape assertions. */
+  preview: string
+  /**
+   * Last 200 characters of that text. The runtime wraps a user message in a
+   * preamble ("[Chat — User Message] …"), so the user's own words can sit past
+   * `preview` — a spec that wants to identify a message by what the person
+   * typed has to look at both ends.
+   */
+  tail: string
 }
 
 interface Marker {
-  script: 'long' | 'hold' | 'tool'
+  script: 'long' | 'hold' | 'tool' | 'bg'
   tag: string
   n: number
   ms: number
   rounds: number
   holdAt: number | null
   gap: number
+  /** `bg`: the shell command, `_` standing in for a space. */
+  cmd?: string
+  /** `tool`: the file the fake model reads (a path the agent can resolve). */
+  path?: string
+  /** `tool`: send the same read_file args every round instead of varying them. */
+  same?: boolean
+  /** `tool`: send read_file with `path: ""` — a lost-arguments call. */
+  empty?: boolean
+  /** `tool`: on the first round, fire N failing calls in ONE turn. */
+  parallel?: number
 }
 
-const MARKER = /\[\[e2e:(long|hold|tool)((?::[a-zA-Z]+=[\w-]+)*)\]\]/
+// Values may contain `|` so a `bg` marker can script a real pipeline
+// (`cmd=false_|_cat`), which is the shape SHO-141 has to judge.
+const MARKER = /\[\[e2e:(long|hold|tool|bg)((?::[a-zA-Z]+=[\w./|-]+)*)\]\]/
 
 /** Tool the fake model calls. `read_file` works on a missing path too: an error result still continues the turn. */
 const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
@@ -68,19 +117,44 @@ const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
  * The agent stops a turn that repeats the same tool call with identical input (loop
  * detection), or after several failing calls in a row. So every round reads a longer
  * slice of a file that exists: distinct input, always a success.
+ *
+ * `same` keeps the args identical on purpose (that is the loop being tested) and
+ * `empty` drops the required `path` to drive the empty-argument guard.
  */
-const toolArgs = (_tag: string, round: number): Record<string, unknown> => ({ path: 'AGENTS.md', offset: 1, limit: round + 1 })
+const toolArgs = (_tag: string, round: number, path = 'AGENTS.md', mode?: 'same' | 'empty'): Record<string, unknown> => {
+  if (mode === 'empty') return { path: '' }
+  if (mode === 'same') return { path, offset: 1, limit: 1 }
+  return { path, offset: 1, limit: round + 1 }
+}
 
 export function marker(
-  script: 'long' | 'hold' | 'tool',
+  script: 'long' | 'hold' | 'tool' | 'bg',
   tag: string,
   n: number,
-  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number } = {},
+  options: {
+    ms?: number
+    rounds?: number
+    holdAt?: number
+    gap?: number
+    cmd?: string
+    path?: string
+    /** `tool`: repeat the same read_file args every round (loop-detector scenario). */
+    same?: boolean
+    /** `tool`: send read_file with `path: ""` (empty-argument-guard scenario). */
+    empty?: boolean
+    /** `tool`: fire this many failing calls in the first round, in one turn. */
+    parallel?: number
+  } = {},
 ): string {
   const parts = [`tag=${tag}`, `n=${n}`, `ms=${options.ms ?? 10}`]
   if (options.rounds !== undefined) parts.push(`rounds=${options.rounds}`)
   if (options.holdAt !== undefined) parts.push(`holdAt=${options.holdAt}`)
   if (options.gap !== undefined) parts.push(`gap=${options.gap}`)
+  if (options.cmd !== undefined) parts.push(`cmd=${options.cmd.replace(/ /g, '_')}`)
+  if (options.path !== undefined) parts.push(`path=${options.path}`)
+  if (options.same) parts.push('same=1')
+  if (options.empty) parts.push('empty=1')
+  if (options.parallel !== undefined) parts.push(`parallel=${options.parallel}`)
   return `[[e2e:${script}:${parts.join(':')}]]`
 }
 
@@ -107,9 +181,14 @@ function parseMarker(text: string): Marker | null {
     tag: params.tag ?? 'x',
     n: Number(params.n ?? 100),
     ms: Number(params.ms ?? 10),
-    rounds: script === 'tool' ? Math.max(1, Number(params.rounds ?? 1)) : 0,
+    rounds: script === 'tool' ? Math.max(1, Number(params.rounds ?? 1)) : script === 'bg' ? 1 : 0,
     holdAt: script === 'hold' ? 0 : params.holdAt !== undefined ? Number(params.holdAt) : null,
     gap: Number(params.gap ?? 0),
+    ...(script === 'bg' ? { cmd: (params.cmd ?? 'sleep_2').replace(/_/g, ' ') } : {}),
+    ...(params.path ? { path: params.path } : {}),
+    ...(script === 'tool' && params.same === '1' ? { same: true } : {}),
+    ...(script === 'tool' && params.empty === '1' ? { empty: true } : {}),
+    ...(script === 'tool' && params.parallel ? { parallel: Math.max(2, Number(params.parallel)) } : {}),
   }
 }
 
@@ -123,7 +202,42 @@ function contentText(content: unknown): string {
   return ''
 }
 
-/** The last user message, and how many tool results follow it (the tool round). */
+/** `messages` as role + tool names + content size — what the model was shown. */
+export function digestMessages(messages: any[]): RequestMessageDigest[] {
+  return messages.map((message) => {
+    const parts: any[] = Array.isArray(message?.content) ? message.content : []
+    const text = [contentText(message?.content), ...parts.map((p) => (typeof p?.text === 'string' ? p.text : ''))].join('\n')
+    const toolNames = parts
+      .filter((p) => p?.type === 'tool_use' || p?.type === 'tool_call' || p?.type === 'toolCall')
+      .map((p) => String(p?.name ?? ''))
+    for (const call of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
+      toolNames.push(String(call?.function?.name ?? call?.name ?? ''))
+    }
+    return {
+      role: String(message?.role ?? ''),
+      toolNames: toolNames.filter(Boolean),
+      chars: text.length,
+      preview: text.slice(0, 200),
+      tail: text.slice(-200),
+    }
+  })
+}
+
+/** How many tool calls one assistant message carried (either wire shape). */
+function toolCallCount(message: any): number {
+  const parts = Array.isArray(message?.content) ? message.content : []
+  const fromParts = parts.filter(
+    (p: any) => p?.type === 'tool_use' || p?.type === 'tool_call' || p?.type === 'toolCall',
+  ).length
+  const fromCalls = Array.isArray(message?.tool_calls) ? message.tool_calls.length : 0
+  return fromParts + fromCalls
+}
+
+/**
+ * The last user message, and how many tool rounds follow it. A round is one
+ * assistant message that called tools — five calls in one turn are still one
+ * round, not five (SHO-235).
+ */
 function conversationState(messages: any[]): { userText: string; round: number } {
   let lastUser = -1
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -134,7 +248,9 @@ function conversationState(messages: any[]): { userText: string; round: number }
   }
   if (lastUser < 0) return { userText: '', round: 0 }
   let round = 0
-  for (let i = lastUser + 1; i < messages.length; i++) if (messages[i]?.role === 'tool') round++
+  for (let i = lastUser + 1; i < messages.length; i++) {
+    if (messages[i]?.role === 'assistant' && toolCallCount(messages[i]) > 0) round++
+  }
   return { userText: contentText(messages[lastUser].content), round }
 }
 
@@ -247,7 +363,14 @@ export class FakeLlmServer {
       /* fall through with an empty body */
     }
 
-    const { userText, round } = conversationState(Array.isArray(body.messages) ? body.messages : [])
+    const messages: any[] = Array.isArray(body.messages) ? body.messages : []
+    const { userText, round } = conversationState(messages)
+    // What the runtime sent back after running the tool — the evidence that the
+    // agent read something, and what it read.
+    const toolResults = messages
+      .filter((m) => m?.role === 'tool')
+      .map((m) => contentText(m.content))
+      .join('\n')
     const toolNames: string[] = (Array.isArray(body.tools) ? body.tools : []).map((t: any) => t?.function?.name).filter(Boolean)
     // Only agent turns carry tools. Title generation and other side calls may
     // quote the user's text, marker included, and must stay plain.
@@ -271,6 +394,9 @@ export class FakeLlmServer {
       startedAt: Date.now(),
       sentAt: [],
       userText,
+      body,
+      messages: digestMessages(messages),
+      ...(toolResults ? { toolResults } : {}),
     }
     this.turns.push(turn)
 
@@ -312,7 +438,9 @@ export class FakeLlmServer {
       })
 
     if (!parsed) {
-      res.write(chunk({ content: 'ok' }))
+      // A task wake has no marker; answer it with a recognisable token so a
+      // spec can tell the auto-resumed turn apart from any other reply.
+      res.write(chunk({ content: userText.includes('[Task update]') ? 'wake-ack' : 'ok' }))
       turn.sentAt.push(Date.now())
       finish('stop')
       return
@@ -354,13 +482,35 @@ export class FakeLlmServer {
     if (closed) return
 
     if (round < parsed.rounds) {
-      const name = TOOL_PREFERENCE.find((n) => toolNames.includes(n))
+      const background = parsed.script === 'bg'
+      const name = background
+        ? (toolNames.includes('exec') ? 'exec' : undefined)
+        : TOOL_PREFERENCE.find((n) => toolNames.includes(n))
       if (name) {
-        const args = JSON.stringify(toolArgs(parsed.tag, round))
-        const id = `call_${parsed.tag}_${round}`
-        res.write(chunk({ tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: '' } }] }))
-        res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: args.slice(0, 8) } }] }))
-        res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: args.slice(8) } }] }))
+        const mode = parsed.empty ? 'empty' : parsed.same ? 'same' : undefined
+        // `parallel` is the shape a model produces when it batches several tool
+        // calls in one turn: every call misses, but the turn is one mistake.
+        const calls =
+          parsed.parallel && round === 0
+            ? Array.from({ length: parsed.parallel }, (_, i) => ({
+                id: `call_${parsed.tag}_${round}_${i}`,
+                args: JSON.stringify({ path: `missing-${parsed.tag}-${i}.txt` }),
+              }))
+            : [
+                {
+                  id: `call_${parsed.tag}_${round}`,
+                  args: JSON.stringify(
+                    background
+                      ? { command: parsed.cmd, background: true }
+                      : toolArgs(parsed.tag, round, parsed.path, mode),
+                  ),
+                },
+              ]
+        for (const [index, call] of calls.entries()) {
+          res.write(chunk({ tool_calls: [{ index, id: call.id, type: 'function', function: { name, arguments: '' } }] }))
+          res.write(chunk({ tool_calls: [{ index, function: { arguments: call.args.slice(0, 8) } }] }))
+          res.write(chunk({ tool_calls: [{ index, function: { arguments: call.args.slice(8) } }] }))
+        }
         turn.toolCalled = name
         finish('tool_calls')
         return

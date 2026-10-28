@@ -198,7 +198,7 @@ test.describe("API Key Feature — Full E2E", () => {
   // =========================================================================
 
   test("2a — create a project for integration scoping", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 15_000 })
 
     const input = homeComposerInput(page)

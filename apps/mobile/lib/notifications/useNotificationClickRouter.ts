@@ -17,9 +17,14 @@ import {
   type ChatNotificationClickData,
 } from './chat-notifier'
 
-function buildChatHref(data: ChatNotificationClickData) {
+export function notificationClickHref(data: ChatNotificationClickData) {
   if ('agentKey' in data && data.agentKey) {
     return { pathname: '/(app)/agents/[key]' as const, params: { key: data.agentKey } }
+  }
+  // A notification that names its own destination (an invitation accept page,
+  // say) is pushed verbatim — it is an app-relative path, not a route object.
+  if ('actionUrl' in data && data.actionUrl) {
+    return data.actionUrl
   }
   if (data.conversationId) {
     return {
@@ -47,7 +52,7 @@ export function useNotificationClickRouter(): void {
 
   useEffect(() => {
     const unsubscribe = subscribeNotificationClicks((data) => {
-      const href = buildChatHref(data)
+      const href = notificationClickHref(data)
       if (!href) return
       try {
         router.push(href as any)
@@ -60,7 +65,7 @@ export function useNotificationClickRouter(): void {
     // while killed, pick up that initial response and route accordingly.
     void consumeColdStartNotification().then((data) => {
       if (!data) return
-      const href = buildChatHref(data)
+      const href = notificationClickHref(data)
       if (!href) return
       try {
         router.push(href as any)

@@ -165,6 +165,21 @@ describe('agent profile card', () => {
     expect(card!.channels.find((c) => c.name === 'eng')!.agentTrigger).toBe('keyword')
   })
 
+  test('names the model the agent runs with, the way the app names models', async () => {
+    const plain = await directory.loadAgentCard(seed.workspaceId, seed.projectId, seed.member)
+    expect(plain!.model).toEqual({ id: 'auto', label: 'Auto' })
+
+    await db.agentConfig.create({ data: { projectId: seed.projectId, modelName: 'claude-sonnet-4-6' } })
+    const picked = (await directory.loadAgentCard(seed.workspaceId, seed.projectId, seed.member))!
+    expect(picked.model).toEqual({ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' })
+    expect(picked.model.label).not.toContain(picked.model.id)
+
+    // Auto routing has no single model to name, so the workspace agent says Auto.
+    const ws = (await directory.loadAgentCard(seed.workspaceId, null, seed.member))!
+    expect(ws.model).toEqual({ id: 'auto', label: 'Auto' })
+    await db.agentConfig.delete({ where: { projectId: seed.projectId } })
+  })
+
   test('the workspace agent has a card, unknown projects do not', async () => {
     const ws = await directory.loadAgentCard(seed.workspaceId, null, seed.member)
     expect(ws).toMatchObject({ projectId: null, name: 'Shogo' })

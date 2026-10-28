@@ -21,6 +21,20 @@
 
 set -euo pipefail
 
+# Agent identity guard. In an agent checkout — one whose local `user.email` is
+# a Shogo agent address — a commit is refused unless both the author and the
+# committer are Shogo Agent <agent@shogo.ai>: `--author`, GIT_AUTHOR_EMAIL /
+# GIT_COMMITTER_* overrides and `-c user.*` are the ways a gray-avatar identity
+# has leaked onto main. A human's checkout is never refused (the guard is
+# dormant when `user.email` is not an agent address), and the hook itself does
+# nothing if bun is missing.
+if command -v bun >/dev/null 2>&1; then
+  hook_dir="$(cd "$(dirname "$0")" && pwd)"
+  if ! bun "$(dirname "$hook_dir")/scripts/git-attribution-hook.ts" verify-commit; then
+    exit 1
+  fi
+fi
+
 CLOUD_SCHEMA="prisma/schema.prisma"
 CLOUD_MIGRATIONS="prisma/migrations"
 LOCAL_SCHEMA="prisma/schema.local.prisma"

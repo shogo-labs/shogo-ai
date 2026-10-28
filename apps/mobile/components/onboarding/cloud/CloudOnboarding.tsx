@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Destination-first onboarding, shared by cloud and local/desktop. Every
- * account already owns a Personal space and a Team workspace (created by the
- * signup hook, or seeded by local bootstrap), so this flow creates nothing
- * new: it asks where the user wants to start, lets team-first users name the
- * workspace, invite people and install a first agent, then lands them there.
+ * Onboarding shared by cloud and local/desktop. Every account already owns a
+ * Personal space and a Team workspace (created by the signup hook, or seeded
+ * by local bootstrap), so this flow creates nothing new: it lets the user name
+ * the workspace, invite people and describe what they want to build, then
+ * lands them there.
  *
- *   personal -> SettingUp -> companion chat (seeded prompt)
- *   team     -> team-setup -> agent-picker -> SettingUp -> project | builder home
+ *   team     -> team-setup -> build-prompt -> SettingUp -> workspace agent chat | builder home
  *   joined   -> joined -> SettingUp -> the workspace they were invited to
+ *
+ * There is no personal-vs-team choice. Users who were invited into a team
+ * workspace go straight to it.
  *
  * Local mode prepends two machine-specific steps: `name` (only while the
  * seeded user still has the placeholder name) and `ai-config` (Shogo Cloud
@@ -29,27 +31,24 @@ import {
   useWorkspaceCollection,
 } from '../../../contexts/domain'
 import { usePostHogSafe } from '../../../contexts/posthog'
-import { api, getOnboardingMessage, type OnboardingIntent } from '../../../lib/api'
+import { api, type OnboardingIntent } from '../../../lib/api'
+import { buildBuildBriefMessage } from '../../chat/turns/buildBrief'
 import { EVENTS, trackEvent } from '../../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../../lib/safe-storage'
 import { setActiveWorkspaceId } from '../../../lib/workspace-store'
-import { setChatPrefill } from '../../../hooks/useChatPrefill'
 import { OnboardingStepper, type StepDef } from '../OnboardingStepper'
 import { NameInput } from '../steps/NameInput'
 import { AIConfigForm } from '../steps/AIConfigForm'
-import { DestinationStep, type Destination } from './DestinationStep'
 import { TeamSetupStep } from './TeamSetupStep'
 import { parseEmailDraft } from './email-draft'
 import { JoinedStep } from './JoinedStep'
-import { AgentPickerStep, type OnboardingListing } from './AgentPickerStep'
+import { BuildPromptStep } from './BuildPromptStep'
 import { SettingUp } from './SettingUp'
 import {
   isDesktopPermissionStep,
   shouldShowDesktopPermissionSteps,
   useDesktopPermissionSteps,
 } from '../desktop/useDesktopPermissionSteps'
-
-const PERSONAL_SEED_PROMPT = 'Help me plan my week.'
 
 /** Names the local bootstrap seeds before the user has told us theirs. */
 const PLACEHOLDER_USER_NAMES = new Set(['', 'local', 'local user'])
@@ -110,7 +109,6 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const [loaded, setLoaded] = useState(false)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [retryingLoad, setRetryingLoad] = useState(false)
-  const [destination, setDestination] = useState<Destination | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
   // Fixed at mount so the step list doesn't shift once the name is saved.
   const [askName] = useState(() => localMode && isPlaceholder(PLACEHOLDER_USER_NAMES, user?.name))
@@ -124,12 +122,16 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const [teamError, setTeamError] = useState<string | null>(null)
   const [inviteError, setInviteError] = useState<string | null>(null)
   const [savingTeam, setSavingTeam] = useState(false)
-  const [selectedListing, setSelectedListing] = useState<OnboardingListing | null>(null)
+  // A marketing-site deep link (`pending_template_id`, a listing slug) seeds the prompt.
+  const [buildPrompt, setBuildPrompt] = useState(() => {
+    const slug = Platform.OS === 'web' ? safeGetItem('pending_template_id') : null
+    return slug ? `Set up the ${slug.replace(/[-_]+/g, ' ')} agent for me` : ''
+  })
   const [finishing, setFinishing] = useState(false)
   const [finishError, setFinishError] = useState<string | null>(null)
 
   const invitedEmails = useRef(new Set<string>())
-  const installedProjectId = useRef<string | null>(null)
+  const createdSessionId = useRef<string | null>(null)
   const savedTeamName = useRef<string | null>(null)
   const handleNextRef = useRef<() => void>(() => {})
   const advanceRef = useRef<() => void>(() => {})
@@ -148,6 +150,9 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const joinedTeamWorkspace = allWorkspaces.find(
     (w) => w.kind !== 'personal' && roleFor(w.id) && roleFor(w.id) !== 'owner',
   )
+  // Everyone lands in a team workspace. Invited users land in the one they joined.
+  type Destination = 'team' | 'joined'
+  const destination: Destination = joinedTeamWorkspace ? 'joined' : 'team'
 
   // Load workspaces + memberships, backfilling either own workspace if the
   // signup hook didn't create it (older accounts, or the hook failed).
@@ -204,13 +209,10 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   useEffect(() => {
     if (!loaded) return
     if (ownTeamWorkspace && !teamName) setTeamName(ownTeamWorkspace.name)
-    if (destination) return
-    if (joinedTeamWorkspace) setDestination('joined')
-    else if (Platform.OS === 'web' && safeGetItem('pending_template_id')) setDestination('team')
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, ownTeamWorkspace?.id, joinedTeamWorkspace?.id])
+  }, [loaded, ownTeamWorkspace?.id])
 
-  const intent: OnboardingIntent | null = destination ? (destination === 'personal' ? 'personal' : 'team') : null
+  const intent: OnboardingIntent = 'team'
   const analyticsContext = useMemo(
     () => ({ mode: localMode ? 'local' : 'cloud', destination, intent }),
     [localMode, destination, intent],
@@ -226,21 +228,24 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const displayTeamName = teamName.trim() || ownTeamWorkspace?.name || 'your workspace'
   const draftInvalid = parseEmailDraft(emailDraft).invalid
 
-  const targetWorkspaceId =
-    destination === 'personal'
-      ? personalWorkspace?.id
-      : destination === 'joined'
-        ? joinedTeamWorkspace?.id
-        : ownTeamWorkspace?.id
+  const targetWorkspaceId = destination === 'joined' ? joinedTeamWorkspace?.id : ownTeamWorkspace?.id
+
+  // Start claiming / booting the workspace agent's runtime now, so it is warm
+  // by the time the user finishes the remaining steps and sends a first turn.
+  const prewarmedWorkspaceId = useRef<string | null>(null)
+  useEffect(() => {
+    if (!loaded || !targetWorkspaceId) return
+    if (prewarmedWorkspaceId.current === targetWorkspaceId) return
+    prewarmedWorkspaceId.current = targetWorkspaceId
+    void api.prewarmWorkspaceRuntime(http, targetWorkspaceId, { source: 'onboarding' })
+  }, [loaded, targetWorkspaceId, http])
 
   const settingUpMessage =
-    destination === 'personal'
-      ? 'Opening your companion…'
-      : destination === 'joined'
-        ? `Opening ${joinedTeamWorkspace?.name ?? 'your team'}…`
-        : selectedListing
-          ? `Installing ${selectedListing.title}…`
-          : `Opening ${displayTeamName}…`
+    destination === 'joined'
+      ? `Opening ${joinedTeamWorkspace?.name ?? 'your team'}…`
+      : buildPrompt.trim()
+        ? 'Starting your workspace agent…'
+        : `Opening ${displayTeamName}…`
 
   const navigateToWorkspace = useCallback(
     (workspaceId: string | undefined) => {
@@ -250,52 +255,39 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     [router],
   )
 
-  const finish = useCallback(async (listingOverride?: OnboardingListing | null) => {
-    const listing = listingOverride !== undefined ? listingOverride : selectedListing
+  const finish = useCallback(async (promptOverride?: string) => {
+    const prompt = (promptOverride !== undefined ? promptOverride : buildPrompt).trim()
     setFinishing(true)
     setFinishError(null)
     try {
       await api.completeOnboarding(http, intent ? { intent } : undefined)
+      safeRemoveItem('pending_template_id')
 
-      if (destination === 'team' && listing && ownTeamWorkspace) {
-        if (!installedProjectId.current) {
-          const installed = await actions.installListing(listing.slug, ownTeamWorkspace.id)
-          if (!installed?.projectId) throw new Error(`Couldn't install ${listing.title}.`)
-          installedProjectId.current = installed.projectId
-          trackEvent(posthog, EVENTS.PROJECT_CREATED, {
-            source: 'onboarding',
-            listing_slug: listing.slug,
-            listing_title: listing.title,
+      if (destination === 'team' && prompt && ownTeamWorkspace) {
+        if (!createdSessionId.current) {
+          const session = await api.createWorkspaceSession(http, ownTeamWorkspace.id, {
+            inferredName: prompt.slice(0, 60),
           })
+          createdSessionId.current = session.id
         }
-        const chatSession = await actions.createChatSession({
-          inferredName: 'Untitled',
-          contextType: 'project',
-          contextId: installedProjectId.current,
-        })
-        safeRemoveItem('pending_template_id')
         setActiveWorkspaceId(ownTeamWorkspace.id)
         trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
           ...analyticsContext,
-          installed_listing: listing.slug,
+          build_prompt: true,
         })
         router.replace({
-          pathname: '/(app)/projects/[id]',
+          pathname: '/(app)/agent',
           params: {
-            id: installedProjectId.current,
-            chatSessionId: chatSession.id,
-            initialMessage: getOnboardingMessage(listing.title, listing.slug),
-            showIntegrations: '1',
-            ...(Platform.OS !== 'web' ? { tab: 'chat-fullscreen' } : {}),
+            chatSessionId: createdSessionId.current,
+            initialMessage: buildBuildBriefMessage(prompt),
           },
         } as any)
         return
       }
 
-      if (destination === 'personal') setChatPrefill(PERSONAL_SEED_PROMPT)
       trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
         ...analyticsContext,
-        installed_listing: null,
+        build_prompt: false,
       })
       navigateToWorkspace(targetWorkspaceId)
     } catch (err) {
@@ -303,12 +295,11 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
       setFinishError(errorMessage(err, "We couldn't finish setting up. Check your connection and try again."))
     }
   }, [
-    actions,
     analyticsContext,
+    buildPrompt,
     destination,
     http,
     intent,
-    selectedListing,
     navigateToWorkspace,
     ownTeamWorkspace,
     posthog,
@@ -456,20 +447,6 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
       })
     }
     list.push(...permissionSteps.steps)
-    list.push({
-      id: 'destination',
-      title: `Welcome, ${firstName}. Where do you want to start?`,
-      subtitle: 'You have a Personal space and a Team workspace. Start wherever you like—you can switch between them anytime.',
-      canContinue: !!destination,
-      primaryLabel: destination === 'personal' ? 'Open my companion' : 'Continue',
-      body: (
-        <DestinationStep
-          value={destination}
-          onChange={setDestination}
-          joinedWorkspaceName={joinedTeamWorkspace?.name}
-        />
-      ),
-    })
     if (destination === 'team') {
       list.push(
         {
@@ -512,13 +489,20 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
           ),
         },
         {
-          id: 'agent-picker',
+          id: 'build-prompt',
           eyebrow: displayTeamName,
-          title: 'Start with an agent',
-          subtitle: 'Pick one to install now, or start from scratch. You can add more from the marketplace anytime.',
-          primaryLabel: selectedListing ? `Install ${selectedListing.title}` : `Open ${displayTeamName}`,
-          skipLabel: selectedListing ? "I'll start from scratch" : undefined,
-          body: <AgentPickerStep selected={selectedListing} onSelect={setSelectedListing} />,
+          title: 'What do you want to build?',
+          subtitle: 'Tell your workspace agent about it. You can change direction anytime.',
+          canContinue: buildPrompt.trim().length > 0,
+          primaryLabel: 'Start building',
+          skipLabel: "I'll explore first",
+          body: (
+            <BuildPromptStep
+              value={buildPrompt}
+              onChange={setBuildPrompt}
+              onSubmit={() => handleNextRef.current()}
+            />
+          ),
         },
       )
     }
@@ -553,8 +537,8 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     permissionSteps.steps,
     retryingLoad,
     retryLoad,
+    buildPrompt,
     savingName,
-    selectedListing,
     savingTeam,
     teamError,
     teamName,
@@ -573,19 +557,10 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     const step = steps[activeIndex]
     if (!step || step.busy || step.canContinue === false) return
     if (step.id === 'name' && !(await saveName())) return
-    if (step.id === 'destination') {
-      trackEvent(posthog, EVENTS.ONBOARDING_INTENT_SELECTED, analyticsContext)
-    }
     if (step.id === 'team-setup' && !(await saveTeamSetup())) return
     if (isDesktopPermissionStep(step.id)) await permissionSteps.onLeave(step.id, 'continued')
-    if (step.id === 'agent-picker' && selectedListing) {
-      trackEvent(posthog, EVENTS.ONBOARDING_AGENT_SELECTED, {
-        ...analyticsContext,
-        listing_slug: selectedListing.slug,
-      })
-    }
     advance()
-  }, [activeIndex, advance, analyticsContext, permissionSteps, selectedListing, posthog, saveName, saveTeamSetup, steps])
+  }, [activeIndex, advance, analyticsContext, permissionSteps, posthog, saveName, saveTeamSetup, steps])
 
   handleNextRef.current = () => void handleNext()
 
@@ -596,9 +571,8 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
       advance()
       return
     }
-    setSelectedListing(null)
-    safeRemoveItem('pending_template_id')
-    void finish(null)
+    setBuildPrompt('')
+    void finish('')
   }, [activeIndex, advance, finish, steps])
 
   const handleStepViewed = useCallback(

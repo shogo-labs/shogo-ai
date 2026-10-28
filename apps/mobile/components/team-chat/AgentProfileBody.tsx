@@ -53,14 +53,26 @@ export function AgentProfileBody({
   card,
   onToggleMute,
   onOpenChannel,
+  showModel = true,
 }: {
   card: AgentCard
   onToggleMute: (channel: AgentCard['channels'][number]) => void
   onOpenChannel?: (conversationId: string) => void
+  /**
+   * The model the agent runs with. Off on the workspace agent's full profile,
+   * where the editable "Workspace agent model" card already is that row.
+   */
+  showModel?: boolean
 }) {
   return (
     <View className="gap-3">
       {card.role ? <Text className="text-sm text-foreground">{card.role}</Text> : null}
+      {showModel ? (
+        <View>
+          <Text className="text-[11px] font-semibold uppercase text-muted-foreground">Model</Text>
+          <Text className="text-sm text-foreground">{card.model.label}</Text>
+        </View>
+      ) : null}
       {card.owner ? (
         <View>
           <Text className="text-[11px] font-semibold uppercase text-muted-foreground">Owner</Text>

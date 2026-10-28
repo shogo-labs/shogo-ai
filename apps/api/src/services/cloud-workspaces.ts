@@ -61,9 +61,15 @@ async function save(next: Stored): Promise<void> {
   await localDb.localConfig.upsert({ where: { key: CONFIG_KEY }, update: { value }, create: { key: CONFIG_KEY, value } })
 }
 
-export async function listCloudWorkspaces(): Promise<{ user: CloudUser | null; workspaces: CloudWorkspaceEntry[]; reachable: boolean }> {
+export async function listCloudWorkspaces(): Promise<{
+  user: CloudUser | null
+  workspaces: CloudWorkspaceEntry[]
+  reachable: boolean
+  /** False when the user kept just one workspace selected at sign-in. */
+  enabled: boolean
+}> {
   const stored = await load()
-  return { user: stored.user, workspaces: stored.workspaces, reachable }
+  return { user: stored.user, workspaces: stored.workspaces, reachable, enabled: stored.enabled }
 }
 
 export async function cloudWorkspaceKey(workspaceId: string): Promise<string | null> {

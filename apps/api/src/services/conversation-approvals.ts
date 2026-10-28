@@ -262,6 +262,23 @@ const PENDING_LOOKBACK_MS = 24 * 60 * 60 * 1000
 const PENDING_LIMIT = 50
 
 /**
+ * Where-clause for "approval card still pending". Postgres filters the Json
+ * column by path. The desktop's SQLite stores `blocks` as a JSON string and
+ * can't filter by path, so it matches the serialized text instead. The
+ * serialization has no whitespace, so the substrings match exactly; a false
+ * positive (the text inside a message body) is dropped by `toPendingApproval`.
+ */
+export function pendingBlocksWhere(isLocal: boolean = process.env.SHOGO_LOCAL_MODE === 'true'): Record<string, unknown> {
+  if (!isLocal) return { blocks: { path: ['approval', 'status'], equals: 'pending' } }
+  return {
+    AND: [
+      { blocks: { contains: '"type":"approval_request"' } },
+      { blocks: { contains: '"status":"pending"' } },
+    ],
+  }
+}
+
+/**
  * The approvals a person can answer right now in a workspace: open cards in
  * channels they can read (open channels, or ones they belong to), newest first.
  * Cards whose run has ended are expired when the runtime reports it, so the
@@ -274,7 +291,7 @@ export async function listPendingApprovals(workspaceId: string, userId: string, 
       authorType: 'agent',
       deletedAt: null,
       createdAt: { gte: new Date(now.getTime() - PENDING_LOOKBACK_MS) },
-      blocks: { path: ['approval', 'status'], equals: 'pending' },
+      ...pendingBlocksWhere(),
       conversation: {
         archivedAt: null,
         OR: [{ kind: { in: ['public', 'activity'] } }, { members: { some: { userId } } }],

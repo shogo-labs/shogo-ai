@@ -172,3 +172,85 @@ describe('reminders', () => {
       .rejects.toThrow()
   })
 })
+
+describe('inbox paging cursor', () => {
+  const T = new Date('2026-05-01T12:00:00.000Z')
+  const who = 'cursor-test-user'
+
+  /** Four rows share one millisecond — a batch mention writes exactly like this. */
+  const seedRows = async () => {
+    await db.chatInboxItem.deleteMany({ where: { workspaceId: seed.workspaceId, userId: who } })
+    for (const id of ['c1', 'c2', 'c3', 'c4']) {
+      await db.chatInboxItem.create({
+        data: { id, workspaceId: seed.workspaceId, userId: who, kind: 'mention', title: id, preview: id, createdAt: T },
+      })
+    }
+    await db.chatInboxItem.create({
+      data: {
+        id: 'c5',
+        workspaceId: seed.workspaceId,
+        userId: who,
+        kind: 'mention',
+        title: 'c5',
+        preview: 'c5',
+        createdAt: new Date(T.getTime() - 1000),
+      },
+    })
+  }
+
+  test('a tie straddling the page boundary is not dropped', async () => {
+    await seedRows()
+
+    const first = await inbox.listInbox(seed.workspaceId, who, { limit: 2 })
+    expect(first.items.map((i: any) => i.id)).toEqual(['c4', 'c3'])
+    expect(first.hasMore).toBe(true)
+
+    const last = first.items[first.items.length - 1] as any
+    const second = await inbox.listInbox(seed.workspaceId, who, {
+      limit: 2,
+      before: last.createdAt,
+      beforeId: last.id,
+    })
+    // c2 and c1 share c3's millisecond; without the id half both vanish.
+    expect(second.items.map((i: any) => i.id)).toEqual(['c2', 'c1'])
+    expect(second.hasMore).toBe(true)
+
+    const lastSecond = second.items[second.items.length - 1] as any
+    const third = await inbox.listInbox(seed.workspaceId, who, {
+      limit: 2,
+      before: lastSecond.createdAt,
+      beforeId: lastSecond.id,
+    })
+    expect(third.items.map((i: any) => i.id)).toEqual(['c5'])
+    expect(third.hasMore).toBe(false)
+  })
+
+  test('without the id half, the boundary millisecond is skipped entirely', async () => {
+    await seedRows()
+
+    const first = await inbox.listInbox(seed.workspaceId, who, { limit: 2 })
+    const last = first.items[first.items.length - 1] as any
+    const second = await inbox.listInbox(seed.workspaceId, who, { limit: 2, before: last.createdAt })
+
+    // Pinning the old behaviour: this is the row loss the id half fixes.
+    expect(second.items.map((i: any) => i.id)).toEqual(['c5'])
+  })
+
+  test('paging walks every row exactly once', async () => {
+    await seedRows()
+
+    const seen: string[] = []
+    let before: string | null = null
+    let beforeId: string | null = null
+    for (let guard = 0; guard < 10; guard += 1) {
+      const page = await inbox.listInbox(seed.workspaceId, who, { limit: 2, before, beforeId })
+      seen.push(...page.items.map((i: any) => i.id))
+      if (!page.hasMore) break
+      const last = page.items[page.items.length - 1] as any
+      before = last.createdAt
+      beforeId = last.id
+    }
+
+    expect(seen).toEqual(['c4', 'c3', 'c2', 'c1', 'c5'])
+  })
+})

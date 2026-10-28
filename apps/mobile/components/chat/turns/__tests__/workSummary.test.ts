@@ -72,6 +72,8 @@ const emptyCounts: WorkCounts = {
   commands: 0,
   integrations: 0,
   integrationToolkits: [],
+  generic: 0,
+  genericToolNames: [],
 }
 
 describe("tallyWork", () => {
@@ -388,6 +390,84 @@ describe("buildWorkLabel", () => {
     expect(buildWorkLabel({ ...emptyCounts, ...integ, editedFiles: 1 }, "edited", "past")).toBe(
       "Edited 1 file, used 3 GitHub tools",
     )
+  })
+})
+
+describe("generic tools in work labels", () => {
+  test("tallyWork counts generic tools by distinct raw name", () => {
+    const { counts } = tallyWork([
+      tool("team_chat_post", { channel: "a", text: "1" }),
+      tool("team_chat_post", { channel: "a", text: "2" }),
+      tool("Skill", { name: "x" }),
+    ])
+    expect(counts.generic).toBe(3)
+    expect(counts.genericToolNames).toEqual(["Skill", "team_chat_post"])
+    expect(counts.commands).toBe(0)
+    expect(counts.integrations).toBe(0)
+  })
+
+  test("generic-only runs classify as 'used'", () => {
+    expect(classifyWorkKind({ ...emptyCounts, generic: 1, genericToolNames: ["team_chat_post"] })).toBe("used")
+  })
+
+  test("a lone generic tool reads as its name; repeats get an xN suffix", () => {
+    const single = { ...emptyCounts, generic: 1, genericToolNames: ["team_chat_post"] }
+    expect(buildWorkLabel(single, "used", "past")).toBe("Team chat post")
+    const repeated = { ...emptyCounts, generic: 3, genericToolNames: ["team_chat_post"] }
+    expect(buildWorkLabel(repeated, "used", "past")).toBe("Team chat post x3")
+  })
+
+  test("several distinct generic tools read as a count", () => {
+    const counts = { ...emptyCounts, generic: 4, genericToolNames: ["Skill", "team_chat_post"] }
+    expect(buildWorkLabel(counts, "used", "past")).toBe("Used 4 tools")
+    expect(buildWorkLabel(counts, "used", "present")).toBe("Using 4 tools")
+  })
+
+  test("generic tools trail integrations in a 'used' label", () => {
+    const integ = { integrations: 3, integrationToolkits: ["github"] }
+    expect(
+      buildWorkLabel({ ...emptyCounts, ...integ, generic: 1, genericToolNames: ["team_chat_post"] }, "used", "past"),
+    ).toBe("Used 3 GitHub tools, team chat post")
+    expect(
+      buildWorkLabel(
+        { ...emptyCounts, ...integ, generic: 4, genericToolNames: ["Skill", "team_chat_post"] },
+        "used",
+        "past",
+      ),
+    ).toBe("Used 3 GitHub tools, 4 other tools")
+  })
+
+  test("generic tools trail explored/ran segments", () => {
+    expect(
+      buildWorkLabel(
+        { ...emptyCounts, readFiles: 2, generic: 1, genericToolNames: ["team_chat_post"] },
+        "explored",
+        "past",
+      ),
+    ).toBe("Explored 2 files, team chat post")
+    expect(
+      buildWorkLabel(
+        { ...emptyCounts, readFiles: 2, generic: 4, genericToolNames: ["Skill", "team_chat_post"] },
+        "explored",
+        "past",
+      ),
+    ).toBe("Explored 2 files, used 4 tools")
+    expect(
+      buildWorkLabel(
+        { ...emptyCounts, commands: 2, generic: 1, genericToolNames: ["team_chat_post"] },
+        "ran",
+        "past",
+      ),
+    ).toBe("Ran 2 commands, team chat post")
+  })
+
+  test("end-to-end: a read followed by team_chat_post posts reads as one explored run", () => {
+    const summary = summarizeWork(
+      [tool("Read", { path: "/a.ts" }), tool("team_chat_post", { channel: "general", text: "done" })],
+      "past",
+    )
+    expect(summary.kind).toBe("explored")
+    expect(summary.label).toBe("Explored 1 file, team chat post")
   })
 })
 

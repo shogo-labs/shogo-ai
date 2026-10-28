@@ -11,7 +11,7 @@ projects:
       model: auto
       heartbeat:
         enabled: true
-        interval: 3600
+        interval: 14400
       capabilities:
         boardsEnabled: true
         boardAdminEnabled: false

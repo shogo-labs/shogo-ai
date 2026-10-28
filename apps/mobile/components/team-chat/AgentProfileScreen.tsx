@@ -14,6 +14,7 @@ import { useOpenAgentDm } from '../../lib/use-open-agent-dm'
 import { useAgentLook } from '../../hooks/useTeamChat'
 import { ShogoBuddy } from '../island/buddy/ShogoBuddy'
 import { BuddyLookSheet } from '../personal/BuddyLookSheet'
+import { AgentDefaultModelCard } from '../settings/AgentDefaultModelCard'
 import { AgentProfileBody, useAgentCard } from './AgentProfileBody'
 import { buddyAvatarColor } from './BuddyAvatar'
 import { useAgentLookEditor } from './useAgentLookEditor'
@@ -88,13 +89,16 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
           {failed ? <Text className="text-center text-sm text-muted-foreground">Couldn’t load this agent’s details.</Text> : null}
           {card ? (
             <View className="rounded-xl border border-border bg-card p-4">
+              {/* The workspace agent's editable "Workspace agent model" card below is its model row. */}
               <AgentProfileBody
                 card={card}
                 onToggleMute={toggleMute}
                 onOpenChannel={(id) => router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: id } } as any)}
+                showModel={!!projectId}
               />
             </View>
           ) : null}
+          {!projectId ? <AgentDefaultModelCard workspaceId={workspaceId} /> : null}
         </View>
       </ScrollView>
 

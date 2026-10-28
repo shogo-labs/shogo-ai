@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import type {
   AssistantMessage,
   ImageContent,
@@ -12,15 +13,32 @@ import type {
 import {
   MAX_IMAGE_BASE64_BYTES,
   SUPPORTED_IMAGE_MIME_TYPES,
+  buildInvalidImagePlaceholder,
   buildOversizedPlaceholder,
   buildUnsupportedFormatPlaceholder,
+  decodeImageInfo,
   enforceImageSizeLimit,
+  scrubInvalidImages,
   scrubOversizedImages,
   sniffImageMimeType,
 } from '../image-size-guard'
 
+/**
+ * Real encoder output (see `fixtures/README` notes in the PR): decode
+ * validation rejects anything that isn't a genuine container, so a fake
+ * `'AAAA'` payload can no longer stand in for "a fine little PNG".
+ */
+function fixtureBase64(name: string): string {
+  return readFileSync(new URL(`./fixtures/${name}`, import.meta.url)).toString('base64')
+}
+
+const PNG_FILE = fixtureBase64('screenshot-fixture.png')
+const JPEG_FILE = fixtureBase64('screenshot-fixture.jpg')
+const GIF_FILE = fixtureBase64('screenshot-fixture.gif')
+const WEBP_FILE = fixtureBase64('screenshot-fixture.webp')
+
 function smallImage(): ImageContent {
-  return { type: 'image', data: 'AAAA', mimeType: 'image/png' }
+  return { type: 'image', data: PNG_FILE, mimeType: 'image/png' }
 }
 
 function bigImage(): ImageContent {
@@ -143,25 +161,45 @@ describe('enforceImageSizeLimit', () => {
     }
   )
 
-  test.each(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])(
-    'passes %s through untouched',
-    (mimeType) => {
-      const content: (TextContent | ImageContent)[] = [unsupportedFormatImage(mimeType)]
-      const out = enforceImageSizeLimit(content, { label: 'read_file' })
-      expect(out).toBe(content)
-    }
-  )
-
-  test('is case-insensitive when matching mimeType against the supported set', () => {
-    const content: (TextContent | ImageContent)[] = [{ type: 'image', data: 'AAAA', mimeType: 'IMAGE/PNG' }]
+  test.each([
+    ['image/png', PNG_FILE],
+    ['image/jpeg', JPEG_FILE],
+    ['image/gif', GIF_FILE],
+    ['image/webp', WEBP_FILE],
+  ])('passes a decodable %s through untouched', (mimeType, data) => {
+    const content: (TextContent | ImageContent)[] = [{ type: 'image', data: data as string, mimeType }]
     const out = enforceImageSizeLimit(content, { label: 'read_file' })
     expect(out).toBe(content)
   })
 
-  test('does not format-check images with no mimeType (can\'t validate what we can\'t identify)', () => {
-    const content: (TextContent | ImageContent)[] = [{ type: 'image', data: 'AAAA' } as ImageContent]
+  test.each(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])(
+    'flags %s whose bytes decode to nothing',
+    (mimeType) => {
+      const content: (TextContent | ImageContent)[] = [unsupportedFormatImage(mimeType)]
+      const out = enforceImageSizeLimit(content, { label: 'read_file' })
+      expect(out).not.toBe(content)
+      expect(out[0].type).toBe('text')
+      expect((out[0] as TextContent).text).toContain('not a decodable')
+    }
+  )
+
+  test('is case-insensitive when matching mimeType against the supported set', () => {
+    const content: (TextContent | ImageContent)[] = [{ type: 'image', data: PNG_FILE, mimeType: 'IMAGE/PNG' }]
     const out = enforceImageSizeLimit(content, { label: 'read_file' })
     expect(out).toBe(content)
+  })
+
+  test('labels an image that declares no mimeType from its own bytes', () => {
+    const content: (TextContent | ImageContent)[] = [{ type: 'image', data: PNG_FILE } as ImageContent]
+    const out = enforceImageSizeLimit(content, { label: 'read_file' })
+    expect(out[0]).toEqual({ type: 'image', data: PNG_FILE, mimeType: 'image/png' })
+  })
+
+  test('rejects an image with no mimeType whose bytes are not an image', () => {
+    const content: (TextContent | ImageContent)[] = [{ type: 'image', data: 'AAAA' } as ImageContent]
+    const out = enforceImageSizeLimit(content, { label: 'read_file' })
+    expect(out).not.toBe(content)
+    expect((out[0] as TextContent).text).toContain('Image omitted')
   })
 
   test('checks format before size, so an unsupported-format image gets the format placeholder even if also oversized', () => {
@@ -173,6 +211,19 @@ describe('enforceImageSizeLimit', () => {
     const out = enforceImageSizeLimit([badBoth], { label: 'read_file' })
     expect((out[0] as TextContent).text).toContain('image/bmp')
     expect((out[0] as TextContent).text).not.toContain('exceeds')
+  })
+
+  test('checks size before decoding, so an oversized payload is reported as oversized and never inflated', () => {
+    const oversized: ImageContent = {
+      type: 'image',
+      data: 'A'.repeat(MAX_IMAGE_BASE64_BYTES + 1),
+      mimeType: 'image/png',
+    }
+    const out = enforceImageSizeLimit([oversized], { label: 'read_file', pathHint: 'big.png' })
+    const text = (out[0] as TextContent).text
+    expect(text).toContain('exceeds')
+    expect(text).toContain('big.png')
+    expect(text).not.toContain('not a decodable')
   })
 })
 
@@ -206,15 +257,15 @@ describe('sniffed image format', () => {
   })
 
   test('relabels a supported image whose declared type is wrong', () => {
-    const jpegAsPng: ImageContent = { type: 'image', data: JPEG, mimeType: 'image/png' }
+    const jpegAsPng: ImageContent = { type: 'image', data: JPEG_FILE, mimeType: 'image/png' }
     expect(enforceImageSizeLimit([jpegAsPng], { label: 'read_file' })).toEqual([{ ...jpegAsPng, mimeType: 'image/jpeg' }])
 
-    const pngAsIcon: ImageContent = { type: 'image', data: PNG, mimeType: 'image/x-icon' }
+    const pngAsIcon: ImageContent = { type: 'image', data: PNG_FILE, mimeType: 'image/x-icon' }
     expect(enforceImageSizeLimit([pngAsIcon], { label: 'read_file' })).toEqual([{ ...pngAsIcon, mimeType: 'image/png' }])
   })
 
   test('leaves a correctly-labeled image untouched by reference', () => {
-    const content: (TextContent | ImageContent)[] = [{ type: 'image', data: PNG, mimeType: 'image/png' }]
+    const content: (TextContent | ImageContent)[] = [{ type: 'image', data: PNG_FILE, mimeType: 'image/png' }]
     expect(enforceImageSizeLimit(content, { label: 'read_file' })).toBe(content)
   })
 })
@@ -320,5 +371,152 @@ describe('scrubOversizedImages', () => {
     const cleaned = out[0] as ToolResultMessage
     expect(cleaned.content[0].type).toBe('text')
     expect((cleaned.content[0] as TextContent).text).toContain('Image omitted')
+  })
+})
+
+/**
+ * A valid PNG with one byte flipped inside its IDAT data. Built here from the
+ * committed encoder output so no invalid image bytes ever enter the repo.
+ * (The card for SHO-41 asks for `len - 40`: that lands in IDAT for this
+ * fixture.)
+ */
+function corruptPngFixture(): Buffer {
+  const bytes = readFileSync(new URL('./fixtures/screenshot-fixture.png', import.meta.url))
+  const corrupt = Buffer.from(bytes)
+  corrupt[corrupt.length - 40] ^= 0xff
+  return corrupt
+}
+
+describe('decodeImageInfo', () => {
+  test('accepts encoder output for every supported format and reports real dims', () => {
+    expect(decodeImageInfo(PNG_FILE, 'image/png')).toEqual({ mimeType: 'image/png', width: 64, height: 64 })
+    expect(decodeImageInfo(JPEG_FILE, 'image/jpeg')).toEqual({ mimeType: 'image/jpeg', width: 64, height: 64 })
+    expect(decodeImageInfo(GIF_FILE, 'image/gif')).toEqual({ mimeType: 'image/gif', width: 64, height: 64 })
+    expect(decodeImageInfo(WEBP_FILE, 'image/webp')).toEqual({ mimeType: 'image/webp', width: 64, height: 64 })
+  })
+
+  test('trusts the bytes over a wrong declared type', () => {
+    expect(decodeImageInfo(JPEG_FILE, 'image/png')).toMatchObject({ mimeType: 'image/jpeg', width: 64 })
+    expect(decodeImageInfo(PNG_FILE, undefined)).toMatchObject({ mimeType: 'image/png', width: 64 })
+  })
+
+  test('rejects a PNG whose IDAT CRC no longer matches', () => {
+    // The exact production-poison shape: valid signature, valid IHDR, corrupt
+    // pixel data. Magic-byte sniffing says "image/png"; a real decoder does not.
+    const corrupt = corruptPngFixture().toString('base64')
+    expect(sniffImageMimeType(corrupt)).toBe('image/png')
+    expect(decodeImageInfo(corrupt, 'image/png')).toBeNull()
+  })
+
+  test('rejects a truncated PNG', () => {
+    const truncated = Buffer.from(PNG_FILE, 'base64').subarray(0, 60).toString('base64')
+    expect(decodeImageInfo(truncated, 'image/png')).toBeNull()
+  })
+
+  test('rejects a JPEG with no EOI marker', () => {
+    const bytes = Buffer.from(JPEG_FILE, 'base64')
+    expect(decodeImageInfo(bytes.subarray(0, bytes.length - 2).toString('base64'), 'image/jpeg')).toBeNull()
+  })
+
+  test('rejects impossible dimensions', () => {
+    const gif = Buffer.from(GIF_FILE, 'base64')
+    gif.writeUInt16LE(0, 6) // logical screen width 0
+    expect(decodeImageInfo(gif.toString('base64'), 'image/gif')).toBeNull()
+
+    const png = Buffer.from(PNG_FILE, 'base64')
+    png.writeUInt32BE(0, 16) // IHDR width 0
+    expect(decodeImageInfo(png.toString('base64'), 'image/png')).toBeNull()
+  })
+
+  test('rejects bytes that are not an image at all', () => {
+    expect(decodeImageInfo('AAAA', 'image/png')).toBeNull()
+    expect(decodeImageInfo(Buffer.from('hello world').toString('base64'), undefined)).toBeNull()
+  })
+
+  test('is deterministic across repeated calls', () => {
+    expect(decodeImageInfo(PNG_FILE, 'image/png')).toEqual(decodeImageInfo(PNG_FILE, 'image/png'))
+    const corrupt = corruptPngFixture().toString('base64')
+    expect(decodeImageInfo(corrupt, 'image/png')).toBeNull()
+    expect(decodeImageInfo(corrupt, 'image/png')).toBeNull()
+  })
+})
+
+describe('buildInvalidImagePlaceholder', () => {
+  test('names the source, the reason and the on-disk path with a re-export hint', () => {
+    const block = buildInvalidImagePlaceholder({
+      label: 'read_file',
+      mimeType: 'image/png',
+      pathHint: '.shogo/screenshots/run/step-01.png',
+    })
+    expect(block.type).toBe('text')
+    expect(block.text).toContain('[Image omitted — read_file]')
+    expect(block.text).toContain('not a decodable image/png')
+    expect(block.text).toContain('.shogo/screenshots/run/step-01.png')
+    expect(block.text.toLowerCase()).toContain('sips')
+  })
+
+  test('uses an explicit reason when the caller has one', () => {
+    const block = buildInvalidImagePlaceholder({ label: 'mcp:foo', reason: 'the model rejected it' })
+    expect(block.text).toContain('the model rejected it')
+  })
+})
+
+describe('corrupt images in a tool result', () => {
+  test('enforceImageSizeLimit replaces the image with one text placeholder', () => {
+    const corrupt: ImageContent = {
+      type: 'image',
+      data: corruptPngFixture().toString('base64'),
+      mimeType: 'image/png',
+    }
+    const content: (TextContent | ImageContent)[] = [corrupt, text('{"path":".shogo/screenshots/s.png"}')]
+    const out = enforceImageSizeLimit(content, { label: 'read_file', pathHint: '.shogo/screenshots/s.png' })
+    expect(out).toHaveLength(2)
+    expect(out[0].type).toBe('text')
+    expect((out[0] as TextContent).text).toContain('Image omitted')
+    expect((out[0] as TextContent).text).toContain('not a decodable image/png')
+    expect(out[1]).toBe(content[1])
+  })
+
+  test('scrubInvalidImages cleans a tool result already sitting in history', () => {
+    const corrupt: ImageContent = {
+      type: 'image',
+      data: corruptPngFixture().toString('base64'),
+      mimeType: 'image/png',
+    }
+    const messages: Message[] = [
+      {
+        role: 'toolResult',
+        toolCallId: 't1',
+        toolName: 'browser',
+        content: [corrupt, text('{"path":".shogo/screenshots/s.png"}')],
+        isError: false,
+        timestamp: 0,
+      },
+    ]
+    const out = scrubInvalidImages(messages)
+    expect(out).not.toBe(messages)
+    const cleaned = out[0] as ToolResultMessage
+    expect(cleaned.content[0].type).toBe('text')
+    expect((cleaned.content[0] as TextContent).text).toContain('Image omitted')
+    expect(scrubInvalidImages(out)).toBe(out)
+  })
+
+  test('scrubInvalidImages leaves a real screenshot alone by reference', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [text('look'), smallImage()], timestamp: 0 },
+      {
+        role: 'toolResult',
+        toolCallId: 't1',
+        toolName: 'browser',
+        content: [smallImage(), text('ok')],
+        isError: false,
+        timestamp: 0,
+      },
+    ]
+    expect(scrubInvalidImages(messages)).toBe(messages)
+  })
+
+  test('keeps the old name as an alias so existing imports keep working', () => {
+    expect(scrubOversizedImages).toBe(scrubInvalidImages)
   })
 })

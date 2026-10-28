@@ -135,6 +135,8 @@ export async function postAgentMessage(input: {
   agentChain?: AgentChain | null
   /** Message kind and status card; see `conversation-message-kind`. */
   blocks?: MessageBlocks | null
+  /** Files this agent uploaded to the conversation (see `storeAgentAttachment`). */
+  attachmentIds?: string[]
   /** Buttons for the mirrored copy on platforms that have them; a function gets the stored row (for its id). */
   actions?: OutboundAction[] | ((row: any) => OutboundAction[])
 }): Promise<PostMessageResult> {
@@ -158,6 +160,7 @@ export async function postAgentMessage(input: {
     clientMsgId: external ? input.externalRef?.slice(0, 100) ?? null : null,
     agentChain: input.agentChain ?? null,
     blocks: input.blocks ?? undefined,
+    attachmentIds: input.attachmentIds,
   })
   if (!result.duplicate) {
     await mirror(result.conversation, result.row, input.text, { type: 'agent', ...agent }, typeof input.actions === 'function' ? input.actions(result.row) : input.actions)
@@ -202,6 +205,21 @@ function externalProgressText(state: { text: string; tool: string | null }): str
   return state.tool ? `_Using ${state.tool}…_` : WORKING_TEXT
 }
 
+/**
+ * A reply waiting for a slot says so on Slack/Teams instead of claiming it is
+ * working. `null` restores the working line when it is admitted.
+ */
+export async function queueAgentReplyNotice(handle: AgentReplyHandle, queue: { position: number | null } | null): Promise<void> {
+  const ext = handle.external
+  if (!ext?.provider.updateMessage || !ext.provider.capabilities.edits) return
+  const text = queue
+    ? queue.position ? `_Queued (#${queue.position})…_` : '_Queued…_'
+    : WORKING_TEXT
+  handle.lastExternalUpdate = Date.now()
+  await ext.provider.updateMessage(ext.conv, ext.ref, { text: await providerText(ext.conv.workspaceId, text), author: handle.author })
+    .catch((err) => console.warn(`[ChatOutbound] ${ext.provider.kind} queue status failed:`, (err as Error).message))
+}
+
 /** Live progress. Shogo clients get every delta; external providers get throttled edits. */
 export async function streamAgentReply(
   handle: AgentReplyHandle,
@@ -240,7 +258,14 @@ function connectLabel(provider: string): string {
  */
 export async function finishAgentReply(
   handle: AgentReplyHandle,
-  final: { text: string; agentStatus: string; work?: AgentWork | null; connect?: IntegrationConnectRequest[] },
+  final: {
+    text: string
+    agentStatus: string
+    work?: AgentWork | null
+    connect?: IntegrationConnectRequest[]
+    /** What an external channel shows, when it differs from the stored text (media is Shogo-only). */
+    externalText?: string
+  },
 ): Promise<void> {
   const connect = final.connect?.length ? final.connect : null
   const blocks = final.work || connect
@@ -253,13 +278,14 @@ export async function finishAgentReply(
   )
   const ext = handle.external
   if (!ext) return
+  const shown = final.externalText ?? final.text
   try {
     const footer = final.work ? `_${workedForLabel(final.work)}_` : ''
     // External surfaces have no connect card, so the link goes in the text unless the agent already wrote it.
     const links = (connect ?? [])
-      .filter((c) => !final.text.includes(c.connectUrl))
+      .filter((c) => !shown.includes(c.connectUrl))
       .map((c) => `Connect ${connectLabel(c.provider)}: ${c.connectUrl}`)
-    const body = [final.text, ...links, footer].filter(Boolean).join('\n\n')
+    const body = [shown, ...links, footer].filter(Boolean).join('\n\n')
     const msg = { text: await providerText(ext.conv.workspaceId, body), author: handle.author }
     if (ext.provider.updateMessage && ext.provider.capabilities.edits) {
       await ext.provider.updateMessage(ext.conv, ext.ref, msg)
@@ -344,8 +370,15 @@ export async function updateAgentMessage(input: {
   }
   if (!String(text ?? '').trim()) throw new AgentMessageError(400, 'empty', 'Nothing to update')
 
-  const message = await shogoProvider.updateMessage(row.id, { text, blocks: blocks ?? null })
+  // An edit never goes through the insert point, so plain `@Name` is resolved here — the one
+  // function agent edits go through. Mirrored external channels keep the text they were given.
   const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
+  if (conversation?.provider === 'shogo' && text.includes('@')) {
+    const { resolveFriendlyMentions } = await import('../conversation-directory')
+    text = (await resolveFriendlyMentions(input.workspaceId, text, input.projectId)).text
+  }
+
+  const message = await shogoProvider.updateMessage(row.id, { text, blocks: blocks ?? null })
   const target = conversation ? await conversationRef(conversation, row.threadRootId ?? null) : null
   const ref = parseExternalRef(row.externalRef)
   if (target && ref && target.provider.capabilities.edits) {

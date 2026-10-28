@@ -9,19 +9,23 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
 import {
   MetalWarmPool,
+  RepoBundleLfsPushError,
   REPO_STAGING_DIR,
   RepoHydrateRefusedError,
+  REPO_DEFERRED_REASON,
   repoKeepPaths,
   type AssignedVm,
   type RepoExport,
 } from './pool'
 import type { RepoLineage, RepoWriteOutcome } from './repo-archive'
+import { parseRepoManifest, type RepoManifest } from './vendor/repo-bundles'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
@@ -38,6 +42,10 @@ class TestPool extends MetalWarmPool {
   statCalls = 0
   preserved: string[] = []
   preserveKey: string | null = 'conflict/p1/superseded-repo.tar.gz'
+
+  protected override async guestHasRepoBundles(): Promise<boolean> {
+    return false
+  }
 
   protected override async statDurableRepo() {
     this.statCalls++
@@ -327,6 +335,387 @@ describe('pool host-mediated repo persist', () => {
     })
   })
 
+  describe('cold-boot hydrate from the incremental manifest', () => {
+    const manifest = parseRepoManifest({
+      v: 1,
+      head: { ref: 'refs/heads/main' },
+      refs: { 'refs/heads/main': 'a'.repeat(40) },
+      config: '[core]\n',
+      rootCommitAt: null,
+      bundles: [{ sha256: 'b'.repeat(64), bytes: 9, kind: 'base' }],
+    })
+    const read = { manifest, etag: '"m1"', lastModified: null }
+    const bundleRefs = [{ ...manifest.bundles[0], url: 'https://store/repo/bundles/b.bundle' }]
+
+    function hydrateFromManifest(pool: TestPool, guest: (path: string, body: any) => Response) {
+      const seen: Array<{ path: string; body: any }> = []
+      const realFetch = globalThis.fetch
+      globalThis.fetch = mock((url: string, init?: RequestInit) => {
+        const path = new URL(url).pathname
+        const body = init?.body && typeof init.body === 'string' ? JSON.parse(init.body) : null
+        seen.push({ path, body })
+        return Promise.resolve(guest(path, body))
+      }) as any
+      ;(pool as any).repoManifest = async () => read
+      ;(pool as any).presignRepoBundles = async () => bundleRefs
+      ;(pool as any).repoRef = async () => {
+        throw new Error('the legacy tarball must not be read when a manifest exists')
+      }
+      return { seen, restore: () => { globalThis.fetch = realFetch } }
+    }
+
+    test('stages from the bundles, adopts them, and keeps the manifest etag as lineage', async () => {
+      const pool = makePool(dir)
+      const h = hydrateFromManifest(pool, (path) =>
+        Response.json(path === '/pool/repo-hydrated' ? { ok: true, deadline: true, bundles: true } : { ok: true }),
+      )
+      try {
+        const r = await (pool as any).hydrateRepo('p1', HANDLE, { RUNTIME_AUTH_SECRET: 'tok' })
+        expect(r).toEqual({ hydrated: true, parentEtag: '"m1"', keptPaths: [] })
+        expect(h.seen.map((s) => s.path)).toEqual(['/pool/repo-hydrated', '/pool/repo-bundles-hydrate', '/pool/repo-hydrated'])
+        expect(h.seen[1].body.bundles).toEqual([{ sha256: 'b'.repeat(64), url: 'https://store/repo/bundles/b.bundle' }])
+        expect(h.seen[1].body.manifest.refs).toEqual({ 'refs/heads/main': 'a'.repeat(40) })
+        expect(h.seen[1].body.stagingDir).toBe(REPO_STAGING_DIR)
+        expect(h.seen[2].body).toEqual({ stagingDir: REPO_STAGING_DIR, timeoutMs: config.hydrateTimeoutMs })
+      } finally {
+        h.restore()
+      }
+    })
+
+    test('refuses a guest without bundle support rather than restoring the stale tarball', async () => {
+      const pool = makePool(dir)
+      const h = hydrateFromManifest(pool, () => Response.json({ ok: true, supported: true, deadline: true }))
+      try {
+        await expect((pool as any).hydrateRepo('p1', HANDLE, {})).rejects.toThrow(/refusing to restore a stale tarball/)
+        expect(h.seen.map((s) => s.path)).toEqual(['/pool/repo-hydrated'])
+      } finally {
+        h.restore()
+      }
+    })
+
+    test('a bundle the guest cannot verify stops before the live tree is touched', async () => {
+      const pool = makePool(dir)
+      const h = hydrateFromManifest(pool, (path) =>
+        path === '/pool/repo-bundles-hydrate'
+          ? Response.json({ error: 'bundle failed its checksum' }, { status: 500 })
+          : Response.json({ ok: true, deadline: true, bundles: true }),
+      )
+      try {
+        await expect((pool as any).hydrateRepo('p1', HANDLE, {})).rejects.toThrow(/repo-bundles-hydrate failed \(500\)/)
+        expect(h.seen.map((s) => s.path)).toEqual(['/pool/repo-hydrated', '/pool/repo-bundles-hydrate'])
+      } finally {
+        h.restore()
+      }
+    })
+
+    test('drift stamps the manifest etag once a manifest exists', async () => {
+      const pool = makePool(dir)
+      ;(pool as any).repoManifest = async () => read
+      ;(pool as any).repoRef = async () => ({ etag: '"tar"', bytes: 1 })
+      const ref = await (pool as any).repoStampRef('p1')
+      expect(ref.etag).toBe('"m1"')
+    })
+  })
+
+  describe('incremental repo writer', () => {
+    const ENTRY_BASE_BYTES = new TextEncoder().encode('base-bundle-bytes')
+    const ENTRY_INCR_BYTES = new TextEncoder().encode('incr')
+    const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex')
+    const baseEntry = { sha256: sha(ENTRY_BASE_BYTES), bytes: ENTRY_BASE_BYTES.byteLength, kind: 'base' as const }
+    const incrEntry = { sha256: sha(ENTRY_INCR_BYTES), bytes: ENTRY_INCR_BYTES.byteLength, kind: 'incr' as const }
+    const head = { ref: 'refs/heads/main' }
+    const oldTip = 'a'.repeat(40)
+    const newTip = 'c'.repeat(40)
+
+    let prevManifest: RepoManifest | null
+    let exportCalls: Array<{ since: string[] | null }>
+    let guestCapable = true
+    let bundleUploads: string[]
+    let manifestWrites: Array<{ manifest: RepoManifest; lineage: RepoLineage }>
+    let manifestOutcome: RepoWriteOutcome
+    let bundleFetchBytes: Uint8Array
+
+    function writer(pool: TestPool, exportResult: any) {
+      // Keep the background sweep out of the writer tests; it has its own coverage.
+      ;(pool as any).scheduleRepoBundleSweep = () => {}
+      ;(pool as any).guestHasRepoBundles = async () => guestCapable
+      exportCalls = []
+      bundleUploads = []
+      manifestWrites = []
+      ;(pool as any).repoManifest = async () => (prevManifest ? { manifest: prevManifest, etag: '"m1"', lastModified: null } : null)
+      ;(pool as any).exportRepoBundle = async (_a: AssignedVm, since: string[] | null) => {
+        exportCalls.push({ since })
+        if (exportResult instanceof Error) throw exportResult
+        return exportResult
+      }
+      ;(pool as any).uploadRepoBundleGuarded = async (_p: string, entry: { sha256: string }) => {
+        bundleUploads.push(entry.sha256)
+        return 'uploaded'
+      }
+      ;(pool as any).uploadManifestGuarded = async (_p: string, manifest: RepoManifest, opts: { lineage: RepoLineage }) => {
+        manifestWrites.push({ manifest, lineage: opts.lineage })
+        return manifestOutcome
+      }
+      ;(pool as any).preserveDurableManifest = async () => 'conflict/p1/superseded-manifest.json'
+      const realFetch = globalThis.fetch
+      globalThis.fetch = mock(() => Promise.resolve(new Response(bundleFetchBytes))) as any
+      return () => {
+        globalThis.fetch = realFetch
+      }
+    }
+
+    const exportOf = (bundle: unknown, refs: Record<string, string> = { 'refs/heads/main': newTip }) => ({
+      bundle,
+      head,
+      refs,
+      config: '[core]\n',
+      rootCommitAt: null,
+    })
+
+    beforeEach(() => {
+      guestCapable = true
+      prevManifest = null
+      manifestOutcome = { status: 'created', etag: '"m1"' }
+      bundleFetchBytes = ENTRY_BASE_BYTES
+    })
+
+    test('a project with no manifest gets a full base, then its manifest is created', async () => {
+      const pool = makePool(dir)
+      const restore = writer(pool, exportOf(baseEntry, { 'refs/heads/main': oldTip }))
+      try {
+        const a = pool.add('p1', { repoParentEtag: undefined })
+        expect(await pool.saveRepoToStore(a)).toBe(true)
+        expect(exportCalls[0].since).toBeNull()
+        expect(bundleUploads).toEqual([baseEntry.sha256])
+        expect(manifestWrites[0].manifest.bundles).toEqual([baseEntry])
+        expect(manifestWrites[0].lineage).toEqual({ kind: 'create-only' })
+        expect(a.repoParentEtag).toBe('"m1"')
+      } finally {
+        restore()
+      }
+    })
+
+    test('nothing new since the manifest writes nothing', async () => {
+      const pool = makePool(dir)
+      prevManifest = parseRepoManifest({
+        v: 1,
+        head,
+        refs: { 'refs/heads/main': newTip },
+        config: '[core]\n',
+        rootCommitAt: null,
+        bundles: [baseEntry],
+      })
+      const restore = writer(pool, exportOf(null, { 'refs/heads/main': newTip }))
+      try {
+        const a = pool.add('p1', { repoParentEtag: '"m1"' })
+        expect(await pool.saveRepoToStore(a)).toBe(false)
+        expect(bundleUploads).toHaveLength(0)
+        expect(manifestWrites).toHaveLength(0)
+      } finally {
+        restore()
+      }
+    })
+
+    test('a new commit uploads an incremental against the recorded tips and extends the chain', async () => {
+      const pool = makePool(dir)
+      prevManifest = parseRepoManifest({
+        v: 1,
+        head,
+        refs: { 'refs/heads/main': oldTip },
+        config: '[core]\n',
+        rootCommitAt: null,
+        bundles: [baseEntry],
+      })
+      bundleFetchBytes = ENTRY_INCR_BYTES
+      const restore = writer(pool, exportOf(incrEntry))
+      try {
+        const a = pool.add('p1', { repoParentEtag: '"m1"' })
+        expect(await pool.saveRepoToStore(a)).toBe(true)
+        expect(exportCalls[0].since).toEqual([oldTip])
+        expect(manifestWrites[0].manifest.bundles.map((b) => b.kind)).toEqual(['base', 'incr'])
+        expect(manifestWrites[0].lineage).toEqual({ kind: 'descends', etag: '"m1"' })
+      } finally {
+        restore()
+      }
+    })
+
+    test('a chain past the compaction threshold restarts with a full base', async () => {
+      const pool = makePool(dir)
+      const incrs = Array.from({ length: 50 }, (_, i) => ({ sha256: i.toString(16).padStart(64, '0'), bytes: 1, kind: 'incr' as const }))
+      prevManifest = parseRepoManifest({
+        v: 1,
+        head,
+        refs: { 'refs/heads/main': oldTip },
+        config: '[core]\n',
+        rootCommitAt: null,
+        bundles: [baseEntry, ...incrs],
+      })
+      const restore = writer(pool, exportOf(baseEntry))
+      try {
+        const a = pool.add('p1', { repoParentEtag: '"m1"' })
+        expect(await pool.saveRepoToStore(a)).toBe(true)
+        expect(exportCalls[0].since).toBeNull()
+        expect(manifestWrites[0].manifest.bundles).toEqual([baseEntry])
+      } finally {
+        restore()
+      }
+    })
+
+    test('a conflicting write quarantines the manifest and leaves the lineage alone', async () => {
+      const pool = makePool(dir)
+      prevManifest = parseRepoManifest({
+        v: 1,
+        head,
+        refs: { 'refs/heads/main': oldTip },
+        config: '[core]\n',
+        rootCommitAt: null,
+        bundles: [baseEntry],
+      })
+      bundleFetchBytes = ENTRY_INCR_BYTES
+      manifestOutcome = { status: 'conflict', quarantineKey: 'conflict/p1/q-manifest.json', reason: 'lineage' }
+      const restore = writer(pool, exportOf(incrEntry))
+      try {
+        const a = pool.add('p1', { repoParentEtag: '"m1"' })
+        expect(await pool.saveRepoToStore(a)).toBe(false)
+        expect(a.repoParentEtag).toBe('"m1"')
+      } finally {
+        restore()
+      }
+    })
+
+    test('a manifest that exists is never bypassed for the tarball when the guest cannot export bundles', async () => {
+      const pool = makePool(dir)
+      prevManifest = parseRepoManifest({
+        v: 1,
+        head,
+        refs: { 'refs/heads/main': oldTip },
+        config: '',
+        rootCommitAt: null,
+        bundles: [baseEntry],
+      })
+      const restore = writer(pool, null)
+      try {
+        const a = pool.add('p1', { repoParentEtag: '"m1"' })
+        await expect(pool.saveRepoToStore(a)).rejects.toThrow(/refusing the tarball fallback/)
+        expect(manifestWrites).toHaveLength(0)
+      } finally {
+        restore()
+      }
+    })
+
+    test('a bundle whose bytes differ from its export is never published', async () => {
+      const pool = makePool(dir)
+      bundleFetchBytes = new TextEncoder().encode('tampered')
+      const restore = writer(pool, exportOf(baseEntry))
+      try {
+        const a = pool.add('p1', { repoParentEtag: undefined })
+        await expect(pool.saveRepoToStore(a)).rejects.toThrow(/did not match its export/)
+        expect(bundleUploads).toHaveLength(0)
+        expect(manifestWrites).toHaveLength(0)
+      } finally {
+        restore()
+      }
+    })
+
+    test('bundle support comes from the repo-hydrated probe and is cached per VM', async () => {
+      let answer: unknown = { ok: true, supported: true, deadline: true, bundles: true }
+      const probes: unknown[] = []
+      const guest = Bun.serve({
+        port: 0,
+        fetch: async (req) => {
+          probes.push(await req.json())
+          return typeof answer === 'string' ? new Response(answer) : Response.json(answer)
+        },
+      })
+      try {
+        const pool = makePool(dir)
+        const handle = { ...HANDLE, agentUrl: `http://127.0.0.1:${guest.port}` }
+        const probe = (a: AssignedVm) => (MetalWarmPool.prototype as any).guestHasRepoBundles.call(pool, a)
+        const capable = pool.add('p1', { handle })
+        expect(await probe(capable)).toBe(true)
+        expect(await probe(capable)).toBe(true)
+        expect(probes).toEqual([{ probe: true }])
+
+        answer = 'ok'
+        const legacy = pool.add('p2', { handle })
+        expect(await probe(legacy)).toBe(false)
+      } finally {
+        guest.stop(true)
+      }
+    })
+
+    test('a guest without bundle support and no manifest keeps the tarball path', async () => {
+      guestCapable = false
+      const pool = makePool(dir)
+      const restore = writer(pool, exportOf(baseEntry))
+      try {
+        const a = pool.add('p1', { repoParentEtag: undefined })
+        expect(await pool.saveRepoToStore(a)).toBe(true)
+        expect(exportCalls).toHaveLength(0)
+        expect(manifestWrites).toHaveLength(0)
+        expect(pool.uploads).toHaveLength(1)
+      } finally {
+        restore()
+      }
+    })
+
+    test('a failed LFS push keeps a project with no manifest on the tarball', async () => {
+      const pool = makePool(dir)
+      const restore = writer(pool, new RepoBundleLfsPushError('lfs push failed'))
+      try {
+        const a = pool.add('p1', { repoParentEtag: undefined })
+        expect(await pool.saveRepoToStore(a)).toBe(true)
+        expect(exportCalls).toHaveLength(1)
+        expect(manifestWrites).toHaveLength(0)
+        expect(pool.uploads).toHaveLength(1)
+      } finally {
+        restore()
+      }
+    })
+
+    test('a failed LFS push never sends a migrated project back to the tarball', async () => {
+      const pool = makePool(dir)
+      prevManifest = parseRepoManifest({
+        v: 1,
+        head,
+        refs: { 'refs/heads/main': oldTip },
+        config: '',
+        rootCommitAt: null,
+        bundles: [baseEntry],
+      })
+      const restore = writer(pool, new RepoBundleLfsPushError('lfs push failed'))
+      try {
+        const a = pool.add('p1', { repoParentEtag: '"m1"' })
+        await expect(pool.saveRepoToStore(a)).rejects.toThrow(RepoBundleLfsPushError)
+        expect(manifestWrites).toHaveLength(0)
+        expect(pool.uploads).toHaveLength(0)
+      } finally {
+        restore()
+      }
+    })
+
+    test('the guest LFS refusal is told apart from other export failures', async () => {
+      let answer = Response.json({ error: 'lfs push failed; repo bundle not exported' }, { status: 503 })
+      const guest = Bun.serve({ port: 0, fetch: () => answer.clone() })
+      try {
+        const pool = makePool(dir)
+        const a = pool.add('p1', { handle: { ...HANDLE, agentUrl: `http://127.0.0.1:${guest.port}` } })
+        const exportBundle = () => (MetalWarmPool.prototype as any).exportRepoBundle.call(pool, a, null)
+        await expect(exportBundle()).rejects.toThrow(RepoBundleLfsPushError)
+
+        answer = Response.json({ error: 'push failed', code: 'lfs-push-failed' }, { status: 503 })
+        await expect(exportBundle()).rejects.toThrow(RepoBundleLfsPushError)
+
+        answer = Response.json({ error: 'git bundle create failed' }, { status: 503 })
+        const other = await exportBundle().catch((err: unknown) => err)
+        expect(other).toBeInstanceOf(Error)
+        expect(other).not.toBeInstanceOf(RepoBundleLfsPushError)
+      } finally {
+        guest.stop(true)
+      }
+    })
+  })
+
   describe('workspace runtime assign', () => {
     function assignWorkspace(repoRef: object | null, onGuest?: (path: string) => Promise<void>) {
       const seen: string[] = []
@@ -375,7 +764,7 @@ describe('pool host-mediated repo persist', () => {
 
     test('stays template-origin when the repo hydrate fails', async () => {
       const { pool, run } = assignWorkspace({ url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' })
-      ;(pool as any).hydrateRepo = async () => {
+      ;(pool as any).prepareRepoStage = async () => {
         throw new Error('The operation timed out.')
       }
       const a = await run
@@ -386,7 +775,7 @@ describe('pool host-mediated repo persist', () => {
     test('members restored from backup make it backup-origin even when the repo hydrate fails', async () => {
       const { pool, run } = assignWorkspace({ url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' })
       ;(pool as any).sourceRef = async () => ({ url: 'https://store/p1/project-src.tar.gz', bytes: 10, etag: '"p1-src"' })
-      ;(pool as any).hydrateRepo = async () => {
+      ;(pool as any).prepareRepoStage = async () => {
         throw new Error('/pool/repo-hydrated failed (500)')
       }
       const a = await run
@@ -432,6 +821,140 @@ describe('pool host-mediated repo persist', () => {
       expect(await pool.saveRepoToStore(a)).toBe(false)
       expect(pool.statCalls).toBe(0)
       expect(pool.preserved).toHaveLength(0)
+    })
+  })
+
+  describe('assign-time repo restore past the foreground budget', () => {
+    const repoRef = { url: 'https://store/p1/repo.git.tar.gz', bytes: 10, etag: '"r1"' }
+
+    function assignSlowRepo(opts: { downloadMs: number; ifIdle?: boolean; adoptStatus?: number }) {
+      const seen: Array<{ path: string; body: any }> = []
+      const guest = Bun.serve({
+        port: 0,
+        fetch: async (req) => {
+          const path = new URL(req.url).pathname
+          const body = req.method === 'POST' ? await req.json().catch(() => null) : null
+          seen.push({ path, body })
+          if (path === '/pool/repo-hydrated' && body?.probe) {
+            return Response.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: opts.ifIdle ?? true })
+          }
+          if (path === '/pool/hydrate-url' && body?.destDir) await Bun.sleep(opts.downloadMs)
+          if (path === '/pool/repo-hydrated' && opts.adoptStatus) {
+            return Response.json({ error: 'workspace already in use', busy: true }, { status: opts.adoptStatus })
+          }
+          return Response.json({ ok: true })
+        },
+      })
+      const cfg = {
+        ...config,
+        work: dir,
+        snapDir: join(dir, 'snap'),
+        runDir: join(dir, 'run'),
+        poolSize: 0,
+        repoForegroundMs: 40,
+      } as typeof config
+      mkdirSync(cfg.snapDir, { recursive: true })
+      mkdirSync(cfg.runDir, { recursive: true })
+      const mgr = {
+        startVM: async () => ({ ...HANDLE, agentUrl: `http://127.0.0.1:${guest.port}`, rootfs: '/tmp/fake', vmClass: 'standard' }),
+        stopVM: async () => {},
+        isRunning: () => true,
+        procCount: () => 0,
+      } as unknown as FirecrackerVMManager
+      const pool = new TestPool(mgr, cfg, { kind: 'none' } as unknown as SnapshotStore)
+      ;(pool as any).sourceRef = async () => null
+      ;(pool as any).repoRef = async () => repoRef
+      ;(pool as any).projectDataRef = async () => null
+      ;(pool as any).hydrateHomeState = async () => ({ hydrated: false })
+      return { pool, seen, guest }
+    }
+
+    async function settle(a: AssignedVm) {
+      for (let i = 0; i < 100 && a.repoHydratePending; i++) await Bun.sleep(10)
+    }
+
+    test('serves the source .git once the budget runs out, then swaps the history in while idle', async () => {
+      const { pool, seen, guest } = assignSlowRepo({ downloadMs: 150 })
+      try {
+        const t0 = performance.now()
+        const a = await pool.assign('p1', { RUNTIME_AUTH_SECRET: 'tok' })
+        expect(performance.now() - t0).toBeLessThan(140)
+        expect(a.repoRestore?.mode).toBe('deferred')
+        expect(a.repoHydratePending).toBe(true)
+        expect(a.repoUntrustedReason).toBe(REPO_DEFERRED_REASON)
+        expect(await pool.saveRepoToStore(a)).toBe(false)
+
+        await settle(a)
+        const adopt = seen.find((s) => s.path === '/pool/repo-hydrated' && s.body?.stagingDir)
+        expect(adopt?.body.ifIdle).toBe(true)
+        expect(a.repoHydratePending).toBe(false)
+        expect(a.repoUntrustedReason).toBeUndefined()
+        expect(a.repoParentEtag).toBe('"r1"')
+        expect(a.repoLinked).toBe(true)
+
+        await pool.saveRepoToStore(a)
+        expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'descends', etag: '"r1"' })
+      } finally {
+        guest.stop(true)
+      }
+    })
+
+    test('a workspace already in use keeps the source .git and never writes the durable repo', async () => {
+      const { pool, guest } = assignSlowRepo({ downloadMs: 100, adoptStatus: 409 })
+      try {
+        const a = await pool.assign('p1', { RUNTIME_AUTH_SECRET: 'tok' })
+        await settle(a)
+        expect(a.repoHydratePending).toBe(false)
+        expect(a.repoUntrustedReason).toMatch(/in use/)
+        expect(a.sourceUntrustedReason).toBeUndefined()
+        expect(a.repoParentEtag).toBeUndefined()
+        expect(await pool.saveRepoToStore(a)).toBe(false)
+        expect(pool.uploads).toHaveLength(0)
+      } finally {
+        guest.stop(true)
+      }
+    })
+
+    test('a guest that cannot refuse a late swap is waited for, as before', async () => {
+      const { pool, seen, guest } = assignSlowRepo({ downloadMs: 100, ifIdle: false })
+      try {
+        const a = await pool.assign('p1', { RUNTIME_AUTH_SECRET: 'tok' })
+        expect(a.repoRestore?.mode).toBe('foreground')
+        expect(a.repoHydratePending).toBe(false)
+        expect(a.repoParentEtag).toBe('"r1"')
+        const adopt = seen.find((s) => s.path === '/pool/repo-hydrated' && s.body?.stagingDir)
+        expect(adopt?.body.ifIdle).toBeUndefined()
+      } finally {
+        guest.stop(true)
+      }
+    })
+
+    test('a fast download stays in the foreground', async () => {
+      const { pool, guest } = assignSlowRepo({ downloadMs: 0 })
+      try {
+        const a = await pool.assign('p1', { RUNTIME_AUTH_SECRET: 'tok' })
+        expect(a.repoRestore?.mode).toBe('foreground')
+        expect(a.repoUntrustedReason).toBeUndefined()
+        expect(a.repoParentEtag).toBe('"r1"')
+      } finally {
+        guest.stop(true)
+      }
+    })
+  })
+
+  describe('reportOpen', () => {
+    test('hands a finished open to the reused retry that follows a control-plane timeout, once', () => {
+      const pool = makePool(dir)
+      pool.add('p1', { repoRestore: { mode: 'deferred', bytes: 5, bundles: 2, foregroundMs: 10_000 } })
+      const first = (pool as any).reportOpen('p1', { handle: HANDLE, mode: 'assigned', phases: { boot: 5 }, totalMs: 90_000 })
+      expect(first.repo).toEqual({ mode: 'deferred', bytes: 5, bundles: 2, foregroundMs: 10_000 })
+
+      const retry = (pool as any).reportOpen('p1', { handle: HANDLE, mode: 'assigned', reused: true })
+      expect(retry.lateWake).toMatchObject({ mode: 'assigned', totalMs: 90_000, phases: { boot: 5 } })
+      expect(retry.lateWake.repo.mode).toBe('deferred')
+
+      const again = (pool as any).reportOpen('p1', { handle: HANDLE, mode: 'assigned', reused: true })
+      expect(again.lateWake).toBeUndefined()
     })
   })
 

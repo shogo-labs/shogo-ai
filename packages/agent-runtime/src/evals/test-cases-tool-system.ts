@@ -18,6 +18,7 @@ import {
   CANVAS_API_BIND_MOCKS,
   TOOL_LIFECYCLE_FULL_MOCKS,
   TOOL_BIND_AT_INSTALL_MOCKS,
+  DEFERRED_PUBLISH_MOCKS,
 } from './tool-mocks'
 import {
   usedTool,
@@ -29,6 +30,10 @@ import {
   toolCallArgsContain,
   installCalledWithoutCommand,
   usedGhCli,
+  builtCanvasV2Only,
+  execCommands,
+  fileWrites,
+  writtenContent,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -51,24 +56,17 @@ function isCodeFile(path: string): boolean {
   return /^src\/.*\.(tsx?|jsx?)$/.test(path)
 }
 
+/** Wrote or edited a src/ component via any route (write_file, edit_file, exec). */
 function wroteCodeFile(r: EvalResult): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    return isCodeFile(String((t.input as any).path ?? ''))
-  })
+  return fileWrites(r).some(w => isCodeFile(w.path))
 }
 
 function allWrittenCode(r: EvalResult): string {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => isCodeFile(String((t.input as any).path ?? '')))
-    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
-    .join('\n')
-    .toLowerCase()
+  return writtenContent(r, isCodeFile).toLowerCase()
 }
 
-function neverUsedV1CanvasTools(_r: EvalResult): boolean {
-  return true
+function neverUsedV1CanvasTools(r: EvalResult): boolean {
+  return builtCanvasV2Only(r)
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +266,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 10,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -320,10 +318,13 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'fetched-issues',
-        description: 'Listed GitHub issues with gh CLI',
+        description: 'Listed GitHub issues (gh issue/search issues/api …/issues, or the GitHub integration)',
         points: 45,
         phase: 'execution',
-        validate: (r) => usedGhCli(r, 'issue') || usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) =>
+          usedGhCli(r, 'issue') ||
+          execCommands(r).some(c => /(^|[\s;&|(])gh\s+(search\s+issues|api\s+[^;&|]*issues)/.test(c)) ||
+          usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
       },
       {
         id: 'wrote-code-file',
@@ -364,7 +365,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 5,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -388,7 +389,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
   // =========================================================================
   {
     id: 'tool-managed-vs-catalog-install',
-    name: 'Tool System: Managed install uses name-only, catalog uses command',
+    name: 'Tool System: Managed install uses name-only, MCP catalog install uses source: mcp',
     category: 'tool-system',
     level: 2,
     conversationHistory: [
@@ -413,13 +414,13 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
             },
           },
           {
-            match: { query: 'browser' },
+            match: { query: 're:browser|scrap|crawl|web|playwright|automat|extract' },
             response: {
-              query: 'browser',
+              query: 'web scraping',
               results: [
-                { name: 'Playwright Browser', qualifiedName: '@playwright/mcp@latest', description: 'Full browser automation.', source: 'catalog', installCommand: 'npx -y @playwright/mcp@latest', authType: 'none', icon: '🎭' },
+                { name: 'playwright', displayName: 'Playwright Browser', qualifiedName: '@playwright/mcp@latest', description: 'Full browser automation — navigate pages, click elements, fill forms, take screenshots, and scrape dynamic content.', source: 'mcp', installCommand: 'connect({ name: "playwright", source: "mcp" })', authType: 'none', icon: '🎭' },
               ],
-              message: 'Found 1 tool(s).',
+              message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
             },
           },
         ],
@@ -436,7 +437,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
           },
           {
             match: { name: 'playwright' },
-            response: { ok: true, server: 'playwright', source: 'catalog', toolCount: 6, tools: [{ name: 'mcp_playwright_browser_navigate', description: 'Navigate' }], message: 'Installed Playwright.' },
+            response: { ok: true, server: 'playwright', source: 'mcp', toolCount: 1, tools: [{ name: 'mcp_playwright_browser_navigate', description: 'Navigate' }], message: 'Installed MCP server "playwright".' },
           },
         ],
         default: { error: 'Unknown tool' },
@@ -478,7 +479,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       },
       {
         id: 'playwright-catalog-style',
-        description: 'Playwright install used catalog style (with command or package)',
+        description: 'Playwright installed as an MCP server (connect with source: "mcp")',
         points: 20,
         phase: 'execution',
         validate: (r) => {
@@ -486,8 +487,8 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
             .filter(t => t.name === 'connect')
             .some(t => {
               const input = t.input as Record<string, any>
-              const name = (input.name || '').toLowerCase()
-              return name.includes('playwright') && (input.command || input.args || (input.name && input.name.includes('@')))
+              const name = String(input.name || '').toLowerCase()
+              return name.includes('playwright') && input.source === 'mcp'
             })
         },
       },
@@ -499,7 +500,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         validate: (r) => {
           const text = r.responseText.toLowerCase()
           return (text.includes('slack') || text.includes('messaging')) &&
-                 (text.includes('playwright') || text.includes('browser'))
+                 (text.includes('playwright') || text.includes('browser') || text.includes('scraping') || text.includes('scrape'))
         },
       },
       {
@@ -572,7 +573,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 5,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -587,6 +588,62 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
     ],
     antiPatterns: [
       'Agent used fabricated sample data instead of fetching from Google Calendar',
+    ],
+  },
+
+  // =========================================================================
+  // Case 7: a task whose only route to done is a DEFERRED tool (SHO-97)
+  // Level 2 | `publish` is not in CORE_TOOL_NAMES, so its schema is only sent
+  // after the agent finds it in the Deferred Tools catalog and calls
+  // read_guide({ tool: 'publish' }) — or calls it directly, which auto-activates.
+  // Scores 0 on `published` if deferral ever drops a tool the task needs.
+  // =========================================================================
+  {
+    id: 'tool-deferred-discovery-completes',
+    name: 'Tool System: a deferred tool the task needs is discoverable and completes the task',
+    category: 'tool-system',
+    level: 2,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
+    input: 'Publish this app to the subdomain sho-eval-deferred, then give me the live URL.',
+    maxScore: 100,
+    toolMocks: DEFERRED_PUBLISH_MOCKS,
+    validationCriteria: [
+      {
+        id: 'published',
+        description: 'Called publish (a deferred, non-core tool) — the task cannot complete without it',
+        points: 45,
+        phase: 'intention',
+        validate: (r) => usedToolAnywhere(r, 'publish'),
+      },
+      {
+        id: 'discovered-before-use',
+        description: 'Learned the tool from the catalog via read_guide({ tool }) or called it directly',
+        points: 20,
+        phase: 'intention',
+        validate: (r) =>
+          usedToolAnywhere(r, 'publish') ||
+          r.toolCalls.some(t => t.name === 'read_guide' && JSON.stringify(t.input ?? {}).includes('publish')),
+      },
+      {
+        id: 'subdomain-verbatim',
+        description: 'Passed the subdomain the user named, unchanged',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => toolCallArgsContain(r, 'publish', 'sho-eval-deferred'),
+      },
+      {
+        id: 'shared-live-url',
+        description: 'Told the user the live https://sho-eval-deferred.shogo.one URL',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'sho-eval-deferred.shogo.one'),
+      },
+    ],
+    antiPatterns: [
+      'Agent said it had no publish tool or asked the user to publish manually',
+      'Agent invented a URL instead of using the one publish returned',
     ],
   },
 ]

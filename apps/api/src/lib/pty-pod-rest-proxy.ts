@@ -63,7 +63,11 @@ export async function proxyTerminalSessionsToPod(
   }
   try {
     const podUrl = await resolvePodUrl(projectId)
-    const targetUrl = `${trimTrailingSlash(podUrl)}/terminal/sessions${pathSuffix}`
+    // The runtime can serve several projects (a merged-root workspace runtime),
+    // so it has to be told which one this terminal belongs to — dev-server URL
+    // detection is keyed by it (SHO-200 S6).
+    const projectQuery = `?project=${encodeURIComponent(projectId)}`
+    const targetUrl = `${trimTrailingSlash(podUrl)}/terminal/sessions${pathSuffix}${projectQuery}`
     const headers: Record<string, string> = { 'x-runtime-token': await deriveRuntimeToken(projectId) }
     if (body !== undefined) {
       headers['content-type'] = contentType ?? 'application/json'

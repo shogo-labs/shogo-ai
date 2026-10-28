@@ -51,6 +51,8 @@ test.describe("Pro Feature Gating", () => {
 
     await expect(page.getByText("You're on Pro Plan")).toBeVisible()
     await expect(page.getByText("Change Plan")).toBeVisible()
+    // The one-time 7-day trial is for first-time upgrades only.
+    await expect(page.getByText("Start 7-day free trial")).toHaveCount(0)
     // Paid plans show rolling usage windows, not a depleting USD pool.
     await expect(page.getByText("Usage limits", { exact: true })).toBeVisible()
     await expect(page.getByText("5-hour window", { exact: true }).first()).toBeVisible()
@@ -59,7 +61,7 @@ test.describe("Pro Feature Gating", () => {
   // ── Sidebar Gating ───────────────────────────────────────────────
 
   test("sidebar hides Upgrade CTA for Pro users", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
     // The "Upgrade to Pro" button in the sidebar bottom should be gone
@@ -70,7 +72,7 @@ test.describe("Pro Feature Gating", () => {
   // ── Model Selector Gating ────────────────────────────────────────
 
   test("Advanced model is selectable for Pro users", async () => {
-    await page.goto("/")
+    await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 15_000 })
 
     const input = homeComposerInput(page)

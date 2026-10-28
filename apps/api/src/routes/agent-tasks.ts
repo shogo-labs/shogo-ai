@@ -416,7 +416,6 @@ async function runAgentTask(
       // map. This is especially important in local mode, where the map points
       // at the configured Ollama model instead of a cloud Claude id.
       agentMode: 'auto',
-      interactionMode: 'agent',
       // A retry is a new delegated execution, not a transport retry of the
       // previous execution. Give it a fresh idempotency key.
       clientTurnId: `agent-task-${task.id}-${crypto.randomUUID()}`,
@@ -555,17 +554,39 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     if (!userId) return unauthorized(c)
     const status = c.req.query('status')
     const projectId = c.req.query('projectId')
-    const tasks = await prisma.agentTask.findMany({
+    // Scope the read to the workspace in view: the phone polls this on Home, and
+    // a user with several workspaces was paying for every other workspace's
+    // tasks on each poll.
+    const workspaceId = c.req.query('workspaceId')
+    // Paging. The list is ordered by updatedAt, so a bare take() silently cut a
+    // long history off with no way to reach the rest. `before`/`beforeId` resume
+    // after the last row of the previous page; the id half keeps rows that share
+    // one millisecond from being skipped, same as the inbox cursor.
+    const limitRaw = Number(c.req.query('limit'))
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.trunc(limitRaw), 200) : 200
+    const beforeRaw = c.req.query('before')
+    const beforeId = c.req.query('beforeId')
+    const beforeDate = beforeRaw ? new Date(beforeRaw) : null
+    const cursor = beforeDate && !Number.isNaN(beforeDate.getTime()) ? beforeDate : null
+    const cursorWhere = cursor
+      ? beforeId
+        ? { OR: [{ updatedAt: { lt: cursor } }, { updatedAt: cursor, id: { lt: beforeId } }] }
+        : { updatedAt: { lt: cursor } }
+      : {}
+    const rows = await prisma.agentTask.findMany({
       where: {
         userId,
         ...(status && TASK_STATUSES.has(status) ? { status: status as any } : {}),
         ...(projectId ? { projectId } : {}),
+        ...(workspaceId ? { workspaceId } : {}),
+        ...cursorWhere,
       },
       include: { project: { select: { id: true, name: true } } },
-      orderBy: { updatedAt: 'desc' },
-      take: 200,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
     })
-    return c.json({ ok: true, items: tasks.map(taskView) })
+    const hasMore = rows.length > limit
+    return c.json({ ok: true, items: (hasMore ? rows.slice(0, limit) : rows).map(taskView), hasMore })
   })
 
   router.post('/agent-tasks', async (c) => {

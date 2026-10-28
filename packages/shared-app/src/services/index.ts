@@ -9,10 +9,28 @@ export {
   REMOTE_ROUTED_PREFIXES,
   REMOTE_EXCLUDED_PATTERNS,
   ROUTE_TABLE,
+  MACHINE_WORKSPACE_CLOUD_ONLY,
+  MACHINE_WORKSPACE_OWNED,
+  MACHINE_WORKSPACE_FAMILIES,
   type RemoteInterceptorConfig,
   type RouteTarget,
   type RouteEntry,
 } from './remote-http-interceptor'
+
+export {
+  MACHINE_RETRY_CAP_MS,
+  MACHINE_RETRY_BASE_MS,
+  MachineWorkspaceStateStore,
+  machineWorkspaceState,
+  describeMachineWorkspace,
+  describeLastSynced,
+  errorLastSyncedAt,
+  isMachineConditionError,
+  parseRetryAfter,
+  type MachineWorkspaceCondition,
+  type MachineWorkspaceTone,
+  type MachineWorkspaceView,
+} from './machine-workspace-state'
 
 export {
   SyncClient,

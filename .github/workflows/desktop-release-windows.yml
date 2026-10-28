@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 env:
-  BUN_VERSION: '1.4.3'
+  BUN_VERSION: '1.4.4'
   # PINNED, do not float to '24'. Node 24.16.0 silently breaks
   # @electron/packager 18.4.4: `electron-forge make` runs through "Copying
   # files / Preparing native dependencies / Finalizing package" and exits 0
@@ -242,6 +242,7 @@ jobs:
         with:
           name: web-dist-windows
           path: apps/mobile/dist/
+          retention-days: 7
 
   build-desktop:
     name: Build Desktop (Windows x64)
@@ -508,6 +509,9 @@ jobs:
           name: desktop-win32-x64
           path: apps/desktop/out/make/**/*
           if-no-files-found: error
+          # Intermediate: the installers are already on the GitHub Release from
+          # this same run. Their 90-day default was 558 GB of live storage.
+          retention-days: 7
 
   boot-smoke-windows:
     # The Windows build was never executed before release. Boot the packaged

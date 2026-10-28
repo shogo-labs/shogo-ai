@@ -109,7 +109,10 @@ class MockElevenLabsClient {
   async createAgent(_args: any) { return 'agent_new' }
   async createPhoneNumberTwilio(_args: any) { return { phoneNumberId: 'EL_PN_NEW' } }
 }
-mock.module('@shogo-ai/sdk/voice', () => ({ ElevenLabsClient: MockElevenLabsClient }))
+// routes/voice.ts pulls in voice-media.ts, which uses the real helpers
+// (model table, normalizers); keep everything except the client class.
+const voiceActualExports = await import('@shogo-ai/voice')
+mock.module('@shogo-ai/sdk/voice', () => ({ ...voiceActualExports, ElevenLabsClient: MockElevenLabsClient }))
 mock.module('@shogo/agent-runtime/src/voice-mode/translator-persona', () => ({
   TRANSLATOR_SYSTEM_PROMPT: '',
   TRANSLATOR_AI_SDK_TOOLS: {},

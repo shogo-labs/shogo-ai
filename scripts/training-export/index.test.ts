@@ -1,5 +1,98 @@
-import { describe, expect, test } from 'bun:test'
-import { scrubText, toTrainingExample } from './index'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
+import { mkdir, rm } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { normalizeCapture } from '../../apps/api/src/lib/proxy-capture/normalize'
+import { readArchiveFiles, selectExamples, scrubText, toTrainingExample } from './index'
+
+const ROOT = resolve(`.tmp/training-export-parity-${process.pid}`)
+
+async function writeFixture(dir: string, format: 'v1' | 'v2'): Promise<void> {
+  const blobs = new Map<string, unknown>()
+  const nodes = new Map<string, unknown>()
+  const writeBlob = (key: string, value: unknown): void => { blobs.set(key, value) }
+  const writeNode = async (key: string, body: any): Promise<void> => { nodes.set(key, body) }
+
+  const lines: string[] = []
+  for (let turn = 0; turn < 3; turn += 1) {
+    const messages = [
+      { role: 'system', content: `You are agent ${turn}.` },
+      { role: 'user', content: `turn ${turn}: find the release notes` },
+    ]
+    for (let step = 0; step < 12; step += 1) {
+      messages.push(
+        { role: 'assistant', content: `step ${step}: searching ${'detail '.repeat(40)}` } as any,
+        { role: 'user', content: `result ${step}: ${'row '.repeat(40)}` } as any,
+      )
+    }
+    const capture = normalizeCapture(
+      {
+        authKind: 'runtime',
+        workspaceId: 'workspace-1',
+        chatSessionId: `session-${turn}`,
+        endpoint: 'chat.completions',
+        requestedModel: 'claude-sonnet-4-5',
+        resolvedModel: 'claude-sonnet-4-5',
+        provider: 'anthropic',
+      },
+      {
+        model: 'claude-sonnet-4-5',
+        system: [{ type: 'text', text: 'You are helpful.' }],
+        tools: [{ type: 'function', name: 'search' }],
+        messages,
+      },
+      { content: `answer ${turn}` },
+      writeBlob,
+      format === 'v2' ? writeNode : undefined,
+    )
+    await Promise.all(capture.chainWrites)
+    lines.push(JSON.stringify({
+      id: `record-${turn}`,
+      ts: new Date(Date.UTC(2026, 9, 21, 9, turn)).toISOString(),
+      source: 'cloud_runtime',
+      workspaceId: 'workspace-1',
+      provider: 'anthropic',
+      resolvedModel: 'claude-sonnet-4-5',
+      turnKey: createHash('sha256').update(`turn-${turn}`).digest('hex'),
+      request: format === 'v2' ? capture.request : capture.requestInline,
+      response: capture.response,
+    }))
+  }
+
+  const root = resolve(dir)
+  for (const [key, value] of [...blobs, ...nodes]) {
+    await mkdir(dirname(join(root, key)), { recursive: true })
+    await Bun.write(join(root, key), gzipSync(Buffer.from(JSON.stringify(value))))
+  }
+  const batch = `${format}/region=test/date=2026-10-21/hour=09/batch.jsonl.gz`
+  await mkdir(dirname(join(root, batch)), { recursive: true })
+  await Bun.write(join(root, batch), gzipSync(Buffer.from(`${lines.join('\n')}\n`)))
+}
+
+afterAll(async () => {
+  await rm(ROOT, { recursive: true, force: true })
+})
+
+describe('training export v1/v2 parity', () => {
+  test('a v1 and a v2 archive of the same traffic export the same examples', async () => {
+    await writeFixture(join(ROOT, 'v1'), 'v1')
+    await writeFixture(join(ROOT, 'v2'), 'v2')
+
+    const legacy = await readArchiveFiles(join(ROOT, 'v1'))
+    const chained = await readArchiveFiles(join(ROOT, 'v2'))
+    expect(legacy.records).toHaveLength(3)
+    expect(chained.records).toHaveLength(3)
+    expect((chained.records[0]!.request as any).chain).toBeDefined()
+    expect((legacy.records[0]!.request as any).messages).toBeDefined()
+
+    const fromV1 = await selectExamples(legacy)
+    const fromV2 = await selectExamples(chained)
+    expect(fromV1).toHaveLength(3)
+    expect(JSON.stringify(fromV2)).toBe(JSON.stringify(fromV1))
+    expect(fromV2[0]!.messages).toHaveLength(28)
+  })
+})
 
 describe('training export normalization', () => {
   test('resolves deduplicated tools and preserves tool calls/results', () => {

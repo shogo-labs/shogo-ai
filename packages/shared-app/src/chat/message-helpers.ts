@@ -186,6 +186,120 @@ export function channelDispatchOf(message: { parts?: unknown } | null | undefine
   }
 }
 
+/**
+ * A `project_call` request recorded into the callee's chat carries this part;
+ * the callee's reply is produced by the call, not by this chat.
+ */
+export interface ProjectCallPrompt {
+  runId: string
+  callerName: string | null
+}
+
+/** The project-call marker on a message, or null when it has none. */
+export function projectCallOf(message: { parts?: unknown } | null | undefined): ProjectCallPrompt | null {
+  const parts = message ? messageParts(message) : null
+  if (!parts) return null
+  const part = parts.find((entry) => !!entry && typeof entry === 'object' && (entry as { type?: unknown }).type === 'data-project-call') as
+    | { data?: unknown }
+    | undefined
+  const data = part?.data
+  if (!data || typeof data !== 'object') return null
+  const record = data as Record<string, unknown>
+  if (typeof record.runId !== 'string' || !record.runId) return null
+  return {
+    runId: record.runId,
+    callerName: typeof record.callerName === 'string' && record.callerName.trim() ? record.callerName : null,
+  }
+}
+
+/** One finished background task in a wake message. */
+export interface TaskUpdateLine {
+  taskId: string
+  title: string
+  /** e.g. "completed", "failed (exit code 1)", "was cancelled" */
+  outcome: string
+  /** Everything after the headline: output file and last output. */
+  detail: string
+}
+
+export interface TaskNotification {
+  taskIds: string[]
+  updates: TaskUpdateLine[]
+}
+
+const TASK_UPDATE_RE = /^\[Task update\] (.*) \(([^()\s]+)\) (.+?)\.$/
+
+/** Parse `[Task update] <title> (<id>) <outcome>.` blocks out of a wake message's text. */
+export function parseTaskUpdates(text: string): TaskUpdateLine[] {
+  const updates: TaskUpdateLine[] = []
+  let current: TaskUpdateLine | null = null
+  const detail: string[] = []
+  const flush = () => {
+    if (current) updates.push({ ...current, detail: detail.join('\n').trim() })
+    detail.length = 0
+  }
+  for (const line of text.split('\n')) {
+    const match = TASK_UPDATE_RE.exec(line)
+    if (match) {
+      flush()
+      current = { title: match[1], taskId: match[2], outcome: match[3], detail: '' }
+    } else if (current) {
+      detail.push(line)
+    }
+  }
+  flush()
+  return updates
+}
+
+/** The wake message the system sends when background tasks finish, or null for any other message. */
+export function taskNotificationOf(message: { parts?: unknown } | null | undefined): TaskNotification | null {
+  const parts = message ? messageParts(message) : null
+  if (!parts) return null
+  const part = parts.find((entry) => !!entry && typeof entry === 'object' && (entry as { type?: unknown }).type === 'data-task-notification') as
+    | { data?: { taskIds?: unknown } }
+    | undefined
+  if (!part) return null
+  const taskIds = Array.isArray(part.data?.taskIds) ? part.data!.taskIds.filter((id): id is string => typeof id === 'string') : []
+  const text = parts
+    .filter((entry): entry is { type: 'text'; text: string } => !!entry && typeof entry === 'object' && (entry as any).type === 'text' && typeof (entry as any).text === 'string')
+    .map((entry) => entry.text)
+    .join('\n')
+  return { taskIds, updates: parseTaskUpdates(text) }
+}
+
+export type UsageLimitCode =
+  | 'usage_limit_reached'
+  | 'entitlement_expired'
+  | 'overage_cap_reached'
+  | 'overage_payment_pending'
+
+const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
+  usage_limit_reached: 'usage_limit_reached',
+  insufficient_credits: 'usage_limit_reached',
+  entitlement_expired: 'entitlement_expired',
+  overage_cap_reached: 'overage_cap_reached',
+  overage_payment_pending: 'overage_payment_pending',
+}
+
+/**
+ * The usage-limit detail of a chat request the API refused with a 402
+ * (`{ error: { code, message, resetsAt? } }`), or null for any other error.
+ */
+export function parseUsageLimitError(
+  rawMessage: string,
+): { code: UsageLimitCode; resetsAt?: string } | null {
+  let parsed: any
+  try {
+    parsed = JSON.parse(stripInternalErrorMarkers(rawMessage))
+  } catch {
+    return null
+  }
+  const code = typeof parsed?.error?.code === 'string' ? USAGE_LIMIT_CODES[parsed.error.code] : undefined
+  if (!code) return null
+  const resetsAt = parsed.error.resetsAt
+  return typeof resetsAt === 'string' && resetsAt ? { code, resetsAt } : { code }
+}
+
 const GENERIC_REQUEST_FAILED = 'The request failed. Please tap Retry to try again.'
 
 export function formatErrorMessage(rawMessage: string): string {

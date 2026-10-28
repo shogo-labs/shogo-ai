@@ -63,7 +63,7 @@ import {
 } from "@shogo/authz"
 import type { Principal } from "../lib/authz"
 import { hookAccess, hookRequire } from "../lib/authz/hooks"
-import { sendMemberJoinedEmail, sendMemberRemovedEmail } from "../services/email.service"
+import { sendMemberRemovedEmail } from "../services/email.service"
 import { syncSeatsFromMembership } from "../services/billing.service"
 import { removeMembership } from "../services/membership.service"
 
@@ -133,35 +133,9 @@ export const memberHooks: MemberHooks = {
         memberId: record.id,
         role: record.role,
         source: 'invitation',
+        prisma: ctx.prisma,
       }))
       .catch(() => {})
-
-    try {
-      const [user, workspace, owners] = await Promise.all([
-        ctx.prisma.user.findUnique({ where: { id: record.userId }, select: { name: true, email: true } }),
-        ctx.prisma.workspace.findUnique({ where: { id: record.workspaceId }, select: { name: true } }),
-        ctx.prisma.member.findMany({
-          where: { workspaceId: record.workspaceId, role: 'owner', projectId: null, userId: { not: record.userId } },
-          include: { user: { select: { email: true } } },
-        }),
-      ])
-      if (!user || !workspace) return
-
-      const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
-      for (const owner of owners) {
-        if (!owner.user?.email) continue
-        sendMemberJoinedEmail({
-          to: owner.user.email,
-          memberName: user.name || user.email,
-          memberEmail: user.email,
-          workspaceName: workspace.name,
-          role: record.role || 'member',
-          dashboardUrl: `${baseUrl}/settings?tab=people`,
-        }).catch((err) => console.error('[Email] member-joined failed:', err))
-      }
-    } catch (err) {
-      console.error('[Email] afterCreate hook error:', err)
-    }
   },
 
   beforeGet: async (id, ctx) => {

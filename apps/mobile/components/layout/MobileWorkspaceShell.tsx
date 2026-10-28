@@ -58,13 +58,14 @@ import {
 } from "../../hooks/usePermissions";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
-import { api } from "../../lib/api";
 import {
   fetchProjectChatSessions,
   projectChatLabel,
   type ProjectChatListItem,
 } from "../../lib/project-chat-sessions";
+import { useWorkspaceChats } from "../../hooks/useWorkspaceChats";
 import { NotificationBell } from "../notifications/NotificationBell";
+import { ChatSessionList } from "./sidebar/ChatSessionList";
 import { ChatTreeItem } from "./sidebar/ChatTreeItem";
 import {
   SidebarContextMenu,
@@ -139,19 +140,8 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
   const drawerProgress = useRef(new Animated.Value(0)).current;
-  const [sessions, setSessions] = useState<
-    Array<{
-      id: string;
-      name?: string | null;
-      inferredName?: string | null;
-      isPrimary?: boolean;
-      isPinned?: boolean;
-      isArchived?: boolean;
-    }>
-  >([]);
+  const workspaceChats = useWorkspaceChats(workspace?.id);
   const [sessionSearch, setSessionSearch] = useState("");
-  const [loadingSessions, setLoadingSessions] = useState(false);
-  const [creatingSession, setCreatingSession] = useState(false);
   const [sideChatsExpanded, setSideChatsExpanded] = useState(true);
   const [archivedSideChatsExpanded, setArchivedSideChatsExpanded] =
     useState(false);
@@ -176,26 +166,12 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
   const [projectChats, setProjectChats] = useState<
     Record<string, ProjectChatState>
   >({});
-  const filteredSessions = sessions.filter((session) => {
+  const matchesSearch = (session: { name?: string | null; inferredName?: string | null }) => {
     const label = session.name || session.inferredName || "Untitled side chat";
     return label.toLowerCase().includes(sessionSearch.trim().toLowerCase());
-  });
-  const sideChats = filteredSessions
-    .filter((session) => !session.isArchived)
-    .sort((a, b) => {
-      return (
-        Number(!!b.isPinned) - Number(!!a.isPinned) ||
-        String(b.id).localeCompare(String(a.id))
-      );
-    });
-  const archivedSideChats = filteredSessions
-    .filter((session) => session.isArchived)
-    .sort((a, b) => {
-      return (
-        Number(!!b.isPinned) - Number(!!a.isPinned) ||
-        String(b.id).localeCompare(String(a.id))
-      );
-    });
+  };
+  const sideChats = workspaceChats.active.filter(matchesSearch);
+  const archivedSideChats = workspaceChats.archived.filter(matchesSearch);
   const showArchivedSideChats =
     archivedSideChatsExpanded || sessionSearch.trim().length > 0;
   const workspaceProjects = projects.all
@@ -337,22 +313,10 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
     setSessionsOpen(false);
   }, [drawerProgress, showChatChrome]);
 
-  const refreshWorkspaceSessions = useCallback(async () => {
-    if (!workspace?.id) return;
-    setLoadingSessions(true);
-    try {
-      setSessions(await api.listWorkspaceSessions(http, workspace.id));
-    } catch {
-      setSessions([]);
-    } finally {
-      setLoadingSessions(false);
-    }
-  }, [http, workspace?.id]);
-
   useEffect(() => {
-    if (!sessionsOpen || !workspace?.id) return;
-    void refreshWorkspaceSessions();
-  }, [refreshWorkspaceSessions, sessionsOpen, workspace?.id]);
+    if (!sessionsOpen) return;
+    void workspaceChats.refresh();
+  }, [sessionsOpen, workspaceChats.refresh]);
 
   useEffect(() => {
     setExpandedProjectIds(new Set());
@@ -365,21 +329,31 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
     void projects.loadAll({ workspaceId: workspace.id }).catch(() => undefined);
   }, [projects, sessionsOpen, workspace?.id]);
 
+  const openWorkspaceChat = (sessionId: string) => {
+    closeSessions();
+    workspaceChats.markSeen(sessionId);
+    router.push({
+      pathname: "/(app)/agent",
+      params: { chatSessionId: sessionId },
+    } as any);
+  };
+
+  // The chat the route opens is read, so a turn ending while it is on screen
+  // clears its dot instead of flagging it as new activity.
+  useEffect(() => {
+    if (!routeParams.chatSessionId) return;
+    workspaceChats.markSeen(routeParams.chatSessionId);
+  }, [routeParams.chatSessionId, workspaceChats.markSeen]);
+
   const createSideChat = async () => {
-    if (!workspace?.id || creatingSession) return;
-    try {
-      setCreatingSession(true);
-      const session = await api.createWorkspaceSession(http, workspace.id);
-      setSessions((current) => [...current, session]);
-      drawerProgress.setValue(0);
-      setSessionsOpen(false);
-      router.push({
-        pathname: "/(app)/agent",
-        params: { chatSessionId: session.id },
-      } as any);
-    } finally {
-      setCreatingSession(false);
-    }
+    const session = await workspaceChats.createChat();
+    if (!session) return;
+    drawerProgress.setValue(0);
+    setSessionsOpen(false);
+    router.push({
+      pathname: "/(app)/agent",
+      params: { chatSessionId: session.id },
+    } as any);
   };
 
   const loadProjectChats = useCallback(
@@ -417,9 +391,6 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
     return chatSessionEvents.subscribe(
       ({ projectId, workspaceId, refresh }) => {
         if (!refresh) return;
-        if (workspaceId && workspaceId === workspace?.id) {
-          void refreshWorkspaceSessions();
-        }
         if (!projectId) return;
         if (!projectChats[projectId] && !expandedProjectIds.has(projectId)) {
           return;
@@ -431,7 +402,6 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
     expandedProjectIds,
     loadProjectChats,
     projectChats,
-    refreshWorkspaceSessions,
     workspace?.id,
   ]);
 
@@ -471,43 +441,6 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: onConfirm },
     ]);
-  };
-
-  const updateWorkspaceChat = async (
-    sessionId: string,
-    changes: { name?: string; isPinned?: boolean; isArchived?: boolean }
-  ) => {
-    const previous = sessions;
-    setSessions((current) =>
-      current.map((session) =>
-        session.id === sessionId ? { ...session, ...changes } : session
-      )
-    );
-    try {
-      if (!chatSessions.get(sessionId)) {
-        await chatSessions.loadById(sessionId);
-      }
-      await actions.updateChatSession(sessionId, changes);
-      if (workspace?.id) {
-        chatSessionEvents.emit({
-          workspaceId: workspace.id,
-          activeSessionId: sessionId,
-          refresh: true,
-        });
-      }
-    } catch {
-      setSessions(previous);
-    }
-  };
-
-  const deleteWorkspaceChat = async (sessionId: string) => {
-    const previous = sessions;
-    setSessions((current) => current.filter((session) => session.id !== sessionId));
-    try {
-      await http.delete(`/api/chat-sessions/${encodeURIComponent(sessionId)}`);
-    } catch {
-      setSessions(previous);
-    }
   };
 
   const updateProjectChat = async (
@@ -670,7 +603,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                 accessibilityLabel={
                   sessionsOpen ? "Close chat sessions" : "Open chat sessions"
                 }
-                accessibilityState={{ expanded: sessionsOpen }}
+                aria-expanded={sessionsOpen}
                 onPress={() =>
                   sessionsOpen ? closeSessions() : openSessions()
                 }
@@ -786,7 +719,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                   contentContainerClassName="px-4 pb-8"
                   keyboardShouldPersistTaps="handled"
                 >
-                  {loadingSessions ? (
+                  {workspaceChats.loading ? (
                     <Text className="py-3 text-sm text-muted-foreground">
                       Loading chats…
                     </Text>
@@ -816,11 +749,11 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                         <Pressable
                           accessibilityRole="button"
                           accessibilityLabel="New chat"
-                          disabled={creatingSession}
+                          disabled={workspaceChats.creating}
                           onPress={() => void createSideChat()}
                           className="h-11 w-11 items-center justify-center rounded-lg active:bg-muted disabled:opacity-50"
                         >
-                          {creatingSession ? (
+                          {workspaceChats.creating ? (
                             <Text className="text-xs text-muted-foreground">
                               …
                             </Text>
@@ -836,43 +769,34 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                         showsVerticalScrollIndicator={sideChats.length > 6}
                         style={{ maxHeight: DRAWER_CHAT_LIST_MAX_HEIGHT }}
                       >
-                        {sideChats.map((session) => (
-                          <ChatTreeItem
-                            key={session.id}
-                            session={session}
-                            onSelect={() => {
-                              closeSessions();
-                              router.push({
-                                pathname: "/(app)/agent",
-                                params: { chatSessionId: session.id },
-                              } as any);
-                            }}
-                            onTogglePin={(id, next) =>
-                              void updateWorkspaceChat(id, { isPinned: next })
-                            }
-                            onRename={(id, name) =>
-                              void updateWorkspaceChat(id, { name })
-                            }
-                            onToggleArchive={(id, next) =>
-                              void updateWorkspaceChat(id, { isArchived: next })
-                            }
-                            onRequestDelete={(id) =>
-                              requestDeleteChat(() => void deleteWorkspaceChat(id))
-                            }
-                            textClassName="text-base font-medium"
-                            inactiveTextClassName="text-foreground"
-                            rowClassName="min-h-0 rounded-xl px-3 py-1.5"
-                          />
-                        ))}
-                        {!loadingSessions &&
-                        sideChats.length === 0 &&
-                        archivedSideChats.length === 0 ? (
-                          <Text className="px-3 py-3 text-sm text-muted-foreground">
-                            {sessionSearch.trim()
+                        <ChatSessionList
+                          sessions={sideChats}
+                          archivedSessions={[]}
+                          renderAll
+                          loaded={!workspaceChats.loading}
+                          loadingLabel="Loading chats…"
+                          emptyLabel={
+                            sessionSearch.trim()
                               ? "No matching side chats."
-                              : "No side chats yet."}
-                          </Text>
-                        ) : null}
+                              : "No side chats yet."
+                          }
+                          streamingIds={workspaceChats.streamingIds}
+                          completedIds={workspaceChats.completedIds}
+                          onSelect={openWorkspaceChat}
+                          onTogglePin={(id, next) =>
+                            void workspaceChats.updateChat(id, { isPinned: next })
+                          }
+                          onRename={(id, name) =>
+                            void workspaceChats.updateChat(id, { name })
+                          }
+                          onToggleArchive={(id, next) =>
+                            void workspaceChats.updateChat(id, { isArchived: next })
+                          }
+                          onDeleteChat={(id) => void workspaceChats.deleteChat(id)}
+                          rowClassName="min-h-0 rounded-xl px-3 py-1.5"
+                          textClassName="text-base font-medium"
+                          inactiveTextClassName="text-foreground"
+                        />
                       </ScrollView>
                       {archivedSideChats.length > 0 ? (
                         <View className="mt-1">
@@ -881,9 +805,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                             accessibilityLabel={`${
                               showArchivedSideChats ? "Collapse" : "Expand"
                             } archived side chats`}
-                            accessibilityState={{
-                              expanded: showArchivedSideChats,
-                            }}
+                            aria-expanded={showArchivedSideChats}
                             onPress={() =>
                               setArchivedSideChatsExpanded((value) => !value)
                             }
@@ -915,40 +837,30 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                 maxHeight: DRAWER_CHAT_LIST_MAX_HEIGHT,
                               }}
                             >
-                              {archivedSideChats.map((session) => (
-                                <ChatTreeItem
-                                  key={session.id}
-                                  session={session}
-                                  onSelect={() => {
-                                    closeSessions();
-                                    router.push({
-                                      pathname: "/(app)/agent",
-                                      params: { chatSessionId: session.id },
-                                    } as any);
-                                  }}
-                                  onTogglePin={(id, next) =>
-                                    void updateWorkspaceChat(id, {
-                                      isPinned: next,
-                                    })
-                                  }
-                                  onRename={(id, name) =>
-                                    void updateWorkspaceChat(id, { name })
-                                  }
-                                  onToggleArchive={(id, next) =>
-                                    void updateWorkspaceChat(id, {
-                                      isArchived: next,
-                                    })
-                                  }
-                                  onRequestDelete={(id) =>
-                                    requestDeleteChat(() =>
-                                      void deleteWorkspaceChat(id)
-                                    )
-                                  }
-                                  textClassName="text-base font-medium"
-                                  inactiveTextClassName="text-foreground"
-                                  rowClassName="min-h-0 rounded-xl px-3 py-1.5"
-                                />
-                              ))}
+                              <ChatSessionList
+                                sessions={archivedSideChats}
+                                archivedSessions={[]}
+                                renderAll
+                                loaded={!workspaceChats.loading}
+                                loadingLabel="Loading chats…"
+                                emptyLabel="No archived chats."
+                                streamingIds={workspaceChats.streamingIds}
+                                completedIds={workspaceChats.completedIds}
+                                onSelect={openWorkspaceChat}
+                                onTogglePin={(id, next) =>
+                                  void workspaceChats.updateChat(id, { isPinned: next })
+                                }
+                                onRename={(id, name) =>
+                                  void workspaceChats.updateChat(id, { name })
+                                }
+                                onToggleArchive={(id, next) =>
+                                  void workspaceChats.updateChat(id, { isArchived: next })
+                                }
+                                onDeleteChat={(id) => void workspaceChats.deleteChat(id)}
+                                rowClassName="min-h-0 rounded-xl px-3 py-1.5"
+                                textClassName="text-base font-medium"
+                                inactiveTextClassName="text-foreground"
+                              />
                             </ScrollView>
                           ) : null}
                         </View>
@@ -1064,7 +976,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                 } chats for ${
                                   project.name || "Untitled project"
                                 }`}
-                                accessibilityState={{ expanded }}
+                                aria-expanded={expanded}
                                 onPress={(event) => {
                                   event.stopPropagation?.();
                                   toggleProjectChats(project.id);
@@ -1217,9 +1129,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                           } archived chats for ${
                                             project.name || "this project"
                                           }`}
-                                          accessibilityState={{
-                                            expanded: archivedChatsExpanded,
-                                          }}
+                                          aria-expanded={archivedChatsExpanded}
                                           onPress={() =>
                                             setExpandedArchivedProjectIds(
                                               (current) => {

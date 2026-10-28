@@ -237,6 +237,9 @@ export function DrawerHost({
           )}
           <div
             data-testid="drawer-host-panel"
+            // The drawer is mounted outside the Workbench, so it opts into the
+            // IDE's OS-file drop zone explicitly (SHO-215).
+            data-os-drop-scope=""
             style={isPanelMaximized ? { flex: 1, flexShrink: 1 } : { height: size, flexShrink: 0 }}
             className="min-h-0"
           >

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { request as playwrightRequest, test, type Page } from "@playwright/test"
+import { recordTestUser } from "./test-accounts"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -14,9 +15,11 @@ export interface TestUser {
 
 export function makeTestUser(prefix: string): TestUser {
   const ts = Date.now()
+  const email = `e2e-${prefix.toLowerCase()}-${ts}@mailnull.com`
+  recordTestUser(email)
   return {
     name: `E2E ${prefix} ${ts}`,
-    email: `e2e-${prefix.toLowerCase()}-${ts}@mailnull.com`,
+    email,
     password: `E2E${prefix}Test2026!`,
   }
 }
@@ -31,15 +34,47 @@ export const STRIPE_CARDS = {
 // ── Core helpers ─────────────────────────────────────────────────────────────
 
 /**
+ * The app's pre-landing home (phone feed / wide "What are we building" builder).
+ *
+ * `/` is the workspace agent chat on an empty session for a team workspace
+ * (SHO-4) — every `page.goto("/")` that then waits for the builder heading has
+ * to come here instead.
+ */
+export const APP_HOME_PATH = "/home"
+
+/** Opens the app home (phone feed / builder) and waits for it to paint. */
+export async function gotoAppHome(page: Page, timeout = 30_000): Promise<void> {
+  await page.goto(APP_HOME_PATH)
+  await page.waitForSelector("text=What are we building", { timeout })
+}
+
+/**
  * Signs up a new account at /sign-in, then walks through the cloud onboarding
  * flow into the Team workspace:
  *
- *   destination (Team workspace) → team setup → agent picker (skip) → home
+ *   team setup → build prompt (skip) → app home
  *
  * Leaves the browser on the home screen with "What are we building" visible.
  */
 export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void> {
+  await signUp(page, user)
+  if (await onboardToBuildPrompt(page)) {
+    await page.getByText("I'll explore first", { exact: true }).click()
+  }
+
+  // ── Home screen ────────────────────────────────────────────────────────────
+  // Skipping onboarding lands on `/` (the empty agent chat); the builder is at
+  // `/home` now.
+  await gotoAppHome(page)
+}
+
+/** Signs up a new account at /sign-in and waits to leave the sign-in page. */
+export async function signUp(page: Page, user: TestUser): Promise<void> {
   watchChatHealth(page)
+  // Mark the sign-up request as an automated test signup. Test addresses are
+  // @mailnull.com (a disposable domain), so without this header the signup
+  // risk scorer would hand them no credit. Only the sign-up call is touched.
+  await markSignupAsE2e(page)
   // ── Sign up ────────────────────────────────────────────────────────────────
   await page.goto("/sign-in")
   // Switch to the Sign Up tab. The LoginScreen renders both tabs as
@@ -61,31 +96,144 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
   await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"), {
     timeout: 30_000,
   })
+}
 
-  // ── Onboarding (destination-first, CloudOnboarding) ───────────────────────
-  // Cloud onboarding asks where to start: Personal space or Team workspace.
-  // Projects live in the Team workspace, so pick it, keep the prefilled team
-  // name, and open the workspace without installing an agent. The CTAs are
-  // Pressables rather than <button>s, so they are matched by visible text.
-  const teamDestination = page.getByRole("radio", { name: "My Team workspace" })
+/**
+ * Walks cloud onboarding (CloudOnboarding) to its last team step, "What do you
+ * want to build?". There is no personal-vs-team choice: a new account goes
+ * straight to team setup. The team name stays prefilled. The CTAs are
+ * Pressables rather than <button>s, so they are matched by visible text.
+ *
+ * Returns false when the account is already onboarded.
+ */
+export async function onboardToBuildPrompt(page: Page): Promise<boolean> {
   try {
-    await teamDestination.waitFor({ timeout: 20_000 })
-  } catch {
-    // Account is already onboarded.
-  }
-  if (await teamDestination.isVisible()) {
-    await teamDestination.click()
-    await page.getByText("Continue", { exact: true }).click()
-
     await page.getByText("Set up your team workspace").waitFor({ timeout: 20_000 })
-    await page.getByText("Continue", { exact: true }).click()
-
-    await page.getByText("Start with an agent").waitFor({ timeout: 20_000 })
-    await page.getByText(/^Open /).last().click()
+  } catch {
+    return false
   }
+  await page.getByText("Continue", { exact: true }).click()
 
-  // ── Home screen ────────────────────────────────────────────────────────────
-  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
+  await page.getByText("What do you want to build?", { exact: true }).first().waitFor({ timeout: 20_000 })
+  return true
+}
+
+/** The onboarding "What do you want to build?" input. */
+export function buildPromptInput(page: Page) {
+  return page.getByTestId("onboarding-build-prompt-input")
+}
+
+/**
+ * Adds the e2e bootstrap header to the sign-up request only. The signup risk
+ * scorer treats a request carrying a valid secret as an allowlisted test
+ * signup (no penalties, full credit path). No-op when the secret is unset,
+ * so local runs without the backdoor keep the normal risk behaviour.
+ */
+export async function markSignupAsE2e(page: Page): Promise<void> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return
+  await page.route("**/api/auth/sign-up/**", (route) =>
+    route.continue({
+      headers: { ...route.request().headers(), "x-e2e-bootstrap-secret": secret },
+    }),
+  )
+}
+
+export interface SignupCreditState {
+  ok: boolean
+  userId: string
+  workspaceId: string | null
+  emailVerified: boolean
+  assessment: {
+    band: string
+    score: number
+    decision: string
+    signals: unknown
+    reviewDecision: string | null
+  } | null
+  promoCredit: {
+    availableUsd: number
+    grantedUsd: number
+    stage: number
+    expiresAt: string | null
+  } | null
+}
+
+/**
+ * Reads the e2e user's signup risk assessment and promo credit through the
+ * backdoor (GET /api/internal/e2e/signup-credit-state). Returns null when the
+ * backdoor is unavailable, so callers can `test.skip`.
+ */
+export async function signupCreditStateViaBackdoor(
+  page: Page,
+  userEmail: string,
+): Promise<SignupCreditState | null> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return null
+  const res = await page.request
+    .get(`${bootstrapApiBase()}/api/internal/e2e/signup-credit-state`, {
+      headers: { "x-e2e-bootstrap-secret": secret },
+      params: { userEmail },
+    })
+    .catch(() => null)
+  if (!res || res.status() === 503 || res.status() === 401) return null
+  if (!res.ok()) throw new Error(`signup-credit-state failed: HTTP ${res.status()} ${await res.text().catch(() => "")}`)
+  return (await res.json()) as SignupCreditState
+}
+
+export interface VerifyEmailOutcome {
+  released: boolean
+  reason?: string
+  band?: string
+  amountUsd?: number
+}
+
+/**
+ * Marks the e2e user's email verified and runs the same credit-release path as
+ * the real `afterEmailVerification` hook (POST /api/internal/e2e/verify-email).
+ * Returns null when the backdoor is unavailable.
+ */
+export async function verifyEmailViaBackdoor(
+  page: Page,
+  userEmail: string,
+): Promise<VerifyEmailOutcome | null> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return null
+  const res = await page.request
+    .post(`${bootstrapApiBase()}/api/internal/e2e/verify-email`, {
+      headers: { "x-e2e-bootstrap-secret": secret, "content-type": "application/json" },
+      data: { userEmail },
+    })
+    .catch(() => null)
+  if (!res || res.status() === 503 || res.status() === 401) return null
+  if (!res.ok()) throw new Error(`verify-email failed: HTTP ${res.status()} ${await res.text().catch(() => "")}`)
+  const body = (await res.json()) as { ok: boolean; outcome: VerifyEmailOutcome }
+  return body.outcome
+}
+
+/**
+ * Starts a Stripe trial on the e2e workspace without Checkout, through the
+ * backdoor with `status: 'trialing'`. Mirrors the real trial path: the
+ * subscription is trialing, and only the free wallet is allocated (the monthly
+ * allowance waits for the first paid invoice).
+ */
+export async function bootstrapTrialSubscriptionViaApi(
+  page: Page,
+  user: TestUser,
+  planId: "basic" | "pro" | "business" = "pro",
+  trialDays = 7,
+): Promise<boolean> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return false
+  const res = await page.request
+    .post(`${bootstrapApiBase()}/api/internal/e2e/bootstrap-subscription`, {
+      headers: { "x-e2e-bootstrap-secret": secret, "content-type": "application/json" },
+      data: { userEmail: user.email, planId, status: "trialing", daysUntilPeriodEnd: trialDays },
+    })
+    .catch(() => null)
+  if (!res || !res.ok()) return false
+  const body = await res.json().catch(() => ({ ok: false }))
+  return body?.ok === true
 }
 
 /**
@@ -146,54 +294,6 @@ export function createApiKeySubmitButton(page: Page) {
     .first()
 }
 
-// ── Interaction mode helpers ─────────────────────────────────────────────────
-
-export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" | "Ask") {
-  // Ensure no active stream (stop button gone) so the trigger is enabled
-  await waitForAgentResponse(page)
-  const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
-  await trigger.waitFor({ state: "visible", timeout: 5_000 })
-
-  // gluestack-ui Popover trigger uses React Native Web Pressable which may not
-  // respond to Playwright's synthetic click. Use dispatchEvent as fallback.
-  await trigger.click()
-  await page.waitForTimeout(600)
-
-  const option = interactionModeOption(page, mode)
-  let popoverVisible = await option.isVisible().catch(() => false)
-
-  if (!popoverVisible) {
-    // Fallback: dispatch pointer events directly on the DOM element
-    await trigger.dispatchEvent("pointerdown")
-    await page.waitForTimeout(100)
-    await trigger.dispatchEvent("pointerup")
-    await page.waitForTimeout(600)
-    popoverVisible = await option.isVisible().catch(() => false)
-  }
-
-  if (!popoverVisible) {
-    // Last resort: evaluate JS click on the raw DOM node
-    await trigger.evaluate((el: HTMLElement) => el.click())
-    await page.waitForTimeout(600)
-  }
-
-  await option.waitFor({ state: "visible", timeout: 10_000 })
-  await option.click()
-  await page.waitForTimeout(300)
-}
-
-/**
- * A row in the composer's interaction-mode popover. Rows carry
- * `interaction-mode-option-<id>`; the exact-label fallback covers builds that
- * predate that testID.
- */
-export function interactionModeOption(page: Page, mode: "Agent" | "Plan" | "Ask") {
-  return page
-    .getByTestId(`interaction-mode-option-${mode.toLowerCase()}`)
-    .or(page.getByText(mode, { exact: true }).filter({ visible: true }).last())
-    .first()
-}
-
 /**
  * The home composer uses an animated typewriter placeholder
  * (`"Ask Shogo to " + rotating suggestion`), so the old
@@ -216,8 +316,8 @@ export function homeComposerInput(page: Page) {
 }
 
 /**
- * The in-project composer. Its placeholder changes with the interaction mode
- * ("Ask a question...", "Describe what to plan...") so target the testID.
+ * The in-project composer. Target the testID: the placeholder rotates on the
+ * home composer and can change on the project one.
  */
 export function projectComposerInput(page: Page) {
   return page.getByTestId("project-composer-input")
@@ -365,11 +465,27 @@ export const MINIMAL_APP_PROMPT =
   "Create the simplest possible starter app: a single page that shows the word Hello. " +
   "Do not add any extra pages, components, features, or backend, and do not run browser QA."
 
+/**
+ * The project page holds a "Starting your project…" gate, with no chat, until
+ * its runtime reports ready. A cold-claimed runtime on staging takes minutes,
+ * and until then there is no stop button for {@link waitForAgentResponse} to
+ * see, so it would return before the first turn even started.
+ */
+export const RUNTIME_READY_TIMEOUT_MS = 300_000
+
+export async function waitForProjectChat(page: Page, timeoutMs = RUNTIME_READY_TIMEOUT_MS) {
+  extendTestTimeout(timeoutMs)
+  await page
+    .getByRole("textbox", { name: "Chat message input" })
+    .filter({ visible: true })
+    .first()
+    .waitFor({ state: "visible", timeout: timeoutMs })
+}
+
 export async function createProjectAndWait(page: Page, prompt: string) {
   extendTestTimeout(90_000)
   watchChatHealth(page)
-  await page.goto("/")
-  await page.waitForSelector("text=What are we building", { timeout: 15_000 })
+  await gotoAppHome(page, 15_000)
 
   const input = homeComposerInput(page)
   await input.click()
@@ -378,6 +494,7 @@ export async function createProjectAndWait(page: Page, prompt: string) {
   await page.keyboard.press("Enter")
 
   await page.waitForURL(/\/projects\//, { timeout: 60_000 })
+  await waitForProjectChat(page)
   await waitForAgentResponse(page)
 }
 
@@ -422,6 +539,20 @@ export function isLiveStripeEnv(): boolean {
   if (url.includes("staging.shogo.ai")) return false
   if (url.includes("shogo.ai")) return true
   return false
+}
+
+/**
+ * Apex that published apps live under for this target: staging mints
+ * `{subdomain}.staging.shogo.one`, everything else `{subdomain}.shogo.one`.
+ * Override with `E2E_PUBLISH_DOMAIN` (set explicitly in `e2e-hosted.yml` next
+ * to `E2E_TARGET_URL`). Deriving it instead of hardcoding keeps the publish
+ * assertions honest on both environments (SHO-207).
+ */
+export function publishDomain(): string {
+  const explicit = process.env.E2E_PUBLISH_DOMAIN?.trim()
+  if (explicit) return explicit.replace(/^\.+/, "").toLowerCase()
+  const target = (process.env.E2E_TARGET_URL || process.env.STAGING_URL || "").toLowerCase()
+  return target.includes("staging.shogo.ai") ? "staging.shogo.one" : "shogo.one"
 }
 
 /**

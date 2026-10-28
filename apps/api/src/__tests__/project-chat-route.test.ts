@@ -33,6 +33,9 @@ mock.module('@shogo/model-catalog', () => ({
   calculateDollarCost: () => 0,
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
+  AUTO_MODEL_ID: 'auto',
+  isAutoModel: (id: string) => id === 'auto',
+  inferProviderFromModel: (_id: string, fallback: string) => fallback,
 }))
 
 process.env.AI_PROXY_SECRET = process.env.AI_PROXY_SECRET ?? 'test-secret'
@@ -92,15 +95,30 @@ mock.module('../services/billing.service', () => ({
     }
   },
   hasAdvancedModelAccess: async () => hasAdvancedModelAccessResult,
+  getUsageWindows: async () => ({
+    fiveHour: { kind: 'fiveHour', limitUsd: 10, utilization: 1, resetsAt: new Date('2099-01-01T00:00:00.000Z') },
+    weekly: { kind: 'weekly', limitUsd: 50, utilization: 0.4, resetsAt: new Date('2099-01-05T00:00:00.000Z') },
+  }),
 }))
 
 // Model registry: a UUID-addressed DB model resolves to its native provider.
 // stampModelProvider (the real helper) reads this to stamp `modelProvider`
 // on the forwarded body so the runtime routes natively instead of `custom`.
 const OPUS_UUID = '11111111-2222-3333-4444-555555555555'
+// An admin-managed economy model (Hoshi 2.0 on staging): unknown to the static
+// catalog, so only its DB tier marks it as available on every plan.
+const HOSHI_UUID = 'a6f55a2b-2ef6-4543-8b78-9745af477ba2'
 mock.module('../services/model-registry.service', () => ({
   getMergedModelEntrySync: (id: string) =>
-    id === OPUS_UUID ? { provider: 'anthropic' } : undefined,
+    id === OPUS_UUID
+      ? { provider: 'anthropic' }
+      : id === HOSHI_UUID
+        ? { provider: 'custom', tier: 'economy' }
+        : undefined,
+}))
+mock.module('../services/public-models.service', () => ({
+  resolvePublicModelSync: (id: string) =>
+    id === 'hoshi-2-0' ? { publicId: 'hoshi-2-0', backingModelId: HOSHI_UUID, enabled: true } : null,
 }))
 
 mock.module('../services/git.service', () => ({
@@ -219,7 +237,11 @@ describe('POST /projects/:projectId/chat', () => {
       body: '{}',
     }))
     expect(res.status).toBe(402)
-    expect((await res.json() as any).error.code).toBe('usage_limit_reached')
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('usage_limit_reached')
+    // The client shows when usage resets next to its Upgrade button.
+    expect(body.error.resetsAt).toBe('2099-01-01T00:00:00.000Z')
+    expect(body.error.window).toBe('fiveHour')
   })
 
   // Regression: a user with on-demand usage turned on (overageEnabled=true)
@@ -398,7 +420,7 @@ describe('POST /projects/:projectId/chat', () => {
     expect(headers.get('X-Billing-User-Id')).toBe('user-1')
     expect(headers.get('X-User-Id')).toBe('user-1')
     expect(headers.get('x-runtime-token')).toBe('tok-1')
-    expect(JSON.parse(String(lastFetchInit?.body)).agentMode).toBe('claude-haiku-4-5-20251001')
+    expect(JSON.parse(String(lastFetchInit?.body)).agentMode).toBe('auto')
     expect(setProjectUserCalls).toEqual([{ projectId: 'p-1', userId: 'user-1' }])
   })
 
@@ -426,8 +448,8 @@ describe('POST /projects/:projectId/chat', () => {
     expect(forwarded.modelProvider).toBe('anthropic')
   })
 
-  test('drops the provider hint when the model is downgraded to haiku', async () => {
-    // No advanced access → agentMode is rewritten to haiku, which the registry
+  test('drops the provider hint when the model is downgraded to auto', async () => {
+    // No advanced access → agentMode is rewritten to auto, which the registry
     // mock doesn't know, so stampModelProvider clears any stale hint.
     hasAdvancedModelAccessResult = false
     nextFetchResponse = () => new Response('data: ok\n\n', {
@@ -449,9 +471,33 @@ describe('POST /projects/:projectId/chat', () => {
     expect(res.status).toBe(200)
     await res.text()
     const forwarded = JSON.parse(String(lastFetchInit?.body))
-    expect(forwarded.agentMode).toBe('claude-haiku-4-5-20251001')
+    expect(forwarded.agentMode).toBe('auto')
     expect('modelProvider' in forwarded).toBe(false)
   })
+
+  for (const agentMode of [HOSHI_UUID, 'hoshi-2-0', 'auto']) {
+    test(`keeps ${agentMode} on a plan without advanced model access`, async () => {
+      hasAdvancedModelAccessResult = false
+      nextFetchResponse = () => new Response('data: ok\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatSessionId: 'chat-1',
+          agentMode,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      }))
+
+      expect(res.status).toBe(200)
+      await res.text()
+      expect(JSON.parse(String(lastFetchInit?.body)).agentMode).toBe(agentMode)
+    })
+  }
 
   test('does not forward X-User-Id when claimed user is not a workspace member', async () => {
     memberFixture = null

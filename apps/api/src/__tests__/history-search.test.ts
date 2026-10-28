@@ -52,6 +52,11 @@ mock.module('../lib/prisma', () => ({
       },
       findFirst: async () => chat,
     },
+    chatMessage: {
+      findMany: async () => [
+        { role: 'user', content: 'Use SQLite for history', createdAt: new Date('2026-09-15T10:00:00Z') },
+      ],
+    },
     plan: { findMany: async () => [plan], findFirst: async () => plan },
     workspace: { findUnique: async () => ({ name: 'Acme', slug: 'acme', description: null }) },
   },
@@ -91,9 +96,17 @@ describe('workspace history search', () => {
         { type: 'plan', planId: 'plan-1', label: '@plan:History' },
       ],
     }
-    expect(await enrichChatReferences(body, 'user-1', 'project-1', 'workspace-1')).toBe(true)
+    expect(await enrichChatReferences(body, 'user-1', 'workspace-1')).toBe(true)
     expect(body.references[0].transcript).toContain('SQLite')
     expect(body.references[1].content).toContain('# Search')
+  })
+
+  test('leaves chat references alone when there is no acting user', async () => {
+    const body = { references: [{ type: 'chat', id: 'other-tenant-chat' }] }
+    // No acting user → nothing can be validated, so enrichment refuses to touch
+    // the references and the route forwards none of them as context.
+    expect(await enrichChatReferences(body, undefined, 'workspace-1')).toBe(false)
+    expect(body.references).toHaveLength(1)
   })
 
   test('workspace reference summaries never list hidden project names', async () => {

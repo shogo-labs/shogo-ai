@@ -40,7 +40,7 @@
  *   - Pressing the mic while Shogo is speaking a summary interrupts
  *     it (`restart({ suppressFirstMessage: true })`) and converts
  *     the session to user-purpose.
- *   - Tool calls from the voice agent (`send_to_chat`, `set_mode`,
+ *   - Tool calls from the voice agent (`send_to_chat`,
  *     `get_recent_activity`) are executed client-side.
  *
  * Text lifecycle:
@@ -368,10 +368,10 @@ function EzModeChatPanelInner({ className }: EzModeChatPanelProps) {
     status: string
   } | null>(null)
 
-  // Client tools exposed to both voice and text modalities. In addition
-  // to the bridge-backed `send_to_chat` + `set_mode`, we expose
-  // `get_recent_activity` so Shogo can pull the raw activity log when it
-  // needs extra material to summarise accurately.
+  // Client tools exposed to both voice and text modalities: the
+  // bridge-backed `send_to_chat`, plus `get_recent_activity` so Shogo can
+  // pull the raw activity log when it needs extra material to summarise
+  // accurately.
   const clientTools = useMemo(() => {
     const base = createBridgeClientTools(bridge)
     const getRecentActivity = () => {

@@ -16,6 +16,12 @@ export interface NativeSheetDrawerShellProps {
   sidebarWide: ReactNode
   sidebarSheet: ReactNode
   sidebarOverlay?: ReactNode
+  /**
+   * Mount `sidebarSheet` only while the drawer is open (or animating). On a
+   * phone the full sidebar used to stay mounted behind every screen; it is
+   * expensive and invisible. Wide layouts keep it mounted as before.
+   */
+  lazySidebarSheet?: boolean
   header: ReactNode | null
   bottomNav?: ReactNode | null
   /** Float `bottomNav` over the content instead of stacking it below. */
@@ -44,6 +50,7 @@ function NativeSheetDrawerShellFrame({
   sidebarWide,
   sidebarSheet,
   sidebarOverlay,
+  lazySidebarSheet = false,
   header,
   bottomNav = null,
   overlayBottomNav = false,
@@ -70,6 +77,9 @@ function NativeSheetDrawerShellFrame({
         safeAreaAppliesBottom ? { bottom: -insets.bottom } : undefined,
       ]
     : underlayStyle
+  // `sheetCompositing` stays true through the closing animation, so the sheet
+  // is still there to slide out; it unmounts only once the drawer is closed.
+  const sheetMounted = !lazySidebarSheet || drawerOpen || sheetCompositing
 
   return (
     <SafeAreaView
@@ -94,7 +104,7 @@ function NativeSheetDrawerShellFrame({
           ]}
           collapsable={false}
         >
-          {nativeSheetDrawer ? (
+          {nativeSheetDrawer && sheetMounted ? (
             <View
               pointerEvents={drawerOpen ? 'auto' : 'none'}
               accessibilityElementsHidden={!drawerOpen}

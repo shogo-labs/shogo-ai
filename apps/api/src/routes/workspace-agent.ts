@@ -20,6 +20,7 @@
 
 import { Hono } from 'hono'
 import type { Permission } from '@shogo/authz'
+import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { decide, loadAccess, principalOf, resolveAgentActor, type AgentCaller, type Principal } from '../lib/authz'
 import { ConversationError, resolveNotifyConversation, resolveNotifyThread } from '../services/conversation.service'
 import { listActiveChatTurns } from '../services/chat-turn-state.service'
@@ -35,7 +36,17 @@ import {
   testSubscription,
   updateSubscription,
 } from '../services/event-subscription.service'
-import { findWorkspaceMember, getMemberWorkActivity } from '../services/engagement-analytics.service'
+import {
+  findWorkspaceMember,
+  getMemberWorkActivity,
+  type WorkspaceMemberRef,
+} from '../services/engagement-analytics.service'
+import {
+  getAllMemberMessages,
+  getMemberMessages,
+  type MemberMessageItem,
+  type MemberMessageQuery,
+} from '../services/member-messages.service'
 import {
   AgentScheduleError,
   createSchedule,
@@ -48,6 +59,7 @@ import {
 import {
   createGoal,
   createGoalEvent,
+  getAgentDefaultModel,
   getGoal,
   getOrCreateAgentProfile,
   isGoalEventKind,
@@ -57,10 +69,12 @@ import {
   listWorkspaceActivity,
   resolveGoalEventApproval,
   saveAgentAvatar as saveLocalAgentAvatar,
+  setAgentDefaultModel,
   updateAgentProfile,
   updateGoal,
   type GoalApprovalDecision,
 } from '../services/workspace-agent.service'
+import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
 
 export interface WorkspaceAgentAuthContext {
   workspaceId: string
@@ -116,6 +130,84 @@ export function sessionAuthorize(
     }
     return { workspaceId, userId }
   }
+}
+
+const MEMBER_MESSAGE_AUDIENCES = new Set(['person', 'agent', 'mixed', 'channel'])
+
+function queryError(message: string): Response {
+  return new Response(JSON.stringify({ error: { code: 'invalid_request', message } }), {
+    status: 400,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+/** Query params for the message export (`/member-activity/messages[.csv]`). */
+function parseMemberMessageQuery(url: URL): MemberMessageQuery | Response {
+  const sinceRaw = url.searchParams.get('since')?.trim() || null
+  const untilRaw = url.searchParams.get('until')?.trim() || null
+  const since = sinceRaw ? new Date(sinceRaw) : null
+  const until = untilRaw ? new Date(untilRaw) : null
+  if (since && Number.isNaN(since.getTime())) return queryError('since must be an ISO timestamp')
+  if (until && Number.isNaN(until.getTime())) return queryError('until must be an ISO timestamp')
+
+  const audience = url.searchParams.get('audience')?.trim() || null
+  if (audience && !MEMBER_MESSAGE_AUDIENCES.has(audience)) {
+    return queryError(`audience must be one of ${[...MEMBER_MESSAGE_AUDIENCES].join(', ')}`)
+  }
+  const source = url.searchParams.get('source')?.trim() || null
+  if (source && source !== 'team_chat' && source !== 'agent_chat') {
+    return queryError("source must be 'team_chat' or 'agent_chat'")
+  }
+  const limitRaw = url.searchParams.get('limit')?.trim() || null
+  const limit = limitRaw ? Number(limitRaw) : undefined
+  if (limitRaw && (!Number.isFinite(limit) || (limit as number) < 1)) {
+    return queryError('limit must be a positive number')
+  }
+
+  return {
+    since,
+    until,
+    audience: audience as MemberMessageQuery['audience'],
+    source: source as MemberMessageQuery['source'],
+    cursor: url.searchParams.get('cursor') ?? null,
+    limit,
+  }
+}
+
+function memberMessagesCsv(items: MemberMessageItem[]): string {
+  const escape = (val: unknown): string => {
+    if (val === null || val === undefined) return ''
+    const s = String(val)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const header = [
+    'created_at',
+    'source',
+    'audience',
+    'conversation',
+    'thread_root_id',
+    'card',
+    'chat_session_id',
+    'message_id',
+    'text',
+  ]
+  const lines = [header.join(',')]
+  for (const item of items) {
+    lines.push(
+      [
+        escape(item.createdAt),
+        escape(item.source),
+        escape(item.audience),
+        escape(item.conversation?.name || item.conversation?.kind || item.chatSession?.name || ''),
+        escape(item.threadRootId),
+        escape(item.workItemKey),
+        escape(item.chatSession?.id),
+        escape(item.id),
+        escape(item.text),
+      ].join(','),
+    )
+  }
+  return lines.join('\n')
 }
 
 export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
@@ -231,6 +323,41 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     }
 
     return c.json({ profile: await updateAgentProfile(auth.workspaceId, changes) })
+  })
+
+  router.get('/workspaces/:workspaceId/agent-default-model', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const canManage = !auth.identity && !!auth.userId &&
+      (await userCan(c, auth.workspaceId, auth.userId, 'workspace.settings:manage'))
+    return c.json({ defaultModel: await getAgentDefaultModel(auth.workspaceId), canManage })
+  })
+
+  /**
+   * Only a signed-in workspace admin may change this: it is deliberately not on
+   * the agent-profile PATCH, which members and the agent runtime can call.
+   */
+  router.put('/workspaces/:workspaceId/agent-default-model', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    if (auth.identity || !auth.userId) {
+      return forbidden(c, 'Only a workspace admin can change the agent default model')
+    }
+    if (!(await userCan(c, auth.workspaceId, auth.userId, 'workspace.settings:manage'))) {
+      return forbidden(c, 'Only a workspace admin can change the agent default model')
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const raw = body && typeof body === 'object' ? body.defaultModel : undefined
+    if (raw !== null && typeof raw !== 'string') {
+      return c.json({ error: { code: 'invalid_field', message: 'defaultModel must be a string or null' } }, 400)
+    }
+    const trimmed = raw?.trim() || null
+    const model = trimmed && trimmed !== AUTO_MODEL_ID ? trimmed : null
+    if (model && !(await isModelVisibleForWorkspace(auth.workspaceId, model))) {
+      return c.json({ error: { code: 'model_not_available', message: 'That model is not available in this workspace' } }, 400)
+    }
+    return c.json({ defaultModel: await setAgentDefaultModel(auth.workspaceId, model), canManage: true })
   })
 
   /**
@@ -718,10 +845,13 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
   // is always the session user. Internal (runtime) callers have no session, so
   // they name the person asking in `requestedBy`; that id comes from the chat
   // request's authenticated user, never from model-supplied input.
-  router.get('/workspaces/:workspaceId/member-activity', async (c) => {
-    const auth = await authorize(c)
-    if (auth instanceof Response) return auth
-
+  //
+  // \"Records\" is the same authorisation and the same audit line: the three
+  // lookups below differ only in what they return (summary, message page, CSV).
+  async function authorizeMemberLookup(
+    c: any,
+    auth: WorkspaceAgentAuthContext,
+  ): Promise<{ actor: string; member: WorkspaceMemberRef } | Response> {
     const actor = auth.userId || c.req.query('requestedBy')?.trim() || null
     if (!actor) {
       return c.json({
@@ -740,15 +870,79 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (!member) {
       return c.json({ error: { code: 'not_found', message: `No workspace member matches "${target}"` } }, 404)
     }
+    return { actor, member }
+  }
 
-    console.info(`[MemberActivity] ${actor} viewed ${member.userId} in workspace ${auth.workspaceId}`)
-    const data = await getMemberWorkActivity(auth.workspaceId, member, {
-      range: c.req.query('range'),
-      since: c.req.query('since'),
-      until: c.req.query('until'),
-      tz: c.req.query('tz'),
-    })
+  function auditMemberLookup(actor: string, workspaceId: string, member: WorkspaceMemberRef, detail: string) {
+    console.info(`[MemberActivity] ${actor} viewed ${member.userId} in workspace ${workspaceId} detail=${detail}`)
+  }
+
+  router.get('/workspaces/:workspaceId/member-activity', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+
+    const lookup = await authorizeMemberLookup(c, auth)
+    if (lookup instanceof Response) return lookup
+    const { actor, member } = lookup
+
+    const detail = c.req.query('detail') === 'board' ? 'board' : 'summary'
+    auditMemberLookup(actor, auth.workspaceId, member, detail)
+    const data = await getMemberWorkActivity(
+      auth.workspaceId,
+      member,
+      {
+        range: c.req.query('range'),
+        since: c.req.query('since'),
+        until: c.req.query('until'),
+        tz: c.req.query('tz'),
+      },
+      new Date(),
+      { boardOnly: detail === 'board' },
+    )
     return c.json({ activity: data })
+  })
+
+  /** The records behind the summary: what this person sent, full text and ids. */
+  router.get('/workspaces/:workspaceId/member-activity/messages', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+
+    const lookup = await authorizeMemberLookup(c, auth)
+    if (lookup instanceof Response) return lookup
+    const { actor, member } = lookup
+
+    const parsed = parseMemberMessageQuery(new URL(c.req.url))
+    if (parsed instanceof Response) return parsed
+
+    auditMemberLookup(actor, auth.workspaceId, member, 'messages')
+    const page = await getMemberMessages(auth.workspaceId, member.userId, parsed)
+    return c.json(page)
+  })
+
+  router.get('/workspaces/:workspaceId/member-activity/messages.csv', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+
+    const lookup = await authorizeMemberLookup(c, auth)
+    if (lookup instanceof Response) return lookup
+    const { actor, member } = lookup
+
+    const parsed = parseMemberMessageQuery(new URL(c.req.url))
+    if (parsed instanceof Response) return parsed
+
+    auditMemberLookup(actor, auth.workspaceId, member, 'messages.csv')
+    const { items } = await getAllMemberMessages(auth.workspaceId, member.userId, {
+      since: parsed.since,
+      until: parsed.until,
+      audience: parsed.audience,
+      source: parsed.source,
+    })
+    return new Response(memberMessagesCsv(items), {
+      headers: {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': `attachment; filename="messages-${member.userId}-${parsed.since?.toISOString().slice(0, 10) ?? 'all'}.csv"`,
+      },
+    })
   })
 
   router.get('/workspaces/:workspaceId/active-chats', async (c) => {

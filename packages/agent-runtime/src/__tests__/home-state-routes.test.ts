@@ -115,6 +115,18 @@ describe('hydrate', () => {
     expect(res.status).toBe(422)
   })
 
+  test('HOME_STATE_ID binds the archive to the runtime, not to the first workspace member', async () => {
+    const a = join(root, 'a')
+    put(a, '.netrc', 'machine x', 0o600)
+    const ws = { HOME_STATE_ID: 'ws:proj:p1', PROJECT_ID: 'p1' }
+    expect(homeStateConfigFromEnv(envFor(a, ws))?.projectId).toBe('ws:proj:p1')
+    const exp = await handleExportHome(post(), { env: envFor(a, ws), stageDir: () => root })
+    const blob = new Uint8Array(await exp.arrayBuffer())
+    const b = join(root, 'b')
+    expect((await handleHydrateHome(post({}, blob), { env: envFor(b, { HOME_STATE_ID: 'ws:proj:p1', PROJECT_ID: 'p2' }) })).status).toBe(200)
+    expect((await handleHydrateHome(post({}, blob), { env: envFor(b, { PROJECT_ID: 'p1' }) })).status).toBe(422)
+  })
+
   test('400 for an empty body, 422 for garbage', async () => {
     const env = envFor(join(root, 'b'))
     expect((await handleHydrateHome(post({}, new Uint8Array()), { env })).status).toBe(400)

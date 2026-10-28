@@ -361,6 +361,61 @@ describe('auth middleware', () => {
     expect(res.status).toBe(401)
   })
 
+  test('answers a runtime token with a retryable 503 while the pool pod is unassigned', async () => {
+    const { app } = await buildApp({
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true', WORKSPACE_ID: undefined },
+    })
+    app.get('/agent/chat/s1/stream', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/chat/s1/stream', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_abcdef' },
+    })
+    expect(res.status).toBe(503)
+    expect(res.headers.get('retry-after')).toBe('1')
+    expect((await res.json()).error.code).toBe('runtime_not_ready')
+    expect(fetchCalls.length).toBe(0)
+  })
+
+  test('answers a runtime token with a retryable 503 while /pool/assign is still running', async () => {
+    let finishAssign!: () => void
+    const assignGate = new Promise<void>((resolve) => { finishAssign = resolve })
+    const { app } = await buildApp({
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true', WORKSPACE_ID: undefined },
+      config: { onAssign: () => assignGate },
+    })
+    app.get('/agent/chat/s1/stream', (c) => c.json({ ok: true }))
+    const assigning = app.request('/pool/assign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-9', attachedProjectIds: ['p1'], env: { WORKSPACE_ID: 'ws-9' } }),
+    })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const during = await app.request('/agent/chat/s1/stream', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_abcdef' },
+    })
+    expect(during.status).toBe(503)
+    expect((await during.json()).error.code).toBe('runtime_not_ready')
+
+    finishAssign()
+    expect((await assigning).status).toBe(200)
+    fetchResponses = [{ ok: true, body: { valid: true, workspaceId: 'ws-9' } }]
+    const after = await app.request('/agent/chat/s1/stream', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_abcdef' },
+    })
+    expect(after.status).toBe(200)
+  })
+
+  test('still rejects garbage tokens with 401 while the pool pod is unassigned', async () => {
+    const { app } = await buildApp({
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true' },
+    })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'random-garbage' },
+    })
+    expect(res.status).toBe(401)
+  })
+
   test('rejects bogus bearer that does not match v1 prefix', async () => {
     const { app } = await buildApp()
     app.get('/agent/secret', (c) => c.json({ ok: true }))
@@ -431,6 +486,105 @@ describe('auth middleware', () => {
       headers: { 'x-runtime-token': 'rt_v1_test-project-123_yy' },
     })
     expect(res.status).toBe(401)
+  })
+
+  // SHO-125 §4b — the API authenticates *to* a project pod with the WORKSPACE
+  // token. The pod has to hold it too, or the byte-compare can never match and
+  // every remote tool call costs an API round-trip (and 401s during a blip).
+  test('accepts the workspace token the API sends when the pod also holds it (no API call)', async () => {
+    fetchImpl = () => Promise.reject(new Error('API unreachable'))
+    const { app } = await buildApp({
+      env: {
+        PROJECT_ID: 'test-project-123',
+        RUNTIME_AUTH_SECRET: 'rt_v1_test-project-123_podtoken',
+        WORKSPACE_RUNTIME_AUTH_SECRET: 'wrt_v1_ws-9_wstoken',
+      },
+    })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_wstoken' },
+    })
+    expect(res.status).toBe(200)
+    // Byte-compare hit: the API was never consulted.
+    expect(fetchCalls.length).toBe(0)
+  })
+
+  test('a workspace runtime holding the workspace token in RUNTIME_AUTH_SECRET still fast-paths', async () => {
+    fetchImpl = () => Promise.reject(new Error('API unreachable'))
+    const { app } = await buildApp({
+      env: {
+        RUNTIME_AUTH_SECRET: 'wrt_v1_ws-9_wstoken',
+        WORKSPACE_ID: 'ws-9',
+      },
+    })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_wstoken' },
+    })
+    expect(res.status).toBe(200)
+    expect(fetchCalls.length).toBe(0)
+  })
+
+  test('still refuses a workspace token the pod does not hold', async () => {
+    fetchImpl = () => Promise.reject(new Error('API unreachable'))
+    const { app } = await buildApp({
+      env: {
+        RUNTIME_AUTH_SECRET: 'rt_v1_test-project-123_podtoken',
+        WORKSPACE_RUNTIME_AUTH_SECRET: 'wrt_v1_ws-9_wstoken',
+      },
+    })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_othertoken' },
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test('a 5xx from the validator is not cached as invalid', async () => {
+    fetchResponses = [
+      { ok: false, status: 503, body: { error: 'deploying' } },
+      { ok: true, body: { valid: true, projectId: 'test-project-123' } },
+    ]
+    const { app } = await buildApp()
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const headers = { 'x-runtime-token': 'rt_v1_test-project-123_transient' }
+    expect((await app.request('/agent/secret', { headers })).status).toBe(401)
+    expect((await app.request('/agent/secret', { headers })).status).toBe(200)
+    expect(fetchCalls.length).toBe(2)
+  })
+
+  test('a timeout from the validator is not cached as invalid', async () => {
+    let calls = 0
+    fetchImpl = () => {
+      calls += 1
+      if (calls === 1) return Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }))
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ valid: true, projectId: 'test-project-123' }),
+        text: () => Promise.resolve('{}'),
+      })
+    }
+    const { app } = await buildApp()
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const headers = { 'x-runtime-token': 'rt_v1_test-project-123_timeout' }
+    expect((await app.request('/agent/secret', { headers })).status).toBe(401)
+    expect((await app.request('/agent/secret', { headers })).status).toBe(200)
+    expect(calls).toBe(2)
+  })
+
+  test('a 401 body names the token scope so a caller knows not to retry', async () => {
+    fetchImpl = () => Promise.reject(new Error('network down'))
+    const { app } = await buildApp({ env: { WORKSPACE_ID: 'ws-9' } })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_other-ws_abcdef' },
+    })
+    expect(res.status).toBe(401)
+    const body = await res.json() as Record<string, unknown>
+    expect(body.code).toBe('auth_mismatch')
+    expect(body.tokenScope).toBe('wrt_v1_other-ws')
+    expect(String(body.error)).not.toContain('abcdef')
   })
 
   test('accepts valid preview JWT via API callback', async () => {

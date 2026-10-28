@@ -57,7 +57,16 @@ export async function createWorkspaceSession(
      */
     createdByUserId?: string
   } = {},
-): Promise<{ id: string; workspaceId: string; contextId: string | null; attached: AttachedProject[] }> {
+): Promise<{
+  id: string
+  workspaceId: string
+  contextId: string | null
+  name: string | null
+  inferredName: string | null
+  createdAt: string | null
+  lastActiveAt: string | null
+  attached: AttachedProject[]
+}> {
   const anchorProjectId = opts.anchorProjectId || undefined
   const attachIds = dedupe([...(anchorProjectId ? [anchorProjectId] : []), ...(opts.attachProjectIds ?? [])])
   if (attachIds.length > 0) {
@@ -89,8 +98,18 @@ export async function createWorkspaceSession(
     id: session.id,
     workspaceId,
     contextId: anchorProjectId ?? null,
+    name: session.name ?? null,
+    inferredName: session.inferredName ?? null,
+    createdAt: toIsoOrNull(session.createdAt),
+    lastActiveAt: toIsoOrNull(session.lastActiveAt),
     attached: (session.attachedProjects ?? []).map(toAttachedProject),
   }
+}
+
+function toIsoOrNull(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'string' && value.length > 0) return new Date(value).toISOString()
+  return null
 }
 
 /**
@@ -295,13 +314,24 @@ export async function assertWorkspaceSessionAccess(
   }
 }
 
-/** List the caller's personal workspace chats (most-recent first). */
+/**
+ * List the caller's personal workspace chats (most-recent first).
+ *
+ * `messageCount` is the session's real message count, so a client can tell an
+ * empty chat from one that has a conversation in it (the landing reuses an
+ * empty chat instead of minting a new one on every cold start).
+ */
 export async function listWorkspaceSessions(workspaceId: string, userId: string) {
-  return prisma.chatSession.findMany({
+  const rows = (await prisma.chatSession.findMany({
     where: { contextType: 'workspace', workspaceId, createdByUserId: userId } as any,
     orderBy: { lastActiveAt: 'desc' },
-    include: { attachedProjects: true } as any,
-  }) as any
+    include: { attachedProjects: true, _count: { select: { messages: true } } } as any,
+  })) as any[]
+
+  return rows.map(({ _count, ...row }) => ({
+    ...row,
+    messageCount: _count?.messages ?? 0,
+  }))
 }
 
 // ──────────────────────────────────────────────────────────────────

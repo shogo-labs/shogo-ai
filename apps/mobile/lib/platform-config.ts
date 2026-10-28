@@ -48,7 +48,7 @@ const CLOUD_CONFIG: PlatformConfig = {
     personalShell: true,
     agentShell: false,
     mobileAgentShell: false,
-    workBoards: false,
+    workBoards: true,
   },
 }
 

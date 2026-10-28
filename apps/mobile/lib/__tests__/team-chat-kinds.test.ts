@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ChatMessage } from '../team-chat-api'
-import { approvalOf, cardProgress, connectRequestsOf, foldStatusRuns, isCollapsibleStatus, messageKind, statusCardOf, stepStates } from '../team-chat-kinds'
+import { approvalOf, cardProgress, connectRequestsOf, foldStatusRuns, isCollapsibleStatus, messageKind, statusCardOf, stepStates, workItemOf } from '../team-chat-kinds'
 
 describe('connect requests', () => {
   test('reads the connect links an agent hit and drops malformed ones', () => {
@@ -93,6 +93,27 @@ describe('folding routine status posts', () => {
   test('a person speaking in between ends the run', () => {
     const items = foldStatusRuns([agent(1, 'status'), agent(2, 'status'), msg(3), agent(4, 'status'), agent(5, 'status')])
     expect(items.map((i) => [i.message.id, i.folded.length])).toEqual([['m2', 1], ['m3', 0], ['m5', 1]])
+  })
+})
+
+describe('workItemOf', () => {
+  const block = {
+    id: 'i1', key: 'SHO-17', boardId: 'b1', boardName: 'Shogo Dev', title: 'Board card renders as a card',
+    column: { name: 'In Development', category: 'active' }, priority: 'high',
+    assignee: { kind: 'agent', name: 'Shogo Dev 3' }, dueAt: null, path: '/work?card=i1',
+  }
+
+  test('reads the block a board card is posted with', () => {
+    expect(workItemOf({ blocks: { type: 'status_card', workItem: block } })).toEqual(block)
+  })
+
+  test('legacy blocks posted without a title fall back to plain text', () => {
+    expect(workItemOf({ blocks: { workItem: { id: 'i1', key: 'SHO-1', boardId: 'b1' } } })).toBeNull()
+  })
+
+  test('messages with no work item are left alone', () => {
+    expect(workItemOf({ blocks: { type: 'status_card', card: { title: 't', status: 'done' } } })).toBeNull()
+    expect(workItemOf({ blocks: null })).toBeNull()
   })
 })
 

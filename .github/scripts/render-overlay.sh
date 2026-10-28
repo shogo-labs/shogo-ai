@@ -28,6 +28,7 @@ placeholder() { printf 's#(value: )"?%s"?$#\\1"%s"#' "$1" "$2"; }
 RENDERED=$(kubectl kustomize "k8s/overlays/${ENVIRONMENT}/" | sed -E \
   -e "$(placeholder RUNTIME_IMAGE_PLACEHOLDER "$RUNTIME_IMAGE")" \
   -e "$(placeholder SHOGO_APP_VERSION_PLACEHOLDER "${APP_VERSION:-}")" \
+  -e "$(placeholder APP_VERSION_PLACEHOLDER "${APP_VERSION:-}")" \
   -e "$(placeholder GA4_MEASUREMENT_ID_PLACEHOLDER "${GA4_MEASUREMENT_ID:-}")" \
   -e "$(placeholder FB_PIXEL_ID_PLACEHOLDER "${FB_PIXEL_ID:-}")")
 

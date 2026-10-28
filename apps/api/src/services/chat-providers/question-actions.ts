@@ -47,14 +47,19 @@ export async function handleQuestionPress(
   if (!userId) return { ok: false, message: 'Link your Shogo account first, then press the button again.' }
 
   try {
-    await answerQuestion({
+    const result = await answerQuestion({
       messageId: row.id,
       questionId: question.id,
       userId,
       answer: option.label,
       origin: press.provider === 'teams' ? 'teams' : 'slack',
     })
-    return { ok: true, message: `Answered: ${option.label}` }
+    return {
+      ok: true,
+      message: result.relay === 'held'
+        ? `Answered: ${option.label}. Your answers go to the agent together once you've answered the rest.`
+        : `Answered: ${option.label}`,
+    }
   } catch (err) {
     if (err instanceof AgentMessageError || err instanceof ConversationError) return { ok: false, message: err.message }
     throw err

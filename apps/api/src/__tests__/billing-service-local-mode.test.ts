@@ -26,10 +26,18 @@ mock.module('../config/usage-plans', () => ({
   FREE_DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
   FIVE_HOUR_MS: 5 * 60 * 60 * 1000,
+  // Mirrors config/usage-plans promoCreditAvailableUsd (mock replaces the whole module).
+  promoCreditAvailableUsd: (wallet: any, now: Date = new Date()) =>
+    wallet?.promoCreditExpiresAt && new Date(wallet.promoCreditExpiresAt).getTime() > now.getTime()
+      ? Math.max(0, wallet.promoCreditUsd ?? 0)
+      : 0,
   SEVEN_DAY_MS: 7 * 24 * 60 * 60 * 1000,
   PLAN_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40 },
   PLAN_RANK: { free: 0, basic: 1, pro: 2, business: 3, enterprise: 4 },
   SEAT_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40, enterprise: 2000 },
+  // A plan change invalidates the agent-reply capacity cache, which reads these.
+  AGENT_REPLY_CONCURRENCY: { free: 2, basic: 4, pro: 8, business: 12, enterprise: 24 },
+  LOCAL_AGENT_REPLY_CONCURRENCY: 24,
   ROLLING_WINDOW_LIMITS: {
     free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
     basic: { fiveHourUsd: 2, weeklyUsd: 10 },

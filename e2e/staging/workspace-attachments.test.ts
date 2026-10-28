@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "./fixtures"
 import {
+  APP_HOME_PATH,
   makeTestUser,
   signUpAndOnboard,
   createProjectAndWait,
@@ -71,7 +72,7 @@ const WRITE_MARKER = `attached-write-ok-${RUN}`
  * there is no auth at all.
  */
 async function ensureAuthenticated(page: Page, user: TestUser): Promise<boolean> {
-  await page.goto("/")
+  await page.goto(APP_HOME_PATH)
   // A cold Playwright context loads the dev bundle on first navigation, which
   // can take far longer than a few seconds, so race the two possible shells
   // with a generous budget: the authenticated home (local mode, or an

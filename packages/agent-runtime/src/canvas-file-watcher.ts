@@ -114,6 +114,7 @@ const IGNORED_PATH_PREFIXES = [
   // auto-open log files and steal the active tab. Keep in sync with the
   // exclude list in github-workspace-git.ts.
   '.shogo/logs',
+  '.shogo/tasks',
   '.shogo/local',
   '.shogo/install-marker',
   '.shogo/agent-state.json',

@@ -72,6 +72,13 @@ export {
   type CreateShogoLlmProviderOptions,
   type ShogoLlmProvider,
 } from './llm/index.js'
+export {
+  createShogoMusicGenerator,
+  type CreateShogoMusicOptions,
+  type GenerateMusicRequest,
+  type GenerateMusicResult,
+  type ShogoMusicGenerator,
+} from './llm/music.js'
 
 // Platform API (API keys, local config, feature flags)
 export {

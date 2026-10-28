@@ -13,6 +13,7 @@
  */
 
 import type { AgentEval, EvalResult } from './types'
+import { resultCollectionCalls } from './eval-helpers'
 
 function toolWasUsed(result: EvalResult, name: string): boolean {
   return result.toolCalls.some(tc => tc.name === name)
@@ -519,11 +520,11 @@ export const subagentEvals: AgentEval[] = [
       },
       {
         id: 'checked-status',
-        description: 'Agent checked the background task status',
+        description: 'Agent collected the background task result',
         points: 3,
         phase: 'intention',
         validate: (r) =>
-          toolWasUsed(r, 'task_status') || toolWasUsed(r, 'agent_status') || toolWasUsed(r, 'agent_result'),
+          toolWasUsed(r, 'task_status') || toolWasUsed(r, 'agent_status') || resultCollectionCalls(r).length > 0,
       },
       {
         id: 'provided-analysis',

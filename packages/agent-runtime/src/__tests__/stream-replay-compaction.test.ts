@@ -100,6 +100,76 @@ describe('compactSseFrames', () => {
   })
 })
 
+describe('compactSseFrames sub-agent updates', () => {
+  /** One sub-agent update: the whole accumulated state, as `emitPreliminary` writes it. */
+  const preliminary = (toolCallId: string, text: string) => ({
+    type: 'tool-output-available',
+    toolCallId,
+    output: { agentId: 'a1', parts: [{ type: 'text', text, id: 'sa-text-0' }] },
+    dynamic: true,
+    preliminary: true,
+  })
+  const spawnCall = (toolCallId: string) => [
+    { type: 'tool-input-start', toolCallId, toolName: 'agent_spawn' },
+    { type: 'tool-input-available', toolCallId, toolName: 'agent_spawn', input: { type: 'browser_qa' } },
+  ]
+  const outputs = (bytes: Uint8Array) =>
+    new TextDecoder().decode(bytes).split('\n\n').filter(Boolean)
+      .map((e) => JSON.parse(e.slice(6)))
+      .filter((e) => e.type === 'tool-output-available')
+
+  test('keeps only the latest preliminary output of a call, and the message it builds', async () => {
+    const frames = [
+      ...spawnCall('spawn').map(frame),
+      ...Array.from({ length: 50 }, (_, i) => frame(preliminary('spawn', `update ${i} `))),
+    ]
+    const compacted = compactSseFrames(frames)
+
+    expect(outputs(compacted)).toHaveLength(1)
+    expect(outputs(compacted)[0].output.parts[0].text).toBe('update 49 ')
+    expect(await finalMessage(streamOf([compacted]))).toEqual(await finalMessage(streamOf(frames)))
+  })
+
+  test('drops every preliminary output once the call has its final one', async () => {
+    const frames = [
+      ...spawnCall('spawn').map(frame),
+      frame(preliminary('spawn', 'update 0 ')),
+      frame(preliminary('spawn', 'update 1 ')),
+      frame({ type: 'tool-output-available', toolCallId: 'spawn', output: { status: 'completed' }, dynamic: true }),
+    ]
+    const compacted = compactSseFrames(frames)
+
+    expect(outputs(compacted)).toEqual([
+      { type: 'tool-output-available', toolCallId: 'spawn', output: { status: 'completed' }, dynamic: true },
+    ])
+  })
+
+  test('drops a call\'s preliminary outputs when it errors instead', () => {
+    const compacted = compactSseFrames([
+      ...spawnCall('spawn').map(frame),
+      frame(preliminary('spawn', 'update 0 ')),
+      frame({ type: 'tool-output-error', toolCallId: 'spawn', errorText: 'boom', dynamic: true }),
+    ])
+    expect(outputs(compacted)).toHaveLength(0)
+  })
+
+  test('keeps concurrent sub-agents apart', () => {
+    const frames = [
+      ...spawnCall('a').map(frame),
+      ...spawnCall('b').map(frame),
+      frame(preliminary('a', 'a0 ')),
+      frame(preliminary('b', 'b0 ')),
+      frame(preliminary('a', 'a1 ')),
+      frame(preliminary('b', 'b1 ')),
+    ]
+    const kept = outputs(compactSseFrames(frames))
+    expect(kept.map((o) => [o.toolCallId, o.output.parts[0].text])).toEqual([
+      ['a', 'a1 '],
+      ['b', 'b1 '],
+    ])
+  })
+})
+
 describe('StreamBufferStore compacted replay', () => {
   test('replays compacted, reports the exact seq, then streams live frames', async () => {
     const store = new StreamBufferStore()

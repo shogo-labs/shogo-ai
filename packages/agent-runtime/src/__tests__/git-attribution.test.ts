@@ -25,6 +25,23 @@ describe('injectCommitTrailer', () => {
     expect(result).toContain('| git commit --trailer')
   })
 
+  test('replaces a hand-written Shogo co-author instead of adding a second one', () => {
+    const command = 'git commit --trailer "Co-authored-by: Shogo <noreply@shogo.ai>" -m done'
+    expect(injectCommitTrailer(command, env)).toBe(
+      'git commit --trailer "Co-authored-by: Shogo Agent <agent@shogo.ai>" -m done',
+    )
+    expect(injectCommitTrailer('git commit --trailer="Co-authored-by: Shogo Dev 2 <dev2@shogo.local>" -m done', env)).toBe(
+      'git commit --trailer="Co-authored-by: Shogo Agent <agent@shogo.ai>" -m done',
+    )
+  })
+
+  test('leaves another tool\'s co-author and adds the canonical one', () => {
+    const command = 'git commit --trailer "Co-authored-by: Cursor <cursoragent@cursor.com>" -m done'
+    expect(injectCommitTrailer(command, env)).toBe(
+      'git commit --trailer "Co-authored-by: Shogo Agent <agent@shogo.ai>" --trailer "Co-authored-by: Cursor <cursoragent@cursor.com>" -m done',
+    )
+  })
+
   test('does not rewrite quoted examples or already-attributed commits', () => {
     const command = [
       'printf "git commit -m example"',

@@ -20,6 +20,7 @@ import {
 import { useTeamChatEvents } from '../lib/team-chat-connection'
 import { setActiveChannelNotificationContext } from '../lib/notifications/chat-notifier'
 import { cacheList, cacheTimeline, readCachedList, readCachedTimeline } from '../lib/team-chat-cache'
+import { linkPreviewOptOuts } from '../lib/link-preview-consent'
 import {
   addOptimistic,
   applyListEvent,
@@ -45,9 +46,18 @@ const TIMELINE_TRIM_TO = 300
 // ─── Which conversation is on screen (suppresses its unread badge) ──────────
 
 let activeConversationId: string | null = null
+// The screen that set the active conversation. Opening a thread pushes a second
+// screen for the same conversation, so the one being covered must not clear it.
+let activeOwner: object | null = null
 const activeListeners = new Set<() => void>()
 
-export function setActiveConversation(id: string | null): void {
+export function setActiveConversation(id: string | null, owner: object): void {
+  if (id === null) {
+    if (activeOwner !== owner) return
+    activeOwner = null
+  } else {
+    activeOwner = owner
+  }
   if (activeConversationId === id) return
   activeConversationId = id
   setActiveChannelNotificationContext(id)
@@ -74,6 +84,9 @@ export function useMyUserId(): string | null {
 const listCache = new Map<string, ConversationSummary[]>()
 const listChangedListeners = new Set<(workspaceId: string) => void>()
 
+/** Slack for the client's own clock against the server's when it starts a catch-up cursor. */
+const CATCH_UP_SKEW_MS = 5_000
+
 /** Ask mounted lists to refetch (after creating/joining/leaving a conversation). */
 export function invalidateConversationList(workspaceId: string): void {
   listChangedListeners.forEach((l) => l(workspaceId))
@@ -86,6 +99,9 @@ export function useConversationList(workspaceId: string | null | undefined) {
   const [loading, setLoading] = useState(!workspaceId || !listCache.has(workspaceId))
   const [error, setError] = useState<string | null>(null)
   const inflight = useRef<Promise<void> | null>(null)
+  // The server clock of the last list this hook holds. A reconnect asks for what
+  // changed after it instead of re-downloading every conversation.
+  const syncedAt = useRef<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!workspaceId) return
@@ -94,9 +110,12 @@ export function useConversationList(workspaceId: string | null | undefined) {
       try {
         const next = await api.list(workspaceId)
         listCache.set(workspaceId, next)
+        // Our clock, not the server's, so start the cursor slightly in the past:
+        // a few unchanged rows in the first catch-up cost nothing, while a
+        // cursor ahead of the server would skip a change.
+        syncedAt.current = new Date(Date.now() - CATCH_UP_SKEW_MS).toISOString()
         setList(next)
         setError(null)
-        if (me) cacheList(me, workspaceId, next)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not load conversations')
       } finally {
@@ -106,10 +125,47 @@ export function useConversationList(workspaceId: string | null | undefined) {
     })()
     inflight.current = run
     return run
-  }, [workspaceId, me])
+  }, [workspaceId])
+
+  /** Reconnect/foreground: merge only the conversations that changed since our last sync. */
+  const catchUp = useCallback(async () => {
+    if (!workspaceId) return
+    if (inflight.current) return inflight.current
+    const since = syncedAt.current
+    if (!since) return refresh()
+    const run = (async () => {
+      try {
+        const { conversations: changed, syncedAt: serverNow } = await api.listSince(workspaceId, since)
+        if (serverNow) syncedAt.current = serverNow
+        if (!changed.length) return
+        setList((current) => {
+          const byId = new Map(changed.map((c) => [c.id, c]))
+          const merged = current.map((c) => byId.get(c.id) ?? c)
+          const known = new Set(current.map((c) => c.id))
+          const added = changed.filter((c) => !known.has(c.id))
+          const next = added.length ? [...merged, ...added] : merged
+          listCache.set(workspaceId, next)
+          return next
+        })
+        setError(null)
+      } catch (err) {
+        // A failed catch-up is not worth an error banner: fall back to a full
+        // list. Clear the in-flight marker first, or `refresh` short-circuits on
+        // it and the fallback never runs.
+        inflight.current = null
+        void refresh()
+        setError(err instanceof Error ? err.message : 'Could not load conversations')
+      } finally {
+        inflight.current = null
+      }
+    })()
+    inflight.current = run
+    return run
+  }, [refresh, workspaceId])
 
   useEffect(() => {
     setList(workspaceId ? listCache.get(workspaceId) ?? [] : [])
+    syncedAt.current = null
     if (workspaceId && me && !listCache.has(workspaceId)) {
       void readCachedList(me, workspaceId).then((cached) => {
         if (!cached || listCache.has(workspaceId)) return
@@ -119,6 +175,14 @@ export function useConversationList(workspaceId: string | null | undefined) {
     }
     void refresh()
   }, [workspaceId, me, refresh])
+
+  // Persisting the list is a side effect of it changing, not part of the state
+  // update: one write per settled list, debounced by the cache itself, instead
+  // of a whole-list write inside every realtime event.
+  useEffect(() => {
+    if (!workspaceId || !me || !list.length) return
+    cacheList(me, workspaceId, list)
+  }, [list, me, workspaceId])
 
   useEffect(() => {
     const onChanged = (id: string) => {
@@ -135,16 +199,12 @@ export function useConversationList(workspaceId: string | null | undefined) {
   useTeamChatEvents(workspaceId, (event) => {
     if (!workspaceId || !me) return
     if (event.type === 'ready') {
-      void refresh()
+      void catchUp()
       return
     }
     setList((current) => {
       const update = applyListEvent(current, event, me, activeRef.current)
       if (update.refetch) queueMicrotask(() => void refresh())
-      if (update.list !== current) {
-        listCache.set(workspaceId, update.list)
-        cacheList(me, workspaceId, update.list)
-      }
       return update.list
     })
   })
@@ -155,7 +215,55 @@ export function useConversationList(workspaceId: string | null | undefined) {
   }, [active])
 
   const groups = useMemo(() => groupForSidebar(list), [list])
-  return { list, groups, loading, error, refresh }
+  return useMemo(() => ({ list, groups, loading, error, refresh }), [list, groups, loading, error, refresh])
+}
+
+// ─── Channel directory (for `#` references) ──────────────────────────────────
+
+const directoryInflight = new Map<string, Promise<ConversationSummary[]>>()
+
+/**
+ * The conversations this viewer can see, for naming `#channel` references in
+ * message text. The list endpoint is already viewer-scoped — every public
+ * channel plus whatever this user is a member of — so a private channel they
+ * are not in simply isn't here, and a message naming it renders as
+ * `#privatechannel` instead of leaking the name.
+ *
+ * Deliberately lighter than `useConversationList`: no live-event subscription
+ * and a workspace-wide in-flight dedupe, so opening a channel doesn't fire a
+ * second copy of that heavier query just to resolve names.
+ */
+export function useChannelDirectory(workspaceId: string | null | undefined): ConversationSummary[] {
+  const [list, setList] = useState<ConversationSummary[]>(() =>
+    workspaceId ? listCache.get(workspaceId) ?? [] : [],
+  )
+  useEffect(() => {
+    if (!workspaceId) {
+      setList([])
+      return
+    }
+    const warm = listCache.get(workspaceId)
+    if (warm) {
+      setList(warm)
+      return
+    }
+    let cancelled = false
+    const running = directoryInflight.get(workspaceId) ?? api.list(workspaceId)
+    directoryInflight.set(workspaceId, running)
+    running
+      .then((next) => {
+        listCache.set(workspaceId, next)
+        if (!cancelled) setList(next)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (directoryInflight.get(workspaceId) === running) directoryInflight.delete(workspaceId)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+  return list
 }
 
 // ─── Mentionables ────────────────────────────────────────────────────────────
@@ -262,6 +370,8 @@ export interface SendInput {
   text: string
   alsoSentToChannel?: boolean
   attachmentIds?: string[]
+  /** Links in this message whose author declined a preview (closed conversations). */
+  linkPreviewsOff?: string[]
 }
 
 export function useConversationTimeline(
@@ -399,7 +509,9 @@ export function useConversationTimeline(
       authorUserId: me,
       authorAgent: null,
       text: input.text,
-      blocks: null,
+      // Carried on the optimistic row too, so the author sees their own refusal
+      // apply immediately rather than a card appearing and then vanishing.
+      blocks: input.linkPreviewsOff?.length ? { linkPreviewsOff: input.linkPreviewsOff } : null,
       clientMsgId,
       agentSessionId: null,
       agentStatus: null,
@@ -420,7 +532,13 @@ export function useConversationTimeline(
       ...s,
       messages: s.messages.map((m) => (m.clientMsgId === clientMsgId && m.pending ? { ...m, pending: 'sending' } : m)),
     }))
-    await sendWithClientId(clientMsgId, { text: message.text, alsoSentToChannel: message.alsoSentToChannel })
+    await sendWithClientId(clientMsgId, {
+      text: message.text,
+      alsoSentToChannel: message.alsoSentToChannel,
+      // A retry must keep the sender's decision, or the preview they declined
+      // would appear on the second attempt.
+      linkPreviewsOff: linkPreviewOptOuts(message.blocks),
+    })
   }, [sendWithClientId])
 
   const retryRef = useRef(retry)
@@ -465,7 +583,7 @@ export function useMarkReadWhileVisible(conversationId: string | null | undefine
     if (!conversationId || !visible || paused || newestSeq <= lastSent.current) return
     const timer = setTimeout(() => {
       lastSent.current = newestSeq
-      api.markRead(conversationId, newestSeq).catch(() => {})
+      api.markRead(conversationId, newestSeq, { advance: true }).catch(() => {})
     }, 400)
     return () => clearTimeout(timer)
   }, [conversationId, newestSeq, visible, paused])
@@ -479,7 +597,7 @@ export function useTypingUsers(
   workspaceId: string | null | undefined,
   conversationId: string | null | undefined,
   threadRootId: string | null = null,
-): string[] {
+): Array<{ id: string; name: string }> {
   const [typing, setTyping] = useState<Record<string, { name: string; at: number }>>({})
   // The server broadcasts typing to the whole workspace, typist included.
   const me = useWorkspaceUser(workspaceId)?.id ?? null
@@ -507,5 +625,5 @@ export function useTypingUsers(
     return () => clearInterval(timer)
   }, [])
   useEffect(() => setTyping({}), [conversationId, threadRootId])
-  return Object.values(typing).map((v) => v.name)
+  return Object.entries(typing).map(([id, v]) => ({ id, name: v.name }))
 }

@@ -490,14 +490,25 @@ export interface PublicModelInput {
   enabled?: boolean
 }
 
+export interface InstanceWorkspaceRegistration {
+  id: string
+  name: string
+  /** `connecting` until the first heartbeat lands — never claim connected before it. */
+  state: 'connected' | 'connecting'
+}
+
 export interface InstanceInfo {
   name: string
   hostname: string
   os: string
   arch: string
+  /** True when any tunnel is up (the primary one, or one of several workspaces). */
   tunnelConnected: boolean
   cloudUrl: string
+  /** The cloud workspace the primary device key was issued in. */
   workspaceName: string | null
+  /** Every cloud workspace this machine is registered in. Optional: older APIs omit it. */
+  workspaces?: InstanceWorkspaceRegistration[]
 }
 
 export interface AffiliateContentSettings {
@@ -1167,11 +1178,11 @@ export class PlatformApi {
     return res.data ?? { ok: false, affiliate: {} }
   }
 
-  /** Live model list from a native provider (anthropic / openai / openrouter),
-   * discovered with the configured key. OpenRouter's catalog is public, so it
-   * lists even without a key. */
+  /** Live model list from a native provider (anthropic / openai / google /
+   * openrouter), discovered with the configured key. OpenRouter's catalog is
+   * public, so it lists even without a key. */
   async getProviderModels(
-    provider: 'anthropic' | 'openai' | 'openrouter',
+    provider: 'anthropic' | 'openai' | 'google' | 'openrouter',
   ): Promise<{ ok: boolean; models: DiscoveredProviderModel[]; error?: string }> {
     const res = await this.http.get<{
       ok: boolean
@@ -1184,7 +1195,7 @@ export class PlatformApi {
   /** Persist which discovered provider models are enabled. Each entry upserts a
    * DB model row (enable) or flips it disabled (enable: false). */
   async setProviderModelsEnabled(
-    provider: 'anthropic' | 'openai',
+    provider: 'anthropic' | 'openai' | 'google',
     models: Array<{ id: string; displayName?: string; contextWindow?: number; enabled: boolean }>,
   ): Promise<void> {
     await this.http.request(

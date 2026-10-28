@@ -538,8 +538,8 @@ describe('Prompt Cache Ordering', () => {
     expect(stableZoneIdx).toBeGreaterThan(0)
     expect(dynamicZoneIdx).toBeGreaterThan(stableZoneIdx)
 
-    // The coding guide should live in the stable zone.
-    const codingGuideIdx = src.indexOf("pushStable('code-agent-guide', buildCodeAgentGeneralGuide(")
+    // CODE_AGENT_GENERAL_GUIDE should live in the stable zone.
+    const codingGuideIdx = src.indexOf("pushStable('code-agent-guide', buildCodeAgentGeneralGuide())")
     expect(codingGuideIdx).toBeGreaterThan(stableZoneIdx)
     expect(codingGuideIdx).toBeLessThan(dynamicZoneIdx)
 

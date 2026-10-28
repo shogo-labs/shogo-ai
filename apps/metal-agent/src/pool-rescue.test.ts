@@ -67,6 +67,11 @@ class TestPool extends MetalWarmPool {
     if (this.guestHangs) return new Promise(() => {})
     return this.guestOk ? Promise.resolve(v) : Promise.reject(new Error('ECONNRESET'))
   }
+
+  protected override async guestHasRepoBundles(): Promise<boolean> {
+    return false
+  }
+
   protected override fetchRepoExport(): Promise<RepoExport | null> {
     return this.guest({ bytes: new Uint8Array([7]), rootCommitAt: null })
   }

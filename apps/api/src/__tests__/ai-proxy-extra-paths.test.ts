@@ -223,10 +223,10 @@ describe('logCacheControlIfEnabled (AI_PROXY_LOG_CACHE=1)', () => {
     expect(res.status).toBe(200)
     const body = await res.json() as any
     expect(body.usage).toEqual({
-      prompt_tokens: 6003,
+      prompt_tokens: 7203,
       completion_tokens: 7,
-      total_tokens: 6010,
-      prompt_tokens_details: { cached_tokens: 6000 },
+      total_tokens: 7210,
+      prompt_tokens_details: { cached_tokens: 7200, cache_write_tokens: 1200 },
       cache_creation_input_tokens: 1200,
     })
     const charged = logs.find(l => l.includes('Charged'))
@@ -267,6 +267,45 @@ describe('logCacheControlIfEnabled (AI_PROXY_LOG_CACHE=1)', () => {
     }
     const cacheLog = logs.find(l => l.includes('[AI Proxy] [cache:stream]'))
     expect(cacheLog).toBeDefined()
+  })
+
+  test('streaming Anthropic chat completion reports cache writes in the terminal usage chunk and bills them', async () => {
+    pushFetch(() => new Response(
+      new TextEncoder().encode(
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg","usage":{"input_tokens":3,"cache_read_input_tokens":6000,"cache_creation_input_tokens":1200,"output_tokens":0}}}\n\n' +
+        'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n' +
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}\n\n' +
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      ),
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    ))
+    const res = await app.fetch(new Request('http://localhost/api/ai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer shogo_sk_valid_extra', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 16,
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    }))
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    const usageChunk = text
+      .split('\n')
+      .filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')
+      .map(l => JSON.parse(l.slice(6)))
+      .find(c => c.usage)
+    expect(usageChunk.usage).toEqual({
+      prompt_tokens: 7203,
+      completion_tokens: 7,
+      total_tokens: 7210,
+      prompt_tokens_details: { cached_tokens: 7200, cache_write_tokens: 1200 },
+      cache_creation_input_tokens: 1200,
+    })
+    await new Promise(r => setTimeout(r, 0))
+    const charged = logs.find(l => l.includes('Charged'))
+    expect(charged).toContain('3 in, 1200 cache-write, 6000 cache-read, 7 out')
   })
 
   test('no log when AI_PROXY_LOG_CACHE is not "1"', async () => {

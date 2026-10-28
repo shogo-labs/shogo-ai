@@ -21,12 +21,13 @@ import {
   RefreshCw,
   Languages,
   AlertTriangle,
+  X,
 } from "lucide-react-native"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../../lib/agent-fetch"
 import { API_URL } from "../../../lib/api"
-import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
+import { DEFAULT_MODEL } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
 import { PlanBuildActions } from "../../chat/PlanBuildActions"
 import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
@@ -39,11 +40,14 @@ function errorMessage(err: unknown, fallback: string): string {
 
 interface PlansPanelProps {
   visible: boolean
-  projectId: string
+  /** Required unless `agentUrl` is given (e.g. the project-less workspace runtime). */
+  projectId?: string
   agentUrl?: string | null
   selectedModel?: string
   requestedPlanPath?: { filepath: string | null; nonce: number } | null
   onBuildPlan?: (plan: PlanData, modelId: string) => void
+  /** Renders a close button in the header when the panel is hosted in a dismissible pane. */
+  onClose?: () => void
 }
 
 function formatDate(iso: string): string {
@@ -122,7 +126,7 @@ function normalizePlanFilepath(filepath?: string | null): string | undefined {
   return `.shogo/plans/${filename}`
 }
 
-export function PlansPanel({ visible, projectId, agentUrl, selectedModel, requestedPlanPath, onBuildPlan }: PlansPanelProps) {
+export function PlansPanel({ visible, projectId, agentUrl, selectedModel, requestedPlanPath, onBuildPlan, onClose }: PlansPanelProps) {
   const isNative = Platform.OS !== "web"
   const planHitClass = isNative ? "h-11 w-11" : "h-8 w-8"
   const planTabPadClass = isNative ? "py-2.5" : "py-2"
@@ -136,7 +140,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const [planContent, setPlanContent] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
+  const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL)
   const [buildStarted, setBuildStarted] = useState(false)
   const [activeTab, setActiveTab] = useState<"technical" | "summary">("technical")
   // Mirror of the global Dual Plan preference — singleton-backed so any
@@ -169,11 +173,22 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       prev === "__streaming__" && selectedPlan !== "__streaming__"
 
     if (enteredFromList || switchedBetweenPlans || leftStreamingToFile) {
-      setBuildMode(selectedModel || DEFAULT_MODEL_PRO)
+      setBuildMode(selectedModel || DEFAULT_MODEL)
     }
   }, [selectedPlan, selectedModel])
 
   const baseUrl = agentUrl || `${API_URL}/api/projects/${projectId}/agent-proxy`
+
+  const closeButton = onClose ? (
+    <Pressable
+      onPress={onClose}
+      accessibilityRole="button"
+      accessibilityLabel="Close plans panel"
+      className={cn("items-center justify-center rounded-lg active:bg-muted", planHitClass)}
+    >
+      <X className="text-muted-foreground" size={planIconMd} />
+    </Pressable>
+  ) : null
 
   const agentClient = useMemo(
     () =>
@@ -250,16 +265,25 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     }
   }, [selectedPlan, fetchPlanDetail, planStream?.planRefreshNonce])
 
+  // Each open request selects its plan once; later stream updates must not
+  // pull the user back out of the list.
+  const handledRequestNonceRef = useRef<number | null>(null)
   useEffect(() => {
-    if (!visible) return
-    const requestedFilename = planFilenameFromPath(requestedPlanPath?.filepath)
+    if (!visible) {
+      handledRequestNonceRef.current = null
+      return
+    }
+    if (!requestedPlanPath || handledRequestNonceRef.current === requestedPlanPath.nonce) return
+    const requestedFilename = planFilenameFromPath(requestedPlanPath.filepath)
     if (requestedFilename) {
+      handledRequestNonceRef.current = requestedPlanPath.nonce
       setSelectedPlan(requestedFilename)
       setPlanContent(null)
       setBuildStarted(false)
       return
     }
-    if (requestedPlanPath && planStream?.streamingPlan) {
+    if (planStream?.streamingPlan) {
+      handledRequestNonceRef.current = requestedPlanPath.nonce
       setSelectedPlan("__streaming__")
       setPlanContent(null)
       setBuildStarted(false)
@@ -397,6 +421,8 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               setSelectedPlan(null)
               setPlanContent(null)
             }}
+            accessibilityRole="button"
+            accessibilityLabel="Back to plans"
             className={cn(
               "items-center justify-center rounded-lg",
               planHitClass,
@@ -459,6 +485,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               <Trash2 className="text-destructive" size={planIconMd} />
             </Pressable>
           )}
+          {closeButton}
         </View>
 
         {/* Tab strip — only when a summary exists or is in flight */}
@@ -639,6 +666,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           <Pressable onPress={fetchPlans} className={isNative ? "h-10 w-10 items-center justify-center rounded-lg" : "h-8 w-8 items-center justify-center rounded-lg"}>
             <RefreshCw className="text-muted-foreground" size={isNative ? 18 : 14} />
           </Pressable>
+          {closeButton}
         </View>
       </View>
 
@@ -743,7 +771,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               {searchQuery ? "No plans match your search" : "No plans yet"}
             </Text>
             <Text className={isNative ? "text-sm text-muted-foreground/70 text-center mt-1" : "text-xs text-muted-foreground/70 text-center mt-1"}>
-              Switch to Plan mode in the chat to create one
+              Ask the agent to plan something and it shows up here
             </Text>
           </View>
         ) : filteredPlans.length > 0 ? (

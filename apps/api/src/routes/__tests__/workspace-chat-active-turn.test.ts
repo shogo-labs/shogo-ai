@@ -68,6 +68,9 @@ mock.module('@shogo/model-catalog', () => ({
   calculateDollarCost: () => 0,
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
+  AUTO_MODEL_ID: 'auto',
+  isAutoModel: (id: string) => id === 'auto',
+  inferProviderFromModel: (_id: string, fallback: string) => fallback,
 }))
 
 mock.module('../../services/cost-analytics.service', () => ({
@@ -144,6 +147,7 @@ mock.module('../../lib/proxy-billing-session-runtime', () => ({
   hasActiveSession: async () => false,
   accumulateUsage: async () => false,
   accumulateImageUsage: async () => false,
+  recordTurnUsage: async () => ({ billedUsd: 0, rawUsd: 0, totalTokens: 0 }),
 }))
 
 mock.module('../../services/git.service', () => ({
@@ -217,13 +221,13 @@ mock.module('../../services/project-attachment.service', () => ({
   },
 }))
 
-type FetchResponder = (url: string) => Response | Promise<Response>
+type FetchResponder = (url: string, init?: RequestInit) => Response | Promise<Response>
 let fetchResponder: FetchResponder | null = null
 const originalFetch = globalThis.fetch
 beforeAll(() => {
-  globalThis.fetch = (async (input: any) => {
+  globalThis.fetch = (async (input: any, init?: RequestInit) => {
     if (!fetchResponder) throw new Error('No fetch responder configured')
-    return fetchResponder(String(input))
+    return fetchResponder(String(input), init)
   }) as any
 })
 afterAll(() => {
@@ -273,11 +277,11 @@ function controllableRuntimeStream() {
 
 const tick = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms))
 
-function sendChat(app: Hono, sessionId: string) {
+function sendChat(app: Hono, sessionId: string, extra: Record<string, unknown> = {}) {
   return app.fetch(new Request('http://x/api/workspaces/ws-1/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Chat-Session-Id': sessionId },
-    body: JSON.stringify({ chatSessionId: sessionId }),
+    body: JSON.stringify({ chatSessionId: sessionId, ...extra }),
   }))
 }
 
@@ -342,6 +346,36 @@ describe('workspace chat active turn', () => {
     await res.text()
   })
 
+  for (const variant of [
+    { name: 'forwards a focused project that is attached', attached: ['p-1'], forwarded: 'p-1' },
+    { name: 'drops a focused project that is no longer attached', attached: [] as string[], forwarded: undefined },
+  ]) {
+    test(variant.name, async () => {
+      store.attachedProjectIds = variant.attached
+      seedSession('s-1')
+      const runtime = controllableRuntimeStream()
+      let forwardedBody: any = null
+      fetchResponder = (_url, init) => {
+        forwardedBody = JSON.parse(String(init?.body))
+        return runtime.response
+      }
+
+      const res = await sendChat(buildApp(), 's-1', { focusedProjectId: 'p-1' })
+      expect(res.status).toBe(200)
+      expect(forwardedBody.focusedProjectId).toBe(variant.forwarded)
+
+      runtime.finish()
+      await res.text()
+    })
+  }
+
+  test('rejects a focused project that is not a string', async () => {
+    seedSession('s-1')
+    const res = await sendChat(buildApp(), 's-1', { focusedProjectId: 42 })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('invalid_focused_project')
+  })
+
   test('a failed send does not clear another tab\'s live turn', async () => {
     const heartbeat = new Date()
     seedSession('s-1', { activeTurnId: 'other-tab-turn', activeTurnStartedAt: heartbeat, activeTurnHeartbeatAt: heartbeat })
@@ -396,6 +430,31 @@ describe('workspace chat active turn', () => {
     expect(sessions.get('s-foreign')!.activeTurnId).toBe('turn-foreign')
     expect(sessions.get('s-foreign-project')!.activeTurnId).toBe('turn-foreign-project')
   })
+
+  for (const variant of [
+    { name: 'stream resume', path: '/api/workspaces/ws-1/chat/s-1/stream', ready: () => controllableRuntimeStream().response },
+    { name: 'turn poll', path: '/api/workspaces/ws-1/chat/s-1/turn', ready: () => Response.json({ status: 'running' }) },
+  ]) {
+    test(`${variant.name} waits out a runtime that is still being assigned`, async () => {
+      seedSession('s-1')
+      let calls = 0
+      fetchResponder = () => {
+        calls++
+        if (calls < 3) {
+          return Response.json(
+            { error: { code: 'runtime_not_ready', message: 'assigning' } },
+            { status: 503, headers: { 'Retry-After': '0' } },
+          )
+        }
+        return variant.ready()
+      }
+
+      const res = await buildApp().fetch(new Request(`http://x${variant.path}`))
+      expect(res.status).toBe(200)
+      expect(calls).toBe(3)
+      await res.body?.cancel()
+    })
+  }
 
   test('a stop the runtime rejects leaves the turn active', async () => {
     seedSession('s-1', { activeTurnId: 'turn-1', activeTurnStartedAt: new Date() })

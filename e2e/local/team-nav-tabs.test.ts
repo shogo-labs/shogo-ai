@@ -10,7 +10,7 @@
  * team-chat-agents.test.ts. `E2E_LOCAL_START_STACK=1` sets both up.
  */
 import { expect, test, type Page } from "@playwright/test"
-import { LOCAL_API_BASE } from "./helpers"
+import { coveredBy, ignoreDevErrorToast, LOCAL_API_BASE } from "./helpers"
 import { activateTeamWorkspace, api, cleanupTeamNav, seedTeamNav, signIn, type TeamNavSeed } from "./team-nav-seed"
 
 const rail = (page: Page) => page.getByRole("navigation", { name: "Workspace tabs" })
@@ -28,6 +28,7 @@ test.describe("Team workspace: desktop rail and panels", () => {
     test.setTimeout(180_000)
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
     page = await context.newPage()
+    await ignoreDevErrorToast(page)
     await signIn(page)
     seed = await seedTeamNav(page)
     await activateTeamWorkspace(page, seed.workspaceId)
@@ -46,10 +47,13 @@ test.describe("Team workspace: desktop rail and panels", () => {
       await expect(tab(page, name)).toBeVisible()
     }
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
-    // The scripted agent answered the seeded DM while nobody was looking.
-    await expect(rail(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible({ timeout: 30_000 })
-    await expect(panel(page, "home-panel").getByText("Workspace agent", { exact: true })).toBeVisible()
-    // Home is this person's workspace-agent chats, not the activity inbox.
+    // `seedTeamNav` waited for the scripted reply, so the DM is already unread:
+    // this line only fails if the rail's badge is broken (SHO-222).
+    await expect(rail(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible()
+    // Home is this person's workspace-agent chats, not the activity inbox. The
+    // list is flat (SHO-119): no "Workspace agent" section header, just rows.
+    await expect(panel(page, "workspace-chats-panel")).toBeVisible()
+    await expect(panel(page, "home-panel").getByText("Workspace agent", { exact: true })).toHaveCount(0)
     await expect(panel(page, "home-panel").getByRole("button", { name: "New chat" })).toBeVisible()
     await expect(panel(page, "home-panel").getByRole("button", { name: "Unreads only" })).toHaveCount(0)
   })
@@ -93,6 +97,35 @@ test.describe("Team workspace: desktop rail and panels", () => {
     }
   })
 
+  test("a label is painted over the panel, and over the card once the panel is hidden", async () => {
+    // Panel state left by earlier tests is unknown, so land on a known one: a
+    // click that only collapsed the panel has to be repeated to reopen it.
+    await tab(page, "DMs").click()
+    if (!(await panel(page, "dms-panel").isVisible())) await tab(page, "DMs").click()
+    await expect(panel(page, "dms-panel")).toBeVisible()
+
+    try {
+      // Panel open: the label reaches over the panel next to the rail.
+      await tab(page, "Agents").hover()
+      const bubble = page.getByTestId("rail-tooltip")
+      await expect(bubble).toHaveText("Agents")
+      expect(await coveredBy(bubble)).toBeNull()
+
+      // Panel hidden: the label reaches over the content card instead. The card
+      // is a later sibling of the whole sidebar column, so it used to be painted
+      // over the rail's tooltips — only the gap between them still showed one.
+      await tab(page, "DMs").click()
+      await expect(panel(page, "dms-panel")).toHaveCount(0)
+      await tab(page, "Agents").hover()
+      await expect(bubble).toHaveText("Agents")
+      expect(await coveredBy(bubble)).toBeNull()
+    } finally {
+      await page.mouse.move(700, 450)
+      if (!(await panel(page, "dms-panel").isVisible())) await tab(page, "DMs").click()
+      await expect(panel(page, "dms-panel")).toBeVisible()
+    }
+  })
+
   test.describe("in the dark theme", () => {
     test.use({ colorScheme: "dark" })
     test("the label is a dark bubble with light text", async ({ browser }) => {
@@ -124,8 +157,11 @@ test.describe("Team workspace: desktop rail and panels", () => {
   })
 
   test("there is one profile button and one workspace switcher, both on the rail", async () => {
+    // `/` is the workspace-agent chat since SHO-4, and that screen's header has
+    // its own "<agent> profile and settings" button (`PersonalAgentHeader`).
+    // Match the rail's ProfileMenu label exactly so it is not counted.
     await expect(page.getByTestId("profile-avatar")).toHaveCount(1)
-    await expect(page.getByRole("button", { name: "Profile and settings" })).toHaveCount(1)
+    await expect(page.getByRole("button", { name: "Profile and settings", exact: true })).toHaveCount(1)
     const switcher = page.getByRole("button", { name: /— open account menu/ })
     await expect(switcher).toHaveCount(1)
     await expect(rail(page).getByRole("button", { name: /— open account menu/ })).toBeVisible()
@@ -243,7 +279,7 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await page.getByRole("menuitem", { name: "Resume notifications" }).click()
     await expect(page.getByRole("menuitem", { name: "Pause notifications" })).toBeVisible({ timeout: 15_000 })
 
-    await page.getByRole("menuitem", { name: "Preferences" }).click()
+    await page.getByRole("menuitem", { name: "Settings" }).click()
     await expect(page).toHaveURL(/\/settings/)
   })
 
@@ -293,9 +329,11 @@ test.describe("Personal workspace: its own tab set", () => {
     for (const name of ["Channels", "DMs", "Agents", "Projects"]) {
       await expect(tab(page, name)).toHaveCount(0)
     }
-    // Home's list is this person's chats with the workspace agent.
+    // Home's list is this person's chats with the workspace agent — flat, with
+    // no section header above them (SHO-119).
     const chats = page.getByTestId("workspace-chats-panel")
-    await expect(chats.getByText("Workspace agent", { exact: true })).toBeVisible({ timeout: 30_000 })
+    await expect(chats.getByRole("button", { name: "New chat" })).toBeVisible({ timeout: 30_000 })
+    await expect(chats.getByText("Workspace agent", { exact: true })).toHaveCount(0)
     for (const name of ["Meetings", "Goals", "Activity"]) {
       await expect(chats.getByRole("link", { name })).toHaveCount(0)
     }
@@ -323,7 +361,7 @@ test.describe("Personal workspace: its own tab set", () => {
     await expect(rail(page)).toBeVisible({ timeout: 60_000 })
 
     const chats = page.getByTestId("workspace-chats-panel")
-    await expect(chats.getByText("Workspace agent", { exact: true })).toBeVisible({ timeout: 30_000 })
+    await expect(chats.getByRole("button", { name: "New chat" })).toBeVisible({ timeout: 30_000 })
     await chats.getByRole("button", { name: "New chat" }).click()
     await expect(page).toHaveURL(/\/agent\?.*chatSessionId=/, { timeout: 30_000 })
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
@@ -341,6 +379,6 @@ test.describe("Personal workspace: its own tab set", () => {
     await tab(page, "Home").click()
     await expect(page).not.toHaveURL(/\/meetings/)
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
-    await expect(chats.getByText("Workspace agent", { exact: true })).toBeVisible()
+    await expect(chats.getByRole("button", { name: "New chat" })).toBeVisible()
   })
 })

@@ -223,6 +223,7 @@ describe('server.ts runtime-resolving code is pinned to the home region', () => 
  */
 const RESOLVER_FILES: Record<string, string> = {
   'lib/admin-runtime-recycle.ts': 'guard: admin recycle resolves via the resolver layer',
+  'lib/chat-runtime-fetch.ts': 'guard: resolves via resolveWorkspaceRuntimeUrl (home-region guard); callers are route-pinned or home-region filtered (chat-turn-reattach)',
   'lib/heartbeat-scheduler.ts': 'cron: partitioned by workspace home region (#1233) + guard backstop',
   'lib/knative-project-manager.ts': 'resolver: getProjectPodUrl/resolveProjectPodUrl definitions',
   'lib/metal-rewarm.ts': 'cron: rollout re-warm resolves via resolveWorkspaceRuntimeUrl (guard)',
@@ -233,18 +234,20 @@ const RESOLVER_FILES: Record<string, string> = {
   'lib/metal-warm-pool-controller.ts': 'resolver: places runtimes on metal hosts (one host per key, see the placement invariant test)',
   'lib/substrate/metal-substrate.ts': 'resolver: substrate wrapper over the metal controller',
   'lib/substrate/router.ts': 'resolver: picks the substrate',
+  'lib/project-attachment-runtime.ts': 'route-pin: called from /api/projects/:projectId/attachments; resolves via resolveWorkspaceRuntimeUrl (home-region guard)',
   'routes/internal-runtime-routes.ts': 'guard: internal runtime routes resolve via resolveWorkspaceRuntimeUrl',
   'routes/local-agent-proxy.ts': 'local-only',
   'routes/local-preview.ts': 'local-only',
-  'routes/local-projects.ts': 'local-only',
   'routes/local-terminal.ts': 'local-only',
   'routes/project-chat.ts': 'route-pin: pinChatToHomeRegion at the top of every chat forwarder',
-  'routes/project-export-import.ts': 'route-pin: mounted under /api/projects/:projectId/',
   'routes/publish.ts': 'route-pin: publish routes under /api/projects/:projectId/ (#1237 proxies bodies to home)',
   'routes/runtime.ts': 'route-pin: runtime routes under /api/projects/:projectId/runtime',
+  'routes/shared-files.ts': 'route-pin: workspace-scoped links call pinWorkspaceToHomeRegion first; resolveWorkspaceRuntimeUrl guard backstops',
   'routes/slack-agent.ts': 'guard: background resolve via resolveWorkspaceRuntimeUrl',
   'routes/workspace-chat.ts': 'route-pin: pinWorkspaceRoutesToHomeRegion on every route (asserted below)',
   'services/agent-call.service.ts': 'guard: agent-to-agent calls resolve via the resolver layer',
+  'services/publish-git.service.ts': 'route-pin: called from routes/publish.ts (pinned under /api/projects/:projectId/); the project-delete hook and the published-site sweep always pass dropPublishPointer:false, so they never resolve a pod URL',
+  'services/workspace-export/files.ts': 'route-pin: pinWorkspaceRoutesToHomeRegion on every workspace export route; only reads pod files',
   'services/github-workspace.ts': 'guard: resolves via the resolver layer',
 }
 

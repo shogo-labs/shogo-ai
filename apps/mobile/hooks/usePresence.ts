@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Who's online in a workspace. Only people currently on screen are fetched:
- * each `usePresence` call registers interest, the store loads those ids in
- * one batch, and live `presence` events keep them current. Watched ids are
- * refetched after a reconnect and every minute, since a server that dies
- * lets heartbeats lapse without sending "offline".
+ * Who's online in a workspace, and who is in a huddle. Only people currently
+ * on screen are fetched: each `usePresence`/`useInHuddle` call registers
+ * interest, the store loads those ids in one batch that carries both, and live
+ * `presence` / `huddle.presence` events keep them current. Watched ids are
+ * refetched after a reconnect and every minute, since a server that dies lets
+ * heartbeats lapse without sending "offline".
  */
 import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { teamChatApi, type PresenceStatus } from '../lib/team-chat-api'
@@ -15,6 +16,7 @@ const REFRESH_MS = 60_000
 const BATCH_DELAY_MS = 50
 
 const statuses = new Map<string, PresenceStatus>()
+const huddles = new Map<string, boolean>()
 const watched = new Map<string, Map<string, number>>()
 const queued = new Map<string, Set<string>>()
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -41,6 +43,28 @@ function apply(workspaceId: string, next: Record<string, PresenceStatus>) {
   if (changed) emit()
 }
 
+/** One person's huddle state, from a live event. */
+function applyHuddle(workspaceId: string, userId: string, inHuddle: boolean) {
+  const k = key(workspaceId, userId)
+  if (huddles.get(k) === inHuddle) return
+  huddles.set(k, inHuddle)
+  emit()
+}
+
+/**
+ * A whole batch's worth, where the response names only the ids that are in a
+ * huddle — everyone else in the batch is explicitly not, which is what clears
+ * a badge whose huddle ended while we weren't listening.
+ */
+function applyHuddleBatch(workspaceId: string, inHuddle: string[], batch: string[]) {
+  const notIn = new Set(batch)
+  for (const userId of inHuddle) {
+    notIn.delete(userId)
+    applyHuddle(workspaceId, userId, true)
+  }
+  for (const userId of notIn) applyHuddle(workspaceId, userId, false)
+}
+
 function load(workspaceId: string, userIds: string[]) {
   const ids = (queued.get(workspaceId) ?? new Set<string>())
   userIds.forEach((id) => ids.add(id))
@@ -55,7 +79,10 @@ function load(workspaceId: string, userIds: string[]) {
       if (!batch.length) return
       Promise.resolve()
         .then(() => teamChatApi().presence(workspaceId, batch))
-        .then((result) => apply(workspaceId, result))
+        .then((result) => {
+          apply(workspaceId, result.presence)
+          applyHuddleBatch(workspaceId, result.huddle, batch)
+        })
         .catch(() => {})
     }, BATCH_DELAY_MS),
   )
@@ -94,7 +121,9 @@ export function usePresenceFeed(workspaceId: string | null | undefined): void {
     }
   }, [workspaceId])
   const state = useTeamChatEvents(workspaceId, (event) => {
-    if (workspaceId && event.type === 'presence') apply(workspaceId, { [event.userId]: event.status })
+    if (!workspaceId) return
+    if (event.type === 'presence') apply(workspaceId, { [event.userId]: event.status })
+    else if (event.type === 'huddle.presence') applyHuddle(workspaceId, event.userId, event.inHuddle)
   })
   const wasOpen = useRef(false)
   useEffect(() => {
@@ -128,8 +157,28 @@ export function usePresence(workspaceId: string | null | undefined, userId: stri
   return statuses.get(key(ws, userId)) ?? null
 }
 
+/** Whether this person is in a huddle right now, for the badge beside their name. */
+export function useInHuddle(workspaceId: string | null | undefined, userId: string | null | undefined): boolean {
+  useSyncExternalStore(
+    (cb) => {
+      listeners.add(cb)
+      return () => listeners.delete(cb)
+    },
+    () => version,
+    () => version,
+  )
+  const ws = workspaceId === undefined ? feedWorkspaceId : workspaceId
+  useEffect(() => {
+    if (!ws || !userId) return
+    return watch(ws, userId)
+  }, [ws, userId])
+  if (!ws || !userId) return false
+  return huddles.get(key(ws, userId)) ?? false
+}
+
 export function _resetPresenceForTests(): void {
   statuses.clear()
+  huddles.clear()
   watched.clear()
   queued.clear()
   timers.forEach((t) => clearTimeout(t))

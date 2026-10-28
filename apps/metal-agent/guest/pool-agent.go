@@ -41,8 +41,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -81,6 +83,29 @@ func track(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// clockSkewToleranceMs is the same tolerance agent-runtime's guest-clock.ts
+// uses: below it the difference is Date-header noise, not a frozen clock.
+const clockSkewToleranceMs = 2000
+
+// syncClockFromHost sets this guest's wall clock from the host's and reports
+// the skew it measured first (guest minus host, ms) plus any error. A Firecracker
+// restore only advances a kvm-clock guest's clock, so a VM booted on TSC resumes
+// with the clock frozen at snapshot time — on staging 2026-10-25 a workspace came
+// back 4h40m behind, which is also what makes outbound TLS fail "certificate is
+// not yet valid". Settimeofday leaves CLOCK_MONOTONIC alone, so the ticker and
+// uptimeMs are unaffected.
+func syncClockFromHost(hostNowMs int64) (int64, string) {
+	skewMs := time.Now().UnixMilli() - hostNowMs
+	if skewMs > -clockSkewToleranceMs && skewMs < clockSkewToleranceMs {
+		return skewMs, ""
+	}
+	tv := syscall.NsecToTimeval(hostNowMs * int64(time.Millisecond))
+	if err := syscall.Settimeofday(&tv); err != nil {
+		return skewMs, err.Error()
+	}
+	return skewMs, ""
+}
+
 func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
@@ -108,7 +133,20 @@ func statusPayload() map[string]any {
 		"quiesceCount":   quiesceCount,
 		"rehydrateCount": rehydrateCount,
 		"quiesced":       quiesced,
+		"clocksource":    currentClocksource(),
 	}
+}
+
+// currentClocksource is the kernel's active clocksource: "kvm-clock" when boot
+// pinned it, "tsc" when the kernel preferred TSC instead. The lifecycle e2e
+// asserts a cold boot stays on kvm-clock, because a restore's clock_realtime
+// only moves kvm-clock — a TSC guest comes back with its clock frozen.
+func currentClocksource() string {
+	b, err := os.ReadFile("/sys/devices/system/clocksource/clocksource0/current_clocksource")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func main() {
@@ -210,20 +248,38 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]any{"quiesced": true, "quiesceCount": n, "bootID": bootID})
 	})
 
-	// Post-restore: the real runtime would reconnect those sockets, re-sync the
-	// wall clock and pull any S3 delta. Here we just clear the quiesced flag.
+	// Post-restore: the real runtime reconnects those sockets, re-syncs the
+	// wall clock and pulls any S3 delta. Here we clear the quiesced flag and
+	// apply the host clock, exactly as agent-runtime's /pool/rehydrate does, so
+	// the lifecycle e2e can prove a resumed guest does not keep the clock it
+	// was frozen with.
 	http.HandleFunc("/pool/rehydrate", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
 			return
 		}
+		var body struct {
+			HostNowMs int64 `json:"hostNowMs"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		mu.Lock()
 		rehydrateCount++
 		quiesced = false
 		n := rehydrateCount
 		mu.Unlock()
+		resp := map[string]any{"rehydrated": true, "rehydrateCount": n, "bootID": bootID}
+		if body.HostNowMs > 0 {
+			skewMs, clockErr := syncClockFromHost(body.HostNowMs)
+			resp["clockSkewMs"] = skewMs
+			if clockErr != "" {
+				resp["clockError"] = clockErr
+				fmt.Printf("REHYDRATE clock skew %dms NOT corrected: %s\n", skewMs, clockErr)
+			} else if skewMs > clockSkewToleranceMs || skewMs < -clockSkewToleranceMs {
+				fmt.Printf("REHYDRATE clock skew %dms corrected\n", skewMs)
+			}
+		}
 		fmt.Printf("REHYDRATE count=%d bootID=%s\n", n, bootID)
-		writeJSON(w, http.StatusOK, map[string]any{"rehydrated": true, "rehydrateCount": n, "bootID": bootID})
+		writeJSON(w, http.StatusOK, resp)
 	})
 
 	addr := ":8080"

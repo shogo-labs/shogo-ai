@@ -10,6 +10,7 @@ let projectRows: Array<{ id: string; workspaceId: string; runtimeEnabled: boolea
 let ineligible = new Set<string>()
 let workspaceHome = new Map<string, string | null>()
 let homeWhere: { homeRegion: string } | { OR: Array<{ homeRegion: string | null }> } | null = null
+let members: Array<{ workspaceId: string; email: string }> = []
 
 mock.module('../prisma', () => ({
   prisma: {
@@ -32,6 +33,14 @@ mock.module('../prisma', () => ({
           ? args.where.OR.map((o: any) => o.homeRegion)
           : [args.where.homeRegion]
         return ids.filter((id) => allowed.includes(workspaceHome.get(id) ?? null)).map((id) => ({ id }))
+      },
+    },
+    member: {
+      findMany: async (args: any) => {
+        const ids: string[] = args.where.workspaceId.in
+        return members
+          .filter((m) => ids.includes(m.workspaceId))
+          .map((m) => ({ workspaceId: m.workspaceId, user: { email: m.email } }))
       },
     },
   },
@@ -507,6 +516,42 @@ describe('listRewarmCandidatesFromDb', () => {
     projectRows = []
     workspaceHome = new Map()
     homeWhere = null
+    members = []
+  })
+
+  test('skips runtimes whose workspace holds only e2e test accounts', async () => {
+    const at = (n: number) => new Date(n * 1000)
+    projectsByMessage = []
+    projectSessions = [
+      { contextId: 'p-e2e', lastActiveAt: at(40) },
+      { contextId: 'p-mixed', lastActiveAt: at(30) },
+      { contextId: 'p-real', lastActiveAt: at(20) },
+      { contextId: 'p-empty', lastActiveAt: at(10) },
+    ]
+    workspaceSessions = [
+      { id: 's-e2e', workspaceId: 'w-e2e', lastActiveAt: at(35) },
+      { id: 's-real', workspaceId: 'w-real', lastActiveAt: at(15) },
+    ]
+    projectRows = [
+      { id: 'p-e2e', workspaceId: 'w-e2e', runtimeEnabled: true, workingMode: 'managed' },
+      { id: 'p-mixed', workspaceId: 'w-mixed', runtimeEnabled: true, workingMode: 'managed' },
+      { id: 'p-real', workspaceId: 'w-real', runtimeEnabled: true, workingMode: 'managed' },
+      { id: 'p-empty', workspaceId: 'w-empty', runtimeEnabled: true, workingMode: 'managed' },
+    ]
+    members = [
+      { workspaceId: 'w-e2e', email: 'e2e-durability-1@mailnull.com' },
+      { workspaceId: 'w-e2e', email: 'E2E-other-2@MAILNULL.com' },
+      { workspaceId: 'w-mixed', email: 'e2e-x-3@mailnull.com' },
+      { workspaceId: 'w-mixed', email: 'dev@shogo.ai' },
+      { workspaceId: 'w-real', email: 'someone@mailnull.com' },
+    ]
+
+    expect((await listRewarmCandidatesFromDb(0, 100)).map((c) => c.key)).toEqual([
+      'ws:proj:p-mixed',
+      'ws:proj:p-real',
+      'ws:w-real',
+      'ws:proj:p-empty',
+    ])
   })
 
   test('keeps only workspaces whose home region is this one', async () => {

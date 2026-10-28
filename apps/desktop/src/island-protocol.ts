@@ -119,6 +119,14 @@ export interface IslandBuddyLook {
 
 export const EMPTY_ISLAND_SNAPSHOT: IslandSnapshot = { sessions: [], recentProjects: [], updatedAt: 0 }
 
+/** Snapshot `projectId` for workspace-agent sessions; the API keys that agent
+ * as `ws`. Mirrors `DESKTOP_ISLAND_WORKSPACE_AGENT_ID` in the renderer. */
+export const ISLAND_WORKSPACE_AGENT_PROJECT_ID = 'ws'
+
+export function isWorkspaceAgentProjectId(projectId: string | undefined): boolean {
+  return projectId === ISLAND_WORKSPACE_AGENT_PROJECT_ID
+}
+
 export function islandSessionKey(projectId: string, sessionId: string): string {
   return `${projectId}:${sessionId}`
 }
@@ -547,7 +555,7 @@ export function mergeIslandSnapshots(
       merged.sessions.push(session)
     }
     for (const project of snapshot.recentProjects) {
-      if (seenProjects.has(project.projectId)) continue
+      if (seenProjects.has(project.projectId) || isWorkspaceAgentProjectId(project.projectId)) continue
       seenProjects.add(project.projectId)
       merged.recentProjects.push(project)
     }

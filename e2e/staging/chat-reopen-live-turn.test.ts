@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, type Page } from "./fixtures"
+import { expect, test, type Page } from "./fixtures"
 import { homeComposerInput, makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
 import {
   collectChatCrashes,
@@ -26,7 +26,7 @@ const CPU_THROTTLE = 4
 const RENDER_BUDGET_MS = 30_000
 
 async function ensureAuthenticated(page: Page, user: TestUser): Promise<void> {
-  await page.goto("/")
+  await page.goto("/home")
   const home = page.getByText("What are we building", { exact: false }).first()
   const signUpTab = page.getByRole("tab", { name: "Sign Up" })
   await Promise.race([
@@ -53,5 +53,8 @@ test.describe("Reopen a project with a live turn", () => {
 
     await throttleCpu(page, CPU_THROTTLE)
     await expectLiveTurnRendersAfterReopen(page, mocks, crashes, RENDER_BUDGET_MS)
+    // The running sub-agent's whole update history collapses to its current
+    // state, so the joining client draws the card once instead of replaying it.
+    expect(mocks.snapshotSubagentUpdates(), "one sub-agent update, not the update history").toBe(1)
   })
 })

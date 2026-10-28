@@ -3,7 +3,7 @@
 
 import { app, BrowserWindow, shell, type WebContents } from 'electron'
 import path from 'path'
-import { getApiPort } from './local-server'
+import { getApiPort, getApiUrl } from './local-server'
 
 export type AppWindowKind = 'main' | 'app' | 'code-workbench'
 
@@ -63,6 +63,9 @@ export class WindowManager {
         // Disabled so preload can require the audio capture pipeline while the
         // renderer remains isolated behind contextBridge.
         sandbox: false,
+        // Lets chat message and huddle sounds play right after launch, without
+        // waiting for a click in the window (the browser's autoplay rule).
+        autoplayPolicy: 'no-user-gesture-required',
         additionalArguments: [`--api-port=${getApiPort()}`],
       },
       show: false,
@@ -212,9 +215,50 @@ export class WindowManager {
   }
 }
 
+/**
+ * File links served by the local API: chat attachments, direct or relayed from
+ * a cloud workspace (`/api/cloud/<ws>/...`), and `share_file` download links
+ * (`/api/f/<token>`, plus the legacy `/f/<token>`). They need the desktop's
+ * session, which the system browser does not have.
+ */
+const IN_APP_FILE_PATH =
+  /^\/(?:api\/(?:cloud\/[^/]+\/)?(?:conversation-files|chat-attachments)|api\/f|f)\//
+
+/**
+ * Renderer event that asks the app to show a file in its own viewer. The
+ * preload re-dispatches it on `window`, so the renderer treats it as an
+ * ordinary in-app click instead of a navigation.
+ */
+export const OPEN_FILE_EVENT = 'shogo:open-file'
+
+/** True for a chat file link on the local API origin. Other URLs are not. */
+export function isInAppFileUrl(url: string, apiUrl: string): boolean {
+  let target: URL
+  let api: URL
+  try {
+    target = new URL(url)
+    api = new URL(apiUrl)
+  } catch {
+    return false
+  }
+  return target.origin === api.origin && IN_APP_FILE_PATH.test(target.pathname)
+}
+
+/** Hands a file link back to the renderer, which opens it in its own pane. */
+function openFileInApp(webContents: WebContents, url: string): void {
+  if (webContents.isDestroyed()) return
+  webContents.send(OPEN_FILE_EVENT, { href: url })
+}
+
 /** Keeps app windows on the app origin; external links open in the browser. */
 export function installAppNavigationGuards(webContents: WebContents): void {
   webContents.setWindowOpenHandler(({ url }) => {
+    if (isInAppFileUrl(url, getApiUrl())) {
+      // Never a new window and never the system browser: the renderer shows
+      // the file in its own pane, like it does on web (SHO-80).
+      openFileInApp(webContents, url)
+      return { action: 'deny' }
+    }
     if (url.startsWith('http://') || url.startsWith('https://')) {
       shell.openExternal(url)
     }
@@ -222,6 +266,13 @@ export function installAppNavigationGuards(webContents: WebContents): void {
   })
 
   webContents.on('will-navigate', (event, url) => {
+    // A plain `<a href>` to a served file would otherwise navigate the window
+    // to the API's raw response; keep the app where it is and show the file.
+    if (isInAppFileUrl(url, getApiUrl())) {
+      event.preventDefault()
+      openFileInApp(webContents, url)
+      return
+    }
     const appOrigins = ['shogo://app', 'http://localhost', 'http://127.0.0.1']
     const isInternal = appOrigins.some((origin) => url.startsWith(origin))
     if (!isInternal) {
@@ -231,4 +282,7 @@ export function installAppNavigationGuards(webContents: WebContents): void {
       }
     }
   })
+
+  // Any window the app does open gets the same rules.
+  webContents.on('did-create-window', (child) => installAppNavigationGuards(child.webContents))
 }

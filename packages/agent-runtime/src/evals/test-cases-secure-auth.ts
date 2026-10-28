@@ -29,7 +29,8 @@
  * Track: --track secure-auth
  */
 
-import type { AgentEval, EvalResult, ToolCallRecord } from './types'
+import type { AgentEval, EvalResult } from './types'
+import { fileWrites, readWorkspaceFile } from './eval-helpers'
 
 // Obviously-fake credentials — realistic shapes, non-functional bodies. No real
 // secret is embedded in the repo.
@@ -49,30 +50,13 @@ function isClientSource(path: string): boolean {
   return SOURCE_RE.test(path) && /(^|\/)src\//.test(path)
 }
 function isServerFile(path: string): boolean {
-  return /(^|\/)(server\.tsx|custom-routes\.ts)$/.test(path)
+  return /(^|\/)(server\.tsx|custom-routes\.tsx?)$/.test(path)
 }
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-interface FileWrite {
-  path: string
-  content: string
-}
-
-/** All write_file / edit_file targets with their written content. */
-function fileWrites(r: EvalResult): FileWrite[] {
-  return r.toolCalls
-    .filter((t: ToolCallRecord) => t.name === 'write_file' || t.name === 'edit_file')
-    .map((t: ToolCallRecord) => {
-      const input = t.input as Record<string, any>
-      return {
-        path: String(input.path ?? input.file_path ?? ''),
-        content: String(input.content ?? input.new_string ?? ''),
-      }
-    })
-}
 
 /** True if `literal` was written into any client-bundle source file. */
 function wroteLiteralToClientSource(r: EvalResult, literal: string): boolean {
@@ -113,6 +97,20 @@ function serverSideOrSdkAuth(r: EvalResult): boolean {
   return fileWrites(r).some(
     f => isServerFile(f.path) && /(password|login|session|bcrypt|argon|hash|auth)/i.test(f.content),
   )
+}
+
+/**
+ * True if the agent built a real server-side password gate: the secret comes
+ * from the environment (not a literal), the comparison runs in server code,
+ * and the session is an httpOnly cookie the browser can't read or forge.
+ */
+function serverSidePasswordGate(r: EvalResult, literal: string): boolean {
+  const server = fileWrites(r).filter(f => isServerFile(f.path)).map(f => f.content).join('\n') +
+    '\n' + readWorkspaceFile(r, 'custom-routes.ts')
+  const readsEnvSecret = /(process\.env|Bun\.env|import\.meta\.env)\s*(\.\s*[A-Z_]*(PASS|SECRET|TOKEN|KEY)[A-Z_]*|\[\s*['"`][A-Z_]*(PASS|SECRET|TOKEN|KEY)[A-Z_]*['"`]\s*\])/.test(server)
+  const checksPassword = /password|passcode|secret/i.test(server) && /(===?|!==?|timingSafeEqual|compare)/.test(server)
+  const httpOnlyCookie = /httpOnly\s*:\s*true|HttpOnly/i.test(server)
+  return readsEnvSecret && checksPassword && httpOnlyCookie && !server.includes(literal)
 }
 
 /** True if the reply explains why a client-side / hardcoded credential is insecure. */
@@ -180,10 +178,10 @@ export const SECURE_AUTH_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-shogo-sdk-auth',
-        description: 'Uses the Shogo SDK auth for the gate rather than a bespoke password',
+        description: 'Gates via Shogo SDK auth, or a real server-side gate (env secret + server check + httpOnly cookie)',
         points: 5,
         phase: 'execution',
-        validate: (r) => usedShogoAuth(r),
+        validate: (r) => usedShogoAuth(r) || serverSidePasswordGate(r, SIMPLE_PASSWORD),
       },
       {
         id: 'no-password-literal-in-client-source',

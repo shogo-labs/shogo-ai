@@ -18,3 +18,10 @@ export function isRemoteReadonlyTool(tool: string): boolean {
 export function remoteToolPermission(tool: string): Permission {
   return isRemoteReadonlyTool(tool) ? 'project:read' : 'project:update'
 }
+
+/**
+ * `POST /api/internal/projects/:id/files/import` (`copy_to_project`): the
+ * 25 MB compressed archive cap in packages/agent-runtime/src/project-transfer.ts,
+ * as base64 characters.
+ */
+export const REMOTE_IMPORT_MAX_BASE64_CHARS = Math.ceil((25 * 1024 * 1024 * 4) / 3) + 4

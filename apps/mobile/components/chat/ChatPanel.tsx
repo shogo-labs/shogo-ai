@@ -30,6 +30,7 @@
 import {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useCallback,
   useMemo,
@@ -58,7 +59,21 @@ import { useRouter } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LinearGradient } from "expo-linear-gradient"
 import { DefaultChatTransport } from "ai"
-import { appendQueuedUserMessage } from "./queued-user-message"
+import {
+  appendQueuedUserMessage,
+  appendQueuedUserMessages,
+  canAttachQueuedTurn,
+} from "./queued-user-message"
+import {
+  appendOptimisticEcho,
+  buildOptimisticUserMessage,
+  hasMatchingUserMessage,
+  newestUserId,
+  stampSendTime,
+  type OptimisticEchoInput as OptimisticUserInput,
+} from "./optimistic-echo"
+import { usageLimitNoticeFor } from "./usage-limit-notice"
+import { useMachineWorkspace } from "../instance/MachineWorkspaceBanner"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
@@ -74,6 +89,7 @@ import {
 import {
   useChatTransportConfig,
   buildChatTurnUrl,
+  buildChatTasksUrl,
   truncateMessagesFrom,
   getPrecedingCheckpoint,
   rollbackProjectToCheckpoint,
@@ -89,22 +105,38 @@ import {
   useDomainActions,
   useChatMessageCollectionForSession,
   useProjectCollection,
+  useSDKHttpOptional,
 } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
+import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
 import { useResolvedTheme } from "../../contexts/theme"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
+  isLiveTurnOtherThan,
+  probeChatTurn,
   probeChatTurnStatus,
-  shouldAttachLiveStream,
+  type ChatTurnSnapshot,
   type ChatTurnStatus,
 } from "./probe-turn-status"
 import {
   externalPromptHasResponse,
   LATE_TURN_MAX_WAIT_MS,
   LATE_TURN_POLL_INTERVAL_MS,
+  messageTurnStartedAt,
   pendingExternalPromptIndex,
+  persistedTailAwaitsReply,
+  persistedTailIsUnseen,
+  persistedTailQuery,
   pollForLateTurn,
+  taskWakeHasResponse,
+  type PersistedTail,
 } from "./late-turn-attach"
+import {
+  lastTurnStartedBackgroundWork,
+  NOTIFY_WAKE_MAX_WAIT_MS,
+  NOTIFY_WAKE_POLL_INTERVAL_MS,
+  watchForNotifyWake,
+} from "./notify-task-watch"
 import {
   decideRetryAction,
   lastAssistantHasResumableWork,
@@ -116,6 +148,7 @@ import {
   shouldAutoRecoverStalledTurn,
 } from "./stall-recovery"
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
+import { followNextTurn } from "./next-turn-follow"
 import {
   runResumeStreamSingleFlight,
   type ResumeStreamFlightRef,
@@ -127,15 +160,25 @@ import {
   foldSnapshotContinuation,
   withResumeReplayReset,
 } from "./resume-replay-transport"
+import { markStoppedTail, mergeStoppedSnapshot } from "./stopped-turn"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useBillingData } from "@shogo/shared-app/hooks"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { workspaceHttp } from "../../lib/workspace-http"
+import { agentProxyBase } from "../../lib/agent-proxy-base"
+import {
+  prepareOutgoingFiles,
+  shouldUploadAttachmentFirst,
+  type OutgoingFilePart,
+} from "../../lib/chat-attachment-upload"
+import { releasePreviewUrl } from "../../lib/composer-attachments"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import {
   getActiveWorkspaceId,
   setActiveWorkspaceId,
 } from "../../lib/workspace-store"
+import { shouldRestoreChatWorkspace } from "../../lib/switch-workspace"
 import {
   hasAcceptedAiConsent,
   acceptAiConsent,
@@ -168,20 +211,15 @@ import { MessageList } from "./MessageList"
 import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import {
   ChatInput,
-  DEFAULT_MODEL_PRO,
-  DEFAULT_MODEL_FREE,
-  type InteractionMode,
+  DEFAULT_MODEL,
   type FileAttachment,
   type ChatReference,
   type ProjectMentionOption,
+  type ChatMentionable,
   type RestoreDraftRequest,
 } from "./ChatInput"
 import { useChatInsertQueue } from "./useChatInsertQueue"
 import type { AgentHistoryResult } from "@shogo-ai/sdk/agent"
-import {
-  loadInteractionModePreference,
-  saveInteractionModePreference,
-} from "../../lib/interaction-mode-preference"
 import { useDualPlan } from "../../lib/dual-plan-preference"
 import {
   isChatStalled,
@@ -211,7 +249,8 @@ import { ChatDock } from "./dock/ChatDock"
 import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
 import { PendingPlanComposerBar } from "./PendingPlanComposerBar"
 import { ChecklistDockPanel } from "./dock/panels/ChecklistDockPanel"
-import { RunningDockPanel } from "./dock/panels/RunningDockPanel"
+import { RunningDockPanel, type TaskWaitState } from "./dock/panels/RunningDockPanel"
+import { isFinishedProcess } from "./dock/finished-rows"
 import { BrowserDockPanel } from "./dock/panels/BrowserDockPanel"
 import { WorktreeDockPanel } from "./dock/panels/WorktreeDockPanel"
 import { ChangesDockPanel } from "./dock/panels/ChangesDockPanel"
@@ -228,14 +267,19 @@ import {
   type ChatContextValue,
   type ChatMessage,
   type OpenProjectPaneRequest,
+  type OpenTaskHint,
 } from "./ChatContext"
+import { asTaskLink, type TaskOutputInfo } from "../../lib/task-link"
+import { taskThreadPane } from "../../lib/task-thread-pane-store"
 import {
+  DESKTOP_ISLAND_WORKSPACE_AGENT_ID,
   registerDesktopIslandSession,
   updateDesktopIslandSession,
   type DesktopIslandSessionState,
   type IslandPendingRequest,
 } from "../../lib/desktop-island"
-import { resolveChatFilePath } from "./file-links"
+import { normalizeWorkspaceMediaPath, resolveChatFilePath } from "./file-links"
+import { useChatFileIndex } from "./useChatFileIndex"
 import { useIdeBridge } from "./ideBridge"
 
 import { TurnList } from "./turns"
@@ -278,6 +322,7 @@ import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { IntegrationConnectCard, type IntegrationAuthRequest } from "./IntegrationConnectCard"
 import { buildStopRequest } from "../../lib/chat-stop"
 import {
+  isPlanStreamOwner,
   planToPublishToStream,
   shouldPublishPlanToStream,
 } from "../../lib/plan-stream-publish"
@@ -350,12 +395,6 @@ interface VirtualToolEvent {
   timestamp: number
 }
 
-type OptimisticUserInput = {
-  sessionId: string
-  content: string
-  files?: FileAttachment[]
-}
-
 export type QueuedMessage = {
   id: string
   content: string
@@ -388,45 +427,6 @@ export type QueuedMessage = {
     }
     bodyExtra: Record<string, unknown>
   }
-}
-
-function buildOptimisticUserMessage(
-  input: OptimisticUserInput,
-  id = "optimistic-user-pending",
-): UIMessage {
-  const parts: any[] = []
-  const text = input.content.trim()
-
-  if (text) {
-    parts.push({ type: "text", text })
-  }
-
-  for (const file of input.files ?? []) {
-    parts.push({
-      type: "file",
-      mediaType: file.type || "application/octet-stream",
-      url: file.dataUrl,
-      ...(file.name ? { name: file.name } : {}),
-    })
-  }
-
-  return {
-    id,
-    role: "user",
-    parts,
-  } as unknown as UIMessage
-}
-
-function hasMatchingUserMessage(
-  messages: UIMessage[],
-  input: OptimisticUserInput,
-): boolean {
-  const text = input.content.trim()
-  return messages.some((message) => {
-    if (message.role !== "user") return false
-    if (text && extractTextContent(message).trim() === text) return true
-    return !text && (input.files?.length ?? 0) > 0
-  })
 }
 
 interface SubagentProgress {
@@ -501,8 +501,6 @@ export interface ChatPanelProps {
   onCollapsedChange?: (collapsed: boolean) => void
   initialMessage?: string
   initialFiles?: FileAttachment[]
-  /** When set (e.g. from home composer), overrides stored interaction mode for this session and first message */
-  initialInteractionMode?: InteractionMode
   /** Personal-shell composer prefill; stages text without sending it. */
   prefillRequest?: RestoreDraftRequest | null
   /**
@@ -552,6 +550,12 @@ export interface ChatPanelProps {
    */
   onOpenFile?: (projectId: string, relPath: string) => void
   /**
+   * Opens a file by its raw workspace path, with no project lookup. Used by
+   * chats whose files live in the workspace root (the workspace agent), so
+   * the host can show its own file viewer. Takes precedence over `onOpenFile`.
+   */
+  onOpenFilePath?: (path: string) => void
+  /**
    * Shows another project (or one of its chats) beside this chat. Only set by
    * hosts with room for a side pane; otherwise cards navigate to the project.
    */
@@ -569,6 +573,12 @@ export interface ChatPanelProps {
   onResolveSessionModel?: (modelId: string | null) => void
   /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
   isActive?: boolean
+  /**
+   * Marks this panel as the owner of the shared `PlanStreamContext` when the
+   * host doesn't pass `onMessagesChange`. Only one mounted panel per
+   * `PlanStreamProvider` should set this.
+   */
+  ownsPlanStream?: boolean
   /** Enables IDE-specific context bridge and compact composer affordances. */
   ideMode?: boolean
   /**
@@ -934,6 +944,36 @@ async function ensureAiConsentForMessage(): Promise<boolean> {
 // Component
 // ============================================================
 
+/**
+ * A seed fetch replaces the dock list wholesale. If a row that was running is
+ * simply missing from the answer (the runtime forgot it, or its registry was
+ * recreated), keep it once as a finished row so it fades out instead of
+ * blinking away — and so the "a task finished" probe still sees it drop.
+ */
+function keepDroppedAsFinished(
+  prev: RunningProcess[],
+  next: RunningProcess[],
+): RunningProcess[] {
+  if (prev.length === 0) return next
+  const seen = new Set(next.map((p) => p.id ?? p.runId))
+  const dropped = prev.filter(
+    (p) =>
+      !seen.has(p.id ?? p.runId) &&
+      !p.stale &&
+      (!p.status || p.status === "running"),
+  )
+  if (dropped.length === 0) return next
+  const now = Date.now()
+  return [
+    ...next,
+    ...dropped.map((p) => ({
+      ...p,
+      status: p.status === "running" ? "completed" : p.status,
+      finishedAt: p.finishedAt ?? now,
+    })),
+  ]
+}
+
 const ChatPanelContent = observer(function ChatPanelContent({
   presentation = "studio",
   featureId,
@@ -959,7 +999,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onCollapsedChange,
   initialMessage,
   initialFiles,
-  initialInteractionMode,
   prefillRequest,
   onPrefillConsumed,
   composer: composerProp,
@@ -977,16 +1016,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onBuildPlanConsumed,
   onOpenPlan,
   onOpenFile,
+  onOpenFilePath,
   onOpenProjectPane,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
   onResolveSessionModel,
   isActive = true,
+  ownsPlanStream = false,
   ideMode = false,
   enrichMessage,
   readOnlyReason,
   phoneTranscriptTopPadding = "chrome",
 }: ChatPanelProps) {
+  // A machine workspace cannot take a write while its Mac is asleep, so the
+  // composer is refused from the same state the banner renders (SHO-185 AC4).
+  // The banner's own line is the reason, so the input says why it is off.
+  const { instance: machineInstance } = useActiveInstance()
+  const machineView = useMachineWorkspace({ machineName: machineInstance?.name })
+  const machineStop = machineView.composeDisabled ? machineView.banner ?? undefined : undefined
   const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
   const chatDockStore = useChatDockStore()
   const {
@@ -1002,11 +1049,31 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
 
+  // Workspace-scoped chat routes to `/api/workspaces/:workspaceId/chat`
+  // instead of the per-project endpoint. Only set when this panel is
+  // operating in workspace scope and we actually have a workspace id.
+  const chatWorkspaceId =
+    chatScope === "workspace" && workspaceId ? workspaceId : undefined
+
+  // One base for every runtime call (tasks, cancel, output, quick actions).
+  // The landing chat has a workspaceId but no projectId, and used to resolve
+  // this to `null` — so its dock never seeded and lost every row on remount.
+  const agentBaseUrl = agentProxyBase({
+    localAgentUrl,
+    projectId,
+    workspaceId: chatWorkspaceId,
+    apiUrl: API_URL,
+  })
+
   // Sibling projects (same workspace, excluding the current one) for the
   // composer's "@" mention menu. Tagging one mounts it into the chat runtime
   // so the agent can read its files. AppSidebar already loads the collection
   // app-wide; we loadAll() defensively in case the panel mounts first.
   const projectCollection = useProjectCollection()
+  // Routing insert point: a workspace-scoped request goes through the domain
+  // client, so a paired desktop's own workspace gets its history from that
+  // machine (the SDK interceptor rewrites the path and the workspace id).
+  const domainHttp = useSDKHttpOptional()
   useEffect(() => {
     projectCollection
       .loadAll(workspaceProjectFilter(workspaceId))
@@ -1098,17 +1165,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const workspaceHistorySearch = useCallback(
     async (query: string): Promise<AgentHistoryResult[]> => {
       if (!workspaceId) return []
+      const search = {
+        q: query,
+        kind: "all",
+        limit: "12",
+        exclude: chatSessionId || "",
+      }
       try {
+        if (domainHttp) {
+          const response = await domainHttp.get<{ results?: AgentHistoryResult[] }>(
+            `/api/workspaces/${encodeURIComponent(workspaceId)}/history/search`,
+            search,
+          )
+          return Array.isArray(response.data?.results) ? response.data.results : []
+        }
         const fetchFn = expoFetch ?? globalThis.fetch
         const headers: Record<string, string> = nativeHeaders
           ? nativeHeaders()
           : {}
-        const params = new URLSearchParams({
-          q: query,
-          kind: "all",
-          limit: "12",
-          exclude: chatSessionId || "",
-        })
+        const params = new URLSearchParams(search)
         const response = await fetchFn(
           `${API_URL}/api/workspaces/${encodeURIComponent(
             workspaceId,
@@ -1125,7 +1200,29 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return []
       }
     },
-    [workspaceId, chatSessionId, nativeHeaders, expoFetch],
+    [workspaceId, chatSessionId, nativeHeaders, expoFetch, domainHttp],
+  )
+
+  /**
+   * Chats the user can hand this message to, from every workspace they belong
+   * to. The server filters by access; this composer only excludes the chat we
+   * are already in (tagging yourself is a no-op).
+   */
+  const chatMentionables = useCallback(
+    async (query: string): Promise<ChatMentionable[]> => {
+      try {
+        const params: Record<string, string> = { q: query, limit: "8" }
+        if (chatSessionId) params.exclude = chatSessionId
+        const { data } = await workspaceHttp().get<{ chats?: ChatMentionable[] }>(
+          "/api/chat-mentionables",
+          params,
+        )
+        return Array.isArray(data?.chats) ? data.chats : []
+      } catch {
+        return []
+      }
+    },
+    [chatSessionId],
   )
 
   // Quick actions state
@@ -1134,9 +1231,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   >([])
 
   const fetchQuickActions = useCallback(async () => {
-    const url =
-      localAgentUrl ||
-      (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+    const url = agentBaseUrl
     if (!url) return
     try {
       const fetchFn = expoFetch ?? globalThis.fetch
@@ -1156,7 +1251,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     } catch {
       // Silently ignore — quick actions are non-critical
     }
-  }, [localAgentUrl, projectId, nativeHeaders, expoFetch])
+  }, [agentBaseUrl, nativeHeaders, expoFetch])
 
   useEffect(() => {
     if (!isActive) return
@@ -1185,7 +1280,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!isPlaceholderSessionName(sessionName)) return
 
       hasTriggeredNamingRef.current = true
-      const http = createHttpClient()
+      const http = workspaceHttp()
       void autoNameSession({
         sessionId,
         userText,
@@ -1434,7 +1529,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
   const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] =
-    useState<string>(DEFAULT_MODEL_FREE)
+    useState<string>(DEFAULT_MODEL)
   const isModelControlled = controlledSelectedModel !== undefined
   // Gate reconciliation until the persisted preference has loaded, so the
   // reconciler never runs against the initial slug default (not a catalog UUID
@@ -1445,14 +1540,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useEffect(() => {
     if (isModelControlled) return
     loadModelPreference(projectId).then((stored) => {
-      if (stored) {
-        setInternalSelectedModel(stored)
-      } else if (hasAdvancedModelAccess) {
-        setInternalSelectedModel(DEFAULT_MODEL_PRO)
-      }
+      if (stored) setInternalSelectedModel(stored)
       setModelPrefLoaded(true)
     })
-  }, [hasAdvancedModelAccess, isModelControlled, projectId])
+  }, [isModelControlled, projectId])
 
   const selectedModel = isModelControlled
     ? controlledSelectedModel
@@ -1476,68 +1567,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // its own selection.
   useReconcileStaleModelSelection(
     internalSelectedModel,
-    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    DEFAULT_MODEL,
     handleModelChange,
     !isModelControlled && modelPrefLoaded,
   )
 
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>(
-    () => initialInteractionMode ?? "agent",
-  )
-
-  useEffect(() => {
-    // A forced mode (e.g. the personal companion shell always forcing
-    // "agent") wins outright — loading/restoring a persisted preference here
-    // would just be immediately overridden by the forced-mode effect below,
-    // and doing so on every mount is a wasted async round trip at best.
-    if (composer.forcedMode) return
-    if (initialInteractionMode) {
-      setInteractionMode(initialInteractionMode)
-      void saveInteractionModePreference(initialInteractionMode)
-      return
-    }
-    void loadInteractionModePreference().then((stored) => {
-      if (stored) {
-        setInteractionMode(stored)
-      }
-    })
-  }, [initialInteractionMode, composer.forcedMode])
-
-  // Mirror interactionMode in a ref so callbacks (sendMessageInternal, queue
-  // processor) always observe the latest value even when fired in the same
-  // tick as a mode change (e.g. plan confirm → switch to agent → send).
-  const interactionModeRef = useRef<InteractionMode>(interactionMode)
-  useEffect(() => {
-    interactionModeRef.current = interactionMode
-  }, [interactionMode])
-
-  useEffect(() => {
-    if (!composer.forcedMode) return
-    interactionModeRef.current = composer.forcedMode
-    setInteractionMode(composer.forcedMode)
-  }, [composer.forcedMode])
-
-  const handleInteractionModeChange = useCallback((mode: InteractionMode) => {
-    interactionModeRef.current = mode
-    setInteractionMode(mode)
-    void saveInteractionModePreference(mode)
-  }, [])
-
-  // Dual Plan preference — singleton-backed hook so the chat input, Plans
-  // panel header, and user settings page all stay in sync. Persistent
-  // per-device; the toggle stays sticky across sessions. Default is ON.
-  const [dualPlan, setDualPlanAsync] = useDualPlan()
+  // Dual Plan preference — singleton-backed hook so the Plans panel header and
+  // user settings page stay in sync. Persistent per-device; the toggle stays
+  // sticky across sessions. Default is ON.
+  const [dualPlan] = useDualPlan()
   const dualPlanRef = useRef<boolean>(dualPlan)
   useEffect(() => {
     dualPlanRef.current = dualPlan
   }, [dualPlan])
-  const handleDualPlanChange = useCallback(
-    (next: boolean) => {
-      dualPlanRef.current = next
-      void setDualPlanAsync(next)
-    },
-    [setDualPlanAsync],
-  )
 
   const [restoreDraftRequest, setRestoreDraftRequest] =
     useState<RestoreDraftRequest | null>(null)
@@ -1589,7 +1631,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const pendingPlanRef = useRef<PlanData | null>(null)
 
   const planStream = usePlanStreamSafe()
-  const isActivePanel = onMessagesChange != null
+  const isActivePanel = isPlanStreamOwner({
+    hasMessagesListener: onMessagesChange != null,
+    ownsPlanStream,
+  })
   const isActivePanelRef = useRef(isActivePanel)
   isActivePanelRef.current = isActivePanel
 
@@ -1686,12 +1731,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Tracks previous streaming state so the post-stream revalidate effect only
   // fires on the true→false transition (not every idle render).
   const wasStreamingRef = useRef(false)
+  // Session whose reply this panel just streamed or joined. Such a reply is on
+  // screen before the API has written its row (it persists after the stream
+  // EOFs), so a paint from history must not replace it (SHO-85).
+  const liveReplySessionRef = useRef<string | null>(null)
+  // Paints refused in a row while the server catches up; carried on the Sentry
+  // event so a report shows how hard the reply was to keep on screen.
+  const historyPaintAttemptRef = useRef(0)
   const cachedMessagesRef = useRef<any[] | null>(null)
   const hasInjectedInitialMessageRef = useRef(false)
   const isSendingMessageRef = useRef(false)
   const lastUserInputRef = useRef<{
     content: string
     files?: FileAttachment[]
+    /** When it was sent — the chat tag's delivery window is read off this (SHO-52). */
+    sentAt?: number
   } | null>(null)
   const lastNonEmptyMessagesRef = useRef<UIMessage[]>([])
 
@@ -1756,38 +1810,54 @@ const ChatPanelContent = observer(function ChatPanelContent({
     new Set(),
   )
 
-  const fetchRunningProcesses = useCallback(async () => {
-    const base =
-      localAgentUrl ||
-      (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
-    if (!base || !currentSessionId) return
+  const fetchRunningProcesses = useCallback(async (): Promise<RunningProcess[] | null> => {
+    if (!currentSessionId) return null
+    const tasksUrl = buildChatTasksUrl(
+      API_URL!,
+      projectId,
+      localAgentUrl,
+      currentSessionId,
+      chatWorkspaceId,
+    )
+    if (!tasksUrl) return null
     try {
       const fetchFn = expoFetch ?? globalThis.fetch
       const headers: Record<string, string> = nativeHeaders
         ? nativeHeaders()
         : {}
-      const res = await fetchFn(
-        `${base}/agent/chat/${currentSessionId}/processes`,
-        {
-          headers,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        } as any,
-      )
-      if (res.ok) {
-        const data = await res.json()
-        if (Array.isArray(data?.processes))
-          setRunningProcesses(data.processes as RunningProcess[])
+      const init = {
+        headers,
+        credentials: Platform.OS === "web" ? "include" : undefined,
+      } as any
+      let res = await fetchFn(tasksUrl, init)
+      // Runtimes that predate tasks only list shell processes.
+      if (res.status === 404) {
+        res = await fetchFn(tasksUrl.replace(/\/tasks$/, "/processes"), init)
       }
+      if (!res.ok) return null
+      const data = await res.json()
+      const list = data?.tasks ?? data?.processes
+      if (!Array.isArray(list)) return null
+      setRunningProcesses((prev) =>
+        keepDroppedAsFinished(prev, list as RunningProcess[]),
+      )
+      return list as RunningProcess[]
     } catch {
       // Non-critical — the panel just won't seed until the next live frame.
+      return null
     }
-  }, [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch])
+  }, [
+    localAgentUrl,
+    projectId,
+    chatWorkspaceId,
+    currentSessionId,
+    nativeHeaders,
+    expoFetch,
+  ])
 
   const handleKillProcess = useCallback(
     async (runId: string) => {
-      const base =
-        localAgentUrl ||
-        (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+      const base = agentBaseUrl
       if (!base || !currentSessionId) return
       setKillingProcesses((prev) => new Set(prev).add(runId))
       try {
@@ -1795,22 +1865,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const headers: Record<string, string> = nativeHeaders
           ? nativeHeaders()
           : {}
-        const res = await fetchFn(
-          `${base}/agent/chat/${currentSessionId}/processes/${runId}/kill`,
-          {
-            method: "POST",
-            headers,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any,
+        const init = {
+          method: "POST",
+          headers,
+          credentials: Platform.OS === "web" ? "include" : undefined,
+        } as any
+        let res = await fetchFn(
+          `${base}/agent/chat/${currentSessionId}/tasks/${encodeURIComponent(runId)}/cancel`,
+          init,
         )
+        if (res.status === 404) {
+          res = await fetchFn(
+            `${base}/agent/chat/${currentSessionId}/processes/${runId}/kill`,
+            init,
+          )
+        }
         if (res.ok) {
           const data = await res.json()
-          if (Array.isArray(data?.processes))
-            setRunningProcesses(
-              (data.processes as RunningProcess[]).filter(
-                (p) => p.runId !== runId,
-              ),
-            )
+          const list = data?.tasks ?? data?.processes
+          // The runtime now answers with the dock list, in which a cancelled
+          // task is a terminal row (Output still opens, no Kill). Trust it.
+          if (Array.isArray(list))
+            setRunningProcesses(list as RunningProcess[])
           else
             setRunningProcesses((prev) => prev.filter((p) => p.runId !== runId))
         }
@@ -1824,11 +1900,72 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
       }
     },
-    [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch],
+    [agentBaseUrl, currentSessionId, nativeHeaders, expoFetch],
   )
+
+  const loadTaskOutput = useCallback(
+    async (taskId: string): Promise<TaskOutputInfo | null> => {
+      const base = agentBaseUrl
+      if (!base || !currentSessionId) return null
+      try {
+        const fetchFn = expoFetch ?? globalThis.fetch
+        const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+        const res = await fetchFn(
+          `${base}/agent/chat/${currentSessionId}/tasks/${encodeURIComponent(taskId)}/output`,
+          { headers, credentials: Platform.OS === "web" ? "include" : undefined } as any,
+        )
+        if (!res.ok) return null
+        const data = await res.json()
+        return {
+          taskId: typeof data?.taskId === "string" ? data.taskId : taskId,
+          source: typeof data?.source === "string" ? data.source : undefined,
+          title: typeof data?.title === "string" ? data.title : undefined,
+          status: typeof data?.status === "string" ? data.status : undefined,
+          outputFile: typeof data?.outputFile === "string" ? data.outputFile : undefined,
+          output: typeof data?.output === "string" ? data.output : "",
+          link: asTaskLink(data?.link),
+        }
+      } catch {
+        return null
+      }
+    },
+    [agentBaseUrl, currentSessionId, nativeHeaders, expoFetch],
+  )
+
+  // Pressing a background task opens where its work is happening: the tagged
+  // agent's thread, the card's thread, the callee project's chat, or its log.
+  const openTaskThread = useCallback(
+    async (taskId: string, hint?: OpenTaskHint) => {
+      taskThreadPane.open({
+        taskId,
+        title: hint?.title,
+        source: hint?.source,
+        status: hint?.status,
+        outputFile: hint?.outputFile,
+        link: hint?.link ?? null,
+        loading: true,
+      })
+      const out = await loadTaskOutput(taskId)
+      taskThreadPane.patch(taskId, {
+        loading: false,
+        output: out?.output ?? undefined,
+        outputFile: out?.outputFile ?? hint?.outputFile,
+        title: out?.title ?? hint?.title,
+        source: out?.source ?? hint?.source,
+        status: out?.status ?? hint?.status,
+        link: out?.link ?? hint?.link ?? null,
+        ...(out ? {} : { error: "This task is no longer tracked." }),
+      })
+    },
+    [loadTaskOutput],
+  )
+
+  // The agent blocked in `wait` (live `data-task-wait` frames during a turn).
+  const [taskWait, setTaskWait] = useState<TaskWaitState | null>(null)
 
   // Seed the process list whenever the active thread changes.
   useEffect(() => {
+    setTaskWait(null)
     if (!currentSessionId) {
       setRunningProcesses([])
       return
@@ -1927,12 +2064,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // saved history replaces it once the turn is over (see `onFinish`).
   const joinedStreamRef = useRef(false)
   const refreshHistoryRef = useRef<() => void>(() => {})
-
-  // Workspace-scoped chat routes to `/api/workspaces/:workspaceId/chat`
-  // instead of the per-project endpoint. Only set when this panel is
-  // operating in workspace scope and we actually have a workspace id.
-  const chatWorkspaceId =
-    chatScope === "workspace" && workspaceId ? workspaceId : undefined
 
   // Stable identity across renders: this is a dep of `useChatTransportConfig`'s
   // internal `useMemo`, so an inline arrow here would rebuild `transportConfig`
@@ -2466,10 +2597,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
       // Live background-process list. The runtime emits the full running list
       // on every change, so we replace state wholesale (no reconciliation).
-      if (dataPart.type === "data-process-update") {
+      if (dataPart.type === "data-task-update") {
+        const tasks = (dataPart as any).data?.tasks
+        if (Array.isArray(tasks)) {
+          setRunningProcesses(tasks as RunningProcess[])
+        }
+      } else if (dataPart.type === "data-process-update") {
         const procs = (dataPart as any).data?.processes
         if (Array.isArray(procs)) {
           setRunningProcesses(procs as RunningProcess[])
+        }
+      }
+      if (dataPart.type === "data-task-wait") {
+        const d = (dataPart as any).data
+        if (d?.active) {
+          setTaskWait({
+            taskIds: Array.isArray(d.taskIds) ? d.taskIds : [],
+            until: typeof d.until === "string" ? d.until : undefined,
+            timeoutMs: typeof d.timeoutMs === "number" ? d.timeoutMs : 30_000,
+            startedAt: typeof d.startedAt === "number" ? d.startedAt : Date.now(),
+          })
+        } else {
+          setTaskWait(null)
         }
       }
 
@@ -2913,13 +3062,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setEmptyResponseError(nextError)
 
       if (currentSessionId) {
-        // The chat's workspace is authoritative for this turn. A legacy
-        // project session can trigger several collection refreshes while it
-        // is upgraded to a workspace session; if one of those refreshes
-        // briefly omits the team, restore the workspace that owns the chat
-        // before the sidebar reconciles its selection.
-        if (workspaceId && getActiveWorkspaceId() !== workspaceId) {
-          setActiveWorkspaceId(workspaceId)
+        // The chat's workspace is authoritative for this turn — unless the
+        // person already moved this screen to another chat (a cross-workspace
+        // chip press), in which case the switch they just made wins.
+        if (
+          workspaceId &&
+          shouldRestoreChatWorkspace({
+            chatWorkspaceId: workspaceId,
+            activeWorkspaceId: getActiveWorkspaceId(),
+            finishedSessionId: currentSessionId,
+            liveSessionId: currentSessionIdRef.current,
+          })
+        ) {
+          setActiveWorkspaceId(workspaceId, { reason: "automatic" })
         }
         refetchUsageWallet()
 
@@ -2983,7 +3138,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   m.role === "assistant" &&
                   !priorAssistantIds.has(m.id),
               )
-              if (appeared) return
+              if (appeared) {
+                // Repaint once now that the row exists. Warming the cache is
+                // not enough: a paint that ran while the row was still missing
+                // dropped the reply from the screen, and this is what brings it
+                // back — with the server's canonical id, exactly once (SHO-85).
+                if (currentSessionIdRef.current === sessionIdForReconcile) {
+                  paintLoadedHistoryRef.current(sessionIdForReconcile, {
+                    requireReply: false,
+                  })
+                }
+                return
+              }
             }
             console.warn(
               "[ChatPanel] Assistant message not yet persisted after reconcile retries — relying on next full reload",
@@ -3121,6 +3287,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // but tight enough to kill a tight reconnect loop.
   const autoResumeTimestampsRef = useRef<number[]>([])
   const autoResumeCircuitTrippedRef = useRef(false)
+  // One reload per blocked attach: repainting history is what puts the missing
+  // prompt on screen, and the reload's own probe attaches from there.
+  const blockedAttachReloadAtRef = useRef(0)
+  /** A probe found a live turn whose prompt the screen has not painted (SHO-147). */
+  const reportLiveTurnAttachBlocked = useCallback(
+    (context: string, reason: string) => {
+      console.warn(
+        `[ChatPanel] Refused to attach the live turn (${context}, reason=${reason}); reloading history first`,
+      )
+      try {
+        Sentry.captureMessage("chat_live_turn_attach_blocked", {
+          level: "warning",
+          tags: { context, reason },
+          extra: {
+            sessionId: currentSessionIdRef.current,
+            turnId: currentTurnIdRef.current,
+            screenRows: cachedMessagesRef.current?.length ?? 0,
+            historyRows: sessionMessages?.all?.length ?? 0,
+          },
+        })
+      } catch (err) {
+        console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+      }
+    },
+    [sessionMessages],
+  )
   const guardedAutoResumeStream = useCallback(
     (reason: "live-turn-probe" | "stall-recovery") => {
       if (autoResumeCircuitTrippedRef.current) {
@@ -3131,6 +3323,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (
         resumeStreamInFlightRef.current.current?.sessionId === currentSessionId
       ) {
+        return
+      }
+      // Never attach to a turn whose prompt is not on screen (SHO-147). The
+      // stream carries only the assistant reply, so with no user row between it
+      // and the reply above, the one-assistant-per-turn grouping gives the new
+      // reply the previous turn's bubble. Painting history is what puts the
+      // missing prompt there — and that load's own probe attaches from there.
+      const gate = resolveLiveTurnAttach({
+        screen: cachedMessagesRef.current ?? [],
+        history: sessionMessages?.all ?? [],
+      })
+      if (!gate.attach) {
+        reportLiveTurnAttachBlocked(reason, gate.reason)
+        if (Date.now() - blockedAttachReloadAtRef.current > 1000) {
+          blockedAttachReloadAtRef.current = Date.now()
+          reloadAndAttachLiveTurnRef.current({ settle: false })
+        }
         return
       }
       const { timestamps, tripped } = recordAutoResumeAttempt(
@@ -3166,7 +3375,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
       void resumeStreamSingleFlight()
     },
-    [currentSessionId, projectId, resumeStreamSingleFlight],
+    [currentSessionId, projectId, resumeStreamSingleFlight, reportLiveTurnAttachBlocked, sessionMessages],
   )
   // A session switch means the user navigated away from whatever was
   // looping — give the (new) session a clean breaker rather than carrying a
@@ -3176,9 +3385,31 @@ const ChatPanelContent = observer(function ChatPanelContent({
     autoResumeCircuitTrippedRef.current = false
   }, [currentSessionId])
 
+  // The transcript as it stood when the user pressed Stop, with the stopped
+  // reply stamped as finished (see stopped-turn.ts). Held on screen while the
+  // SDK settles so the reply can't blink out between the abort and the next
+  // render, and released — merged into the live array, never over it — as soon
+  // as anything else needs the window.
   const [stoppedMessages, setStoppedMessages] = useState<UIMessage[] | null>(
     null,
   )
+  const stoppedMessagesRef = useRef<UIMessage[] | null>(null)
+  // The turn Stop cancelled. A send right after Stop must not wait behind it.
+  const stoppedTurnIdRef = useRef<string | null>(null)
+  const releaseStopSnapshot = useCallback(() => {
+    const snapshot = stoppedMessagesRef.current
+    stoppedMessagesRef.current = null
+    setStoppedMessages(null)
+    if (!snapshot) return
+    setMessages((prev) => mergeStoppedSnapshot(prev, snapshot))
+  }, [setMessages])
+  // Stop state belongs to one chat: carrying a snapshot (or a cancelled turn
+  // id) into another one would hold that chat's transcript still.
+  useEffect(() => {
+    stoppedMessagesRef.current = null
+    stoppedTurnIdRef.current = null
+    setStoppedMessages(null)
+  }, [currentSessionId])
   // Keep the stop control visible while the transport is recovering a turn
   // whose server-side agent may still be running.
   const [streamAutoRecovering, setStreamAutoRecovering] = useState(false)
@@ -3209,25 +3440,37 @@ const ChatPanelContent = observer(function ChatPanelContent({
   >(() => {})
   const resumeQueuedTurn = useCallback(
     (queuedUserMessage?: UIMessage) => {
-      // A message already on screen means this window showed that turn some
-      // other way and whatever runs now is a later one; attaching bare would
-      // write its reply over the last one. Load the history (which has the
-      // running turn's message) and attach from there.
-      if (
-        !queuedUserMessage ||
-        messagesRef.current.some((m) => m.id === queuedUserMessage.id)
-      ) {
+      // Whatever happens next, the transcript is live again: the stop
+      // snapshot's reply is merged in rather than left frozen behind this turn.
+      releaseStopSnapshot()
+      if (!queuedUserMessage) {
         reloadAndAttachLiveTurnRef.current()
         return
       }
-      // The server saved the queued message and started its turn; show the
-      // message before attaching to the reply (see queued-user-message.ts).
-      setMessages((prev) => appendQueuedUserMessage(prev, queuedUserMessage))
+      const onScreen = messagesRef.current.some(
+        (m) => m.id === queuedUserMessage.id,
+      );
+      // Queued messages are not in this list at all any more — only the dock
+      // shows them — so a message already here came from the server's history
+      // (a reload while its turn was running). If nothing landed after it,
+      // this turn's reply belongs at the end and attaching directly is right;
+      // if something did, the transcript has moved on and history is the truth.
+      if (onScreen && !canAttachQueuedTurn(messagesRef.current, queuedUserMessage)) {
+        reloadAndAttachLiveTurnRef.current()
+        return
+      }
+      // The server saved the queued message and started its turn: append it at
+      // the end and attach the reply under it, without reloading history. This
+      // is the normal path — the bubble first appears here, when the turn it
+      // belongs to starts.
+      if (!onScreen) {
+        setMessages((prev) => appendQueuedUserMessage(prev, queuedUserMessage))
+      }
       void resumeStreamSingleFlight().catch((error) => {
         console.warn("[ChatPanel] Failed to attach to queued turn:", error)
       })
     },
-    [resumeStreamSingleFlight, setMessages],
+    [releaseStopSnapshot, resumeStreamSingleFlight, setMessages],
   )
   const serverQueue = useServerMessageQueue({
     sessionId: currentSessionId,
@@ -3365,12 +3608,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [])
 
+  // The SDK settled after Stop: hand the transcript back. Merging (not
+  // replacing) keeps anything the window gained after the stop — the next
+  // message's bubble and its reply — and the stop marker keeps the cancelled
+  // reply classified as finished for the next replay.
   useEffect(() => {
-    if (status === "ready" && stoppedMessages !== null) {
-      setMessages(stoppedMessages)
-      setStoppedMessages(null)
-    }
-  }, [status, stoppedMessages, setMessages])
+    if (status !== "ready" || stoppedMessages === null) return
+    releaseStopSnapshot()
+  }, [status, stoppedMessages, releaseStopSnapshot])
 
   // Propagate messages to parent (for pendingToolInstalls, TerminalPanel, etc.)
   // but skip the flood of per-token updates during streaming. Firing this on
@@ -3409,6 +3654,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(
     null,
   )
+  // Non-null while an attachment's bytes are going up, so a 200 MB file shows
+  // movement instead of a frozen composer (the chips are cleared on submit).
+  const [uploadStatus, setUploadStatus] = useState<{
+    name: string
+    fraction: number
+  } | null>(null)
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
   const [errorDismissed, setErrorDismissed] = useState(false)
   const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
@@ -3471,6 +3722,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // otherwise tapping X once would permanently mute future errors.
     setErrorDismissed(false)
   }, [errorBannerText])
+
+  const usageLimitView = useMemo(
+    () =>
+      usageLimitNoticeFor({
+        error: error?.message,
+        errorDismissed,
+        stoppedTurn: usageLimitNotice,
+        currentSessionId,
+      }),
+    [error?.message, errorDismissed, usageLimitNotice, currentSessionId],
+  )
+  const usageLimitBlocked = usageLimitView?.variant === "blocked"
+  useEffect(() => {
+    if (usageLimitBlocked) refetchUsageWallet()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usageLimitBlocked])
 
   useEffect(() => {
     if (!isTunnelError || !localAgentUrl) {
@@ -3555,37 +3822,61 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [messages.length, pendingInitialMessage])
 
+  /**
+   * The transcript plus the bubble of a dispatched head the panel has not
+   * attached yet. Only used to tell whether the pre-send echo has been
+   * superseded by the real message — still-queued rows are not in here (they
+   * live in the dock), so queueing clears the echo explicitly.
+   */
+  const messagesWithQueued = useMemo(
+    () => appendQueuedUserMessages(messages, serverQueue.pendingUserMessages),
+    [messages, serverQueue.pendingUserMessages],
+  )
+
   useEffect(() => {
     if (!optimisticUserInput) return
     if (optimisticUserInput.sessionId !== currentSessionId) {
       setOptimisticUserInput(null)
       return
     }
-    if (hasMatchingUserMessage(messages, optimisticUserInput)) {
+    if (hasMatchingUserMessage(messagesWithQueued, optimisticUserInput)) {
       setOptimisticUserInput(null)
     }
-  }, [currentSessionId, messages, optimisticUserInput])
+  }, [currentSessionId, messagesWithQueued, optimisticUserInput])
+
+  // A big web pick paints its echo from a `blob:` object URL, and the real
+  // message carries a workspace URL instead — so once this echo is replaced or
+  // dropped, nothing can reach that blob again and it is released here. The
+  // composer deliberately keeps its own copy alive through the send (see
+  // `resetAttachments`), so the release belongs to the echo's lifetime.
+  useEffect(() => {
+    const files = optimisticUserInput?.files ?? []
+    return () => {
+      for (const file of files) releasePreviewUrl(file.previewUrl)
+    }
+  }, [optimisticUserInput])
 
   const displayMessages = useMemo((): UIMessage[] => {
-    const effectiveMessages = foldSnapshotContinuation(
-      stoppedMessages ?? messages,
-      resumeSnapshotIdRef.current,
+    // While the stop snapshot is held, the window still shows it — merged with
+    // the live array so a message sent after Stop appears under the reply it
+    // followed, instead of being hidden behind the frozen transcript.
+    const effectiveMessages = appendQueuedUserMessages(
+      foldSnapshotContinuation(
+        stoppedMessages ? mergeStoppedSnapshot(messages, stoppedMessages) : messages,
+        resumeSnapshotIdRef.current,
+      ),
+      serverQueue.pendingUserMessages,
     )
     const currentOptimisticInput =
       optimisticUserInput?.sessionId === currentSessionId
         ? optimisticUserInput
         : null
-    const shouldPrependOptimisticUser =
-      currentOptimisticInput &&
-      !hasMatchingUserMessage(effectiveMessages, currentOptimisticInput)
 
     if (effectiveMessages.length > 0) {
-      return shouldPrependOptimisticUser
-        ? [
-            buildOptimisticUserMessage(currentOptimisticInput),
-            ...effectiveMessages,
-          ]
-        : effectiveMessages
+      return stampSendTime(
+        appendOptimisticEcho(effectiveMessages, currentOptimisticInput),
+        lastUserInputRef.current,
+      )
     }
 
     if (isStreaming || isSendingMessageRef.current) {
@@ -3624,16 +3915,67 @@ const ChatPanelContent = observer(function ChatPanelContent({
         } as unknown as UIMessage,
       ]
     }
+    // A brand-new chat has no other message to show, but the person's own
+    // bubble is already known — paint it while the send is still in flight.
+    if (currentOptimisticInput) {
+      return appendOptimisticEcho([], currentOptimisticInput)
+    }
     return []
   }, [
     currentSessionId,
     messages,
+    serverQueue.pendingUserMessages,
     stoppedMessages,
     pendingInitialMessage,
     initialMessage,
     optimisticUserInput,
     isStreaming,
   ])
+
+  /**
+   * Paints the user's own bubble. `ChatInput` clears the composer synchronously
+   * on submit, so anything awaited before this (the live-turn probe, the consent
+   * modal) leaves the transcript frozen for that whole round trip.
+   */
+  const showOptimisticEcho = useCallback(
+    (content: string, files?: FileAttachment[]) => {
+      if (!currentSessionId) return
+      const trimmedContent = content.trim()
+      const fileArray = files ?? []
+      if (!trimmedContent && fileArray.length === 0) return
+      lastUserInputRef.current = { content: trimmedContent, files: fileArray, sentAt: Date.now() }
+      const baselineUserId = newestUserId(messagesRef.current)
+      setOptimisticUserInput((current) =>
+        current &&
+        current.sessionId === currentSessionId &&
+        current.content === trimmedContent
+          ? current
+          : {
+              sessionId: currentSessionId,
+              content: trimmedContent,
+              files: fileArray,
+              baselineUserId,
+              sentAt: lastUserInputRef.current?.sentAt,
+            },
+      )
+    },
+    [currentSessionId],
+  )
+
+  /** Drops the echo painted for a queued send that will not run as it was sent. */
+  const clearOptimisticEcho = useCallback(
+    (content: string) => {
+      const trimmedContent = content.trim()
+      setOptimisticUserInput((current) =>
+        current &&
+        current.sessionId === currentSessionId &&
+        current.content === trimmedContent
+          ? null
+          : current,
+      )
+    },
+    [currentSessionId],
+  )
 
   // Stable references for memo'd downstream components (TurnList / SubagentPanel).
   // Previously these were `Array.from(Map.values())` inline, which allocated on
@@ -3657,14 +3999,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     async (
       sessionId: string,
       opts: { retryDelaysMs?: readonly number[]; timeoutMs?: number } = {},
-    ) => {
+    ): Promise<ChatTurnSnapshot> => {
       const controller = new AbortController()
       const timer =
         opts.timeoutMs !== undefined
           ? setTimeout(() => controller.abort(), opts.timeoutMs)
           : undefined
       try {
-        return await probeChatTurnStatus({
+        return await probeChatTurn({
           url: buildChatTurnUrl(
             API_URL!,
             projectId,
@@ -3683,6 +4025,60 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     },
     [projectId, localAgentUrl, chatWorkspaceId, expoFetch, nativeHeaders],
+  )
+
+  /**
+   * The newest saved row for this chat, one row wide. A refocus has to tell
+   * "this chat is up to date" from "a turn was written while this window was
+   * in the background" without pulling the transcript (SHO-53). The row is
+   * read newest-first: the list route only orders when it is told to, and an
+   * unordered `limit=1` hands back an arbitrary row — in local mode the oldest
+   * one, which made every refocus reload the transcript (SHO-99).
+   */
+  const probePersistedTail = useCallback(
+    async (sessionId: string): Promise<PersistedTail | null> => {
+      if (!API_URL) return null
+      const query = persistedTailQuery(sessionId)
+      try {
+        // Same insert point as the transcript itself (`/api/chat-messages` is
+        // routed by the SDK interceptor): read the row from the same places the
+        // messages come from, or a machine workspace would compare its
+        // transcript against a cloud chat and think history moved.
+        const body = domainHttp
+          ? (await domainHttp.get<{ items?: any[] }>("/api/chat-messages", query)).data
+          : await (expoFetch ?? globalThis.fetch)(
+              `${API_URL}/api/chat-messages?${new URLSearchParams(query).toString()}`,
+              {
+                headers: nativeHeaders ? nativeHeaders() : {},
+                credentials: Platform.OS === "web" ? "include" : undefined,
+              } as any,
+            )
+              .then((response) => (response.ok ? response.json().catch(() => null) : null))
+              .catch(() => null)
+        const newest = Array.isArray(body?.items) ? body.items[0] : null
+        if (!newest?.id) return null
+        let parts: any = newest.parts
+        if (typeof parts === "string") {
+          try {
+            parts = JSON.parse(parts)
+          } catch {
+            parts = []
+          }
+        }
+        return {
+          id: String(newest.id),
+          role: typeof newest.role === "string" ? newest.role : null,
+          content: typeof newest.content === "string" ? newest.content : null,
+          turnStartedAt: messageTurnStartedAt({ parts }),
+          contentLength:
+            typeof newest.content === "string" ? newest.content.length : null,
+        }
+      } catch {
+        // A failed read is not evidence of a missed turn: leave the panel be.
+        return null
+      }
+    },
+    [expoFetch, nativeHeaders, domainHttp],
   )
 
   // A turn this panel is not attached to (started in another window, by
@@ -3721,29 +4117,196 @@ const ChatPanelContent = observer(function ChatPanelContent({
     historyOnlyNonceRef.current = ++liveTurnReloadNonceRef.current
     setLiveTurnReloadNonce(liveTurnReloadNonceRef.current)
   }
-  const attachToLiveTurnIfAny = useCallback(async () => {
+  /**
+   * @returns true when a live turn was found and this window started attaching
+   * to it. Callers that got `false` know nothing is running *yet*.
+   */
+  const attachToLiveTurnIfAny = useCallback(async (): Promise<boolean> => {
     const sessionId = currentSessionIdRef.current
     if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) {
-      return
+      return false
     }
     lastLiveTurnCheckAtRef.current = Date.now()
-    const turnStatus = await probeLiveTurn(sessionId)
+    const turn = await probeLiveTurn(sessionId)
     if (
       currentSessionIdRef.current !== sessionId ||
       isStreamingRef.current ||
       isSendingMessageRef.current
     ) {
-      return
+      return false
     }
-    if (shouldAttachLiveStream(turnStatus)) reloadAndAttachLiveTurn()
+    // The turn Stop just cancelled can still read `active`: attaching to it
+    // would rebuild the reply the user stopped and hide the one that follows.
+    if (!isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)) return false
+    reloadAndAttachLiveTurn()
+    return true
   }, [probeLiveTurn, reloadAndAttachLiveTurn])
+
+  const attachToLiveTurnIfAnyRef = useRef(attachToLiveTurnIfAny)
+  attachToLiveTurnIfAnyRef.current = attachToLiveTurnIfAny
+
+  /**
+   * A paint from history was refused because the reply on screen is newer than
+   * anything the server has written (SHO-85). Reported once per paint, never on
+   * the happy path: without it the next "my reply vanished" report has nothing
+   * to look at.
+   */
+  const reportHistoryPaintKeptLiveTail = useCallback(
+    (context: string, reason: string, history: readonly any[]) => {
+      const historyTailRole = history[history.length - 1]?.role ?? "none"
+      console.warn(
+        `[ChatPanel] Kept the on-screen reply instead of painting history (${context}, reason=${reason}, ` +
+          `historyTailRole=${historyTailRole}, historyRows=${history.length})`,
+      )
+      try {
+        Sentry.captureMessage("chat_history_paint_dropped_reply", {
+          level: "warning",
+          tags: { context, reason },
+          extra: {
+            sessionId: currentSessionIdRef.current,
+            turnId: currentTurnIdRef.current,
+            historyTailRole,
+            historyRows: history.length,
+            screenRows: messagesRef.current.length,
+            attempt: historyPaintAttemptRef.current,
+          },
+        })
+      } catch (err) {
+        console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+      }
+    },
+    [],
+  )
+
+  /**
+   * Paint the transcript from what the message store holds, unless that would
+   * drop a reply the API has not written yet (SHO-85).
+   */
+  const paintLoadedHistory = useCallback(
+    (sessionId: string, options: { requireReply?: boolean; keepsLiveTail?: boolean } = {}) => {
+      if (!sessionMessages) return
+      const loaded = [...sessionMessages.all].sort(
+        (a: any, b: any) =>
+          messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
+      )
+      if (options.requireReply !== false) {
+        const promptIndex = pendingExternalPromptIndex(loaded)
+        if (promptIndex < 0 || !externalPromptHasResponse(loaded, promptIndex)) return
+      }
+
+      const aiMessages = loaded.map((message: any) => {
+        const next: any = {
+          id: message.id,
+          role: message.role as "user" | "assistant",
+          content: message.content ?? extractTextContent(message),
+          createdAt: message.createdAt,
+        }
+        if (message.parts) {
+          try {
+            next.parts = JSON.parse(message.parts)
+          } catch {
+            // Keep the text content when an older message has malformed parts.
+          }
+        }
+        return next
+      })
+      const cached = cachedMessagesRef.current
+      const paint = resolveHistoryPaint({
+        history: aiMessages,
+        current: cached ?? [],
+        keepsLiveTail:
+          options.keepsLiveTail ?? liveReplySessionRef.current === sessionId,
+      })
+      if (paint.keptLiveTail) {
+        historyPaintAttemptRef.current += 1
+        reportHistoryPaintKeptLiveTail("paintLoadedHistory", paint.reason, aiMessages)
+        return
+      }
+      // Paint the decision's transcript, not raw history: when history is ahead
+      // of the screen it carries the reply that only exists on screen (SHO-147).
+      const painted = paint.messages as any[]
+      const unchanged =
+        cached?.length === painted.length &&
+        cached?.[painted.length - 1]?.id === painted[painted.length - 1]?.id &&
+        cached?.[painted.length - 1]?.content === painted[painted.length - 1]?.content
+      if (!unchanged) {
+        cachedMessagesRef.current = painted
+        setMessages(painted)
+      }
+      // History accounts for the screen again: the reply it was missing has been
+      // written (or was never this panel's), so the next paint may go ahead
+      // without the live-tail guard (SHO-85).
+      if (!paint.carriedLiveReply) liveReplySessionRef.current = null
+      sessionMessageCache.set(sessionId, painted)
+    },
+    [sessionMessages, setMessages, reportHistoryPaintKeptLiveTail],
+  )
+  const paintLoadedHistoryRef = useRef(paintLoadedHistory)
+  paintLoadedHistoryRef.current = paintLoadedHistory
+
+  // Repaint the transcript from saved history. A turn this window did not run
+  // — a delegated task, a channel dispatch, a project call, or the wake a
+  // finished background task produces — has its reply written by the server,
+  // so reloading is the only way it lands here (SHO-31).
+  const reloadPersistedResponse = useCallback(
+    async (options: { requireReply?: boolean } = {}) => {
+      if (!sessionMessages || isStreamingRef.current) return
+      const sessionId = currentSessionIdRef.current
+      if (!sessionId) return
+      await sessionMessages.loadPage(
+        { sessionId, agent: "technical" },
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      if (isStreamingRef.current || currentSessionIdRef.current !== sessionId) return
+
+      paintLoadedHistory(sessionId, options)
+    },
+    [sessionMessages, paintLoadedHistory],
+  )
+
+  /**
+   * Catch up after the window was not in front (SHO-53). The wake watch only
+   * runs for an active panel, so a wake that ran while this chat sat behind
+   * another chat tab, another browser tab or another app left nothing armed
+   * here. By the time the person comes back the turn reads `completed`, which
+   * the attach path sends to "history is enough" — but this window has never
+   * seen that history. One row-wide read of the newest saved message decides
+   * it, so a chat that is already up to date still costs a single `/turn`
+   * probe and no transcript reload.
+   */
+  const repaintIfBehindPersistedTail = useCallback(async () => {
+    const sessionId = currentSessionIdRef.current
+    if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return
+    const tail = await probePersistedTail(sessionId)
+    if (currentSessionIdRef.current !== sessionId) return
+    if (
+      !persistedTailIsUnseen(tail, messagesRef.current, {
+        // A reply this window streamed is on screen under the AI SDK's id
+        // until a paint adopts the saved row (SHO-85/SHO-99).
+        streamedHere: liveReplySessionRef.current === sessionId,
+      })
+    )
+      return
+    // A repaint that requires the reply keeps SHO-31's rule: another window's
+    // ordinary turn is not this window's to overwrite. A tail that is still a
+    // user row is a prompt answered elsewhere (the queue's `[Task update]`
+    // wake), so paint it and let the late-turn probe fetch the reply.
+    await reloadPersistedResponse({ requireReply: !persistedTailAwaitsReply(tail) })
+  }, [probePersistedTail, reloadPersistedResponse])
 
   useEffect(() => {
     if (!isActive || !currentSessionId) return
+    let cancelled = false
     const recheck = () => {
       // Focus fires on every click back into the window.
       if (Date.now() - lastLiveTurnCheckAtRef.current < 3000) return
-      void attachToLiveTurnIfAny()
+      // Both halves are one-shot per focus event: a live turn is attached to,
+      // and a turn that finished elsewhere is repainted from saved history.
+      // Nothing here polls.
+      void attachToLiveTurnIfAny().then((attached) => {
+        if (attached || cancelled) return
+        void repaintIfBehindPersistedTail()
+      })
     }
     if (Platform.OS === "web") {
       if (typeof window === "undefined" || typeof document === "undefined") {
@@ -3755,6 +4318,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       window.addEventListener("focus", recheck)
       document.addEventListener("visibilitychange", onVisibility)
       return () => {
+        cancelled = true
         window.removeEventListener("focus", recheck)
         document.removeEventListener("visibilitychange", onVisibility)
       }
@@ -3762,28 +4326,133 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") recheck()
     })
-    return () => subscription.remove()
-  }, [isActive, currentSessionId, attachToLiveTurnIfAny])
+    return () => {
+      cancelled = true
+      subscription.remove()
+    }
+  }, [isActive, currentSessionId, attachToLiveTurnIfAny, repaintIfBehindPersistedTail])
 
-  const attachToLiveTurnIfAnyRef = useRef(attachToLiveTurnIfAny)
-  attachToLiveTurnIfAnyRef.current = attachToLiveTurnIfAny
   const wasTransportStreamingRef = useRef(false)
+  // A window that followed a turn must keep following: the next message in the
+  // server queue starts once the API has seen this turn end, which can be a
+  // dispatcher tick away, and a short queued turn can start *and* finish
+  // between two probes. Two fixed probes therefore miss it (SHO-29: window A
+  // showed none of the second queued reply), so keep looking for as long as the
+  // dispatcher could take, then refresh the history on the way out — a turn
+  // that ran while nothing here was attached still has to land on screen.
   useEffect(() => {
     const wasStreaming = wasTransportStreamingRef.current
     wasTransportStreamingRef.current = isTransportStreaming
     if (!wasStreaming || isTransportStreaming || !isActive) return
-    // The queue dispatcher starts the next message once the API has seen
-    // this turn end, a moment after this window has.
-    const timers = [1500, 4000].map((delay) =>
-      setTimeout(() => void attachToLiveTurnIfAnyRef.current(), delay),
-    )
-    return () => timers.forEach(clearTimeout)
+    let cancelled = false
+    void followNextTurn({
+      attachIfLive: attachToLiveTurnIfAnyRef.current,
+      refreshHistory: () => refreshHistoryRef.current(),
+      // A stream or a send starting is this window taking over again: the
+      // stream's own end re-arms the follow, and reloading history mid-send
+      // would drop the bubble just echoed.
+      isCancelled: () =>
+        cancelled || isStreamingRef.current || isSendingMessageRef.current,
+    })
+    return () => {
+      cancelled = true
+    }
   }, [isTransportStreaming, isActive])
 
-  // A delegated task or a channel mention starts its turn outside this panel.
-  // The first history-load probe can therefore see `unknown` while a slot or
-  // a cold runtime is still in the way. Keep probing so the live reply shows
-  // up here instead of only after the session is opened again.
+  // A `wait` ends with its turn at the latest.
+  useEffect(() => {
+    if (!isStreaming) setTaskWait(null)
+  }, [isStreaming])
+
+  // Background work that will wake this chat when it finishes. The wake turn
+  // is produced by the API's queue (a `[Task update]` row plus a turn this
+  // window never posted), and the task list here is the only local signal that
+  // such work exists — it is seeded once per session, i.e. before the turn
+  // that starts the task, so nothing would notice it otherwise.
+  // Only rows that are still running count: a finished row stays in the
+  // runtime's list for ten minutes (and in the dock for a few seconds), so it
+  // must not keep the "waiting for a wake" state alive.
+  const notifyTaskIds = runningProcesses
+    .filter((p) => p.notify && !p.stale && !isFinishedProcess(p))
+    .map((p) => p.id ?? p.runId)
+    .join("\0")
+  const backgroundWorkExpected = useMemo(
+    () => lastTurnStartedBackgroundWork(messages),
+    [messages],
+  )
+  const wakeWatchArmed = Boolean(notifyTaskIds) || backgroundWorkExpected
+
+  useEffect(() => {
+    if (!wakeWatchArmed || !isActive || !currentSessionId || isStreaming) return
+
+    let cancelled = false
+    // The wake row and its reply both arrive after this arm, so an older
+    // answered wake in history must not end the wait on the first tick.
+    const wakeCountAtArm = messagesRef.current.length
+    const settled = () =>
+      messagesRef.current.length > wakeCountAtArm &&
+      taskWakeHasResponse(messagesRef.current)
+
+    void watchForNotifyWake({
+      probeTasks: async () => {
+        const list = await fetchRunningProcesses()
+        // Unknown (runtime unreachable) is not the same as "nothing running":
+        // hold the wait instead of probing turns for a wake that cannot come.
+        if (!list) return null
+        return list
+          .filter((p) => p.notify && !p.stale && !isFinishedProcess(p))
+          .map((p) => p.id ?? p.runId)
+      },
+      probeTurn: () => {
+        const turnUrl = buildChatTurnUrl(
+          API_URL!,
+          projectId,
+          localAgentUrl,
+          currentSessionId,
+          chatWorkspaceId,
+        )
+        return probeChatTurnStatus({
+          url: turnUrl,
+          fetch: expoFetch,
+          headers: nativeHeaders ? nativeHeaders() : undefined,
+          credentials: Platform.OS === "web" ? "include" : undefined,
+        })
+      },
+      // Reload first: the live stream carries only the reply, and the wake's
+      // `[Task update]` row has to be in place for it to attach to.
+      attach: () => reloadAndAttachLiveTurn(),
+      reload: () => reloadPersistedResponse({ requireReply: false }),
+      isSettled: settled,
+      isCancelled: () => cancelled || isStreamingRef.current,
+      intervalMs: NOTIFY_WAKE_POLL_INTERVAL_MS,
+      maxWaitMs: NOTIFY_WAKE_MAX_WAIT_MS,
+      onError: (error) => {
+        if (!cancelled) console.warn("[ChatPanel] wake watch failed", error)
+      },
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    wakeWatchArmed,
+    isActive,
+    currentSessionId,
+    isStreaming,
+    projectId,
+    localAgentUrl,
+    chatWorkspaceId,
+    expoFetch,
+    nativeHeaders,
+    fetchRunningProcesses,
+    reloadAndAttachLiveTurn,
+    reloadPersistedResponse,
+  ])
+
+  // A delegated task, a channel mention or a `[Task update]` wake starts its
+  // turn outside this panel. The first history-load probe can therefore see
+  // `unknown` while a slot or a cold runtime is still in the way. Keep probing
+  // so the live reply shows up here instead of only after the session is
+  // opened again.
   const externalPromptIndex = useMemo(
     () => pendingExternalPromptIndex(messages),
     [messages],
@@ -3807,39 +4476,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     let cancelled = false
 
     const refreshPersistedResponse = async () => {
-      if (cancelled || isStreamingRef.current) return
-      await sessionMessages.loadPage(
-        { sessionId: currentSessionId, agent: "technical" },
-        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
-      )
-      if (cancelled || isStreamingRef.current) return
-
-      const loaded = [...sessionMessages.all].sort(
-        (a: any, b: any) =>
-          messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
-      )
-      const promptIndex = pendingExternalPromptIndex(loaded)
-      if (promptIndex < 0 || !externalPromptHasResponse(loaded, promptIndex)) return
-
-      const aiMessages = loaded.map((message: any) => {
-        const next: any = {
-          id: message.id,
-          role: message.role as "user" | "assistant",
-          content: message.content ?? extractTextContent(message),
-          createdAt: message.createdAt,
-        }
-        if (message.parts) {
-          try {
-            next.parts = JSON.parse(message.parts)
-          } catch {
-            // Keep the text content when an older message has malformed parts.
-          }
-        }
-        return next
-      })
-      cachedMessagesRef.current = aiMessages
-      sessionMessageCache.set(currentSessionId, aiMessages)
-      setMessages(aiMessages)
+      if (cancelled) return
+      await reloadPersistedResponse()
     }
 
     void pollForLateTurn({
@@ -3883,7 +4521,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     expoFetch,
     nativeHeaders,
     guardedAutoResumeStream,
-    setMessages,
+    reloadPersistedResponse,
   ])
 
   // Detect when the AI SDK stream ends but we never observed a
@@ -3942,7 +4580,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
     setEmptyResponseError(null)
     setConnectivityWait(null)
     setJustReconnected(false)
-    setStoppedMessages([...messagesRef.current])
+    // Stop is terminal: keep the turn's id (a send right after Stop must not
+    // queue behind it) and stamp the reply as finished so no later replay
+    // deletes it (see stopped-turn.ts).
+    stoppedTurnIdRef.current = currentTurnIdRef.current
+    const snapshot = markStoppedTail(
+      [...messagesRef.current],
+      stoppedTurnIdRef.current,
+    )
+    stoppedMessagesRef.current = snapshot
+    setStoppedMessages(snapshot)
+    // The live array carries the marker too, so a replay that starts before
+    // the snapshot is released keeps the stopped reply as well.
+    setMessages(snapshot)
     stop()
 
     const req = buildStopRequest({
@@ -3967,6 +4617,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     localAgentUrl,
     expoFetch,
     currentSessionId,
+    setMessages,
   ])
 
   // Keep the shared subagent-stop helper pointed at the current API/runtime
@@ -4225,6 +4876,48 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [messages, onActiveToolCall])
 
+  // Post-stream settle: when streaming ends, the AI SDK messages ARE the
+  // authoritative fresh state — `cachedMessagesRef.current` is already kept in
+  // lockstep with `messages` on every active-panel render (see the block near
+  // line 1593), and `sessionMessageCache` is updated there too. The only thing
+  // we need to do here is mark the cache fresh so Effect 1 (which re-runs
+  // because `isStreaming` is in its deps) takes the fast bail-out path and
+  // skips the network refetch + setMessages cycle that used to cascade a
+  // second re-render across every open tab. Zombie loading flags are also
+  // cleared defensively.
+  //
+  // This MUST be a layout effect declared above Effect 1 (SHO-85). Effects run
+  // in declaration order, so as a plain `useEffect` below it stamped the cache
+  // *after* Effect 1 had already read a stale stamp on the same commit — the
+  // one where `isStreaming` flips to false — and refetched. The assistant row
+  // is written server-side after the stream EOFs, so that fetch came back
+  // without the reply and painted it off the screen. Running first here makes
+  // Effect 1 see the fresh stamp and keep the turn that just finished.
+  useLayoutEffect(() => {
+    if (!isActive || !currentSessionId) {
+      wasStreamingRef.current = isStreaming
+      return
+    }
+    if (wasStreamingRef.current && !isStreaming) {
+      cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
+      if (isLoadingMessagesRef.current) {
+        isLoadingMessagesRef.current = false
+        setIsLoadingMessages(false)
+      }
+    }
+    wasStreamingRef.current = isStreaming
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, isStreaming, currentSessionId])
+
+  // Remember which session's reply this panel is watching live, so a history
+  // paint can tell "the server has not written this yet" from "this reply is
+  // stale" (SHO-85). Cleared when a paint adopts the server's row.
+  useEffect(() => {
+    if (isStreaming && currentSessionId) {
+      liveReplySessionRef.current = currentSessionId
+    }
+  }, [isStreaming, currentSessionId])
+
   // Effect 1: Load chat messages with stale-while-revalidate.
   // On tab activate: show cached messages instantly (if available), then fetch
   // fresh data from the API. Only update the display if the response differs.
@@ -4365,6 +5058,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
 
         const cached = cachedMessagesRef.current
+        // Never paint a transcript that is behind what is on screen: the reply
+        // this panel just streamed is written server-side after the stream
+        // EOFs, so history can legitimately be missing it (SHO-85).
+        const paint = resolveHistoryPaint({
+          history: aiMessages,
+          current: cached ?? [],
+          keepsLiveTail: liveReplySessionRef.current === loadSessionId,
+        })
+        if (paint.keptLiveTail) {
+          historyPaintAttemptRef.current += 1
+          reportHistoryPaintKeptLiveTail("effect-1", paint.reason, aiMessages)
+          return
+        }
+        // Paint the decision's transcript rather than raw history: when history
+        // is ahead of the screen it also carries the reply that only exists on
+        // screen, spliced in front of the prompt that started the next turn
+        // (SHO-147).
+        const painted = paint.messages as any[]
         const textLength = (m: any): number => {
           const fromParts = (m?.parts ?? []).reduce(
             (n: number, p: any) =>
@@ -4377,21 +5088,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // only grows, so compare its text too.
         const changed =
           !cached ||
-          cached.length !== aiMessages.length ||
+          cached.length !== painted.length ||
           cached[cached.length - 1]?.id !==
-            aiMessages[aiMessages.length - 1]?.id ||
+            painted[painted.length - 1]?.id ||
           textLength(cached[cached.length - 1]) !==
-            textLength(aiMessages[aiMessages.length - 1])
+            textLength(painted[painted.length - 1])
 
         if (changed) {
-          cachedMessagesRef.current = aiMessages
-          sessionMessageCache.set(loadSessionId, aiMessages)
-          setMessages(aiMessages)
+          cachedMessagesRef.current = painted
+          sessionMessageCache.set(loadSessionId, painted)
+          setMessages(painted)
+          historyPaintAttemptRef.current = 0
         } else {
           // Same shape as cache — still refresh the module cache entry so any
           // later in-flight mutations (status flips, etc.) don't drift.
-          sessionMessageCache.set(loadSessionId, aiMessages)
+          sessionMessageCache.set(loadSessionId, painted)
         }
+        // History accounts for the screen again: the reply it was missing has
+        // been written (or was never this panel's), so the next paint may go
+        // ahead without the live-tail guard (SHO-85).
+        if (!paint.carriedLiveReply) liveReplySessionRef.current = null
       })
       .catch((err: any) =>
         console.error("[ChatPanel] Failed to load messages:", err),
@@ -4432,20 +5148,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
           loadSessionId,
           chatWorkspaceId,
         )
-        void probeChatTurnStatus({
+        void probeChatTurn({
           url: turnUrl,
           fetch: expoFetch,
           headers: nativeHeaders ? nativeHeaders() : undefined,
           credentials: Platform.OS === "web" ? "include" : undefined,
           retryDelaysMs: [1000, 3000],
-        }).then((turnStatus) => {
+        }).then((turn) => {
           if (myGeneration !== loadGenerationRef.current) return
           lastLiveTurnCheckAtRef.current = Date.now()
           const expectedLive = liveTurnExpectedRef.current
           liveTurnExpectedRef.current = false
-          if (shouldAttachLiveStream(turnStatus)) {
+          // A turn this window stopped is not a turn to attach to, even while
+          // the runtime still reports it (stop reaches it a beat later).
+          const stopped = turn.turnId !== null && turn.turnId === stoppedTurnIdRef.current
+          if (isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)) {
             guardedAutoResumeStream("live-turn-probe")
-          } else if (expectedLive) {
+          } else if (expectedLive && !stopped) {
             setTimeout(
               () => reloadAndAttachLiveTurnRef.current({ settle: false }),
               750,
@@ -4496,31 +5215,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     lastSessionModel,
     onResolveSessionModel,
   ])
-
-  // Post-stream settle: when streaming ends, the AI SDK messages ARE the
-  // authoritative fresh state — `cachedMessagesRef.current` is already kept in
-  // lockstep with `messages` on every active-panel render (see the block near
-  // line 1593), and `sessionMessageCache` is updated there too. The only thing
-  // we need to do here is mark the cache fresh so Effect 1 (which re-runs
-  // because `isStreaming` is in its deps) takes the fast bail-out path and
-  // skips the network refetch + setMessages cycle that used to cascade a
-  // second re-render across every open tab. Zombie loading flags are also
-  // cleared defensively.
-  useEffect(() => {
-    if (!isActive || !currentSessionId) {
-      wasStreamingRef.current = isStreaming
-      return
-    }
-    if (wasStreamingRef.current && !isStreaming) {
-      cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
-      if (isLoadingMessagesRef.current) {
-        isLoadingMessagesRef.current = false
-        setIsLoadingMessages(false)
-      }
-    }
-    wasStreamingRef.current = isStreaming
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, isStreaming, currentSessionId])
 
   // Surface a system notification when a turn finishes streaming while the
   // user is not currently active in the app (desktop window unfocused,
@@ -4605,9 +5299,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return baseMessage
       })
 
-      cachedMessagesRef.current = aiMessages
-      sessionMessageCache.set(currentSessionId, aiMessages)
-      setMessages(aiMessages)
+      const paint = resolveHistoryPaint({
+        history: aiMessages,
+        current: cachedMessagesRef.current ?? [],
+        keepsLiveTail: liveReplySessionRef.current === currentSessionId,
+      })
+      if (paint.keptLiveTail) {
+        historyPaintAttemptRef.current += 1
+        reportHistoryPaintKeptLiveTail("load-older", paint.reason, aiMessages)
+        // Nothing was painted, so the scroll handler must be able to ask again.
+        isLoadingOlderRef.current = false
+        return
+      }
+
+      cachedMessagesRef.current = paint.messages as any[]
+      sessionMessageCache.set(currentSessionId, paint.messages as any[])
+      setMessages(paint.messages as any[])
+      if (!paint.carriedLiveReply) liveReplySessionRef.current = null
+      historyPaintAttemptRef.current = 0
       // NOTE: isLoadingOlderRef is intentionally NOT reset here.
       // It is reset in onContentSizeChange after scroll position is adjusted,
       // so the onScroll handler doesn't immediately re-trigger loading.
@@ -4615,7 +5324,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       console.error("[ChatPanel] Failed to load older messages:", err)
       isLoadingOlderRef.current = false
     }
-  }, [currentSessionId, sessionMessages, setMessages])
+  }, [
+    currentSessionId,
+    sessionMessages,
+    setMessages,
+    reportHistoryPaintKeptLiveTail,
+  ])
 
   /** Native: load older only when scroll settles near the top — not on every onScroll frame. */
   const tryLoadOlderNearTopOnScrollEnd = useCallback(
@@ -4727,16 +5441,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const planStreamRef = useRef(planStream)
   planStreamRef.current = planStream
 
-  useEffect(() => {
-    if (!isActivePanel) return
-    const next = isStreaming && interactionMode === "plan"
-    const ctx = planStreamRef.current
-    if (!ctx) return
-    if (ctx.isPlanStreaming === next) return
-    ctx.setIsPlanStreaming(next)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStreaming, interactionMode, isActivePanel])
-
   // Track the last plan we published so we can return the SAME object
   // identity when nothing about the create_plan args has changed. Without
   // this, every streaming token rebuilt a fresh `normalizePlanData({...})`
@@ -4809,6 +5513,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
     lastDerivedPlanRef.current = { sig, plan: fresh }
     return fresh
   }, [isStreaming, messages])
+
+  // A plan is "streaming" while a `create_plan` call is still arriving — that
+  // is what lights the Plans panel's streaming row.
+  useEffect(() => {
+    if (!isActivePanel) return
+    const next = derivedStreamingPlan != null
+    const ctx = planStreamRef.current
+    if (!ctx) return
+    if (ctx.isPlanStreaming === next) return
+    ctx.setIsPlanStreaming(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedStreamingPlan, isActivePanel])
 
   // Throttle the publish to the shared `PlanStreamContext` so a long
   // `create_plan` stream doesn't notify every `usePlanStream()` consumer
@@ -5016,7 +5732,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const match = dataUrl.match(/^data:([^;]+);/)
     return match?.[1] || "application/octet-stream"
   }, [])
-
   // Internal function that actually sends a message (used by queue processor)
   // Isolated "actually put it on the wire" step, factored out of
   // `sendMessageInternal` so a network-class failure can be queued for
@@ -5110,7 +5825,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
-      setStoppedMessages(null)
+      // Hand the transcript back with the stopped reply still in it: the new
+      // message is appended after it, not painted over it.
+      releaseStopSnapshot()
+      stoppedTurnIdRef.current = null
       setEmptyResponseError(null)
       setErrorDismissed(false)
       userInitiatedStopRef.current = false
@@ -5134,32 +5852,57 @@ const ChatPanelContent = observer(function ChatPanelContent({
         isUserAtBottomRef.current = true
       }
       setIsFollowing(true)
-      lastUserInputRef.current = { content: trimmedContent, files: fileArray }
-      setOptimisticUserInput({
-        sessionId: currentSessionId,
-        content: trimmedContent,
-        files: fileArray,
-      })
+      showOptimisticEcho(trimmedContent, fileArray)
+
+      // The turn is in flight from here: the upload below is the first thing
+      // that can take real time on a big attachment, and the composer must
+      // already be locked and the transcript already painting the bubble
+      // (QA round 1 on SHO-213: it looked frozen for the whole upload).
+      isSendingMessageRef.current = true
+
+      // Seed the progress row before the first byte moves: a transport that
+      // reports no intermediate events (a small file, a fast link) would
+      // otherwise leave the composer looking idle for the whole upload.
+      const uploading = fileArray.find(
+        (file) => !file.savedPath && shouldUploadAttachmentFirst(file),
+      )
+      if (uploading) setUploadStatus({ name: uploading.name, fraction: 0 })
+
+      // Attachments go up BEFORE the turn. The bytes are PUT to the runtime's
+      // streaming route and the message carries a reference part (`savedPath`),
+      // so a large archive never becomes a base64 JSON body — that inflation,
+      // repeated through the client, the API and the runtime, is what made big
+      // attachments time out (SHO-213). Small images stay inline: vision needs
+      // their bytes on this very request.
+      let outgoingParts: OutgoingFilePart[] = []
+      try {
+        outgoingParts = await prepareOutgoingFiles(fileArray, {
+          agentUrl: agentBaseUrl,
+          headers: nativeHeaders ? nativeHeaders() : undefined,
+          fetchImpl: expoFetch ?? undefined,
+          onUploadProgress: (name, fraction) => setUploadStatus({ name, fraction }),
+        })
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Could not upload the attachment."
+        console.warn("[ChatPanel] Attachment upload failed:", err)
+        isSendingMessageRef.current = false
+        setEmptyResponseError(message)
+        return
+      } finally {
+        setUploadStatus(null)
+      }
 
       const parts: Array<
         | { type: "text"; text: string }
-        | { type: "file"; mediaType: string; url: string; name?: string }
+        | OutgoingFilePart
       > = []
 
       if (trimmedContent) {
         parts.push({ type: "text", text: trimmedContent })
       }
 
-      fileArray.forEach((file) => {
-        parts.push({
-          type: "file",
-          mediaType: file.type || extractMediaType(file.dataUrl),
-          url: file.dataUrl,
-          ...(file.name ? { name: file.name } : {}),
-        })
-      })
-
-      isSendingMessageRef.current = true
+      parts.push(...outgoingParts)
 
       // Let EZ Mode know a new turn is starting. This is what
       // triggers the overlay to arm its heartbeat / activity buffer.
@@ -5202,6 +5945,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
         )
       }
 
+      // The chat lists keep their own rows (they are not MST collections), so
+      // the same bump has to reach them: this re-stamps just this row and
+      // re-sorts it to "now" without a list re-fetch.
+      chatSessionEvents.emit({
+        touchedSessionId: currentSessionId,
+        lastActiveAt: Date.now(),
+      })
+
       const messagePayload: {
         text: string
         files?: Array<{
@@ -5229,13 +5980,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
       }
 
-      if (fileArray.length > 0) {
-        messagePayload.files = fileArray.map((file) => ({
-          type: "file" as const,
-          mediaType: file.type || extractMediaType(file.dataUrl),
-          url: file.dataUrl,
-          ...(file.name ? { name: file.name } : {}),
-        }))
+      if (outgoingParts.length > 0) {
+        messagePayload.files = outgoingParts
       }
 
       try {
@@ -5267,7 +6013,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
           projectId,
           focusedProjectId,
           agentMode: perMsgModel || selectedModel,
-          interactionMode: interactionModeRef.current,
           dualPlan: dualPlanRef.current,
           clientTurnId,
           // Live canvas preview size (phone vs desktop). The runtime
@@ -5291,9 +6036,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           extra: extraBody,
         })
         console.log(
-          "[ChatPanel][send] bodyExtra — interactionMode:",
-          bodyExtra.interactionMode,
-          "agentMode:",
+          "[ChatPanel][send] bodyExtra — agentMode:",
           bodyExtra.agentMode,
           "hasConfirmedPlan:",
           !!bodyExtra.confirmedPlan,
@@ -5314,7 +6057,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       deliverMessage,
       featureId,
       phase,
-      extractMediaType,
+      agentBaseUrl,
+      nativeHeaders,
+      expoFetch,
       workspaceId,
       userId,
       projectId,
@@ -5327,11 +6072,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
       isPhoneViewport,
       windowWidth,
       maybeAutoNameSession,
+      releaseStopSnapshot,
+      showOptimisticEcho,
     ],
   )
 
-  // Register bridge endpoints so the EZ Mode overlay can send messages
-  // and toggle interaction mode on our behalf. The registrar is a no-op
+  // Register bridge endpoints so the EZ Mode overlay can send messages on our
+  // behalf. The registrar is a no-op
   // when no <ChatBridgeProvider> is mounted (e.g. tests), so it's safe to
   // call unconditionally.
   const bridgeSend = useCallback(
@@ -5340,12 +6087,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [sendMessageInternal],
   )
-  const bridgeSetMode = useCallback(
-    (mode: InteractionMode) => {
-      handleInteractionModeChange(mode)
-    },
-    [handleInteractionModeChange],
-  )
   const {
     emitTurnStart: bridgeEmitTurnStart,
     emitToolActivity: bridgeEmitToolActivity,
@@ -5353,7 +6094,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     setSubagentCards: bridgeSetSubagentCards,
   } = useChatBridgeRegistrar({
     send: bridgeSend,
-    setMode: bridgeSetMode,
   })
   useEffect(() => {
     emitTurnStartRef.current = bridgeEmitTurnStart
@@ -5496,10 +6236,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // above and `apps/desktop/src/main.ts`. No-op on mobile/web.
     const bridge = (
       window as unknown as {
-        shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void }
+        shogoDesktop?: {
+          onSystemResume?: (cb: () => void) => () => void
+          // The desktop app respawns its local API in-process after it is
+          // killed from userland (SHO-26); see `preload.ts`.
+          onLocalServerRestarted?: (cb: () => void) => () => void
+        }
       }
     ).shogoDesktop
     const unsubscribeResume = bridge?.onSystemResume?.(() => {
+      void tryDrain()
+    })
+    // Same recovery when the desktop app had to respawn its local API after a
+    // userland kill (SHO-26): requests failed while it was down, so probe and
+    // flush as soon as it is healthy again.
+    const unsubscribeLocalApiRestarted = bridge?.onLocalServerRestarted?.(() => {
       void tryDrain()
     })
     // Poll as a fallback for the remaining case neither event covers: a
@@ -5519,6 +6270,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         window.removeEventListener("online", onOnline)
       }
       unsubscribeResume?.()
+      unsubscribeLocalApiRestarted?.()
       clearInterval(interval)
     }
   }, [
@@ -5583,7 +6335,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useEffect(() => {
     const bridge = (
       window as unknown as {
-        shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void }
+        shogoDesktop?: {
+          onSystemResume?: (cb: () => void) => () => void
+          // The desktop app respawns its local API in-process after it is
+          // killed from userland (SHO-26); see `preload.ts`.
+          onLocalServerRestarted?: (cb: () => void) => () => void
+        }
       }
     ).shogoDesktop
     if (!bridge?.onSystemResume) return
@@ -5593,7 +6350,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
       )
       lastChatProgressAtRef.current = Date.now()
     })
-    return unsubscribe
+    // A respawned local API means the in-flight socket died with the old
+    // process; give the turn a fresh stall window instead of letting the
+    // watchdog trip on the gap (SHO-26).
+    const unsubscribeLocalApiRestarted = bridge.onLocalServerRestarted?.(() => {
+      console.log(
+        "[ChatPanel] Desktop local API restarted — resetting stall watchdog",
+      )
+      lastChatProgressAtRef.current = Date.now()
+    })
+    return () => {
+      unsubscribe()
+      unsubscribeLocalApiRestarted?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -5691,6 +6460,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const handleRemoveQueuedMessage = useCallback(
     (messageId: string) => {
+      const removed =
+        messageQueue.find((m) => m.id === messageId) ??
+        serverQueue.queuedMessages.find((m) => m.id === messageId)
+      if (removed) clearOptimisticEcho(removed.content)
       if (serverQueue.isServerQueued(messageId)) {
         void serverQueue.remove(messageId).catch((error) => {
           console.warn(
@@ -5702,7 +6475,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
       setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
     },
-    [serverQueue],
+    [clearOptimisticEcho, messageQueue, serverQueue],
   )
 
   const handleReorderQueuedMessage = useCallback(
@@ -5748,6 +6521,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         (m) => m.id === messageId,
       )
       if (serverTarget) {
+        clearOptimisticEcho(serverTarget.content)
         void serverQueue.remove(messageId).catch((error) => {
           console.warn(
             "[ChatPanel] Failed to edit server queued message:",
@@ -5768,14 +6542,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return queue.filter((m) => m.id !== messageId)
       })
       if (!target) return
+      clearOptimisticEcho(target.content)
       setRestoreDraftRequest({
         nonce: Date.now(),
         content: target.content,
         files: target.files,
       })
     },
-    [serverQueue],
+    [clearOptimisticEcho, serverQueue],
   )
+
+  /**
+   * Local queue rows the person clicked "Send now" on while a turn was
+   * streaming. The local queue is drained by this window, not the server: the
+   * row leaves `messageQueue` only when the drain takes it on the falling edge
+   * of the stop this click asks for, so the dock would keep showing a message
+   * the person has already sent. Cleared when the row leaves the queue, and on
+   * that falling edge — a row the drain did not take is still queued.
+   */
+  const [sentNowIds, setSentNowIds] = useState<Set<string>>(() => new Set())
 
   // "Send now" — interrupt the current streaming turn and immediately drain
   // the chosen queued message. Implemented as "promote to front + stop" so we
@@ -5807,6 +6592,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       })
       if (!promoted) return
       if (isStreaming) {
+        setSentNowIds((current) => {
+          if (current.has(messageId)) return current
+          const next = new Set(current)
+          next.add(messageId)
+          return next
+        })
         handleStop()
       } else {
         void processMessageQueue()
@@ -5815,9 +6606,57 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [isStreaming, handleStop, processMessageQueue, serverQueue],
   )
 
+  // A hidden local row is gone from the queue (the drain took it) or the turn
+  // came to rest without taking it (still queued, so it has to be visible).
+  useEffect(() => {
+    if (sentNowIds.size === 0) return
+    if (!isStreaming) {
+      setSentNowIds(new Set())
+      return
+    }
+    const queued = new Set(messageQueue.map((m) => m.id))
+    let stale = false
+    for (const id of sentNowIds) if (!queued.has(id)) stale = true
+    if (!stale) return
+    setSentNowIds((current) => {
+      const next = new Set(current)
+      for (const id of current) if (!queued.has(id)) next.delete(id)
+      return next
+    })
+  }, [isStreaming, messageQueue, sentNowIds])
+
+  /**
+   * The waiting chip's Resume: deliver the updates a paused session is holding.
+   * The server un-pauses the wake; this window only needs to refresh the queue.
+   */
+  const handleResumeTaskWakes = useCallback(
+    (messageId: string) => {
+      void serverQueue.resumeTaskWake(messageId).catch((error) => {
+        console.warn("[ChatPanel] Failed to resume waiting updates:", error)
+      })
+    },
+    [serverQueue],
+  )
+
+  // A team-chat message queued behind this session's turn is its own queue row:
+  // Send now and ✕ reach the agent-wake routes, never the session's own queue.
+  // The promise goes back to the row so a refusal (409 not_pending, 403 viewer)
+  // is shown where the person pressed, not just logged.
+  const handleSendAgentWakeNow = useCallback(
+    (wakeId: string) => serverQueue.sendWakeNow(wakeId),
+    [serverQueue],
+  )
+  const handleRemoveAgentWake = useCallback(
+    (wakeId: string) => serverQueue.removeWake(wakeId),
+    [serverQueue],
+  )
+
   const displayedQueue = useMemo(
-    () => [...serverQueue.queuedMessages, ...messageQueue],
-    [messageQueue, serverQueue.queuedMessages],
+    () =>
+      [...serverQueue.queuedMessages, ...messageQueue].filter(
+        (message) => !sentNowIds.has(message.id),
+      ),
+    [messageQueue, sentNowIds, serverQueue.queuedMessages],
   )
 
   const enqueueServerMessage = useCallback(
@@ -5854,7 +6693,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
         projectId,
         focusedProjectId,
         agentMode: perMsgModel || selectedModel,
-        interactionMode: interactionModeRef.current,
         dualPlan: dualPlanRef.current,
         viewer: canvasViewerPayload({
           isPhoneViewport,
@@ -5879,6 +6717,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
         references,
         body,
       })
+      // The queued turn is the server's to run: until it takes the row there
+      // is no user message in this session, so the message lives in the dock
+      // only and the caller drops the pre-send echo. When the server
+      // dispatches it, the hook hands over that turn's saved user message and
+      // it appears in the transcript with its reply. Hand back any stopped
+      // snapshot so that reply lands *below* the stop.
+      releaseStopSnapshot()
     },
     [
       currentSession,
@@ -5891,6 +6736,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       isPhoneViewport,
       phase,
       projectId,
+      releaseStopSnapshot,
       selectedModel,
       serverQueue,
       userId,
@@ -5922,8 +6768,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
       const trimmedContent = content.trim()
 
+      // iOS shows a one-time consent prompt before the message leaves the
+      // device; everywhere else this resolves on the next microtask, so the
+      // echo below still paints before any request goes out.
+      if (!(await ensureAiConsentForMessage())) return
+
+      // Paint the user's own bubble before anything is awaited or sent: the
+      // composer is already empty, and the live-turn probe below can take its
+      // full budget before `sendMessageInternal` runs.
+      showOptimisticEcho(trimmedContent, files)
+
       const queueMessage = async () => {
-        const queueLocally = () =>
+        // Anything that lands in `displayedQueue` (the dock) must not also sit
+        // in the transcript: a queued message is not a turn yet, and its bubble
+        // appears when the server dispatches it.
+        const queueLocally = () => {
+          clearOptimisticEcho(trimmedContent)
           setMessageQueue((queue) => [
             ...queue,
             {
@@ -5936,6 +6796,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               references,
             },
           ])
+        }
         if (localAgentUrl) {
           queueLocally()
           return
@@ -5947,6 +6808,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             perMsgModel,
             references,
           )
+          clearOptimisticEcho(trimmedContent)
         } catch (error) {
           console.warn(
             "[ChatPanel] Server queue unavailable; retaining a local queued message:",
@@ -5971,11 +6833,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // so queue the message behind the live turn and show that turn here.
       // Bounded: a cold runtime must not hold the message back. If the probe
       // gives up, the runtime still waits for any live turn before this one.
-      const turnStatus = await probeLiveTurn(currentSessionId, {
+      //
+      // The turn the user just stopped is not "busy": it can still read
+      // `active` for a moment, and queueing behind it is what attached the new
+      // reply to the old message (see stopped-turn.ts).
+      const turn = await probeLiveTurn(currentSessionId, {
         timeoutMs: 1500,
       })
       if (
-        shouldAttachLiveStream(turnStatus) &&
+        isLiveTurnOtherThan(turn, stoppedTurnIdRef.current) &&
         currentSessionIdRef.current === currentSessionId
       ) {
         await queueMessage()
@@ -5992,6 +6858,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       )
     },
     [
+      clearOptimisticEcho,
       enqueueServerMessage,
       isStreaming,
       localAgentUrl,
@@ -5999,6 +6866,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       currentSessionId,
       probeLiveTurn,
       reloadAndAttachLiveTurn,
+      showOptimisticEcho,
     ],
   )
 
@@ -6015,7 +6883,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [handleSendMessage],
   )
 
-  // Plan confirmation: switch to Agent mode and execute.
+  // Plan confirmation: execute the plan in this same chat.
   // Keep the PlanCard visible with confirmed state for a few seconds before dismissing.
   const confirmDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -6029,20 +6897,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setConfirmedPlan(planToBuild)
       pendingPlanRef.current = null
       setPendingPlan(null)
-      console.log(
-        "[ChatPanel][confirm-plan] BEFORE mode change — stateMode:",
-        interactionMode,
-        "refMode:",
-        interactionModeRef.current,
-        "selectedModel:",
-        selectedModel,
-      )
-      handleInteractionModeChange("agent")
-      console.log(
-        "[ChatPanel][confirm-plan] AFTER mode change — refMode:",
-        interactionModeRef.current,
-        "(state will update on next render)",
-      )
       handleSendMessage("Execute the confirmed plan.", undefined, modelId)
       if (confirmDismissTimerRef.current)
         clearTimeout(confirmDismissTimerRef.current)
@@ -6050,7 +6904,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setConfirmedPlan(null)
       }, 4000)
     },
-    [handleSendMessage, handleInteractionModeChange],
+    [handleSendMessage],
   )
 
   // Build from Plans panel: execute a saved plan with selected model
@@ -6062,14 +6916,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
     )
       return
     lastBuildNonceRef.current = buildPlanRequest.nonce
-    const { plan, modelId: requestedMode } = buildPlanRequest
+    const { plan, modelId } = buildPlanRequest
     const planToBuild = normalizePlanData(plan)
     confirmedPlanRef.current = planToBuild
     setConfirmedPlan(planToBuild)
     pendingPlanRef.current = null
     setPendingPlan(null)
-    handleInteractionModeChange("agent")
-    handleSendMessage("Execute the confirmed plan.", undefined, requestedMode)
+    handleSendMessage("Execute the confirmed plan.", undefined, modelId)
     if (confirmDismissTimerRef.current)
       clearTimeout(confirmDismissTimerRef.current)
     confirmDismissTimerRef.current = setTimeout(() => {
@@ -6078,7 +6931,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onBuildPlanConsumed?.(buildPlanRequest.nonce)
   }, [
     buildPlanRequest,
-    handleInteractionModeChange,
     handleSendMessage,
     onBuildPlanConsumed,
   ])
@@ -6224,6 +7076,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       dataUrl: p.url,
       name: p.name ?? p.filename ?? "file",
       type: p.mediaType ?? extractMediaType(p.url),
+      ...(typeof p.savedPath === "string" ? { savedPath: p.savedPath } : {}),
     }))
     const files: FileAttachment[] | undefined =
       cachedFiles && cachedFiles.length > 0
@@ -6558,6 +7411,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               dataUrl: p.url,
               name: p.name ?? p.filename ?? "file",
               type: p.mediaType ?? extractMediaType(p.url),
+              ...(typeof p.savedPath === "string" ? { savedPath: p.savedPath } : {}),
             }))
           : undefined
       if (!content && !files) return
@@ -6750,13 +7604,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // silently failed to render (only the "Image generated" placeholder
   // showed, never the actual picture — see workspace-chat.ts's matching
   // `/workspaces/:workspaceId/agent-proxy/*` route).
-  const resolvedAgentUrl =
-    localAgentUrl ||
-    (projectId
-      ? `${API_URL}/api/projects/${projectId}/agent-proxy`
-      : chatWorkspaceId
-        ? `${API_URL}/api/workspaces/${chatWorkspaceId}/agent-proxy`
-        : null)
+  const resolvedAgentUrl = agentBaseUrl
 
   // Generate a stakeholder summary for a plan that doesn't have one yet.
   // Mutates the local pending/streaming plan as soon as the summary comes
@@ -6907,7 +7755,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setPendingPermissionRequest(null)
       try {
         if (projectId) {
-          const http = createHttpClient()
+          const http = workspaceHttp()
           await api.sendPermissionResponse(http, projectId, response)
         }
       } catch (err) {
@@ -7046,7 +7894,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (pendingPlanRef.current) handleConfirmPlan(pendingPlanRef.current, modelId)
   }
   islandPlanFeedbackRef.current = (text) => {
-    handleInteractionModeChange("plan")
     handleSendMessage(text)
   }
   islandSendRef.current = (text, files) => handleSendMessage(text, files)
@@ -7060,12 +7907,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   // Register this chat with the desktop island. The registration is a no-op
   // on web/mobile, but on Electron it lets the overlay reuse the exact same
-  // send, permission and ask-user paths as the in-window composer.
+  // send, permission and ask-user paths as the in-window composer. Workspace
+  // agent chats have no project, so they register under the agent's id.
+  const islandProjectId =
+    projectId ?? (chatScope === "workspace" && workspaceId ? DESKTOP_ISLAND_WORKSPACE_AGENT_ID : undefined)
   useEffect(() => {
-    if (!projectId || !currentSessionId) return
+    if (!islandProjectId || !currentSessionId) return
     return registerDesktopIslandSession({
       sessionId: currentSessionId,
-      projectId,
+      projectId: islandProjectId,
       ...islandStateRef.current,
       sendMessage: (text, files) => islandSendRef.current(text, files),
       respondPermission: (requestId, decision, pattern) =>
@@ -7076,14 +7926,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
       buildPlan: (modelId) => islandBuildPlanRef.current(modelId),
       sendPlanFeedback: (text) => islandPlanFeedbackRef.current(text),
     })
-  }, [currentSessionId, projectId])
+  }, [currentSessionId, islandProjectId])
 
   // Streaming ticks and activity transitions update the existing
   // registration instead of re-registering the session.
   useEffect(() => {
-    if (!projectId || !currentSessionId) return
-    updateDesktopIslandSession(projectId, currentSessionId, islandState)
-  }, [currentSessionId, islandState, projectId])
+    if (!islandProjectId || !currentSessionId) return
+    updateDesktopIslandSession(islandProjectId, currentSessionId, islandState)
+  }, [currentSessionId, islandProjectId, islandState])
 
   // Stable session summary so a new object literal isn't allocated each
   // render even when the underlying session id/name haven't changed.
@@ -7129,6 +7979,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const openFile = useCallback(
     (path: string) => {
+      if (onOpenFilePath) {
+        const raw = normalizeWorkspaceMediaPath(path)
+        if (raw) onOpenFilePath(raw)
+        return
+      }
       const resolved = resolveChatFilePath(
         path,
         projectId ?? focusedProjectId ?? null,
@@ -7149,7 +8004,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         },
       } as any)
     },
-    [chatScope, chatSessionId, focusedProjectId, onOpenFile, projectId, router],
+    [chatScope, chatSessionId, focusedProjectId, onOpenFile, onOpenFilePath, projectId, router],
+  )
+  const fileExists = useChatFileIndex(
+    resolvedAgentUrl,
+    projectId ?? focusedProjectId ?? null,
+    isStreaming,
   )
 
   const contextValue = useMemo<ChatContextValue>(
@@ -7170,8 +8030,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
       confirmedPlan,
       openPlan: onOpenPlan,
       openFile,
+      fileExists,
       workspaceId: workspaceId ?? null,
       openProjectPane: onOpenProjectPane,
+      openTaskThread,
       generateSummary: handleGenerateSummary,
       selectedModel,
       isPro: hasAdvancedModelAccess,
@@ -7191,8 +8053,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
       confirmedPlan,
       onOpenPlan,
       openFile,
+      fileExists,
       workspaceId,
       onOpenProjectPane,
+      openTaskThread,
       handleGenerateSummary,
       selectedModel,
       hasAdvancedModelAccess,
@@ -7370,68 +8234,62 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useDockPanel(connectivityDockDescriptor, chatDockStore)
 
   const usageLimitDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!usageLimitNotice || usageLimitNotice.sessionId !== currentSessionId) {
-      return null
-    }
-    const resetsAt = usageLimitNotice.resetsAt
-      ? new Date(usageLimitNotice.resetsAt)
-      : null
-    const resetLabel =
-      resetsAt && !Number.isNaN(resetsAt.getTime())
-        ? ` Your usage resets ${resetsAt.toLocaleString(undefined, {
-            weekday: "short",
-            hour: "numeric",
-            minute: "2-digit",
-          })}.`
-        : ""
+    if (!usageLimitView) return null
+    const blocked = usageLimitView.variant === "blocked"
     return {
       id: "usage-limit",
       kind: "status",
       order: 3,
-      title: "Usage limit reached",
+      title: usageLimitView.title,
       icon: AlertCircle,
       accent: "warning",
       defaultExpanded: true,
-      onDismiss: () => setUsageLimitNotice(null),
+      onDismiss: () =>
+        blocked ? setErrorDismissed(true) : setUsageLimitNotice(null),
       headerActions: (
         <View className="flex-row gap-1.5">
           <Pressable
             onPress={handleUpgradeClick}
             accessibilityRole="button"
-            accessibilityLabel="Upgrade plan"
+            accessibilityLabel={
+              usageLimitView.primaryLabel === "Upgrade"
+                ? "Upgrade plan"
+                : "Open billing settings"
+            }
             className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
           >
             <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
-              Upgrade
+              {usageLimitView.primaryLabel}
             </Text>
           </Pressable>
           <Pressable
             onPress={() => {
+              if (blocked) {
+                handleRetry()
+                return
+              }
               setUsageLimitNotice(null)
               void handleSendMessage("continue")
             }}
             accessibilityRole="button"
-            accessibilityLabel="Continue the task"
+            accessibilityLabel={
+              blocked ? "Retry sending the message" : "Continue the task"
+            }
             className="shrink-0 rounded-md bg-orange-500/15 px-2 py-1"
           >
             <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
-              Continue
+              {usageLimitView.secondaryLabel}
             </Text>
           </Pressable>
         </View>
       ),
       render: () => (
         <Text className="text-xs text-orange-700 dark:text-orange-300">
-          {`The agent stopped partway through; completed work is saved.${resetLabel} Tap Continue after it resets, or upgrade to keep going now.`}
+          {usageLimitView.body}
         </Text>
       ),
     }
-  }, [
-    usageLimitNotice,
-    currentSessionId,
-    handleUpgradeClick,
-    handleSendMessage,
-  ])
+  }, [usageLimitView, handleUpgradeClick, handleSendMessage, handleRetry])
   useDockPanel(usageLimitDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
@@ -7529,6 +8387,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useDockPanel(toolErrorDockDescriptor, chatDockStore)
 
   const errorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (usageLimitView?.variant === "blocked") return null
     if (!(
       ((error || emptyResponseError) && !errorDismissed) ||
       streamAutoRecovering
@@ -7672,6 +8531,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     errorBannerNeedsReadMore,
     handleRetry,
     clearActiveInstance,
+    usageLimitView,
   ])
   useDockPanel(errorDockDescriptor, chatDockStore)
 
@@ -7724,6 +8584,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
             killingProcesses={killingProcesses}
             subagents={activeSubagentsList}
             recentTools={recentToolsList}
+            waiting={taskWait}
+            agentIdle={!isStreaming}
+            loadOutput={loadTaskOutput}
+            onOpenTask={(proc) =>
+              void openTaskThread(proc.id ?? proc.runId, {
+                title: proc.title ?? proc.command,
+                source: proc.source,
+                status: proc.status,
+                outputFile: proc.outputFile,
+                link: proc.link,
+              })
+            }
           />
           <BrowserDockPanel />
           <WorktreeDockPanel
@@ -8027,21 +8899,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   <ExecutionBadge />
                   <ChatInput
                     onSubmit={handleInputSubmit}
-                    disabled={!currentSessionId || !!readOnlyReason}
+                    uploadStatus={uploadStatus}
+                    disabled={!currentSessionId || !!readOnlyReason || machineView.composeDisabled}
                     placeholder={
-                      readOnlyReason
-                        ? readOnlyReason
+                      readOnlyReason ?? machineStop
+                        ? (readOnlyReason ?? machineStop)!
                         : !featureId
                         ? "Message"
                         : hasPendingQuestion
                           ? questionPresentation === "sheet"
                             ? "Respond to the question, or type a message..."
                             : "Respond to the question below, or type a message..."
-                          : interactionMode === "plan"
-                            ? "Describe what you want to plan..."
-                            : interactionMode === "ask"
-                              ? "Ask a question..."
-                              : "Ask Shogo..."
+                          : "Ask Shogo..."
                     }
                     isStreaming={isStreaming}
                     onStop={handleStop}
@@ -8054,10 +8923,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onReorderQueuedMessage={handleReorderQueuedMessage}
                     onEditQueuedMessage={handleEditQueuedMessage}
                     onSendQueuedMessageNow={handleSendQueuedMessageNow}
-                    interactionMode={interactionMode}
-                    onInteractionModeChange={handleInteractionModeChange}
-                    dualPlan={dualPlan}
-                    onDualPlanChange={handleDualPlanChange}
+                    onSendAgentWakeNow={handleSendAgentWakeNow}
+                    onRemoveAgentWake={handleRemoveAgentWake}
+                    onResumeTaskWakes={handleResumeTaskWakes}
                     contextUsage={contextUsage}
                     contextBreakdown={contextBreakdown}
                     quickActions={quickActions}
@@ -8070,7 +8938,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     projectId={projectId}
                     projects={projectMentionOptions}
                     chatSessionId={currentSessionId}
+                    chatWorkspaceId={chatWorkspaceId}
                     workspaceHistorySearch={workspaceHistorySearch}
+                    chatMentionables={chatMentionables}
                     ideMode={ideMode}
                     ideContext={ideBridge.context}
                     ideFileSearch={ideBridge.listFiles}

@@ -30,6 +30,7 @@ mock.module('../../../lib/team-chat-api', () => ({
       buddyLook: null,
       canEdit,
       role: null,
+      model: { id: 'auto', label: 'Auto' },
       owner: null,
       channels: [],
     }),

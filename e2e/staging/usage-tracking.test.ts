@@ -38,6 +38,7 @@ interface WorkspacePlan {
   planId: string
   paidTier?: boolean
   usageWindows?: { fiveHour: UsageWindowView; weekly: UsageWindowView }
+  promoCredit?: { availableUsd: number; grantedUsd: number; expiresAt: string | null }
 }
 
 /** Opens /billing and returns the workspace-plan payload the page loaded. */
@@ -78,6 +79,10 @@ test.describe("Usage Tracking", () => {
     expect(plan.planId).toBe("pro")
     expect(plan.usageWindows).toBeTruthy()
     baselineFiveHourUsd = plan.usageWindows!.fiveHour.usedUsd
+    // Signup credit is part of the billing payload (it may be fully spent
+    // or absent on a Pro-bootstrapped workspace, so only the shape is checked).
+    expect(plan.promoCredit).toBeDefined()
+    expect(typeof plan.promoCredit!.availableUsd).toBe("number")
   })
 
   test("Pro windows are capped (not uncapped/enterprise) with positive limits", async () => {

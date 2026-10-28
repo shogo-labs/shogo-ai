@@ -261,13 +261,13 @@ mock.module('@shogo/model-catalog', () => ({
   getModelEntry: (id: string) => ({ id }),
   resolveAgentModeDefault: () => 'claude-sonnet-4-6',
   MODEL_DOLLAR_COSTS: {
-    'claude-haiku-4-5': { inputPerMillion: 1, outputPerMillion: 5 },
-    'claude-sonnet-4-6': { inputPerMillion: 3, outputPerMillion: 15 },
-    'claude-opus-4-7': { inputPerMillion: 15, outputPerMillion: 75 },
-    'gpt-5.4-nano': { inputPerMillion: 0.1, outputPerMillion: 0.4 },
-    haiku: { inputPerMillion: 1, outputPerMillion: 5 },
-    sonnet: { inputPerMillion: 3, outputPerMillion: 15 },
-    opus: { inputPerMillion: 15, outputPerMillion: 75 },
+    'claude-haiku-4-5': { inputPerMillion: 1, outputPerMillion: 5, cachedInputPerMillion: 0.1, cacheWritePerMillion: 1.25 },
+    'claude-sonnet-4-6': { inputPerMillion: 3, outputPerMillion: 15, cachedInputPerMillion: 0.3, cacheWritePerMillion: 3.75 },
+    'claude-opus-4-7': { inputPerMillion: 15, outputPerMillion: 75, cachedInputPerMillion: 1.5, cacheWritePerMillion: 18.75 },
+    'gpt-5.4-nano': { inputPerMillion: 0.1, outputPerMillion: 0.4, cachedInputPerMillion: 0.01, cacheWritePerMillion: 0 },
+    haiku: { inputPerMillion: 1, outputPerMillion: 5, cachedInputPerMillion: 0.1, cacheWritePerMillion: 1.25 },
+    sonnet: { inputPerMillion: 3, outputPerMillion: 15, cachedInputPerMillion: 0.3, cacheWritePerMillion: 3.75 },
+    opus: { inputPerMillion: 15, outputPerMillion: 75, cachedInputPerMillion: 1.5, cacheWritePerMillion: 18.75 },
   },
   calculateDollarCost: (model: string, inT: number, outT: number, cachedT: number) => {
     const cost = (inT * 3 + outT * 15 + cachedT * 1) / 1_000_000
@@ -369,6 +369,35 @@ describe('getAgentCostBreakdown', () => {
     expect(breakdown[0].successRate).toBe(95)
     expect(totals.uniqueAgents).toBe(1)
     expect(totals.totalCreditCost).toBe(5)
+  })
+
+  test('sums cache tokens and splits out the Shogo fee in cloud, but not on desktop', async () => {
+    store.groupByRows = [{
+      agentType: 'main-chat',
+      model: 'claude-sonnet-4-6',
+      _count: { _all: 2 },
+      _sum: { inputTokens: 100, outputTokens: 50, cachedInputTokens: 9000, cacheWriteTokens: 700, toolCalls: 4, creditCost: 10, wallTimeMs: 0 },
+    }]
+    store.flagsRows = []
+    const previousLocalMode = process.env.SHOGO_LOCAL_MODE
+    try {
+      delete process.env.SHOGO_LOCAL_MODE
+      const cloud = await cost.getAgentCostBreakdown('ws-1')
+      expect(cloud.breakdown[0].totalCacheWriteTokens).toBe(700)
+      expect(cloud.totals.totalCachedInputTokens).toBe(9000)
+      expect(cloud.totals.totalCacheWriteTokens).toBe(700)
+      expect(cloud.totals.totalCreditCost).toBe(10)
+      expect(cloud.totals.shogoFeeUsd).toBeCloseTo(2, 6)
+      expect(cloud.totals.totalWithFeeUsd).toBeCloseTo(12, 6)
+
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      const desktop = await cost.getAgentCostBreakdown('ws-1')
+      expect(desktop.totals.shogoFeeUsd).toBe(0)
+      expect(desktop.totals.totalWithFeeUsd).toBe(10)
+    } finally {
+      if (previousLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = previousLocalMode
+    }
   })
 
   test('sorts breakdown by totalCreditCost descending', async () => {
@@ -710,6 +739,28 @@ describe('recordAgentCostMetric', () => {
     expect(store.metricInserts[0].creditCost).toBeGreaterThan(0)
   })
 
+  test('server recompute prices cache reads and cache writes at their own rates', async () => {
+    await cost.recordAgentCostMetric({
+      workspaceId: 'ws-1', agentType: 'reviewer', model: 'claude-haiku-4-5',
+      inputTokens: 1_000_000, outputTokens: 1_000_000,
+      cachedInputTokens: 1_000_000, cacheWriteTokens: 1_000_000,
+      toolCalls: 0, creditCost: 0, wallTimeMs: 100, success: true,
+    })
+    // haiku stub: input 1 + output 5 + cache read 0.1 + cache write 1.25
+    expect(store.metricInserts[0].creditCost).toBeCloseTo(7.35, 6)
+    expect(store.metricInserts[0].cachedInputTokens).toBe(1_000_000)
+    expect(store.metricInserts[0].cacheWriteTokens).toBe(1_000_000)
+  })
+
+  test('server recompute runs for a cache-only call', async () => {
+    await cost.recordAgentCostMetric({
+      workspaceId: 'ws-1', agentType: 'reviewer', model: 'claude-haiku-4-5',
+      inputTokens: 0, outputTokens: 0, cacheWriteTokens: 1_000_000,
+      toolCalls: 0, creditCost: 0, wallTimeMs: 100, success: true,
+    })
+    expect(store.metricInserts[0].creditCost).toBeCloseTo(1.25, 6)
+  })
+
   test('auto-attaches a run to an active experiment when the model matches', async () => {
     // `normalizeExperimentAgentType('reviewer')` rewrites to 'code-reviewer',
     // so the recorded metric's agentType must match the normalized form
@@ -750,7 +801,7 @@ describe('recordAgentCostMetric', () => {
     })
     // MODEL_DOLLAR_COSTS stub has both `haiku` and `claude-haiku-4-5` at the
     // same rate, so this mainly guards that the resolved id (not the raw
-    // alias) is what reaches `serverComputeCreditCost` / the inserted row.
+    // alias) is what reaches the server-side cost recompute / the inserted row.
     expect(store.metricInserts[0].model).toBe('claude-haiku-4-5')
     expect(store.metricInserts[0].creditCost).toBeGreaterThan(0)
   })

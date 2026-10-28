@@ -15,11 +15,14 @@ export interface ChatSessionType {
   contextType: ContextType
   contextId?: string
   workspaceId?: string
+  createdByUserId?: string
   phase?: string
   claudeCodeSessionId?: string
   cachedMessageCount: number
   contextUsageTokens: number
   contextWindowTokens: number
+  contextSummary?: string
+  contextSummaryThroughCount: number
   isPrimary: boolean
   isPinned: boolean
   isArchived: boolean
@@ -40,11 +43,14 @@ export interface ChatSessionCreateInput {
   contextType: ContextType
   contextId?: string
   workspaceId?: string
+  createdByUserId?: string
   phase?: string
   claudeCodeSessionId?: string
   cachedMessageCount?: number
   contextUsageTokens?: number
   contextWindowTokens?: number
+  contextSummary?: string
+  contextSummaryThroughCount?: number
   isPrimary?: boolean
   isPinned?: boolean
   isArchived?: boolean
@@ -63,11 +69,14 @@ export interface ChatSessionUpdateInput {
   contextType?: ContextType
   contextId?: string
   workspaceId?: string
+  createdByUserId?: string
   phase?: string
   claudeCodeSessionId?: string
   cachedMessageCount?: number
   contextUsageTokens?: number
   contextWindowTokens?: number
+  contextSummary?: string
+  contextSummaryThroughCount?: number
   isPrimary?: boolean
   isPinned?: boolean
   isArchived?: boolean

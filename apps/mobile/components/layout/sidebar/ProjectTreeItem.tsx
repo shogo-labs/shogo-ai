@@ -2,24 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  View,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
-} from "react-native";
+import { Platform, Pressable, Text, TextInput, View } from "react-native";
 import { useLocalSearchParams, usePathname, useRouter } from "expo-router";
 import { observer } from "mobx-react-lite";
 import {
   Archive,
   ArchiveRestore,
   Check,
-  ChevronDown,
   ChevronRight,
   Folder,
   Lock,
@@ -41,7 +30,6 @@ import { defaultTabForProject } from "../../../lib/project-preview-tab";
 import {
   fetchProjectChatSessions,
   PROJECT_CHAT_PAGE_SIZE,
-  projectChatLabel,
   visibleProjectChatItems,
   type ProjectChatListItem,
 } from "../../../lib/project-chat-sessions";
@@ -55,117 +43,11 @@ import {
   SidebarContextMenu,
   type SidebarMenuEntry,
 } from "../SidebarContextMenu";
-import { ChatTreeItem } from "./ChatTreeItem";
+import { ChatSessionList } from "./ChatSessionList";
+import { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
 import { NativeProjectActionsSheet } from "./NativeProjectActionsSheet";
 
 // ─── ProjectTreeItem (a project + its nested chats) ─────────
-
-const INITIAL_VISIBLE_CHATS = 5;
-const INLINE_CHAT_INCREMENT = 10;
-const MAX_INLINE_CHATS = 20;
-const ARCHIVED_CHAT_ROW_ID = "archived-chats" as const;
-
-type SidebarChatRow =
-  | { type: "chat"; id: string; session: any }
-  | { type: "archived-header"; id: typeof ARCHIVED_CHAT_ROW_ID }
-  | {
-      type: "footer";
-      id: string;
-      action: "show-more" | "show-less" | "see-all";
-      count: number;
-      scope: "active" | "archived";
-    };
-
-function createSidebarChatRows(
-  activeSessions: any[],
-  archivedSessions: any[],
-  archivedExpanded: boolean,
-  {
-    activeHasMore,
-    activeShownCount,
-    archivedHasMore,
-    archivedShownCount,
-    includeFooter,
-    hasMoreChats,
-    totalChats,
-  }: {
-    activeHasMore: boolean;
-    activeShownCount: number;
-    archivedHasMore: boolean;
-    archivedShownCount: number;
-    includeFooter: boolean;
-    hasMoreChats: boolean;
-    totalChats: number;
-  },
-): SidebarChatRow[] {
-  const rows: SidebarChatRow[] = activeSessions.map((session: any) => ({
-    type: "chat",
-    id: session.id,
-    session,
-  }));
-
-  if (includeFooter) {
-    if (activeHasMore) {
-      rows.push({
-        type: "footer",
-        id: "active-chats-footer",
-        action:
-          hasMoreChats || activeShownCount >= MAX_INLINE_CHATS
-            ? "see-all"
-            : "show-more",
-        count: Math.max(totalChats, activeSessions.length),
-        scope: "active",
-      });
-    } else if (activeShownCount > INITIAL_VISIBLE_CHATS) {
-      rows.push({
-        type: "footer",
-        id: "active-chats-footer",
-        action: "show-less",
-        count: Math.max(totalChats, activeSessions.length),
-        scope: "active",
-      });
-    }
-  }
-
-  if (archivedSessions.length > 0) {
-    rows.push({ type: "archived-header", id: ARCHIVED_CHAT_ROW_ID });
-  }
-
-  if (archivedExpanded) {
-    rows.push(
-      ...archivedSessions.map((session: any) => ({
-        type: "chat" as const,
-        id: session.id,
-        session,
-      })),
-    );
-
-    if (includeFooter) {
-      if (archivedHasMore) {
-        rows.push({
-          type: "footer",
-          id: "archived-chats-footer",
-          action:
-            hasMoreChats || archivedShownCount >= MAX_INLINE_CHATS
-              ? "see-all"
-              : "show-more",
-          count: Math.max(totalChats, archivedSessions.length),
-          scope: "archived",
-        });
-      } else if (archivedShownCount > INITIAL_VISIBLE_CHATS) {
-        rows.push({
-          type: "footer",
-          id: "archived-chats-footer",
-          action: "show-less",
-          count: Math.max(totalChats, archivedSessions.length),
-          scope: "archived",
-        });
-      }
-    }
-  }
-
-  return rows;
-}
 
 export const ProjectTreeItem = observer(function ProjectTreeItem({
   project,
@@ -214,13 +96,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   const [totalChats, setTotalChats] = useState(0);
   const [hasMoreChats, setHasMoreChats] = useState(false);
   const [loadingMoreChats, setLoadingMoreChats] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_CHATS);
-  const [archivedVisibleCount, setArchivedVisibleCount] = useState(
-    INITIAL_VISIBLE_CHATS,
-  );
   const seededRef = useRef(false);
-  // Collapsible "Archived" subsection (in-memory; defaults to collapsed).
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
   // Live streaming / new-activity state mirrored from the open project
   // workspace (the only one mounted) via the activity event bus.
   const [streamingIds, setStreamingIds] = useState<Set<string>>(new Set());
@@ -232,9 +108,9 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [nativeActionsOpen, setNativeActionsOpen] = useState(false);
   const suppressNextProjectPressRef = useRef(false);
-  // Delete confirmation, shared by this project and its chats.
+  // Delete confirmation for this project. Chat deletes go through the shared
+  // in-app dialog inside ChatSessionList.
   const [confirmDelete, setConfirmDelete] = useState<{
-    kind: "project" | "chat";
     id: string;
     label: string;
   } | null>(null);
@@ -298,32 +174,10 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     void loadChats();
   }, [loadChats]);
 
-  const handleChatScroll = useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (!hasMoreChats || loadingMoreChats) return;
-      const { contentOffset, contentSize, layoutMeasurement } =
-        event.nativeEvent;
-      const distanceFromBottom =
-        contentSize.height - (contentOffset.y + layoutMeasurement.height);
-      if (distanceFromBottom <= 24)
-        void loadChats(sessions.length + PROJECT_CHAT_PAGE_SIZE);
-    },
-    [hasMoreChats, loadingMoreChats, loadChats, sessions.length],
-  );
-
-  const handleShowMore = useCallback((scope: "active" | "archived") => {
-    const setCount =
-      scope === "active" ? setVisibleCount : setArchivedVisibleCount;
-    setCount((current) =>
-      Math.min(current + INLINE_CHAT_INCREMENT, MAX_INLINE_CHATS),
-    );
-  }, []);
-
-  const handleShowLess = useCallback((scope: "active" | "archived") => {
-    const setCount =
-      scope === "active" ? setVisibleCount : setArchivedVisibleCount;
-    setCount(INITIAL_VISIBLE_CHATS);
-  }, []);
+  const handleLoadMoreChats = useCallback(() => {
+    if (!hasMoreChats || loadingMoreChats) return;
+    void loadChats(sessions.length + PROJECT_CHAT_PAGE_SIZE);
+  }, [hasMoreChats, loadingMoreChats, loadChats, sessions.length]);
 
   const toggleExpanded = useCallback(() => {
     setExpanded((prev) => {
@@ -378,13 +232,6 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     setExpanded(true);
     void loadChats();
   }, [collapsed, loadChats, mobileProjectDetail]);
-
-  useEffect(() => {
-    if (!collapsed) return;
-    setVisibleCount(INITIAL_VISIBLE_CHATS);
-    setArchivedVisibleCount(INITIAL_VISIBLE_CHATS);
-    setArchivedExpanded(false);
-  }, [collapsed]);
 
   const openProject = useCallback(() => {
     void api.prewarmProjectRuntime(http, project.id);
@@ -593,27 +440,21 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
 
   const requestProjectDelete = useCallback(() => {
     setConfirmDelete({
-      kind: "project",
       id: project.id,
       label: project.name || "Untitled",
     });
   }, [project.id, project.name]);
 
-  // Run the confirmed delete for either the project or one of its chats.
   const performDelete = useCallback(async () => {
     const target = confirmDelete;
     setConfirmDelete(null);
     if (!target) return;
-    if (target.kind === "chat") {
-      await handleDeleteChat(target.id);
-      return;
-    }
     try {
       await actions.deleteProject(target.id);
     } catch (e) {
       console.error("[AppSidebar] Failed to delete project:", e);
     }
-  }, [confirmDelete, handleDeleteChat, actions]);
+  }, [confirmDelete, actions]);
 
   if (collapsed) {
     return "";
@@ -656,222 +497,32 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       : []),
   ];
 
-  const renderChatList = () => {
-    const activeSessions = visibleProjectChatItems(sessions);
-    const archivedSessions = sessions.filter((s: any) => s.isArchived);
-    const activeSessionsForList = mobileProjectDetail
-      ? activeSessions
-      : activeSessions.slice(0, visibleCount);
-    if (!mobileProjectDetail && isActive && activeChatId) {
-      const activeSession = activeSessions.find(
-        (session) => session.id === activeChatId,
-      );
-      if (
-        activeSession &&
-        !activeSessionsForList.some((session) => session.id === activeChatId)
-      ) {
-        activeSessionsForList.push(activeSession);
-      }
-    }
-    const archivedSessionsForList = mobileProjectDetail
-      ? archivedSessions
-      : archivedExpanded
-        ? archivedSessions.slice(0, archivedVisibleCount)
-        : [];
-    const renderChat = (s: any, key = s.id) => (
-      <ChatTreeItem
-        key={key}
-        session={s}
-        active={isActive && s.id === activeChatId}
-        isStreaming={streamingIds.has(s.id)}
-        isCompleted={completedIds.has(s.id)}
-        onSelect={handleSelectChat}
-        onTogglePin={handleTogglePin}
-        onRename={handleRename}
-        onToggleArchive={handleToggleArchive}
-        onRequestDelete={(id) =>
-          setConfirmDelete({
-            kind: "chat",
-            id,
-            label: projectChatLabel(s),
-          })
-        }
-        mobileProjectDetail={mobileProjectDetail}
-        variant={workspacePane ? "workspacePane" : undefined}
-      />
-    );
-    const chatRows = createSidebarChatRows(
-      activeSessionsForList,
-      archivedSessionsForList,
-      archivedExpanded,
-      {
-        activeHasMore:
-          !mobileProjectDetail &&
-          (activeSessions.length > visibleCount || hasMoreChats),
-        activeShownCount: mobileProjectDetail
-          ? activeSessions.length
-          : visibleCount,
-        archivedHasMore:
-          !mobileProjectDetail &&
-          archivedExpanded &&
-          (archivedSessions.length > archivedVisibleCount || hasMoreChats),
-        archivedShownCount: mobileProjectDetail
-          ? archivedSessions.length
-          : archivedVisibleCount,
-        includeFooter: !mobileProjectDetail,
-        hasMoreChats,
-        totalChats: Math.max(totalChats, sessions.length),
-      },
-    );
-
-    const rowContent = chatRows.map((row) => {
-      if (row.type === "chat") return renderChat(row.session, row.id);
-      if (row.type === "footer") {
-        const label =
-          row.action === "show-more"
-            ? "Show more"
-            : row.action === "show-less"
-              ? "Show less"
-              : `See all (${row.count})`;
-        const accessibilityLabel =
-          row.action === "show-more"
-            ? `Show more chats for ${project.name || "Untitled"}`
-            : row.action === "show-less"
-              ? `Show fewer chats for ${project.name || "Untitled"}`
-              : `See all chats for ${project.name || "Untitled"}`;
-        return (
-          <Pressable
-            key={row.id}
-            onPress={() => {
-              if (row.action === "show-more") {
-                handleShowMore(row.scope);
-              } else if (row.action === "show-less") {
-                handleShowLess(row.scope);
-              } else {
-                handleBrowseChats();
-              }
-            }}
-            accessibilityRole="button"
-            role="button"
-            accessibilityLabel={accessibilityLabel}
-            className={cn(
-              "flex-row items-center gap-1 pt-2 pb-0.5 active:opacity-70",
-              mobileProjectDetail ? "pl-12 pr-1" : "px-1",
-            )}
-          >
-            {row.action === "see-all" ? (
-              <ChevronRight
-                size={10}
-                className="text-muted-foreground shrink-0"
-              />
-            ) : (
-              <ChevronDown
-                size={10}
-                className={cn(
-                  "text-muted-foreground shrink-0",
-                  row.action === "show-less" && "rotate-180",
-                )}
-              />
-            )}
-            <Text
-              className="text-[10px] uppercase tracking-wide text-muted-foreground"
-              numberOfLines={1}
-            >
-              {label}
-            </Text>
-          </Pressable>
-        );
-      }
-      return (
-        <Pressable
-          key={row.id}
-          onPress={() => setArchivedExpanded((v) => !v)}
-          accessibilityLabel={`${archivedExpanded ? "Collapse" : "Expand"} archived chats`}
-          accessibilityState={{ expanded: archivedExpanded }}
-          className={cn(
-            "flex-row items-center gap-1 pt-2 pb-0.5 active:opacity-70",
-            mobileProjectDetail ? "pl-12 pr-1" : "px-1",
-          )}
-        >
-          {archivedExpanded ? (
-            <ChevronDown
-              size={10}
-              className="text-muted-foreground shrink-0"
-            />
-          ) : (
-            <ChevronRight
-              size={10}
-              className="text-muted-foreground shrink-0"
-            />
-          )}
-          <Text
-            className="text-[10px] uppercase tracking-wide text-muted-foreground flex-1"
-            numberOfLines={1}
-          >
-            Archived
-          </Text>
-          <Text className="text-[10px] text-muted-foreground shrink-0">
-            {archivedSessions.length}
-          </Text>
-        </Pressable>
-      );
-    });
-    const loadingMoreContent = loadingMoreChats ? (
-      <View className="px-2 py-1.5">
-        <Text
-          className="text-xs text-muted-foreground opacity-70"
-          numberOfLines={1}
-        >
-          Loading more…
-        </Text>
-      </View>
-    ) : null;
-
-    return (
-      <View
-        className={
-          mobileProjectDetail
-            ? "flex-1"
-            : workspacePane
-              ? "mt-0.5"
-              : "ml-6 mt-0.5"
-        }
-      >
-        {sessions.length === 0 ? (
-          <View className={mobileProjectDetail ? "pl-12 pr-2 py-3" : "px-2 py-3"}>
-            <Text
-              className="text-sm text-muted-foreground opacity-70"
-              numberOfLines={1}
-            >
-              {loaded ? "No chats yet" : "Loading…"}
-            </Text>
-          </View>
-        ) : mobileProjectDetail ? (
-          <ScrollView
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
-            showsHorizontalScrollIndicator={false}
-            showsVerticalScrollIndicator
-            accessibilityLabel={`${project.name || "Untitled"} chats`}
-            style={{ flex: 1 }}
-            contentContainerStyle={{ paddingRight: 2 }}
-            onScroll={handleChatScroll}
-            scrollEventThrottle={64}
-          >
-            {rowContent}
-            {loadingMoreContent}
-          </ScrollView>
-        ) : (
-          <View
-            accessibilityLabel={`${project.name || "Untitled"} chats`}
-            role="list"
-          >
-            {rowContent}
-          </View>
-        )}
-      </View>
-    );
-  };
+  const renderChatList = () => (
+    <ChatSessionList
+      sessions={visibleProjectChatItems(sessions)}
+      archivedSessions={sessions.filter((s: any) => s.isArchived)}
+      activeChatId={isActive ? activeChatId : null}
+      revealActiveChat={isActive}
+      streamingIds={streamingIds}
+      completedIds={completedIds}
+      variant={workspacePane ? "workspacePane" : undefined}
+      mobileProjectDetail={mobileProjectDetail}
+      loaded={loaded}
+      emptyLabel="No chats yet"
+      hasMore={hasMoreChats}
+      loadingMore={loadingMoreChats}
+      onLoadMore={handleLoadMoreChats}
+      onSeeAll={handleBrowseChats}
+      onSelect={handleSelectChat}
+      onTogglePin={handleTogglePin}
+      onRename={handleRename}
+      onToggleArchive={handleToggleArchive}
+      onDeleteChat={handleDeleteChat}
+      totalCount={Math.max(totalChats, sessions.length)}
+      scopeLabel={project.name || "Untitled"}
+      listAccessibilityLabel={`${project.name || "Untitled"} chats`}
+    />
+  );
 
   return (
     <View className={mobileProjectDetail ? "flex-1" : undefined}>
@@ -1078,58 +729,13 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           onDelete={canDeleteProject ? requestProjectDelete : undefined}
         />
       )}
-      <Modal
+      <ConfirmDeleteDialog
         visible={!!confirmDelete}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setConfirmDelete(null)}
-      >
-        <Pressable
-          className="flex-1 bg-black/50 items-center justify-center"
-          onPress={() => setConfirmDelete(null)}
-        >
-          <Pressable
-            className="bg-card rounded-xl p-6 w-80 border border-border"
-            onPress={(e) => e.stopPropagation()}
-          >
-            <View className="flex-row items-center justify-between mb-1">
-              <Text className="text-base font-semibold text-foreground">
-                {confirmDelete?.kind === "project"
-                  ? "Delete project"
-                  : "Delete chat"}
-              </Text>
-              <Pressable
-                onPress={() => setConfirmDelete(null)}
-                className="p-1"
-                accessibilityLabel="Close"
-              >
-                <X size={20} className="text-muted-foreground" />
-              </Pressable>
-            </View>
-            <Text className="text-sm text-muted-foreground mb-4">
-              {confirmDelete?.kind === "project"
-                ? `Permanently delete "${confirmDelete?.label}" and all of its chats? This can't be undone.`
-                : `Permanently delete "${confirmDelete?.label}"? This can't be undone.`}
-            </Text>
-            <View className="flex-row gap-2 justify-end">
-              <Pressable
-                onPress={() => setConfirmDelete(null)}
-                className="px-4 py-2 rounded-md border border-border active:bg-muted"
-              >
-                <Text className="text-sm text-foreground">Cancel</Text>
-              </Pressable>
-              <Pressable
-                onPress={performDelete}
-                className="px-4 py-2 rounded-md bg-destructive active:bg-destructive/80"
-              >
-                <Text className="text-sm text-destructive-foreground">
-                  Delete
-                </Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        title="Delete project"
+        message={`Permanently delete "${confirmDelete?.label}" and all of its chats? This can't be undone.`}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={performDelete}
+      />
     </View>
   );
 });

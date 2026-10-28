@@ -13,131 +13,149 @@
  * 3. Anti-patterns: Agent avoids inline tokens and falls back correctly
  */
 
-import type { AgentEval } from './types'
-import type { ToolMockMap } from './tool-mocks'
+import type { AgentEval, EvalResult } from './types'
+import {
+  cliExecMock,
+  cmdRe,
+  dateDaysAgo,
+  daysAgo,
+  execResult,
+  type ExecMockPattern,
+  type ToolMockMap,
+  type ToolMockSpec,
+} from './tool-mocks'
 import {
   usedTool,
-  usedToolAnywhere,
   neverUsedTool,
   delegatedTo,
-  execCommandContains,
+  execCommands,
+  execInlinesSecret,
   wroteEnvFile,
+  wroteFileAnyRoute,
+  readWorkspaceFile,
   responseContains,
-  toolCallArgsContain,
   usedGhCli,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Shared mock fixtures for CLI routing evals
+//
+// The suite's premise is that gh/glab/aws/stripe/oci are pre-installed. The
+// exec mock simulates those binaries (including `which`/`--version` probes)
+// and answers their commands; everything else runs for real, so `.env`
+// writes and `cat .env` reads hit the actual workspace.
 // ---------------------------------------------------------------------------
 
-const CLI_EXEC_MOCK: ToolMockMap = {
-  exec: {
-    type: 'pattern',
-    patterns: [
-      {
-        match: { command: 'gh pr list' },
-        response: {
-          stdout: '#1\tFix login bug\tOPEN\t2026-03-18\n#2\tAdd dark mode\tOPEN\t2026-03-17\n#3\tUpdate deps\tMERGED\t2026-03-16',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'gh issue' },
-        response: {
-          stdout: '#10\tLogin page 500 error\topen\t2026-03-18\n#11\tMissing favicon\topen\t2026-03-17',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'gh run list' },
-        response: {
-          stdout: 'completed\tsuccess\tCI\tmain\t3m22s\t2026-03-18\ncompleted\tfailure\tCI\tfeature/dark-mode\t1m45s\t2026-03-17',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'glab mr list' },
-        response: {
-          stdout: '!1\tRefactor auth module\topen\t2026-03-18\n!2\tAdd CI pipeline\tmerged\t2026-03-16',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'glab pipeline' },
-        response: {
-          stdout: '#101\trunning\tmain\t2026-03-18T10:00:00Z\n#100\tsuccess\tmain\t2026-03-17T15:30:00Z',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'aws s3' },
-        response: {
-          stdout: '2026-03-01 my-bucket-prod\n2026-03-10 my-bucket-staging\n2026-02-15 backup-archive',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'aws ec2' },
-        response: {
-          stdout: 'i-0abc123\trunning\tt3.medium\tus-east-1a\nweb-server-prod\ni-0def456\tstopped\tt3.small\tus-east-1b\tdev-server',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'stripe customers' },
-        response: {
-          stdout: 'cus_ABC123\tjohn@example.com\tJohn Doe\ncus_DEF456\tjane@example.com\tJane Smith\ncus_GHI789\tbob@example.com\tBob Wilson',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'stripe' },
-        response: {
-          stdout: 'sub_123\tcus_ABC123\tactive\t$49.00/month\tPro Plan',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-      {
-        match: { command: 'oci' },
-        response: {
-          stdout: '{"data": [{"display-name": "web-server-1", "lifecycle-state": "RUNNING", "shape": "VM.Standard2.1"}]}',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
-    ],
-    default: { stdout: '', stderr: '', exitCode: 0 },
-  },
-  write_file: {
-    type: 'static',
-    response: { ok: true, bytesWritten: 64 },
-  },
-  read_file: {
-    type: 'static',
-    response: { content: '', lines: 0 },
-  },
-  search_integrations: {
-    type: 'static',
-    response: {
-      results: [
-        { name: 'github', description: 'GitHub managed integration (OAuth)', type: 'managed' },
-      ],
+const ok = (stdout: string) => execResult(stdout)
+
+const SIMULATED_CLIS = ['glab', 'aws', 'stripe', 'oci']
+
+const CLI_PATTERNS: ExecMockPattern[] = [
+  ...SIMULATED_CLIS.flatMap((bin): ExecMockPattern[] => [
+    { match: { command: `re:(?:^|[\\s;&|(])(which|command\\s+-v|type)\\s+${bin}\\b` }, response: ok(`/usr/local/bin/${bin}`) },
+    { match: { command: `re:(?:^|[\\s;&|(/])${bin}\\s+(--version|version)\\b` }, response: ok(`${bin} version (simulated)`) },
+  ]),
+  { match: { command: cmdRe('glab', 'mr') }, response: ok(`!1\tRefactor auth module\topen\t${dateDaysAgo(1)}\n!2\tAdd CI pipeline\tmerged\t${dateDaysAgo(3)}`) },
+  { match: { command: cmdRe('glab', 'ci') }, response: ok(`#101\trunning\tmain\t${daysAgo(0, 10)}\n#100\tsuccess\tmain\t${daysAgo(1, 15, 30)}`) },
+  { match: { command: cmdRe('glab', 'pipeline') }, response: ok(`#101\trunning\tmain\t${daysAgo(0, 10)}\n#100\tsuccess\tmain\t${daysAgo(1, 15, 30)}`) },
+  // REST fallback for GitLab (curl with the token read from the environment).
+  { match: { command: 're:\\bcurl\\b[\\s\\S]*gitlab\\.com/api/v4[\\s\\S]*merge_requests' }, response: ok(JSON.stringify([{ iid: 1, title: 'Refactor auth module', state: 'opened' }, { iid: 2, title: 'Add CI pipeline', state: 'merged' }])) },
+  { match: { command: 're:\\bcurl\\b[\\s\\S]*gitlab\\.com/api/v4[\\s\\S]*pipelines' }, response: ok(JSON.stringify([{ id: 101, status: 'running', ref: 'main' }, { id: 100, status: 'success', ref: 'main' }])) },
+  { match: { command: cmdRe('aws', 's3') }, response: ok(`${dateDaysAgo(45)} 10:00:00 my-bucket-prod\n${dateDaysAgo(36)} 10:00:00 my-bucket-staging\n${dateDaysAgo(60)} 10:00:00 backup-archive`) },
+  { match: { command: cmdRe('aws', 'ec2') }, response: ok('i-0abc123\trunning\tt3.medium\tus-east-1a\tweb-server-prod\ni-0def456\tstopped\tt3.small\tus-east-1b\tdev-server') },
+  { match: { command: cmdRe('aws', 'sts') }, response: ok(JSON.stringify({ UserId: 'AIDAEXAMPLE', Account: '123456789012', Arn: 'arn:aws:iam::123456789012:user/dev' })) },
+  { match: { command: cmdRe('stripe', 'customers') }, response: ok(JSON.stringify({ object: 'list', data: [{ id: 'cus_ABC123', email: 'john@example.com', name: 'John Doe' }, { id: 'cus_DEF456', email: 'jane@example.com', name: 'Jane Smith' }, { id: 'cus_GHI789', email: 'bob@example.com', name: 'Bob Wilson' }] }, null, 2)) },
+  { match: { command: cmdRe('stripe', 'subscriptions') }, response: ok(JSON.stringify({ id: 'sub_1QxYz123', object: 'subscription', customer: 'cus_ABC123', status: 'active', items: { data: [{ price: { id: 'price_monthly_49', unit_amount: 4900, recurring: { interval: 'month' } } }] } }, null, 2)) },
+  { match: { command: 're:\\bcurl\\b[\\s\\S]*api\\.stripe\\.com/v1/customers' }, response: ok(JSON.stringify({ object: 'list', data: [{ id: 'cus_ABC123', email: 'john@example.com', name: 'John Doe' }, { id: 'cus_DEF456', email: 'jane@example.com', name: 'Jane Smith' }, { id: 'cus_GHI789', email: 'bob@example.com', name: 'Bob Wilson' }] })) },
+  { match: { command: 're:\\bcurl\\b[\\s\\S]*api\\.stripe\\.com/v1/subscriptions' }, response: ok(JSON.stringify({ id: 'sub_1QxYz123', object: 'subscription', customer: 'cus_ABC123', status: 'active' })) },
+  { match: { command: cmdRe('oci') }, response: ok('{"data": [{"display-name": "web-server-1", "lifecycle-state": "RUNNING", "shape": "VM.Standard2.1"}]}') },
+]
+
+const GITHUB_CONNECT_MOCK: ToolMockSpec = {
+  type: 'pattern',
+  patterns: [
+    {
+      match: { token: 're:\\S' },
+      response: { ok: true, connected: 'octocat/web-app', as: 'octocat', branch: 'main', files: 'already up to date with the repository' },
     },
+  ],
+  default: {
+    ok: true,
+    authorizeUrl: 'https://github.com/apps/shogo-ai/installations/new?state=eval',
+    options: [
+      'Open the link to authorize the Shogo GitHub App for this repository.',
+      'Share a GitHub access token (fine-grained: Contents and Pull requests read/write; classic: repo scope). It is stored encrypted on the project connection.',
+    ],
   },
-  connect: {
-    type: 'static',
-    response: { ok: true, tools: ['GITHUB_LIST_REPOS', 'GITHUB_CREATE_ISSUE'] },
-  },
+}
+
+function cliRoutingMocks(gh: { authenticated: boolean }): ToolMockMap {
+  return {
+    exec: cliExecMock({ patterns: CLI_PATTERNS, gh }),
+    github_connect: GITHUB_CONNECT_MOCK,
+    search_integrations: {
+      type: 'static',
+      response: {
+        results: [
+          { name: 'github', description: 'GitHub managed integration (OAuth)', type: 'managed' },
+        ],
+      },
+    },
+    connect: {
+      type: 'static',
+      response: { ok: true, tools: ['GITHUB_LIST_REPOS', 'GITHUB_CREATE_ISSUE'] },
+    },
+  }
+}
+
+/** The user gave a token: `gh` works once it's configured. */
+const CLI_EXEC_MOCK = cliRoutingMocks({ authenticated: true })
+/** No token anywhere: `gh` reports it isn't logged in. */
+const CLI_EXEC_MOCK_NO_AUTH = cliRoutingMocks({ authenticated: false })
+
+/** Ran `words` as a command (not just mentioned the word somewhere). */
+function ranCommand(r: EvalResult, ...words: string[]): boolean {
+  const re = new RegExp(cmdRe(...words).slice(3), 'i')
+  return execCommands(r).some(c => re.test(c))
+}
+
+/**
+ * Saved the GitHub token through a sanctioned route: `.env` (GITHUB_TOKEN or
+ * GH_TOKEN) for the CLI, or `github_connect` with the token, which stores it
+ * encrypted on the project connection.
+ */
+function savedGithubToken(r: EvalResult, token: string): boolean {
+  return wroteEnvFile(r, 'GITHUB_TOKEN') || wroteEnvFile(r, 'GH_TOKEN') ||
+    r.toolCalls.some(t => t.name === 'github_connect' && String((t.input as Record<string, unknown>)?.token ?? '') === token)
+}
+
+/** Listed PRs via gh, or via the GitHub REST API with the token from the environment. */
+function listedPrs(r: EvalResult): boolean {
+  return ranCommand(r, 'gh', 'pr') || ranCommand(r, 'gh', 'search', 'prs') ||
+    execCommands(r).some(c => /\bcurl\b[\s\S]*api\.github\.com[\s\S]*\/(pulls|search\/issues)/.test(c))
+}
+
+function savedStripeKey(r: EvalResult): boolean {
+  return wroteEnvFile(r, 'STRIPE_API_KEY') || wroteEnvFile(r, 'STRIPE_SECRET_KEY')
+}
+
+function usedStripe(r: EvalResult, resource: string): boolean {
+  return ranCommand(r, 'stripe', resource) ||
+    execCommands(r).some(c => new RegExp(`\\bcurl\\b[\\s\\S]*api\\.stripe\\.com/v1/${resource}`).test(c))
+}
+
+/**
+ * Only a fingerprint is given, and OCI request signing needs the private key
+ * itself, so asking for it is a correct answer.
+ */
+function askedForOciPrivateKey(r: EvalResult): boolean {
+  const asked = r.toolCalls.some(t => t.name === 'ask_user' && /private key|\.pem/i.test(JSON.stringify(t.input)))
+  return asked || /private key|\.pem\b/i.test(r.responseText ?? '')
+}
+
+/** Used glab, or the GitLab REST API via curl. */
+function usedGitlab(r: EvalResult, resource: RegExp): boolean {
+  return execCommands(r).some(c => (/(^|[\s;&|(/])glab\s/.test(c) && resource.test(c)) || /\bcurl\b[\s\S]*gitlab\.com\/api\/v4/.test(c) && resource.test(c))
 }
 
 // ---------------------------------------------------------------------------
@@ -155,24 +173,24 @@ const ghTokenFlow: AgentEval = {
   validationCriteria: [
     {
       id: 'wrote-env-github-token',
-      description: 'Saved GITHUB_TOKEN to .env file',
+      description: 'Saved the token via .env (GITHUB_TOKEN/GH_TOKEN) or github_connect',
       points: 30,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'GITHUB_TOKEN'),
+      validate: (r) => savedGithubToken(r, 'ghp_ABC123xyz789'),
     },
     {
       id: 'used-gh-pr-list',
-      description: 'Ran gh pr list via exec',
+      description: 'Listed PRs via gh (or the GitHub API with the token from env)',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'gh pr list') || execCommandContains(r, 'gh pr '),
+      validate: (r) => listedPrs(r),
     },
     {
       id: 'no-inline-token',
       description: 'Did NOT inline token in exec command',
       points: 20,
       phase: 'execution',
-      validate: (r) => !execCommandContains(r, 'ghp_ABC123xyz789'),
+      validate: (r) => !execInlinesSecret(r, 'ghp_ABC123xyz789'),
     },
     {
       id: 'mentions-prs',
@@ -203,17 +221,17 @@ const glabTokenFlow: AgentEval = {
     },
     {
       id: 'used-glab-mr',
-      description: 'Ran glab mr list via exec',
+      description: 'Listed MRs via glab (or the GitLab API with the token from env)',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'glab mr') || execCommandContains(r, 'glab mr list'),
+      validate: (r) => usedGitlab(r, /\bmr\b|merge_requests/),
     },
     {
       id: 'no-inline-token',
       description: 'Did NOT inline token in exec command',
       points: 20,
       phase: 'execution',
-      validate: (r) => !execCommandContains(r, 'glpat-'),
+      validate: (r) => !execInlinesSecret(r, 'glpat-'),
     },
     {
       id: 'mentions-mrs',
@@ -254,14 +272,14 @@ const awsTokenFlow: AgentEval = {
       description: 'Ran aws s3 ls via exec',
       points: 25,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'aws s3'),
+      validate: (r) => ranCommand(r, 'aws', 's3'),
     },
     {
       id: 'no-inline-secret',
       description: 'Did NOT inline secret key in exec command',
       points: 15,
       phase: 'execution',
-      validate: (r) => !execCommandContains(r, 'wJalrXUtnFEMI'),
+      validate: (r) => !execInlinesSecret(r, 'wJalrXUtnFEMI'),
     },
     {
       id: 'mentions-buckets',
@@ -285,24 +303,24 @@ const stripeTokenFlow: AgentEval = {
   validationCriteria: [
     {
       id: 'wrote-env-stripe-key',
-      description: 'Saved STRIPE_API_KEY to .env',
+      description: 'Saved the Stripe key (STRIPE_API_KEY/STRIPE_SECRET_KEY) to .env',
       points: 30,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'STRIPE_API_KEY'),
+      validate: (r) => savedStripeKey(r),
     },
     {
       id: 'used-stripe-customers',
-      description: 'Ran stripe customers list via exec',
+      description: 'Listed customers via the stripe CLI (or the Stripe API with the key from env)',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'stripe customers') || execCommandContains(r, 'stripe '),
+      validate: (r) => usedStripe(r, 'customers'),
     },
     {
       id: 'no-inline-key',
       description: 'Did NOT inline Stripe key in exec command',
       points: 20,
       phase: 'execution',
-      validate: (r) => !execCommandContains(r, 'sk_test_'),
+      validate: (r) => !execInlinesSecret(r, 'sk_test_'),
     },
     {
       id: 'mentions-customers',
@@ -326,24 +344,26 @@ const ociTokenFlow: AgentEval = {
   validationCriteria: [
     {
       id: 'wrote-config-or-env',
-      description: 'Saved OCI config (to .env or ~/.oci/config) via write_file',
+      description: 'Saved OCI config (to .env or ~/.oci/config)',
       points: 30,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'write_file'),
+      validate: (r) => wroteFileAnyRoute(r, (p) => p === '.env' || p.endsWith('/.env') || /\.oci\/config$/.test(p)),
     },
     {
       id: 'used-oci-cli',
-      description: 'Ran oci command via exec',
+      description: 'Ran oci or called the OCI API, or asked for the private key signing needs',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'oci'),
+      validate: (r) => ranCommand(r, 'oci') ||
+        execCommands(r).some(c => /\bcurl\b[\s\S]*oraclecloud\.com/.test(c)) ||
+        askedForOciPrivateKey(r),
     },
     {
       id: 'mentions-instances',
-      description: 'Response mentions compute instances from output',
+      description: 'Response reports the instances from the output, or asks for the private key',
       points: 20,
       phase: 'execution',
-      validate: (r) => responseContains(r, 'web-server') || responseContains(r, 'instance') || responseContains(r, 'RUNNING'),
+      validate: (r) => responseContains(r, 'web-server') || responseContains(r, 'RUNNING') || askedForOciPrivateKey(r),
     },
     {
       id: 'reasonable-calls',
@@ -371,17 +391,17 @@ const ghPreferCli: AgentEval = {
   validationCriteria: [
     {
       id: 'used-write-file',
-      description: 'Saved token to .env',
+      description: 'Saved the token via .env or github_connect',
       points: 25,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'GITHUB_TOKEN'),
+      validate: (r) => savedGithubToken(r, 'ghp_PREFER_CLI_TEST_TOKEN_123'),
     },
     {
       id: 'used-gh-cli',
       description: 'Used gh CLI via exec instead of connect',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'gh issue') || execCommandContains(r, 'gh '),
+      validate: (r) => ranCommand(r, 'gh'),
     },
     {
       id: 'did-not-tool-install',
@@ -415,7 +435,7 @@ const ghIssuesWithoutToken: AgentEval = {
       description: 'Used gh issue via exec',
       points: 50,
       phase: 'execution',
-      validate: (r) => usedGhCli(r, 'issue') || execCommandContains(r, 'gh '),
+      validate: (r) => usedGhCli(r, 'issue') || ranCommand(r, 'gh'),
     },
     {
       id: 'did-not-tool-install',
@@ -446,17 +466,17 @@ const stripePreferCli: AgentEval = {
   validationCriteria: [
     {
       id: 'wrote-env-stripe',
-      description: 'Saved STRIPE_API_KEY to .env',
+      description: 'Saved the Stripe key (STRIPE_API_KEY/STRIPE_SECRET_KEY) to .env',
       points: 25,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'STRIPE_API_KEY'),
+      validate: (r) => savedStripeKey(r),
     },
     {
       id: 'used-stripe-cli',
-      description: 'Used stripe CLI via exec',
+      description: 'Created the subscription via the stripe CLI (or the Stripe API with the key from env)',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'stripe'),
+      validate: (r) => usedStripe(r, 'subscriptions'),
     },
     {
       id: 'did-not-tool-install',
@@ -494,10 +514,10 @@ const glabPreferCli: AgentEval = {
     },
     {
       id: 'used-glab-cli',
-      description: 'Used glab pipeline via exec',
+      description: 'Listed pipelines via glab (or the GitLab API with the token from env)',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'glab'),
+      validate: (r) => usedGitlab(r, /\bci\b|pipeline/),
     },
     {
       id: 'did-not-mcp-install',
@@ -538,14 +558,14 @@ const awsPreferCli: AgentEval = {
       description: 'Used aws s3 via exec',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'aws s3'),
+      validate: (r) => ranCommand(r, 'aws', 's3'),
     },
     {
       id: 'no-managed-install',
       description: 'Did NOT use connect',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'connect') && neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
+      validate: (r) => neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-buckets',
@@ -568,17 +588,18 @@ const ghActionsPreferCli: AgentEval = {
   validationCriteria: [
     {
       id: 'wrote-env-github',
-      description: 'Saved GITHUB_TOKEN to .env',
+      description: 'Saved the token via .env or github_connect',
       points: 25,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'GITHUB_TOKEN'),
+      validate: (r) => savedGithubToken(r, 'ghp_ACTIONS_TOKEN_789'),
     },
     {
       id: 'used-gh-run',
       description: 'Used gh run list (or similar) via exec',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'gh run') || execCommandContains(r, 'gh workflow'),
+      validate: (r) => ranCommand(r, 'gh', 'run') || ranCommand(r, 'gh', 'workflow') ||
+        execCommands(r).some(c => /\bcurl\b[\s\S]*api\.github\.com[\s\S]*actions\/runs/.test(c)),
     },
     {
       id: 'no-tool-install',
@@ -612,24 +633,24 @@ const antiPatternInlineToken: AgentEval = {
   validationCriteria: [
     {
       id: 'wrote-env-first',
-      description: 'Saved token to .env before running CLI',
+      description: 'Saved token to .env (or github_connect) before running CLI',
       points: 40,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'GITHUB_TOKEN'),
+      validate: (r) => savedGithubToken(r, 'ghp_INLINE_TEST_SECRET_456'),
     },
     {
       id: 'no-token-in-command',
       description: 'Token does NOT appear in any exec command string',
       points: 40,
       phase: 'execution',
-      validate: (r) => !execCommandContains(r, 'ghp_INLINE_TEST_SECRET_456'),
+      validate: (r) => !execInlinesSecret(r, 'ghp_INLINE_TEST_SECRET_456'),
     },
     {
       id: 'used-gh-cli',
       description: 'Still used gh CLI via exec',
       points: 20,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'gh '),
+      validate: (r) => ranCommand(r, 'gh'),
     },
   ],
   antiPatterns: ['Passed token as GITHUB_TOKEN=xxx gh ... in command string'],
@@ -646,17 +667,17 @@ const antiPatternSkipEnv: AgentEval = {
   validationCriteria: [
     {
       id: 'wrote-env',
-      description: 'Wrote token to .env (did not skip it)',
+      description: 'Saved the token to .env or github_connect (did not skip it)',
       points: 40,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'GITHUB_TOKEN'),
+      validate: (r) => savedGithubToken(r, 'ghp_SKIP_ENV_TEST_789'),
     },
     {
       id: 'used-cli-not-managed',
       description: 'Used gh CLI, not connect',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'gh ') && neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
+      validate: (r) => listedPrs(r) && neverUsedTool(r, 'connect') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-results',
@@ -671,36 +692,37 @@ const antiPatternSkipEnv: AgentEval = {
 
 const fallbackToManaged: AgentEval = {
   id: 'cli-fallback-no-token',
-  name: 'CLI Routing: Fall back to managed integration when no token given',
+  name: 'CLI Routing: No token — use gh if authed, else offer github_connect',
   category: 'tool-routing',
   level: 2,
   input: 'Can you connect to my GitHub and show me my repositories?',
   maxScore: 100,
-  toolMocks: CLI_EXEC_MOCK,
+  toolMocks: CLI_EXEC_MOCK_NO_AUTH,
   validationCriteria: [
     {
-      id: 'searched-for-integration',
-      description: 'Searched for GitHub integration via search_integrations',
+      id: 'tried-gh-or-github-connect',
+      description: 'Checked gh (CLI-first for GitHub) or started github_connect',
       points: 40,
       phase: 'intention',
-      validate: (r) => usedToolAnywhere(r, 'search_integrations') || usedToolAnywhere(r, 'connect'),
+      validate: (r) => ranCommand(r, 'gh') || usedTool(r, 'github_connect'),
     },
     {
       id: 'did-not-write-env',
-      description: 'Did NOT write to .env (no token was provided)',
-      points: 30,
+      description: 'Did NOT write a GitHub token to .env (none was provided)',
+      points: 20,
       phase: 'execution',
-      validate: (r) => !wroteEnvFile(r, 'GITHUB_TOKEN'),
+      validate: (r) => !wroteEnvFile(r, 'GITHUB_TOKEN') && !wroteEnvFile(r, 'GH_TOKEN'),
     },
     {
-      id: 'did-not-use-bare-gh',
-      description: 'Did NOT blindly run gh CLI without a token',
-      points: 30,
+      id: 'explained-auth-step',
+      description: 'Told the user how to authorize (GitHub App link or a token) instead of inventing repos',
+      points: 40,
       phase: 'execution',
-      validate: (r) => !execCommandContains(r, 'gh pr') && !execCommandContains(r, 'gh issue') && !execCommandContains(r, 'gh repo'),
+      validate: (r) => /authoriz|token|sign in|log in|login|link|install the/i.test(r.responseText) &&
+        !/octocat\/web-app/i.test(r.responseText),
     },
   ],
-  antiPatterns: ['Ran gh CLI without any token being configured'],
+  antiPatterns: ['Listed repositories that no tool returned', 'Wrote a placeholder token to .env'],
 }
 
 // ---------------------------------------------------------------------------
@@ -718,38 +740,38 @@ const multiTokenSingleTurn: AgentEval = {
   validationCriteria: [
     {
       id: 'wrote-github-token',
-      description: 'Saved GITHUB_TOKEN to .env',
+      description: 'Saved the GitHub token via .env or github_connect',
       points: 20,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'GITHUB_TOKEN'),
+      validate: (r) => savedGithubToken(r, 'ghp_MULTI_GH_TOKEN'),
     },
     {
       id: 'wrote-stripe-key',
-      description: 'Saved STRIPE_API_KEY to .env',
+      description: 'Saved the Stripe key to .env',
       points: 20,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'STRIPE_API_KEY'),
+      validate: (r) => savedStripeKey(r),
     },
     {
       id: 'used-gh-cli',
       description: 'Used gh CLI for PRs',
       points: 15,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'gh pr') || execCommandContains(r, 'gh '),
+      validate: (r) => listedPrs(r),
     },
     {
       id: 'used-stripe-cli',
-      description: 'Used stripe CLI for customers',
+      description: 'Used stripe CLI (or API with env key) for customers',
       points: 15,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'stripe'),
+      validate: (r) => usedStripe(r, 'customers'),
     },
     {
       id: 'no-inline-tokens',
       description: 'Neither token appears in exec commands',
       points: 15,
       phase: 'execution',
-      validate: (r) => !execCommandContains(r, 'ghp_MULTI_GH_TOKEN') && !execCommandContains(r, 'sk_test_MULTI_STRIPE_KEY'),
+      validate: (r) => !execInlinesSecret(r, 'ghp_MULTI_GH_TOKEN') && !execInlinesSecret(r, 'sk_test_MULTI_STRIPE_KEY'),
     },
     {
       id: 'no-managed-install',
@@ -774,7 +796,7 @@ const multiTokenMultiTurn: AgentEval = {
     },
     {
       role: 'assistant',
-      content: 'I\'ve saved your AWS credentials to `.env` and listed your S3 buckets:\n\n- my-bucket-prod (created 2026-03-01)\n- my-bucket-staging (created 2026-03-10)\n- backup-archive (created 2026-02-15)\n\nYou have 3 buckets total.',
+      content: `I've saved your AWS credentials to \`.env\` (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) and ran \`aws s3 ls\`:\n\n- my-bucket-prod (created ${dateDaysAgo(45)})\n- my-bucket-staging (created ${dateDaysAgo(36)})\n- backup-archive (created ${dateDaysAgo(60)})\n\nYou have 3 buckets total.`,
     },
   ],
   maxScore: 100,
@@ -785,23 +807,22 @@ const multiTokenMultiTurn: AgentEval = {
   validationCriteria: [
     {
       id: 'wrote-github-token',
-      description: 'Saved GITHUB_TOKEN to .env (appending, not overwriting AWS keys)',
+      description: 'Saved the GitHub token via .env (GITHUB_TOKEN/GH_TOKEN) or github_connect',
       points: 30,
       phase: 'intention',
-      validate: (r) => wroteEnvFile(r, 'GITHUB_TOKEN'),
+      validate: (r) => savedGithubToken(r, 'ghp_SECOND_TOKEN_XYZ'),
     },
     {
       id: 'preserved-aws-keys',
-      description: 'Read existing .env before writing (to preserve AWS keys)',
+      description: 'The AWS keys are still in .env after this turn (appended, not overwritten)',
       points: 20,
-      phase: 'intention',
+      phase: 'execution',
       validate: (r) => {
-        const writes = r.toolCalls.filter(t => t.name === 'write_file')
-        return writes.some(t => {
-          const input = t.input as Record<string, any>
-          const content = typeof input.content === 'string' ? input.content : ''
-          return content.includes('AWS_ACCESS_KEY_ID') && content.includes('GITHUB_TOKEN')
-        }) || usedTool(r, 'read_file')
+        const env = readWorkspaceFile(r, '.env')
+        if (env) return env.includes('AWS_ACCESS_KEY_ID') && env.includes('AWS_SECRET_ACCESS_KEY')
+        // No workspace snapshot: fall back to what was written.
+        return !r.toolCalls.some(t => t.name === 'write_file' && /(^|\/)\.env$/.test(String((t.input as Record<string, unknown>)?.path ?? '')) &&
+          !String((t.input as Record<string, unknown>)?.content ?? '').includes('AWS_ACCESS_KEY_ID'))
       },
     },
     {
@@ -809,7 +830,7 @@ const multiTokenMultiTurn: AgentEval = {
       description: 'Used gh CLI for PRs',
       points: 25,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'gh pr') || execCommandContains(r, 'gh '),
+      validate: (r) => listedPrs(r),
     },
     {
       id: 'mentions-prs',

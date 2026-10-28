@@ -9,7 +9,7 @@
  * `capabilities.subagentOrchestration` rating in the model catalog.
  *
  * Failure modes seen in real eval runs (e.g. MiMo-v2.5 via OpenRouter):
- *   - emits `agent_spawn` and stops (never calls `agent_result`)
+ *   - emits `agent_spawn` and stops (never waits for its result)
  *   - calls `agent_create` but never spawns the resulting agent
  *   - spawns parallel children but synthesizes only one
  *
@@ -23,6 +23,7 @@
  */
 
 import type { AgentEval, EvalResult, ToolCallRecord } from './types'
+import { resultCollectionCalls } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,8 +39,7 @@ function spawnCount(result: EvalResult): number {
 }
 
 function awaitedAtLeastOneResult(result: EvalResult): boolean {
-  return callsByName(result, 'agent_result').length > 0
-    || callsByName(result, 'task_result').length > 0
+  return resultCollectionCalls(result).length > 0
 }
 
 function spawnedAndAwaited(result: EvalResult): boolean {
@@ -195,9 +195,7 @@ export const SUBAGENT_SMOKE_EVALS: AgentEval[] = [
         description: 'Agent fetched at least two results',
         points: 4,
         phase: 'intention',
-        validate: (r) =>
-          (callsByName(r, 'agent_result').length
-            + callsByName(r, 'task_result').length) >= 2,
+        validate: (r) => resultCollectionCalls(r).length >= 2,
       },
       {
         id: 'correct-sum',

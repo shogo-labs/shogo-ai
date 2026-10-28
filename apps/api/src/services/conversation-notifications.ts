@@ -10,18 +10,20 @@
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { sendPushToUser } from '../lib/push-notifications'
-import { collectMentionIds, groupNames, markdownToPlainText, renderMentionsAsText } from './conversation-mentions'
+import { markdownToPlainText, renderMentionsAsText } from './conversation-mentions'
+import { loadMentionNames } from './conversation-agent-dispatcher'
 import { registerAfterPostHook } from './conversation-pipeline'
 import {
   agentDisplayName, onReactionAdded,
   type PostMessageResult, type ReactionAddedEvent,
 } from './conversation.service'
 import { getPresence } from './conversation-presence'
-import { getSettingsRows, isSilenced, parseKeywords } from './chat-settings'
+import { getSettingsRows, isSilenced, parseKeywords, type MessageSound, type MobilePushDelay } from './chat-settings'
 import { createInboxItems } from './chat-inbox'
 import { interrupts } from './conversation-message-kind'
 import { approvalPushFor } from './approval-push'
 import { liveActivityApprovalOpened } from './approval-live-activity'
+import { clearDelayedPushes, delayedPushCount, scheduleDelayedPush as queueDelayedPush } from './push-delay-queue'
 
 const db = prisma as any
 
@@ -29,6 +31,14 @@ export type NotificationReason = 'dm' | 'mention' | 'keyword' | 'broadcast' | 't
 export const PUSH_COALESCE_MS = 15_000
 const BODY_CHARS = 180
 const INBOX_REASONS = new Set<NotificationReason>(['mention', 'keyword', 'broadcast', 'thread'])
+
+/** How long a phone waits before a push, once the person has gone away. */
+const PUSH_DELAY_MS: Record<MobilePushDelay, number> = {
+  immediate: 0,
+  inactive: 0,
+  inactive_5m: 5 * 60_000,
+  inactive_10m: 10 * 60_000,
+}
 
 type Sender = (userId: string, payload: Parameters<typeof sendPushToUser>[1]) => Promise<void>
 let sendPush: Sender = sendPushToUser
@@ -39,6 +49,16 @@ export interface NotificationRecipient {
   reason: NotificationReason
   /** DND or quiet hours: record it in the inbox but don't alert. */
   silenced?: boolean
+  /** The recipient's message sound; `off` keeps phone pushes silent. */
+  messageSound?: MessageSound
+  /** Direct messages also land in the Activity inbox. */
+  dmInActivity?: boolean
+  /** When the phone push goes out; `immediate` pushes even while the person is active. */
+  mobilePushDelay?: MobilePushDelay
+}
+
+function pushDelayOf(raw: unknown): MobilePushDelay {
+  return typeof raw === 'string' && raw in PUSH_DELAY_MS ? (raw as MobilePushDelay) : 'inactive'
 }
 
 function isDirect(kind: string): boolean {
@@ -128,16 +148,27 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
   }
 
   if (row.threadRootId) {
-    const [root, repliers] = await Promise.all([
-      db.conversationMessage.findUnique({ where: { id: row.threadRootId }, select: { authorUserId: true } }),
+    // Followers: whoever started the thread, everyone who replied, and everyone
+    // @mentioned in it, as in Slack. Non-members and muted members are skipped by `quiet`.
+    const inThread = { OR: [{ id: row.threadRootId }, { threadRootId: row.threadRootId }], deletedAt: null }
+    const [authors, mentioned] = await Promise.all([
       db.conversationMessage.findMany({
-        where: { threadRootId: row.threadRootId, authorUserId: { not: null }, deletedAt: null },
+        where: { ...inThread, authorUserId: { not: null } },
         select: { authorUserId: true },
         distinct: ['authorUserId'],
         take: 50,
       }),
+      db.conversationMention.findMany({
+        where: { targetType: 'user', targetUserId: { not: null }, message: inThread },
+        select: { targetUserId: true },
+        distinct: ['targetUserId'],
+        take: 50,
+      }),
     ])
-    const followers = [root?.authorUserId, ...repliers.map((r: any) => r.authorUserId)].filter(Boolean) as string[]
+    const followers = [
+      ...authors.map((r: any) => r.authorUserId),
+      ...mentioned.map((m: any) => m.targetUserId),
+    ].filter(Boolean) as string[]
     for (const id of followers) if (!quiet(id)) add(id, 'thread')
   }
 
@@ -151,7 +182,26 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
   const now = new Date()
   return [...reasons]
     .filter(([userId]) => !quietKind || (byUser.get(userId)?.level === 'all' && !byUser.get(userId)?.muted))
-    .map(([userId, reason]) => ({ userId, reason, silenced: isSilenced(settings.get(userId), now) }))
+    .map(([userId, reason]) => ({
+      userId,
+      reason,
+      silenced: isSilenced(settings.get(userId), now),
+      messageSound: settings.get(userId)?.messageSound === 'off' ? 'off' : 'default',
+      dmInActivity: settings.get(userId)?.dmInActivity === true,
+      mobilePushDelay: pushDelayOf(settings.get(userId)?.mobilePushDelay),
+    }))
+}
+
+/**
+ * Preview text for a notification: mention tokens resolved to names, then
+ * flattened to plain text.
+ *
+ * `renderMentionsAsText` falls back to `@someone` / `@group` / `@agent` /
+ * `#channel` for every token whose id it was not handed, so a preview built
+ * without the name lookup shows placeholders instead of the people tagged.
+ */
+async function notificationText(text: string, workspaceId: string): Promise<string> {
+  return markdownToPlainText(renderMentionsAsText(text, await loadMentionNames(workspaceId, [text])))
 }
 
 async function describe(result: PostMessageResult) {
@@ -159,17 +209,7 @@ async function describe(result: PostMessageResult) {
   const author = row.authorType === 'agent'
     ? row.authorAgentRef?.name ?? (await agentDisplayName(conversation.workspaceId, row.authorAgentRef?.projectId ?? null))
     : row.authorUser?.name || row.authorUser?.email || row.blocks?.externalAuthor?.name || 'Someone'
-  const ids = collectMentionIds([row.text])
-  const [users, projects] = await Promise.all([
-    ids.userIds.length ? db.user.findMany({ where: { id: { in: ids.userIds } }, select: { id: true, name: true, email: true } }) : [],
-    ids.projectIds.length ? db.project.findMany({ where: { id: { in: ids.projectIds } }, select: { id: true, name: true } }) : [],
-  ])
-  const text = markdownToPlainText(renderMentionsAsText(row.text ?? '', {
-    users: new Map(users.map((u: any) => [u.id, u.name || u.email])),
-    projects: new Map(projects.map((p: any) => [p.id, p.name])),
-    groups: await groupNames(db, conversation.workspaceId, ids.groupIds),
-    workspaceAgentName: await agentDisplayName(conversation.workspaceId, null),
-  }))
+  const text = await notificationText(row.text ?? '', conversation.workspaceId)
   const attachments = row.attachments?.length ? `📎 ${row.attachments.length} file${row.attachments.length > 1 ? 's' : ''}` : ''
   const body = (text || attachments || 'New message').slice(0, BODY_CHARS)
   const where = isDirect(conversation.kind) ? null : `#${conversation.slug ?? conversation.name ?? 'channel'}`
@@ -193,7 +233,7 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
   }
 
   await createInboxItems(recipients
-    .filter((r) => INBOX_REASONS.has(r.reason))
+    .filter((r) => INBOX_REASONS.has(r.reason) || (r.reason === 'dm' && r.dmInActivity === true))
     .map((r) => ({
       workspaceId: conversation.workspaceId,
       userId: r.userId,
@@ -205,17 +245,19 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
       preview: body,
     })))
 
-  for (const { userId, reason, silenced } of recipients) {
+  for (const { userId, reason, silenced, messageSound, mobilePushDelay = 'inactive' } of recipients) {
     if (silenced) continue
+    // The phone plays the system sound only when the person wants message sounds.
+    const sound: 'default' | null = messageSound === 'off' ? null : 'default'
     // Every open client gets the alert and decides locally whether to show it
     // (a backgrounded tab with permission still can). The push is only for
-    // when no device is in active use.
+    // when no device is in active use, unless the person asked for every push.
     publishConversationEvent(
       conversation.workspaceId,
       { type: 'notification', ...data, reason, title, body },
       [userId],
     )
-    if (presence[userId] === 'active') continue
+    if (presence[userId] === 'active' && mobilePushDelay !== 'immediate') continue
     // An approval waits on a person, so it is never folded into the last push
     // for the channel, and its notification carries Approve and Deny buttons.
     if (approval) {
@@ -226,6 +268,7 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
         channelId: 'messages',
         audience: 'chat',
         categoryId: approval.categoryId,
+        sound,
         data: { ...data, reason, ...approval.data },
       })
       void liveActivityApprovalOpened(userId, approval)
@@ -237,10 +280,40 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
     if (lastPush.size > 10_000) {
       for (const [k, t] of lastPush) if (now - t >= PUSH_COALESCE_MS) lastPush.delete(k)
     }
+    const payload = { title, body, type: 'channel-message' as const, channelId: 'messages', audience: 'chat' as const, sound, data: { ...data, reason } }
+    const wait = PUSH_DELAY_MS[mobilePushDelay]
+    if (wait > 0) {
+      scheduleDelayedPush(userId, conversation.id, conversation.workspaceId, wait, payload)
+      continue
+    }
     lastPush.set(key, now)
-    void sendPush(userId, { title, body, type: 'channel-message', channelId: 'messages', audience: 'chat', data: { ...data, reason } })
+    void sendPush(userId, payload)
   }
   return recipients
+}
+
+/**
+ * Holds a phone push for `waitMs`, then sends it only if the person is still
+ * away. Reading the conversation first cancels it (see `cancelDelayedPushes`).
+ */
+function scheduleDelayedPush(
+  userId: string,
+  conversationId: string,
+  workspaceId: string,
+  waitMs: number,
+  payload: Parameters<typeof sendPushToUser>[1],
+): void {
+  const key = `${userId}:${conversationId}`
+  queueDelayedPush(userId, conversationId, waitMs, async () => {
+    const presence = await getPresence(workspaceId, [userId])
+    if (presence[userId] === 'active') return
+    lastPush.set(key, Date.now())
+    await sendPush(userId, payload)
+  })
+}
+
+export function _delayedPushCountForTests(): number {
+  return delayedPushCount()
 }
 
 export async function notifyForReaction({ message, conversation, reactorId, emoji }: ReactionAddedEvent): Promise<void> {
@@ -253,7 +326,7 @@ export async function notifyForReaction({ message, conversation, reactorId, emoj
   if (existing) return
   const reactor = await db.user.findUnique({ where: { id: reactorId }, select: { name: true, email: true } })
   const who = reactor?.name || reactor?.email || 'Someone'
-  const preview = markdownToPlainText(renderMentionsAsText(message.text ?? '')) || 'your message'
+  const preview = (await notificationText(message.text ?? '', conversation.workspaceId)) || 'your message'
   await createInboxItems([{
     workspaceId: conversation.workspaceId,
     userId: authorId,
@@ -282,7 +355,7 @@ export async function notifyQuestion(input: {
   const settings = await getSettingsRows(conversation.workspaceId, input.userIds)
   const presence = await getPresence(conversation.workspaceId, input.userIds)
   const now = new Date()
-  const body = markdownToPlainText(renderMentionsAsText(input.body)).slice(0, BODY_CHARS)
+  const body = (await notificationText(input.body, conversation.workspaceId)).slice(0, BODY_CHARS)
   const data = {
     conversationId: conversation.id,
     messageId: row.id,
@@ -312,4 +385,5 @@ export function registerConversationNotifications(): void {
 export function _setPushSenderForTests(sender: Sender | null): void {
   sendPush = sender ?? sendPushToUser
   lastPush.clear()
+  clearDelayedPushes()
 }

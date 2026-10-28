@@ -19,7 +19,12 @@ const WEB_DIR = path.join(__dirname, '..', 'dist', '_expo', 'static', 'js', 'web
 
 /** Largest `index-*.js` ceiling. After async routes the entry is ~1.12 MB. */
 export const MAIN_CHUNK_BUDGET_BYTES = 2_500_000
-/** Shared `__common-*.js` loaded with the entry. Measured at ~10.3 MB after lazy imports. */
+/**
+ * Shared `__common-*.js` loaded with the entry. Measured at ~10.3 MB after lazy imports.
+ * v2.3.11 landed at 12.32 MB because Monaco's 1.13 MB of extraLibs `.d.ts`
+ * reached the shared chunk through the file viewer; it is a dynamic import
+ * now, which puts the chunk back at ~11.2 MB.
+ */
 export const COMMON_CHUNK_BUDGET_BYTES = 12_000_000
 
 export function packageKey(source) {

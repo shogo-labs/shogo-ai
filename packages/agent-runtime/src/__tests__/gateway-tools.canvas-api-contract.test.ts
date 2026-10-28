@@ -7,7 +7,7 @@
  * `fetch('/api/<segment>')` for a segment with no matching server route,
  * the tool result must include a `canvasApiContract.warning` field that
  * names the orphaned routes and points at the two valid fixes (Prisma
- * model OR custom Hono route in server.tsx).
+ * model OR custom Hono route in custom-routes.ts).
  *
  * This catches the "fetches non-existent route" failure mode in the MiMo
  * eval analysis (Bucket F1) at the moment the agent writes the bad
@@ -91,7 +91,39 @@ describe('canvas-API contract — write_file', () => {
     expect(r.canvasApiContract.activeRoutes).toEqual(['/api/users', '/api/posts'])
     expect(r.canvasApiContract.warning).toContain('/api/leads')
     expect(r.canvasApiContract.warning).toContain('Prisma model')
-    expect(r.canvasApiContract.warning).toContain('server.tsx')
+    expect(r.canvasApiContract.warning).toContain('custom-routes.ts')
+    expect(r.canvasApiContract.warning).toContain("app.get('/leads'")
+    expect(r.canvasApiContract.warning).toContain('Do not add routes to server.tsx')
+  })
+
+  test('does NOT flag fetches served by routes in custom-routes.ts', async () => {
+    writeFileSync(
+      join(TEST_DIR, 'custom-routes.ts'),
+      `import { Hono } from 'hono'
+       const app = new Hono()
+       app.get('/dashboard', (c) => c.json({}))
+       app.post("/webhooks/stripe", (c) => c.json({}))
+       export default app`,
+    )
+    const ssm = fakeSkillServerManager(['users'])
+    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const r = await runWrite(
+      ctx,
+      'src/App.tsx',
+      `fetch('/api/dashboard'); fetch('/api/webhooks/stripe'); fetch('/api/users')`,
+    )
+    expect(r.canvasApiContract).toBeUndefined()
+  })
+
+  test('routes only mentioned in custom-routes.ts comments still count as missing', async () => {
+    writeFileSync(
+      join(TEST_DIR, 'custom-routes.ts'),
+      `/**\n * Example: app.get('/dashboard', ...)\n */\n// app.get('/leads', h)\nconst app = new Hono()\nexport default app`,
+    )
+    const ssm = fakeSkillServerManager(['users'])
+    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const r = await runWrite(ctx, 'src/App.tsx', `fetch('/api/dashboard'); fetch('/api/leads')`)
+    expect(r.canvasApiContract.orphanedFetches.sort()).toEqual(['/api/dashboard', '/api/leads'])
   })
 
   test('does NOT flag fetches that match an active route', async () => {

@@ -89,7 +89,10 @@ test.describe("dark mode surfaces", () => {
     await page.goto("/")
     const sidebar = page.getByRole("navigation", { name: "App sidebar" })
     await sidebar.waitFor({ state: "visible", timeout: 30_000 })
-    const heading = sidebar.getByText("Workspace agent", { exact: true })
+    // Home's flat chat list sits on the sidebar surface (SHO-119 removed the
+    // "Workspace agent" heading, so anchor on its New chat row instead).
+    const heading = sidebar.getByTestId("workspace-chats-panel").getByText("New chat")
+    await expect(heading).toBeVisible()
     expectDarkReadable("sidebar", await surfaceOf(heading), { opaque: false })
     await attach(page, "sidebar", sidebar)
   })
@@ -163,8 +166,16 @@ test.describe("dark mode surfaces", () => {
     )
     await page.goto(`/projects/${projectId}`)
 
-    const queued = page.getByText("queued prompt", { exact: true })
-    await queued.waitFor({ state: "visible", timeout: 30_000 })
+    // A queued prompt lives in the dock alone until its turn starts, so there
+    // is exactly one of it on the page — no need to scope the lookup away from
+    // a transcript copy.
+    await expect(page.getByText("queued prompt", { exact: true })).toHaveCount(1)
+    const dockRow = page
+      .getByLabel("Queued message", { exact: true })
+      .filter({ hasText: "queued prompt" })
+      .first()
+    await dockRow.waitFor({ state: "visible", timeout: 30_000 })
+    const queued = dockRow.getByText("queued prompt", { exact: true })
     expectDarkReadable("queue dock", await surfaceOf(queued), { opaque: true })
 
     const failedRow = page.getByLabel("Queued message").filter({ hasText: "failed prompt" })

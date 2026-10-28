@@ -100,7 +100,7 @@ function Choice({ label, selected, disabled, onPress }: { label: string; selecte
     <Pressable
       accessibilityRole="radio"
       accessibilityLabel={label}
-      accessibilityState={{ selected, disabled }}
+      aria-checked={selected} aria-disabled={disabled}
       disabled={disabled}
       onPress={onPress}
       className={`rounded-lg border px-3 py-1.5 disabled:opacity-50 ${selected ? "border-primary bg-primary" : "border-border"}`}
@@ -317,7 +317,7 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
           <Pressable
             accessibilityRole="checkbox"
             accessibilityLabel="Use their account for reading too"
-            accessibilityState={{ checked: readToo, disabled: locked }}
+            aria-checked={readToo} aria-disabled={locked}
             disabled={locked}
             onPress={() => void save({ readToo: !readToo })}
             className="mt-3 flex-row items-center gap-2 disabled:opacity-50"

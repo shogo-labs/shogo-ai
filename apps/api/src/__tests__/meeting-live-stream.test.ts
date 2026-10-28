@@ -309,6 +309,102 @@ describe('meeting live bus', () => {
   })
 })
 
+describe('huddle notes on a stream session', () => {
+  const huddleTicket = { ...TICKET, huddleId: 'huddle-1' }
+
+  function huddleSession(overrides: Partial<import('../services/meeting-live-stream').StreamSessionDeps> = {}) {
+    const backend = new FakeBackend(false, { finalEveryBytes: 32000 })
+    // Real backends report that they bill; the session only settles when they do.
+    ;(backend as any).billed = true
+    const billed: number[] = []
+    const sent: any[] = []
+    const deps: import('../services/meeting-live-stream').StreamSessionDeps = {
+      ensureDraft: async () => ({ id: 'meeting-1', status: 'recording' }),
+      appendFinal: async () => ({ ok: true, stored: true, finals: 1 }),
+      publish: () => {},
+      setStatus: async () => {},
+      bill: async (_ticket, seconds) => {
+        billed.push(seconds)
+      },
+      admit: async () => true,
+      ensureHuddleDraft: async () => ({ id: 'meeting-1', status: 'recording' }),
+      huddleOffsetSeconds: async () => 4,
+      huddleNotesEnabled: async () => true,
+      addNotesClientSeconds: async () => {},
+      ...overrides,
+    }
+    const session = new stream.LiveStreamSession(huddleTicket, 0, (m) => sent.push(m), { name: backend.name, create: () => backend }, deps)
+    return { session, backend, billed, sent, deps }
+  }
+
+  test('with notes off, audio is dropped before it reaches the recognizer or the bill', async () => {
+    const off = { enabled: false }
+    const h = huddleSession({ huddleNotesEnabled: async () => off.enabled })
+    expect(await h.session.begin()).toBe(false)
+
+    h.session.onAudio(pcm(2))
+    await new Promise((r) => setTimeout(r, 10))
+
+    expect(h.backend.received).toBe(0)
+    expect(h.billed).toEqual([])
+    expect(h.sent.some((m) => m.type === 'error' && m.code === 'notes_off')).toBe(true)
+    off.enabled = true
+  })
+
+  test('with notes on, the audio flows and the forwarded seconds are billed once', async () => {
+    const h = huddleSession()
+    expect(await h.session.begin()).toBe(true)
+    h.session.onAudio(pcm(2))
+    await h.session.finish(50)
+
+    expect(h.backend.received).toBeGreaterThan(0)
+    expect(h.billed).toHaveLength(1)
+    expect(h.billed[0]).toBeCloseTo(2, 1)
+  })
+
+  test('a huddle stream bills the huddle, and a plain recording does not touch notes counters', async () => {
+    const counted: Array<[string, number]> = []
+    const h = huddleSession({
+      addNotesClientSeconds: async (huddleId, seconds) => {
+        counted.push([huddleId, seconds])
+      },
+    })
+    expect(await h.session.begin()).toBe(true)
+    h.session.onAudio(pcm(1))
+    await h.session.finish(50)
+    expect(counted).toHaveLength(1)
+    expect(counted[0][0]).toBe('huddle-1')
+    expect(counted[0][1]).toBeCloseTo(1, 1)
+  })
+
+  test('each final is stored under `c:<speakerId>:<item>`, with the speaker id on the segment', async () => {
+    const saved: Array<{ itemId: string; speaker?: string; speakerId?: string }> = []
+    const h = huddleSession({
+      appendFinal: async (_id, input) => {
+        saved.push({ itemId: input.itemId, speaker: input.speaker, speakerId: input.speakerId })
+        return { ok: true, stored: true, finals: saved.length }
+      },
+    })
+    // A coverer's ticket names the person it transcribes, not itself.
+    const session = new stream.LiveStreamSession(
+      { ...huddleTicket, speakerId: 'user-2', speaker: 'Ben' },
+      0,
+      () => {},
+      { name: h.backend.name, create: () => h.backend },
+      h.deps,
+    )
+    expect(await session.begin()).toBe(true)
+    session.onAudio(pcm(2))
+    await session.finish(50)
+
+    expect(saved.length).toBeGreaterThan(0)
+    // The prefix says which path wrote the line: the fallback writes `lk:`.
+    expect(saved[0].itemId).toMatch(/^c:user-2:/)
+    expect(saved[0].speaker).toBe('Ben')
+    expect(saved[0].speakerId).toBe('user-2')
+  })
+})
+
 describe('runHttpAudioStream (WAV fixture, end to end)', () => {
   /** A real WAV file's samples, as the desktop recorder would stream them. */
   function wavFixture(seconds: number): { wav: Buffer; pcm: Buffer } {

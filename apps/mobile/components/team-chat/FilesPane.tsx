@@ -4,14 +4,18 @@
  * Files shared in a conversation: search by name, filter by kind, open a
  * file, or jump to the message that shared it.
  */
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { ActivityIndicator, FlatList, Image, Linking, Pressable, Text, TextInput, View } from 'react-native'
-import { FileText, MessageSquare, Paperclip, Search, X } from 'lucide-react-native'
+import { Download, MessageSquare, Paperclip, Search, X } from 'lucide-react-native'
 import { SegmentedFilter } from '../phone/SegmentedFilter'
 import { useConversationFiles } from '../../hooks/useConversationFiles'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { formatFileSize } from '../../lib/composer-attachments'
 import { absoluteApiUrl, type ConversationFile, type ConversationFileKind } from '../../lib/team-chat-api'
+import { downloadAttachment } from '../../lib/attachment-download'
+import { parseInAppFileHref } from '../../lib/share-file-links'
+import { useShareFileOpener } from '../chat/share-file-context'
+import { fileTypeMeta } from '../../lib/file-type'
 
 type KindFilter = 'all' | ConversationFileKind
 
@@ -90,15 +94,24 @@ export function FilesPane({ workspaceId, conversationId, title, onClose, onShowI
 
 function FileRow({ file, onShowInChat }: { file: ConversationFile; onShowInChat: () => void }) {
   const url = absoluteApiUrl(file.url)
+  const openShareFile = useShareFileOpener()
+  const meta = fileTypeMeta(file.name, file.mimeType)
   const date = new Date(file.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  // The app serves this file itself, so opening it belongs in the app's own
+  // viewer — `Linking.openURL` is a new browser tab on the URL (SHO-80).
+  const openFile = useCallback(() => {
+    const served = parseInAppFileHref(url)
+    if (served && openShareFile) openShareFile({ ...served, name: file.name })
+    else void Linking.openURL(url)
+  }, [file.name, openShareFile, url])
   return (
     <View className="flex-row items-center gap-3 border-b border-border/60 px-3 py-2" testID={`file-row-${file.id}`}>
-      <Pressable onPress={() => void Linking.openURL(url)} accessibilityRole="link" accessibilityLabel={`Open ${file.name}`} className="min-w-0 flex-1 flex-row items-center gap-3">
+      <Pressable onPress={openFile} accessibilityRole="link" accessibilityLabel={`Open ${file.name}`} className="min-w-0 flex-1 flex-row items-center gap-3">
         {file.kind === 'image' ? (
           <Image source={{ uri: url }} className="rounded border border-border" style={{ width: 36, height: 36 }} resizeMode="cover" />
         ) : (
-          <View className="items-center justify-center rounded border border-border bg-card" style={{ width: 36, height: 36 }}>
-            <FileText size={16} className="text-muted-foreground" />
+          <View className="items-center justify-center rounded" style={{ width: 36, height: 36, backgroundColor: meta.color }}>
+            <Text className="text-[10px] font-bold text-white" numberOfLines={1}>{meta.glyph}</Text>
           </View>
         )}
         <View className="min-w-0 flex-1">
@@ -107,6 +120,9 @@ function FileRow({ file, onShowInChat }: { file: ConversationFile; onShowInChat:
             {file.uploadedBy.name} · {date} · {formatFileSize(file.size)}
           </Text>
         </View>
+      </Pressable>
+      <Pressable onPress={() => void downloadAttachment(url, file.name)} accessibilityRole="button" accessibilityLabel={`Download ${file.name}`} className="rounded-md p-1.5 active:bg-muted">
+        <Download size={15} className="text-muted-foreground" />
       </Pressable>
       <Pressable onPress={onShowInChat} accessibilityRole="button" accessibilityLabel={`Show ${file.name} in chat`} className="rounded-md p-1.5 active:bg-muted">
         <MessageSquare size={15} className="text-muted-foreground" />

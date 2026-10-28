@@ -182,7 +182,9 @@ export const CommandPalette = observer(function CommandPalette({
         label: 'Home',
         description: 'Go to home page',
         icon: Home,
-        href: '/(app)',
+        // The landing (`/(app)`) is the workspace agent on a fresh chat; the
+        // home page itself is the feed/builder at `/(app)/home`.
+        href: '/(app)/home',
         category: 'navigation',
         keywords: ['home', 'dashboard'],
       },
@@ -263,7 +265,7 @@ export const CommandPalette = observer(function CommandPalette({
         label: 'Workspace Analytics',
         description: 'View usage metrics and spend',
         icon: BarChart3,
-        href: '/(app)/settings?tab=analytics',
+        href: '/(app)/analytics',
         category: 'settings',
         keywords: ['analytics', 'usage', 'spend', 'metrics', 'stats'],
       },

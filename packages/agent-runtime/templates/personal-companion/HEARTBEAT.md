@@ -6,9 +6,8 @@ only when something meaningful changed or needs their input.
 1. Call `goal_list({ status: "active" })`.
 2. For each active goal, check `nextCheckInAt`:
    - Not due yet and nothing changed since the last run: skip it silently.
-   - Due, or something changed (progress made, blocked, a delegated build
-     finished): advance the next plan step or inspect the delegated builder
-     with `project_call`, then record it with `goal_log`
+   - Due, or something changed (progress made, blocked, a step finished):
+     advance the next plan step, then record it with `goal_log`
      (`progress`/`blocker`/`approval`/`deliverable` as appropriate) and update
      `nextCheckInAt` with `goal_update` for the next time this should be
      revisited.
@@ -23,5 +22,6 @@ only when something meaningful changed or needs their input.
 If a goal needs a decision, record a `goal_log` event with `kind: "approval"`
 and ask the user one focused question as part of the digest (or on its own if
 it's the only thing worth saying) — never take the irreversible action first
-and ask after. If a delegated build has produced a URL, attach it to the goal
-with `goal_update({ deliverables })` before notifying the user.
+and ask after. If the user asked for something to be built, remind them once
+that building happens in their Team workspace, and keep the goal here for the
+parts that don't.

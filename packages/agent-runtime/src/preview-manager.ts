@@ -26,6 +26,7 @@ import {
   consumeBuildOutputChange,
   pruneStaleBuildOutput,
 } from './build-output-prune'
+import { consumeBuildInputChange } from './build-input-fingerprint'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
@@ -34,6 +35,7 @@ import {
   removeViteWatchPidfile,
   writeViteWatchPidfile,
 } from '@shogo-ai/sdk/vite-watch'
+import { containChild, type Containment } from './process-tree'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
 import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
@@ -146,6 +148,7 @@ export function emitBuildLine(
 import { createServer } from 'net'
 import { pkg, resolveBinInvocation } from '@shogo/shared-runtime'
 import { fetchAppRuntimeToken } from './app-runtime-token'
+import { resolveProjectProcessEnv } from './project-process-env'
 import {
   previewBuildLogPath,
   previewConsoleLogPath,
@@ -171,6 +174,13 @@ import {
   inFlightWorkspaceInstall,
   resolveWorkspaceTechStackId,
 } from './workspace-defaults'
+
+/**
+ * Re-exported for the modules and tests that have always imported the rule
+ * from here; the implementation lives in `project-process-env.ts` so every
+ * spawn site can share it without importing this module.
+ */
+export { resolveProjectProcessEnv } from './project-process-env'
 
 const LOG_PREFIX = 'preview-manager'
 /** Matches CanvasBuildManager's debounce so an agent's burst of edits coalesces into one export. */
@@ -879,43 +889,6 @@ export function resolveApiServerEnv(input: {
 }
 
 /**
- * Env for any process that runs project code: the API sidecar, builds,
- * watchers, Expo and Prisma. The `@shogo-ai/sdk` in that process reads
- * RUNTIME_AUTH_SECRET, PROJECT_ID and RUNTIME_PORT from it.
- *
- * In a workspace runtime the inherited workspace token is replaced by the
- * project's own token, or removed when there is none, and PROJECT_ID names
- * the project rather than the workspace.
- */
-export function resolveProjectProcessEnv(input: {
-  parentEnv: NodeJS.ProcessEnv
-  projectId?: string
-  appRuntimeToken?: string | null
-}): Record<string, string> {
-  const { parentEnv, projectId, appRuntimeToken } = input
-  const out: Record<string, string> = {}
-  for (const [k, v] of Object.entries(parentEnv)) {
-    if (typeof v === 'string') out[k] = v
-  }
-  // parentEnv.PORT is the runtime's own port. The SDK tools client uses it
-  // to reach the runtime over 127.0.0.1; the sidecar overwrites PORT with
-  // its bind port afterwards.
-  out.RUNTIME_PORT = parentEnv.PORT ?? '8080'
-  // The merged map is a workspace transport detail — project code must not
-  // see a sibling project's connection string.
-  delete out.WORKSPACE_DATABASE_URLS
-  if (parentEnv.WORKSPACE_RUNTIME === 'true') {
-    if (projectId) out.PROJECT_ID = projectId
-    if (projectId && appRuntimeToken) out.RUNTIME_AUTH_SECRET = appRuntimeToken
-    else delete out.RUNTIME_AUTH_SECRET
-  }
-  if (parentEnv.SHOGO_LOCAL_MODE === 'true' && !parentEnv.SHOGO_API_URL) {
-    out.SHOGO_API_URL = 'http://localhost:8002'
-  }
-  return out
-}
-
-/**
  * Resolve the `DATABASE_URL` for a project's API sidecar. Prefers a
  * per-project entry in the `WORKSPACE_DATABASE_URLS` env map (cloud
  * provisioned DBs in workspace mode); otherwise pins the local sqlite file
@@ -983,6 +956,13 @@ export class PreviewManager {
   private onBuildComplete?: (info?: { outputChanged: boolean }) => void
   private buildWatchProcess: ChildProcess | null = null
   private apiServerProcess: ChildProcess | null = null
+  /**
+   * Containment for the two detached children this manager owns (SHO-144).
+   * Each one records its group in the workspace's child ledger, so a runtime
+   * that dies without running `stop()` still leaves a reaper a trail.
+   */
+  private buildWatchContainment: Containment | null = null
+  private apiContainment: Containment | null = null
   /**
    * True once the spawned `server.tsx` process has been observed to bind
    * its port (either the in-process `/health` poll returned 2xx OR the
@@ -2025,15 +2005,21 @@ export class PreviewManager {
    * or when the group signal raises (typically ESRCH — group already empty).
    */
   private killApiServerProcessGroup(proc: ChildProcess, signal: NodeJS.Signals): void {
-    if (process.platform === 'win32' || !proc.pid) {
+    // Containment knows where the whole tree is: the process group on POSIX,
+    // the job object on Windows. The direct signal stays as the fast path for
+    // the leader (and for a `proc` with no pid, which the lifecycle unit test
+    // wires), but the tree kill is what reaches the grandchildren.
+    const containment = this.apiContainment
+    if (process.platform !== 'win32' && proc.pid) {
+      try {
+        process.kill(-proc.pid, signal)
+      } catch {
+        try { proc.kill(signal) } catch { /* already gone */ }
+      }
+    } else {
       try { proc.kill(signal) } catch { /* already gone */ }
-      return
     }
-    try {
-      process.kill(-proc.pid, signal)
-    } catch {
-      try { proc.kill(signal) } catch { /* already gone */ }
-    }
+    if (signal === 'SIGKILL') void containment?.killTree({ graceMs: 0 })
   }
 
   /**
@@ -2549,7 +2535,15 @@ export class PreviewManager {
     this.lastSetupError = null
     this._phase = 'ready'
     try {
-      this.onBuildComplete?.({ outputChanged: true })
+      // A static build re-runs on any watched change, and Remotion/custom
+      // output embeds render-time data, so ask the inputs instead of
+      // assuming a rebuild means a new site. The plan decides where this
+      // build writes (`outDir` from shogo.preview.json, default `dist`), and
+      // the staging copy is ours too — both are output, not input.
+      const outDirs = [DEFAULT_STAGING_DIR, plan.kind === 'command' ? plan.outDir : null].filter(
+        (dir): dir is string => !!dir,
+      )
+      this.onBuildComplete?.({ outputChanged: consumeBuildInputChange(cwd, { ignore: outDirs }) })
     } catch (err: any) {
       console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
     }
@@ -2973,8 +2967,12 @@ export class PreviewManager {
     }
     if (this.apiServerProcess) {
       console.log(`[${LOG_PREFIX}] Stopping API server...`)
-      this.apiServerProcess.kill('SIGTERM')
+      const proc = this.apiServerProcess
       this.apiServerProcess = null
+      this.killApiServerProcessGroup(proc, 'SIGTERM')
+      // Graceful in intent, verified in fact: whatever `server.tsx` started is
+      // a grandchild the leader's pid never reaches (SHO-144).
+      void this.apiContainment?.killTree()
     }
     this.apiListening = false
     // Invalidate any in-flight _startApiServerImpl() attempt. It's still
@@ -3022,18 +3020,21 @@ export class PreviewManager {
    */
   private killBuildWatchProcessGroup(proc: ChildProcess): void {
     const pid = proc.pid
-    if (process.platform === 'win32' || !proc.pid) {
+    const containment = this.buildWatchContainment
+    if (process.platform !== 'win32' && pid) {
+      try {
+        process.kill(-pid, 'SIGTERM')
+      } catch {
+        try { proc.kill('SIGTERM') } catch { /* already gone */ }
+      }
+    } else {
       try { proc.kill('SIGTERM') } catch { /* already gone */ }
-      if (pid) removeViteWatchPidfile(this.workspaceDir, pid)
-      return
     }
-    try {
-      process.kill(-proc.pid, 'SIGTERM')
-    } catch {
-      try { proc.kill('SIGTERM') } catch { /* already gone */ }
-    } finally {
-      removeViteWatchPidfile(this.workspaceDir, pid)
-    }
+    if (pid) removeViteWatchPidfile(this.workspaceDir, pid)
+    // Verified teardown: vite's rollup workers and native-binding loaders are
+    // grandchildren, and on Windows the tree cannot be reached by parent pid at
+    // all. Nothing waits on it — the exit handler resolves the lifecycle.
+    void containment?.killTree({ graceMs: 0 })
   }
 
   get phase(): PreviewPhase {
@@ -3447,6 +3448,13 @@ export class PreviewManager {
     }
 
     this.buildWatchProcess = viteProcess
+    // Containment before anything else: the ledger entry and (on Windows) the
+    // job have to exist while the parent chain is still intact.
+    this.buildWatchContainment?.dispose()
+    this.buildWatchContainment = containChild(viteProcess, {
+      label: 'vite-watch',
+      workspaceDir: this.workspaceDir,
+    })
     if (viteProcess.pid) {
       try {
         writeViteWatchPidfile(this.workspaceDir, {
@@ -3478,6 +3486,8 @@ export class PreviewManager {
       console.error(`[${LOG_PREFIX}] Vite build --watch error: ${err.message}`)
       if (this.buildWatchProcess === viteProcess) {
         this.buildWatchProcess = null
+        this.buildWatchContainment?.dispose()
+        this.buildWatchContainment = null
       }
       if (viteProcess.pid) removeViteWatchPidfile(this.workspaceDir, viteProcess.pid)
     })
@@ -3526,6 +3536,8 @@ export class PreviewManager {
       console.log(`[${LOG_PREFIX}] Vite build --watch exited (code=${code}, signal=${signal})`)
       if (this.buildWatchProcess === viteProcess) {
         this.buildWatchProcess = null
+        this.buildWatchContainment?.dispose()
+        this.buildWatchContainment = null
       }
       if (viteProcess.pid) removeViteWatchPidfile(this.workspaceDir, viteProcess.pid)
     })
@@ -3824,6 +3836,11 @@ export class PreviewManager {
     })
 
     this.apiServerProcess = proc
+    this.apiContainment?.dispose()
+    this.apiContainment = containChild(proc, {
+      label: 'api-sidecar',
+      workspaceDir: this.workspaceDir,
+    })
 
     // Drop the detached leader from the event-loop ref-count (the HTTP server
     // keeps the loop alive anyway); stdio pipes stay ref'd so the build-log
@@ -3846,6 +3863,8 @@ export class PreviewManager {
       console.log(`[${LOG_PREFIX}] API server exited (code=${code}, signal=${signal})`)
       if (this.apiServerProcess === proc) {
         this.apiServerProcess = null
+        this.apiContainment?.dispose()
+        this.apiContainment = null
         // Stop advertising a listening port the moment the owning
         // process is gone — without this the `/api/*` proxy would
         // keep fetching against a dead socket between the exit and
@@ -4505,9 +4524,14 @@ export class PreviewManager {
         } else if (promote && this.onBuildComplete) {
           // Cloud Expo has no HMR. `/preview/restart` and the boot-time
           // seed both land here; fire the same reload toast CBM uses so
-          // the canvas iframe picks up the new hashed `entry-*.js`.
+          // the canvas iframe picks up the new hashed `entry-*.js` — but
+          // only when the export actually came from changed inputs, since
+          // a restart over untouched sources produces a different bundle
+          // (metro ids follow traversal order) for the same app.
           try {
-            this.onBuildComplete({ outputChanged: true })
+            this.onBuildComplete({
+              outputChanged: consumeBuildInputChange(cwd, { ignore: ['dist', stagingDir] }),
+            })
           } catch (err: any) {
             console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
           }

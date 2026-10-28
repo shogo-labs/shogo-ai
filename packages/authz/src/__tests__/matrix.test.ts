@@ -25,11 +25,13 @@ import {
 const WS_OWNER: Permission[] = [
   'workspace:read', 'workspace:update', 'workspace:delete', 'workspace.members:read',
   'workspace.members:manage', 'workspace.owners:manage', 'workspace.billing:manage',
-  'workspace.settings:manage', 'workspace.api_keys:manage', 'workspace.analytics:read', 'project:create',
+  'workspace.settings:manage', 'workspace.api_keys:manage', 'workspace.analytics:read',
+  'workspace:export', 'project:create',
 ]
 const WS_ADMIN: Permission[] = [
   'workspace:read', 'workspace:update', 'workspace.members:read', 'workspace.members:manage',
-  'workspace.settings:manage', 'workspace.api_keys:manage', 'workspace.analytics:read', 'project:create',
+  'workspace.settings:manage', 'workspace.api_keys:manage', 'workspace.analytics:read',
+  'workspace:export', 'project:create',
 ]
 const WS_MEMBER: Permission[] = ['workspace:read', 'workspace.members:read', 'project:create']
 const WS_VIEWER: Permission[] = ['workspace:read', 'workspace.members:read']

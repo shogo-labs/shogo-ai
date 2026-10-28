@@ -62,10 +62,9 @@ describe('capability tool classification', () => {
     }
   })
 
-  test('personal profile keeps project delegation + workspace-agent tools enabled', () => {
+  test('personal profile keeps workspace-agent tools enabled but has no project delegation', () => {
     const disabled = disabledToolNamesForProfile('personal')
     for (const kept of [
-      'project_list', 'project_create', 'project_call', 'project_configure',
       'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list', 'set_status',
       'ask_user', 'read_file', 'write_file', 'edit_file', 'web', 'memory_read',
       // The reminder skill's reach-the-user boundary capability must stay
@@ -74,6 +73,14 @@ describe('capability tool classification', () => {
     ]) {
       expect(disabled.has(kept)).toBe(false)
     }
+    // SHO-221: a personal companion doesn't build software, so it has no way
+    // to create or reach a builder project — hidden or otherwise.
+    for (const removed of [
+      'project_list', 'project_create', 'project_call', 'project_configure',
+      'connect_project', 'copy_to_project',
+    ]) {
+      expect(disabled.has(removed)).toBe(true)
+    }
   })
 
   test('personal profile disables builder, shell, orchestration, and project composition', () => {
@@ -81,7 +88,7 @@ describe('capability tool classification', () => {
     for (const removed of [
       'exec', 'exec_list', 'terminal_exec', 'checkpoint', 'publish', 'create_plan', 'system_apply',
       'project_attach', 'project_detach', 'list_projects', 'mount_project',
-      'agent_spawn', 'team_create', 'task_create',
+      'agent_spawn', 'team_create', 'team_task_create',
       'impact_radius', 'detect_changes', 'review_context', 'read_lints', 'server_sync',
     ]) {
       expect(disabled.has(removed)).toBe(true)

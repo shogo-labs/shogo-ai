@@ -1,49 +1,70 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Tells the agent which project capabilities are on, off, or locked by the
- * workspace profile, and that `capabilities_configure` can change the ones
- * that are not locked.
+ * Tells the agent which capabilities are on, off, or locked by the workspace
+ * profile, and that `capabilities_configure` can change the ones that are not
+ * locked.
+ *
+ * There are two surfaces and the block is written for whichever one the turn
+ * belongs to:
+ *   - `project` — the project's own agent, toggles on `Project.settings`;
+ *   - `workspace` — the workspace agent, toggles on `Workspace.settings`.
+ *
+ * A workspace runtime pinned to an anchor project serves BOTH, so the scope is
+ * passed in per turn rather than derived from boot env (see `chatContext` on
+ * the runtime message payload). Printing the anchor project's toggles as the
+ * workspace agent's own was the bug this split fixes.
  */
 
 import {
   CAPABILITY_INFO,
   CAPABILITY_KEYS,
-  WORKSPACE_AGENT_CAPABILITY_DEFAULTS,
   missingCapabilityRequirements,
-  normalizeCapabilitySettings,
+  resolveCapabilities,
   type CapabilityKey,
+  type CapabilityScope,
   type CapabilitySettings,
 } from '@shogo/shared-runtime/capability-settings'
 import { CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
-import { isWorkspaceRuntimeMode } from './workspace-runtime-mode'
+import { isWorkspaceAgentRuntime } from './workspace-runtime-mode'
+
+export { isWorkspaceAgentRuntime }
+export type { CapabilityScope }
 
 /** Personal workspaces have no team channels, so these stay off there. */
 const PERSONAL_LOCKED_OFF: CapabilityKey[] = ['teamChatEnabled', 'boardAdminEnabled', 'companyOpsEnabled']
 
-/** The workspace agent: a workspace runtime not anchored on a project. */
-export function isWorkspaceAgentRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isWorkspaceRuntimeMode(env) && !env.WORKSPACE_ANCHOR_PROJECT_ID
+/** The scope a turn belongs to when the caller did not say. */
+export function defaultCapabilityScope(env: NodeJS.ProcessEnv = process.env): CapabilityScope {
+  return isWorkspaceAgentRuntime(env) ? 'workspace' : 'project'
 }
 
 /**
- * Capability toggles as this runtime applies them: stored values, the
- * workspace agent's opt-in defaults when nothing is stored, and profile locks.
+ * Capability toggles as this runtime applies them for one surface: stored
+ * values (plus the workspace agent's opt-in defaults for workspace scope) and
+ * profile locks.
+ */
+export function resolveCapabilitiesForScope(
+  config: Record<string, unknown> & { capabilityProfile?: CapabilityProfileName },
+  scope: CapabilityScope,
+): CapabilitySettings {
+  const caps = resolveCapabilities(config, { scope })
+  for (const key of lockedCapabilityKeys(config.capabilityProfile)) {
+    caps[key] = effectiveCapabilityValue(key, caps, config.capabilityProfile)
+  }
+  return caps
+}
+
+/**
+ * Scope inferred from boot env. Kept for callers with no turn context (tool
+ * registration, the boot-time capability sync); a turn must use
+ * `resolveCapabilitiesForScope` with the surface it actually runs in.
  */
 export function resolveRuntimeCapabilities(
   config: Record<string, unknown> & { capabilityProfile?: CapabilityProfileName },
   env: NodeJS.ProcessEnv = process.env,
 ): CapabilitySettings {
-  const caps = normalizeCapabilitySettings(config)
-  if (isWorkspaceAgentRuntime(env)) {
-    for (const [key, value] of Object.entries(WORKSPACE_AGENT_CAPABILITY_DEFAULTS) as Array<[CapabilityKey, boolean]>) {
-      if (config[key] === undefined) caps[key] = value
-    }
-  }
-  for (const key of lockedCapabilityKeys(config.capabilityProfile)) {
-    caps[key] = effectiveCapabilityValue(key, caps, config.capabilityProfile)
-  }
-  return caps
+  return resolveCapabilitiesForScope(config, defaultCapabilityScope(env))
 }
 
 export interface CapabilityStateView {
@@ -66,8 +87,18 @@ export function lockedCapabilityKeys(profile: CapabilityProfileName | undefined)
   return locked
 }
 
-export function capabilityState(config: { capabilityProfile?: CapabilityProfileName }): CapabilityStateView {
-  const caps = resolveRuntimeCapabilities(config as Record<string, unknown>)
+/**
+ * `config` is the runtime config, so it carries the capability toggles
+ * themselves (`videoGenEnabled`, `threeDGenEnabled`, …) plus the profile.
+ * `Partial` because an absent toggle means "use the default", not "disabled".
+ */
+export type CapabilityConfigInput = { capabilityProfile?: CapabilityProfileName } & Partial<CapabilitySettings>
+
+export function capabilityState(
+  config: CapabilityConfigInput,
+  scope: CapabilityScope = defaultCapabilityScope(),
+): CapabilityStateView {
+  const caps = resolveCapabilitiesForScope(config as Record<string, unknown>, scope)
   const locked = new Set(lockedCapabilityKeys(config.capabilityProfile))
   const enabled: CapabilityKey[] = []
   const disabled: CapabilityKey[] = []
@@ -99,12 +130,37 @@ export function effectiveCapabilityValue(
   return caps[key]
 }
 
+export interface CapabilityStatusOptions {
+  /** Surface these toggles belong to. Defaults to the boot-env scope. */
+  scope?: CapabilityScope
+  /** Project whose toggles these are (project scope), for the title. */
+  projectName?: string
+  /**
+   * The anchor project a workspace runtime is pinned to. Named in a separate,
+   * clearly-labelled line so its toggles are never read as the workspace
+   * agent's own.
+   */
+  anchorProjectName?: string
+}
+
 /** Stable prompt block. Changes only when a capability toggle changes. */
-export function buildCapabilityStatusSection(config: { capabilityProfile?: CapabilityProfileName }): string {
-  const caps = resolveRuntimeCapabilities(config as Record<string, unknown>)
-  const { enabled, disabled, locked } = capabilityState(config)
+export function buildCapabilityStatusSection(
+  config: CapabilityConfigInput,
+  opts: CapabilityStatusOptions = {},
+): string {
+  const scope = opts.scope ?? defaultCapabilityScope()
+  const caps = resolveCapabilitiesForScope(config as Record<string, unknown>, scope)
+  const { enabled, disabled, locked } = capabilityState(config, scope)
+
+  const title =
+    scope === 'workspace'
+      ? '## Workspace capabilities'
+      : `## Project capabilities${opts.projectName ? ` (${opts.projectName})` : ''}`
+
   const lines = [
-    '## Project Capabilities',
+    title,
+    '',
+    `These are ${scope === 'workspace' ? "the workspace agent's own toggles, stored on the workspace." : "this project's toggles."}`,
     '',
     `Enabled: ${enabled.length > 0 ? enabled.map((key) => formatCapability(key)).join(', ') : 'none'}`,
     `Disabled: ${disabled.length > 0 ? disabled.map((key) => formatCapability(key)).join(', ') : 'none'}`,
@@ -120,7 +176,15 @@ export function buildCapabilityStatusSection(config: { capabilityProfile?: Capab
   }
   lines.push(
     '',
-    'You can turn these on or off for this project with `capabilities_configure`. Changes apply from your next turn. Turn on a disabled capability when the user\'s task needs it, rather than telling them it is unavailable. Do not change a locked capability.',
+    scope === 'workspace'
+      ? 'You can turn these on or off for the workspace with `capabilities_configure` (it uses the workspace scope here by default; pass `scope: "project"` to change a project\'s). Changes apply from your next turn. Turn on a disabled capability when the user\'s task needs it, rather than telling them it is unavailable. Do not change a locked capability.'
+      : 'You can turn these on or off for this project with `capabilities_configure`. Changes apply from your next turn. Turn on a disabled capability when the user\'s task needs it, rather than telling them it is unavailable. Do not change a locked capability.',
   )
+  if (scope === 'workspace' && opts.anchorProjectName) {
+    lines.push(
+      '',
+      `Project chats run with their own toggles — the open project is **${opts.anchorProjectName}**; its capabilities are managed separately and are not the list above.`,
+    )
+  }
   return lines.join('\n')
 }

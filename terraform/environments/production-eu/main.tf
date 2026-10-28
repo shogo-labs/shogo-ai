@@ -159,6 +159,23 @@ module "eu" {
   # remediation"). Until that cycle runs, the live value stays 100 GB.
   system_node_boot_volume_gb = 200
 
+  # Image GC at 70/60 instead of the kubelet default 85/80 (SHO-136), mirrored
+  # with production-us. EU is the largest region (it absorbed India's tenants)
+  # and its nodes carry the most stacked runtime digests, so it gets the same
+  # continuous reclaim rather than the panic reclaim that only fires when the
+  # kubelet is already evicting. Only the GC thresholds — the staging pool's
+  # memory-pressure flags are a separate decision and do not ride along here.
+  #
+  # Like the boot volume, node_metadata is in the pool's ignore_changes: an
+  # apply alone does not reach running nodes, the canary recycle does.
+  #
+  # NOT LIVE (checked 2026-10-27): that recycle has never run, so no EU node
+  # applies these thresholds yet. What reclaims disk today is the node-image-gc
+  # DaemonSet (k8s/base/node-image-gc.yaml), which prunes superseded Shogo
+  # digests at 65% on the nodes we already have. See terraform/README.md "Node
+  # image store remediation".
+  kubelet_extra_args = "--image-gc-high-threshold=70 --image-gc-low-threshold=60"
+
   enable_workload_pool = false
 
   # Observability

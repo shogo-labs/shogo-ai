@@ -363,7 +363,7 @@ export default observer(function ApiKeysPage() {
           onPress={() => setShowManualKeys((v) => !v)}
           className={cn("mb-3 flex-row items-center gap-2 py-1", isNativePhone && "min-h-11")}
           accessibilityRole="button"
-          accessibilityState={{ expanded: showManualKeys }}
+          aria-expanded={showManualKeys}
         >
           {showManualKeys ? (
             <ChevronDown size={isNativePhone ? 20 : 16} className="text-muted-foreground" />

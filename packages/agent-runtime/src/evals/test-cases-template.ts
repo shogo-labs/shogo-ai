@@ -11,7 +11,7 @@
 
 import type { AgentEval } from './types'
 import { getAgentTemplateById } from '../agent-templates'
-import { usedTool, usedToolAnywhere, usedGhCli } from './eval-helpers'
+import { usedTool, usedToolAnywhere, usedGhCli, execCommands, readPaths, searchedAnyRoute, fileWrites } from './eval-helpers'
 import { GH_CLI_EXEC_MOCK } from './tool-mocks'
 
 function getTemplateFiles(templateId: string): Record<string, string> {
@@ -266,17 +266,22 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'investigates',
-        description: 'Agent actively investigates (uses web or search_integrations)',
+        description: 'Agent actively investigates (probes endpoints, reads logs/code, or looks for monitoring integrations)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'web') || usedToolAnywhere(r, 'search_integrations'),
+        validate: (r) =>
+          usedTool(r, 'web') || usedToolAnywhere(r, 'search_integrations') ||
+          execCommands(r).some(c => /\b(curl|wget)\b|\blogs?\b|\.log\b|\b(grep|rg|tail)\b/i.test(c)) ||
+          readPaths(r).some(p => /log|route|server/i.test(p)) ||
+          searchedAnyRoute(r),
       },
       {
         id: 'uses-canvas',
-        description: 'Agent builds an incident status page',
+        description: 'Agent records the incident: builds/updates a status page or writes an incident note (any write route)',
         points: 25,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => fileWrites(r).some(w =>
+          /(^|\/)src\/.+\.(tsx?|json)$/.test(w.path) || /incident|status|postmortem|triage|memory\//i.test(w.path)),
       },
       {
         id: 'mentions-investigation',
@@ -296,7 +301,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => {
           const text = r.responseText.toLowerCase()
-          return text.includes('sentry') || text.includes('datadog') || text.includes('monitoring')
+          return /sentry|datadog|monitoring|observability|error tracking|new relic|grafana|pagerduty|alerting/.test(text)
         },
       },
     ],

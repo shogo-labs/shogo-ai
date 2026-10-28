@@ -103,7 +103,7 @@ describe("getToolSummary — built-in tools", () => {
       member_activity: { user: "sam@example.com" },
       agent_status: { instance_id: "agent-1" },
       agent_result: { instance_id: "agent-1" },
-      task_get: { task_id: 7 },
+      team_task_get: { task_id: 7 },
       meeting_read: { meeting_id: "meeting-1" },
       memory_read: { file: "MEMORY.md" },
       read_history: { kind: "plan", id: "plan-1" },
@@ -131,6 +131,38 @@ describe("getToolSummary — built-in tools", () => {
       verb: "Read",
       target: "#general thread",
     })
+  })
+})
+
+describe("getToolSummary — background tasks", () => {
+  test("wait on one task names it, and flips tense when done", () => {
+    expect(getToolSummary("wait", { task_ids: ["t_1234abcd"] })).toEqual({
+      verb: "Waiting for",
+      target: "task t_1234abcd",
+    })
+    expect(getToolSummary("wait", { task_ids: ["t_1234abcd"] }, "success")).toEqual({
+      verb: "Waited for",
+      target: "task t_1234abcd",
+    })
+  })
+
+  test("wait on several tasks counts them and shows until", () => {
+    expect(getToolSummary("wait", { task_ids: ["t_a", "t_b"], until: "ready" })).toEqual({
+      verb: "Waiting for",
+      target: '2 tasks to show "ready"',
+    })
+  })
+
+  test("wait with no tasks is a timed pause", () => {
+    expect(getToolSummary("wait", { timeout_ms: 60_000 })).toEqual({
+      verb: "Waiting for",
+      target: "1 minute",
+    })
+  })
+
+  test("task_list and task_cancel", () => {
+    expect(getToolSummary("task_list", {})).toEqual({ verb: "List", target: "background tasks" })
+    expect(getToolSummary("task_cancel", { task_id: "t_1" })).toEqual({ verb: "Cancel", target: "task t_1" })
   })
 })
 
@@ -610,14 +642,20 @@ describe("parseShellCommand — fallback", () => {
 })
 
 describe("getToolSummary — fallback", () => {
-  test("unknown tool falls back to tool name + key arg", () => {
+  test("unknown MCP tool falls back to a humanized name + key arg", () => {
     const summary = getToolSummary("mcp__foo__bar", { name: "baz" })
-    expect(summary.verb).toBe("mcp__foo__bar")
+    expect(summary.verb).toBe("Foo: Bar")
     expect(summary.target).toBe("baz")
   })
 
   test("unknown tool with no useful args", () => {
-    expect(getToolSummary("custom_tool")).toEqual({ verb: "custom_tool" })
+    expect(getToolSummary("custom_tool")).toEqual({ verb: "Custom tool" })
+  })
+
+  test("generic runtime tool such as team_chat_post reads as 'Team chat post'", () => {
+    expect(getToolSummary("team_chat_post", { channel: "general", text: "hi" })).toEqual({
+      verb: "Team chat post",
+    })
   })
 })
 

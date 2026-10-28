@@ -464,9 +464,8 @@ const ROOT_CAUSE_PLAN_HARDCODED_LIMIT: AgentEval = {
   name: 'Root cause (plan): hardcoded token limit overrides the setting',
   category: 'root-cause',
   level: 3,
-  interactionMode: 'plan',
   input:
-    "Users report RAG answers ignore the 'Max input tokens' setting — context is always cut at 4096 tokens. Plan a fix.",
+    "Make a plan first, do not change anything yet: users report RAG answers ignore the 'Max input tokens' setting — context is always cut at 4096 tokens.",
   workspaceFiles: RAG_FIXTURE,
   maxScore: 100,
   validationCriteria: [
@@ -524,8 +523,7 @@ const ROOT_CAUSE_PLAN_TIMEOUT: AgentEval = {
   name: 'Root cause (plan): hardcoded request timeout overrides the setting',
   category: 'root-cause',
   level: 3,
-  interactionMode: 'plan',
-  input: 'Requests time out after 5s even though I set the timeout to 30s in settings.',
+  input: 'Make a plan first, do not change anything yet: requests time out after 5s even though I set the timeout to 30s in settings.',
   workspaceFiles: TIMEOUT_FIXTURE,
   maxScore: 100,
   validationCriteria: [

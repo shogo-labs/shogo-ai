@@ -9,7 +9,7 @@
  *
  *   1. Across capability-config permutations, the agent-mode tool set always
  *      contains the expected core tools (`expectedCoreToolsForAgentMode`).
- *   2. A tool removed by a read-only mode still dispatches to a *mode-aware*
+ *   2. A tool removed by coordinator mode still dispatches to a coordinator
  *      error stub (not the opaque "Tool not found"), via
  *      `createModeUnavailableTool`.
  */
@@ -21,7 +21,6 @@ import {
   expectedCoreToolsForAgentMode,
   createModeUnavailableTool,
   type ToolContext,
-  type RestrictedMode,
 } from '../gateway-tools'
 import type { GatewayConfig } from '../gateway'
 
@@ -95,25 +94,22 @@ describe('WS7: core tools always present in agent mode', () => {
   })
 })
 
-describe('WS7: mode-aware unavailable-tool stub', () => {
-  const modes: RestrictedMode[] = ['plan', 'ask', 'coordinator']
+describe('WS7: unavailable-tool stub', () => {
+  test('createModeUnavailableTool returns an actionable error, not "not found"', async () => {
+    const stub = createModeUnavailableTool('write_file', 'coordinator')
+    expect(stub.name).toBe('write_file')
+    const res: any = await stub.execute('id', {})
+    const detail = res.details
+    expect(detail.toolUnavailableInMode).toBe('coordinator')
+    expect(String(detail.error)).toContain('write_file')
+    expect(String(detail.error).toLowerCase()).not.toContain('not found')
+    // Mentions how to recover (delegate).
+    expect(/delegate/i.test(String(detail.error))).toBe(true)
+  })
 
-  for (const mode of modes) {
-    test(`createModeUnavailableTool(${mode}) returns an actionable error, not "not found"`, async () => {
-      const stub = createModeUnavailableTool('write_file', mode)
-      expect(stub.name).toBe('write_file')
-      const res: any = await stub.execute('id', {})
-      const detail = res.details
-      expect(detail.toolUnavailableInMode).toBe(mode)
-      expect(String(detail.error)).toContain('write_file')
-      expect(String(detail.error).toLowerCase()).not.toContain('not found')
-      // Mentions how to recover (agent mode / delegate).
-      expect(/agent mode|delegate/i.test(String(detail.error))).toBe(true)
-    })
-  }
-
-  test('plan-mode stub names the mode', async () => {
-    const res: any = await createModeUnavailableTool('exec', 'plan').execute('id', {})
-    expect(String(res.details.error)).toContain('Plan mode')
+  test('the stub names coordinator mode and never offers a mode switch', async () => {
+    const res: any = await createModeUnavailableTool('exec', 'coordinator').execute('id', {})
+    expect(String(res.details.error)).toContain('coordinator mode')
+    expect(/agent mode|plan mode|ask mode/i.test(String(res.details.error))).toBe(false)
   })
 })

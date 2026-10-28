@@ -130,6 +130,7 @@ function makePool() {
     'saveWorkspaceMembersToStore',
     'saveProjectDataToStore',
     'saveRepoToStore',
+    'saveHomeStateToStore',
   ]) {
     ;(pool as any)[m] = async () => undefined
   }

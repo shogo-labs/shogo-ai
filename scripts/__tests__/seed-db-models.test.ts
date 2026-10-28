@@ -42,7 +42,7 @@ beforeAll(async () => {
   console.log = () => {}
   try {
     const { main } = await import('../seed-db-models')
-    await main()
+    await main([])
   } finally {
     console.log = log
   }
@@ -101,5 +101,31 @@ describe('seed-db-models vs MODEL_CATALOG / MODEL_DOLLAR_COSTS', () => {
       const want = Object.fromEntries(fields.map((f) => [f, costs[f]]))
       expect({ apiModel: row.apiModel, ...got }).toEqual({ apiModel: row.apiModel, ...want })
     }
+  })
+})
+
+describe('seed-db-models --only', () => {
+  const runQuietly = async (argv: string[]) => {
+    const { main } = await import('../seed-db-models')
+    const log = console.log
+    console.log = () => {}
+    try {
+      await main(argv)
+    } finally {
+      console.log = log
+    }
+  }
+
+  it('seeds only the named model', async () => {
+    const before = seeded.length
+    await runQuietly(['--only=haiku-5-5'])
+    expect(seeded.slice(before).map((r) => `${r.provider}:${r.apiModel}`)).toEqual(['anthropic:claude-haiku-5-5'])
+  })
+
+  it('rejects unknown seeder names before writing anything', async () => {
+    const before = seeded.length
+    await expect(runQuietly(['--only=haiku-5-5,nope'])).rejects.toThrow('Unknown seeder(s): nope')
+    await expect(runQuietly(['--only='])).rejects.toThrow('Unknown seeder(s)')
+    expect(seeded.length).toBe(before)
   })
 })

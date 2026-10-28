@@ -40,7 +40,7 @@ export function OptionSelect<T extends string | null>({
         testID={testID}
         accessibilityRole="button"
         accessibilityLabel={`${label}: ${current?.label ?? ''}`}
-        accessibilityState={{ expanded: open, disabled }}
+        aria-expanded={open} aria-disabled={disabled}
         disabled={disabled}
         onPress={() => setOpen((o) => !o)}
         className={cn('flex-row items-center gap-1.5 rounded-lg px-2 py-1.5 web:hover:bg-muted', disabled && 'opacity-50')}

@@ -18,6 +18,11 @@
  */
 
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
+import {
+  emptyArgsMessage,
+  findEmptyFromNames,
+  requiredStringProps,
+} from './tool-arg-guard'
 
 // ============================================================================
 // Concurrency-safe tool registry
@@ -47,6 +52,9 @@ export const CONCURRENT_SAFE_TOOLS = new Set([
   'agent_cancel',
   'exec_wait',
   'exec_list',
+  'wait',
+  'task_list',
+  'task_cancel',
 ])
 
 export function isConcurrencySafe(toolName: string): boolean {
@@ -196,6 +204,11 @@ export interface OrchestrationState {
 
 /**
  * Wrap a single tool with orchestration (semaphore + optional write mutex).
+ *
+ * The wrapped `execute` also enforces the empty-argument guard: a required
+ * string argument that is missing or blank rejects the call before it runs.
+ * The required-string list comes from the tool's own schema, so every tool is
+ * covered without tool-specific code.
  */
 function wrapSingleTool(
   tool: AgentTool,
@@ -203,6 +216,12 @@ function wrapSingleTool(
   writeMutex: WriteMutex,
 ): AgentTool {
   const safe = isConcurrencySafe(tool.name)
+  const requiredStrings = requiredStringProps(tool.parameters)
+
+  const assertRequiredArgsPresent = (params: unknown): void => {
+    const empty = findEmptyFromNames(requiredStrings, params)
+    if (empty.length > 0) throw new Error(emptyArgsMessage(tool.name, empty))
+  }
 
   if (safe) {
     return {
@@ -213,6 +232,7 @@ function wrapSingleTool(
         signal?: AbortSignal,
         onUpdate?: any,
       ): Promise<AgentToolResult<any>> => {
+        assertRequiredArgsPresent(params)
         await semaphore.acquire()
         try {
           return await tool.execute(toolCallId, params, signal, onUpdate)
@@ -231,6 +251,7 @@ function wrapSingleTool(
       signal?: AbortSignal,
       onUpdate?: any,
     ): Promise<AgentToolResult<any>> => {
+      assertRequiredArgsPresent(params)
       await semaphore.acquire()
       await writeMutex.acquire()
       try {
@@ -311,6 +332,15 @@ export function wrapToolsWithOrchestration(
           if (start === undefined && end === undefined) return proxy
           const wrapped = Array.from(target).map(getOrWrap)
           return wrapped.slice(start, end)
+        }
+      }
+      // `find` is the dispatch path. Delegate to the inner list's own `find`
+      // so a proxied input can resolve tools it deliberately omits from
+      // iteration (e.g. mode-unavailable stubs that return a helpful error).
+      if (prop === 'find') {
+        return (predicate: (t: AgentTool, i: number) => unknown, thisArg?: unknown) => {
+          const hit = target.find((t, i) => predicate.call(thisArg, getOrWrap(t), i))
+          return hit === undefined ? undefined : getOrWrap(hit)
         }
       }
       if (typeof prop === 'string' && PROXIED_PROPS.has(prop)) {

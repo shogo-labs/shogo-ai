@@ -4,7 +4,7 @@ import { useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, NotebookText, Paperclip, Pencil, PanelRight, Pin, Radio, Sparkles, Star, Trash2, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, PanelRight, Pin, Radio, Sparkles, Star, Trash2, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -13,7 +13,6 @@ import { WebTooltip } from '../chat/WebTooltip'
 import {
   conversationTitle,
   isAgentDm,
-  isSelfDm,
   teamChatApi,
   type CatchUpResult,
   type ChatMessage,
@@ -22,14 +21,46 @@ import {
   type MembershipNotifyLevel,
   type Participant,
 } from '../../lib/team-chat-api'
-import { mentionNames, renderMentions } from '../../lib/team-chat-state'
+import { mentionNames, renderMentionsMarkdown } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { usePresence } from '../../hooks/usePresence'
+import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { PresenceDot, presenceLabel } from './PresenceDot'
 import { AgentAvatar } from './AgentAvatar'
+import { confirmsAddToChannel } from './AddToChannelConfirm'
+import { UserAvatar } from './UserAvatar'
 import { HuddleButton } from './Huddle'
 
 const api = teamChatApi()
+
+/** One inline header icon: a 16px icon with `p-1.5` padding, plus the row gap. */
+const HEADER_SLOT = 36
+/** Room kept for the leading avatar, the title's minimum width, the huddle button and their gaps. */
+const HEADER_FIXED = 24 + 8 + 120 + 8 + 28 + 8
+/** Narrower than this, the desktop header shows only the title, the huddle button and "More". */
+const HEADER_COMPACT = 260
+/** Actions that stay inline first, in this order. Anything else goes under "More" when space runs out. */
+const INLINE_PRIORITY = ['catchup', 'notify', 'star', 'pins', 'files', 'members']
+
+/**
+ * Splits the desktop header actions into the ones that fit inline and the rest,
+ * which move under "More". A `rowWidth` of 0 means the row is not measured yet,
+ * so everything stays inline.
+ */
+export function splitHeaderActions<T extends { key: string }>(actions: T[], rowWidth: number): { inline: T[]; overflow: T[] } {
+  if (rowWidth <= 0) return { inline: actions, overflow: [] }
+  if (rowWidth < HEADER_COMPACT) return { inline: [], overflow: actions }
+  const slotsIn = (width: number) => Math.max(0, Math.floor((width - HEADER_FIXED) / HEADER_SLOT))
+  if (actions.length <= slotsIn(rowWidth)) return { inline: actions, overflow: [] }
+  // The More button takes one slot itself.
+  const slots = slotsIn(rowWidth - HEADER_SLOT)
+  const rank = (key: string) => {
+    const i = INLINE_PRIORITY.indexOf(key)
+    return i === -1 ? INLINE_PRIORITY.length : i
+  }
+  const kept = new Set([...actions].sort((a, b) => rank(a.key) - rank(b.key)).slice(0, slots).map((a) => a.key))
+  return { inline: actions.filter((a) => kept.has(a.key)), overflow: actions.filter((a) => !kept.has(a.key)) }
+}
 
 export interface ConversationHeaderProps {
   conversation: ConversationDetail
@@ -79,6 +110,17 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const [editOpen, setEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Desktop only: the width of the action row and the header's height, which places the More menu.
+  const [actionRowWidth, setActionRowWidth] = useState(0)
+  const [headerHeight, setHeaderHeight] = useState(0)
+  const [moreOpen, setMoreOpen] = useState(false)
+  // iOS can't present a modal while the More menu's modal is dismissing.
+  const afterMore = useRef<(() => unknown) | null>(null)
+  const fromMore = (fn: () => unknown) => {
+    setMoreOpen(false)
+    if (Platform.OS === 'ios') afterMore.current = fn
+    else void fn()
+  }
   const isChannel = conversation.kind === 'public' || conversation.kind === 'private' || conversation.kind === 'activity'
   const canRename = conversation.canManage && (conversation.kind === 'public' || conversation.kind === 'private') && !conversation.archivedAt
   const canEditTopic = conversation.kind !== 'activity' && !conversation.archivedAt && (conversation.canPost || conversation.canManage)
@@ -89,14 +131,17 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const named = others.length ? others : conversation.members
   const participants: Participant[] = named.map((m) => (m.type === 'agent'
     ? { type: 'agent', projectId: m.projectId, name: m.name }
-    : { type: 'user', id: m.userId, name: m.name, image: m.image, ...(m.userId === me ? { self: true } : {}) }))
+    : { type: 'user', id: m.userId, name: m.name, image: resolveAvatarUrl(m.image), ...(m.userId === me ? { self: true } : {}) }))
   const title = isChannel ? conversation.name ?? 'channel' : conversationTitle({ kind: conversation.kind, name: conversation.name, participants })
   const dmPeer = conversation.kind === 'dm' ? participants.find((p) => p.type === 'user') : undefined
+  // Your own note is the one direct message whose leading slot is you: nobody
+  // is across from you, so the header shows your face instead of an icon.
+  const selfPeer = dmPeer?.type === 'user' && dmPeer.self === true ? dmPeer : null
   // Presence next to your own note would be your own status, so drop it.
   const peerId = dmPeer?.type === 'user' && dmPeer.self !== true ? dmPeer.id : null
   const peerStatus = useUserStatus(conversation.workspaceId, peerId)
   const peerPresence = usePresence(conversation.workspaceId, peerId)
-  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : isSelfDm({ kind: conversation.kind, participants }) ? NotebookText : Users
+  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : Users
 
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -236,6 +281,8 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     <View className="w-4 items-center">
       <PresenceDot userId={peerId} workspaceId={conversation.workspaceId} size={9} />
     </View>
+  ) : selfPeer ? (
+    <UserAvatar name={selfPeer.name} image={selfPeer.image} size={20} />
   ) : agentPeer?.type === 'agent' ? (
     <AgentAvatar name={agentName} projectId={agentProjectId} workspaceId={conversation.workspaceId} size={20} />
   ) : (
@@ -260,7 +307,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
             </View>
             <ScrollView>
               {catchUp?.summary ? (
-                <MarkdownText>{renderMentions(catchUp.summary, mentionNames(mentionables))}</MarkdownText>
+                <MarkdownText>{renderMentionsMarkdown(catchUp.summary, mentionNames(mentionables))}</MarkdownText>
               ) : (
                 <Text className="text-sm text-muted-foreground">You're all caught up. Nothing new since you last read.</Text>
               )}
@@ -299,7 +346,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
                       </Pressable>
                     ) : null}
                   </View>
-                  <MarkdownText>{renderMentions(m.text, mentionNames(mentionables))}</MarkdownText>
+                  <MarkdownText>{renderMentionsMarkdown(m.text, mentionNames(mentionables))}</MarkdownText>
                 </View>
               )) : (
                 <Text className="text-sm text-muted-foreground">Nothing pinned yet. Hover a message and use the pin button to keep it here.</Text>
@@ -479,11 +526,13 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     )
   }
 
+  const { inline, overflow } = splitHeaderActions(actions, actionRowWidth)
+
   return (
-    <View className="border-b border-border px-4 py-2.5">
-      <View className="flex-row items-center gap-2">
+    <View className="border-b border-border px-4 py-2.5" onLayout={(e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height))}>
+      <View className="flex-row items-center gap-2 overflow-hidden" onLayout={(e) => setActionRowWidth(Math.round(e.nativeEvent.layout.width))}>
         {leading}
-        <Text className="flex-shrink text-base font-semibold text-foreground" numberOfLines={1}>
+        <Text className="min-w-0 flex-shrink text-base font-semibold text-foreground" numberOfLines={1}>
           {title}
         </Text>
         {peerId && peerPresence ? <Text className="text-xs text-muted-foreground">{presenceLabel(peerPresence)}</Text> : null}
@@ -499,11 +548,16 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
         ) : null}
         <View className="flex-1" />
         <HuddleButton conversation={conversation} me={me} label={title} />
-        {actions.map((a) => (
+        {inline.map((a) => (
           <HeaderButton key={a.key} label={a.label} onPress={() => void a.onPress()}>
             {a.icon(16)}
           </HeaderButton>
         ))}
+        {overflow.length > 0 ? (
+          <HeaderButton label="More actions" onPress={() => setMoreOpen(true)}>
+            <MoreHorizontal size={16} className="text-muted-foreground" />
+          </HeaderButton>
+        ) : null}
       </View>
       {conversation.topic ? (
         <Pressable
@@ -522,6 +576,39 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
         </Pressable>
       ) : null}
       {error && <Text className="mt-1 text-xs text-destructive">{error}</Text>}
+      <Modal
+        visible={moreOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMoreOpen(false)}
+        onDismiss={() => {
+          const fn = afterMore.current
+          afterMore.current = null
+          if (fn) void fn()
+        }}
+      >
+        <Pressable className="flex-1" onPress={() => setMoreOpen(false)}>
+          <Pressable
+            className="absolute right-4 min-w-52 rounded-xl border border-border bg-card p-1 shadow-lg"
+            style={{ top: headerHeight }}
+            onPress={() => {}}
+            testID="header-more-menu"
+          >
+            {overflow.map((a) => (
+              <Pressable
+                key={a.key}
+                onPress={() => fromMore(a.onPress)}
+                accessibilityRole="menuitem"
+                accessibilityLabel={a.label}
+                className="flex-row items-center gap-3 rounded-md px-3 py-2 active:bg-muted hover:bg-muted"
+              >
+                {a.icon(16)}
+                <Text className={cn('flex-1 text-sm', a.danger ? 'text-destructive' : 'text-foreground')}>{a.label}</Text>
+              </Pressable>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
       {modals}
     </View>
   )
@@ -574,7 +661,7 @@ function NotifyModal({
             <Pressable
               key={c.value}
               accessibilityRole="radio"
-              accessibilityState={{ checked: current === c.value }}
+              aria-checked={current === c.value}
               onPress={async () => {
                 await onPick({ notifyLevel: c.value })
                 onClose()
@@ -590,7 +677,7 @@ function NotifyModal({
           ))}
           <Pressable
             accessibilityRole="switch"
-            accessibilityState={{ checked: !!conversation.muted }}
+            aria-checked={!!conversation.muted}
             onPress={async () => {
               await onPick({ muted: !conversation.muted })
               onClose()
@@ -822,7 +909,7 @@ function DeleteChannelModal({
                 onPress={() => void act('delete')}
                 disabled={!confirmed || !!busy}
                 accessibilityLabel="Delete permanently"
-                accessibilityState={{ disabled: !confirmed || !!busy }}
+                aria-disabled={!confirmed || !!busy}
                 className={cn('rounded-md bg-destructive px-3 py-1.5', (!confirmed || busy) && 'opacity-50')}
               >
                 <Text className="text-sm font-medium text-destructive-foreground">{busy === 'delete' ? 'Deleting…' : 'Delete permanently'}</Text>
@@ -919,7 +1006,14 @@ function MembersModal({
                 {people.map((p) => (
                   <Pressable
                     key={p.id}
-                    onPress={() => act(() => api.addMembers(conversation.id, [p.id]))}
+                    onPress={() => {
+                      void (async () => {
+                        // A private channel's history (and its files) is handed
+                        // over on add — the same warning the mention nudge gives.
+                        if (!(await confirmsAddToChannel(conversation.kind))) return
+                        void act(() => api.addMembers(conversation.id, [p.id]))
+                      })()
+                    }}
                     className="flex-row items-center gap-2 rounded-md px-1 py-1.5 active:bg-muted hover:bg-muted"
                   >
                     <Users size={14} className="text-muted-foreground" />

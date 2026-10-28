@@ -392,10 +392,10 @@ describe('team_* tools without a TeamManager', () => {
   const cases: Array<[string, Record<string, any>]> = [
     ['team_create', { team_name: 'foo' }],
     ['team_delete', { team_name: 'foo' }],
-    ['task_create', { subject: 'do x', description: 'd' }],
-    ['task_get', { task_id: 1 }],
-    ['task_list', {}],
-    ['task_update', { task_id: 1, status: 'completed' }],
+    ['team_task_create', { subject: 'do x', description: 'd' }],
+    ['team_task_get', { task_id: 1 }],
+    ['team_task_list', {}],
+    ['team_task_update', { task_id: 1, status: 'completed' }],
     ['send_team_message', { to: 'bob', message: 'hi' }],
   ]
   for (const [name, params] of cases) {

@@ -6,9 +6,13 @@
  * Phone Settings is usually opened from Account. History-back would return
  * there; native chrome should land on Home instead. Wide web/desktop keeps
  * history-back, with the projects list as the no-history fallback.
+ *
+ * Home is the explicit `/(app)/home` route: the landing (`/`) is the
+ * workspace agent on a fresh chat, which is not a place to drop someone
+ * coming out of Settings.
  */
 
-export const APP_HOME_HREF = '/(app)'
+export const APP_HOME_HREF = '/(app)/home'
 export const SETTINGS_WIDE_FALLBACK_HREF = '/(app)/projects'
 
 export type SettingsBackRouter = {
@@ -30,22 +34,4 @@ export function leaveSettings(
     return
   }
   router.replace(SETTINGS_WIDE_FALLBACK_HREF)
-}
-
-/**
- * Way out of Chat preferences (`/c/settings`).
- *
- * That page is a workspace page, but the workspace sidebar is hidden for any
- * path containing "/settings" (see `(app)/_layout.tsx`), so it is the one `/c`
- * page with no chrome to leave by. History-back is the right answer when it
- * exists — it returns to the channels panel or chat it was opened from — and a
- * cold deep link has none, so fall back to the workspace rather than the
- * account settings page's projects list.
- */
-export function leaveChatPreferences(router: SettingsBackRouter): void {
-  if (router.canGoBack()) {
-    router.back()
-    return
-  }
-  router.replace(APP_HOME_HREF)
 }

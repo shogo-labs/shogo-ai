@@ -6,13 +6,16 @@
  * before they run and evaluate them against the active security policy.
  *
  * Three tiers: strict (ask everything), balanced (allowlist-based), full_autonomy (YOLO).
- * Hard-blocked actions (rm -rf /, shutdown, system paths) are denied in ALL modes.
+ * Nothing is blocked by default: only rules a person configured (shell/file deny
+ * lists, per-tool action rules, local-access settings) apply. The built-in blocks
+ * that remain — credential paths (`~/.ssh`, `~/.aws`, …) and the `system`
+ * category — apply only in strict/balanced; full_autonomy blocks nothing.
  */
 
 import { resolve, join, dirname } from 'path'
 import { existsSync, lstatSync, statSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
-import { dedupeRoots, isWithinAnyRoot, isWithinRoot } from './path-boundary'
+import { dedupeRoots, isWithinAnyCanonicalRoot, isWithinAnyRoot, isWithinRoot, canonicalPathSync } from './path-boundary'
 import {
   checkComputerUse,
   checkFileAccess,
@@ -38,53 +41,8 @@ const log = createLogger('permission-engine')
 export type { ActionRule, SecurityPreference, PermissionCategory, PermissionCheckResult }
 
 // ---------------------------------------------------------------------------
-// Hard-blocked patterns — enforced in ALL modes, never overridable
+// Hard-blocked paths — enforced in ALL modes, never overridable
 // ---------------------------------------------------------------------------
-
-// Patterns checked against each sub-command after splitting on ; && ||
-const SUB_COMMAND_BLOCKED: RegExp[] = [
-  /^\s*rm\s+(-[a-z]*r[a-z]*\s+|--recursive\s+)\//,
-  /^\s*shutdown\b/,
-  /^\s*reboot\b/,
-  /^\s*mkfs\b/,
-  /^\s*dd\s+if=/,
-  /^\s*chmod\s+777\b/,
-  /^\s*kill\s+-9\s+1\b/,
-  /^\s*format\s+[a-z]:/i,
-]
-
-// Patterns checked against the entire command string (cannot be split away)
-const FULL_COMMAND_BLOCKED: RegExp[] = [
-  /\|\s*(ba)?sh\b/,
-  /\bgit\s+push\s+.*--force\b/,
-  /\bsh\s+-c\b/,
-  /\bbash\s+-c\b/,
-  /\beval\s+["']/,
-]
-
-// `sudo` itself is allowed (subject to mode/allowlist rules), but must not
-// hide a hard-blocked command behind it, e.g. `sudo -u root rm -rf /`.
-const SUDO_PREFIX = /^\s*sudo(?:\s+(?:-[ugCDhpRrTt]\s+\S+|--\S+|-\S+))*\s+/
-
-function stripSudoPrefix(sub: string): string {
-  let out = sub
-  while (SUDO_PREFIX.test(out)) out = out.replace(SUDO_PREFIX, '')
-  return out
-}
-
-function isHardBlockedCommand(command: string): boolean {
-  for (const pattern of FULL_COMMAND_BLOCKED) {
-    if (pattern.test(command)) return true
-  }
-  const subCommands = command.split(/\s*(?:&&|\|\||;)\s*/).map(stripSudoPrefix)
-  for (const sub of subCommands) {
-    for (const pattern of SUB_COMMAND_BLOCKED) {
-      if (pattern.test(sub)) return true
-    }
-  }
-  return false
-}
-
 const HARD_BLOCKED_PATH_PREFIXES: string[] = [
   join(homedir(), '.ssh'),
   join(homedir(), '.gnupg'),
@@ -330,7 +288,8 @@ export interface PermissionEngineOptions {
   /**
    * Skip built-in action-rule defaults (e.g. "merging a PR asks") so only rules a
    * person configured apply. For runtimes serving cloud workspaces from a user's
-   * own machine (`shogo worker`): hard blocks stay, nobody gets prompted by default.
+   * own machine (`shogo worker`): credential-path blocks stay, nobody gets
+   * prompted by default.
    */
   noDefaultActionRules?: boolean
 }
@@ -521,9 +480,11 @@ export class PermissionEngine {
         ?? { action: 'allow', reason: 'No rule for this action', category }
     }
 
-    // 1. Hard-block checks (always deny, all modes)
-    const hardBlock = this.checkHardBlocked(category, toolName, params)
-    if (hardBlock) return hardBlock
+    // 1. Hard-block checks (deny in strict/balanced; full_autonomy blocks nothing)
+    if (this.pref.mode !== 'full_autonomy') {
+      const hardBlock = this.checkHardBlocked(category, toolName, params)
+      if (hardBlock) return hardBlock
+    }
 
     // 2. User deny overrides
     const denyCheck = this.checkDenyOverrides(category, toolName, params)
@@ -551,18 +512,6 @@ export class PermissionEngine {
     _toolName: string,
     params: Record<string, any>,
   ): PermissionCheckResult | null {
-    if (category === 'shell') {
-      const command = (params.command as string) || ''
-      if (isHardBlockedCommand(command)) {
-        return {
-          action: 'deny',
-          reason: `Blocked: this command matches a hard-blocked destructive pattern`,
-          guidance: 'This command is never allowed. Ask the user to run it manually if needed.',
-          category,
-        }
-      }
-    }
-
     if (category === 'file_read' || category === 'file_write' || category === 'file_delete') {
       const filePath = (params.path as string) || ''
       const resolved = resolve(this.workspaceDir, filePath)
@@ -765,13 +714,11 @@ export class PermissionEngine {
   private checkWithinWorkspace(params: Record<string, any>): boolean {
     const filePath = (params.path as string) || ''
     try {
-      const resolved = resolve(this.workspaceDir, filePath)
-      if (!resolved.startsWith(this.workspaceDir)) return false
-      if (existsSync(resolved)) {
-        const real = realpathSync(resolved)
-        if (!real.startsWith(this.workspaceDir)) return false
-      }
-      return true
+      // Canonical on both sides — a project runtime's WORKSPACE_DIR is a
+      // symlink, so a raw compare prompted for its own files. Linked folders
+      // are deliberately *not* a root here: they are a separate grant and keep
+      // their approval prompt in balanced mode (SHO-125 review).
+      return isWithinAnyCanonicalRoot([this.workspaceDir], resolve(this.workspaceDir, filePath))
     } catch {
       return false
     }
@@ -962,9 +909,9 @@ function gate(
   const originalExecute = tool.execute
   const gated: AgentTool = {
     ...tool,
-    execute: async (toolCallId: string, params: any) => {
+    execute: async (toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
       const check = evaluate(tool.name, params ?? {})
-      if (!check) return originalExecute(toolCallId, params)
+      if (!check) return originalExecute(toolCallId, params, signal, onUpdate)
 
       if (check.action === 'deny') {
         return textResult({
@@ -989,7 +936,7 @@ function gate(
         }
       }
 
-      return originalExecute(toolCallId, params)
+      return originalExecute(toolCallId, params, signal, onUpdate)
     },
   }
   ;(gated as any)[GATED] = true
@@ -1039,12 +986,25 @@ export function scratchPathForWrite(
   const rewritten = rewriteScratchPath(filePath)
   if (!rewritten.remappedFrom) return rewritten
   const roots = dedupeRoots([workspaceDir, ...linkedFolderRoots()].map((r) => resolve(r)))
-  if (isWithinAnyRoot(roots, resolve(filePath))) return { path: filePath }
+  if (isWithinAnyCanonicalRoot(roots, filePath)) return { path: filePath }
   return rewritten
 }
 
-export function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
+/**
+ * Refuse a path outside the workspace (and, when `LINKED_FOLDERS` is set, outside
+ * the linked folders too).
+ *
+ * `opts.unrestricted` skips the linked-folder boundary entirely. The gateway sets
+ * it for a desktop runtime in full_autonomy, where a person asked us to block
+ * nothing (SHO-209). The cloud pod boundary never sets it.
+ */
+export function assertWithinWorkspace(
+  workspaceDir: string,
+  filePath: string,
+  opts?: { unrestricted?: boolean },
+): string {
   const resolved = resolve(workspaceDir, filePath)
+  if (opts?.unrestricted) return resolved
 
   // External (VS Code-style) projects: validate against the union of
   // [WORKSPACE_DIR, ...linkedFolders]. We import lazily so tests that
@@ -1062,34 +1022,23 @@ export function assertWithinWorkspace(workspaceDir: string, filePath: string): s
       /* fall through */
     }
     const roots = dedupeRoots([workspaceDir, ...linkedFolders].map((r) => resolve(r)))
-    const realRoots = dedupeRoots(
-      roots.map((r) => {
-        try {
-          return realpathSync(r)
-        } catch {
-          return r
-        }
-      }),
-    )
-    const ok = isWithinAnyRoot(realRoots, resolved)
-    if (!ok) {
+    const realRoots = dedupeRoots(roots.map((r) => canonicalPathSync(r)))
+    // Canonical-on-both-sides is the whole point: a project runtime's
+    // WORKSPACE_DIR is a symlink into <ws>/workspaces/<id>, so a raw
+    // `resolve()` of a relative path never compares equal to the realpath'd
+    // root and every relative path was rejected (SHO-125).
+    const canonical = canonicalPathSync(resolved)
+    if (!isWithinAnyRoot(realRoots, canonical)) {
+      // Lexically in-root but canonically out-of-root means a symlink inside
+      // an allowed folder points outside it — refused, with its own message so
+      // the denial stays diagnosable.
+      if (isWithinAnyRoot(roots, resolved)) {
+        throw new Error(`Symlink target outside allowed roots: ${filePath}`)
+      }
       throw new Error(
         `Path is outside the project's allowed folders: ${filePath}\n` +
           `Allowed roots:\n  - ${roots.join('\n  - ')}`,
       )
-    }
-    // Symlink-escape defense for files that already exist.
-    if (existsSync(resolved)) {
-      let real: string
-      try {
-        real = realpathSync(resolved)
-      } catch {
-        return resolved
-      }
-      const realOk = isWithinAnyRoot(realRoots, real)
-      if (!realOk) {
-        throw new Error(`Symlink target outside allowed roots: ${filePath}`)
-      }
     }
     return resolved
   }

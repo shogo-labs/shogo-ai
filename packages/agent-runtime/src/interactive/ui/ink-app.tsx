@@ -120,7 +120,6 @@ function App({ gateway, cwd, model: initialModel, sessionId: initialSessionId }:
       try {
         await gateway.processChatMessageStream(prompt, store, {
           chatSessionId: sessionRef.current,
-          interactionMode: 'agent',
           modelOverride: model,
         })
       } catch (e: any) {

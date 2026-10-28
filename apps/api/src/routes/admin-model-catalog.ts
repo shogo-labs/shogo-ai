@@ -128,11 +128,9 @@ export function toModelResponse(row: any) {
   }
 }
 
-// Providers we can discover live + fully route today. Google is intentionally
-// excluded until chat routing lands (see plan "Deferred"), so it can't be
-// half-enabled here. OpenRouter's catalog is public, so it discovers even
-// without a key.
-const DISCOVERY_PROVIDERS = new Set(['anthropic', 'openai', 'openrouter'])
+// Providers we can discover live + fully route today. OpenRouter's catalog is
+// public, so it discovers even without a key.
+const DISCOVERY_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'openrouter'])
 
 interface DiscoveredModel {
   id: string
@@ -154,6 +152,13 @@ function openRouterPerMillion(v: unknown): number | undefined {
 /** OpenAI's /models lists embeddings, audio, image, moderation, etc. Keep only
  *  chat-capable text models so the picker isn't flooded. */
 const OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|realtime|live|dall-e|image|moderation|transcribe|search|babbage|davinci|ada|curie|codex|guard)/i
+
+/** Gemini's ListModels reports `generateContent` for non-text models too: TTS,
+ *  Imagen, AQA, live models, and the image-OUTPUT Gemini ids
+ *  (`gemini-2.5-flash-image`, `gemini-2.0-flash-preview-image-generation`), and
+ *  Lyria music — keep them all out of the chat picker, which is text-chat
+ *  only. */
+const GOOGLE_NON_CHAT = /(embedding|aqa|imagen|veo|tts|live|image|lyria)/i
 
 async function discoverProviderModels(
   provider: string,
@@ -188,6 +193,37 @@ async function discoverProviderModels(
       const models = (data.data || [])
         .filter((m) => !OPENAI_NON_CHAT.test(m.id))
         .map((m) => ({ id: m.id, displayName: m.id }))
+        .sort((a, b) => a.id.localeCompare(b.id))
+      return { ok: true, models }
+    }
+    if (provider === 'google') {
+      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000', {
+        headers: { 'x-goog-api-key': apiKey },
+        signal: AbortSignal.timeout(8000),
+      })
+      if (!res.ok) return { ok: false, models: [], error: `Google returned ${res.status}` }
+      const data = (await res.json()) as {
+        models?: Array<{
+          name: string
+          displayName?: string
+          inputTokenLimit?: number
+          supportedGenerationMethods?: string[]
+        }>
+      }
+      const models = (data.models || [])
+        // ListModels also returns embeddings, AQA, Imagen, Veo, TTS and Live
+        // models. Only `generateContent` models can serve a chat turn, and the
+        // id filter drops the ones that expose it but aren't text chat.
+        .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map((m) => ({ ...m, id: m.name.replace(/^models\//, '') }))
+        .filter((m) => !GOOGLE_NON_CHAT.test(m.id))
+        .map((m) => ({
+          id: m.id,
+          displayName: m.displayName || m.id,
+          ...(Number.isFinite(m.inputTokenLimit) && (m.inputTokenLimit as number) > 0
+            ? { contextLength: m.inputTokenLimit }
+            : {}),
+        }))
         .sort((a, b) => a.id.localeCompare(b.id))
       return { ok: true, models }
     }
@@ -246,6 +282,7 @@ function inferFamily(provider: string, id: string): string {
     return 'other'
   }
   if (provider === 'openai') return 'gpt'
+  if (provider === 'google') return 'gemini'
   return 'other'
 }
 
@@ -385,7 +422,8 @@ export function adminModelCatalogRoutes() {
   })
 
   // GET /providers/:provider/models — live discovery for anthropic / openai /
-  // openrouter. OpenRouter's catalog is public, so it lists without a key.
+  // google / openrouter. OpenRouter's catalog is public, so it lists without a
+  // key.
   router.get('/providers/:provider/models', async (c) => {
     const provider = c.req.param('provider')
     if (!DISCOVERY_PROVIDERS.has(provider)) {

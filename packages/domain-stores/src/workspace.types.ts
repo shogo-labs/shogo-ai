@@ -17,6 +17,7 @@ export interface WorkspaceType {
   slug: string
   description?: string
   ssoSettings?: Record<string, unknown>
+  settings?: Record<string, unknown>
   instanceSize: InstanceSize
   composioScope: string
   trainingDataMode: string
@@ -24,6 +25,8 @@ export interface WorkspaceType {
   parentWorkspaceId?: string
   chatMode?: string
   chatProvider?: string
+  agentReplyConcurrency?: number
+  machineInstanceId?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -34,6 +37,7 @@ export interface WorkspaceCreateInput {
   slug: string
   description?: string
   ssoSettings?: Record<string, unknown>
+  settings?: Record<string, unknown>
   instanceSize?: InstanceSize
   composioScope?: string
   trainingDataMode?: string
@@ -41,6 +45,8 @@ export interface WorkspaceCreateInput {
   parentWorkspaceId?: string
   chatMode?: string
   chatProvider?: string
+  agentReplyConcurrency?: number
+  machineInstanceId?: string
 }
 
 export interface WorkspaceUpdateInput {
@@ -49,6 +55,7 @@ export interface WorkspaceUpdateInput {
   slug?: string
   description?: string
   ssoSettings?: Record<string, unknown>
+  settings?: Record<string, unknown>
   instanceSize?: InstanceSize
   composioScope?: string
   trainingDataMode?: string
@@ -56,4 +63,6 @@ export interface WorkspaceUpdateInput {
   parentWorkspaceId?: string
   chatMode?: string
   chatProvider?: string
+  agentReplyConcurrency?: number
+  machineInstanceId?: string
 }

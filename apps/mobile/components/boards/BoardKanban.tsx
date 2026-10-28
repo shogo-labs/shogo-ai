@@ -7,17 +7,33 @@
  */
 import { useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { AlertTriangle, Bot, Clock, KanbanSquare, List, Plus, Search, X } from 'lucide-react-native'
+import { AlertTriangle, ArrowUpDown, Bot, Clock, GitPullRequest, KanbanSquare, List, Plus, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { Mentionables } from '../../lib/team-chat-api'
 import { workBoardsApi, type BoardColumn, type HealthIssue, type WorkItem } from '../../lib/work-boards-api'
-import { ISSUE_LABEL, age, agentName, applyMove, assigneeName, columnBadges, issuesByItem, itemsByColumn } from '../../lib/board-layout'
+import {
+  BOARD_SORT_LABELS,
+  BOARD_SORT_OPTIONS,
+  ISSUE_LABEL,
+  age,
+  agentName,
+  applyMove,
+  assigneeName,
+  columnBadges,
+  issuesByItem,
+  itemsByColumn,
+  orderedItems,
+  type BoardSort,
+} from '../../lib/board-layout'
+import { useBoardSort } from '../../lib/board-sort-preference'
 import { useBoardView } from '../../hooks/useWorkBoards'
 import { DraggableCard, DropZone, supportsDrag } from './drag'
 import { OptionSheet } from './OptionSheet'
 import { Lane } from './Lane'
 import { PRIORITY_DOT } from './priority'
+import { PullRequestChip } from './PullRequestChip'
 import { WorkItemRow } from './WorkItemRow'
+import { WorkingIndicator } from './WorkingIndicator'
 
 const api = workBoardsApi()
 
@@ -37,13 +53,21 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
   const [menuFor, setMenuFor] = useState<WorkItem | null>(null)
   const [showIssues, setShowIssues] = useState(false)
   const [mode, setMode] = useState<'board' | 'list'>('board')
+  const [sort, chooseSort] = useBoardSort(boardId)
+  const [sortOpen, setSortOpen] = useState(false)
 
-  const grouped = useMemo(() => (view ? itemsByColumn(view) : new Map<string, WorkItem[]>()), [view])
+  const grouped = useMemo(() => (view ? itemsByColumn(view, sort) : new Map<string, WorkItem[]>()), [view, sort])
+  const listed = useMemo(() => (view ? orderedItems(view, sort) : []), [view, sort])
   const byItem = useMemo(() => issuesByItem(view?.health.issues ?? []), [view])
 
   const move = (itemId: string, columnId: string, beforeId: string | null) => {
     if (!view) return
-    const result = applyMove(view.items, { itemId, columnId, beforeId })
+    const card = view.items.find((i) => i.id === itemId)
+    // Only Manual shows an in-column order, so elsewhere a drop just changes the column.
+    if (!card) return
+    if (sort !== 'manual' && card.columnId === columnId) return
+    const anchor = sort === 'manual' ? beforeId : null
+    const result = applyMove(view.items, { itemId, columnId, beforeId: anchor })
     if (!result) return
     setView({ ...view, items: result.items })
     api.move(itemId, result.request)
@@ -60,6 +84,15 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
       void reload()
     } catch (err) {
       setNotice(err instanceof Error ? err.message : 'Could not add the card')
+    }
+  }
+
+  const toggleArming = async (column: BoardColumn) => {
+    try {
+      await api.updateColumn(boardId, column.id, { rules: { ...(column.rules ?? {}), allowAutoMerge: !column.rules?.allowAutoMerge } })
+      void reload()
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Could not change the column rule')
     }
   }
 
@@ -95,6 +128,16 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
             className="flex-1 py-1.5 text-sm text-foreground"
           />
         </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Sort cards"
+          onPress={() => setSortOpen(true)}
+          testID="board-sort"
+          className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1.5 hover:bg-muted"
+        >
+          <ArrowUpDown size={13} className="text-muted-foreground" />
+          <Text className="text-xs text-foreground">{BOARD_SORT_LABELS[sort]}</Text>
+        </Pressable>
         <View className="flex-row rounded-md border border-border" accessibilityRole="tablist">
           {(['board', 'list'] as const).map((m) => {
             const Icon = m === 'board' ? KanbanSquare : List
@@ -138,7 +181,7 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
       ) : null}
       {mode === 'list' ? (
         <ScrollView className="flex-1" testID="board-list">
-          {view.board.columns.flatMap((column) => grouped.get(column.id) ?? []).map((item) => (
+          {listed.map((item) => (
             <WorkItemRow
               key={item.id}
               item={{ ...item, column: item.column ?? view.board.columns.find((c) => c.id === item.columnId) }}
@@ -155,6 +198,7 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
               key={column.id}
               column={column}
               items={grouped.get(column.id) ?? []}
+              sort={sort}
               issues={issues}
               byItem={byItem}
               mentionables={mentionables}
@@ -169,10 +213,24 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
               onOpen={onOpenCard}
               onMenu={setMenuFor}
               onAdd={(title) => addCard(column, title)}
+              onToggleArming={() => void toggleArming(column)}
             />
           ))}
         </ScrollView>
       )}
+      {sortOpen ? (
+        <OptionSheet
+          title="Sort cards"
+          value={sort}
+          options={BOARD_SORT_OPTIONS.map((s) => ({
+            id: s,
+            label: BOARD_SORT_LABELS[s],
+            hint: s === 'manual' ? 'Drag order' : s === 'newest' ? 'Newest first' : 'Oldest first',
+          }))}
+          onSelect={(id) => chooseSort(id as BoardSort)}
+          onClose={() => setSortOpen(false)}
+        />
+      ) : null}
       {menuFor ? (
         <OptionSheet
           title={`Move ${menuFor.key}`}
@@ -189,6 +247,7 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
 interface ColumnProps {
   column: BoardColumn
   items: WorkItem[]
+  sort: BoardSort
   issues: HealthIssue[]
   byItem: Map<string, HealthIssue[]>
   mentionables: Mentionables | null
@@ -200,13 +259,17 @@ interface ColumnProps {
   onOpen: (item: WorkItem) => void
   onMenu: (item: WorkItem) => void
   onAdd: (title: string) => Promise<void>
+  onToggleArming: () => void
 }
 
 function Column(props: ColumnProps) {
   const { column, items } = props
+  // Manual is the only sort where a drop has a visible "above this card" meaning.
+  const manual = props.sort === 'manual'
   const [hoverCard, setHoverCard] = useState<string | null>(null)
   const badges = columnBadges(column, items.length, props.issues)
   const agent = column.agentRef ? agentName(column.agentRef, props.mentionables) : null
+  const arming = column.rules?.allowAutoMerge === true
   return (
     <Lane
       title={column.name}
@@ -220,12 +283,28 @@ function Column(props: ColumnProps) {
           <Text className="text-[10px] font-medium text-destructive">{badges.breaches}</Text>
         </View>
       ) : null}
-      right={agent ? (
-        <View className="flex-row items-center gap-1" accessibilityLabel={`${agent} works this column`}>
-          <Bot size={12} className="text-muted-foreground" />
-          <Text className="max-w-24 text-[11px] text-muted-foreground" numberOfLines={1}>{agent}</Text>
+      right={(
+        <View className="flex-row items-center gap-1.5">
+          {agent ? (
+            <View className="flex-row items-center gap-1" accessibilityLabel={`${agent} works this column`}>
+              <Bot size={12} className="text-muted-foreground" />
+              <Text className="max-w-24 text-[11px] text-muted-foreground" numberOfLines={1}>{agent}</Text>
+            </View>
+          ) : null}
+          {/* Cards here may have their PR armed and merged by an agent. */}
+          <Pressable
+            accessibilityRole="switch"
+            aria-checked={arming}
+            accessibilityLabel={`${column.name}: ${arming ? 'auto-merge allowed' : 'auto-merge not allowed'}`}
+            onPress={props.onToggleArming}
+            testID={`board-column-arm-${column.name}`}
+            className={cn('flex-row items-center gap-1 rounded px-1 py-0.5', arming ? 'bg-emerald-500/10' : 'hover:bg-muted')}
+          >
+            <GitPullRequest size={11} className={arming ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'} />
+            {arming ? <Text className="text-[10px] font-medium text-emerald-700 dark:text-emerald-400">arm</Text> : null}
+          </Pressable>
         </View>
-      ) : null}
+      )}
       dragging={!!props.dragging}
       onDropCard={(id) => props.onDrop(id, null)}
       footer={<AddCard onAdd={props.onAdd} />}
@@ -235,11 +314,11 @@ function Column(props: ColumnProps) {
           key={item.id}
           onDrop={(id) => {
             setHoverCard(null)
-            props.onDrop(id, item.id)
+            props.onDrop(id, manual ? item.id : null)
           }}
           onHover={(on) => setHoverCard(on ? item.id : null)}
         >
-          {hoverCard === item.id && props.dragging && props.dragging !== item.id ? <View className="h-1 rounded bg-primary" /> : null}
+          {manual && hoverCard === item.id && props.dragging && props.dragging !== item.id ? <View className="h-1 rounded bg-primary" /> : null}
           <DraggableCard id={item.id} onDragStart={props.onDragStart} onDragEnd={props.onDragEnd}>
             <CardTile
               item={item}
@@ -267,6 +346,7 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
   onLongPress: () => void
 }) {
   const who = assigneeName(item, mentionables)
+  const working = item.working
   const occurrences = typeof item.fields?.occurrences === 'number' ? (item.fields.occurrences as number) : null
   return (
     <Pressable
@@ -279,7 +359,7 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
       testID={`board-card-${item.key}`}
       className={cn(
         'gap-1.5 rounded-md border bg-card p-2.5 hover:border-primary/40',
-        selected ? 'border-primary' : 'border-border',
+        selected ? 'border-primary' : working?.length ? 'border-primary/40' : 'border-border',
         faded && 'opacity-40',
       )}
     >
@@ -287,10 +367,12 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
         {item.priority !== 'none' ? <View className={cn('h-2 w-2 rounded-full', PRIORITY_DOT[item.priority])} accessibilityLabel={`${item.priority} priority`} /> : null}
         <Text className="text-[11px] text-muted-foreground">{item.key}</Text>
         <View className="flex-1" />
+        <WorkingIndicator working={working} testID={`board-card-working-${item.key}`} className="shrink" />
         {occurrences ? <Text className="text-[11px] text-muted-foreground">×{occurrences}</Text> : null}
       </View>
       <Text className="text-sm text-foreground" numberOfLines={3}>{item.title}</Text>
       <View className="flex-row flex-wrap items-center gap-1.5">
+        {item.pr ? <PullRequestChip pr={item.pr} /> : null}
         {who ? (
           <View className="flex-row items-center gap-1 rounded bg-muted px-1.5 py-0.5">
             {item.assigneeAgentRef ? <Bot size={10} className="text-muted-foreground" /> : null}

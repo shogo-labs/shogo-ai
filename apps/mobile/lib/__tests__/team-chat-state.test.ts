@@ -13,7 +13,9 @@ import {
   markdownToPlainText,
   plainPreview,
   searchSnippet,
+  activeChannelQuery,
   activeMentionQuery,
+  channelCandidates,
   addOptimistic,
   applyListEvent,
   applyTimelineEvent,
@@ -27,11 +29,14 @@ import {
   mentionCandidates,
   mentionNames,
   mergePage,
+  newestReadableSeq,
   renderMentions,
+  renderMentionsMarkdown,
   startsGroup,
   stepConversation,
   trimToNewest,
 } from '../team-chat-state'
+import { mentionHref, mentionTargetFromHref } from '../../components/chat/file-links'
 
 function msg(partial: Partial<ChatMessage> & { id: string; seq: number }): ChatMessage {
   return {
@@ -123,6 +128,28 @@ describe('timeline', () => {
     expect(state.messages.map((m) => m.id)).toEqual(['m1', 'r1'])
   })
 
+  test('newestReadableSeq ignores thread-only replies but counts ones also sent to the channel', () => {
+    expect(newestReadableSeq([])).toBe(0)
+    expect(newestReadableSeq([msg({ id: 'm1', seq: 5 })])).toBe(5)
+    // A thread reply that never reached the channel doesn't count: marking the
+    // channel read shouldn't silently also advance past something unseen.
+    expect(newestReadableSeq([
+      msg({ id: 'm1', seq: 5 }),
+      msg({ id: 'r1', seq: 6, threadRootId: 'm1' }),
+    ])).toBe(5)
+    // ...but one marked "also send to channel" *does* render in the channel
+    // feed, so reading the channel has to count it too.
+    expect(newestReadableSeq([
+      msg({ id: 'm1', seq: 5 }),
+      msg({ id: 'r1', seq: 6, threadRootId: 'm1', alsoSentToChannel: true }),
+    ])).toBe(6)
+    // A pending (not yet confirmed) send is never "read" yet.
+    expect(newestReadableSeq([
+      msg({ id: 'm1', seq: 5 }),
+      { ...msg({ id: 'tmp', seq: 0 }), pending: true },
+    ])).toBe(5)
+  })
+
   test('optimistic sends are replaced by the server copy and failures are marked', () => {
     let state = addOptimistic(emptyTimeline, msg({ id: 'tmp-1', seq: 0, clientMsgId: 'c-1' }))
     state = addOptimistic(state, msg({ id: 'tmp-2', seq: 0, clientMsgId: 'c-2' }))
@@ -183,6 +210,32 @@ describe('conversation list', () => {
     expect(update.list[1]!.lastMessage).toBeUndefined()
     update = applyListEvent(update.list, { type: 'message.created', conversationId: 'dm', message: msg({ id: 'c', seq: 7, conversationId: 'dm', authorUserId: 'u2', text: 'in thread', threadRootId: 'a' }) }, 'me', null)
     expect(update.list[0]!.lastMessage?.preview).toBe('ship it @someone')
+  })
+
+  test('a voice note with no text previews as a voice note, not as blank', () => {
+    const list = [conv({ id: 'dm', kind: 'dm' })]
+    const voiceNote = {
+      id: 'att-1',
+      name: 'Voice note.m4a',
+      mimeType: 'audio/mp4',
+      size: 12_000,
+      width: null,
+      height: null,
+      url: '/api/conversation-files/att-1',
+      durationMs: 12_000,
+      peaks: '20 40 60',
+    }
+    const update = applyListEvent(
+      list,
+      {
+        type: 'message.created',
+        conversationId: 'dm',
+        message: msg({ id: 'v', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: '', attachments: [voiceNote] }),
+      },
+      'me',
+      null,
+    )
+    expect(update.list[0]!.lastMessage).toMatchObject({ preview: '🎤 Voice note · 0:12', authorId: 'u2' })
   })
 
   test('messages from others bump unread and mentions; my own and the open conversation stay read', () => {
@@ -280,7 +333,38 @@ describe('mentions', () => {
     // Tie-broken by membership: Ana (member) before Ana Lopez (not a member).
     expect(filterCandidates(candidates, 'ana').map((c) => c.display)).toEqual(['Ana', 'Ana Lopez'])
     // With no query, every non-member user sorts after the rest, in their original order.
-    expect(filterCandidates(candidates, '').map((c) => c.display)).toEqual(['Shogo', 'Billing Bot', 'Ana', 'here', 'channel', 'Ana Lopez'])
+    expect(filterCandidates(candidates, '').map((c) => c.display)).toEqual(['Ana', 'Ana Lopez', 'here', 'channel', 'Shogo', 'Billing Bot'])
+  })
+
+  test('people always rank above groups, specials and agents, even when the agent matches better', () => {
+    const many: Mentionables = {
+      people: [{ id: 'u9', name: 'Eby Paul Daniel', email: 'eby@x.com', image: null, role: 'member' }],
+      agents: Array.from({ length: 9 }, (_, i) => ({
+        key: `p:e${i}`,
+        projectId: `e${i}`,
+        name: `Email Agent ${i}`,
+        description: null,
+        image: null,
+      })),
+    }
+    const candidates = mentionCandidates(many, 'me')
+
+    // "e" is a prefix match for both the person and the agents, but the person still comes first,
+    // then the specials, and the agents fill the rest of the 8 slots.
+    const result = filterCandidates(candidates, 'e')
+    expect(result.map((c) => c.display)).toEqual([
+      'Eby Paul Daniel',
+      'here',
+      'channel',
+      'Email Agent 0',
+      'Email Agent 1',
+      'Email Agent 2',
+      'Email Agent 3',
+      'Email Agent 4',
+    ])
+
+    // With a tight limit, the agents are what gets cut, never the person.
+    expect(filterCandidates(candidates, 'e', 1).map((c) => c.display)).toEqual(['Eby Paul Daniel'])
   })
 
   test('omitting channel membership leaves every candidate unflagged', () => {
@@ -295,6 +379,10 @@ describe('mentions', () => {
     expect(wire).toBe('<@u:u2> and <@u:u3>, ask <@a:p:p1>. email@Ana stays')
     expect(renderMentions(`${wire} <!here> <@a:ws> <@u:gone>`, mentionNames(mentionables))).toBe(
       '**@Ana Lopez** and **@Ana**, ask **@Billing Bot**. email@Ana stays **@here** **@Shogo** **@someone**',
+    )
+    expect(renderMentionsMarkdown(`${wire} <!here> <@a:ws> <@u:gone>`, mentionNames(mentionables))).toBe(
+      '[@Ana Lopez](/shogo-mention/u/u2) and [@Ana](/shogo-mention/u/u3), ask [@Billing Bot](/shogo-mention/a/p%3Ap1). email@Ana stays ' +
+        '[@here](/shogo-mention) [@Shogo](/shogo-mention/a/ws) [@someone](/shogo-mention/u/gone)',
     )
   })
 })
@@ -411,6 +499,9 @@ describe('group mentions', () => {
     const group = mentionCandidates(m, null).find((c) => c.kind === 'group')!
     expect(group).toMatchObject({ display: 'design', token: '<@g:g1>', subtitle: 'Design · 2 people' })
     expect(renderMentions('<@g:g1> and <@g:gone>', mentionNames(m))).toBe('**@design** and **@group**')
+    expect(renderMentionsMarkdown('<@g:g1> and <@g:gone>', mentionNames(m))).toBe(
+      '[@design](/shogo-mention) and [@group](/shogo-mention)',
+    )
   })
 })
 
@@ -442,5 +533,112 @@ describe('stepConversation', () => {
     expect(stepConversation(list, 'b', 1, true)?.id).toBe('e')
     expect(stepConversation(list, 'e', 1, true)?.id).toBe('b')
     expect(stepConversation([conv('a'), conv('b')], 'a', 1, true)).toBeNull()
+  })
+})
+
+describe('renderMentionsMarkdown', () => {
+  test('renders channel mentions and escapes brackets in names', () => {
+    const names = {
+      users: new Map([['u1', 'Ana [ops]']]),
+      agents: new Map(),
+      conversations: new Map([['c1', 'general']]),
+    }
+    expect(renderMentionsMarkdown('<@u:u1> in <#c:c1> and <#c:gone>', names)).toBe(
+      '[@Ana \\[ops\\]](/shogo-mention/u/u1) in [#general](/shogo-mention/c/c1) and #privatechannel',
+    )
+  })
+
+  test('a channel mention carries its conversation so a tap can open it', () => {
+    const names = { users: new Map(), agents: new Map(), conversations: new Map([['c1', 'general']]) }
+    const rendered = renderMentionsMarkdown('<#c:c1>', names)
+    expect(rendered).toBe('[#general](/shogo-mention/c/c1)')
+    expect(mentionTargetFromHref(rendered.match(/\]\(([^)]+)\)/)![1])).toEqual({ kind: 'c', id: 'c1' })
+  })
+
+  test('a channel this reader cannot see is plain text: no name, no link', () => {
+    const names = { users: new Map(), agents: new Map(), conversations: new Map([['c1', 'general']]) }
+    const rendered = renderMentionsMarkdown('<#c:secret-plans>', names)
+    expect(rendered).toBe('#privatechannel')
+    expect(rendered).not.toContain('secret-plans')
+    expect(rendered).not.toContain('/shogo-mention')
+  })
+
+  test('with no directory at all the old placeholder is kept', () => {
+    const names = { users: new Map(), agents: new Map() }
+    expect(renderMentionsMarkdown('<#c:c1>', names)).toBe('[#channel](/shogo-mention)')
+  })
+
+  test('carries the person or agent so a tap can open their profile', () => {
+    const names = {
+      users: new Map([['u1', 'Ana']]),
+      agents: new Map([['p:p1', 'Billing Bot']]),
+    }
+    const rendered = renderMentionsMarkdown('<@u:u1> and <@a:p:p1>', names)
+    expect(mentionTargetFromHref(mentionHref('u', 'u1'))).toEqual({ kind: 'u', id: 'u1' })
+    // The agent key holds a colon, so it has to survive the round trip.
+    expect(rendered).toBe('[@Ana](/shogo-mention/u/u1) and [@Billing Bot](/shogo-mention/a/p%3Ap1)')
+    const hrefs = [...rendered.matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1])
+    expect(hrefs.map((h) => mentionTargetFromHref(h))).toEqual([
+      { kind: 'u', id: 'u1' },
+      { kind: 'a', id: 'p:p1' },
+    ])
+  })
+
+  test('a target-less mention still renders, and reports no target', () => {
+    const names = { users: new Map(), agents: new Map(), conversations: new Map([['c1', 'general']]) }
+    const rendered = renderMentionsMarkdown('<!here> <#c:c1>', names)
+    expect(rendered).toBe('[@here](/shogo-mention) [#general](/shogo-mention/c/c1)')
+    expect(mentionTargetFromHref(rendered.match(/\]\(([^)]+)\)/)![1])).toBeNull()
+  })
+})
+
+describe('channel references', () => {
+  const channels = [
+    { id: 'c1', kind: 'public', name: 'general', slug: 'general' },
+    { id: 'c2', kind: 'private', name: 'Client ITAU', slug: 'client-itau' },
+    { id: 'c3', kind: 'dm', name: null, slug: null },
+    { id: 'c4', kind: 'public', name: 'old', slug: 'old', archivedAt: '2026-01-01T00:00:00.000Z' },
+  ]
+
+  test('typing # opens the picker only on a fresh word', () => {
+    expect(activeChannelQuery('see #gen', 8)).toEqual({ start: 4, query: 'gen' })
+    expect(activeChannelQuery('#', 1)).toEqual({ start: 0, query: '' })
+    // A # inside a word (a colour, a URL fragment) is not a reference trigger.
+    expect(activeChannelQuery('issue#12', 8)).toBeNull()
+    expect(activeChannelQuery('done ', 5)).toBeNull()
+  })
+
+  test('only channels this reader can see, and never the one they are in', () => {
+    const picked = channelCandidates(channels, 'c1')
+    expect(picked.map((c) => c.token)).toEqual(['<#c:c2>'])
+    expect(picked[0]).toMatchObject({ kind: 'channel', display: 'client-itau', subtitle: 'Private channel' })
+    expect(channelCandidates(channels).map((c) => c.conversationId)).toEqual(['c1', 'c2'])
+  })
+
+  test('#name is encoded to the channel token and decoded back', () => {
+    const choices = channelCandidates(channels)
+    const picked = choices.filter((c) => c.display === 'general')
+    expect(encodeMentions('look at #general please', picked)).toBe('look at <#c:c1> please')
+    expect(decodeMentions('look at <#c:c1> please', choices)).toEqual({
+      text: 'look at #general please',
+      picked: [expect.objectContaining({ token: '<#c:c1>' })],
+    })
+  })
+
+  test('an @name and a #name in one message encode independently', () => {
+    const people = mentionCandidates(
+      { people: [{ id: 'u1', name: 'Ana', email: 'ana@x.dev' }], agents: [], groups: [] } as any,
+      null,
+    )
+    const choices = [...people, ...channelCandidates(channels)]
+    const text = '@Ana see #general'
+    const picked = [people[0]!, choices.find((c) => c.display === 'general')!]
+    expect(encodeMentions(text, picked)).toBe('<@u:u1> see <#c:c1>')
+  })
+
+  test('plain-text and bold renders keep the privacy rule', () => {
+    const names = { users: new Map(), agents: new Map(), conversations: new Map([['c1', 'general']]) }
+    expect(renderMentions('<#c:c1> <#c:secret>', names)).toBe('**#general** #privatechannel')
+    expect(markdownToPlainText(renderMentionsMarkdown('<#c:secret>', names))).toBe('#privatechannel')
   })
 })

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import type { ChatTransport, UIMessage } from "ai"
 import { coalesceChunkBursts } from "./chunk-coalescer"
+import { TURN_STOPPED_PART_TYPE } from "./stopped-turn"
 
 /**
  * `resumeStream()` hits the SDK's default `/stream` URL, which carries no
@@ -20,11 +21,16 @@ import { coalesceChunkBursts } from "./chunk-coalescer"
  * True for an assistant message whose turn hasn't finished: no live
  * `data-turn-complete` frame and no persisted `completedAt`. A finished
  * assistant message from an earlier turn is left alone.
+ *
+ * A reply the user stopped carries neither of those — the turn was cancelled,
+ * so the runtime never reports it complete — but it is finished history, not
+ * a message a replay should rebuild (see stopped-turn.ts).
  */
 export function isUnfinishedAssistant(message: UIMessage | undefined): boolean {
   if (!message || message.role !== "assistant") return false
   for (const part of (message.parts ?? []) as Array<Record<string, any>>) {
     if (part?.type === "data-turn-complete") return false
+    if (part?.type === TURN_STOPPED_PART_TYPE) return false
     if (
       part?.type === "data-turn-timing" &&
       typeof part?.data?.completedAt === "number"
@@ -54,7 +60,8 @@ export function applyMessageSnapshot<T extends UIMessage>(
  * The rest of a snapshot stream lands in a new message the SDK appends after
  * the snapshot, and the turn list shows only a turn's last assistant message.
  * Shows the two as one message: the snapshot's parts, then the rest of the
- * turn. The snapshot ends at a step boundary, so no part is split across them.
+ * turn. The snapshot ends where the last part closed, so no part is split
+ * across them.
  */
 export function foldSnapshotContinuation<T extends UIMessage>(
   messages: T[],
@@ -92,28 +99,54 @@ export function dropUnfinishedAssistantTail<T extends UIMessage>(
 /**
  * A runtime that was asked for `?snapshot=1` (see `useChatTransportConfig`'s
  * `resumeSnapshot`) opens the stream with one of these: the assistant message
- * assembled up to the last finished step. The rest of the stream continues
- * that message, so the client applies the snapshot instead of rebuilding the
- * turn chunk by chunk.
+ * assembled up to the last point where no part was open. The rest of the stream
+ * continues that message, so the client applies the snapshot instead of
+ * rebuilding the turn chunk by chunk.
  */
 export const MESSAGE_SNAPSHOT_CHUNK_TYPE = "data-message-snapshot"
+
+/**
+ * A snapshot always needs an id: `foldSnapshotContinuation` joins the
+ * continuation to it by id, and without one the turn shows only its latest
+ * action (the 2.4.1 regression). Runtimes before the fix send `id: ""`, so the
+ * client names it the way the runtime now does: after the turn.
+ */
+export function withSnapshotId<T extends UIMessage>(snapshot: T | undefined): T | undefined {
+  if (!snapshot || snapshot.id) return snapshot
+  let turnId: string | undefined
+  for (const part of (snapshot.parts ?? []) as Array<Record<string, any>>) {
+    if (part?.type === "data-turn-start" && typeof part.data?.turnId === "string") {
+      turnId = part.data.turnId
+      break
+    }
+  }
+  const id = turnId
+    ? `turn-${turnId}`
+    : `turn-snapshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return { ...snapshot, id }
+}
 
 /** How long to wait for the first chunk before assuming there is no snapshot. */
 const SNAPSHOT_PEEK_MS = 1500
 
 /**
  * Reads ahead at most one chunk without losing it: `stream()` yields the
- * original chunks, optionally minus the first one.
+ * original chunks, optionally minus the first one. `endedWithoutFrames` says
+ * the peek ended because the stream closed, not because it went quiet: a held
+ * open stream with nothing to send yet is a live turn, a closed one is a
+ * runtime with nothing buffered.
  */
 function peekFirstChunk<T>(source: ReadableStream<T>, timeoutMs: number) {
   const reader = source.getReader()
   let firstRead: Promise<ReadableStreamReadResult<T>> | null = reader.read()
   let skipFirst = false
+  let endedWithoutFrames = false
   const peeked = new Promise<T | undefined>((resolve, reject) => {
     const timer = setTimeout(() => resolve(undefined), timeoutMs)
     firstRead!.then(
       (result) => {
         clearTimeout(timer)
+        endedWithoutFrames = result.done === true
         resolve(result.done ? undefined : result.value)
       },
       (error) => {
@@ -124,6 +157,9 @@ function peekFirstChunk<T>(source: ReadableStream<T>, timeoutMs: number) {
   })
   return {
     peeked,
+    get endedWithoutFrames() {
+      return endedWithoutFrames
+    },
     stream(opts: { skipFirst: boolean }): ReadableStream<T> {
       skipFirst = opts.skipFirst
       return new ReadableStream<T>(
@@ -148,6 +184,26 @@ function peekFirstChunk<T>(source: ReadableStream<T>, timeoutMs: number) {
 }
 
 /**
+ * Whether a resume may drop the unfinished copy of the message on screen: the
+ * replay has to be about to rebuild it. A buffered heartbeat, or a stream that
+ * closed without a single frame, means the runtime has nothing left to replay —
+ * dropping then leaves the transcript with no copy at all, which is how a reply
+ * the person watched finish disappeared. Silence alone is not evidence of that
+ * (a live turn's stream is held open with nothing to send yet), so it keeps the
+ * old drop.
+ */
+export function replayRebuildsMessage(args: {
+  first: { type?: unknown; transient?: unknown } | undefined
+  endedWithoutFrames: boolean
+  appliesSnapshot: boolean
+}): boolean {
+  const { first, endedWithoutFrames, appliesSnapshot } = args
+  if (first === undefined) return !endedWithoutFrames
+  if (first.type === MESSAGE_SNAPSHOT_CHUNK_TYPE) return !appliesSnapshot
+  return first.transient !== true
+}
+
+/**
  * Also coalesces chunk bursts on both streams (see chunk-coalescer.ts): the
  * replay arrives as one burst, and a POST stream can carry one too when the
  * API resumes a cut turn server-side.
@@ -155,7 +211,8 @@ function peekFirstChunk<T>(source: ReadableStream<T>, timeoutMs: number) {
  * When the resume stream opens with a message snapshot, `onSnapshot` gets it
  * (it must install the message before the SDK reads the last one, which
  * happens once this resolves) and `beforeReplay` is not called. Otherwise the
- * older replay path applies.
+ * older replay path applies, and only when the replay is really going to
+ * rebuild the message (see `replayRebuildsMessage`).
  */
 export function withResumeReplayReset<T extends UIMessage>(
   transport: ChatTransport<T>,
@@ -168,19 +225,23 @@ export function withResumeReplayReset<T extends UIMessage>(
     reconnectToStream: async (options) => {
       const stream = await transport.reconnectToStream(options)
       if (!stream) return stream
-      if (!onSnapshot) {
-        beforeReplay()
-        return coalesceChunkBursts(stream)
-      }
       const peek = peekFirstChunk(stream, SNAPSHOT_PEEK_MS)
       const first = await peek.peeked
-      const snapshot =
-        first?.type === MESSAGE_SNAPSHOT_CHUNK_TYPE
-          ? ((first as any).data?.message as T | undefined)
-          : undefined
-      if (snapshot) onSnapshot(snapshot)
-      else beforeReplay()
-      return coalesceChunkBursts(peek.stream({ skipFirst: first?.type === MESSAGE_SNAPSHOT_CHUNK_TYPE }))
+      const isSnapshotChunk = first?.type === MESSAGE_SNAPSHOT_CHUNK_TYPE
+      const snapshot = isSnapshotChunk
+        ? withSnapshotId((first as any).data?.message as T | undefined)
+        : undefined
+      if (snapshot && onSnapshot) onSnapshot(snapshot)
+      else if (
+        replayRebuildsMessage({
+          first: first as { type?: unknown; transient?: unknown } | undefined,
+          endedWithoutFrames: peek.endedWithoutFrames,
+          appliesSnapshot: Boolean(onSnapshot),
+        })
+      ) {
+        beforeReplay()
+      }
+      return coalesceChunkBursts(peek.stream({ skipFirst: Boolean(snapshot && onSnapshot) }))
     },
   }
 }

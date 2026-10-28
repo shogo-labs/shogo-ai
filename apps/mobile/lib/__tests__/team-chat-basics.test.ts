@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { messageLink, parseMessageLink } from '../team-chat-links'
+import { docLink, messageLink, parseConversationLink, parseMessageLink } from '../team-chat-links'
 import { activeEmojiQuery, emojiForShortcode, replaceFinishedShortcode, searchEmoji, EMOJI_GROUPS } from '../emoji-data'
 import { applyListEvent, firstUnreadIndex } from '../team-chat-state'
 
@@ -23,6 +23,36 @@ describe('message links', () => {
     expect(parseMessageLink('https://studio.shogo.ai/c/c1', hosts)).toBeNull()
     expect(parseMessageLink('https://studio.shogo.ai/projects/p1?msg=m1', hosts)).toBeNull()
     expect(parseMessageLink('not a url', hosts)).toBeNull()
+  })
+
+  test('every /c/ shape our own links produce opens in place, not in a browser', () => {
+    expect(parseConversationLink('https://studio.shogo.ai/c/c1?msg=m1', hosts)).toEqual({
+      conversationId: 'c1',
+      params: { msg: 'm1' },
+    })
+    expect(parseConversationLink('https://studio.shogo.ai/c/c1?thread=m1', hosts)).toEqual({
+      conversationId: 'c1',
+      params: { thread: 'm1' },
+    })
+    // Our own docLink(), and the card pane a board row opens.
+    expect(parseConversationLink(docLink('c1', 'https://studio.shogo.ai'), hosts)).toEqual({
+      conversationId: 'c1',
+      params: { doc: '1' },
+    })
+    expect(parseConversationLink('https://studio.shogo.ai/c/c1?card=w-9', hosts)).toEqual({
+      conversationId: 'c1',
+      params: { card: 'w-9' },
+    })
+    expect(parseConversationLink('https://studio.shogo.ai/c/c1', hosts)).toEqual({ conversationId: 'c1', params: {} })
+  })
+
+  test('a channel link elsewhere stays a link, and unknown params are dropped', () => {
+    expect(parseConversationLink('https://evil.example/c/c1?doc=1', hosts)).toBeNull()
+    expect(parseConversationLink('https://studio.shogo.ai/f/att-1', hosts)).toBeNull()
+    expect(parseConversationLink('https://studio.shogo.ai/c/c1?utm_source=x&msg=m1', hosts)).toEqual({
+      conversationId: 'c1',
+      params: { msg: 'm1' },
+    })
   })
 })
 

@@ -64,16 +64,31 @@ import {
 } from './project-data-archive'
 import {
   describeRepoArchive,
+  describeRepoBundles,
+  fetchRepoManifest,
   preserveRepoArchive,
+  preserveRepoManifest,
+  REPO_BUNDLE_GRACE_MS,
   REPO_MAX_BYTES,
   repoBodySha256,
   repoBodySize,
   statRepoArchive,
+  sweepRepoBundles,
   uploadRepoArchiveGuarded,
+  uploadRepoBundle,
+  uploadRepoManifestGuarded,
   type RepoBody,
   type RepoLineage,
+  type RepoManifestRead,
   type RepoWriteOutcome,
 } from './repo-archive'
+import {
+  needsCompaction,
+  nextBundleChain,
+  parseRepoManifest,
+  type RepoManifest,
+  type RepoManifestBundle,
+} from './vendor/repo-bundles'
 import { readSerialTail } from './serial-watcher'
 import { stagedRootfsPath } from './self-update'
 import type { ArchiveRef } from './archive-ref'
@@ -93,6 +108,40 @@ const PRESIGN_TTL_SEC = 30 * 60
  * swaps it in. Under `.shogo/local`, which the guest's committer never stages.
  */
 export const REPO_STAGING_DIR = '.shogo/local/repo-staging'
+
+/** Outcome of one bundle-format persist. `unchanged` means durable already. */
+type RepoPersist = 'written' | 'unchanged' | 'quarantined' | 'lost' | 'empty'
+
+/** What `/pool/export-repo-bundle` answers with. `bundle` is null when nothing new needs sending. */
+interface RepoBundleExport {
+  bundle: RepoManifestBundle | null
+  head: RepoManifest['head']
+  refs: Record<string, string>
+  config: string
+  rootCommitAt: number | null
+}
+
+/** The guest refused a bundle export because its LFS objects could not be pushed. */
+export class RepoBundleLfsPushError extends Error {}
+
+/** Guests before `code` was added only send the message. */
+function isLfsPushFailure(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown; error?: unknown }
+    return parsed.code === 'lfs-push-failed' || (typeof parsed.error === 'string' && parsed.error.startsWith('lfs push failed'))
+  } catch {
+    return false
+  }
+}
+
+/** How often a project's unreferenced bundles are swept, at most. */
+const REPO_BUNDLE_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000
+
+/** Same ref state, bundles and config: writing it again would change nothing. */
+function sameManifestState(a: RepoManifest, b: RepoManifest): boolean {
+  const canon = (m: RepoManifest) => JSON.stringify([m.head, m.refs, m.config, m.rootCommitAt, m.bundles])
+  return canon(a) === canon(b)
+}
 
 /**
  * How long past its own deadline the host waits on `/pool/repo-hydrated`. The
@@ -131,6 +180,8 @@ export class ExportTooLargeError extends Error {
 }
 
 /** Longest the periodic sweep waits before retrying a failed `.git` export. */
+/** How long a rollout rotation that aborted waits before trying again. */
+export const ROTATE_RETRY_MS = 10 * 60_000
 const REPO_EXPORT_MAX_BACKOFF_MS = 30 * 60_000
 const REPO_EXPORT_MIN_BACKOFF_MS = 60_000
 
@@ -180,6 +231,62 @@ export class RepoHydrateRefusedError extends Error {
 
 /** The guest may have swapped `.git` and reset the tree, but the host never heard. */
 export class RepoAdoptUncertainError extends Error {}
+
+/**
+ * `repoUntrustedReason` while an assign-time repo restore finishes behind an
+ * open that already returned (see `hydrateRepoAtAssign`).
+ */
+/** How long a finished open waits for the retry that reports it (see reportOpen). */
+const LATE_WAKE_TTL_MS = 15 * 60_000
+
+export const REPO_DEFERRED_REASON = 'repo hydrate still downloading in the background'
+
+/** The assign-time repo restore, as reported to the control plane. */
+export interface RepoRestoreInfo {
+  /** `deferred`: the open returned on the source's `.git`; the history swaps in later. */
+  mode: 'foreground' | 'deferred' | 'none' | 'failed'
+  bytes: number
+  bundles: number
+  /** How long the open itself waited on it. */
+  foregroundMs: number
+}
+
+/** A repo restore up to (not including) the swap into the live tree. */
+type RepoStage =
+  | { kind: 'none' }
+  /** Legacy guest: overlaid in place, nothing left to swap. */
+  | { kind: 'applied'; parentEtag?: string; bytes: number }
+  | {
+      kind: 'staging'
+      parentEtag?: string
+      keepPaths: string[]
+      bytes: number
+      bundles: number
+      /** The guest can refuse a late swap once the workspace is in use. */
+      canDefer: boolean
+      /** For logs: what is being restored. */
+      describe: string
+      /** The download into the staging dir, already running. */
+      download: Promise<void>
+    }
+
+/** True if `p` settles (either way) within `ms`. Never throws. */
+async function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      p.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /**
  * The top-level paths whose durable source is not older than the durable repo.
@@ -246,6 +353,13 @@ const HEALTH_GATE_RETRIES = 4
  * pin every vCPU for minutes; that guest is slow, not wedged.
  */
 const HEALTH_GATE_PATIENT_TIMEOUT_MS = 15_000
+/**
+ * Guest clock skew after a restore that is worth a warning + a metric. The
+ * `Date` header has one-second resolution and a resumed guest is measured
+ * mid-boot, so a few hundred ms is normal; five seconds means the clock really
+ * did freeze (or the guest has no working time source), not that we were late.
+ */
+const GUEST_CLOCK_SKEW_ALERT_MS = 5000
 /**
  * How long background activity polls must have been failing before open()
  * discards a running guest. Shorter than this, open() reports "busy" and the
@@ -508,6 +622,8 @@ export interface AssignedVm {
    * another VM's write and never grounds for promotion.
    */
   repoLinked?: boolean
+  /** How the assign-time repo restore went, reported once with the open. Memory only. */
+  repoRestore?: RepoRestoreInfo
   /** Last `repoHeadSha` the guest reported; export when it changes. */
   repoHeadSha?: string
   /**
@@ -727,11 +843,12 @@ function publishedSubdomainFromEnv(env: Record<string, string>): string | undefi
 }
 
 /**
- * Home-directory persistence is per project: workspace runtimes (`ws:` keys)
- * span several projects, and a published site never carries the agent's home.
+ * Home-directory persistence is per runtime key. A `ws:` runtime holds at most
+ * its own anchor project (see {@link ownMemberIds}), so its home belongs to it
+ * alone. A published site never carries the agent's home.
  */
-function homeStateEligible(projectId: string, publishedSubdomain: string | undefined): boolean {
-  return !projectId.startsWith('ws:') && !publishedSubdomain
+function homeStateEligible(publishedSubdomain: string | undefined): boolean {
+  return !publishedSubdomain
 }
 
 /** A workspace runtime's member project ids from its assign env; undefined when not given. */
@@ -827,6 +944,31 @@ async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
   }
 }
 
+/**
+ * How far the guest's wall clock is from the host's, in ms (guest - host),
+ * read from the `Date` header the guest's own Bun.serve stamps on /health.
+ * Returns null when the guest does not answer or sends no parseable Date — a
+ * missing header is not a skew of zero, so callers must not treat it as one.
+ *
+ * The header has one-second resolution, so the comparison is against the
+ * midpoint of the request; anything inside a second is noise.
+ */
+async function probeGuestClockSkew(url: string, timeoutMs = 2000): Promise<number | null> {
+  try {
+    const hostBefore = Date.now()
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+    const hostAfter = Date.now()
+    if (!res.ok) return null
+    const date = res.headers.get('date')
+    if (!date) return null
+    const guest = Date.parse(date)
+    if (!Number.isFinite(guest)) return null
+    return guest - Math.round((hostBefore + hostAfter) / 2)
+  } catch {
+    return null
+  }
+}
+
 export class MetalWarmPool {
   private available: PooledVm[] = []
   private assigned = new Map<string, AssignedVm>()
@@ -852,6 +994,8 @@ export class MetalWarmPool {
   private inFlight = new Set<string>()
   /** Collapses concurrent open (assign|resume) calls for the same project. */
   private openFlight = new Singleflight<OpenResult | PrewarmedResult | null>()
+  /** Last finished non-reused open per runtime key, for `lateWake`. */
+  private lastOpen = new Map<string, LateWake>()
   /** Why the most recent resume attempt for a project declined its snapshot; read by open(). */
   private lastStaleReason = new Map<string, StaleReason>()
   /** Collapses concurrent suspend calls for the same project. */
@@ -913,10 +1057,7 @@ export class MetalWarmPool {
     store?: SnapshotStore,
   ) {
     this.store = store ?? createSnapshotStore(cfg)
-    this.rootfsIds = {
-      standard: computeRootfsIdentity(cfg),
-      docker: computeRootfsIdentity(cfg, classConfig(cfg, 'docker').baseRootfs),
-    }
+    this.rootfsIds = this.readRootfsIds()
     this.rootfsId = this.rootfsIds.standard
     this.index = new CacheIndex(cfg.snapDir)
     this.stagedIndex = new CacheIndex(join(cfg.snapDir, 'staged'))
@@ -945,6 +1086,15 @@ export class MetalWarmPool {
    * mid-flight — and a wedged one keeps holding its port, so every restart
    * fails with EADDRINUSE. A 404 (guest opted out) or timeout is tolerated so
    * the substrate works with any guest.
+   *
+   * `rehydrate` also carries the host's clock, and the guest corrects its own
+   * wall clock from it before restarting the sidecars. A restored guest can
+   * come back with the clock frozen at snapshot time (see guestBootArgs), and
+   * that clock decides whether every outbound TLS handshake in the guest is
+   * valid. Snapshots taken before `clocksource=kvm-clock` was pinned stay on
+   * TSC until they cold-boot, so this sync is the backstop that fixes them —
+   * and it is harmless for a guest that is already right (the guest ignores a
+   * skew under 2 s). An old guest ignores the extra field.
    */
   protected async callGuestHook(
     url: string,
@@ -955,7 +1105,11 @@ export class MetalWarmPool {
     try {
       const res = await fetch(`${url}/pool/${hook}`, {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(hook === 'rehydrate' ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: hook === 'rehydrate' ? JSON.stringify({ hostNowMs: Date.now() }) : undefined,
         signal: AbortSignal.timeout(timeoutMs),
       })
       if (res.status === 404) return false
@@ -1133,6 +1287,13 @@ export class MetalWarmPool {
   }
 
   /** Current golden-rootfs identity for `vmClass` (see `rootfsIds`). */
+  private readRootfsIds(): Record<VmClass, string> {
+    return {
+      standard: computeRootfsIdentity(this.cfg),
+      docker: computeRootfsIdentity(this.cfg, classConfig(this.cfg, 'docker').baseRootfs),
+    }
+  }
+
   private classRootfsIdentity(vmClass: VmClass): string {
     return this.rootfsIds[vmClass] ?? this.rootfsIds.standard
   }
@@ -1392,9 +1553,9 @@ export class MetalWarmPool {
 
   private claim(vmClass: VmClass = 'standard'): PooledVm | null {
     const idx = this.available.findIndex((v) => v.ready && v.handle.vmClass === vmClass)
-    if (idx === -1) return null
-    const [vm] = this.available.splice(idx, 1)
-    // Replace in background.
+    const vm = idx === -1 ? null : this.available.splice(idx, 1)[0]!
+    // Replace in background. A miss tops up too: a fill whose boots failed is
+    // not retried on its own, so an empty pool would otherwise stay empty.
     this.reconcile().catch(() => {})
     return vm
   }
@@ -1768,6 +1929,7 @@ export class MetalWarmPool {
       return done({ handle: a.handle, mode: 'assigned', staleReason, bootRootfsIdentity: this.bootRootfsIdentity(a) })
     })
     if (r?.mode === 'prewarmed') return r
+    const reported = this.reportOpen(projectId, r as OpenResult)
     // Always-on: paid tiers (control plane sets SHOGO_ALWAYS_ON) must never be
     // idle-suspended by the reaper. Re-assert on EVERY open — this is the one
     // path with `env`, so it also (re)applies the flag after a resume (which
@@ -1784,9 +1946,48 @@ export class MetalWarmPool {
         this.writeLive(a)
       }
     }
-    // openFlight value is never null here (assign throws on failure), but keep
-    // the type honest for canResume races.
-    return r as OpenResult
+    return reported
+  }
+
+  /**
+   * Attach what the control plane needs to see how an open went, and keep a
+   * copy for the slow case. The control plane stops waiting on /assign after
+   * 30s, so a slow open's phases die with the request that timed out; its
+   * retry is then a `reused` hit. That retry gets the stashed open as
+   * `lateWake`, once, so the slow opens are exactly the ones still measured.
+   */
+  private reportOpen(projectId: string, r: OpenResult): OpenResult {
+    if (r.reused) {
+      const late = this.lastOpen.get(projectId)
+      this.lastOpen.delete(projectId)
+      if (late && Date.now() - late.at <= LATE_WAKE_TTL_MS) return { ...r, lateWake: late }
+      return r
+    }
+    const a = this.assigned.get(projectId)
+    const repo = r.mode === 'assigned' ? a?.repoRestore : undefined
+    if (a) a.repoRestore = undefined
+    const out: OpenResult = repo ? { ...r, repo } : r
+    const late: LateWake = {
+      at: Date.now(),
+      mode: r.mode,
+      ...(r.source ? { source: r.source } : {}),
+      ...(r.staleReason ? { staleReason: r.staleReason } : {}),
+      phases: r.phases ?? {},
+      totalMs: r.totalMs ?? 0,
+      ...(repo ? { repo } : {}),
+    }
+    this.lastOpen.set(projectId, late)
+    if (this.lastOpen.size > 500) {
+      const cutoff = Date.now() - LATE_WAKE_TTL_MS
+      for (const [k, v] of this.lastOpen) if (v.at < cutoff) this.lastOpen.delete(k)
+    }
+    console.log(
+      `[pool] opened ${projectId} mode=${r.mode}${r.source ? `/${r.source}` : ''}` +
+        `${r.staleReason ? ` stale=${r.staleReason}` : ''} total=${r.totalMs ?? '?'}ms` +
+        `${repo ? ` repo=${repo.mode}(${repo.bundles}b/${repo.bytes}B in ${repo.foregroundMs}ms)` : ''} ` +
+        `phases=${JSON.stringify(r.phases ?? {})}`,
+    )
+    return out
   }
 
   /** Claim + assign a warm VM to a project (or boot one on a cold miss). */
@@ -1988,7 +2189,7 @@ export class MetalWarmPool {
     // Best-effort like writable state, and for the same reason a failure marks
     // the VM untrusted: it now has an empty home, which must never be exported
     // over the real one.
-    if (homeStateEligible(projectId, publishedSubdomain)) {
+    if (homeStateEligible(publishedSubdomain)) {
       try {
         const h = await timer.time('hydrate_home', () => this.hydrateHomeState(projectId, vm.handle, env))
         if (h === 'unsupported') a.homeExportUnsupported = true
@@ -2015,13 +2216,17 @@ export class MetalWarmPool {
     // member's files each turn and is exported under the runtime key. Skipping
     // the hydrate leaves the replacement VM create-only against an archive
     // that already exists, so every later export is refused as a conflict.
+    let repoDeferred = false
     try {
       // A published runtime never commits, and resetting its tree to a `.git`
       // HEAD would replace the source it just restored.
       const r = publishedSourceId(projectId)
         ? { hydrated: false as const, parentEtag: undefined }
-        : await timer.time('hydrate_repo', () => this.hydrateRepo(projectId, vm.handle, env, sourceTimes))
-      if (r.hydrated) {
+        : await timer.time('hydrate_repo', () => this.hydrateRepoAtAssign(a, vm.handle, env, sourceTimes))
+      if (r === 'deferred') {
+        // finishRepoDeferred owns the rest, including clearing repoHydratePending.
+        repoDeferred = true
+      } else if (r.hydrated) {
         a.repoParentEtag = r.parentEtag
         // A workspace runtime has no source backup of its own (members are
         // backed up per project), so the durable merged-root repo is what
@@ -2029,7 +2234,7 @@ export class MetalWarmPool {
         // refused a durable snapshot push and every wake would cold-boot.
         if (projectId.startsWith('ws:')) a.workspaceOrigin = 'backup'
       }
-      a.repoLinked = true
+      if (!repoDeferred) a.repoLinked = true
     } catch (err: any) {
       const reason = `repo hydrate failed at assign (${err?.message ?? err})`
       this.distrustRepo(a, reason)
@@ -2040,11 +2245,13 @@ export class MetalWarmPool {
         err?.message ?? err,
       )
     } finally {
-      a.repoHydratePending = false
-      a.repoHeadSha = undefined
-      a.repoExportedHeadSha = undefined
-      a.repoExportSha = undefined
-      this.writeLive(a)
+      if (!repoDeferred) {
+        a.repoHydratePending = false
+        a.repoHeadSha = undefined
+        a.repoExportedHeadSha = undefined
+        a.repoExportSha = undefined
+        this.writeLive(a)
+      }
     }
 
     // Server-backed published VM: overlay the live site's writable state
@@ -2830,6 +3037,11 @@ export class MetalWarmPool {
       return false
     }
     const head = a.repoHeadSha
+    const bundled = await this.storeRepoBundles(a)
+    if (bundled !== null) {
+      if (bundled !== 'lost' && head && a.repoHeadSha === head) a.repoExportedHeadSha = head
+      return bundled === 'written'
+    }
     let exported: RepoExport | null
     try {
       exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
@@ -2923,6 +3135,21 @@ export class MetalWarmPool {
    * superseding with it discards the durable history it never contained.
    */
   private async promoteUnlinkedRepo(a: AssignedVm, bytes: RepoBody, rootCommitAt: number | null): Promise<boolean> {
+    return this.promoteUnlinkedWith(a, rootCommitAt, {
+      preserve: () => this.preserveDurableRepo(a.projectId),
+      write: (lineage) => this.uploadRepoGuarded(a.projectId, bytes, { lineage }),
+    })
+  }
+
+  /** Same supersede rules for either format; `io` supplies the store operations. */
+  private async promoteUnlinkedWith(
+    a: AssignedVm,
+    rootCommitAt: number | null,
+    io: {
+      preserve: () => Promise<string | null>
+      write: (lineage: RepoLineage) => Promise<RepoWriteOutcome>
+    },
+  ): Promise<boolean> {
     const since = a.stateSince ?? a.assignedAt
     if (rootCommitAt === null || rootCommitAt >= since - REPO_BORN_ON_BOOT_SLACK_MS) {
       console.warn(
@@ -2941,11 +3168,9 @@ export class MetalWarmPool {
     }
     if (!current?.etag || current.lastModified === null || current.lastModified >= since) return false
 
-    const preservedKey = await this.preserveDurableRepo(a.projectId).catch(() => null)
+    const preservedKey = await io.preserve().catch(() => null)
     if (!preservedKey) return false
-    const outcome = await this.uploadRepoGuarded(a.projectId, bytes, {
-      lineage: { kind: 'descends', etag: current.etag },
-    })
+    const outcome = await io.write({ kind: 'descends', etag: current.etag })
     if (outcome.status !== 'written' && outcome.status !== 'created') return false
 
     metrics.inc(M.repoPromoted)
@@ -2957,6 +3182,200 @@ export class MetalWarmPool {
         `${new Date(since).toISOString()}); previous archive kept at ${preservedKey}`,
     )
     return true
+  }
+
+  /**
+   * The incremental writer. Returns null when the legacy tarball path should
+   * run instead: no manifest exists yet and the guest cannot read or write
+   * bundles, or cannot push the LFS objects a bundle would leave out. A
+   * project with a manifest never falls back.
+   */
+  private async storeRepoBundles(a: AssignedVm): Promise<RepoPersist | null> {
+    const current = await this.repoManifest(a.projectId)
+    if (!current && !(await this.guestHasRepoBundles(a))) return null
+    // Past the compaction threshold the export is a full base, which restarts the chain.
+    const compact = !!current && needsCompaction(current.manifest.bundles)
+    const since = current && !compact ? Object.values(current.manifest.refs) : null
+    let exported: RepoBundleExport | null
+    try {
+      exported = await this.exportRepoBundle(a, since)
+    } catch (err) {
+      // The tarball still carries `.git/lfs/objects`; a bundle cannot, so the
+      // project stays unmigrated until its LFS push succeeds.
+      if (!current && err instanceof RepoBundleLfsPushError) {
+        metrics.inc(M.repoBundleLfsFallback)
+        console.warn(`[pool] keeping ${a.projectId} on the repo tarball: ${err.message}`)
+        return null
+      }
+      throw err
+    }
+    if (!exported) {
+      if (current) {
+        throw new Error(`guest cannot export incremental repo for ${a.projectId}; refusing the tarball fallback`)
+      }
+      return null
+    }
+    if (exported.bundle) await this.publishRepoBundle(a, exported.bundle)
+    if (compact && exported.bundle?.kind === 'base') metrics.inc(M.repoBundleCompactions)
+    const bundles = nextBundleChain(current?.manifest.bundles ?? null, exported.bundle)
+    if (bundles.length === 0) return 'empty'
+    const next = parseRepoManifest({
+      v: 1,
+      head: exported.head,
+      refs: exported.refs,
+      config: exported.config,
+      rootCommitAt: exported.rootCommitAt,
+      bundles,
+    })
+    if (current && sameManifestState(current.manifest, next)) return 'unchanged'
+    return this.writeRepoManifest(a, next)
+  }
+
+  /**
+   * Ask the guest for the next bundle. `since` holds the tips the manifest
+   * records; null asks for a full base.
+   */
+  /**
+   * Whether this VM's guest advertises bundle support in the repo-hydrated
+   * probe. Only a capable guest may migrate a project, since every later
+   * restore of that project needs the same capability. A failed probe is not
+   * cached, so it is retried on the next save.
+   */
+  protected async guestHasRepoBundles(a: AssignedVm): Promise<boolean> {
+    const known = this.repoBundleCapable.get(a)
+    if (known !== undefined) return known
+    let capable: boolean
+    try {
+      const env: Record<string, string> = a.runtimeToken ? { RUNTIME_AUTH_SECRET: a.runtimeToken } : {}
+      const probe = await this.callRepoHydrated(a.handle, env, { probe: true }, Math.min(this.cfg.hydrateTimeoutMs, 10_000))
+      capable = probe?.bundles === true
+    } catch (err: any) {
+      console.warn(`[pool] repo bundle probe failed for ${a.projectId}: ${err?.message ?? err}`)
+      return false
+    }
+    this.repoBundleCapable.set(a, capable)
+    return capable
+  }
+
+  protected async exportRepoBundle(a: AssignedVm, since: string[] | null): Promise<RepoBundleExport | null> {
+    const res = await fetch(`${a.handle.agentUrl}/pool/export-repo-bundle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {}) },
+      body: JSON.stringify(since ? { since } : { full: true }),
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (res.status === 404) return null
+    if (!res.ok) {
+      const text = await res.text()
+      const message = `/pool/export-repo-bundle failed (${res.status}): ${text}`
+      if (res.status === 503 && isLfsPushFailure(text)) throw new RepoBundleLfsPushError(message)
+      throw new Error(message)
+    }
+    return (await res.json()) as RepoBundleExport
+  }
+
+  /**
+   * Fetch one bundle from the guest, check it against what the export promised,
+   * and store it. It goes up before the manifest that references it, so a
+   * failed manifest write leaves only an unreferenced bundle for GC.
+   */
+  private async publishRepoBundle(a: AssignedVm, entry: RepoManifestBundle): Promise<void> {
+    const path = this.exportSpoolPath(a.handle.id, 'bundle')
+    try {
+      const res = await fetch(`${a.handle.agentUrl}/pool/export-repo-bundle/${entry.sha256}`, {
+        headers: a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {},
+        signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+      })
+      if (!res.ok) throw new Error(`bundle ${entry.sha256} download failed (${res.status})`)
+      const spooled = await spoolResponse(res, path, REPO_MAX_BYTES)
+      if (spooled.sha256 !== entry.sha256 || spooled.size !== entry.bytes) {
+        throw new Error(`bundle ${entry.sha256} did not match its export (${spooled.size} bytes)`)
+      }
+      await this.uploadRepoBundleGuarded(a.projectId, entry, Bun.file(path))
+      metrics.inc(M.repoBundleBytes, entry.bytes)
+      if (entry.kind === 'base') metrics.inc(M.repoBundleFull)
+    } finally {
+      rmSync(path, { force: true })
+    }
+  }
+
+  protected uploadRepoBundleGuarded(projectId: string, entry: RepoManifestBundle, body: ReturnType<typeof Bun.file>) {
+    return uploadRepoBundle(projectId, entry, body, this.cfg)
+  }
+
+  private async writeRepoManifest(a: AssignedVm, manifest: RepoManifest): Promise<RepoPersist> {
+    const outcome = await this.uploadManifestGuarded(a.projectId, manifest, {
+      lineage: this.repoLineageOf(a),
+      preserveOnRefusal: true,
+    })
+    switch (outcome.status) {
+      case 'created':
+      case 'written':
+        a.repoParentEtag = outcome.etag ?? a.repoParentEtag
+        this.writeLive(a)
+        console.log(
+          `[pool] saved repo manifest for ${a.projectId} (${manifest.bundles.length} bundle(s), ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
+        )
+        this.scheduleRepoBundleSweep(a.projectId)
+        return 'written'
+      case 'conflict':
+        if (!a.repoParentEtag && !a.repoLinked && (await this.promoteUnlinkedManifest(a, manifest))) {
+          return 'written'
+        }
+        metrics.inc(M.repoManifestConflict)
+        console.error(
+          `[pool] REFUSED to overwrite repo manifest for ${a.projectId} — lineage ` +
+            `(etag=${a.repoParentEtag ?? 'none'}) does not match. Quarantined at ${outcome.quarantineKey}.`,
+        )
+        return outcome.quarantineKey ? 'quarantined' : 'lost'
+      case 'refused':
+        metrics.inc(M.repoRefused)
+        return outcome.quarantineKey ? 'quarantined' : 'lost'
+      case 'too-large':
+        metrics.inc(M.repoTooLarge)
+        return 'lost'
+      case 'skipped':
+        return 'lost'
+    }
+    return 'lost'
+  }
+
+  /**
+   * Sweep a project's unreferenced bundles, at most once per interval. It runs
+   * in the background and never blocks an export. Retired bundles are removed
+   * only after the grace period, so the timing is not critical.
+   */
+  protected scheduleRepoBundleSweep(projectId: string, now = Date.now()): void {
+    if (now - (this.repoBundleSweptAt.get(projectId) ?? 0) < REPO_BUNDLE_SWEEP_INTERVAL_MS) return
+    this.repoBundleSweptAt.set(projectId, now)
+    sweepRepoBundles(projectId, this.cfg, now, REPO_BUNDLE_GRACE_MS)
+      .then((r) => {
+        if (r?.deleted) metrics.inc(M.repoBundlesGced, r.deleted)
+      })
+      .catch((err: any) => console.warn(`[pool] repo bundle sweep failed for ${projectId}:`, err?.message ?? err))
+  }
+
+  /** Last sweep per project, so a busy writer does not list the bucket on every save. */
+  private repoBundleSweptAt = new Map<string, number>()
+  private repoBundleCapable = new WeakMap<AssignedVm, boolean>()
+
+  private promoteUnlinkedManifest(a: AssignedVm, manifest: RepoManifest): Promise<boolean> {
+    return this.promoteUnlinkedWith(a, manifest.rootCommitAt, {
+      preserve: () => this.preserveDurableManifest(a.projectId),
+      write: (lineage) => this.uploadManifestGuarded(a.projectId, manifest, { lineage }),
+    })
+  }
+
+  protected uploadManifestGuarded(
+    projectId: string,
+    manifest: RepoManifest,
+    opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
+  ): Promise<RepoWriteOutcome> {
+    return uploadRepoManifestGuarded(projectId, manifest, opts, this.cfg)
+  }
+
+  protected preserveDurableManifest(projectId: string): Promise<string | null> {
+    return preserveRepoManifest(projectId, this.cfg)
   }
 
   protected statDurableRepo(projectId: string): Promise<{ etag: string | null; lastModified: number | null } | null> {
@@ -2984,10 +3403,32 @@ export class MetalWarmPool {
     env: Record<string, string>,
     sourceTimes: Record<string, number | null> = {},
   ): Promise<{ hydrated: boolean; parentEtag?: string; keptPaths?: string[] }> {
+    const stage = await this.prepareRepoStage(projectId, handle, env, sourceTimes)
+    if (stage.kind === 'none') return { hydrated: false }
+    if (stage.kind === 'applied') return { hydrated: true, parentEtag: stage.parentEtag }
+    await stage.download
+    return this.adoptRepoStage(projectId, handle, env, stage)
+  }
+
+  /**
+   * Everything before the swap: read the durable lineage, probe the guest and
+   * START the download into the staging dir (returned as `download`, not
+   * awaited). Staging never touches the live tree, which is what lets an open
+   * stop waiting for it.
+   */
+  private async prepareRepoStage(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    sourceTimes: Record<string, number | null>,
+  ): Promise<RepoStage> {
+    // A manifest is authoritative once it exists, so the tarball is never read then.
+    const read = await this.repoManifest(projectId)
+    if (read) return this.prepareRepoStageFromBundles(projectId, handle, env, read, sourceTimes)
     const ref = await this.repoRef(projectId)
     if (!ref) {
       console.log(`[pool] no durable repo for ${projectId} — guest keeps its seeded .git`)
-      return { hydrated: false }
+      return { kind: 'none' }
     }
     // Stage, then have the guest swap `.git` in and reset the tree to HEAD.
     // Overlaying straight onto the live `.git` leaves a template seed commit
@@ -2998,7 +3439,7 @@ export class MetalWarmPool {
       console.log(`[pool] guest has no /pool/repo-hydrated — overlaying ${projectId} repo the legacy way`)
       await this.applyArchive(handle, env, ref, `${projectId} repo`)
       console.log(`[pool] hydrated .git for ${projectId} (${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`)
-      return { hydrated: true, parentEtag: ref.etag ?? undefined }
+      return { kind: 'applied', parentEtag: ref.etag ?? undefined, bytes: ref.bytes }
     }
 
     const keepPaths = repoKeepPaths(sourceTimes, ref.lastModified ?? null)
@@ -3008,13 +3449,230 @@ export class MetalWarmPool {
           `paths out of the reset — leaving the tree as hydrated`,
       )
     }
-    await this.applyArchive(handle, env, ref, `${projectId} repo`, REPO_STAGING_DIR)
+    return {
+      kind: 'staging',
+      parentEtag: ref.etag ?? undefined,
+      keepPaths,
+      bytes: ref.bytes,
+      bundles: 0,
+      canDefer: probe.ifIdle === true,
+      describe: `(${ref.bytes} bytes, etag=${ref.etag ?? 'none'}`,
+      download: this.applyArchive(handle, env, ref, `${projectId} repo`, REPO_STAGING_DIR),
+    }
+  }
+
+  /**
+   * Restore from the incremental format: the guest downloads and verifies each
+   * bundle into the staging dir, then adopts it like a tarball. A guest without
+   * the capability is refused, not handed the stale tarball.
+   */
+  private async prepareRepoStageFromBundles(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    read: RepoManifestRead,
+    sourceTimes: Record<string, number | null>,
+  ): Promise<RepoStage> {
+    const probe = await this.callRepoHydrated(handle, env, { probe: true })
+    if (probe?.bundles !== true) {
+      throw new Error(
+        `guest cannot restore incremental repo bundles for ${projectId}; refusing to restore a stale tarball`,
+      )
+    }
+    const keepPaths = repoKeepPaths(sourceTimes, read.lastModified)
+    if (keepPaths.length && probe.deadline !== true) {
+      throw new Error(
+        `durable repo is older than the source of ${keepPaths.join(', ')} and this guest cannot keep ` +
+          `paths out of the reset — leaving the tree as hydrated`,
+      )
+    }
+    const bundles = await this.presignRepoBundles(projectId, read.manifest)
+    const totalBytes = bundles.reduce((n, b) => n + b.bytes, 0)
+    const downloadMs = Math.max(this.cfg.hydrateTimeoutMs, this.hydrateBudgetMs(totalBytes))
+    // Staging only: a failure here leaves the live tree exactly as it was.
+    const download = this.callRepoBundlesHydrate(
+      handle,
+      env,
+      {
+        stagingDir: REPO_STAGING_DIR,
+        manifest: read.manifest,
+        bundles: bundles.map(({ sha256, url }) => ({ sha256, url })),
+        timeoutMs: downloadMs,
+      },
+      downloadMs + this.repoHydratedSlackMs,
+    )
+    return {
+      kind: 'staging',
+      parentEtag: read.etag ?? undefined,
+      keepPaths,
+      bytes: totalBytes,
+      bundles: bundles.length,
+      canDefer: probe.ifIdle === true,
+      describe: `from ${bundles.length} bundle(s) (${totalBytes} bytes, manifest etag=${read.etag ?? 'none'}`,
+      download,
+    }
+  }
+
+  /** Swap a fully downloaded stage in. `ifIdle`: the guest refuses (409) once the workspace has been used. */
+  private async adoptRepoStage(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    stage: Extract<RepoStage, { kind: 'staging' }>,
+    opts: { ifIdle?: boolean } = {},
+  ): Promise<{ hydrated: boolean; parentEtag?: string; keptPaths?: string[] }> {
+    const { keepPaths } = stage
+    await this.adoptStagedRepo(handle, env, keepPaths, opts)
+    console.log(
+      `[pool] hydrated .git for ${projectId} ${stage.describe}` +
+        `${keepPaths.length ? `, kept newer source at ${keepPaths.join(', ')}` : ''})`,
+    )
+    return { hydrated: true, parentEtag: stage.parentEtag, keptPaths: keepPaths }
+  }
+
+  /**
+   * The assign-time repo restore, bounded by `repoForegroundMs`.
+   *
+   * Source, data and home are already in place, so the guest can serve on the
+   * source's own `.git`. If the history download is still running when the
+   * budget runs out, the open returns now and {@link finishRepoDeferred} swaps
+   * the history in afterwards, but only while nobody has used the workspace
+   * (the guest enforces that; see `ifIdle` on /pool/repo-hydrated). A guest
+   * that cannot enforce it is waited for, exactly as before.
+   */
+  private async hydrateRepoAtAssign(
+    a: AssignedVm,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    sourceTimes: Record<string, number | null>,
+  ): Promise<{ hydrated: boolean; parentEtag?: string } | 'deferred'> {
+    const t0 = performance.now()
+    let outcome: RepoRestoreInfo['mode'] = 'failed'
+    let bytes = 0
+    let bundles = 0
+    try {
+      const stage = await this.prepareRepoStage(a.projectId, handle, env, sourceTimes)
+      if (stage.kind !== 'none') bytes = stage.bytes
+      if (stage.kind === 'staging') bundles = stage.bundles
+      if (stage.kind === 'none') {
+        outcome = 'none'
+        return { hydrated: false }
+      }
+      if (stage.kind === 'applied') {
+        metrics.inc(M.repoHydrateBytes, stage.bytes)
+        outcome = 'foreground'
+        return { hydrated: true, parentEtag: stage.parentEtag }
+      }
+      metrics.inc(M.repoHydrateBytes, stage.bytes)
+      metrics.inc(M.repoHydrateBundles, stage.bundles)
+      const budget = this.cfg.repoForegroundMs
+      if (stage.canDefer && budget > 0) {
+        const finished = await settlesWithin(stage.download, budget)
+        if (!finished) {
+          outcome = 'deferred'
+          this.deferRepoHydrate(a, handle, env, stage, t0)
+          return 'deferred'
+        }
+      }
+      await stage.download
+      const r = await this.adoptRepoStage(a.projectId, handle, env, stage)
+      outcome = 'foreground'
+      return r
+    } finally {
+      const ms = Math.round(performance.now() - t0)
+      a.repoRestore = { mode: outcome, bytes, bundles, foregroundMs: ms }
+      metrics.inc(`${M.repoHydrate}{outcome="${outcome}"}`)
+      if (outcome !== 'deferred') metrics.inc(M.repoHydrateMs, ms)
+    }
+  }
+
+  private deferRepoHydrate(
+    a: AssignedVm,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    stage: Extract<RepoStage, { kind: 'staging' }>,
+    t0: number,
+  ): void {
+    // Persisted, so an agent restart mid-download leaves the VM untrusted for
+    // repo writes (today's failure state) rather than linked to a lineage its
+    // `.git` never adopted. Cleared once the swap lands.
+    a.repoUntrustedReason = REPO_DEFERRED_REASON
+    this.writeLive(a)
+    console.warn(
+      `[pool] repo hydrate for ${a.projectId} still downloading after ${this.cfg.repoForegroundMs}ms ` +
+        `${stage.describe}) — serving the source's .git now, finishing in the background`,
+    )
+    void this.finishRepoDeferred(a, handle, env, stage, t0)
+  }
+
+  private async finishRepoDeferred(
+    a: AssignedVm,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    stage: Extract<RepoStage, { kind: 'staging' }>,
+    t0: number,
+  ): Promise<void> {
+    let outcome: 'adopted' | 'busy' | 'failed' | 'abandoned' = 'failed'
+    try {
+      await stage.download
+      if (this.assigned.get(a.projectId) !== a) {
+        outcome = 'abandoned'
+        return
+      }
+      const r = await this.adoptRepoStage(a.projectId, handle, env, stage, { ifIdle: true })
+      if (a.repoUntrustedReason === REPO_DEFERRED_REASON) a.repoUntrustedReason = undefined
+      a.repoParentEtag = r.parentEtag
+      if (r.hydrated && a.projectId.startsWith('ws:')) a.workspaceOrigin = 'backup'
+      a.repoLinked = true
+      outcome = 'adopted'
+    } catch (err: any) {
+      if (this.assigned.get(a.projectId) !== a) {
+        outcome = 'abandoned'
+        return
+      }
+      const busy = err instanceof RepoHydrateRefusedError && err.status === 409
+      outcome = busy ? 'busy' : 'failed'
+      const reason = busy
+        ? 'repo hydrate finished after the workspace was in use — kept the source .git'
+        : `repo hydrate failed in the background (${err?.message ?? err})`
+      this.distrustRepo(a, reason)
+      if (err instanceof RepoAdoptUncertainError) this.distrustSource(a, reason)
+      console.error(
+        `[pool] deferred repo hydrate for ${a.projectId} ${busy ? 'not adopted' : 'failed'} — this VM stays ` +
+          `UNTRUSTED for repo.git and will NOT overwrite it:`,
+        busy ? reason : (err?.message ?? err),
+      )
+    } finally {
+      const ms = Math.round(performance.now() - t0)
+      metrics.inc(`${M.repoHydrateDeferred}{outcome="${outcome}"}`)
+      metrics.inc(M.repoHydrateMs, ms)
+      a.repoHydratePending = false
+      a.repoHeadSha = undefined
+      a.repoExportedHeadSha = undefined
+      a.repoExportSha = undefined
+      if (this.assigned.get(a.projectId) === a) this.writeLive(a)
+      console.log(`[pool] deferred repo hydrate for ${a.projectId}: ${outcome} after ${ms}ms`)
+    }
+  }
+
+  /** Swap the staged `.git` in and reset the tree. Past the deadline the guest declines. */
+  private async adoptStagedRepo(
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    keepPaths: string[],
+    opts: { ifIdle?: boolean } = {},
+  ): Promise<void> {
     const timeoutMs = this.cfg.hydrateTimeoutMs
     try {
       await this.callRepoHydrated(
         handle,
         env,
-        { stagingDir: REPO_STAGING_DIR, timeoutMs, ...(keepPaths.length ? { keepPaths } : {}) },
+        {
+          stagingDir: REPO_STAGING_DIR,
+          timeoutMs,
+          ...(keepPaths.length ? { keepPaths } : {}),
+          ...(opts.ifIdle ? { ifIdle: true } : {}),
+        },
         timeoutMs + this.repoHydratedSlackMs,
       )
     } catch (err: any) {
@@ -3023,11 +3681,58 @@ export class MetalWarmPool {
         `guest did not answer /pool/repo-hydrated (${err?.message ?? err}); it may still reset the tree`,
       )
     }
-    console.log(
-      `[pool] hydrated .git for ${projectId} (${ref.bytes} bytes, etag=${ref.etag ?? 'none'}` +
-        `${keepPaths.length ? `, kept newer source at ${keepPaths.join(', ')}` : ''})`,
-    )
-    return { hydrated: true, parentEtag: ref.etag ?? undefined, keptPaths: keepPaths }
+  }
+
+  /** Presigned GETs for each bundle of the manifest, in chain order. */
+  protected presignRepoBundles(projectId: string, manifest: RepoManifestRead['manifest']) {
+    return describeRepoBundles(projectId, manifest, this.cfg, PRESIGN_TTL_SEC)
+  }
+
+  /** The project's incremental manifest, or null when it has none. */
+  protected repoManifest(projectId: string): Promise<RepoManifestRead | null> {
+    return fetchRepoManifest(projectId, this.cfg)
+  }
+
+  /**
+   * Lineage stamp for the repo: the manifest's ETag once one exists, else the
+   * tarball's. Snapshot drift compares against this.
+   */
+  protected async repoStampRef(projectId: string): Promise<ArchiveRef | null> {
+    const read = await this.repoManifest(projectId)
+    if (read) {
+      return {
+        etag: read.etag,
+        bytes: 0,
+        lastModified: read.lastModified,
+        url: null,
+        load: async () => {
+          throw new Error('the repo manifest is a lineage stamp, not restorable bytes')
+        },
+      }
+    }
+    return this.repoRef(projectId)
+  }
+
+  /** Stage a restored repo in the guest, verified bundle by bundle. */
+  protected async callRepoBundlesHydrate(
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    body: {
+      stagingDir: string
+      manifest: RepoManifestRead['manifest']
+      bundles: Array<{ sha256: string; url: string }>
+      timeoutMs: number
+    },
+    waitMs: number,
+  ): Promise<void> {
+    const token = env.RUNTIME_AUTH_SECRET
+    const res = await fetch(`${handle.agentUrl}/pool/repo-bundles-hydrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(waitMs),
+    })
+    if (!res.ok) throw new Error(`/pool/repo-bundles-hydrate failed (${res.status}): ${await res.text()}`)
   }
 
   /**
@@ -3038,9 +3743,9 @@ export class MetalWarmPool {
   protected async callRepoHydrated(
     handle: FcVmHandle,
     env: Record<string, string>,
-    body: { probe: true } | { stagingDir: string; timeoutMs?: number; keepPaths?: string[] },
+    body: { probe: true } | { stagingDir: string; timeoutMs?: number; keepPaths?: string[]; ifIdle?: boolean },
     waitMs: number = this.cfg.hydrateTimeoutMs,
-  ): Promise<{ deadline?: boolean } | null> {
+  ): Promise<{ deadline?: boolean; bundles?: boolean; ifIdle?: boolean } | null> {
     const token = env.RUNTIME_AUTH_SECRET
     const res = await fetch(`${handle.agentUrl}/pool/repo-hydrated`, {
       method: 'POST',
@@ -3050,7 +3755,7 @@ export class MetalWarmPool {
     })
     if (res.status === 404) return null
     if (!res.ok) throw new RepoHydrateRefusedError(res.status, await res.text())
-    return ((await res.json().catch(() => ({}))) ?? {}) as { deadline?: boolean }
+    return ((await res.json().catch(() => ({}))) ?? {}) as { deadline?: boolean; bundles?: boolean; ifIdle?: boolean }
   }
 
   protected repoRef(projectId: string): Promise<ArchiveRef | null> {
@@ -3649,7 +4354,7 @@ export class MetalWarmPool {
    * export before the VM goes away, whose refused bytes are quarantined.
    */
   async saveHomeStateToStore(a: AssignedVm, opts: DataSaveOpts = {}): Promise<boolean> {
-    if (!homeStateEligible(a.projectId, a.publishedSubdomain) || a.homeExportUnsupported) return false
+    if (!homeStateEligible(a.publishedSubdomain) || a.homeExportUnsupported) return false
     return this.homeFlight.run(a.projectId, () => this.saveHomeStateInner(a, opts))
   }
 
@@ -3734,7 +4439,7 @@ export class MetalWarmPool {
   async exportAllHomeState(): Promise<number> {
     let n = 0
     for (const a of this.assigned.values()) {
-      if (a.homeExportUnsupported || !homeStateEligible(a.projectId, a.publishedSubdomain)) continue
+      if (a.homeExportUnsupported || !homeStateEligible(a.publishedSubdomain)) continue
       try {
         if (await this.saveHomeStateToStore(a)) n++
         a.homeExportFailures = 0
@@ -4080,7 +4785,7 @@ export class MetalWarmPool {
     type Check = { kind: StaleReason; what: string; stamped?: string; memberId?: string; ref: () => Promise<ArchiveRef | null> }
     const checks: Check[] = [
       { kind: 'source', what: 'source', stamped: stamps.backupEtag, ref: () => this.sourceRef(publishedSourceId(projectId) ?? projectId) },
-      { kind: 'repo', what: 'repo', stamped: stamps.repoEtag, ref: () => this.repoRef(projectId) },
+      { kind: 'repo', what: 'repo', stamped: stamps.repoEtag, ref: () => this.repoStampRef(projectId) },
       { kind: 'data', what: 'data', stamped: stamps.dataEtag, ref: () => this.projectDataRef(projectId) },
       { kind: 'home', what: 'home', stamped: stamps.homeEtag, ref: () => this.homeStateRef(projectId) },
       ...Object.entries(stamps.memberDataEtags ?? {}).map(([memberId, etag]): Check => ({
@@ -4332,6 +5037,21 @@ export class MetalWarmPool {
       throw err
     } finally {
       this.inFlight.delete(handle.id)
+    }
+
+    // The first health check after the restore is also the only cheap place to
+    // see whether the guest came back with a frozen clock — the rehydrate hook
+    // below corrects it, so measure now, before the correction, and make a
+    // snapshot that still comes back skewed visible in metrics instead of only
+    // in a guest's TLS errors later.
+    const skewMs = await probeGuestClockSkew(handle.agentUrl)
+    if (skewMs !== null) {
+      const abs = Math.abs(skewMs)
+      metrics.gauge(M.guestClockSkewMs, Math.max(abs, metrics.getGauge(M.guestClockSkewMs)))
+      if (abs > GUEST_CLOCK_SKEW_ALERT_MS) {
+        metrics.inc(M.guestClockSkewAfterRestore)
+        console.warn(`[pool] guest clock skew ${skewMs}ms after restore ${handle.id} (project=${projectId})`)
+      }
     }
 
     // Now live (assigned), not a cache entry: drop the suspended entry + index.
@@ -4687,6 +5407,66 @@ export class MetalWarmPool {
   }
 
   /**
+   * Rootfs rollout: retire assigned VMs still on a superseded image (backed up,
+   * stopped without a snapshot) so the control plane warms them on the current
+   * one. A VM goes once it has been idle for `rolloutIdleMs`, or
+   * `rolloutDeadlineMs` after this host first saw it stale, and never during an
+   * agent turn. Unlike `reapIdle`, always-on VMs rotate too; they come back
+   * separately because the control plane boots them again instead of leaving
+   * them suspended.
+   */
+  async rotateStale(now = Date.now()): Promise<{ retired: string[]; alwaysOn: string[] }> {
+    const out = { retired: [] as string[], alwaysOn: [] as string[] }
+    if (!(this.cfg.rolloutIdleMs > 0)) return out
+    const stale = [...this.assigned.values()].filter(
+      (a) => this.rootfsGeneration(this.bootRootfsIdentity(a), a.handle.vmClass) === 'stale',
+    )
+    const staleIds = new Set(stale.map((a) => a.projectId))
+    for (const id of this.staleSince.keys()) if (!staleIds.has(id)) this.staleSince.delete(id)
+    for (const a of stale) if (!this.staleSince.has(a.projectId)) this.staleSince.set(a.projectId, now)
+
+    for (const id of this.rotateRetryAt.keys()) if (!staleIds.has(id)) this.rotateRetryAt.delete(id)
+
+    const due = stale.filter((a) => {
+      if ((a.activeStreams ?? 0) > 0) return false
+      if (now < (this.rotateRetryAt.get(a.projectId) ?? 0)) return false
+      const idleFor = now - (a.lastRealActivityAt ?? a.assignedAt)
+      return idleFor >= this.cfg.rolloutIdleMs || now - this.staleSince.get(a.projectId)! >= this.cfg.rolloutDeadlineMs
+    })
+    const cap = this.cfg.reapMaxPerPass ?? 0
+    if (cap > 0 && due.length > cap) due.length = cap
+    for (const a of due) {
+      const alwaysOn = !!a.alwaysOn
+      try {
+        const r = await this.recycle(a.projectId, { reason: 'stale-rootfs' })
+        if (r.aborted) {
+          this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
+          const failed = r.steps.filter((s) => !s.ok).map((s) => `${s.step}: ${s.detail ?? 'failed'}`)
+          console.warn(
+            `[pool] rollout rotation of ${a.projectId} aborted (${failed.join('; ') || 'no step failed'}); ` +
+              `retrying in ${ROTATE_RETRY_MS / 60_000}m`,
+          )
+          continue
+        }
+      } catch (err: any) {
+        this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
+        console.error(`[pool] rollout rotation failed for ${a.projectId}:`, err?.message ?? err)
+        continue
+      }
+      this.staleSince.delete(a.projectId)
+      this.rotateRetryAt.delete(a.projectId)
+      metrics.inc(M.rolloutRotated)
+      ;(alwaysOn ? out.alwaysOn : out.retired).push(a.projectId)
+    }
+    return out
+  }
+
+  /** When this host first saw each assigned VM on a superseded rootfs (see `rotateStale`). */
+  private staleSince = new Map<string, number>()
+  /** A rotation that aborted (a backup failed) waits until then: each attempt re-runs every backup. */
+  private rotateRetryAt = new Map<string, number>()
+
+  /**
    * Tear down a tracked VM: drop it from the assigned map + adopt-on-restart
    * registry, then stopVM to reclaim tap/socket/rootfs. Shared by the open()
    * liveness/health gate (dead FC process OR mute guest) and the dead-VM reaper.
@@ -4779,6 +5559,9 @@ export class MetalWarmPool {
     try {
       if (a.projectId.startsWith('ws:')) {
         await bounded(this.saveWorkspaceMembersToStore(a))
+        await bounded(this.saveHomeStateToStore(a, { final: true })).catch((err: any) =>
+          console.warn(`[pool] home-directory rescue for ${a.projectId} failed:`, err?.message ?? err),
+        )
         return true
       }
       // `.git` first: it is small and, once git works, carries every commit.
@@ -5426,12 +6209,17 @@ export class MetalWarmPool {
   /**
    * Activation: make staged snapshots taken on `identities` the projects'
    * current ones, replacing (and deleting) the old-rootfs snapshot each one
-   * supersedes. Called right before the staged image is renamed over the base
-   * and the agent restarts, so the restarted pool rehydrates them as current.
+   * supersedes. Called right after the staged image is renamed over the base
+   * and before the agent restarts, so the restarted pool rehydrates them as current.
    * Their durable push was deferred while staged; `pushPendingDurable` does it
    * after the restart. Staged snapshots for any other identity are dropped.
    */
   promoteStagedSnapshots(identities: string[]): number {
+    // The base on disk is already the new image. This process keeps running
+    // (drain, a last GC sweep) until the restart, and must judge freshness
+    // against that image, or it reclaims the snapshots it just promoted.
+    this.rootfsIds = this.readRootfsIds()
+    this.rootfsId = this.rootfsIds.standard
     let n = 0
     for (const s of [...this.stagedSuspended.values()]) {
       if (!s.rootfsIdentity || !identities.includes(s.rootfsIdentity) || this.assigned.has(s.projectId)) {
@@ -5665,6 +6453,11 @@ export class MetalWarmPool {
       let out: 'written' | 'quarantined' | 'lost' | 'empty' | undefined
       const exportRepo = () =>
         this.repoFlight.run(a.projectId, async () => {
+          const bundled = await this.storeRepoBundles(a)
+          if (bundled !== null) {
+            out = bundled === 'unchanged' ? 'written' : bundled
+            return out === 'written'
+          }
           const exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
           try {
             out = exported ? await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt) : 'empty'
@@ -5703,7 +6496,7 @@ export class MetalWarmPool {
       return untrusted.length ? `database not persisted — ${untrusted.join('; ')}` : null
     })
 
-    if (homeStateEligible(a.projectId, a.publishedSubdomain)) {
+    if (homeStateEligible(a.publishedSubdomain)) {
       await run('home', async () => {
         await this.saveHomeStateToStore(a, { final: true, reason: 'recycle' })
         return a.homeUntrustedReason ? `home directory not persisted — ${a.homeUntrustedReason}` : null
@@ -5886,4 +6679,19 @@ export interface OpenResult {
   totalMs?: number
   /** Cold boot only: why no snapshot was resumed. */
   staleReason?: StaleReason
+  /** Fresh assign only: how the git history restore went. */
+  repo?: RepoRestoreInfo
+  /** `reused` only: the open this VM came from, if nobody received it (see reportOpen). */
+  lateWake?: LateWake
+}
+
+/** A finished open, kept for the retry that follows a control-plane timeout. */
+export interface LateWake {
+  at: number
+  mode: 'assigned' | 'resumed'
+  source?: 'local' | 'store'
+  staleReason?: StaleReason
+  phases: Record<string, number>
+  totalMs: number
+  repo?: RepoRestoreInfo
 }

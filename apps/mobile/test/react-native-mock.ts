@@ -90,6 +90,15 @@ export const reactNativeMockBase = {
   // (the REAL, un-mocked file) instead of a clean override. Keeping every
   // transitive export in this ONE base object sidesteps that entirely.
   useColorScheme: () => 'light',
+  // Reached through `expo-audio` once a graph imports the voice-note player's
+  // engine; a component graph that touches it must not fall through to the
+  // real module.
+  LogBox: {
+    ignoreLogs: () => {},
+    ignoreAllLogs: () => {},
+    warn: () => {},
+    error: () => {},
+  },
   Easing: {
     linear: (t: number) => t,
     ease: (t: number) => t,
@@ -150,11 +159,11 @@ export const reactNativeMockBase = {
         return this
       }
     },
-    timing: () => ({ start: (cb?: () => void) => cb?.() }),
-    spring: () => ({ start: (cb?: () => void) => cb?.() }),
-    sequence: () => ({ start: (cb?: () => void) => cb?.() }),
-    parallel: () => ({ start: (cb?: () => void) => cb?.() }),
-    loop: () => ({ start: () => {} }),
+    timing: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+    spring: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+    sequence: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+    parallel: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+    loop: () => ({ start: () => {}, stop: () => {}, reset: () => {} }),
     createAnimatedComponent: <T,>(c: T) => c,
   },
   NativeModules: {},

@@ -22,6 +22,7 @@ import { EVENTS, trackEvent } from '../../lib/analytics'
 import { PAUSE_OPTIONS, pauseState } from '../../lib/profile-menu'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { expiryFrom } from '../../lib/team-chat-state'
+import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { PresenceDot, presenceLabel } from '../team-chat/PresenceDot'
 import { useTeamChatNav } from '../team-chat/TeamChatSidebarProvider'
 import { ThemeChoiceList } from './sidebar/ThemeChoiceList'
@@ -99,7 +100,7 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
           className="relative items-center justify-center active:opacity-80"
           style={{ width: dimension, height: dimension }}
         >
-          <Avatar fallback={initials(user?.name)} src={user?.image} size={size === 'sm' ? 'sm' : 'md'} />
+          <Avatar fallback={initials(user?.name)} src={resolveAvatarUrl(user?.image)} size={size === 'sm' ? 'sm' : 'md'} />
           {chat.enabled && status ? (
             <PresenceDot
               userId={user?.id}
@@ -157,7 +158,7 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
   return (
     <View role="menu" className="py-1" testID="profile-menu">
       <View className="flex-row items-center gap-3 px-3 py-3">
-        <Avatar fallback={initials(user?.name)} src={user?.image} size="md" />
+        <Avatar fallback={initials(user?.name)} src={resolveAvatarUrl(user?.image)} size="md" />
         <View className="min-w-0 flex-1">
           <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>{user?.name || 'You'}</Text>
           {chat.enabled ? (
@@ -175,7 +176,7 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
 
       {chat.enabled && (
         <>
-          <Pressable role="menuitem" accessibilityLabel="What's your status?" onPress={() => go('/(app)/c/settings')} className={ROW}>
+          <Pressable role="menuitem" accessibilityLabel="What's your status?" onPress={() => go('/(app)/settings?tab=chat')} className={ROW}>
             <SmilePlus size={16} className="text-muted-foreground" />
             <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
               {settings?.statusEmoji || settings?.statusText ? `${settings.statusEmoji ?? ''} ${settings.statusText ?? ''}`.trim() : "What's your status?"}
@@ -250,7 +251,7 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
             {...triggerProps}
             role="menuitem"
             accessibilityLabel="Appearance"
-            accessibilityState={{ expanded: appearanceOpen }}
+            aria-expanded={appearanceOpen}
             onPress={() => setAppearanceOpen((open) => !open)}
             className={cn(ROW, appearanceOpen && "bg-muted")}
           >
@@ -268,9 +269,9 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
           </PopoverBody>
         </PopoverContent>
       </Popover>
-      <Pressable role="menuitem" accessibilityLabel="Preferences" onPress={() => go('/(app)/settings')} className={ROW}>
+      <Pressable role="menuitem" accessibilityLabel="Settings" onPress={() => go('/(app)/settings')} className={ROW}>
         <Settings size={16} className="text-muted-foreground" />
-        <Text className="flex-1 text-sm text-foreground">Preferences</Text>
+        <Text className="flex-1 text-sm text-foreground">Settings</Text>
       </Pressable>
       <Pressable role="menuitem" accessibilityLabel="Account and workspaces" onPress={() => go('/(app)/account')} className={ROW}>
         <UserRound size={16} className="text-muted-foreground" />

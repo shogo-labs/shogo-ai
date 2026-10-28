@@ -77,6 +77,10 @@ import { resolveAutoTierModel } from '../lib/runtime/agent-model-defaults'
 import { prisma } from '../lib/prisma'
 import { loadAccess } from '../lib/authz'
 import { apiKeyOrSession, authorizeProject, type AuthContext } from '../middleware/auth'
+import {
+  DEFAULT_PROJECT_AGENT_VOICE_ID as DEFAULT_PROJECT_VOICE_ID,
+  resolveShogoElevenLabsClient,
+} from './voice-media'
 import { resolveVoiceContext, composeVoiceSystemPrompt } from '../lib/voice-context'
 import { resolveShogoTwilioClient, verifyTwilioSignature } from '../lib/twilio'
 import { createLiveWebRtcSession } from '../lib/live-webrtc'
@@ -162,31 +166,27 @@ function resolveElevenLabsClient(): { client: ElevenLabsClient; agentId: string 
  * Exported so Phase 3/4/5 handlers (provision-number, outbound,
  * webhooks) can reuse the same construction.
  */
-export function resolveShogoElevenLabsClient():
-  | { client: ElevenLabsClient }
-  | { error: string } {
-  const apiKey = process.env.ELEVENLABS_API_KEY
-  if (!apiKey) {
-    return {
-      error:
-        'ELEVENLABS_API_KEY is not configured. Voice mode is unavailable until the server sets this env var.',
-    }
-  }
-  return { client: new ElevenLabsClient({ apiKey }) }
-}
+/**
+ * Resolve Shogo's pooled ElevenLabs client for Mode B agent + phone
+ * operations. Unlike `resolveElevenLabsClient` this does NOT require a
+ * shared-agent id — per-project agents are lazily provisioned.
+ *
+ * Defined in `voice-media.ts` (where the hosted media routes live) so there
+ * is one implementation; re-exported here for the Phase 3/4/5 handlers
+ * (provision-number, outbound, webhooks) that already import it.
+ */
+export { resolveShogoElevenLabsClient }
 
-// Voice id used by the auto-provisioned per-project agent. Matches the
-// existing shared translator agent's default. Can be made per-project
-// configurable via VoiceProjectConfig.settings in a future iteration.
-const DEFAULT_PROJECT_AGENT_VOICE_ID =
-  process.env.ELEVENLABS_DEFAULT_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL'
+// Voice id used by the auto-provisioned per-project agent. Shared with the
+// hosted media routes so a project's default voice means the same thing
+// everywhere.
+const DEFAULT_PROJECT_AGENT_VOICE_ID = DEFAULT_PROJECT_VOICE_ID
 
-// ElevenLabs rejects `eleven_turbo_v2_5` (SDK fallback) for English-only
-// convai agents on most plans with "English Agents must use turbo or
-// flash v2". `eleven_turbo_v2` is accepted everywhere. Override via
-// `ELEVENLABS_DEFAULT_TTS_MODEL` if your plan supports a different one.
+// New project agents start on Eleven v4 Turbo: current-generation, ~100 ms,
+// accepted by convai, and understands audio tags. Override per deployment
+// with `ELEVENLABS_DEFAULT_TTS_MODEL`.
 const DEFAULT_PROJECT_AGENT_TTS_MODEL =
-  process.env.ELEVENLABS_DEFAULT_TTS_MODEL || 'eleven_turbo_v2'
+  process.env.ELEVENLABS_DEFAULT_TTS_MODEL || 'eleven_v4_turbo'
 
 const DEFAULT_PROJECT_AGENT_SYSTEM_PROMPT = `You are the Shogo Voice assistant for this project. You help the user by speaking conversationally, answering questions about the project, and relaying requests to the technical agent via tool calls. Be concise — voice output is slow, so prefer short sentences and avoid reading long lists aloud.`
 
@@ -440,8 +440,10 @@ function uiMessageText(m: UIMessage): string {
 async function upsertShogoTextMessage(params: {
   chatSessionId: string
   uiMessage: UIMessage
+  /** The signed-in person; stamped on their own prompts so they stay attributable. */
+  userId?: string | null
 }): Promise<void> {
-  const { chatSessionId, uiMessage } = params
+  const { chatSessionId, uiMessage, userId } = params
   const content = uiMessageText(uiMessage)
   const envelope: ShogoPartsEnvelope = {
     kind: 'shogo-text',
@@ -457,6 +459,7 @@ async function upsertShogoTextMessage(params: {
       : undefined
 
   try {
+    const authorUserId = role === 'user' ? userId ?? null : null
     if (id) {
       await prisma.chatMessage.upsert({
         where: { id },
@@ -467,6 +470,7 @@ async function upsertShogoTextMessage(params: {
           content,
           parts: partsJson,
           agent: 'voice',
+          authorUserId,
         },
         update: {
           content,
@@ -481,6 +485,7 @@ async function upsertShogoTextMessage(params: {
           content,
           parts: partsJson,
           agent: 'voice',
+          authorUserId,
         },
       })
     }
@@ -832,84 +837,6 @@ export function voiceRoutes() {
   })
 
   /**
-   * POST /voice/music
-   *
-   * Generate music via the ElevenLabs Music API using Shogo's pooled
-   * EL key. Body mirrors the SDK `ComposeMusicParams`: exactly one of
-   * `prompt` / `compositionPlan`, plus optional `musicLengthMs`,
-   * `modelId`, `forceInstrumental`, `outputFormat`. Returns the raw
-   * generated audio bytes.
-   *
-   * Project-scoped (not per-end-user), so runtime-token callers are
-   * accepted here — they reach this via the SDK voice proxy.
-   */
-  router.post('/voice/music', async (c) => {
-    const resolved = resolveShogoElevenLabsClient()
-    if ('error' in resolved) {
-      return c.json({ error: resolved.error }, 503)
-    }
-
-    let body: {
-      prompt?: string
-      compositionPlan?: Record<string, unknown>
-      musicLengthMs?: number
-      modelId?: string
-      forceInstrumental?: boolean
-      outputFormat?: string
-    }
-    try {
-      body = (await c.req.json()) as typeof body
-    } catch {
-      return c.json({ error: 'Invalid JSON body' }, 400)
-    }
-
-    const hasPrompt = typeof body.prompt === 'string' && body.prompt.trim().length > 0
-    const hasPlan = body.compositionPlan != null && typeof body.compositionPlan === 'object'
-    if (hasPrompt === hasPlan) {
-      return c.json(
-        { error: 'Provide exactly one of `prompt` or `compositionPlan`' },
-        400,
-      )
-    }
-
-    try {
-      const { audio, contentType } = await resolved.client.composeMusic({
-        ...(hasPrompt ? { prompt: body.prompt!.trim() } : {}),
-        ...(hasPlan ? { compositionPlan: body.compositionPlan } : {}),
-        ...(typeof body.musicLengthMs === 'number'
-          ? { musicLengthMs: body.musicLengthMs }
-          : {}),
-        ...(typeof body.modelId === 'string' && body.modelId
-          ? { modelId: body.modelId }
-          : {}),
-        ...(typeof body.forceInstrumental === 'boolean'
-          ? { forceInstrumental: body.forceInstrumental }
-          : {}),
-        ...(typeof body.outputFormat === 'string' && body.outputFormat
-          ? { outputFormat: body.outputFormat }
-          : {}),
-      })
-      return new Response(audio, {
-        status: 200,
-        headers: {
-          'content-type': contentType,
-          'cache-control': 'private, max-age=3600',
-        },
-      })
-    } catch (err: any) {
-      console.error('[Voice] music generation failed:', err?.message || err)
-      return c.json(
-        {
-          error: 'Music generation failed',
-          detail: err?.message ?? String(err),
-          elBody: err?.body ?? undefined,
-        },
-        502,
-      )
-    }
-  })
-
-  /**
    * POST /voice/translator/chat/:chatSessionId
    *
    * Streaming translator endpoint. In addition to forwarding the AI SDK
@@ -928,10 +855,10 @@ export function voiceRoutes() {
    * Request body: `{ messages: UIMessage[] }` (AI SDK v6 format).
    * Response: UI message stream.
    *
-   * The two tools (`send_to_chat`, `set_mode`) are declared WITHOUT an
-   * `execute` function — they are executed client-side by the overlay,
-   * which supplies results via `useChat().addToolOutput` before the
-   * translator's next turn.
+   * The two tools (`send_to_chat`, `get_recent_activity`) are declared
+   * WITHOUT an `execute` function — they are executed client-side by the
+   * overlay, which supplies results via `useChat().addToolOutput` before
+   * the translator's next turn.
    */
   router.post('/voice/translator/chat/:chatSessionId', async (c) => {
     const auth = c.get('auth')
@@ -988,7 +915,7 @@ export function voiceRoutes() {
       for (let i = uiMessages.length - 1; i >= 0; i--) {
         const m = uiMessages[i]
         if (m.role !== 'user') break
-        await upsertShogoTextMessage({ chatSessionId, uiMessage: m })
+        await upsertShogoTextMessage({ chatSessionId, uiMessage: m, userId: auth.userId })
       }
 
       // Compose the same persona + project context block we send
@@ -1057,6 +984,7 @@ export function voiceRoutes() {
             await upsertShogoTextMessage({
               chatSessionId,
               uiMessage: m,
+              userId: auth.userId,
             })
           }
         },
@@ -1173,6 +1101,7 @@ export function voiceRoutes() {
         return c.json({ error: authz.message }, authz.status)
       }
 
+      const authorUserId = role === 'user' ? auth.userId : null
       const row = id
         ? await prisma.chatMessage.upsert({
             where: { id },
@@ -1183,6 +1112,7 @@ export function voiceRoutes() {
               content: body.text,
               parts: partsJson,
               agent: 'voice',
+              authorUserId,
               ...(createdAt ? { createdAt } : {}),
             },
             update: {
@@ -1197,6 +1127,7 @@ export function voiceRoutes() {
               content: body.text,
               parts: partsJson,
               agent: 'voice',
+              authorUserId,
               ...(createdAt ? { createdAt } : {}),
             },
           })
@@ -1819,6 +1750,10 @@ export function voiceRoutes() {
           'voice_minutes_outbound',
           'voice_number_setup',
           'voice_number_monthly',
+          // Pooled-key media (TTS, voice changer, sound effects, …), one row
+          // per op call with its unit + quantity in `actionMetadata`. Written
+          // by `voice-media.ts`; zero-cost until an op is priced.
+          'voice_media_usage',
         ],
       },
     }

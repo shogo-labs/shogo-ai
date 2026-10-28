@@ -180,8 +180,9 @@ You explain what you're about to do, then do it. You prefer showing over telling
 ## Priorities
 1. User requests — respond promptly and take action
 2. Urgent alerts — surface immediately via channels
-3. Scheduled checks — run on heartbeat cadence
-4. Proactive suggestions — offer when relevant context is available
+3. Work you handed off — act on its \`[Task update]\` as soon as it arrives; never schedule check-ins to follow it
+4. Scheduled checks — run on heartbeat cadence (a safety net for stalls, not the way to follow work)
+5. Proactive suggestions — offer when relevant context is available
 `,
   'HEARTBEAT.md': '',
   'TOOLS.md': `# Tools
@@ -212,6 +213,10 @@ not belong in \`exec\`.
   'MEMORY.md': `# Memory
 
 Long-lived facts and learnings are stored here.
+
+Append with \`edit_file\` (or \`write_file\` with \`append: true\`) — never rewrite this file wholesale:
+every write keeps the previous version under \`.shogo/memory-history/\`, and \`write_file\` refuses a
+whole-file replacement that keeps less than half of the current content.
 `,
   'config.json': JSON.stringify(
     {
@@ -225,6 +230,38 @@ Long-lived facts and learnings are stored here.
     null,
     2
   ),
+}
+
+/**
+ * The `## App Development` section a workspace-runtime root needs: the root is
+ * a meta-agent sandbox with no app in it, so building means a project.
+ */
+const WORKSPACE_ROOT_APP_DEVELOPMENT = `## App Development
+- The workspace root is not an app. To build an app or site, call \`project_create\` with a short brief, then \`project_call\` to build it in that project, or work inside a project folder that is already mounted (\`<projectId>/\`)
+- Never create \`package.json\`, \`src/\` or \`prisma/\`, run \`bun add\`, or start a preview in the workspace root
+- Use edit_file to update existing files — avoid full rewrites`
+
+function replaceAppDevelopmentSection(agentsMd: string): string {
+  const start = agentsMd.indexOf('## App Development\n')
+  if (start === -1) return agentsMd
+  const end = agentsMd.indexOf('\n## ', start + 1)
+  return agentsMd.slice(0, start) + WORKSPACE_ROOT_APP_DEVELOPMENT + (end === -1 ? '' : agentsMd.slice(end))
+}
+
+/** The project-scoped default AGENTS.md, unchanged. */
+export const PROJECT_AGENTS_MD = DEFAULT_WORKSPACE_FILES['AGENTS.md']
+
+/**
+ * AGENTS.md for a workspace runtime (`WORKSPACE_RUNTIME=true`), where the root
+ * holds projects as sibling folders and never an app of its own. Derived from
+ * the project default so everything except "App Development" stays identical.
+ */
+export const WORKSPACE_RUNTIME_AGENTS_MD = replaceAppDevelopmentSection(PROJECT_AGENTS_MD)
+
+/** Defaults for a workspace runtime: the project defaults with the root-scoped AGENTS.md. */
+export const DEFAULT_WORKSPACE_RUNTIME_FILES: Record<string, string> = {
+  ...DEFAULT_WORKSPACE_FILES,
+  'AGENTS.md': WORKSPACE_RUNTIME_AGENTS_MD,
 }
 
 /**
@@ -260,7 +297,10 @@ function removeStaleShogoSymlink(dir: string): void {
   } catch {}
 }
 
-export function seedWorkspaceDefaults(dir: string): void {
+export function seedWorkspaceDefaults(
+  dir: string,
+  files: Record<string, string> = DEFAULT_WORKSPACE_FILES,
+): void {
   // External (VS Code-style) projects: NEVER seed default workspace
   // files into the user's repo root. The user's tree gets:
   //   - `.shogo/` (skills/, plans/, local/, project.json, AGENTS.md)
@@ -319,12 +359,78 @@ export function seedWorkspaceDefaults(dir: string): void {
   mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
   mkdirSync(join(dir, '.shogo', 'plans'), { recursive: true })
 
-  for (const [filename, content] of Object.entries(DEFAULT_WORKSPACE_FILES)) {
+  for (const [filename, content] of Object.entries(files)) {
     const filepath = join(dir, filename)
     if (!existsSync(filepath)) {
       writeFileSync(filepath, content, 'utf-8')
     }
   }
+}
+
+/**
+ * The runtime template's own AGENTS.md, or null when the template is not
+ * reachable from this process.
+ *
+ * A warm-pool pre-seed runs `seedWorkspaceDefaults` and then
+ * `seedRuntimeTemplate`, which copies the template over the same root — so on
+ * the cloud path the root's AGENTS.md is *this* file, not the project default
+ * (SHO-194).
+ */
+function readRuntimeTemplateAgentsMd(): string | null {
+  try {
+    const templatePath = getRuntimeTemplatePath()
+    if (!templatePath) return null
+    return readFileSync(join(templatePath, 'AGENTS.md'), 'utf-8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Every AGENTS.md a root can carry without a person having edited it: the
+ * project default, the workspace-runtime default, and the runtime template's
+ * own file with and without its App Development section already swapped.
+ */
+function pristineAgentsMdVariants(): string[] {
+  const variants = [PROJECT_AGENTS_MD, WORKSPACE_RUNTIME_AGENTS_MD]
+  const templateMd = readRuntimeTemplateAgentsMd()
+  if (templateMd !== null) variants.push(templateMd, replaceAppDevelopmentSection(templateMd))
+  return variants
+}
+
+/**
+ * Seed a workspace runtime's root (`WORKSPACE_RUNTIME=true`): the project
+ * defaults, except AGENTS.md describes the root as a meta-agent sandbox where
+ * building an app means `project_create`, not editing `src/App.tsx`.
+ *
+ * An AGENTS.md already on disk is upgraded only when it is one of the pristine
+ * shapes a seed can leave behind — the same "never clobber an edit" rule as
+ * `seedPersonalCompanionTemplate`. The runtime template's own file is one of
+ * them: a pool pre-seed copies it over the root, so its other sections are kept
+ * and only the App Development section is swapped. A workspace whose agent was
+ * customized keeps its file; `WORKSPACE.md` carries the same rule on every boot
+ * for those.
+ */
+export function seedWorkspaceRuntimeDefaults(dir: string): void {
+  seedWorkspaceDefaults(dir, DEFAULT_WORKSPACE_RUNTIME_FILES)
+  const destination = join(dir, 'AGENTS.md')
+  try {
+    const current = readFileSync(destination, 'utf-8')
+    if (current === WORKSPACE_RUNTIME_AGENTS_MD) return
+    if (current === readRuntimeTemplateAgentsMd()) {
+      const upgraded = replaceAppDevelopmentSection(current)
+      if (upgraded === current) {
+        console.warn('[workspace-defaults] runtime-template AGENTS.md has no `## App Development` section — left as it is')
+        return
+      }
+      writeFileSync(destination, upgraded, 'utf-8')
+      console.log('[workspace-defaults] Upgraded the runtime-template AGENTS.md to the workspace-runtime default')
+      return
+    }
+    if (current !== PROJECT_AGENTS_MD) return
+    writeFileSync(destination, WORKSPACE_RUNTIME_AGENTS_MD, 'utf-8')
+    console.log('[workspace-defaults] Upgraded the pristine project AGENTS.md to the workspace-runtime default')
+  } catch { /* nothing to upgrade */ }
 }
 
 function getPersonalCompanionTemplatePath(): string | null {
@@ -365,8 +471,18 @@ export function seedPersonalCompanionTemplate(dir: string): boolean {
   for (const filename of ['AGENTS.md', 'HEARTBEAT.md']) {
     const destination = join(dir, filename)
     const current = existsSync(destination) ? readFileSync(destination, 'utf-8') : null
-    const pristine = DEFAULT_WORKSPACE_FILES[filename]
-    if (current === null || current === pristine || (filename === 'HEARTBEAT.md' && current.trim() === '')) {
+    // A workspace root is seeded with the workspace-runtime AGENTS.md first, and
+    // a cloud pool pre-seed leaves the runtime template's own file there, so
+    // both count as untouched — otherwise a personal workspace booted from the
+    // pool would never receive the companion persona (SHO-194).
+    const pristine = filename === 'AGENTS.md'
+      ? pristineAgentsMdVariants()
+      : [DEFAULT_WORKSPACE_FILES[filename]]
+    if (
+      current === null ||
+      pristine.includes(current) ||
+      (filename === 'HEARTBEAT.md' && current.trim() === '')
+    ) {
       copyFileSync(join(templatePath, filename), destination)
       changed = true
     }
@@ -860,8 +976,33 @@ export function seedRuntimeTemplate(dir: string): boolean {
     },
   })
 
+  materializeWorkspaceSdkPin(dir, templatePath)
   console.log('[workspace-defaults] Seeded runtime template into workspace')
   return true
+}
+
+/**
+ * A dev checkout's template pins `@shogo-ai/sdk` to `workspace:*`, which no
+ * `bun install` outside the monorepo can resolve. Rewrite it to the sibling
+ * `packages/sdk` version, as `migrateLegacyShogoSdkPin` does for existing
+ * workspaces. Shipped templates are already materialized, so this no-ops.
+ */
+function materializeWorkspaceSdkPin(dir: string, templatePath: string): void {
+  const pkgPath = join(dir, 'package.json')
+  let raw: string
+  let pkgJson: { dependencies?: Record<string, string> }
+  try {
+    raw = readFileSync(pkgPath, 'utf-8')
+    pkgJson = JSON.parse(raw)
+  } catch { return }
+  if (!pkgJson.dependencies?.['@shogo-ai/sdk']?.startsWith('workspace:')) return
+  let version: string | undefined
+  try {
+    version = JSON.parse(readFileSync(join(templatePath, '..', '..', 'packages', 'sdk', 'package.json'), 'utf-8')).version
+  } catch { return }
+  if (typeof version !== 'string') return
+  pkgJson.dependencies['@shogo-ai/sdk'] = `^${version}`
+  writeFileSync(pkgPath, JSON.stringify(pkgJson, null, 2) + (raw.endsWith('\n') ? '\n' : ''))
 }
 
 // ---------------------------------------------------------------------------
@@ -966,6 +1107,9 @@ export interface TechStackMeta {
     shellEnabled?: boolean
     heartbeatToolsEnabled?: boolean
     imageGenEnabled?: boolean
+    videoGenEnabled?: boolean
+    musicGenEnabled?: boolean
+    threeDGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
   }
@@ -1142,6 +1286,55 @@ export function wipeProjectFiles(dir: string): number {
 }
 
 /**
+ * Write a stack's `.shogo/STACK.md` into `dir` — the doc the agent reads to
+ * learn what kind of project it is in.
+ *
+ * Non-destructive by default (files that already exist are kept), because the
+ * agent may have tailored it. A stack *switch* passes `overwrite: true`: a doc
+ * describing the stack the marker says you left is worse than no doc at all,
+ * and `.shogo/` survives `wipeProjectFiles()` so nothing else will replace it.
+ *
+ * `AGENTS.md` in the same directory is agent identity and is never touched.
+ */
+export function writeTechStackDoc(
+  dir: string,
+  stackId: string,
+  opts: { overwrite?: boolean } = {},
+): boolean {
+  const stackPath = getTechStackPath(stackId)
+  if (!stackPath) return false
+  const source = join(stackPath, '.shogo', 'STACK.md')
+  if (!existsSync(source)) return false
+  const destShogo = join(dir, '.shogo')
+  const dest = join(destShogo, 'STACK.md')
+  if (!opts.overwrite && existsSync(dest)) return false
+  try {
+    mkdirSync(destShogo, { recursive: true })
+    copyFileSync(source, dest)
+    return true
+  } catch (err: any) {
+    console.warn(`[workspace-defaults] Failed to write .shogo/STACK.md for "${stackId}": ${err?.message ?? err}`)
+    return false
+  }
+}
+
+/**
+ * Top-level entries a fresh workspace of a Vite-family stack gets from the
+ * bundled runtime-template (what `seedRuntimeTemplate()` copies when the
+ * workspace has no `package.json` yet). Filtered by the same skip list the copy
+ * uses, so the caller sees exactly the files the template would have written.
+ */
+export function runtimeTemplateTopLevelEntries(): string[] {
+  const templatePath = getRuntimeTemplatePath()
+  if (!templatePath) return []
+  try {
+    return readdirSync(templatePath).filter((entry) => !RUNTIME_TEMPLATE_SKIP.has(entry))
+  } catch {
+    return []
+  }
+}
+
+/**
  * Seed tech stack files into a workspace.
  * Copies .shogo/STACK.md and starter/ files from the tech stack.
  * Only writes files that don't already exist (preserves customizations).
@@ -1154,15 +1347,7 @@ export function seedTechStack(dir: string, stackId: string): boolean {
     return false
   }
 
-  const stackMd = join(stackPath, '.shogo', 'STACK.md')
-  if (existsSync(stackMd)) {
-    const destShogo = join(dir, '.shogo')
-    mkdirSync(destShogo, { recursive: true })
-    const destStackMd = join(destShogo, 'STACK.md')
-    if (!existsSync(destStackMd)) {
-      copyFileSync(stackMd, destStackMd)
-    }
-  }
+  writeTechStackDoc(dir, stackId)
 
   const starterDir = join(stackPath, 'starter')
   if (existsSync(starterDir)) {
@@ -1313,11 +1498,15 @@ function inferStackFromWorkspaceFiles(dir: string): string | null {
   const threeish =
     has('three') || has('@react-three/fiber') || has('expo-gl') || has('expo-three')
   if (expoish) return threeish ? 'expo-three' : 'expo-app'
+  // A Remotion project is a video project, whatever else its package.json
+  // says. Checked before the `custom` line so a Remotion app that also has
+  // an Astro/Eleventy-style static config still previews as a video editor.
+  if (has('remotion') || has('@remotion/player')) return 'video-editor'
   if (has('astro') || has('@11ty/eleventy') || existsSync(join(dir, 'shogo.preview.json'))) return 'custom'
   return null
 }
 
-function readTechStackMarker(dir: string): string {
+export function readTechStackMarker(dir: string): string {
   try {
     const markerPath = join(dir, '.tech-stack')
     if (!existsSync(markerPath)) return ''

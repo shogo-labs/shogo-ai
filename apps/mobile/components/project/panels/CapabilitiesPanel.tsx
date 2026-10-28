@@ -8,6 +8,9 @@ import {
   Terminal,
   Clock,
   ImageIcon,
+  Clapperboard,
+  Music,
+  Box,
   Brain,
   ChevronDown,
   ChevronRight,
@@ -74,6 +77,9 @@ export interface CapabilitySettings {
   shellEnabled: boolean
   heartbeatToolsEnabled: boolean
   imageGenEnabled: boolean
+  videoGenEnabled: boolean
+  musicGenEnabled: boolean
+  threeDGenEnabled: boolean
   memoryEnabled: boolean
   quickActionsEnabled: boolean
   sdkGuideEnabled: boolean
@@ -164,11 +170,55 @@ const CAPABILITIES: CapabilityDef[] = [
   {
     key: 'imageGenEnabled',
     label: 'Image Generation',
-    description: 'Generate images from text descriptions',
-    detail: 'Creates images using AI models from text prompts. Useful for generating app icons, placeholder graphics, concept art, social media assets, diagrams, and visual mockups.',
+    description: 'Generate and edit images from text descriptions',
+    detail: 'Creates images with SOUL V2, Ideogram 4.0, Qwen Image 3, Recraft v4.1, Z-Image Turbo, Grok Imagine, Marketing Studio, Ads Studio and Cinema Studio 4.0. Pass reference images to edit a picture or keep a character consistent across shots. Useful for app icons, game sprites, concept art, social media assets, and visual mockups.',
     disabledDescription: 'No image generation',
     icon: ImageIcon,
-    toolNames: ['generate_image'],
+    toolNames: ['generate_image', 'list_media_models'],
+  },
+  {
+    key: 'videoGenEnabled',
+    optIn: true,
+    label: 'Video Generation',
+    description: 'Generate video clips or animate images',
+    detail: 'Creates short clips with Kling 3.0 (Standard, Pro, Turbo, 4K), Hailuo 2.3, Wan 2.6/2.7/3.0, Seedance, MiniMax H3, PixVerse V6, LTX-2.5 and Happy Horse, from a text prompt or by animating a still image. Clips take one to five minutes to render and are billed per second of video, so this is off until you turn it on.',
+    disabledDescription: 'No video generation',
+    icon: Clapperboard,
+    toolNames: ['generate_video'],
+    examples: [
+      '"Animate the hero image into a 5 second loop for the landing page"',
+      '"Make three 9:16 product shots for TikTok from these photos"',
+    ],
+  },
+  {
+    key: 'musicGenEnabled',
+    optIn: true,
+    label: 'Music Generation',
+    description: 'Write a song or a short music clip from a prompt',
+    detail:
+      'Creates music with Lyria: a full song with verses, choruses and vocals (Lyria 3.5, up to about three minutes) or a 30-second clip for a loop, sting or intro. Describe the genre, mood, instruments and structure, and ask for a length in the prompt. Billed per song, so this is off until you turn it on.',
+    disabledDescription: 'No music generation',
+    icon: Music,
+    toolNames: ['generate_music'],
+    examples: [
+      '"Write a 90 second lo-fi track for the onboarding video"',
+      '"A 30 second upbeat sting for the app launch"',
+    ],
+  },
+  {
+    key: 'threeDGenEnabled',
+    optIn: true,
+    label: '3D Generation',
+    description: 'Turn a prompt or a still image into a 3D model',
+    detail:
+      'Turn a text prompt or still image into a 3D model (GLB), and post-process any model: re-texture, convert formats, retopology, separate parts, rig and animate. Rendered on Tripo and billed per task, roughly $0.10-$0.60 depending on the operation, so this is off until you turn it on.',
+    disabledDescription: 'No 3D model generation',
+    icon: Box,
+    toolNames: ['generate_3d_model', 'edit_3d_model'],
+    examples: [
+      '"Make a low-poly game asset of this chair from the product photo"',
+      '"Build a 3D model of a red fox and save it as public/assets/fox.glb"',
+    ],
   },
   {
     key: 'memoryEnabled',

@@ -110,16 +110,31 @@ mock.module('../../lib/prisma', () => ({
 const gitCalls = {
   initRepo: [] as string[],
   commit: [] as any[],
+  snapshotTree: [] as any[],
   getCommit: [] as any[],
   saveCheckpointMetadata: [] as any[],
   getStatus: [] as string[],
+  getOriginRemoteUrl: [] as string[],
   checkout: [] as any[],
   getDiff: [] as any[],
+  deleteCheckpointRef: [] as any[],
+  ensureLegacyCheckpointRef: [] as any[],
 }
 
 let initRepoImpl = async (_p: string) => ({ branch: 'main' })
 let commitImpl = async (_p: string, _opts: any) =>
   ({ sha: 'sha_new', message: 'msg', filesChanged: 1, additions: 2, deletions: 3 } as any)
+let snapshotTreeImpl = async (_p: string, opts: any) =>
+  ({
+    sha: 'sha_snapshot',
+    shortSha: 'sha_sna',
+    refName: `refs/shogo/checkpoints/main/2026-10-19T00-00-00.000Z-sha_sna`,
+    branch: 'main',
+    message: opts?.message ?? '',
+    filesChanged: 1,
+    additions: 2,
+    deletions: 3,
+  } as any)
 let getCommitImpl = async (_p: string, _ref: string) =>
   ({ sha: 'sha_head', message: 'head msg', filesChanged: 4, additions: 5, deletions: 6 } as any)
 let getStatusImpl = async (_p: string) => ({ hasChanges: false } as any)
@@ -128,18 +143,33 @@ let checkoutImpl = async (_p: string, _ref: string, _opts: any) =>
 let getDiffImpl = async (_p: string, _from: string, _to: string) =>
   ({ files: [{ path: 'a.ts', status: 'modified', additions: 1, deletions: 1 }], totalAdditions: 1, totalDeletions: 1 } as any)
 let saveCheckpointMetadataImpl = async (_p: string, _m: any) => {}
+let getOriginRemoteUrlImpl = async (_p: string): Promise<string | null> => null
+let deleteCheckpointRefImpl = async (_p: string, _ref: string) => true
+let ensureLegacyCheckpointRefImpl = async (_p: string, _sha: string): Promise<string | null> =>
+  `refs/shogo/checkpoints/legacy/${_sha}`
 
 mock.module('../git.service', () => ({
+  CHECKPOINT_REF_PREFIX: 'refs/shogo/checkpoints',
   initRepo: (p: string) => { gitCalls.initRepo.push(p); return initRepoImpl(p) },
   commit: (p: string, o: any) => { gitCalls.commit.push({ p, o }); return commitImpl(p, o) },
+  snapshotTree: (p: string, o: any) => { gitCalls.snapshotTree.push({ p, o }); return snapshotTreeImpl(p, o) },
   getCommit: (p: string, r: string) => { gitCalls.getCommit.push({ p, r }); return getCommitImpl(p, r) },
   saveCheckpointMetadata: (p: string, m: any) => {
     gitCalls.saveCheckpointMetadata.push({ p, m })
     return saveCheckpointMetadataImpl(p, m)
   },
   getStatus: (p: string) => { gitCalls.getStatus.push(p); return getStatusImpl(p) },
+  getOriginRemoteUrl: (p: string) => { gitCalls.getOriginRemoteUrl.push(p); return getOriginRemoteUrlImpl(p) },
   checkout: (p: string, r: string, o: any) => { gitCalls.checkout.push({ p, r, o }); return checkoutImpl(p, r, o) },
   getDiff: (p: string, f: string, t: string) => { gitCalls.getDiff.push({ p, f, t }); return getDiffImpl(p, f, t) },
+  deleteCheckpointRef: (p: string, r: string) => {
+    gitCalls.deleteCheckpointRef.push({ p, r })
+    return deleteCheckpointRefImpl(p, r)
+  },
+  ensureLegacyCheckpointRef: (p: string, s: string) => {
+    gitCalls.ensureLegacyCheckpointRef.push({ p, s })
+    return ensureLegacyCheckpointRefImpl(p, s)
+  },
 }))
 
 // github.service (lazy-imported by syncAfterCheckpoint)
@@ -247,9 +277,24 @@ beforeEach(() => {
     totalAdditions: 1, totalDeletions: 1,
   } as any)
   saveCheckpointMetadataImpl = async () => {}
+  getOriginRemoteUrlImpl = async () => null
+  snapshotTreeImpl = async (_p: string, opts: any) => ({
+    sha: 'sha_snapshot',
+    shortSha: 'sha_sna',
+    refName: 'refs/shogo/checkpoints/main/2026-10-19T00-00-00.000Z-sha_sna',
+    branch: 'main',
+    message: opts?.message ?? '',
+    filesChanged: 1,
+    additions: 2,
+    deletions: 3,
+  } as any)
+  deleteCheckpointRefImpl = async () => true
+  ensureLegacyCheckpointRefImpl = async (_p: string, sha: string) =>
+    `refs/shogo/checkpoints/legacy/${sha}`
   nextId = 0
   delete process.env.PROJECTS_DATABASE_URL
   delete process.env.DATABASE_URL
+  delete process.env.SHOGO_CHECKPOINT_MODE
 })
 
 afterEach(async () => {
@@ -267,6 +312,17 @@ describe('CheckpointsDisabledError', () => {
     expect(e.code).toBe('checkpoints_disabled_in_external_mode')
     expect(e.name).toBe('CheckpointsDisabledError')
     expect(e.message).toMatch(/external \(folder-linked\) projects/)
+  })
+})
+
+describe('CheckpointsDisabledForeignRepoError', () => {
+  it('has the canonical code + name and names the origin URL', () => {
+    const e = new svc.CheckpointsDisabledForeignRepoError('https://github.com/acme/repo.git')
+    expect(e.code).toBe('checkpoints_disabled_foreign_repo')
+    expect(e.name).toBe('CheckpointsDisabledForeignRepoError')
+    expect(e.originUrl).toBe('https://github.com/acme/repo.git')
+    expect(e.message).toContain('https://github.com/acme/repo.git')
+    expect(e.message).toMatch(/checkout of another git repository/)
   })
 })
 
@@ -292,6 +348,40 @@ describe('createCheckpoint — gating + happy path', () => {
     await expect(
       svc.createCheckpoint({ projectId: 'p1', workspacePath: '/missing', message: 'm' }),
     ).rejects.toThrow(/Workspace not found: \/missing/)
+  })
+
+  it('refuses a repo with a foreign origin before touching git or the DB', async () => {
+    seedProject({ id: 'p_foreign' })
+    getOriginRemoteUrlImpl = async () => 'https://github.com/acme/repo.git'
+    await expect(
+      svc.createCheckpoint({ projectId: 'p_foreign', workspacePath: '/ws', message: 'm' }),
+    ).rejects.toBeInstanceOf(svc.CheckpointsDisabledForeignRepoError)
+    // initRepo is what edits .gitignore and .git/config user.* — it must not run.
+    expect(gitCalls.initRepo).toEqual([])
+    expect(gitCalls.commit).toEqual([])
+    expect(prismaCalls.createCheckpoint).toEqual([])
+  })
+
+  it('snapshots a foreign-origin repo on a ref once a GitHubConnection hands it to Shogo', async () => {
+    seedProject({ id: 'p_gh', githubConnection: { id: 'gh1' } } as any)
+    getOriginRemoteUrlImpl = async () => 'https://github.com/acme/repo.git'
+    const cp = await svc.createCheckpoint({ projectId: 'p_gh', workspacePath: '/ws', message: 'm' })
+    expect(cp).toBeDefined()
+    expect(gitCalls.initRepo).toEqual(['/ws'])
+    // SHO-61: a connected project's branch belongs to the user, so the
+    // checkpoint is a ref snapshot — no commit is written onto the branch.
+    expect(gitCalls.commit).toEqual([])
+    expect(gitCalls.snapshotTree).toHaveLength(1)
+    expect(cp.mode).toBe('ref')
+    expect(cp.refName).toBe('refs/shogo/checkpoints/main/2026-10-19T00-00-00.000Z-sha_sna')
+  })
+
+  it('commits a repo with no origin exactly as before', async () => {
+    seedProject({ id: 'p_no_origin' })
+    getOriginRemoteUrlImpl = async () => null
+    const cp = await svc.createCheckpoint({ projectId: 'p_no_origin', workspacePath: '/ws', message: 'm' })
+    expect(cp).toBeDefined()
+    expect(gitCalls.commit.length).toBe(1)
   })
 
   it('creates the .shogo directory when missing', async () => {
@@ -625,6 +715,19 @@ describe('rollback', () => {
     const out = await svc.rollback({ projectId: 'mine', workspacePath: '/ws', checkpointId: 'cp_x' })
     expect(out.success).toBe(false)
     expect(out.error).toBe('Checkpoint does not belong to this project')
+  })
+
+  it('refuses to roll back a foreign repo (no checkout, no read-tree)', async () => {
+    seedProject({ id: 'p_f' })
+    seedCheckpoint({ id: 'cp_f', projectId: 'p_f', commitSha: 'sha_f', branch: 'main' })
+    getStatusImpl = async () => ({ hasChanges: true } as any)
+    getOriginRemoteUrlImpl = async () => 'git@github.com:acme/repo.git'
+    await expect(
+      svc.rollback({ projectId: 'p_f', workspacePath: '/ws', checkpointId: 'cp_f' }),
+    ).rejects.toBeInstanceOf(svc.CheckpointsDisabledForeignRepoError)
+    expect(gitCalls.checkout).toEqual([])
+    expect(gitCalls.commit).toEqual([])
+    expect(execCalls.some((c) => c.cmd.startsWith('git read-tree'))).toBe(false)
   })
 
   it('creates a pre-rollback checkpoint when workspace has changes', async () => {

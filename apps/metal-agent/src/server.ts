@@ -23,6 +23,7 @@
  * it ships defaulting to observe rather than enforcing on arrival.
  */
 
+import { assignResponseBody } from './assign-response'
 import { type AuthMode, bucketPath, decideControlAuth, parseAuthMode } from './auth'
 import { config } from './config'
 import { injectE2eFault } from './e2e-faults'
@@ -190,22 +191,7 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
           rootfs === 'staged' ? await pool.openStaged(runtimeKey, env ?? {}, bind) : await pool.open(runtimeKey, env ?? {}, bind)
         if (r.mode === 'prewarmed') return Response.json(r)
         const url = await fwd.ensure(runtimeKey, r.handle.guestIp)
-        // vmClass reflects what was ACTUALLY booted, which may be 'standard'
-        // even for a docker-class request if this host doesn't support the
-        // class (pool.assign() fails closed and logs loudly) — the control
-        // plane can use a mismatch here to flag a routing bug.
-        return Response.json({
-          url,
-          mode: r.mode,
-          source: r.source,
-          readyMs: r.readyMs,
-          reused: r.reused,
-          vmClass: r.handle.vmClass,
-          phases: r.phases,
-          totalMs: r.totalMs,
-          staleReason: r.staleReason,
-          bootRootfsIdentity: r.bootRootfsIdentity,
-        })
+        return Response.json(assignResponseBody(r, url))
       }
 
       if (path === '/gc' && req.method === 'POST') {
@@ -488,6 +474,26 @@ if (config.idleSuspendMs > 0) {
         }
         if (ids.length) console.log(`[metal-agent] idle-suspended: ${ids.join(', ')}`)
         if (retired.length) console.log(`[metal-agent] idle-retired (stale rootfs): ${retired.join(', ')}`)
+      })
+      .catch((err) => console.error('[metal-agent] idle reap error:', err?.message ?? err))
+      .then(() => pool.rotateStale())
+      .then(({ retired, alwaysOn }) => {
+        for (const id of retired) {
+          fwd.remove(id)
+          reportPlacement('cold', id, { refresh: 'stale-rootfs' })
+        }
+        for (const id of alwaysOn) {
+          fwd.remove(id)
+          reportPlacement('cold', id, { refresh: 'stale-rootfs-always-on' })
+        }
+        const all = [...retired, ...alwaysOn]
+        if (all.length) console.log(`[metal-agent] rollout-rotated (superseded rootfs): ${all.join(', ')}`)
+      })
+      .catch((err) => console.error('[metal-agent] rollout rotation error:', err?.message ?? err))
+      // Retry warm boots that failed (they often do right after a restart).
+      // Not awaited: a fill boots several VMs and must not hold up the sweep.
+      .then(() => {
+        pool.reconcile().catch((err) => console.error('[metal-agent] warm pool refill error:', err?.message ?? err))
       }),
   )
 }

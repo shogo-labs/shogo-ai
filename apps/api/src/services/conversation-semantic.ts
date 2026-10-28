@@ -18,6 +18,7 @@
 
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
+import { notMachineWorkspaceWhere } from '../lib/machine-workspace'
 import { MESSAGE_INCLUDE, serializeMessage, ConversationError } from './conversation.service'
 import { searchMessages, type SearchResult } from './conversation-search'
 import { loadMentionNames, runWorkspaceAgentPrompt } from './conversation-agent-dispatcher'
@@ -109,6 +110,8 @@ export async function indexPendingMessages(now = new Date(), batch = INDEX_BATCH
   const rows = await db.conversationMessage.findMany({
     where: {
       ...(home ? { conversation: { workspace: home } } : {}),
+      // A machine workspace's messages are indexed on the desktop that holds them.
+      ...(await notMachineWorkspaceWhere()),
       deletedAt: null,
       authorType: { not: 'system' },
       embedding: { is: null },

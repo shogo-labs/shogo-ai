@@ -46,6 +46,7 @@ mock.module("lucide-react-native", () => {
     LogIn: Icon("LogIn"),
     LogOut: Icon("LogOut"),
     Mail: Icon("Mail"),
+    MessageSquare: Icon("MessageSquare"),
     Monitor: Icon("Monitor"),
     Moon: Icon("Moon"),
     Paintbrush: Icon("Paintbrush"),
@@ -84,11 +85,39 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/posthog"), () => ({
 mock.module(resolve(import.meta.dir, "../../../../contexts/theme"), () => ({
   useTheme: () => ({ theme: "dark", setTheme: () => {} }),
 }))
+mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttpOptional: () => null,
+  getDomainHttpClient: () => null,
+  useDomainOptional: () => null,
+  getDomainStore: () => null,
+  useDomainActions: () => ({
+    acceptInvitation: async () => ({}),
+    declineInvitation: async () => ({}),
+  }),
+  useDomainActionsOptional: () => ({
+    acceptInvitation: async () => ({}),
+    declineInvitation: async () => ({}),
+  }),
+  getDomainActionsInstance: () => null,
+  useWorkspaceCollection: () => ({ all: [], loadAll: async () => {} }),
+  useWorkspaceCollectionOptional: () => null,
+}))
+mock.module(resolve(import.meta.dir, "../../../../contexts/auth"), () => ({
+  useAuth: () => ({ user: { id: "user-1", email: "user@example.com" } }),
+  useAuthOptional: () => ({ user: { id: "user-1", email: "user@example.com" } }),
+  getAuthUserSnapshot: () => ({ id: "user-1", email: "user@example.com" }),
+}))
 mock.module(resolve(import.meta.dir, "../../../../lib/platform-config"), () => ({
+  isLocalMode: () => false,
+  isWorkspaceRuntimeEnabled: () => false,
+  isProjectWorkspaceRuntimeEnabled: () => false,
+  invalidatePlatformConfigCache: () => {},
   usePlatformConfig: () => ({ localMode: false, shogoKeyConnected: false }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/native-phone-layout"), () => ({
   isNativePlatform: () => true,
+  isPhoneLayout: () => true,
+  usePhoneLayout: () => true,
   useIsNativePhoneLayout: () => true,
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/billing-config"), () => ({
@@ -98,17 +127,25 @@ mock.module(resolve(import.meta.dir, "../../../../lib/analytics"), () => ({
   EVENTS: { UPGRADE_CLICKED: "u" },
   trackEvent: () => {},
 }))
+mock.module(resolve(import.meta.dir, "../../../../lib/api"), () => ({
+  isInvitationExpired: () => false,
+  api: { getReceivedInvitations: async () => [] },
+}))
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({
   CompactUsageWindows: () => null,
 }))
 
 const { AccountMenu, AccountMenuBody, ACCOUNT_SCREEN_HREF } = await import("../AccountMenu")
+const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")
 
 const props = {
   user: { name: "Ashutosh" },
   onSignOut: () => {},
   isSuperAdmin: false,
-  workspaces: [{ id: "w1", name: "Ashutosh Personal" }],
+  // One list of entries (SHO-108): a cloud workspace here, no paired machine.
+  entries: buildWorkspaceEntries({ workspaces: [{ id: "w1", name: "Ashutosh Personal", kind: "personal" }] }),
+  currentKey: cloudWorkspaceKey("w1"),
+  onSelectEntry: () => {},
   currentWorkspace: { id: "w1", name: "Ashutosh Personal" },
   billingData: {},
   workspacePlan: null,
@@ -171,8 +208,9 @@ describe("AccountMenuBody native grouping", () => {
     expect(screen.getByLabelText("Integrations")).toBeTruthy()
     expect(screen.getByLabelText("Remote Control")).toBeTruthy()
     expect(screen.getByLabelText("Billing")).toBeTruthy()
-    expect(screen.getByLabelText("Usage")).toBeTruthy()
-    expect(screen.getByLabelText("Cost Optimizer")).toBeTruthy()
+    // Usage and Cost Optimizer moved to the Analytics screen (More tab).
+    expect(screen.queryByLabelText("Usage")).toBeNull()
+    expect(screen.queryByLabelText("Cost Optimizer")).toBeNull()
     expect(screen.getByLabelText("Profile")).toBeTruthy()
     expect(screen.getByLabelText("API Keys")).toBeTruthy()
     expect(screen.getByLabelText("Appearance")).toBeTruthy()

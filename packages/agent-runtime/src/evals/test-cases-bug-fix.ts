@@ -14,37 +14,38 @@
  */
 
 import type { AgentEval, EvalResult } from './types'
-import { usedTool, neverUsedTool, toolCallCount, toolCallArgsContain, execCommandContains } from './eval-helpers'
+import {
+  usedTool,
+  neverUsedTool,
+  toolCallCount,
+  toolCallArgsContain,
+  execCommandContains,
+  fileWrites,
+  readFileAnyRoute,
+  searchedAnyRoute,
+} from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Validation helpers
 // ---------------------------------------------------------------------------
 
+/** The first edited file was read (read_file or exec cat/head/sed -n …) before the first edit. */
 function readBeforeFirstEdit(r: EvalResult): boolean {
   const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
   if (editIdx === -1) return true
-  return r.toolCalls.slice(0, editIdx).some(
-    t => t.name === 'read_file' || t.name === 'grep',
-  )
+  const path = String((r.toolCalls[editIdx].input as any).path ?? '')
+  return readFileAnyRoute(r, path, r.toolCalls.slice(0, editIdx))
 }
 
 function neverWroteFile(r: EvalResult, pathPattern: RegExp): boolean {
-  return !r.toolCalls.some(t =>
-    (t.name === 'write_file' || t.name === 'edit_file') &&
-    pathPattern.test(String((t.input as any).path ?? '')),
-  )
+  return !fileWrites(r).some(w => pathPattern.test(w.path))
 }
 
 function neverCreatedThrowawayFiles(r: EvalResult): boolean {
   const throwawayPatterns = [
     /debug/i, /reproduce/i, /scratch/i, /tmp_/i, /temp_/i, /check_/i, /verify_/i, /test_fix/i,
   ]
-  return !r.toolCalls
-    .filter(t => t.name === 'write_file')
-    .some(t => {
-      const path = String((t.input as any).path ?? '')
-      return throwawayPatterns.some(p => p.test(path))
-    })
+  return !fileWrites(r).some(w => throwawayPatterns.some(p => p.test(w.path)))
 }
 
 function ranTests(r: EvalResult): boolean {
@@ -484,15 +485,13 @@ def test_none():
     validationCriteria: [
       {
         id: 'explored-structure',
-        description: 'Agent used ls, glob, or grep to understand the project before editing',
+        description: 'Agent explored the project (search, or exec ls/find/rg/grep) before editing',
         points: 3,
         phase: 'intention',
         validate: (r) => {
           const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
           if (editIdx === -1) return false
-          return r.toolCalls.slice(0, editIdx).some(
-            t => t.name === 'ls' || t.name === 'glob' || t.name === 'grep',
-          )
+          return searchedAnyRoute(r, r.toolCalls.slice(0, editIdx))
         },
       },
       {

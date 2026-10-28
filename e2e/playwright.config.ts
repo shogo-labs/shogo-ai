@@ -22,6 +22,32 @@ import { quarantineGrepInvert } from "./staging/quarantine"
  * be skipped cleanly when pointed at live keys. See
  * e2e/staging/helpers.ts → isLiveStripeEnv().
  */
+
+const CRITICAL_SUITE_WORKER_CAP = 4
+
+/**
+ * Worker count, bounded by what the target cluster can absorb (SHO-136).
+ *
+ * Every hosted file provisions its own isolated account and project runtime, so
+ * an uncached boot pulls the ~10 GB `shogo-runtime` image onto whichever node
+ * the scheduler picks. An 8-worker critical run could want ~80 GB across three
+ * staging nodes — that is the load that put a node under DiskPressure on
+ * 2026-10-21 and timed out whichever specs landed there.
+ *
+ * The critical suite therefore never exceeds 4 workers: `E2E_WORKERS` can dial
+ * it DOWN, never up. The full nightly suite keeps 8 (off-peak, and it is the
+ * suite that actually needs the throughput).
+ */
+export function resolveWorkers(env: Record<string, string | undefined>): number {
+  const requested = Number(env.E2E_WORKERS)
+  const override = Number.isFinite(requested) && requested > 0 ? requested : undefined
+  if (env.E2E_SUITE === 'critical') {
+    return Math.min(override ?? CRITICAL_SUITE_WORKER_CAP, CRITICAL_SUITE_WORKER_CAP)
+  }
+  if (override) return override
+  return env.CI ? 8 : 1
+}
+
 export default defineConfig({
   testDir: "./staging",
   ...(process.env.E2E_SUITE === "critical" ? { testMatch: criticalPathTestMatch() } : {}),
@@ -29,17 +55,13 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
-  // Each hosted test provisions its own isolated account, so files can run
-  // concurrently. Hosted CI runs 8 workers to keep the ~118-test suite well
-  // under the (now 60m) job timeout; the env override lets a run dial this up
-  // or down without a code change. Stays serial locally to avoid hammering a
-  // localhost target.
-  workers: process.env.E2E_WORKERS
-    ? Number(process.env.E2E_WORKERS)
-    : process.env.CI
-      ? 8
-      : 1,
-  reporter: [["html", { outputFolder: "../test-results/e2e-report" }]],
+  workers: resolveWorkers(process.env),
+  reporter: [
+    ["html", { outputFolder: "../test-results/e2e-report" }],
+    // Machine-readable copy for the environment/product classification
+    // (scripts/e2e-classify.ts) and the per-spec durations in the run summary.
+    ["json", { outputFile: "../test-results/e2e-report.json" }],
+  ],
   timeout: 120_000,
   expect: { timeout: 15_000 },
   outputDir: "../test-results/e2e-artifacts",

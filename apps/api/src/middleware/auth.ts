@@ -32,6 +32,7 @@ import { auth } from "../auth"
 import { prisma } from "../lib/prisma"
 import { resolveApiKey } from "../routes/api-keys"
 import { verifyRuntimeToken } from "../lib/runtime-token"
+import { verifyWorkspaceRuntimeToken } from "../lib/workspace-runtime-token"
 import type { Permission } from "@shogo/authz"
 import { authorize, decide, denialResponse, getAccess } from "../lib/authz"
 import { projectRoutePermission } from "../lib/authz/project-routes"
@@ -98,6 +99,87 @@ declare module "hono" {
 }
 
 /**
+ * Project routes a workspace runtime token (`wrt_v1_*`) may call for one of
+ * its workspace's projects. Workspace runtimes push Git LFS objects with the
+ * token they hold; every other project route still requires a project token.
+ */
+const WORKSPACE_TOKEN_PROJECT_ROUTE =
+  /^\/api\/projects\/([^/]+)\/git\/info\/lfs\/objects\/(?:batch|verify)$/
+
+function workspaceTokenLfsScope(
+  path: string,
+  token: string,
+): { projectId: string; workspaceId: string } | null {
+  const match = WORKSPACE_TOKEN_PROJECT_ROUTE.exec(path)
+  if (!match) return null
+  const verified = verifyWorkspaceRuntimeToken(token)
+  if (!verified.ok) return null
+  return { projectId: decodeURIComponent(match[1]), workspaceId: verified.workspaceId }
+}
+
+/**
+ * Runtime-token auth for `scope.projectId`, or null when the project is
+ * missing, outside `scope.workspaceId` (workspace tokens), or has no owner.
+ *
+ * Resolves a real owner userId in the same round-trip as the project
+ * existence check. See ../lib/runtime-token.md §3: AuthContext.userId for
+ * runtime-token callers is the project's owner Member (project-scoped first,
+ * then workspace-scoped). This is representation, not an identity assertion —
+ * the pod did not authenticate as that user; `via === 'runtimeToken'` remains
+ * the capability signal.
+ */
+async function runtimeTokenAuth(
+  path: string,
+  scope: { projectId: string; workspaceId?: string },
+): Promise<AuthContext | null> {
+  const project = await prisma.project.findUnique({
+    where: { id: scope.projectId },
+    select: {
+      workspaceId: true,
+      members: {
+        where: { role: { in: ['owner', 'admin'] } },
+        orderBy: { createdAt: 'asc' },
+        select: { userId: true },
+        take: 1,
+      },
+      workspace: {
+        select: {
+          members: {
+            where: { role: 'owner', projectId: null },
+            orderBy: { createdAt: 'asc' },
+            select: { userId: true },
+            take: 1,
+          },
+        },
+      },
+    },
+  })
+  if (!project) return null
+  if (scope.workspaceId && project.workspaceId !== scope.workspaceId) return null
+  const ownerUserId =
+    project.members[0]?.userId ??
+    project.workspace.members[0]?.userId
+  if (!ownerUserId) {
+    // Project exists but has no owner in either scope. This should not
+    // happen given workspace-creation invariants, but we fall through
+    // (→ 401 at requireAuth) rather than silently attributing to a
+    // random user.
+    console.warn(
+      "[authMiddleware] runtime-token: no owner resolvable for project",
+      { path, projectId: scope.projectId },
+    )
+    return null
+  }
+  return {
+    userId: ownerUserId,
+    workspaceId: project.workspaceId,
+    projectId: scope.projectId,
+    isAuthenticated: true,
+    via: 'runtimeToken',
+  }
+}
+
+/**
  * Auth middleware that extracts session from Better Auth.
  * Sets c.get("auth") with user info for downstream handlers.
  *
@@ -108,7 +190,10 @@ export async function authMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header("authorization")
   if (authHeader?.startsWith("Bearer shogo_sk_")) {
     try {
-      const result = await resolveApiKey(authHeader.slice(7))
+      const key = authHeader.slice(7)
+      const deviceAppVersion = c.req.header("X-Shogo-Device-App-Version")
+      const result = await resolveApiKey(key, deviceAppVersion ? { deviceAppVersion } : undefined)
+      c.set("apiKeyResolution", { key, result })
       if (result) {
         c.set("auth", {
           userId: result.userId,
@@ -157,61 +242,14 @@ export async function authMiddleware(c: Context, next: Next) {
       c.req.query("projectId") ?? c.req.param("projectId") ?? undefined
     try {
       const verified = verifyRuntimeToken(runtimeToken, legacyFallbackProjectId)
-      if (verified.ok) {
-        const scopedProjectId = verified.projectId
-        // Resolve a real owner userId in the same round-trip as the
-        // project existence check. See ../lib/runtime-token.md §3:
-        // AuthContext.userId for runtime-token callers is the project's
-        // owner Member (project-scoped first, then workspace-scoped).
-        // This is representation, not an identity assertion — the pod
-        // did not authenticate as that user; `via === 'runtimeToken'`
-        // remains the capability signal.
-        const project = await prisma.project.findUnique({
-          where: { id: scopedProjectId },
-          select: {
-            workspaceId: true,
-            members: {
-              where: { role: { in: ['owner', 'admin'] } },
-              orderBy: { createdAt: 'asc' },
-              select: { userId: true },
-              take: 1,
-            },
-            workspace: {
-              select: {
-                members: {
-                  where: { role: 'owner', projectId: null },
-                  orderBy: { createdAt: 'asc' },
-                  select: { userId: true },
-                  take: 1,
-                },
-              },
-            },
-          },
-        })
-        const ownerUserId =
-          project?.members[0]?.userId ??
-          project?.workspace.members[0]?.userId
-        if (project && ownerUserId) {
-          c.set("auth", {
-            userId: ownerUserId,
-            workspaceId: project.workspaceId,
-            projectId: scopedProjectId,
-            isAuthenticated: true,
-            via: 'runtimeToken',
-          })
-          await next()
-          return
-        }
-        if (project && !ownerUserId) {
-          // Project exists but has no owner in either scope. This
-          // should not happen given workspace-creation invariants,
-          // but we fall through (→ 401 at requireAuth) rather than
-          // silently attributing to a random user.
-          console.warn(
-            "[authMiddleware] runtime-token: no owner resolvable for project",
-            { path: c.req.path, projectId: scopedProjectId },
-          )
-        }
+      const scope = verified.ok
+        ? { projectId: verified.projectId }
+        : workspaceTokenLfsScope(c.req.path, runtimeToken)
+      const runtimeAuth = scope ? await runtimeTokenAuth(c.req.path, scope) : null
+      if (runtimeAuth) {
+        c.set("auth", runtimeAuth)
+        await next()
+        return
       }
     } catch (err) {
       // verify may throw in production if signing secret missing;
@@ -326,12 +364,39 @@ export const PUBLIC_PREFIXES = [
   '/api/cli/login/',
 ]
 
+/**
+ * Public paths that cannot be expressed as a prefix without exposing a whole
+ * router. Checked alongside `PUBLIC_PREFIXES`.
+ */
+export const PUBLIC_PATTERNS: RegExp[] = [
+  // Emailed invitation links land on `/invitations/<id>/accept`, which has to
+  // render (workspace name, role) before the invitee has a session. The uuid is
+  // the credential and the payload carries no email address — see
+  // `./routes/invitation-info.ts`. Matching the exact subpath keeps the rest of
+  // the generated `/api/invitations` CRUD surface behind `requireAuth`.
+  /^\/api\/invitations\/[^/]+\/info$/,
+  // Zernio redirects the browser here straight from the OAuth consent screen,
+  // so there is no Shogo session on the request. The page only reads the
+  // `connected`/`error` query params and renders copy — it never touches
+  // tenant data. Matching the exact path keeps the rest of `/api/social/*`
+  // (accounts, posts, inbox) behind `requireAuth`.
+  /^\/api\/social\/connect\/return$/,
+]
+
+/** True when `path` is public for `requireAuth` (prefix or pattern list). */
+export function isPublicPath(path: string): boolean {
+  return (
+    PUBLIC_PREFIXES.some((p) => path.startsWith(p)) ||
+    PUBLIC_PATTERNS.some((pattern) => pattern.test(path))
+  )
+}
+
 export async function requireAuth(c: Context, next: Next) {
   const auth = c.get("auth")
 
   if (!auth?.isAuthenticated || !auth.userId) {
     const path = new URL(c.req.url).pathname
-    if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) {
+    if (isPublicPath(path)) {
       return next()
     }
     if (auth?.authError) {

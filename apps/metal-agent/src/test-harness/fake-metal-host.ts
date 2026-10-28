@@ -27,7 +27,16 @@ import {
   packRepoArchive,
   seedRepoIfAbsent,
 } from '../../../../packages/shared-runtime/src/repo-store'
+import {
+  buildRepoBundle,
+  materializeRepoFromBundles,
+  parseRepoManifest,
+  readRepoSnapshotFields,
+  REPO_MANIFEST_VERSION,
+  type RepoManifest,
+} from '../../../../packages/shared-runtime/src/repo-bundles'
 import { handleExportHome, handleHydrateHome } from '../../../../packages/agent-runtime/src/home-state-routes'
+import { RepoAdoptGate, isWorkspaceNeutralRequest } from '../../../../packages/agent-runtime/src/repo-adopt-gate'
 import { config, type MetalConfig } from '../config'
 import type { FcSnapshot, FcVmHandle } from '../firecracker-vm-manager'
 
@@ -64,11 +73,59 @@ export class FakeS3 {
     return [...this.objects.keys()].filter((k) => k.startsWith(prefix))
   }
 
+  /**
+   * Make GETs of matching keys misbehave, as object storage did on 2026-10-25
+   * (a git history download that hung for two minutes). HEAD is never
+   * affected, so the pool still sees the object exists.
+   *
+   *   - `hang`: the response never starts until `release()` (then served normally).
+   *   - `fail`: waits `afterMs`, then answers 500.
+   *   - `delay`: waits `afterMs`, then serves normally.
+   *
+   * Returns `release`, which also lifts the fault for later requests.
+   */
+  stall(match: (key: string) => boolean, mode: { kind: 'hang' } | { kind: 'fail' | 'delay'; afterMs: number } = { kind: 'hang' }): () => void {
+    let release!: () => void
+    const released = new Promise<void>((r) => { release = r })
+    const fault: StorageFault = { match, mode, released, hits: 0 }
+    this.faults.push(fault)
+    return () => {
+      this.faults = this.faults.filter((f) => f !== fault)
+      release()
+    }
+  }
+
+  /** How many GETs a fault has caught so far. */
+  stalledGets(match?: (key: string) => boolean): number {
+    return this.faultLog.filter((k) => !match || match(k)).length
+  }
+
+  private faults: StorageFault[] = []
+  private faultLog: string[] = []
+
+  private async applyFault(key: string): Promise<Response | null> {
+    const fault = this.faults.find((f) => f.match(key))
+    if (!fault) return null
+    fault.hits++
+    this.faultLog.push(key)
+    if (fault.mode.kind === 'hang') {
+      await fault.released
+      return null
+    }
+    const { afterMs } = fault.mode
+    await Promise.race([Bun.sleep(afterMs), fault.released])
+    return fault.mode.kind === 'fail' ? new Response('storage unavailable', { status: 500 }) : null
+  }
+
   private async handle(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname
     const prefix = `/${BUCKET}/`
     if (!path.startsWith(prefix)) return new Response('no such bucket', { status: 404 })
     const key = decodeURIComponent(path.slice(prefix.length))
+    if (req.method === 'GET') {
+      const faulted = await this.applyFault(key)
+      if (faulted) return faulted
+    }
     const existing = this.objects.get(key)
     if (req.method === 'HEAD' || req.method === 'GET') {
       if (!existing) return new Response(null, { status: 404 })
@@ -98,7 +155,21 @@ export class FakeS3 {
   }
 }
 
+interface StorageFault {
+  match: (key: string) => boolean
+  mode: { kind: 'hang' } | { kind: 'fail' | 'delay'; afterMs: number }
+  released: Promise<void>
+  hits: number
+}
+
 export type GuestKind =
+  /**
+   * Today's guest (agent-runtime after 2026-10-27): everything `current`
+   * does, plus incremental repo bundles and `ifIdle`, so the host may serve
+   * the source's `.git` and swap the history in later. The late swap goes
+   * through the real `RepoAdoptGate`, exactly as agent-runtime wires it.
+   */
+  | 'deferring'
   /** Honours `timeoutMs` and `keepPaths`, advertises `deadline`. */
   | 'current'
   /** The 2026-09-28 incident guest: full reset whenever the git layer is ready, however late. */
@@ -115,6 +186,10 @@ export class FakeGuest {
   /** Env from the last `/pool/assign` or `/pool/refresh-env`; feeds the real home-state handlers. */
   env: Record<string, string> = {}
   readonly adopts: Array<Promise<unknown>> = []
+  /** The agent-runtime's gate for late `.git` swaps (`deferring` guests only). */
+  readonly adoptGate = new RepoAdoptGate()
+  /** Every `/pool/repo-hydrated` adopt answer, in order: 200, 409 (busy), 504, 500. */
+  readonly adoptStatuses: number[] = []
   alive = true
   private server: ReturnType<typeof Bun.serve>
   private settleGit!: () => void
@@ -169,6 +244,30 @@ export class FakeGuest {
     return git(this.ws, 'rev-parse', 'HEAD')
   }
 
+  /**
+   * A chat turn that writes `rel`, sent over HTTP like the IDE's, so it passes
+   * through the same request middleware as agent-runtime (it marks the
+   * workspace in use, and waits out a late `.git` swap in progress).
+   */
+  async use(rel: string, body: string): Promise<void> {
+    const res = await fetch(`${this.url}/agent/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ rel, body }),
+    })
+    if (!res.ok) throw new Error(`/agent/chat failed (${res.status})`)
+  }
+
+  /** Whether `sha` is in this workspace's history. */
+  hasCommit(sha: string): boolean {
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], { cwd: this.ws, stdio: 'ignore' })
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** The Firecracker process died; the workspace stays on the rootfs. */
   crash(): void {
     this.alive = false
@@ -178,6 +277,7 @@ export class FakeGuest {
   stop(): void {
     if (this.alive) this.server.stop(true)
     this.alive = false
+    if (this.bundleSpoolDir) rmSync(this.bundleSpoolDir, { recursive: true, force: true })
     rmSync(this.ws, { recursive: true, force: true })
     rmSync(this.home, { recursive: true, force: true })
   }
@@ -206,15 +306,35 @@ export class FakeGuest {
 
   private async handle(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname
+    // agent-runtime's app-wide middleware: anything that can write the
+    // workspace marks it in use and waits out a late `.git` swap.
+    if (this.kind === 'deferring' && !isWorkspaceNeutralRequest(req.method, path)) await this.adoptGate.enter()
     // Binary bodies: the real guest handlers, before anything parses JSON.
     if (path === '/pool/export-home') return handleExportHome(req, { env: this.homeEnv(), stageDir: () => tmpdir() })
     if (path === '/pool/hydrate-home') return handleHydrateHome(req, { env: this.homeEnv() })
+    const built = path.match(/^\/pool\/export-repo-bundle\/([0-9a-f]{64})$/)
+    if (built && this.kind === 'deferring') {
+      const p = join(this.bundleSpool, `${built[1]}.bundle`)
+      return existsSync(p) ? new Response(Bun.file(p)) : Response.json({ error: 'bundle not built' }, { status: 404 })
+    }
     const body: any = await req.json().catch(() => ({}))
     switch (path) {
       case '/pool/assign':
+        if (this.kind === 'deferring') this.adoptGate.reset()
+        this.env = { ...this.env, ...(body.env ?? {}), PROJECT_ID: body.projectId ?? this.env.PROJECT_ID }
+        return Response.json({ ok: true })
       case '/pool/refresh-env':
         this.env = { ...this.env, ...(body.env ?? {}), PROJECT_ID: body.projectId ?? this.env.PROJECT_ID }
         return Response.json({ ok: true })
+      case '/agent/chat':
+        this.edit(body.rel, body.body)
+        return Response.json({ ok: true })
+      case '/pool/repo-bundles-hydrate':
+        if (this.kind !== 'deferring') return new Response('not found', { status: 404 })
+        return this.repoBundlesHydrate(body)
+      case '/pool/export-repo-bundle':
+        if (this.kind !== 'deferring') return new Response('not found', { status: 404 })
+        return this.exportRepoBundle(body)
       case '/pool/hydrate-url': {
         const res = await fetch(body.url)
         if (!res.ok) return new Response(`pull failed ${res.status}`, { status: 502 })
@@ -250,8 +370,15 @@ export class FakeGuest {
 
   private async repoHydrated(body: any): Promise<Response> {
     if (body.probe === true) {
+      if (this.kind === 'deferring') return Response.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true })
       return Response.json(this.kind === 'current' ? { ok: true, supported: true, deadline: true } : { ok: true, supported: true })
     }
+    const res = await this.repoAdopt(body)
+    this.adoptStatuses.push(res.status)
+    return res
+  }
+
+  private async repoAdopt(body: any): Promise<Response> {
     const staging = join(this.ws, body.stagingDir)
     if (this.kind === 'legacy') {
       const adopt = this.gitReady.then(() => adoptHydratedRepo(this.ws, staging, { logger: NOOP }))
@@ -259,18 +386,74 @@ export class FakeGuest {
       return Response.json({ ok: true, ...(await adopt) })
     }
     const timeoutMs = Number(body.timeoutMs)
-    const adopt = adoptHydratedRepoBefore(this.ws, staging, {
-      deadline: Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : null,
-      ready: this.gitReady,
-      keepPaths: body.keepPaths,
-      logger: NOOP,
-    })
+    const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : null
+    const run = () =>
+      adoptHydratedRepoBefore(this.ws, staging, { deadline, ready: this.gitReady, keepPaths: body.keepPaths, logger: NOOP })
+    // As agent-runtime: a late swap (`ifIdle`) only happens through the gate.
+    const adopt = this.kind === 'deferring' && body.ifIdle === true ? this.adoptGate.adoptIfIdle(run) : run()
     this.adopts.push(adopt.catch(() => {}))
     try {
-      return Response.json({ ok: true, ...(await adopt) })
+      const res = await adopt
+      if (!res) {
+        rmSync(staging, { recursive: true, force: true })
+        return Response.json({ error: 'workspace already in use', adopted: false, busy: true }, { status: 409 })
+      }
+      return Response.json({ ok: true, ...res })
     } catch (err: any) {
       if (err instanceof AdoptDeadlineError) return Response.json({ error: err.message, adopted: false }, { status: 504 })
       return Response.json({ error: err?.message ?? String(err) }, { status: 500 })
+    }
+  }
+
+  private bundleSpoolDir: string | null = null
+  private get bundleSpool(): string {
+    if (!this.bundleSpoolDir) this.bundleSpoolDir = mkdtempSync(join(tmpdir(), 'fake-bundle-spool-'))
+    return this.bundleSpoolDir
+  }
+
+  /** agent-runtime's `/pool/export-repo-bundle`: the next bundle since `since`, served by digest. */
+  private async exportRepoBundle(body: any): Promise<Response> {
+    if (this.flushBeforeExport && git(this.ws, 'status', '--porcelain')) {
+      gitCommitAll(this.ws, 'flush before export')
+    }
+    const since: string[] | null = body?.full === true || body?.since == null ? null : body.since
+    try {
+      const built = await buildRepoBundle(this.ws, { previous: since, workDir: this.bundleSpool })
+      const snap = await readRepoSnapshotFields(this.ws)
+      return Response.json({ bundle: built?.entry ?? null, ...snap, rootCommitAt: null })
+    } catch (err: any) {
+      return Response.json({ error: err?.message ?? String(err) }, { status: 500 })
+    }
+  }
+
+  /** agent-runtime's `/pool/repo-bundles-hydrate`: download each bundle and rebuild the repo in staging. */
+  private async repoBundlesHydrate(body: any): Promise<Response> {
+    const staging = this.resolve(body.stagingDir)
+    let manifest: RepoManifest
+    try {
+      manifest = parseRepoManifest(body.manifest)
+    } catch (err: any) {
+      return Response.json({ error: err?.message ?? 'invalid manifest' }, { status: 400 })
+    }
+    const items = body.bundles as Array<{ sha256: string; url: string }>
+    const timeoutMs = Number(body.timeoutMs) > 0 ? Number(body.timeoutMs) : 15 * 60_000
+    const spool = mkdtempSync(join(tmpdir(), 'fake-bundles-'))
+    try {
+      rmSync(staging, { recursive: true, force: true })
+      await materializeRepoFromBundles(staging, manifest, async (entry) => {
+        const item = items[manifest.bundles.indexOf(entry)]
+        const res = await fetch(item.url, { signal: AbortSignal.timeout(timeoutMs) })
+        if (!res.ok) throw new Error(`bundle ${entry.sha256} download failed (${res.status})`)
+        const p = join(spool, `${entry.sha256}.bundle`)
+        await Bun.write(p, res)
+        return p
+      })
+      return Response.json({ ok: true, bundles: manifest.bundles.length })
+    } catch (err: any) {
+      rmSync(staging, { recursive: true, force: true })
+      return Response.json({ error: err?.message ?? String(err) }, { status: 500 })
+    } finally {
+      rmSync(spool, { recursive: true, force: true })
     }
   }
 }
@@ -474,6 +657,15 @@ export function git(dir: string, ...args: string[]): string {
 }
 
 export function gitCommitAll(dir: string, message: string): void {
+  // agent-runtime's `stageExcludes`: host staging dirs (which hold their own
+  // `.git` while a repo restore is in flight) are never part of a commit.
+  // Via info/exclude, so it also holds after a durable `.git` is swapped in.
+  const exclude = join(dir, '.git', 'info', 'exclude')
+  const current = existsSync(exclude) ? readFileSync(exclude, 'utf-8') : ''
+  if (!current.includes('.shogo/local')) {
+    mkdirSync(join(dir, '.git', 'info'), { recursive: true })
+    writeFileSync(exclude, `${current}${current && !current.endsWith('\n') ? '\n' : ''}.shogo/local/\nchat-files/\n`)
+  }
   git(dir, 'add', '-A')
   git(dir, 'commit', '-q', '--allow-empty', '-m', message)
 }
@@ -559,6 +751,43 @@ export function repoFileAtHead(bytes: Uint8Array, rel: string): string | null {
     return null
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Write a durable repo in the incremental format (`repo/manifest.json` plus
+ * one base bundle) whose HEAD holds `files`, built by the same code the
+ * exporter uses. Returns HEAD and the bundle's object key.
+ */
+export async function putRepoBundles(
+  s3: FakeS3,
+  projectId: string,
+  files: Record<string, string>,
+  lastModified = Date.now(),
+): Promise<{ sha: string; bundleKey: string; manifestEtag: string }> {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-bundle-repo-'))
+  const work = mkdtempSync(join(tmpdir(), 'fake-bundle-out-'))
+  try {
+    for (const [rel, body] of Object.entries(files)) writeRel(dir, rel, body)
+    await seedRepoIfAbsent(dir, { logger: NOOP })
+    const built = await buildRepoBundle(dir, { previous: null, workDir: work })
+    if (!built) throw new Error('empty repo')
+    const fields = await readRepoSnapshotFields(dir)
+    const manifest: RepoManifest = {
+      v: REPO_MANIFEST_VERSION,
+      head: fields.head,
+      refs: fields.refs,
+      config: fields.config,
+      rootCommitAt: null,
+      bundles: [built.entry],
+    }
+    const bundleKey = `${projectId}/repo/bundles/${built.entry.sha256}.bundle`
+    s3.put(bundleKey, new Uint8Array(readFileSync(built.path)), lastModified)
+    const manifestEtag = s3.put(`${projectId}/repo/manifest.json`, new TextEncoder().encode(JSON.stringify(manifest)), lastModified)
+    return { sha: git(dir, 'rev-parse', 'HEAD'), bundleKey, manifestEtag }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(work, { recursive: true, force: true })
   }
 }
 

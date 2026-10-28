@@ -28,6 +28,8 @@ export interface WorkspaceAgentProfile {
   personality: string | null
   statusText: string | null
   statusUpdatedAt: string | null
+  /** Model used when the agent is tagged in team chat; null = Auto. */
+  defaultModel?: string | null
 }
 
 export interface AgentScheduleSummary {

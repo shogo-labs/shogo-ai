@@ -20,8 +20,6 @@ describe('workspaceExperience', () => {
       expect(exp.primaryNav).toEqual(exp.bottomTabs.filter((id) => id !== 'more'))
       expect(exp.chatReturnsToProjectContext).toBe(true)
       expect(exp.composer.showModelPicker).toBe(true)
-      expect(exp.composer.showInteractionModes).toBe(true)
-      expect(exp.composer.forcedMode).toBeUndefined()
     }
   })
 
@@ -40,8 +38,6 @@ describe('workspaceExperience', () => {
     expect(exp.primaryNav).toEqual(exp.bottomTabs.filter((id) => id !== 'more'))
     expect(exp.chatReturnsToProjectContext).toBe(false)
     expect(exp.composer.showModelPicker).toBe(false)
-    expect(exp.composer.showInteractionModes).toBe(false)
-    expect(exp.composer.forcedMode).toBe('agent')
   })
 
   it('team gets the full icon rail and the four-tab dock', () => {
