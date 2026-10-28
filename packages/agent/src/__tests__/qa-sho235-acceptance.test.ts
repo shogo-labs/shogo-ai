@@ -112,11 +112,17 @@ function scriptedExec(outputs: any[]): { tool: AgentTool; seen: any[] } {
 
 /**
  * The no-progress stop is off by default (round 2); every test in this file that
- * expects a stop opts in at the historical threshold of 5 turns.
+ * expects a stop opts in at the historical threshold of 5 turns. Pass the
+ * `DEFAULT` sentinel to exercise the shipped default instead.
  */
 const OPT_IN = { maxConsecutiveNoProgress: 5 } as const
+const DEFAULT = 'default' as const
 
-function run(streamFn: StreamFn, tool: AgentTool, loopDetection = OPT_IN) {
+function run(
+  streamFn: StreamFn,
+  tool: AgentTool,
+  loopDetection: typeof OPT_IN | typeof DEFAULT = OPT_IN,
+) {
   return runAgentLoop({
     model: 'claude-sonnet-4-5',
     system: 'test',
@@ -125,7 +131,7 @@ function run(streamFn: StreamFn, tool: AgentTool, loopDetection = OPT_IN) {
     tools: [tool],
     streamFn,
     maxIterations: 30,
-    loopDetection,
+    ...(loopDetection === DEFAULT ? {} : { loopDetection }),
   })
 }
 
@@ -295,5 +301,89 @@ describe('SHO-235 AC 5 / AC 6 — what must not change', () => {
     for (let i = 0; i < 6; i++) {
       expect(d.recordAndCheck('exec', { command: `attempt ${i}` }, { exitCode: 7, stderr: 'Could not resolve host' }).loopDetected).toBe(false)
     }
+  })
+})
+
+describe('SHO-235 round 2 — no_progress is off unless a caller opts in', () => {
+  // A scripted `streamFn` keeps emitting its scripted turns whatever `agent.abort()`
+  // does — there is no fetch to cancel — so a tool-call *count* cannot prove the
+  // loop stopped here. What this harness does prove is the contract that matters:
+  // whether `loopBreak` is set, with which reason, and that the model's final text
+  // is replaced by the loop note. "Stops before the 11th call" is pinned at the
+  // detector instead (identical_calls fires on the 10th `recordAndCheck`).
+  test('R1: 20 turns of genuine thrash run to the end on the default config', async () => {
+    // Every call fails and every call differs — input and output — so neither
+    // identical_calls nor identical_outputs nor cycle can end this. The only
+    // thing that used to stop it was no_progress, and that is off by default.
+    const thrash = Array.from({ length: 20 }, (_, i) => ({
+      exitCode: 7, stdout: '', stderr: `curl: (7) Could not resolve host: metrics.internal (attempt ${i})`,
+    }))
+    const { tool } = scriptedExec(thrash)
+    const result = await run(
+      scriptedStream([
+        ...thrash.map((_, i) => ({ calls: [{ name: 'exec', arguments: { command: `curl http://metrics.internal/signups?p=${i}` } }] })),
+        { text: 'the endpoint is unreachable, asking for help' },
+      ]),
+      tool,
+      DEFAULT, // no loopDetection at all — the default path
+    )
+
+    expect(result.loopBreak).toBeUndefined()
+    expect(result.text).toBe('the endpoint is unreachable, asking for help')
+  })
+
+  test('R3: opting in with 5 restores round 1 exactly, on the same 20 turns', async () => {
+    const thrash = Array.from({ length: 20 }, (_, i) => ({
+      exitCode: 7, stdout: '', stderr: `curl: (7) Could not resolve host: metrics.internal (attempt ${i})`,
+    }))
+    const { tool } = scriptedExec(thrash)
+    const result = await run(
+      scriptedStream([
+        ...thrash.map((_, i) => ({ calls: [{ name: 'exec', arguments: { command: `curl http://metrics.internal/signups?p=${i}` } }] })),
+        { text: 'never reached' },
+      ]),
+      tool,
+      OPT_IN,
+    )
+
+    expect(result.loopBreak?.reason).toBe('no_progress')
+    expect(result.loopBreak?.pattern).toBe(
+      '5 turns in a row where every tool call failed — stop and ask for help instead of retrying',
+    )
+    expect(result.text).not.toBe('never reached')
+  })
+
+  test('R2: the rewritten desktop `empty=1` scenario — blank calls end as identical_calls, never no_progress', async () => {
+    // What `apps/desktop/e2e/streaming/streaming.spec.ts` now asserts, but at the
+    // loop level: that spec needs Electron and no CI job runs it, so this is the
+    // only place the claim is executed. SHO-223's empty-argument model used to be
+    // stopped at 5 by no_progress; with it off, identical_calls is what ends it.
+    const guardError = { error: "read_file: required argument 'path' was empty — arguments were lost" }
+    const { tool } = scriptedExec(Array.from({ length: 12 }, () => guardError))
+    const result = await run(
+      scriptedStream([
+        ...Array.from({ length: 12 }, () => ({ calls: [{ name: 'exec', arguments: { command: 'read_file' } }] })),
+        { text: 'never reached' },
+      ]),
+      tool,
+      DEFAULT,
+    )
+
+    expect(result.loopBreak?.reason).toBe('identical_calls')
+    expect(result.loopBreak?.pattern).toBe('exec called 10 times with identical input')
+    expect(result.text).not.toBe('never reached')
+  })
+
+  test('R2: and identical_calls is what fires on the 10th blank call, with the stop off', () => {
+    const d = new LoopDetector()
+    const guardError = { error: "read_file: required argument 'path' was empty" }
+
+    for (let call = 1; call <= 9; call++) {
+      expect(d.recordAndCheck('read_file', { path: '' }, guardError).loopDetected).toBe(false)
+      expect(d.recordTurnEnd().loopDetected).toBe(false) // no_progress is off
+    }
+    const tenth = d.recordAndCheck('read_file', { path: '' }, guardError)
+    expect(tenth.loopDetected).toBe(true)
+    expect(tenth.reason).toBe('identical_calls')
   })
 })
