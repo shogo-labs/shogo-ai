@@ -714,7 +714,7 @@ async function reconcilePublishingPost(workspaceId: string, post: any) {
   // change mid-response.
   const reconciled = await db.socialPost.findFirst({
     where: { id: post.id, workspaceId },
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true } } } } },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
   })
   return reconciled ?? post
 }
@@ -733,7 +733,7 @@ export async function listPosts(
   }
   const posts = await db.socialPost.findMany({
     where,
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true } } } } },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
     orderBy: [{ scheduledFor: 'asc' }, { createdAt: 'desc' }],
     take: Math.min(Math.max(opts.limit ?? 50, 1), 200),
   })
@@ -745,7 +745,7 @@ export async function listPosts(
 export async function getPost(workspaceId: string, postId: string) {
   const post = await db.socialPost.findFirst({
     where: { id: postId, workspaceId },
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true } } } } },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
   })
   if (!post) throw new SocialError(404, 'post_not_found', 'Post not found')
   return reconcilePublishingPost(workspaceId, post).catch(() => post)
@@ -935,7 +935,7 @@ export async function deletePost(workspaceId: string, postId: string): Promise<D
 
   const updated = await db.socialPost.findFirst({
     where: { id: post.id, workspaceId },
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true } } } } },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
   })
   return { deleted: false, kept: true, post: updated, removed, manual }
 }
@@ -954,7 +954,7 @@ export async function calendar(workspaceId: string, from: Date, to: Date) {
         { publishedAt: { gte: from, lte: to } },
       ],
     },
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true } } } } },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
     orderBy: { scheduledFor: 'asc' },
   })
   return posts
