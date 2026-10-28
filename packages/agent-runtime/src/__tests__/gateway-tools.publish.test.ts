@@ -355,6 +355,45 @@ describe('publish tool', () => {
     expect(details).toMatchObject({ error: 'Upgrade required', code: 'plan_required', status: 402 })
   })
 
+  test('maps cloud_signin_required to a sign-in instruction, not a failure', async () => {
+    publishProjectImpl = async () => ({
+      ok: false,
+      status: 503,
+      code: 'cloud_signin_required',
+      error: 'Sign in to Shogo Cloud to publish.',
+    })
+    const details = await run(baseCtx(), { subdomain: 'my-site' })
+    expect(details.code).toBe('cloud_signin_required')
+    expect(details.error).toMatch(/settings/i)
+    expect(details.error).toMatch(/nothing was deployed/i)
+  })
+
+  test('maps server_backed_requires_cloud_project to "sync then publish in the cloud"', async () => {
+    publishProjectImpl = async () => ({
+      ok: false,
+      status: 400,
+      code: 'server_backed_requires_cloud_project',
+      error: 'This app has a server.',
+    })
+    const details = await run(baseCtx(), { subdomain: 'my-site' })
+    expect(details.code).toBe('server_backed_requires_cloud_project')
+    expect(details.error).toMatch(/sync the project to shogo cloud/i)
+    expect(details.error).toMatch(/do not retry/i)
+  })
+
+  test('maps publish_route_missing to "update Shogo", not another subdomain attempt', async () => {
+    publishProjectImpl = async () => ({
+      ok: false,
+      status: 404,
+      code: 'publish_route_missing',
+      error: 'This API has no publish route (version mismatch).',
+    })
+    const details = await run(baseCtx(), { subdomain: 'my-site' })
+    expect(details.code).toBe('publish_route_missing')
+    expect(details.error).toMatch(/version mismatch/i)
+    expect(details.error).toMatch(/do not retry with a different subdomain/i)
+  })
+
   test('reports verified:false (with a propagation note) when the live URL is not yet serving', async () => {
     fetchStatus = 503
     const details = await run(baseCtx(), { subdomain: 'cold' })

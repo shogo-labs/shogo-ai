@@ -38,6 +38,7 @@ import { notifyPaymentReceipt, notifyPaymentFailed, notifyPaymentActionRequired 
 import { STRIPE_API_VERSION, resolveInvoiceSubscriptionId } from './lib/stripe-helpers'
 import { proxyToPeer } from './lib/region-peer-proxy'
 import { publishRoutes } from './routes/publish'
+import { publishedSitesRoutes } from './routes/published-sites'
 import { slackAgentRoutes } from './routes/slack-agent'
 import { projectAdminRoutes } from './routes/project-admin'
 import { publicApiRoutes } from './routes/public-api'
@@ -108,6 +109,7 @@ export {
   resolveInvoiceSubscriptionId,
   proxyToPeer,
   publishRoutes,
+  publishedSitesRoutes,
   slackAgentRoutes,
   projectAdminRoutes,
   publicApiRoutes,
