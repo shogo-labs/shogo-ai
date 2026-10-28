@@ -688,6 +688,27 @@ describe('deleting a post that went live', () => {
     expect(store.posts).toHaveLength(1)
     expect(calls).toHaveLength(0)
   })
+
+  test('a live target with no provider post id is handed to the person, never `/posts/null/unpublish`', async () => {
+    providerReply = { id: 'zernio_post_50' }
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Reconciled from a relay',
+      accountIds: ['acct_x'],
+      publishNow: true,
+    })
+    // A row written by the relay path can be live with no id to unpublish against.
+    store.posts.find((row: any) => row.id === post.id)!.zernioPostId = null
+    calls.length = 0
+
+    const result = await deletePost('ws_1', post.id)
+
+    expect(result.deleted).toBe(false)
+    expect(result.removed).toEqual([])
+    expect(result.manual.map((entry) => entry.platform)).toEqual(['x'])
+    expect(result.manual[0].reason).toContain('No provider post id')
+    expect(calls.some((call) => call.path.includes('unpublish'))).toBe(false)
+    expect(calls.some((call) => call.path.includes('null'))).toBe(false)
+  })
 })
 
 describe('a publish that outruns the clock', () => {

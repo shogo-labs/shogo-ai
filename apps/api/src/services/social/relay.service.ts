@@ -15,7 +15,7 @@
  */
 
 import { prisma } from '../../lib/prisma'
-import { SocialError, getSocialClient, type SocialClient } from './client'
+import { CREATE_POST_TIMEOUT_MS, SocialError, getSocialClient, type SocialClient } from './client'
 import {
   ensureProfile,
   externalIdFor,
@@ -399,6 +399,10 @@ export async function relayOperation(args: {
       query: plan.query,
       body: plan.body,
       idempotencyKey: args.idempotencyKey,
+      // The hop that waits for Zernio is this one, not the desktop's call to us:
+      // a create carries the media and needs the publish budget, or a 34 MB reel
+      // still aborts at the 15 s read default. Reads keep the default.
+      ...(plan.record === 'post-created' ? { timeoutMs: CREATE_POST_TIMEOUT_MS } : {}),
     })
   } catch (err) {
     // `profile_external_id_conflict`: our profile already exists at Zernio

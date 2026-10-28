@@ -9198,6 +9198,14 @@ function socialPlatformSchema(platforms: SocialPlatformName[]) {
 }
 
 /**
+ * A delete of a live post is one provider call per target (15 s each on the
+ * server), so the tool's own budget has to outlast the work it starts: at 20 s
+ * a three-target take-down could finish at the provider and still time out here,
+ * leaving the agent to report a failure for work that succeeded.
+ */
+const SOCIAL_DELETE_TIMEOUT_MS = 120_000
+
+/**
  * Call the internal social routes — the same handlers the desktop composer and
  * the UI use, so a tool action cannot drift from what a person sees.
  */
@@ -9206,6 +9214,7 @@ async function socialInternalCall(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
   body?: Record<string, unknown>,
+  options: { timeoutMs?: number } = {},
 ): Promise<{ ok: true; data: any } | { ok: false; error: string; code?: string; suggestion?: string }> {
   const workspaceId = ctx.workspaceId
   if (!workspaceId) {
@@ -9220,7 +9229,7 @@ async function socialInternalCall(
         method,
         headers: getInternalHeaders(),
         ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(options.timeoutMs ?? 20_000),
       },
     )
     const data = await response.json().catch(() => ({}))
@@ -9866,7 +9875,13 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             error: 'post_id is required: run action "posts" to find the post id.',
           })
         }
-        const result = await socialInternalCall(ctx, 'DELETE', `/social/posts/${encodeURIComponent(postId)}`)
+        const result = await socialInternalCall(
+          ctx,
+          'DELETE',
+          `/social/posts/${encodeURIComponent(postId)}`,
+          undefined,
+          { timeoutMs: SOCIAL_DELETE_TIMEOUT_MS },
+        )
         if (!result.ok) {
           return textResult({
             error: result.error,

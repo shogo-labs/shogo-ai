@@ -23,11 +23,20 @@ interface Call {
   method: string
   url: string
   body: any
+  timeoutMs?: number
 }
 
 let calls: Call[] = []
 let replies: Array<{ match: RegExp; status?: number; body: any }> = []
 const realFetch = globalThis.fetch
+// The tool arms its own abort budget per call; the duration is invisible on the
+// resulting signal, so capture what was asked for.
+const realSignalTimeout = AbortSignal.timeout.bind(AbortSignal)
+let requestedTimeoutMs: number | undefined
+AbortSignal.timeout = ((ms: number) => {
+  requestedTimeoutMs = ms
+  return realSignalTimeout(ms)
+}) as typeof AbortSignal.timeout
 
 const workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-social-tool-'))
 
@@ -41,7 +50,8 @@ globalThis.fetch = (async (input: any, init: any = {}) => {
   // A media upload PUTs raw bytes, so only a JSON string body is parsed.
   const raw = init.body
   const body = typeof raw === 'string' ? JSON.parse(raw) : raw
-  calls.push({ method, url, body })
+  calls.push({ method, url, body, timeoutMs: requestedTimeoutMs })
+  requestedTimeoutMs = undefined
   const reply = replies.find((entry) => entry.match.test(`${method} ${url}`))
   const status = reply?.status ?? 200
   const payload = reply?.body ?? {}
@@ -53,6 +63,7 @@ globalThis.fetch = (async (input: any, init: any = {}) => {
 
 afterAll(() => {
   globalThis.fetch = realFetch
+  AbortSignal.timeout = realSignalTimeout
   rmSync(workspaceDir, { recursive: true, force: true })
 })
 
@@ -340,6 +351,9 @@ describe('deleting a post', () => {
 
     const call = calls.find((entry) => entry.method === 'DELETE')!
     expect(call.url).toContain('/workspaces/ws_1/social/posts/post_9')
+    // One unpublish per live target can take 15 s each on the server, so the
+    // tool's own 20 s default would abandon work that is still going.
+    expect(call.timeoutMs).toBe(120_000)
     expect(result.deleted).toBe(false)
     expect(result.removed).toHaveLength(1)
     expect(result.manual[0].url).toBe('https://instagram.com/p/2')

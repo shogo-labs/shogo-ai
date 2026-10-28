@@ -894,6 +894,16 @@ export async function deletePost(workspaceId: string, postId: string): Promise<D
       })
       continue
     }
+    // A row reconciled from a relayed publish can be live without the provider id
+    // we would unpublish against; `/posts/null/unpublish` is not a call worth
+    // making, so those targets go to the person too.
+    if (!post.zernioPostId) {
+      manual.push({
+        ...entry,
+        reason: `No provider post id was recorded for this one — remove it in the ${label} app.`,
+      })
+      continue
+    }
 
     try {
       await getSocialClient().request({
