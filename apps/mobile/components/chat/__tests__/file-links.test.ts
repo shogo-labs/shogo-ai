@@ -162,6 +162,12 @@ describe("resolveRelativeLinks", () => {
     expect(resolveRelativeLinks("[../secret.txt](../secret.txt)", { fileLinks: true })).toBe(
       "`../secret.txt`",
     )
+    // The linkifier runs straight after, so an unwrapped `../` must not be
+    // picked back up as a file path either — end to end it is never a link.
+    for (const input of ["[../secret.txt](../secret.txt)", "[x](../a/b.ts)", "../secret.txt"]) {
+      const resolved = resolveRelativeLinks(input, { fileLinks: true })
+      expect(linkifyFilePaths(resolved)).not.toContain("shogo-file")
+    }
   })
 
   test("leaves urls, rooted paths, fragments, schemes and app hrefs alone", () => {

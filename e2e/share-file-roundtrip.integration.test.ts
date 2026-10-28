@@ -37,6 +37,7 @@ import { localSharedFileRoutes } from '../apps/api/src/routes/local-shared-files
 let root = ''
 let workspacesDir = ''
 let mergedRoot = ''
+let anchoredRoot = ''
 
 const savedEnv = new Map<string, string | undefined>()
 function setEnv(key: string, value: string | undefined) {
@@ -53,6 +54,7 @@ beforeAll(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'share-file-roundtrip-')))
   workspacesDir = join(root, 'workspaces')
   mergedRoot = join(workspacesDir, '.workspace-roots', 'ws-1')
+  anchoredRoot = join(workspacesDir, '.workspace-roots', 'proj-p-anchor')
 
   mkdirSync(mergedRoot, { recursive: true })
   for (const id of ['proj-a', 'proj-b']) {
@@ -62,8 +64,19 @@ beforeAll(() => {
   writeFileSync(join(workspacesDir, 'proj-a', 'out', 'report.mp4'), 'video bytes')
   writeFileSync(join(mergedRoot, 'summary.csv'), 'a,b\n')
 
+  // A project-ANCHORED runtime roots its agent at `.workspace-roots/proj-<id>`
+  // with that project mounted inside, so a file the agent writes at the root
+  // (`plans/qa.md`) exists only there (SHO-242).
+  mkdirSync(join(workspacesDir, 'p-anchor', 'plans'), { recursive: true })
+  writeFileSync(join(workspacesDir, 'p-anchor', 'README.md'), 'anchor readme')
+  mkdirSync(anchoredRoot, { recursive: true })
+  symlinkSync(join(workspacesDir, 'p-anchor'), join(anchoredRoot, 'p-anchor'))
+  mkdirSync(join(anchoredRoot, 'plans'), { recursive: true })
+  writeFileSync(join(anchoredRoot, 'plans', 'qa.md'), '# qa plan\n')
+
   projects['proj-a'] = { workspaceId: 'ws-1' }
   projects['proj-b'] = { workspaceId: 'ws-1' }
+  projects['p-anchor'] = { workspaceId: 'ws-1' }
 
   setEnv('BETTER_AUTH_SECRET', 'share-file-roundtrip-secret')
   setEnv('SHOGO_API_URL', 'http://api.test')
@@ -115,23 +128,24 @@ beforeEach(() => {
   }
 })
 
-function ctx(): ToolContext {
-  trustWorkspaceForTests(mergedRoot)
+function ctx(overrides: { workspaceDir?: string; projectId?: string } = {}): ToolContext {
+  const workspaceDir = overrides.workspaceDir ?? mergedRoot
+  trustWorkspaceForTests(workspaceDir)
   return {
-    workspaceDir: mergedRoot,
+    workspaceDir,
     channels: new Map(),
     config: { channels: [], model: { provider: 'anthropic', name: 'claude-sonnet-4-5' } },
-    projectId: 'ws:ws-1',
+    projectId: overrides.projectId ?? 'ws:ws-1',
     sessionId: 'sess-1',
     userId: 'user-1',
     workspaceId: 'ws-1',
-    fileStateCache: new FileStateCache(mergedRoot),
+    fileStateCache: new FileStateCache(workspaceDir),
     autoRouting: false,
   } as ToolContext
 }
 
-async function share(params: Record<string, any>) {
-  const tool = createTools(ctx()).find((t) => t.name === 'share_file')
+async function share(params: Record<string, any>, overrides?: Parameters<typeof ctx>[0]) {
+  const tool = createTools(ctx(overrides)).find((t) => t.name === 'share_file')
   if (!tool) throw new Error('missing share_file tool')
   const result = await tool.execute('t', params)
   return result.details as any
@@ -199,5 +213,44 @@ describe('share_file → desktop mint → desktop download', () => {
     } finally {
       projects['proj-b'] = { workspaceId: 'ws-1' }
     }
+  })
+})
+
+// The reported call (SHO-242): a project-anchored runtime's agent writes
+// `plans/qa.md` at its working folder — the merged root — and shares it. That
+// file lives in no mount, so the mint used to sign a workspace link that the
+// download route could not resolve, and `share_file` answered `file_not_found`
+// for a file that exists.
+describe('share_file from a project-anchored runtime', () => {
+  function asAnchored() {
+    setEnv('WORKSPACE_PROJECT_IDS', 'p-anchor')
+    setEnv('WORKSPACE_ANCHOR_PROJECT_ID', 'p-anchor')
+    setEnv('LINKED_FOLDERS', JSON.stringify([join(workspacesDir, 'p-anchor')]))
+  }
+
+  afterAll(() => {
+    setEnv('WORKSPACE_PROJECT_IDS', 'proj-a,proj-b')
+    setEnv('LINKED_FOLDERS', JSON.stringify([join(workspacesDir, 'proj-a'), join(workspacesDir, 'proj-b')]))
+  })
+
+  test('a file at the working-folder root mints a project link and serves its bytes', async () => {
+    asAnchored()
+    const result = await share({ path: 'plans/qa.md' }, { workspaceDir: anchoredRoot, projectId: 'p-anchor' })
+
+    expect(result.ok).toBe(true)
+    expect(result.projectId).toBe('p-anchor')
+    expect(result.path).toBe('plans/qa.md')
+    expect(mintCalls.at(-1)?.url).toContain('/projects/p-anchor/shared-files')
+    expect(await downloadBytes(result.url)).toEqual({ status: 200, text: '# qa plan\n' })
+  })
+
+  test('a file inside the anchor\'s own mount still mints project-scoped', async () => {
+    asAnchored()
+    const result = await share({ path: 'p-anchor/README.md' }, { workspaceDir: anchoredRoot, projectId: 'p-anchor' })
+
+    expect(result.ok).toBe(true)
+    expect(result.projectId).toBe('p-anchor')
+    expect(result.path).toBe('README.md')
+    expect(await downloadBytes(result.url)).toEqual({ status: 200, text: 'anchor readme' })
   })
 })

@@ -4821,6 +4821,7 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
         path,
         requestedProjectId,
         mountedProjectIds: workspaceAttachedProjectIds(),
+        anchorProjectId: projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID),
         workspaceRuntime: isWorkspaceRuntimeMode(),
       })
       const projectId = target.projectId

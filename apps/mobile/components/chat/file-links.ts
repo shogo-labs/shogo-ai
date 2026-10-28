@@ -111,6 +111,9 @@ export function filePathCandidate(
   const trimmed = raw.trim().replace(/^[('"]+|[)'",.;:]+$/g, "")
   if (!trimmed || /\s/.test(trimmed) || isUrl(trimmed)) return null
   const normalized = trimmed.replace(/\\/g, "/")
+  // `../x.md` climbs out of the workspace: it never names a file we can serve,
+  // and the file routes reject it anyway (SHO-242).
+  if (normalized.split("/").some((segment) => segment === "..")) return null
   const looksLikeFile =
     FILE_WITH_EXT.test(normalized) || ABS_FILE_WITH_EXT.test(normalized)
   if (!looksLikeFile) return null

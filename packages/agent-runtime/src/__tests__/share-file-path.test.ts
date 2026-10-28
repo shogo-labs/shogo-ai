@@ -121,6 +121,98 @@ describe('resolveShareFileLinkTarget', () => {
     ).toEqual({ projectId: 'proj-a', linkPath: 'out/report.pdf' })
   })
 
+  test('a file the anchor wrote at its merged root is signed for the anchor', () => {
+    const root = tempDir('share-path-anchor-')
+    const project = tempDir('share-path-anchor-proj-')
+    mkdirSync(join(project, 'plans'), { recursive: true })
+    writeFileSync(join(project, 'README.md'), 'readme')
+    symlinkSync(project, join(root, 'p-anchor'))
+    mkdirSync(join(root, 'plans'), { recursive: true })
+    writeFileSync(join(root, 'plans', 'qa.md'), '# qa plan')
+
+    const atRoot = resolveShareFileLinkTarget({
+      workspaceDir: root,
+      resolvedPath: join(root, 'plans', 'qa.md'),
+      path: 'plans/qa.md',
+      requestedProjectId: 'p-anchor',
+      mountedProjectIds: ['p-anchor'],
+      anchorProjectId: 'p-anchor',
+      workspaceRuntime: true,
+    })
+    // The file lives only at `.workspace-roots/proj-<anchor>/plans/qa.md`, so a
+    // workspace link would be served from a root that does not hold it and the
+    // mint answered `file_not_found` (SHO-242).
+    expect(atRoot).toEqual({ projectId: 'p-anchor', linkPath: 'plans/qa.md' })
+
+    writeFileSync(join(root, 'summary.csv'), 'a,b')
+    expect(
+      resolveShareFileLinkTarget({
+        workspaceDir: root,
+        resolvedPath: join(root, 'summary.csv'),
+        path: 'summary.csv',
+        requestedProjectId: 'p-anchor',
+        mountedProjectIds: ['p-anchor'],
+        anchorProjectId: 'p-anchor',
+        workspaceRuntime: true,
+      }),
+    ).toEqual({ projectId: 'p-anchor', linkPath: 'summary.csv' })
+
+    // A file inside the anchor's own mount keeps the mount's relative path.
+    expect(
+      resolveShareFileLinkTarget({
+        workspaceDir: root,
+        resolvedPath: join(root, 'p-anchor', 'README.md'),
+        path: 'p-anchor/README.md',
+        mountedProjectIds: ['p-anchor'],
+        anchorProjectId: 'p-anchor',
+        workspaceRuntime: true,
+      }),
+    ).toEqual({ projectId: 'p-anchor', linkPath: 'README.md' })
+    cleanup()
+  })
+
+  test('a linked local folder at the anchored root keeps a workspace link', () => {
+    const root = tempDir('share-path-anchor-')
+    const project = tempDir('share-path-anchor-proj-')
+    const notes = tempDir('share-path-anchor-notes-')
+    symlinkSync(project, join(root, 'p-anchor'))
+    symlinkSync(notes, join(root, 'notes'))
+    writeFileSync(join(notes, 'idea.md'), 'idea')
+
+    const target = resolveShareFileLinkTarget({
+      workspaceDir: root,
+      resolvedPath: join(root, 'notes', 'idea.md'),
+      path: 'notes/idea.md',
+      mountedProjectIds: ['p-anchor'],
+      anchorProjectId: 'p-anchor',
+      workspaceRuntime: true,
+    })
+
+    // A mount is not the anchor's own working folder, so nothing is guessed.
+    expect(target.projectId).toBeUndefined()
+    expect(target.linkPath).toBe('notes/idea.md')
+    cleanup()
+  })
+
+  test('an anchor this runtime does not mount is not guessed', () => {
+    const root = tempDir('share-path-anchor-')
+    mkdirSync(join(root, 'plans'), { recursive: true })
+    writeFileSync(join(root, 'plans', 'qa.md'), '# qa plan')
+
+    const target = resolveShareFileLinkTarget({
+      workspaceDir: root,
+      resolvedPath: join(root, 'plans', 'qa.md'),
+      path: 'plans/qa.md',
+      mountedProjectIds: [],
+      anchorProjectId: 'p-anchor',
+      workspaceRuntime: true,
+    })
+
+    expect(target.projectId).toBeUndefined()
+    expect(target.linkPath).toBe('plans/qa.md')
+    cleanup()
+  })
+
   test('a mount name that is not one path segment is skipped', () => {
     const root = tempDir('share-path-ws-')
     writeFileSync(join(root, 'report.pdf'), 'pdf')
