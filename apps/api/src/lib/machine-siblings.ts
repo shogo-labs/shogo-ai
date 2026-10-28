@@ -82,6 +82,15 @@ export async function retireMachineSiblings(params: {
       data: { preferredInstanceId: instanceId },
     })
 
+    // A machine workspace is marked by the row that made it (`machineInstanceId`
+    // has no FK, so nothing re-points it for us). Left alone it names the row we
+    // are about to delete: the client then builds relay paths from a dead id and
+    // every write retries into a 404.
+    await tx.workspace.updateMany({
+      where: { machineInstanceId: { in: ids } },
+      data: { machineInstanceId: instanceId },
+    })
+
     // (instanceId, pushToken) is unique, so a token this row already has would
     // collide on the re-point: those duplicates go rather than the survivor.
     const kept = await tx.pushSubscription.findMany({

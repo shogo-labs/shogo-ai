@@ -23,6 +23,7 @@ const db: Record<string, Row[]> = {
   remoteAction: [],
   machineMirrorRow: [],
   machineSyncState: [],
+  workspace: [],
 }
 
 /** The subset of Prisma the sweep touches, on plain arrays. */
@@ -50,6 +51,19 @@ const mockPrisma: any = {
       for (const row of db.project) {
         if (row.preferredInstanceId && ids.includes(row.preferredInstanceId)) {
           row.preferredInstanceId = data.preferredInstanceId
+          count++
+        }
+      }
+      return { count }
+    },
+  },
+  workspace: {
+    updateMany: async ({ where, data }: any) => {
+      const ids: string[] = where.machineInstanceId.in
+      let count = 0
+      for (const row of db.workspace) {
+        if (row.machineInstanceId && ids.includes(row.machineInstanceId)) {
+          row.machineInstanceId = data.machineInstanceId
           count++
         }
       }
@@ -183,6 +197,9 @@ describe('retireMachineSiblings', () => {
     db.project.push({ id: 'p-1', preferredInstanceId: 'i-4' })
     db.pushSubscription.push({ id: 'sub-1', instanceId: 'i-6', pushToken: 'tok-1' })
     db.remoteAction.push({ id: 'act-1', instanceId: 'i-2' })
+    // `machineInstanceId` is a bare column: a machine workspace tagged by the row
+    // that goes away would hand the client a dead id and 404 every write.
+    db.workspace.push({ id: 'ws-machine-1', machineInstanceId: 'i-3' })
 
     const result = await retire()
 
@@ -191,6 +208,7 @@ describe('retireMachineSiblings', () => {
     expect(db.project[0].preferredInstanceId).toBe(KEEP)
     expect(db.pushSubscription[0].instanceId).toBe(KEEP)
     expect(db.remoteAction[0].instanceId).toBe(KEEP)
+    expect(db.workspace[0].machineInstanceId).toBe(KEEP)
   })
 
   test('the cloud copy follows the row that survives', async () => {
