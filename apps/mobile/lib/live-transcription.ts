@@ -26,6 +26,12 @@ export interface AdaptiveLiveOptions {
   wsBase: string
   /** Fallback: transcribe one chunk server-side. */
   postChunk(chunk: LiveChunk): Promise<void>
+  /**
+   * Whether the mic is muted right now. A muted participant is neither
+   * transcribed nor billed, and LiveKit keeps the publication alive while
+   * muted, so the frames have to be dropped here rather than upstream.
+   */
+  isMuted?(): boolean
   handlers?: StreamHandlers
   /** Which path ended up carrying the audio. */
   onMode?(mode: 'stream' | 'chunks'): void
@@ -43,10 +49,16 @@ export function startAdaptiveLive(options: AdaptiveLiveOptions): LiveCapture {
   /** The stream ended early; chunks cover the rest, so the whole isn't covered by one transcript. */
   let streamBroke = false
 
+  /** Silent frames never leave the device: no transcript, no billed seconds. */
+  const forward = (push: (frame: Float32Array) => void) => (frame: Float32Array) => {
+    if (stopped || options.isMuted?.()) return
+    push(frame)
+  }
+
   const useChunks = (startOffset: number) => {
     mode = 'chunks'
     chunker = createChunker(tap.sampleRate, options.postChunk, startOffset)
-    tap.attach((frame) => chunker!.push(frame))
+    tap.attach(forward((frame) => chunker!.push(frame)))
     options.onMode?.('chunks')
   }
 
@@ -73,7 +85,7 @@ export function startAdaptiveLive(options: AdaptiveLiveOptions): LiveCapture {
     if (connected) {
       mode = 'stream'
       sink = createStreamSink(tap.sampleRate, (frame) => connected.sendPcm(frame))
-      tap.attach((frame) => sink!.push(frame))
+      tap.attach(forward((frame) => sink!.push(frame)))
       options.onMode?.('stream')
     } else {
       useChunks(0)

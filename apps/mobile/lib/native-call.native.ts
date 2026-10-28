@@ -76,6 +76,8 @@ interface ActiveCall {
 /** System-screen calls by huddle, and the other way round. */
 const callsByHuddle = new Map<string, ActiveCall>()
 const huddleByUuid = new Map<string, string>()
+type SystemAction = 'answer' | 'end'
+const earlySystemActions = new Map<string, { actions: SystemAction[]; timer: ReturnType<typeof setTimeout> }>()
 
 let handlers: NativeCallHandlers | null = null
 /** Answers and declines that came in before the app's handlers were set (a call that opened the app). */
@@ -126,17 +128,26 @@ export function setNativeCallHandlers(next: NativeCallHandlers | null): void {
 }
 
 /** Shows the call on the system screen right away. Returns false if this build has no system call screen. */
-export function showNativeIncomingCall(ring: NativeCallRing): boolean {
+export function showNativeIncomingCall(
+  ring: NativeCallRing,
+  options: { callUUID?: string; alreadyReportedByPushKit?: boolean } = {},
+): boolean {
   if (!callKeep) return false
   if (callsByHuddle.has(ring.huddleId)) return true
-  const uuid = randomUUID()
+  const stableUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(ring.huddleId)
+    ? ring.huddleId.toLowerCase()
+    : null
+  const uuid = options.callUUID ?? stableUUID ?? randomUUID()
   const call: ActiveCall = { uuid, ring, answered: false, timer: null }
   callsByHuddle.set(ring.huddleId, call)
   huddleByUuid.set(uuid, ring.huddleId)
   // Nobody answers: the call stops on its own, as the server's ring does.
   call.timer = setTimeout(() => endNativeCall(ring.huddleId, 'missed'), NATIVE_RING_MS)
   const name = ring.from.name
-  callKeep.displayIncomingCall(uuid, name, ring.kind === 'dm' ? name : `${name}'s huddle`, 'generic', false)
+  if (!options.alreadyReportedByPushKit) {
+    callKeep.displayIncomingCall(uuid, name, ring.kind === 'dm' ? name : `${name}'s huddle`, 'generic', false)
+  }
+  replayEarlySystemActions(uuid)
   return true
 }
 
@@ -172,10 +183,36 @@ function endAnsweredCalls(): void {
   }
 }
 
+// CallKit can deliver an answer before PushKit's cached payload reaches JS.
+function queueEarlySystemAction(uuid: string, action: SystemAction): void {
+  if (Platform.OS !== 'ios') return
+  const queued = earlySystemActions.get(uuid)
+  if (queued) {
+    queued.actions.push(action)
+    return
+  }
+  const timer = setTimeout(() => earlySystemActions.delete(uuid), NATIVE_RING_MS)
+  earlySystemActions.set(uuid, { actions: [action], timer })
+}
+
+function replayEarlySystemActions(uuid: string): void {
+  const queued = earlySystemActions.get(uuid)
+  if (!queued) return
+  earlySystemActions.delete(uuid)
+  clearTimeout(queued.timer)
+  for (const action of queued.actions) {
+    if (action === 'answer') onSystemAnswer(uuid)
+    else onSystemEnd(uuid)
+  }
+}
+
 function onSystemAnswer(uuid: string): void {
   const huddleId = huddleByUuid.get(uuid)
   const call = huddleId ? callsByHuddle.get(huddleId) : undefined
-  if (!call) return
+  if (!call) {
+    queueEarlySystemAction(uuid, 'answer')
+    return
+  }
   markNativeCallAnswered(call.ring.huddleId)
   dispatch('answer', call.ring)
 }
@@ -184,7 +221,10 @@ function onSystemAnswer(uuid: string): void {
 function onSystemEnd(uuid: string): void {
   const huddleId = huddleByUuid.get(uuid)
   const call = huddleId ? callsByHuddle.get(huddleId) : undefined
-  if (!call) return
+  if (!call) {
+    queueEarlySystemAction(uuid, 'end')
+    return
+  }
   forget(call)
   dispatch(call.answered ? 'hangup' : 'decline', call.ring)
 }
@@ -216,6 +256,15 @@ function setupCallKit(): void {
     })
     .catch((err: unknown) => console.warn('[Huddles] CallKeep setup failed:', (err as Error).message))
   if (Platform.OS === 'android') callKeep.setAvailable(true)
+  if (Platform.OS === 'ios') {
+    callKeep.addEventListener('didLoadWithEvents', (events) => {
+      for (const event of events) {
+        if (event.name === 'RNCallKeepPerformAnswerCallAction') onSystemAnswer(event.data.callUUID)
+        else if (event.name === 'RNCallKeepPerformEndCallAction') onSystemEnd(event.data.callUUID)
+        else if (event.name === 'RNCallKeepDidActivateAudioSession') activateAudio()
+      }
+    })
+  }
   callKeep.addEventListener('answerCall', ({ callUUID }) => onSystemAnswer(callUUID))
   callKeep.addEventListener('endCall', ({ callUUID }) => onSystemEnd(callUUID))
   callKeep.addEventListener('didActivateAudioSession', () => activateAudio())
@@ -228,11 +277,15 @@ function setupCallKit(): void {
 let voipToken: string | null = null
 let expoPushToken: string | null = null
 let announce = true
+let voipTokenState: 'unknown' | 'registered' | 'invalidated' = 'unknown'
 
 async function syncVoipToken(): Promise<void> {
-  if (!expoPushToken || !voipToken) return
+  if (!expoPushToken || voipTokenState === 'unknown') return
   await api
-    .putVoipToken(createHttpClient(), { pushToken: expoPushToken, voipToken: announce ? voipToken : null })
+    .putVoipToken(createHttpClient(), {
+      pushToken: expoPushToken,
+      voipToken: voipTokenState === 'registered' && announce ? voipToken : null,
+    })
     .catch(() => {})
 }
 
@@ -244,19 +297,31 @@ export function setAnnounceHuddleCalls(enabled: boolean): void {
 
 function onVoipPush(payload: Record<string, unknown>): void {
   const ring = ringFromPushData(payload)
-  if (ring) showNativeIncomingCall(ring)
-  // Apple requires every VoIP push to be reported as a call. A push that isn't a ring
-  // is still completed so the system doesn't count it against us.
-  const uuid = ring ? callsByHuddle.get(ring.huddleId)?.uuid : undefined
-  voipPush?.onVoipNotificationCompleted(uuid ?? '')
+  if (!ring) return
+
+  const callUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(ring.huddleId)
+    ? ring.huddleId.toLowerCase()
+    : undefined
+  if (callUUID) showNativeIncomingCall(ring, { callUUID, alreadyReportedByPushKit: true })
+}
+
+function onVoipRegistration(token: string): void {
+  voipToken = token.trim() || null
+  voipTokenState = voipToken ? 'registered' : 'invalidated'
+  void syncVoipToken()
 }
 
 function startVoip(): void {
   if (!voipPush) return
-  voipPush.addEventListener('register', (token: string) => {
-    voipToken = token
-    void syncVoipToken()
+  voipPush.addEventListener('didLoadWithEvents', (events) => {
+    for (const event of events) {
+      if (event.name === voipPush.RNVoipPushRemoteNotificationsRegisteredEvent) onVoipRegistration(event.data)
+      else if (event.name === voipPush.RNVoipPushRemoteNotificationReceivedEvent) {
+        onVoipPush(event.data as Record<string, unknown>)
+      }
+    }
   })
+  voipPush.addEventListener('register', onVoipRegistration)
   voipPush.addEventListener('notification', (payload: object) => onVoipPush(payload as Record<string, unknown>))
   voipPush.registerVoipToken()
 }

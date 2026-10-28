@@ -1,0 +1,183 @@
+# =============================================================================
+# E2E (phone) - the four phone specs, on WebKit and Chromium
+# =============================================================================
+# `e2e/local/playwright.config.ts` splits its specs by viewport: the `chromium`
+# project `testIgnore`s PHONE_SPECS and `ci.yml` runs `--project=chromium`, so
+# the phone specs ran nowhere in CI and the SHO-220 nav/perf specs could rot for
+# weeks without anyone noticing (SHO-222). They get their own workflow because
+# they need a browser `ci.yml` never installs (WebKit) and their own cache key.
+#
+# Deliberately NOT in ci.yml's matrix: that job is capped at 35 minutes and is
+# already at 34m37s on its slowest entry (SHO-133).
+#
+# PR-only, and not part of the required `ci` aggregator — the same trade the
+# local-mode E2E jobs make (ci.yml:558-562): a red shows as a named check on the
+# PR without holding the merge queue. Making it required later means adding
+# `merge_group` to the triggers and the check name to branch protection.
+# =============================================================================
+
+name: E2E (phone)
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: e2e-phone-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Phone specs needed?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      app: ${{ steps.app.outputs.app }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The diff below needs the base commit, which a shallow clone lacks.
+          fetch-depth: 0
+
+      # The same deny-list ci.yml's prelude uses, so "app code" means one thing
+      # in both workflows. Fails open: no diff or an unknown path is app code.
+      - name: Detect app-code changes
+        id: app
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+            echo "Unable to resolve the comparison SHAs; assuming app code."
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" | bash scripts/ci/app-code-changed.sh
+
+  phone:
+    name: 'E2E (phone: iPhone 15 Pro WebKit + Pixel 7)'
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    # 60, not 40 (SHO-234). Setup is normally ~1m and green runs finish in
+    # 19-23m, but a run whose apt/download leg drags spends ~18m in
+    # `Install Playwright browsers` alone (17m43s, run 40506041201) on top of
+    # ~20m of specs — which lands on a 40m cap, so the job was *cancelled*
+    # mid-spec and uploaded nothing: the PR silently got no phone coverage.
+    # The specs step is bounded at 30m, so worst case here is ~20m of setup +
+    # 30m of specs; 60 leaves room for a loaded runner on top of that. Do not
+    # lower it back without re-checking that arithmetic.
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: workspace-e2e-phone-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'apps/api/src/generated/*.ts', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore bun dependencies
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build workspace packages
+        if: steps.workspace-e2e-phone-cache.outputs.cache-hit != 'true'
+        run: bun run build:packages
+
+      # Its own key, not ci.yml's: that cache holds Chromium only and
+      # `actions/cache` never overwrites a key, so sharing it would download
+      # WebKit again on every run.
+      - name: Restore Playwright browsers
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-webkit-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: playwright-webkit-${{ runner.os }}-
+
+      # Logged to the run summary (SHO-234): a slow apt/download leg here is
+      # what ate the cap on run 40506041201, and inferring it from step
+      # timestamps after the fact is not a thing anyone does.
+      - name: Install Playwright browsers
+        shell: bash
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          npx playwright install --with-deps chromium webkit
+          elapsed=$(( $(date +%s) - start ))
+          {
+            echo "### Playwright browser install"
+            echo ""
+            echo "\`npx playwright install --with-deps chromium webkit\` took **${elapsed}s** ($(( elapsed / 60 ))m$(( elapsed % 60 ))s)."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Playwright install: ${elapsed}s"
+          if (( elapsed > 300 )); then
+            echo "::warning title=Slow Playwright install::took ${elapsed}s (normally ~1m); the specs step has 30m and the job 60m"
+          fi
+
+      # --retries 0 is permanent here. Retries are exactly what hid the SHO-222
+      # race: the badge assertion passed on the second attempt and the flake
+      # never showed. If a phone spec is flaky, fix the spec.
+      # Its own bound, shorter than the job cap (SHO-234): an overrun here ends
+      # as a *failed* `E2E (phone: ...)` check with `e2e-phone-report` uploaded.
+      # A job-level cap instead *cancels* the run, and `if: failure()` does not
+      # fire for `cancelled` — so the failure was invisible and artifact-free.
+      - name: Run e2e/local phone specs
+        timeout-minutes: 30
+        env:
+          E2E_LOCAL_START_STACK: '1'
+        run: npx playwright test --config e2e/local/playwright.config.ts --project=iphone-15-pro --project=pixel-7 --retries 0
+
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: e2e-phone-report
+          path: |
+            test-results/e2e-local-report
+            test-results/e2e-local-artifacts
+          retention-days: 7

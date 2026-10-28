@@ -3,6 +3,7 @@
 
 import { prisma } from '../lib/prisma'
 import { createRuntimeManager, setRuntimeManager } from '../lib/runtime'
+import { machineSyncSeqHeader } from '../lib/machine-sync/local-sync'
 import { createApp } from './create-app'
 import { deriveApiProfile } from './profile'
 import { runtimeRoutes } from '../routes/runtime'
@@ -42,6 +43,7 @@ import { createChatMessageEditRoutes } from '../routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from '../routes/chat-message-feedback'
 import { createChatSessionForkRoutes } from '../routes/chat-session-fork'
 import { chatQueuedMessageActionsRoutes } from '../routes/chat-queued-message-actions'
+import { agentWakeRoutes } from '../routes/agent-wakes'
 import { toolsProxyRoutes } from '../routes/tools-proxy'
 import { socialEventRoutes, socialRoutes } from '../routes/social'
 import { techStackRoutes } from '../routes/tech-stacks'
@@ -101,6 +103,11 @@ export function createLocalApp(): LocalAppBundle {
     vitePort: VITE_PORT,
     health: (c) => c.json({ ok: true, redis: { healthy: true, latencyMs: 0, degraded: false } }),
   })
+
+  // Stamps `x-shogo-sync-seq` on this process's mutations so the cloud can wait
+  // for the machine copy to catch up before answering the Studio (SHO-185).
+  // Registered first, so it wraps every route below.
+  app.use('/api/*', machineSyncSeqHeader())
 
   app.route('/api', localPlatformRoutes())
   app.route('/api', localSystemRoutes())
@@ -185,11 +192,15 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', aiProxyRoutes())
   app.route('/api', aiLiveRoutes())
   app.route('/api', voiceRoutes())
-  // The desktop composer must serve TTS too. `server.ts` (cloud) mounts this
-  // next to `voiceRoutes()`, but this composer is the one desktop boots
+  // The desktop composer must serve hosted TTS too. `server.ts` (cloud) mounts
+  // this next to `voiceRoutes()`, but this composer is the one desktop boots
   // (`entry.ts` → `local-server.ts` → `createLocalApp()`), so without it
   // `POST /api/voice/tts` — and with it every pod-shaped TTS call that the SDK
   // proxy forwards here — 404s on desktop.
+  //
+  // `voiceMediaRoutes()` is the *single* owner of the hosted media paths
+  // (`/voice/tts`, `/voice/music`, `/voice/op/*`): `voiceRoutes()` registers
+  // none of them, so mounting both here does not duplicate a route (SHO-73).
   app.route('/api', voiceMediaRoutes())
   app.route('/api', rbacRoutes())
   app.route('/api', chatRoutes())
@@ -223,6 +234,8 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api/v1', appActionsRoutes())
   app.route('/api/chat-messages', createChatMessageEditRoutes())
   app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
+  // The queue of team-chat wakes waiting behind a live reply (SHO-167).
+  app.route('/api', agentWakeRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api/chat-messages', createChatMessageFeedbackRoutes())
   app.route('/api/chat-sessions', createChatSessionFeedbackRoutes())
   app.route('/api/chat-sessions', createChatSessionForkRoutes())

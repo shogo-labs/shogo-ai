@@ -28,6 +28,9 @@ const REQUIRED_LOCAL_ROUTES = [
   'GET /api/projects/:projectId/thumbnail.png',
   'POST /api/projects/:projectId/thumbnail/capture',
   'POST /api/projects/:projectId/runtime/prewarm',
+  // SHO-226: the visible canvas pings this so the preview on screen is never
+  // the warm-preview LRU victim. Desktop is the surface that evicts.
+  'POST /api/projects/:projectId/preview/active',
   'POST /api/generate-project-name',
   'GET /api/templates',
   'POST /api/workspaces/personal',
@@ -108,9 +111,16 @@ const REQUIRED_LOCAL_ROUTES = [
   'POST /api/local/projects/from-remote-folder',
   // Voice TTS: the hosted route lives in `routes/voice-media.ts`, which only
   // `server.ts` (cloud) mounted — desktop 404'd on TTS until it was added to
-  // `createLocalApp()`. `music` comes along with it (voiceRoutes delegates).
+  // `createLocalApp()`. `music` comes along with it from the same router.
   'POST /api/voice/tts',
   'POST /api/voice/music',
+  // SHO-73: the registry-dispatched media family, and the desktop-only voice
+  // session routes, are all served locally — `voice-media.ts` owns the media
+  // paths and `voice.ts` owns the rest, so neither may be dropped.
+  'GET /api/voice/op/:opId',
+  'POST /api/voice/op/:opId',
+  'GET /api/voice/signed-url',
+  'POST /api/voice/transcript/:chatSessionId',
   // The file viewer (SHO-70): a shared file opens in the app, so the metadata
   // and text routes it renders from must answer on desktop too — otherwise the
   // viewer is a blank screen on exactly the surface that has no browser tab.
@@ -122,6 +132,11 @@ const REQUIRED_LOCAL_ROUTES = [
 const CLOUD_ONLY_RUNTIME_PATHS = new Set([
   // Publishing deploys to `*.shogo.one`; desktop has no publish pipeline.
   '/api/internal/projects/:param/publish',
+  // Cross-project previews (SHO-125): another project is served by its own pod
+  // on metal, and desktop has no metal substrate — `isMetalRuntime()` is false
+  // there, so `preview_project` takes the local `/p/<id>/preview/start` path
+  // and never builds this URL.
+  '/api/internal/workspaces/:param/sessions/:param/projects/:param/preview',
 ])
 
 const AGENT_RUNTIME_SRC = resolve(import.meta.dir, '../../../../../packages/agent-runtime/src')
@@ -234,6 +249,22 @@ describe('local API route parity', () => {
     for (const route of REQUIRED_LOCAL_ROUTES) {
       expect(routes.has(route), `missing local route: ${route}`).toBe(true)
     }
+  })
+
+  test('no /api/voice path is mounted twice', async () => {
+    // SHO-73: desktop mounts `voiceRoutes()` *and* `voiceMediaRoutes()`.
+    // `voiceRoutes()` used to register its own `/voice/music`, so that one path
+    // was in the table twice (harmlessly, but it hid which module owned it).
+    // The wildcard auth middlewares are expected to repeat — one per router.
+    const app = await composeLocalApp()
+    const seen = new Map<string, number>()
+    for (const route of app.routes) {
+      if (route.method === 'ALL' || !route.path.startsWith('/api/voice/')) continue
+      const key = `${route.method} ${route.path}`
+      seen.set(key, (seen.get(key) ?? 0) + 1)
+    }
+    expect(seen.size).toBeGreaterThan(5)
+    expect([...seen].filter(([, count]) => count > 1)).toEqual([])
   })
 
   test('every internal path the agent-runtime calls is served by the local composer', async () => {

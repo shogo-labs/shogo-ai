@@ -159,7 +159,7 @@ export function AppVersionsPanel({
               key={chip.key}
               onPress={() => setFilter(chip.key)}
               accessibilityRole="button"
-              accessibilityState={{ selected }}
+              aria-selected={selected}
               className={cn(
                 'rounded-full border px-3 py-1.5',
                 selected ? 'border-primary bg-primary/10' : 'border-border bg-card',

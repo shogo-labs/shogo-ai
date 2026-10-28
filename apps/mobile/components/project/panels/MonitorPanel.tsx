@@ -36,7 +36,7 @@ export function MonitorPanel({ projectId, agentUrl, visible, isPaidPlan }: Monit
               onPress={() => setSubTab(tab.id)}
               role="tab"
               accessibilityLabel={tab.label}
-              accessibilityState={{ selected: subTab === tab.id }}
+              aria-selected={subTab === tab.id}
               className={cn(
                 'px-3 py-1.5 rounded-md',
                 subTab === tab.id ? 'bg-primary' : 'active:bg-muted',

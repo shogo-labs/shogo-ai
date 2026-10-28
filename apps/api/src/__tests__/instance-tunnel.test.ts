@@ -70,6 +70,10 @@ class FakeWebSocket {
   }
 }
 
+// The live tunnel's threading has its own test; these drive the protocol.
+const { _testing: tunnelTesting } = await import('../lib/instance-tunnel')
+tunnelTesting.forceInProcess()
+
 const { startInstanceTunnel, stopInstanceTunnel, isTunnelConnected, _testing } = await import('../lib/instance-tunnel')
 
 afterAll(() => {

@@ -41,6 +41,9 @@ type Instance = {
 
 const instancesById = new Map<string, Instance>()
 const auditRows: any[] = []
+let syncStateRow:
+  | { instanceId: string; enabled: boolean; lastIngestAt: Date | null; cursor?: number }
+  | null = null
 
 const mockPrisma = {
   instance: {
@@ -68,11 +71,29 @@ const mockPrisma = {
       return args.data
     },
   },
+  machineSyncState: {
+    findUnique: async (args: any) => {
+      if (!syncStateRow) return null
+      return args?.where?.instanceId === syncStateRow.instanceId ? { ...syncStateRow } : null
+    },
+    findMany: async () => (syncStateRow ? [{ ...syncStateRow }] : []),
+    upsert: async (args: any) => {
+      syncStateRow = {
+        instanceId: args.where.instanceId,
+        enabled: true,
+        lastIngestAt: null,
+        ...(syncStateRow ? syncStateRow : args.create),
+        ...args.update,
+      }
+      return { ...syncStateRow }
+    },
+  },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 mock.module('../routes/api-keys', () => ({
-  resolveApiKey: async () => null,
+  resolveApiKey: async (key: string) =>
+    key === 'shogo_sk_device' ? { userId: 'u-1', workspaceId: 'ws-cloud' } : null,
 }))
 mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: async () => {},
@@ -174,6 +195,7 @@ const SNAPSHOT = {
 beforeEach(() => {
   instancesById.clear()
   auditRows.length = 0
+  syncStateRow = null
   instanceTesting.tunnels.clear()
   instanceTesting.activeViewers.clear()
   machineTesting.resetWakeDeadlineMs()
@@ -211,6 +233,18 @@ describe('GET /api/machines', () => {
     seedInstance()
     const res = await buildApp({}).request('/api/machines')
     expect(res.status).toBe(401)
+  })
+
+  // PERF-6: every open Studio tab polls this list. Marking the viewer here put
+  // all of the caller's desktops on the 5 s heartbeat whenever a tab was open.
+  test('listing machines does not put them on the fast viewer poll', async () => {
+    seedInstance({ id: 'i-1', workspaceId: 'ws-a' })
+    seedInstance({ id: 'i-2', workspaceId: 'ws-b', hostname: 'mac-2' })
+    const res = await buildApp().request('/api/machines')
+    expect(res.status).toBe(200)
+    expect(instanceTesting.activeViewers.size).toBe(0)
+    expect(await instanceTesting.isViewerActive('ws-a')).toBe(false)
+    expect(await instanceTesting.isViewerActive('ws-b')).toBe(false)
   })
 
   test('carries the cached heartbeat snapshot so an offline row can still render', async () => {
@@ -391,6 +425,39 @@ describe('machine workspace relay', () => {
     expect(res.status).toBe(403)
     const body = (await res.json()) as any
     expect(body.error.code).toBe('forbidden')
+    expect(instanceTesting.activeViewers.size).toBe(0)
+  })
+
+  // PERF-6 keeps SHO-185's goal for the machine actually in use: using one of
+  // its workspaces keeps that desktop on the 5 s poll, and only that one.
+  test('using a machine workspace marks only that machine as viewed', async () => {
+    seedInstance({ id: 'i-1', workspaceId: 'ws-a' })
+    seedInstance({ id: 'i-2', workspaceId: 'ws-b', hostname: 'mac-2' })
+    attachTunnel('i-1', respondJson({ projects: [] }))
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')
+    expect(res.status).toBe(200)
+    expect(await instanceTesting.isViewerActive('ws-a')).toBe(true)
+    expect(await instanceTesting.isViewerActive('ws-b')).toBe(false)
+  })
+
+  test('a sleeping machine in use is marked too, so its next heartbeat comes fast', async () => {
+    seedInstance({ workspaceId: 'ws-a', lastSeenAt: new Date(Date.now() - 20_000) })
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')
+    expect(res.status).toBe(503)
+    expect(await instanceTesting.isViewerActive('ws-a')).toBe(true)
+  })
+
+  test('a machine that heartbeated recently is `waking`, not `offline`', async () => {
+    // An idle desktop signals every 60s and has no push channel, so "no tunnel
+    // right now" is normal for a live machine. Saying offline there is what made
+    // every panel of a sleeping machine's workspace fail (SHO-185).
+    seedInstance({ lastSeenAt: new Date(Date.now() - 20_000), metadata: { machine: SNAPSHOT } })
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects')
+    expect(res.status).toBe(503)
+    expect(res.headers.get('retry-after')).toBe('3')
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('waking')
+    expect(body.projects).toBeUndefined()
   })
 
   test('an offline machine answers 503 offline, never 200 with empty data', async () => {
@@ -400,6 +467,41 @@ describe('machine workspace relay', () => {
     const body = (await res.json()) as any
     expect(body.error.code).toBe('offline')
     expect(body.projects).toBeUndefined()
+  })
+
+  test('a write to an offline machine is read-only, not a retry', async () => {
+    // The rows are on the desktop, so a write has nowhere to land. Answering
+    // `waking` here would make the composer retry a send that can never be
+    // delivered, and the client would queue nothing to show for it (SHO-185).
+    seedInstance({ lastSeenAt: null, metadata: { machine: SNAPSHOT } })
+    syncStateRow = {
+      instanceId: 'i-1',
+      enabled: true,
+      lastIngestAt: new Date('2026-10-23T09:00:00.000Z'),
+    }
+
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Docs' }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(res.headers.get('retry-after')).toBeNull()
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('machine_offline_readonly')
+    // What the banner shows: the copy's last successful ingest.
+    expect(body.error.lastSyncedAt).toBe('2026-10-23T09:00:00.000Z')
+  })
+
+  test('a live read of an offline machine still says offline', async () => {
+    // Preview, terminal and file contents are not in the copy — they are the
+    // machine. There is nothing to be read-only about, so no 409.
+    seedInstance({ lastSeenAt: null, metadata: { machine: SNAPSHOT } })
+    const res = await buildApp().request('/api/machines/i-1/w/lw-1/api/workspaces/ws-1/preview')
+    expect(res.status).toBe(503)
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('offline')
   })
 
   test('streams an agent chat SSE back through the relay', async () => {
@@ -468,14 +570,14 @@ describe('machine workspace relay', () => {
       respondJson({ projects: [{ id: 'p-1' }] })(req, conn)
     })
 
-    const calls: string[] = []
+    const calls: Array<{ path: string; body?: unknown }> = []
     const http = {
       get: async (path: string) => {
-        calls.push(path)
+        calls.push({ path })
         return { data: {} }
       },
-      post: async (path: string) => {
-        calls.push(path)
+      post: async (path: string, body?: unknown) => {
+        calls.push({ path, body })
         return { data: {} }
       },
       patch: async () => ({ data: {} }),
@@ -489,14 +591,57 @@ describe('machine workspace relay', () => {
       remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/i-1/w/lw-1',
       machineWorkspaceId: 'lw-1',
     }))
-    await proxy.get('/api/projects?workspaceId=ws-cloud')
+    // A write — a read of the machine's records is answered by the cloud copy
+    // and never reaches the relay (SHO-185).
+    await proxy.post('/api/projects', { name: 'Docs', workspaceId: 'ws-cloud' })
 
     // The URL the app would fetch, replayed through the real relay route.
-    const sent = new URL(calls[0])
-    const res = await buildApp().request(`${sent.pathname}${sent.search}`)
+    const sent = new URL(calls[0].path)
+    const res = await buildApp().request(`${sent.pathname}${sent.search}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(calls[0].body),
+    })
 
     expect(res.status).toBe(200)
-    expect(seen.path).toBe('/api/projects?workspaceId=lw-1')
+    expect(seen.path).toBe('/api/projects')
     expect(seen.path.startsWith('/api/api')).toBe(false)
+    // A create carries the workspace in its body, and it must be the machine's
+    // own id — the cloud id the UI was showing resolves to nothing there.
+    expect(JSON.parse(seen.body).workspaceId).toBe('lw-1')
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────
+// POST /api/machines/:id/sync — device-key auth (PERF-9)
+// ────────────────────────────────────────────────────────────────────
+
+describe('POST /api/machines/:id/sync auth', () => {
+  function push(app: Hono, headers: Record<string, string>) {
+    return app.request('/api/machines/i-1/sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify({ mode: 'changes', epoch: 'e', cursor: 0, models: [] }),
+    })
+  }
+
+  test('a desktop that sends its key as x-api-key (builds before the fix) is accepted', async () => {
+    seedInstance()
+    syncStateRow = { instanceId: 'i-1', enabled: false, lastIngestAt: null, cursor: 7 }
+    const res = await push(buildApp(null), { 'x-api-key': 'shogo_sk_device' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ok: true, disabled: true, cursor: 7 })
+  })
+
+  test('an unknown x-api-key is still refused with 401', async () => {
+    seedInstance()
+    const res = await push(buildApp(null), { 'x-api-key': 'shogo_sk_wrong' })
+    expect(res.status).toBe(401)
+  })
+
+  test('a person’s session is not a device key', async () => {
+    seedInstance()
+    const res = await push(buildApp({ ...OWNER, workspaceId: 'ws-cloud', via: 'session' }), {})
+    expect(res.status).toBe(401)
   })
 })

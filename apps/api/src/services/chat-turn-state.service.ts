@@ -62,14 +62,49 @@ export async function markTurnStarted(
 }
 
 /**
+ * Hand a session on once its turn is gone: its own chat queue first (a person's
+ * message, or the row they pressed Send now on), then whatever else is waiting
+ * on the same session.
+ *
+ * This belongs here, at the turn state, because *every* ender has to do it —
+ * the HTTP chat routes, a channel run's `endTurn`, the stop routes, the
+ * stale-turn recovery — and any one of them that forgot left a pending row with
+ * no starter. That is how "Send now" stopped a reply and then sent nothing: the
+ * turn was cleared, the row was promoted, and the only thing left to start it
+ * was a timer (SHO-198) that guessed at the race (SHO-205).
+ */
+export function drainAfterTurn(chatSessionId: string): void {
+  void import('./conversation-agent-dispatcher')
+    .then(({ drainSessionAfterTurn }) => drainSessionAfterTurn(chatSessionId))
+    .catch((error) => console.warn(`[ChatTurnState] Failed to hand chat ${chatSessionId} on:`, error))
+}
+
+/**
  * Clear an active turn only when it is still the turn that started it.
  * This prevents a delayed stream completion from clearing a newer turn.
  */
 export async function markTurnEnded(chatSessionId: string, turnId: string): Promise<void> {
-  await prisma.chatSession.updateMany({
+  const cleared = await prisma.chatSession.updateMany({
     where: { id: chatSessionId, activeTurnId: turnId },
     data: CLEARED_TURN,
   })
+  // A duplicate or stale completion cleared nothing, so there is no turn for the
+  // queue to follow: draining there would start a second turn beside a live one.
+  if (cleared.count > 0) drainAfterTurn(chatSessionId)
+}
+
+/**
+ * End the turn a caller was tracking and hand the session on either way.
+ *
+ * A turn id that was never marked leaves nothing to clear, so the queue is
+ * drained directly rather than waiting for a turn-end that cannot come.
+ */
+export async function endTurnAndDrain(
+  chatSessionId: string,
+  turnId: string | null | undefined,
+): Promise<void> {
+  if (!turnId) return drainAfterTurn(chatSessionId)
+  await markTurnEnded(chatSessionId, turnId)
 }
 
 /** Refresh liveness for a turn that is still streaming. No-op once it ended or was replaced. */
@@ -134,14 +169,22 @@ export async function releaseTurnsForHandoff(): Promise<number> {
  * Explicit stop requests clear whatever turn is active without waiting for
  * stream replay. `scope` must pin the session to the caller's project or
  * workspace so a client-supplied session id can't clear a foreign chat.
+ *
+ * `handOff: 'caller'` says the caller dispatches the queue itself, right after
+ * this returns and with the outcome in hand — the send-now route does, because
+ * it has a person waiting on the answer. Everyone else leaves it to the queue:
+ * a stop that clears a turn with a row still pending must not leave that row
+ * without a starter.
  */
 export async function clearActiveTurn(
   scope: Prisma.ChatSessionWhereInput & { id: string },
+  opts: { handOff?: 'queue' | 'caller' } = {},
 ): Promise<void> {
-  await prisma.chatSession.updateMany({
+  const cleared = await prisma.chatSession.updateMany({
     where: scope,
     data: CLEARED_TURN,
   })
+  if (cleared.count > 0 && opts.handOff !== 'caller') drainAfterTurn(scope.id)
 }
 
 /**

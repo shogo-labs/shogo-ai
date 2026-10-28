@@ -33,7 +33,6 @@ export interface EvalRunnerConfig {
   verbose: boolean
   workspaceDir: string
   agentMode?: string
-  interactionMode?: 'agent' | 'plan' | 'ask'
   /**
    * Tool calls accumulated by every previously-completed phase of the
    * pipeline this eval belongs to. Set by `runEvalOnWorker` when running
@@ -121,9 +120,6 @@ export async function sendTurn(
       // bucket, so reusing that key here matches the reset contract and
       // keeps each eval isolated.
       const body: Record<string, unknown> = { messages, chatSessionId: 'chat' }
-      if (config.interactionMode) {
-        body.interactionMode = config.interactionMode
-      }
       if (config.agentMode) {
         body.agentMode = config.agentMode
       }
@@ -553,9 +549,6 @@ export async function runEval(
   config: Partial<EvalRunnerConfig> = {},
 ): Promise<EvalResult> {
   const cfg = { ...DEFAULT_CONFIG, ...config }
-  if (eval_.interactionMode && !cfg.interactionMode) {
-    cfg.interactionMode = eval_.interactionMode
-  }
   const startTime = Date.now()
   const errors: string[] = []
 

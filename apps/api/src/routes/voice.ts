@@ -79,7 +79,6 @@ import { loadAccess } from '../lib/authz'
 import { apiKeyOrSession, authorizeProject, type AuthContext } from '../middleware/auth'
 import {
   DEFAULT_PROJECT_AGENT_VOICE_ID as DEFAULT_PROJECT_VOICE_ID,
-  handleVoiceMusic,
   resolveShogoElevenLabsClient,
 } from './voice-media'
 import { resolveVoiceContext, composeVoiceSystemPrompt } from '../lib/voice-context'
@@ -441,8 +440,10 @@ function uiMessageText(m: UIMessage): string {
 async function upsertShogoTextMessage(params: {
   chatSessionId: string
   uiMessage: UIMessage
+  /** The signed-in person; stamped on their own prompts so they stay attributable. */
+  userId?: string | null
 }): Promise<void> {
-  const { chatSessionId, uiMessage } = params
+  const { chatSessionId, uiMessage, userId } = params
   const content = uiMessageText(uiMessage)
   const envelope: ShogoPartsEnvelope = {
     kind: 'shogo-text',
@@ -458,6 +459,7 @@ async function upsertShogoTextMessage(params: {
       : undefined
 
   try {
+    const authorUserId = role === 'user' ? userId ?? null : null
     if (id) {
       await prisma.chatMessage.upsert({
         where: { id },
@@ -468,6 +470,7 @@ async function upsertShogoTextMessage(params: {
           content,
           parts: partsJson,
           agent: 'voice',
+          authorUserId,
         },
         update: {
           content,
@@ -482,6 +485,7 @@ async function upsertShogoTextMessage(params: {
           content,
           parts: partsJson,
           agent: 'voice',
+          authorUserId,
         },
       })
     }
@@ -833,23 +837,6 @@ export function voiceRoutes() {
   })
 
   /**
-   * POST /voice/music
-   *
-   * Generate music via the ElevenLabs Music API using Shogo's pooled
-   * EL key. Body mirrors the SDK `ComposeMusicParams`: exactly one of
-   * `prompt` / `compositionPlan`, plus optional `musicLengthMs`,
-   * `modelId`, `forceInstrumental`, `outputFormat`. Returns the raw
-   * generated audio bytes.
-   *
-   * Project-scoped (not per-end-user), so runtime-token callers are
-   * accepted here — they reach this via the SDK voice proxy. The handler
-   * lives in `voice-media.ts` and is mounted in both cloud and desktop, so
-   * this route only exists for pre-existing cloud callers that hit
-   * `/api/voice/music` before the media module did.
-   */
-  router.post('/voice/music', (c) => handleVoiceMusic(c))
-
-  /**
    * POST /voice/translator/chat/:chatSessionId
    *
    * Streaming translator endpoint. In addition to forwarding the AI SDK
@@ -868,10 +855,10 @@ export function voiceRoutes() {
    * Request body: `{ messages: UIMessage[] }` (AI SDK v6 format).
    * Response: UI message stream.
    *
-   * The two tools (`send_to_chat`, `set_mode`) are declared WITHOUT an
-   * `execute` function — they are executed client-side by the overlay,
-   * which supplies results via `useChat().addToolOutput` before the
-   * translator's next turn.
+   * The two tools (`send_to_chat`, `get_recent_activity`) are declared
+   * WITHOUT an `execute` function — they are executed client-side by the
+   * overlay, which supplies results via `useChat().addToolOutput` before
+   * the translator's next turn.
    */
   router.post('/voice/translator/chat/:chatSessionId', async (c) => {
     const auth = c.get('auth')
@@ -928,7 +915,7 @@ export function voiceRoutes() {
       for (let i = uiMessages.length - 1; i >= 0; i--) {
         const m = uiMessages[i]
         if (m.role !== 'user') break
-        await upsertShogoTextMessage({ chatSessionId, uiMessage: m })
+        await upsertShogoTextMessage({ chatSessionId, uiMessage: m, userId: auth.userId })
       }
 
       // Compose the same persona + project context block we send
@@ -997,6 +984,7 @@ export function voiceRoutes() {
             await upsertShogoTextMessage({
               chatSessionId,
               uiMessage: m,
+              userId: auth.userId,
             })
           }
         },
@@ -1113,6 +1101,7 @@ export function voiceRoutes() {
         return c.json({ error: authz.message }, authz.status)
       }
 
+      const authorUserId = role === 'user' ? auth.userId : null
       const row = id
         ? await prisma.chatMessage.upsert({
             where: { id },
@@ -1123,6 +1112,7 @@ export function voiceRoutes() {
               content: body.text,
               parts: partsJson,
               agent: 'voice',
+              authorUserId,
               ...(createdAt ? { createdAt } : {}),
             },
             update: {
@@ -1137,6 +1127,7 @@ export function voiceRoutes() {
               content: body.text,
               parts: partsJson,
               agent: 'voice',
+              authorUserId,
               ...(createdAt ? { createdAt } : {}),
             },
           })

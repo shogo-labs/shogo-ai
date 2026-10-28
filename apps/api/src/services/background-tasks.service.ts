@@ -477,6 +477,13 @@ export interface TaskEvent {
    * a milestone, instead of re-parsing the rendered line.
    */
   card?: CardEventState
+  /**
+   * The agent whose run produced this event (`project:<id>` / `workspace`).
+   * A watch never hears its own agent: the run that just ended knows what it
+   * did, so waking it for that is a wake that buys another wake — the loop
+   * that made one mention re-run an agent a dozen times (SHO-129).
+   */
+  fromAgentRef?: string
 }
 
 export interface CardEventState {
@@ -641,12 +648,43 @@ export async function emitTaskEvent(source: string, targetRef: string, event: Ta
       },
       take: 50,
     })
-    for (const row of rows) await applyEvent(row, event)
-    return rows.length
+    const own = await watchedByAgent(rows, event.fromAgentRef)
+    let applied = 0
+    for (const row of rows) {
+      // The run that wrote this line is the one watching: it already knows, and
+      // settling it would queue a wake whose run writes the next line.
+      if (own.has(row.id)) continue
+      await applyEvent(row, event)
+      applied++
+    }
+    if (own.size) {
+      console.log(`[BackgroundTasks] ${source}:${targetRef} ignored by ${own.size} watch(es) of its own agent ${event.fromAgentRef}`)
+    }
+    return applied
   } catch (err) {
     console.warn(`[BackgroundTasks] emit ${source}:${targetRef} failed:`, (err as Error).message)
     return 0
   }
+}
+
+/**
+ * The watches in `rows` held by `agentRef`, i.e. sitting in one of its chat
+ * sessions. The session is the only record of who owns a watch.
+ */
+async function watchedByAgent(rows: BackgroundTaskRow[], agentRef: string | undefined): Promise<Set<string>> {
+  if (!agentRef || !rows.length) return new Set()
+  const sessions: Array<{ id: string; contextType: string | null; contextId: string | null }> = await db.chatSession
+    .findMany({
+      where: { id: { in: [...new Set(rows.map((row) => row.chatSessionId))] } },
+      select: { id: true, contextType: true, contextId: true },
+    })
+    .catch(() => [])
+  const mine = new Set(
+    sessions
+      .filter((s) => (s.contextType === 'project' && s.contextId ? `project:${s.contextId}` : 'workspace') === agentRef)
+      .map((s) => s.id),
+  )
+  return new Set(rows.filter((row) => mine.has(row.chatSessionId)).map((row) => row.id))
 }
 
 export function newTaskId(): string {
@@ -699,11 +737,41 @@ export interface LocalTaskNotice {
   text: string
 }
 
+/**
+ * Ids the runtime has already been told about, so a looping notice logs once
+ * instead of once per copy (SHO-196).
+ */
+const ignoredRuntimeNotices = new Set<string>()
+
+/**
+ * A runtime's own finished task, handed over so the API can queue its wake.
+ *
+ * The gate in here is what makes delivery idempotent (SHO-196). The runtime can
+ * re-send a note whose task entry it has already evicted, and that note's text
+ * is a snapshot of an old milestone; writing it would overwrite the current
+ * state of the row and wake the session again on every turn end.
+ */
 export async function notifyLocalTasks(chatSessionId: string, tasks: LocalTaskNotice[]): Promise<number> {
   let n = 0
   for (const task of tasks.slice(0, 50)) {
     if (typeof task?.id !== 'string' || !/^t_[A-Za-z0-9]{4,32}$/.test(task.id)) continue
     const status: BackgroundTaskStatus = isFinal(task.status) ? task.status as BackgroundTaskStatus : 'completed'
+    const existing = await db.backgroundTask.findUnique({ where: { id: task.id } })
+    // The API owns these rows (`project_call`, `agent_reply`, `work_item`): it
+    // re-arms the watch and formats the wake from the row's own output, so a
+    // runtime notice about one of them is never its to write.
+    if (existing && REMOTE_SOURCES.has(existing.source)) {
+      if (!ignoredRuntimeNotices.has(task.id)) {
+        if (ignoredRuntimeNotices.size >= 500) ignoredRuntimeNotices.clear()
+        ignoredRuntimeNotices.add(task.id)
+        console.warn(`[BackgroundTasks] ignored runtime notice for API-tracked ${existing.source} task ${task.id}`)
+      }
+      continue
+    }
+    // A local task finishes once. A second notice for the same id in the same
+    // state is a replay: it must not rewrite the row or queue another wake. A
+    // row that was never delivered is still owed its wake, so it passes through.
+    if (existing && existing.status === status && (existing.notifiedAt !== null || existing.consumed)) continue
     const now = new Date()
     await db.backgroundTask.upsert({
       where: { id: task.id },
@@ -871,9 +939,38 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
-/** A user message that is a queued background-task wake. */
+/**
+ * A user message that is a queued background-task wake.
+ *
+ * A resume queued after a killed run (`kind: 'resume'`, SHO-121) carries a
+ * `data-resume` part and no `data-task-notification`, so it is deliberately not
+ * one of these and cannot pause wakes.
+ */
 export function isTaskWakeMessage(parts: string | null | undefined): boolean {
   return parseJson<Array<{ type?: string }>>(parts, []).some((p) => p?.type === 'data-task-notification')
+}
+
+/**
+ * The part types the queue writes for the machine's own bookkeeping: a task
+ * wake, and a resume after an interrupted turn.
+ *
+ * They persist as `role: 'user'` rows because that is how the queue delivers a
+ * turn, but nobody typed them — so neither may count as a person. Two rules
+ * read this: the one-resume-per-person rule (`postInterruptedResume`) and the
+ * wake pause (`consecutiveWakeWaits`). Add a new synthetic kind here, once.
+ */
+const AUTONOMOUS_USER_PART_TYPES = new Set(['data-task-notification', 'data-resume'])
+
+/**
+ * Whether a user message was written by the system rather than a person.
+ *
+ * Not the same as `isTaskWakeMessage`: a resume is autonomous but is not a
+ * wake, and before SHO-227 that difference is exactly what reset both caps.
+ */
+export function isAutonomousUserMessage(parts: string | null | undefined): boolean {
+  return parseJson<Array<{ type?: string }>>(parts, []).some(
+    (p) => typeof p?.type === 'string' && AUTONOMOUS_USER_PART_TYPES.has(p.type),
+  )
 }
 
 /** The tasks a wake message's `parts` were queued for. */
@@ -920,23 +1017,44 @@ export function taskWakeBodyResetsRun(body: string | null | undefined): boolean 
  * it starts a new wait when it introduces a task created after it. A person
  * writing ends the run, and the oldest wake in it always counts as one.
  *
+ * A re-armed watch — one row per card, so it keeps its id and its `createdAt` —
+ * wakes on the same task again and again. That is a new wait each time, and it is
+ * read off the wake messages rather than the row, because re-arming clears the
+ * row (`finishedAt`, `notifiedAt`) before the cap is measured. Otherwise a card
+ * watch that keeps waking itself could never reach the cap (SHO-129).
+ *
  * A wake a person resumed from the composer (`wakeRunReset`) ends the run too:
  * that is the pause lifting, and the wake it delivers starts the count again.
+ *
+ * A resume after an interrupted turn is skipped rather than treated as a
+ * person (SHO-227). It reads as a user message, but nobody wrote it — and
+ * letting it end the run is what reset the pause after every restart, so a
+ * watch that re-armed itself in the resumed turn could wake forever.
  */
 export async function consecutiveWakeWaits(chatSessionId: string, limit: number): Promise<number> {
+  // Autonomous rows inside the run are skipped, so the window has to be wider
+  // than the number of wakes it must be able to see.
   const recent: Array<{ parts: string | null; createdAt: Date }> = await db.chatMessage.findMany({
     where: { sessionId: chatSessionId, role: 'user' },
     orderBy: { createdAt: 'desc' },
-    take: limit + 1,
+    take: limit * 2 + 2,
     select: { parts: true, createdAt: true },
   })
   const run: Array<{ at: Date; taskIds: string[] }> = []
+  let newestWake: string | null = null
   for (const message of recent) {
-    if (!isTaskWakeMessage(message.parts)) break
-    run.push({ at: message.createdAt, taskIds: taskWakeIdsFromParts(message.parts) })
+    if (isTaskWakeMessage(message.parts)) {
+      if (newestWake === null) newestWake = message.parts
+      run.push({ at: message.createdAt, taskIds: taskWakeIdsFromParts(message.parts) })
+      continue
+    }
+    // A resume is the machine restarting itself, not a person: it neither ends
+    // the run nor counts as a wait.
+    if (isAutonomousUserMessage(message.parts)) continue
+    break
   }
   if (!run.length) return 0
-  if (taskWakeResetsRun(recent[0]!.parts)) return 1
+  if (taskWakeResetsRun(newestWake)) return 1
 
   const ids = [...new Set(run.flatMap((wake) => wake.taskIds))]
   const rows: Array<{ id: string; createdAt: Date }> = ids.length
@@ -946,9 +1064,12 @@ export async function consecutiveWakeWaits(chatSessionId: string, limit: number)
 
   let waits = 1
   for (let i = 0; i + 1 < run.length; i++) {
+    // The same task reporting twice in a row is a re-armed watch waking again.
+    const older = new Set(run[i + 1]!.taskIds)
+    const rearmed = run[i]!.taskIds.some((id) => older.has(id))
     let newestTaskAt = 0
     for (const id of run[i]!.taskIds) newestTaskAt = Math.max(newestTaskAt, startedAt.get(id) ?? 0)
-    if (newestTaskAt > run[i + 1]!.at.getTime()) waits++
+    if (rearmed || newestTaskAt > run[i + 1]!.at.getTime()) waits++
   }
   return waits
 }

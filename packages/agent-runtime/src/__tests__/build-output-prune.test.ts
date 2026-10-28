@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs'
+import { createHash } from 'crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -119,6 +120,106 @@ describe('buildOutputManifestPluginSource', () => {
     expect(src).toContain('writeBundle(options, bundle)')
     expect(src).toContain("createHash('sha1')")
     expect(src).toContain('fingerprint')
+  })
+})
+
+describe('build-output manifest plugin fingerprint (the canvas "Update available" toast)', () => {
+  type Build = {
+    modules: Record<string, string>
+    chunks: Record<string, { name: string; code: string }>
+    assets: Record<string, string | Uint8Array>
+  }
+
+  /** The plugin exactly as the watch wrapper splices it in. */
+  function loadPlugin() {
+    const src = buildOutputManifestPluginSource(join(shogoDir, BUILD_OUTPUT_MANIFEST))
+    return new Function('createHash', 'writeFileSync', 'Buffer', `return (${src})`)(
+      createHash,
+      writeFileSync,
+      Buffer,
+    )
+  }
+
+  /** One `writeBundle`, then the question the reload broadcast asks. */
+  function rebuild(b: Build, withModuleInfo = true): boolean {
+    const bundle: Record<string, unknown> = {}
+    for (const [fileName, chunk] of Object.entries(b.chunks)) bundle[fileName] = { type: 'chunk', ...chunk }
+    for (const [fileName, source] of Object.entries(b.assets)) bundle[fileName] = { type: 'asset', source }
+    const ctx = withModuleInfo
+      ? {
+          getModuleIds: () => Object.keys(b.modules)[Symbol.iterator](),
+          getModuleInfo: (id: string) => ({ code: b.modules[id] }),
+        }
+      : {}
+    loadPlugin().writeBundle.call(ctx, { dir: outDir }, bundle)
+    return consumeBuildOutputChange(shogoDir)
+  }
+
+  const html = (chunk: string, title = 'Dashboard') =>
+    `<!doctype html><title>${title}</title><script type="module" src="./${chunk}"></script>` +
+    '<link rel="stylesheet" href="./assets/index-CSS1.css">'
+
+  // The real diff between two "updates" on a recharts dashboard where nothing
+  // was edited: a cached watch rebuild deconflicts decimal.js-light's
+  // top-level `Decimal` differently from the full build.
+  const modules = {
+    '/w/src/main.tsx': 'import { App } from "./App"\nrender(App)',
+    '/w/node_modules/decimal.js-light/decimal.mjs': 'var Decimal, external = true;\nexport default Decimal',
+  }
+  const full: Build = {
+    modules,
+    chunks: { 'assets/index-D1TaQJiw.js': { name: 'index', code: 'var Decimal,\n  external = true;' } },
+    assets: { 'index.html': html('assets/index-D1TaQJiw.js'), 'assets/index-CSS1.css': '.p-4{padding:1rem}' },
+  }
+  const renamed: Build = {
+    modules,
+    chunks: { 'assets/index-KHXTg5s3.js': { name: 'index', code: 'var Decimal$1,\n  external = true;' } },
+    assets: { 'index.html': html('assets/index-KHXTg5s3.js'), 'assets/index-CSS1.css': '.p-4{padding:1rem}' },
+  }
+
+  it('a rebuild that only renames colliding identifiers is not an update', () => {
+    expect(rebuild(full)).toBe(true)
+    expect(rebuild(renamed)).toBe(false)
+    expect(rebuild(full)).toBe(false)
+    expect(rebuild(renamed)).toBe(false)
+  })
+
+  it('an edit to any module is an update', () => {
+    rebuild(full)
+    expect(
+      rebuild({ ...renamed, modules: { ...modules, '/w/src/main.tsx': 'import { App } from "./App"\nrender(App, 2)' } }),
+    ).toBe(true)
+  })
+
+  it('a changed stylesheet or page shell is an update', () => {
+    rebuild(full)
+    expect(rebuild({ ...renamed, assets: { ...renamed.assets, 'assets/index-CSS1.css': '.p-8{padding:2rem}' } })).toBe(true)
+    rebuild(full)
+    expect(
+      rebuild({ ...renamed, assets: { ...renamed.assets, 'index.html': html('assets/index-KHXTg5s3.js', 'Sales') } }),
+    ).toBe(true)
+  })
+
+  it('source maps never count — they encode the render-time names', () => {
+    rebuild({ ...full, assets: { ...full.assets, 'assets/index-D1TaQJiw.js.map': '{"names":["Decimal"]}' } })
+    expect(
+      rebuild({ ...renamed, assets: { ...renamed.assets, 'assets/index-KHXTg5s3.js.map': '{"names":["Decimal$1"]}' } }),
+    ).toBe(false)
+  })
+
+  it('binary assets are hashed as bytes', () => {
+    rebuild({ ...full, assets: { ...full.assets, 'assets/logo.png': new Uint8Array([1, 2, 3]) } })
+    expect(rebuild({ ...renamed, assets: { ...renamed.assets, 'assets/logo.png': new Uint8Array([1, 2, 3]) } })).toBe(false)
+    expect(rebuild({ ...renamed, assets: { ...renamed.assets, 'assets/logo.png': new Uint8Array([1, 2, 4]) } })).toBe(true)
+  })
+
+  it('without module info it falls back to the rendered chunks, and still writes the manifest', () => {
+    expect(rebuild(full, false)).toBe(true)
+    expect(rebuild(full, false)).toBe(false)
+    expect(rebuild(renamed, false)).toBe(true)
+    const manifest = JSON.parse(readFileSync(join(shogoDir, BUILD_OUTPUT_MANIFEST), 'utf-8'))
+    expect(manifest.outDir).toBe(outDir)
+    expect(manifest.files).toEqual(['assets/index-CSS1.css', 'assets/index-KHXTg5s3.js', 'index.html'])
   })
 })
 

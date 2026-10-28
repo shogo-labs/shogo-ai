@@ -81,6 +81,11 @@ export interface ReactionDetail {
   who: string
   /** What they did, e.g. "reacted with :heart:". */
   verb: string
+  /**
+   * Did the viewer react? Drives the "(click to remove)" hint — the chip's click
+   * removes the reaction when they have, so the card has to say so.
+   */
+  viewerReacted: boolean
 }
 
 /**
@@ -100,5 +105,5 @@ export function reactionDetail(
   const named = viewerReacted ? [...shown, 'You'] : shown
   const rest = userIds.length - named.length
   const who = rest > 0 ? `${named.join(', ')} and ${rest} ${rest === 1 ? 'other' : 'others'}` : joinNames(named)
-  return { who, verb: `reacted with ${emojiShortcode(emoji)}` }
+  return { who, verb: `reacted with ${emojiShortcode(emoji)}`, viewerReacted }
 }

@@ -84,7 +84,7 @@ export default function TeamChatLater() {
             <Pressable
               key={key}
               accessibilityRole="tab"
-              accessibilityState={{ selected: tab === key }}
+              aria-selected={tab === key}
               onPress={() => setTab(key)}
               className={cn('flex-row items-center gap-1.5 rounded-full border px-3 py-1', tab === key ? 'border-primary bg-primary/10' : 'border-border')}
             >

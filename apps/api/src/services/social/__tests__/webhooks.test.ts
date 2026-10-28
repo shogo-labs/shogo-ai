@@ -13,7 +13,9 @@ import {
   scopeForExternalId,
   socialEventTypeFor,
   verifyZernioSignature,
+  zernioEventType,
 } from '../zernio-webhook'
+import { handleZernioWebhook } from '../webhooks'
 
 const SECRET = 'whsec_test'
 
@@ -101,5 +103,44 @@ describe('event parsing and routing', () => {
     })
     expect(scopeForExternalId('lws_not-a-uuid')).toEqual({ ok: false })
     expect(scopeForExternalId('lws_')).toEqual({ ok: false })
+  })
+})
+
+describe('deliveries that belong to no profile', () => {
+  // The body Zernio's "Send test" button and POST /v1/webhooks/test deliver.
+  const testBody = JSON.stringify({
+    id: '3f0c1c2e-6c4a-4d3e-9b1f-2a7d8e9f0a1b',
+    event: 'webhook.test',
+    message: 'This is a test webhook from Zernio',
+    timestamp: '2026-10-24T17:00:00Z',
+  })
+
+  test('reads the event name from `event` or `type`', () => {
+    expect(zernioEventType(testBody)).toBe('webhook.test')
+    expect(zernioEventType(commentBody)).toBe('comment.received')
+    expect(zernioEventType('{}')).toBeNull()
+    expect(zernioEventType('not json')).toBeNull()
+  })
+
+  test('a signed webhook.test is answered 200 so the dashboard test passes', async () => {
+    const res = await handleZernioWebhook({ rawBody: testBody, signature: sign(testBody), secret: SECRET })
+    expect(res).toEqual({ status: 200, body: { ok: true, test: true } })
+  })
+
+  test('an unsigned webhook.test is still refused', async () => {
+    const res = await handleZernioWebhook({ rawBody: testBody, signature: sign(testBody, 'other'), secret: SECRET })
+    expect(res.status).toBe(401)
+  })
+
+  test('a signed event with no profiles is accepted and dropped, not retried', async () => {
+    const body = JSON.stringify({ id: 'evt_run', event: 'workflow.run.completed', run: { id: 'run_1' } })
+    const res = await handleZernioWebhook({ rawBody: body, signature: sign(body), secret: SECRET })
+    expect(res).toEqual({ status: 200, body: { ok: true, ignored: 'no_profile' } })
+  })
+
+  test('a signed body we cannot read at all is still a 400', async () => {
+    const body = 'not json'
+    const res = await handleZernioWebhook({ rawBody: body, signature: sign(body), secret: SECRET })
+    expect(res.status).toBe(400)
   })
 })

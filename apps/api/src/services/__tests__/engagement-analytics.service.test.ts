@@ -17,6 +17,12 @@ const fx = {
   goalEvents: [] as any[],
   tasks: [] as any[],
   meetings: [] as any[],
+  prompts: [] as any[],
+  unattributedPrompts: 0,
+  boardEvents: [] as any[],
+  threadRoots: [] as any[],
+  dmMembers: [] as any[],
+  cardThreads: [] as any[],
 }
 const calls: Record<string, any[]> = {}
 const record = (name: string, args: any) => {
@@ -43,12 +49,27 @@ mock.module('../../lib/prisma', () => ({
       // The service issues two queries: user-authored messages, then agent-authored approval cards.
       findMany: async (a: any) => {
         record('message', a)
+        // Third shape: the thread-root lookup that decides a reply's audience.
+        if (a.where?.id?.in) return fx.threadRoots
         return a.where.authorType === 'agent' ? fx.approvalMessages : fx.messages
       },
     },
     goalEvent: { findMany: async (a: any) => (record('goalEvent', a), fx.goalEvents) },
     agentTask: { findMany: async (a: any) => (record('task', a), fx.tasks) },
     meeting: { findMany: async (a: any) => (record('meeting', a), fx.meetings) },
+    workItemEvent: { findMany: async (a: any) => (record('boardEvent', a), fx.boardEvents) },
+    conversationMember: { findMany: async (a: any) => (record('conversationMember', a), fx.dmMembers) },
+    workItem: { findMany: async (a: any) => (record('workItem', a), fx.cardThreads) },
+    chatMessage: {
+      // Mirrors the real filter: stamped author, else the session owner.
+      findMany: async (a: any) => {
+        record('chatMessage', a)
+        const owner = a.where?.AND?.[1]?.OR?.[0]?.authorUserId
+        if (!owner) return fx.prompts
+        return fx.prompts.filter((r: any) => (r.authorUserId ?? r.session?.createdByUserId) === owner)
+      },
+      count: async (a: any) => (record('chatMessageCount', a), fx.unattributedPrompts),
+    },
   },
 }))
 mock.module('../model-registry.service', () => ({
@@ -295,7 +316,15 @@ describe('getMemberWorkActivity', () => {
 
   test('summarises one person for an agent to describe, without chart payloads', async () => {
     fx.approvalMessages = [channelApproval({ decidedAt: '2026-07-07T18:00:00Z' })]
-    fx.messages = [{ authorUserId: 'alice', createdAt: new Date('2026-07-07T17:00:00Z') }]
+    fx.messages = [
+      {
+        authorUserId: 'alice',
+        id: 'cm1',
+        conversationId: 'c1',
+        text: 'Can you check the retry?',
+        createdAt: new Date('2026-07-07T17:00:00Z'),
+      },
+    ]
     fx.tasks = [
       { userId: 'alice', projectId: 'p1', title: 'Fix totals', status: 'completed', createdAt: new Date('2026-07-07T15:00:00Z'), startedAt: new Date('2026-07-07T15:30:00Z'), completedAt: new Date('2026-07-07T16:00:00Z'), resultSummary: 'Merged' },
     ]
@@ -305,7 +334,11 @@ describe('getMemberWorkActivity', () => {
     expect(out.user).toEqual(alice)
     expect(out.window).toMatchObject({ tz: 'UTC', label: 'today', from: '2026-07-07T00:00:00.000Z' })
     expect(out.totals).toMatchObject({ approvalsDecided: 1, messagesSent: 1, tasksCompleted: 1 })
-    expect(out.recent.map((r) => r.label)).toEqual(['Merge pull request #12', 'Fix totals'])
+    expect(out.recent.map((r) => r.label)).toEqual([
+      'Merge pull request #12',
+      'Can you check the retry?',
+      'Fix totals',
+    ])
     expect(out).not.toHaveProperty('heatmap')
     expect(out).not.toHaveProperty('hourOfWeek')
     expect(out).not.toHaveProperty('daily')
@@ -319,5 +352,222 @@ describe('getMemberWorkActivity', () => {
     expect(out.totals.activeDays).toBe(0)
     expect(out.totals.approvalsDecided).toBe(0)
     expect(out.recent).toEqual([])
+  })
+
+  test('splits what a person sent by who it was aimed at', async () => {
+    const at = (h: number) => new Date(`2026-07-07T${String(h).padStart(2, '0')}:00:00Z`)
+    fx.messages = [
+      // Tagged a person.
+      {
+        authorUserId: 'alice',
+        id: 'm1',
+        conversationId: 'c1',
+        threadRootId: null,
+        text: '@Bob can you take this?',
+        createdAt: at(9),
+        conversation: { kind: 'public' },
+        mentions: [{ targetType: 'user' }],
+      },
+      // Tagged an agent.
+      {
+        authorUserId: 'alice',
+        id: 'm2',
+        conversationId: 'c1',
+        threadRootId: null,
+        text: '@Planner break this down',
+        createdAt: at(10),
+        conversation: { kind: 'public' },
+        mentions: [{ targetType: 'agent' }],
+      },
+      // Tagged both.
+      {
+        authorUserId: 'alice',
+        id: 'm3',
+        conversationId: 'c1',
+        threadRootId: null,
+        text: '@Bob @Planner thoughts?',
+        createdAt: at(11),
+        conversation: { kind: 'public' },
+        mentions: [{ targetType: 'user' }, { targetType: 'agent' }],
+      },
+      // Untagged channel post.
+      {
+        authorUserId: 'alice',
+        id: 'm4',
+        conversationId: 'c1',
+        threadRootId: null,
+        text: 'standup notes',
+        createdAt: at(12),
+        conversation: { kind: 'public' },
+        mentions: [],
+      },
+      // A DM with another person, no mentions.
+      {
+        authorUserId: 'alice',
+        id: 'm5',
+        conversationId: 'dm1',
+        threadRootId: null,
+        text: 'thanks!',
+        createdAt: at(13),
+        conversation: { kind: 'dm' },
+        mentions: [],
+      },
+    ]
+    fx.dmMembers = [
+      { conversationId: 'dm1', memberType: 'user', userId: 'alice' },
+      { conversationId: 'dm1', memberType: 'user', userId: 'bob' },
+    ]
+
+    const out = await svc.getMemberWorkActivity(WS, alice, { range: 'today', tz: 'UTC' }, now)
+
+    expect(out.totals).toMatchObject({
+      messagesSent: 5,
+      messagesToPeople: 2,
+      messagesToAgents: 1,
+      messagesMixed: 1,
+      messagesToChannel: 1,
+    })
+    // The four buckets always add up to the headline number.
+    expect(
+      out.totals.messagesToPeople + out.totals.messagesToAgents + out.totals.messagesMixed + out.totals.messagesToChannel,
+    ).toBe(out.totals.messagesSent)
+  })
+
+  test('a reply in an agent thread counts as aimed at the agent', async () => {
+    fx.messages = [
+      {
+        authorUserId: 'alice',
+        id: 'm6',
+        conversationId: 'c1',
+        threadRootId: 'root1',
+        text: 'go ahead',
+        createdAt: new Date('2026-07-07T09:00:00Z'),
+        conversation: { kind: 'public' },
+        mentions: [],
+      },
+    ]
+    fx.threadRoots = [{ id: 'root1', authorType: 'agent' }]
+
+    const out = await svc.getMemberWorkActivity(WS, alice, { range: 'today', tz: 'UTC' }, now)
+    expect(out.totals.messagesToAgents).toBe(1)
+    expect(out.totals.messagesToPeople).toBe(0)
+  })
+
+  test('a message in a card thread is attributed to the card', async () => {
+    fx.messages = [
+      {
+        authorUserId: 'alice',
+        id: 'm7',
+        conversationId: 'c1',
+        threadRootId: 'root2',
+        text: 'picked this up',
+        createdAt: new Date('2026-07-07T09:00:00Z'),
+        conversation: { kind: 'public' },
+        mentions: [],
+      },
+    ]
+    fx.cardThreads = [{ key: 'SHO-7', threadRootMessageId: 'root2' }]
+
+    const out = await svc.getMemberWorkActivity(WS, alice, { range: 'today', tz: 'UTC' }, now)
+    expect(out.recent.find((r) => r.kind === 'message')?.workItemKey).toBe('SHO-7')
+    expect(out.recent.find((r) => r.kind === 'message')?.label).toBe('picked this up')
+  })
+
+  test('credits board actions to the person who took them and counts them', async () => {
+    const at = (h: number) => new Date(`2026-07-07T${String(h).padStart(2, '0')}:00:00Z`)
+    const event = (over: Record<string, any>) => ({
+      id: 'e',
+      actorUserId: 'alice',
+      eventData: null,
+      workItemId: 'wi1',
+      createdAt: at(9),
+      workItem: { key: 'SHO-7', title: 'Export', conversationId: 'conv1', board: { name: 'Dev' }, column: { name: 'In Dev', category: 'active' } },
+      ...over,
+    })
+    fx.boardEvents = [
+      event({ id: 'e1', type: 'created', createdAt: at(9) }),
+      event({ id: 'e2', type: 'moved', createdAt: at(10), eventData: JSON.stringify({ to: { column: 'QA & Review', category: 'review' } }) }),
+      event({ id: 'e3', type: 'assigned', createdAt: at(11), eventData: JSON.stringify({ label: 'Shogo QA' }) }),
+      event({ id: 'e4', type: 'commented', createdAt: at(12) }),
+      event({ id: 'e5', type: 'moved', createdAt: at(13), eventData: JSON.stringify({ to: { column: 'Done', category: 'done' } }) }),
+    ]
+
+    const out = await svc.getMemberWorkActivity(WS, alice, { range: 'today', tz: 'UTC' }, now)
+
+    expect(out.totals).toMatchObject({
+      cardsCreated: 1,
+      cardsMoved: 2,
+      cardsCompleted: 1,
+      cardComments: 1,
+      cardAssignments: 1,
+    })
+    // Agent actions have no actor and are excluded by the query itself.
+    expect(calls.boardEvent.at(-1).where.actorUserId).toBe('alice')
+    expect(calls.boardEvent.at(-1).where.workspaceId).toEqual({ in: [WS] })
+    // One row per card, showing where it stands and what this person last did.
+    expect(out.cards).toHaveLength(1)
+    expect(out.cards[0]).toMatchObject({
+      key: 'SHO-7',
+      title: 'Export',
+      board: 'Dev',
+      column: 'Done',
+      lastAction: 'moved to Done',
+    })
+    expect(out.recent.find((r) => r.kind === 'card_event')?.label).toBe('SHO-7 moved to Done')
+  })
+
+  test('counts prompts a person typed into an agent chat', async () => {
+    fx.prompts = [
+      // Someone else's prompt in the same workspace: not credited to alice.
+      {
+        id: 'p1',
+        authorUserId: 'bob',
+        createdAt: new Date('2026-07-07T09:00:00Z'),
+        content: 'add the export button',
+        sessionId: 's1',
+        session: { name: 'SHO-7 work', inferredName: null, createdByUserId: 'bob', contextType: 'project', contextId: 'proj1' },
+      },
+      // Legacy row with no stamped author: the session owner is the sender.
+      {
+        id: 'p2',
+        authorUserId: null,
+        createdAt: new Date('2026-07-07T10:00:00Z'),
+        content: 'and a CSV',
+        sessionId: 's2',
+        session: { name: null, inferredName: 'Export work', createdByUserId: 'alice', contextType: 'project', contextId: 'proj1' },
+      },
+    ]
+
+    const out = await svc.getMemberWorkActivity(WS, alice, { range: 'today', tz: 'UTC' }, now)
+
+    expect(out.totals.agentChatPrompts).toBe(1)
+    expect(out.recent.filter((r) => r.kind === 'chat_prompt').map((r) => r.label)).toEqual(['and a CSV'])
+    // Only person-typed prompts are read: never agent output, never project-call scaffolding.
+    const where = calls.chatMessage.at(-1).where
+    expect(where.role).toBe('user')
+    // Scoped to this workspace's agent chats, never another workspace's.
+    // The relation is `session`: `chatSession` belongs to ToolCallLog and
+    // throws against a real database, which no mock would ever show.
+    expect(where.AND[0].session.OR[0]).toEqual({ workspaceId: { in: [WS] } })
+    expect(where.AND[1].OR).toEqual([
+      { authorUserId: 'alice' },
+      { authorUserId: null, session: { createdByUserId: 'alice' } },
+    ])
+    expect(JSON.stringify(where)).not.toContain('chatSession')
+    // The project of a prompt comes from the session's context, where a
+    // project chat keeps it (ChatSession has no projectId column).
+    expect(calls.chatMessage.at(-1).select.session.select).toMatchObject({
+      contextType: true,
+      contextId: true,
+    })
+  })
+
+  test('reports prompts nobody can be credited for as a number, not a guess', async () => {
+    fx.unattributedPrompts = 4
+
+    const out = await svc.getMemberWorkActivity(WS, alice, { range: 'today', tz: 'UTC' }, now)
+
+    expect(out.totals.unattributedPrompts).toBe(4)
+    expect(calls.chatMessageCount.at(-1).where).toMatchObject({ authorUserId: null, role: 'user' })
   })
 })

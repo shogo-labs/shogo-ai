@@ -50,7 +50,11 @@ import { isPublishPlanError, publishErrorMessage } from './publish-errors'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private' | 'password'
 
-const PUBLISH_DOMAIN = 'shogo.one'
+/**
+ * Fallback apex only — the API reports the real one (`publishDomain`) because
+ * staging mints `{sub}.staging.shogo.one` and production `{sub}.shogo.one`.
+ */
+const DEFAULT_PUBLISH_DOMAIN = 'shogo.one'
 
 const SITE_PASSWORD_MIN_LENGTH = 4
 
@@ -86,6 +90,8 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const [publishedAt, setPublishedAt] = useState<number | null>(null)
   const [publishedSubdomain, setPublishedSubdomain] = useState<string | null>(null)
   const [publishedCommitSha, setPublishedCommitSha] = useState<string | null>(null)
+  // Apex reported by the API for this environment (see getPublishState).
+  const [publishDomain, setPublishDomain] = useState(DEFAULT_PUBLISH_DOMAIN)
   const [isPublishing, setIsPublishing] = useState(false)
   const [isUnpublishing, setIsUnpublishing] = useState(false)
   const [isRepublishing, setIsRepublishing] = useState(false)
@@ -120,6 +126,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const loadPublishState = useCallback(async () => {
     try {
       const data = await api.getPublishState(http, projectId)
+      if (data.publishDomain) setPublishDomain(data.publishDomain)
       if (data.subdomain) {
         setIsPublished(true)
         setPublishedSubdomain(data.subdomain)
@@ -306,7 +313,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const handlePushData = () => {
     Alert.alert(
       'Push dev data to live?',
-      `This replaces the live database at ${publishedSubdomain}.${PUBLISH_DOMAIN} with your current dev data. The previous live data is backed up so you can restore it.`,
+      `This replaces the live database at ${publishedSubdomain}.${publishDomain} with your current dev data. The previous live data is backed up so you can restore it.`,
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Push to live', style: 'destructive', onPress: () => { void doPushData(false) } },
@@ -316,7 +323,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
 
   const handleViewPublished = () => {
     if (publishedSubdomain) {
-      Linking.openURL(`https://${publishedSubdomain}.${PUBLISH_DOMAIN}`)
+      Linking.openURL(`https://${publishedSubdomain}.${publishDomain}`)
     }
   }
 
@@ -399,7 +406,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
               <View className="flex-row items-center gap-2">
                 <CheckCircle size={16} color="#10b981" />
                 <Text className="text-sm text-emerald-600 dark:text-emerald-400">
-                  {publishedSubdomain}.{PUBLISH_DOMAIN}
+                  {publishedSubdomain}.{publishDomain}
                 </Text>
               </View>
               {publishedCommitSha && (
@@ -451,7 +458,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
             </View>
             <View className="flex-row items-center justify-between mt-1">
               <Text className="text-[11px] text-muted-foreground">
-                {subdomain || 'your-subdomain'}.{PUBLISH_DOMAIN}
+                {subdomain || 'your-subdomain'}.{publishDomain}
               </Text>
               {subdomainStatus.available === false && subdomainStatus.reason && (
                 <Text className="text-[11px] text-destructive">{subdomainStatus.reason}</Text>
@@ -613,7 +620,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
                 <Text className="text-[11px] text-muted-foreground mt-0.5">
                   {isPublished
                     ? 'Changing your URL requires Pro. You can still publish updates to your current URL.'
-                    : 'Get a permanent public link on your own name.shogo.one address. Available on Pro & Business.'}
+                    : `Get a permanent public link on your own name.${publishDomain} address. Available on Pro & Business.`}
                 </Text>
               </View>
               <ExternalLink size={14} className="text-primary" />

@@ -9,7 +9,8 @@
 
 import type { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
-import { readConversationFile, verifyConversationFileToken } from '../lib/conversation-files'
+import { readConversationFile, readConversationFileStream, verifyConversationFileToken, wantsInlineBytes } from '../lib/conversation-files'
+import { publishConversationEvent } from '../lib/conversation-bus'
 import {
   MAX_EMOJI_BYTES,
   createEmoji,
@@ -70,7 +71,11 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     const auth = await h.requireWorkspace(c)
     if (auth instanceof Response) return auth
     try {
-      return c.json({ settings: await updateChatSettings(auth.workspaceId, auth.userId, await h.readJson(c)) })
+      const settings = await updateChatSettings(auth.workspaceId, auth.userId, await h.readJson(c))
+      // The person's other open tabs and devices pick the change up live; without it a tab
+      // loaded before the change keeps playing the old message tone until it reloads.
+      publishConversationEvent(auth.workspaceId, { type: 'settings.changed', settings }, [auth.userId])
+      return c.json({ settings })
     } catch (err) {
       return h.errorResponse(c, err)
     }
@@ -92,6 +97,7 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     return c.json(await listInbox(auth.workspaceId, auth.userId, {
       unreadOnly: c.req.query('filter') === 'unread',
       before: c.req.query('before') ?? null,
+      beforeId: c.req.query('beforeId') ?? null,
       limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     }))
   })
@@ -470,7 +476,18 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     if (!row) return c.json({ error: { code: 'not_found', message: 'Emoji not found' } }, 404)
     try {
       const file = await readConversationFile(row.storageKey)
-      if (file.kind === 'redirect') return c.redirect(file.url, 302)
+      if (file.kind === 'redirect') {
+        if (!wantsInlineBytes(c)) return c.redirect(file.url, 302)
+        const stream = await readConversationFileStream(row.storageKey)
+        return new Response(stream.body as any, {
+          headers: {
+            'Content-Type': row.mimeType,
+            ...(stream.contentLength !== null ? { 'Content-Length': String(stream.contentLength) } : {}),
+            'Cache-Control': 'private, max-age=86400',
+            'X-Content-Type-Options': 'nosniff',
+          },
+        })
+      }
       return new Response(file.bytes as any, {
         headers: {
           'Content-Type': row.mimeType,

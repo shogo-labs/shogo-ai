@@ -10,7 +10,7 @@ describe('buildCapabilityStatusSection', () => {
     expect(text).toContain('## Project capabilities')
     expect(text).toContain('Web search (`webEnabled`)')
     expect(text).toContain('Shell (`shellEnabled`)')
-    expect(text).toContain('Disabled: Video generation (`videoGenEnabled`), 3D generation (`threeDGenEnabled`), Git worktrees (`gitWorktreesEnabled`), Social media (`socialMediaEnabled`)')
+    expect(text).toContain('Disabled: Video generation (`videoGenEnabled`), Music generation (`musicGenEnabled`), 3D generation (`threeDGenEnabled`), Git worktrees (`gitWorktreesEnabled`), Social media (`socialMediaEnabled`)')
     expect(text).not.toContain('Locked by')
     expect(text).toContain('capabilities_configure')
   })

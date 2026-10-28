@@ -315,9 +315,9 @@ describe('AC4 — "N of M on <tag>" follows the deployed release', () => {
 describe('AC5 — adoption history is captured at one insert point', () => {
   test('a version change appends exactly one row; repeats only bump lastSeenAt', async () => {
     const deviceId = 'hist-1'
-    const t0 = new Date('2026-10-01T08:00:00Z')
-    const t1 = new Date('2026-10-05T08:00:00Z')
-    const t2 = new Date('2026-10-10T08:00:00Z')
+    const t0 = ago(9 * DAY)
+    const t1 = ago(5 * DAY)
+    const t2 = ago(1 * DAY)
 
     await deviceVersionEvents.recordDeviceVersionEvent({ deviceId, version: '2.2.27', platform: 'darwin-arm64', seenAt: t0 })
     await deviceVersionEvents.recordDeviceVersionEvent({ deviceId, version: '2.2.27', platform: 'darwin-arm64', seenAt: t1 })
@@ -338,13 +338,13 @@ describe('AC5 — adoption history is captured at one insert point', () => {
       deviceId: 'hist-cli',
       version: 'shogo-cli/unknown',
       platform: 'linux-x64',
-      seenAt: new Date('2026-10-02T08:00:00Z'),
+      seenAt: ago(8 * DAY),
     })
     await deviceVersionEvents.recordDeviceVersionEvent({
       deviceId: 'hist-beta',
       version: '2.3.6-beta.20261020t083308',
       platform: 'win32',
-      seenAt: new Date('2026-10-03T08:00:00Z'),
+      seenAt: ago(7 * DAY),
     })
 
     const cli = await db.deviceVersionEvent.findFirst({ where: { deviceId: 'hist-cli' } })
@@ -405,7 +405,30 @@ describe('AC5 — the backfill does not invent history it never observed', () =>
       },
     })
 
+    // The adoption series is a per-day union across every device, so a bare
+    // count of 2.3.6 points mixes the in-place key with the fixture's own 2.3.6
+    // rows — and those sit at clock-relative offsets (`ago(30 * 60 * 1000)` is
+    // today, `ago(3 * HOUR)` is yesterday before 03:00Z). Counting them made it
+    // depend on what time of day CI ran. Measure the dates the backfill actually
+    // ADDS instead, and hold those to what the in-place key could have observed.
+    const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+    const versionDays = async () =>
+      new Set(
+        (await analytics.getAppVersions({ days: 30 })).adoption
+          .filter((point) => point.version === '2.3.6')
+          .map((point) => point.date),
+      )
+    // The dates the fixture's own 2.3.6 keys account for: the backfill copies
+    // lastSeenAt, so each of them covers exactly one day.
+    const fixtureDays = new Set(
+      FIXTURE.filter((row) => row.version === '2.3.6' && !row.revoked).map((row) => utcDay(row.seenAt!.getTime())),
+    )
+    // ...and the in-place key may not reach further back than two days before
+    // its own last sighting, however old its createdAt is.
+    const inplaceFloor = utcDay(NOW - 2 * HOUR - 2 * DAY)
+
     try {
+      const before = await versionDays()
       await db.$executeRawUnsafe(backfill)
 
       const rows = await db.deviceVersionEvent.findMany({ where: { deviceId: 'backfill-inplace' } })
@@ -413,10 +436,13 @@ describe('AC5 — the backfill does not invent history it never observed', () =>
       const first = new Date(rows[0].firstSeenAt).getTime()
       const last = new Date(rows[0].lastSeenAt).getTime()
       expect(last - first).toBeLessThan(2 * DAY)
+      // firstSeenAt comes from the last sighting, not from the key's birthday.
+      expect(first - ago(200 * DAY).getTime()).toBeGreaterThan(190 * DAY)
 
-      const data = await analytics.getAppVersions({ days: 30 })
-      const days = data.adoption.filter((point) => point.version === '2.3.6').length
-      expect(days).toBeLessThan(5)
+      const added = [...(await versionDays())].filter((date) => !before.has(date))
+      const unexplained = added.filter((date) => !fixtureDays.has(date))
+      expect(unexplained.length).toBeLessThanOrEqual(2)
+      for (const date of unexplained) expect(date >= inplaceFloor).toBe(true)
     } finally {
       // The backfill reads every live device, so undo both the extra key and
       // the rows it wrote before the later tests measure the fixture.
@@ -512,6 +538,169 @@ describe('AC4/AC5 — the admin routes are mounted', () => {
       'k8s/overlays/staging/api-service.yaml',
     ]) {
       expect(readFileSync(resolve(root, path), 'utf-8'), path).toContain('APP_VERSION')
+    }
+  })
+})
+
+describe('SHO-126 — the current version follows the newest version event', () => {
+  /** A device key, in its own workspace so two keys can coexist for one machine. */
+  async function createKey(workspace: string, deviceId: string, version: string | null, seenAt: Date) {
+    return db.apiKey.create({
+      data: {
+        name: `device-${deviceId}-${Math.random().toString(36).slice(2)}`,
+        keyHash: `qa-sho126-${deviceId}-${Math.random().toString(36).slice(2)}`,
+        keyPrefix: 'shogo_dev',
+        workspaceId: workspace,
+        userId,
+        kind: 'device',
+        deviceId,
+        deviceName: `machine ${deviceId}`,
+        devicePlatform: 'darwin-arm64',
+        deviceAppVersion: version,
+        lastSeenAt: seenAt,
+        createdAt: ago(60 * DAY),
+      },
+    })
+  }
+
+  const versionsOf = (segment: { byVersion: Array<{ version: string; count: number }> }, version: string) =>
+    segment.byVersion.find((row) => row.version === version)?.count ?? 0
+
+  test('a deliberate downgrade is counted on the lower version', async () => {
+    const deviceId = 'downgrade-1'
+    const second = await db.workspace.create({
+      data: { name: 'Other 126', slug: `other-126-${Date.now()}`, kind: 'team' },
+    })
+    const before = await analytics.getAppInstalls()
+
+    try {
+      // The machine holds a key in two workspaces; the second still carries the
+      // version it moved off, which is what made semver-first pick 2.3.6.
+      await createKey(workspaceId, deviceId, '2.3.6', ago(6 * DAY))
+      await createKey(second.id, deviceId, '2.2.27', ago(1 * HOUR))
+      await deviceVersionEvents.recordDeviceVersionEvent({
+        deviceId, version: '2.3.6', platform: 'darwin-arm64', seenAt: ago(20 * DAY),
+      })
+      await deviceVersionEvents.recordDeviceVersionEvent({
+        deviceId, version: '2.2.27', platform: 'darwin-arm64', seenAt: ago(1 * HOUR),
+      })
+
+      const after = await analytics.getAppInstalls()
+
+      expect(versionsOf(after.desktop, '2.2.27')).toBe(versionsOf(before.desktop, '2.2.27') + 1)
+      expect(versionsOf(after.desktop, '2.3.6')).toBe(versionsOf(before.desktop, '2.3.6'))
+      expect(after.desktop.totalDevices).toBe(before.desktop.totalDevices + 1)
+
+      const osRow = after.desktop.versions.find((row) => row.version === '2.2.27')!
+      const osBefore = before.desktop.versions.find((row) => row.version === '2.2.27')
+      expect(osRow.os.macos).toBe((osBefore?.os.macos ?? 0) + 1)
+
+      // Stays a desktop (the history says so), never an extra CLI device.
+      expect(after.cli.totalDevices).toBe(before.cli.totalDevices)
+
+      const devices = await analytics.getActiveDevices({ days: 365, includeDormant: true })
+      expect(devices.devices.find((device) => device.id === deviceHandle(deviceId)))
+        .toMatchObject({ version: '2.2.27', client: 'desktop', osLabel: 'macOS' })
+
+      const versions = await analytics.getAppVersions({ days: 30 })
+      expect(versionsOf(versions.desktop, '2.2.27')).toBe(versionsOf(before.desktop, '2.2.27') + 1)
+    } finally {
+      await db.apiKey.deleteMany({ where: { deviceId } })
+      await db.deviceVersionEvent.deleteMany({ where: { deviceId } })
+      await db.workspace.delete({ where: { id: second.id } })
+    }
+  })
+
+  test('a device with no event row keeps its api_keys version, and stays unknown without one', async () => {
+    const noEvent = 'noevent-1'
+    const noVersion = 'noversion-1'
+
+    try {
+      await createKey(workspaceId, noEvent, '1.12.7', ago(2 * DAY))
+      await createKey(workspaceId, noVersion, null, ago(1 * HOUR))
+
+      const devices = await analytics.getActiveDevices({ days: 365, includeDormant: true })
+      expect(devices.devices.find((device) => device.id === deviceHandle(noEvent))!.version).toBe('1.12.7')
+      expect(devices.devices.find((device) => device.id === deviceHandle(noVersion))!.version).toBe('unknown')
+    } finally {
+      await db.apiKey.deleteMany({ where: { deviceId: { in: [noEvent, noVersion] } } })
+      await db.deviceVersionEvent.deleteMany({ where: { deviceId: { in: [noEvent, noVersion] } } })
+    }
+  })
+})
+
+// =========================================================================
+// SHO-126 QA round 1 — the invariant the read model depends on: history is
+// only written by a request that actually carried a version.
+// =========================================================================
+
+describe('SHO-126 — a version-less request cannot re-stamp a stale sibling key', () => {
+  const deviceId = 'stale-stamp-1'
+  const liveKey = 'shogo_sk_stale_stamp_live'
+  const staleKey = 'shogo_sk_stale_stamp_old'
+  const hash = (key: string) => createHash('sha256').update(key).digest('hex')
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 150))
+
+  const createRealKey = (workspace: string, key: string, version: string, seenAt: Date) =>
+    db.apiKey.create({
+      data: {
+        name: `device-${deviceId}-${workspace}`,
+        keyHash: hash(key),
+        keyPrefix: 'shogo_sk',
+        workspaceId: workspace,
+        userId,
+        kind: 'device',
+        deviceId,
+        deviceName: 'machine',
+        devicePlatform: 'darwin-arm64',
+        deviceAppVersion: version,
+        lastSeenAt: seenAt,
+        createdAt: ago(60 * DAY),
+      },
+    })
+
+  test('the tools-proxy path leaves the reported version alone; a real report still lands', async () => {
+    const { resolveApiKey } = await import('../routes/api-keys')
+    const second = await db.workspace.create({
+      data: { name: 'Stale 126', slug: `stale-126-${Date.now()}`, kind: 'team' },
+    })
+
+    try {
+      // One machine, two keys. The secondary workspace's key still carries the
+      // version it moved off — the row a version-less touch used to bump.
+      await createRealKey(workspaceId, liveKey, '2.3.6', ago(1 * HOUR))
+      await createRealKey(second.id, staleKey, '2.2.27', ago(20 * DAY))
+      await deviceVersionEvents.recordDeviceVersionEvent({
+        deviceId, version: '2.3.6', platform: 'darwin-arm64', seenAt: ago(1 * HOUR),
+      })
+      await deviceVersionEvents.recordDeviceVersionEvent({
+        deviceId, version: '2.2.27', platform: 'darwin-arm64', seenAt: ago(20 * DAY),
+      })
+
+      const staleSeenAt = (await db.deviceVersionEvent.findFirst({ where: { deviceId, version: '2.2.27' } }))!
+        .lastSeenAt.getTime()
+      expect((await analytics.getActiveDevices({ days: 365, includeDormant: true }))
+        .devices.find((device) => device.id === deviceHandle(deviceId))!.version).toBe('2.3.6')
+
+      // What tools-proxy / instances / live-auth do: authenticate the stale key
+      // with no version in hand.
+      expect(await resolveApiKey(staleKey)).not.toBeNull()
+      await settle()
+
+      const staleRow = await db.deviceVersionEvent.findFirst({ where: { deviceId, version: '2.2.27' } })
+      expect(staleRow.lastSeenAt.getTime()).toBe(staleSeenAt)
+      expect((await analytics.getActiveDevices({ days: 365, includeDormant: true }))
+        .devices.find((device) => device.id === deviceHandle(deviceId))!.version).toBe('2.3.6')
+
+      // A request that does report a version is never throttled away.
+      expect(await resolveApiKey(staleKey, { deviceAppVersion: '2.2.28' })).not.toBeNull()
+      await settle()
+      expect((await analytics.getActiveDevices({ days: 365, includeDormant: true }))
+        .devices.find((device) => device.id === deviceHandle(deviceId))!.version).toBe('2.2.28')
+    } finally {
+      await db.apiKey.deleteMany({ where: { deviceId } })
+      await db.deviceVersionEvent.deleteMany({ where: { deviceId } })
+      await db.workspace.delete({ where: { id: second.id } })
     }
   })
 })

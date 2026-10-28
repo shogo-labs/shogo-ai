@@ -22,7 +22,15 @@ mock.module('child_process', () => ({
   // the actual ports test doesn't exercise these paths.
   execFile: () => {},
   execFileSync: () => '',
-  exec: () => {},
+  // Async form used by the process-table scans and Windows kills. It must call
+  // back, or the awaited scan hangs the test (SHO-185 moved these off execSync).
+  exec: (cmd: string, optsOrCb: any, maybeCb?: any) => {
+    execCalls.push(cmd)
+    const cb = typeof optsOrCb === 'function' ? optsOrCb : maybeCb
+    const next = execPlan.shift()
+    if (next instanceof Error) cb(next, '', '')
+    else cb(null, String(next ?? ''), '')
+  },
   // spawnSync added when shogo-worker RuntimeExecutor.executeAsync was
   // introduced — without it static import { spawnSync } fails.
   spawnSync: () => ({ status: 0, stdout: "", stderr: "", error: null }),
@@ -67,16 +75,22 @@ function managerPrivate() {
 }
 
 describe('RuntimeManager private port helpers', () => {
-  test('isPortListening ignores self and parent pids, accepts other numeric listeners, and swallows exec errors', async () => {
+  test('isPortListening probes the port directly, with no subprocess', async () => {
+    // It used to shell out to `lsof` three times per attempt, up to 50 attempts,
+    // on the runtime start path — which froze the local API's event loop and made
+    // the desktop supervisor kill it mid-tunnel-request (SHO-185).
     const rm = managerPrivate()
-    execPlan = [`${process.pid}\n${process.ppid}\nabc\n43210\n`]
-    await expect(rm.isPortListening(37123)).resolves.toBe(true)
 
-    execPlan = [`${process.pid}\n${process.ppid}\n`]
-    await expect(rm.isPortListening(37123)).resolves.toBe(false)
+    const server = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    const port = server.port!
+    try {
+      await expect(rm.isPortListening(port)).resolves.toBe(true)
+    } finally {
+      server.stop(true)
+    }
 
-    execPlan = [new Error('lsof failed')]
-    await expect(rm.isPortListening(37123)).resolves.toBe(false)
+    // Nothing is listening on the port we just released.
+    await expect(rm.isPortListening(port)).resolves.toBe(false)
   })
 
   test('allocatePortAsync skips used ports, checks companion ports, and releases allocated ports', async () => {

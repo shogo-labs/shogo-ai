@@ -84,6 +84,77 @@ describe('FakeLlmServer', () => {
     expect(llm.requestsFor('t').map((t) => t.round)).toEqual([0, 1, 2])
   })
 
+  test('tool same=1 sends identical args every round (the loop-detector script)', async () => {
+    const user = { role: 'user', content: `${marker('tool', 'sm', 30, { ms: 1, rounds: 2, same: true })} go` }
+    const argsOf = (text: string) => {
+      const call = parseSse(text).flatMap((c) => c.delta.tool_calls ?? [])
+      return JSON.parse(call.map((c: any) => c.function.arguments).join(''))
+    }
+    const toolReply = { role: 'tool', tool_call_id: 'call_sm_0', content: 'x' }
+    const asst = { role: 'assistant', content: null, tool_calls: [{ id: 'call_sm_0', type: 'function', function: { name: 'read_file', arguments: '{}' } }] }
+
+    const r0 = argsOf(await complete(llm.url, [user]))
+    const r1 = argsOf(await complete(llm.url, [user, asst, toolReply]))
+    expect(r0).toEqual({ path: 'AGENTS.md', offset: 1, limit: 1 })
+    expect(r1).toEqual(r0)
+  })
+
+  test('tool empty=1 sends read_file with an empty path (the guard script)', async () => {
+    const out = parseSse(await complete(llm.url, [{ role: 'user', content: `${marker('tool', 'em', 10, { ms: 1, rounds: 1, empty: true })} go` }]))
+    const call = out.flatMap((c) => c.delta.tool_calls ?? [])
+    expect(JSON.parse(call.map((c: any) => c.function.arguments).join(''))).toEqual({ path: '' })
+  })
+
+  test('tool parallel=5 fires five failing calls in the first round, one call after', async () => {
+    const user = { role: 'user', content: `${marker('tool', 'pl', 10, { ms: 1, rounds: 2, parallel: 5 })} go` }
+    const callsOf = (text: string) => {
+      const chunks = parseSse(text).flatMap((c) => c.delta.tool_calls ?? [])
+      const byIndex = new Map<number, { id?: string; name?: string; arguments: string }>()
+      for (const c of chunks) {
+        const entry = byIndex.get(c.index) ?? { arguments: '' }
+        if (c.id) entry.id = c.id
+        if (c.function?.name) entry.name = c.function.name
+        if (c.function?.arguments) entry.arguments += c.function.arguments
+        byIndex.set(c.index, entry)
+      }
+      return [...byIndex.values()]
+    }
+    const toolReplies = (round: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        role: 'tool',
+        tool_call_id: `call_pl_${round}_${i}`,
+        content: `File not found: missing-pl-${i}.txt`,
+      }))
+    const asst = (round: number, count: number) => ({
+      role: 'assistant',
+      content: null,
+      tool_calls: Array.from({ length: count }, (_, i) => ({
+        id: `call_pl_${round}_${i}`,
+        type: 'function',
+        function: { name: 'read_file', arguments: '{}' },
+      })),
+    })
+
+    const r0 = callsOf(await complete(llm.url, [user]))
+    expect(r0).toHaveLength(5)
+    expect(r0.map((c) => c.name)).toEqual(Array(5).fill('read_file'))
+    expect(r0.map((c) => JSON.parse(c.arguments))).toEqual(
+      Array.from({ length: 5 }, (_, i) => ({ path: `missing-pl-${i}.txt` })),
+    )
+
+    const r1 = callsOf(await complete(llm.url, [user, asst(0, 5), ...toolReplies(0, 5)]))
+    expect(r1).toHaveLength(1)
+  })
+
+  test('marker carries the same/empty flags and nothing else', () => {
+    expect(marker('tool', 'x', 10, { rounds: 2, same: true })).toContain(':same=1')
+    expect(marker('tool', 'x', 10, { rounds: 2, empty: true })).toContain(':empty=1')
+    expect(marker('tool', 'x', 10, { rounds: 2, parallel: 5 })).toContain(':parallel=5')
+    expect(marker('tool', 'x', 10, { rounds: 2 })).not.toContain('same=1')
+    expect(marker('tool', 'x', 10, { rounds: 2 })).not.toContain('empty=1')
+    expect(marker('tool', 'x', 10, { rounds: 2 })).not.toContain('parallel=')
+  })
+
   test('hold sends no tokens until released', async () => {
     const pending = complete(llm.url, [{ role: 'user', content: marker('hold', 'h', 10, { ms: 1 }) }])
     await llm.waitForTurn('h')

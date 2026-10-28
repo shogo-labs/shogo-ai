@@ -82,9 +82,11 @@ on (`realtime`). It covers `eleven_v4`, `eleven_v4_turbo`, `eleven_v3`,
   distinct model instead of silently swapping it.
 - `textToSpeech()` only falls back when the upstream failure is model-related
   (402, or 400/403/404/422 mentioning model/plan/permission) and reports
-  `requestedModel` / `fellBack` / `fallbackReason`. The `tts` handler adds
-  `x-tts-model-used`, `x-tts-model-requested` and a `Warning: 199` header when
-  they differ.
+  `requestedModel` / `fellBack` / `fallbackReason`. The retry target is
+  `TTS_FALLBACK_MODEL` (`eleven_flash_v2_5`, the widest-available model) —
+  deliberately *not* `CONVAI_TTS_MODEL_FALLBACK`, so a BYO account without v4
+  entitlement still gets audio. The `tts` handler adds `x-tts-model-used`,
+  `x-tts-model-requested` and a `Warning: 199` header when they differ.
 
 ## Proxy mode (Shogo pods)
 

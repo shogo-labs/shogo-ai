@@ -74,7 +74,17 @@ export const CHAT_RATE_LIMITS = {
   agentPost: { max: 30, windowMs: 60_000 },
   /** Huddle joins per user, so reconnect loops can't flood LiveKit or the roster. */
   huddleJoin: { max: 20, windowMs: 60_000 },
+  /** People rung into a huddle per user, so invites can't be used to spam. */
+  huddleInvite: { max: 30, windowMs: 60_000 },
+  /** Knock-to-join requests, keyed by caller (user id or IP) and by link. */
+  huddleKnock: { max: 10, windowMs: 60_000 },
+  huddleKnockPerLink: { max: 30, windowMs: 60_000 },
+  /** Poll votes and question upvotes per user. */
+  vote: { max: 120, windowMs: 60_000 },
 } as const
+
+/** Most people in one huddle at a time. */
+export const HUDDLE_MAX_PARTICIPANTS = 50
 
 // ─── Semaphore ───────────────────────────────────────────────────────────────
 

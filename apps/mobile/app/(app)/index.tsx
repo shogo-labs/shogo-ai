@@ -33,15 +33,16 @@ import {
 } from '../../contexts/domain'
 import { ComposerPlusSection } from '../../components/chat/ComposerPlusMenu'
 import {
+  MachineWorkspaceBanner,
+  useMachineWorkspace,
+} from '../../components/instance/MachineWorkspaceBanner'
+import { isMachineConditionError } from '@shogo/shared-app/services'
+import { useActiveInstance } from '../../contexts/active-instance'
+import {
   ChatInput,
   DEFAULT_MODEL,
   type FileAttachment,
-  type InteractionMode,
 } from '../../components/chat/ChatInput'
-import {
-  loadInteractionModePreference,
-  saveInteractionModePreference,
-} from '../../lib/interaction-mode-preference'
 import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
 import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
@@ -277,7 +278,6 @@ export const HomeScreen = observer(function HomeScreen({
     iosKeyboardAvoiding: iosComposerAvoiding,
   })
 
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL)
   // Gate stale-selection reconciliation until the persisted preference has
   // loaded. Otherwise the reconciler runs against the initial slug default
@@ -328,14 +328,14 @@ export const HomeScreen = observer(function HomeScreen({
   const draftRef = useRef<HomeDraft | null>(null)
   const draftPromiseRef = useRef<Promise<HomeDraft | null> | null>(null)
   const draftPrewarmedRef = useRef<Set<string>>(new Set())
+  // The last submission the machine refused, kept only long enough for the
+  // banner's Try again (and the waking auto-retry) to re-run it.
+  const lastRefusedRef = useRef<{
+    text: string
+    files?: FileAttachment[]
+  } | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   // APP_MODE_DISABLED: homeAppTemplates state removed
-
-  useEffect(() => {
-    void loadInteractionModePreference().then((stored) => {
-      if (stored) setInteractionMode(stored)
-    })
-  }, [])
 
   // The cloud workspace: identity, billing and membership are the cloud
   // account's even while a paired computer's workspace is open.
@@ -458,11 +458,6 @@ export const HomeScreen = observer(function HomeScreen({
     return name.split(' ')[0] || 'there'
   }, [user?.name])
 
-  const handleHomeInteractionModeChange = useCallback((mode: InteractionMode) => {
-    setInteractionMode(mode)
-    void saveInteractionModePreference(mode)
-  }, [])
-
   const handleHomeModelChange = useCallback((modelId: string) => {
     setSelectedModel(modelId)
     void saveModelPreference(modelId)
@@ -477,13 +472,6 @@ export const HomeScreen = observer(function HomeScreen({
     handleHomeModelChange,
     modelPrefLoaded,
   )
-
-  const homeComposerPlaceholder =
-    interactionMode === 'plan'
-      ? 'Describe what you want to plan...'
-      : interactionMode === 'ask'
-        ? 'Ask a question...'
-        : undefined
 
   /**
    * Create the chat session for a freshly-created home project. When the
@@ -623,7 +611,6 @@ export const HomeScreen = observer(function HomeScreen({
   const createProjectFromPrompt = useCallback(async (
     text: string,
     files?: FileAttachment[],
-    submissionInteractionMode: InteractionMode = interactionMode,
   ) => {
     if (!text.trim() || !user?.id || !currentWorkspace?.id) return
 
@@ -658,6 +645,13 @@ export const HomeScreen = observer(function HomeScreen({
             prewarmHomeDraft(draft, currentWorkspace.id)
           }
         } catch (err: any) {
+          if (isMachineConditionError(err)) {
+            // The machine is asleep or still waking: the banner says so and
+            // offers Try again, so keep the submission to re-run rather than
+            // showing a second, worse explanation in an alert.
+            lastRefusedRef.current = { text, files }
+            return
+          }
           const detail = err?.message || err?.details?.error?.message || String(err)
           console.error('[Home] Failed to create project:', detail, err)
           Alert.alert('Error', `Failed to create project: ${detail}`)
@@ -693,7 +687,6 @@ export const HomeScreen = observer(function HomeScreen({
           chatSessionId: consumed.chatSessionId,
           chatScope: consumed.chatScope,
           initialMessage: text,
-          initialInteractionMode: submissionInteractionMode,
         },
       } as any)
 
@@ -736,7 +729,6 @@ export const HomeScreen = observer(function HomeScreen({
     currentWorkspace?.id,
     ensureDraftProject,
     http,
-    interactionMode,
     posthog,
     prewarmHomeDraft,
     projects,
@@ -776,7 +768,6 @@ export const HomeScreen = observer(function HomeScreen({
           id: consumed.projectId,
           chatSessionId: consumed.chatSessionId,
           chatScope: consumed.chatScope,
-          initialInteractionMode: interactionMode,
           startEzMode: '1',
           autoStartVoice: '1',
         },
@@ -787,7 +778,6 @@ export const HomeScreen = observer(function HomeScreen({
   }, [
     currentWorkspace?.id,
     ensureDraftProject,
-    interactionMode,
     isCreating,
     posthog,
     projects,
@@ -796,15 +786,10 @@ export const HomeScreen = observer(function HomeScreen({
   ])
 
   const handlePromptSubmit = useCallback(
-    (
-      text: string,
-      files?: FileAttachment[],
-      modeOverride?: InteractionMode,
-    ): void | false => {
-      const submissionInteractionMode = modeOverride ?? interactionMode
-      void createProjectFromPrompt(text, files, submissionInteractionMode)
+    (text: string, files?: FileAttachment[]): void | false => {
+      void createProjectFromPrompt(text, files)
     },
-    [createProjectFromPrompt, interactionMode],
+    [createProjectFromPrompt],
   )
 
   const handleTemplatePress = useCallback(async (listing: HomeListing) => {
@@ -891,6 +876,26 @@ export const HomeScreen = observer(function HomeScreen({
     }
   }, [isAuthenticated, localMode, router])
 
+  // A machine workspace cannot take a write while its Mac is asleep, so the
+  // composer is disabled from the same state the banner renders — and the banner
+  // says which of the two things is true, waking or offline.
+  //
+  // These three hooks stay above every early return below: `homeSurface` and
+  // `rendersAgentChat` both flip while the workspace loads, and a hook that only
+  // runs on the second render throws "Rendered more hooks than during the
+  // previous render" — which blanks the whole app behind the error boundary.
+  const { instance: machineInstance } = useActiveInstance()
+  const retryMachineRequest = useCallback(() => {
+    const refused = lastRefusedRef.current
+    if (!refused) return
+    lastRefusedRef.current = null
+    return createProjectFromPrompt(refused.text, refused.files)
+  }, [createProjectFromPrompt])
+  const machineView = useMachineWorkspace({
+    machineName: machineInstance?.name,
+    onRetry: retryMachineRequest,
+  })
+
   if (!isAuthenticated) {
     if (localMode) {
       return null
@@ -910,7 +915,14 @@ export const HomeScreen = observer(function HomeScreen({
     )
   }
 
-  if (!currentExperience.resolved) {
+  // The builder does not depend on the workspace kind — `appHomeSurface`
+  // returns `builder` for `forceBuilder` before it ever reads `kind` — so
+  // `/(app)/new-project` paints its greeting, composer, Import and stack chips
+  // on the first frame instead of waiting behind this skeleton for the
+  // workspace collection (which can be seconds, or never on a refresh). `/`
+  // and `/(app)/home` do pick their surface from the kind (agent chat, feed,
+  // builder), so they keep it.
+  if (!currentExperience.resolved && !forceBuilder) {
     return (
       <View className="flex-1 bg-background px-4 pt-16" testID="home-chrome-skeleton">
         <WorkspaceChromeSkeletonRows count={4} />
@@ -969,7 +981,9 @@ export const HomeScreen = observer(function HomeScreen({
           {`What are we building, ${firstName}?`}
         </Text>
       )}
-      {!localMode && currentExperience.kind === 'team' ? (
+      {/* `workspaceExperience(undefined)` reports team as its fail-safe kind, so
+          an unresolved first frame must not claim a Team workspace. */}
+      {!localMode && currentExperience.resolved && currentExperience.kind === 'team' ? (
         <Text
           className={`text-center text-muted-foreground ${isNativePhone ? 'mt-2' : 'mb-6'}`}
           style={heroSubtitleStyle}
@@ -983,7 +997,7 @@ export const HomeScreen = observer(function HomeScreen({
   const composer = usesMobileWorkspaceChrome ? (
     <ChatInput
       onSubmit={(text, files) => handlePromptSubmit(text, files)}
-      disabled={isCreating}
+      disabled={isCreating || machineView.composeDisabled}
       placeholder="Describe the project you want to build..."
       composer={currentExperience.composer}
       presentation="agent"
@@ -994,11 +1008,9 @@ export const HomeScreen = observer(function HomeScreen({
       <ChatInput
         onSubmit={(text, files) => handlePromptSubmit(text, files)}
         submitting={isCreating}
-        placeholder={homeComposerPlaceholder}
-        typingPlaceholder={interactionMode === 'agent'}
+        disabled={machineView.composeDisabled}
+        typingPlaceholder
         composer={currentExperience.composer}
-        interactionMode={interactionMode}
-        onInteractionModeChange={handleHomeInteractionModeChange}
         selectedModel={selectedModel}
         onModelChange={handleHomeModelChange}
         isPro={hasAdvancedModelAccess}
@@ -1098,6 +1110,10 @@ export const HomeScreen = observer(function HomeScreen({
                 : restComposerSidePad,
             }}
           >
+            <MachineWorkspaceBanner
+              machineName={machineInstance?.name}
+              onRetry={retryMachineRequest}
+            />
             {composer}
           </Animated.View>
         </View>
@@ -1107,6 +1123,7 @@ export const HomeScreen = observer(function HomeScreen({
 
   const screen = (
     <View
+      testID="home-builder"
       className={isNativePhone && isDark ? 'flex-1' : 'flex-1 bg-background'}
       style={isNativePhone ? { backgroundColor: isDark ? 'transparent' : nativePhoneCanvas(false) } : undefined}
     >

@@ -159,11 +159,11 @@ export const reactNativeMockBase = {
         return this
       }
     },
-    timing: () => ({ start: (cb?: () => void) => cb?.() }),
-    spring: () => ({ start: (cb?: () => void) => cb?.() }),
-    sequence: () => ({ start: (cb?: () => void) => cb?.() }),
-    parallel: () => ({ start: (cb?: () => void) => cb?.() }),
-    loop: () => ({ start: () => {} }),
+    timing: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+    spring: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+    sequence: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+    parallel: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+    loop: () => ({ start: () => {}, stop: () => {}, reset: () => {} }),
     createAnimatedComponent: <T,>(c: T) => c,
   },
   NativeModules: {},

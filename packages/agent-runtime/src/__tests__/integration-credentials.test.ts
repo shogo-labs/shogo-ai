@@ -223,10 +223,13 @@ describe('project_call turns', () => {
     expect(result).toEqual({ reply: 'done', sessionId: 'run:r1', runId: 'r1' })
     expect(calls[0]![0]).toBe('[pipeline runId=r1] [from project pA]\nfile it')
     expect(calls[0]![1]).toBe('run:r1')
-    expect(calls[0]![9]).toBe('ticket-for-B')
+    // Positional: prompt, sessionId, isHeartbeat, streamTarget, uiWriter,
+    // activeSkill, images, dualPlan, requesterTicket.
+    expect(calls[0]![7]).toBe(false)
+    expect(calls[0]![8]).toBe('ticket-for-B')
 
     await (AgentGateway.prototype as any).processPipelineCall.call(self, { message: 'no person' })
-    expect(calls[1]![9]).toBeUndefined()
+    expect(calls[1]![8]).toBeUndefined()
   })
 
   test('a streamed call reaches the turn, which stays unattended for permission asks', async () => {

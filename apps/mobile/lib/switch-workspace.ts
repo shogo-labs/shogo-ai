@@ -125,8 +125,37 @@ export function adoptChatWorkspace(
   projects?: WorkspaceProjectCollection,
 ): boolean {
   if (!chatWorkspaceId || chatWorkspaceId === activeWorkspaceId) return false
-  setActiveWorkspaceId(chatWorkspaceId)
+  // An automatic write: the chat's workspace is derived from data that may be
+  // older than the switch the person just made (SHO-157). The store refuses it
+  // then, and this must not reload projects for a workspace that did not win.
+  if (!setActiveWorkspaceId(chatWorkspaceId, { reason: 'automatic' })) return false
   if (projects) reloadProjects(chatWorkspaceId, projects)
+  return true
+}
+
+/**
+ * Whether a screen should adopt the workspace that owns `initialSessionId`.
+ *
+ * Adoption exists for a chat that is not in the active workspace (a chip from
+ * another workspace, SHO-52) — not for a screen that has been moved to another
+ * workspace. When the workspace changes under a mounted screen the person left
+ * that chat, so the chat's workspace is no longer the one to show; letting it
+ * decide again is what wrote the old workspace back ~10 ms after a switch on
+ * staging (SHO-157). A fresh mount or a new session id in the same workspace
+ * still adopts.
+ */
+export function shouldAdoptChatWorkspace(args: {
+  initialSessionId: string | null | undefined
+  adoptedSessionId: string | null | undefined
+  screenWorkspaceId: string | null | undefined
+  workspaceId: string | null | undefined
+}): boolean {
+  if (!args.initialSessionId) return false
+  if (!args.workspaceId) return false
+  if (args.adoptedSessionId === args.initialSessionId) return false
+  if (args.screenWorkspaceId != null && args.screenWorkspaceId !== args.workspaceId) {
+    return false
+  }
   return true
 }
 

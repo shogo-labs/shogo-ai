@@ -7,15 +7,22 @@
  * team directory, and manifest channel upserts.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { rmSync } from 'fs'
 import { Hono } from 'hono'
 import { seedWorkspace, setupChannelsTestDb, sseResponse, waitFor, type SeededWorkspace } from './helpers/channels-test-db'
+import type { ChainPausedRecord } from '../lib/agent-chain-metrics'
 
 process.env.SHOGO_AGENT_CHAIN_MAX_DEPTH = '6'
 process.env.SHOGO_AGENT_CHAIN_MAX_PING_PONG = '3'
 
 const { dir } = setupChannelsTestDb()
+
+/** Every pause the dispatcher counts, so the tests can assert on it. */
+const pausedRecords: ChainPausedRecord[] = []
+mock.module('../lib/agent-chain-metrics', () => ({
+  recordChainPaused: (record: ChainPausedRecord) => { pausedRecords.push(record) },
+}))
 
 const { prisma } = await import('../lib/prisma')
 const { conversationRoutes, agentChannelRoutes } = await import('../routes/conversations')
@@ -65,6 +72,7 @@ beforeAll(async () => {
 beforeEach(() => {
   invocations = []
   scripts = {}
+  pausedRecords.length = 0
   agentAuth = { projectId: null }
   dispatcher._resetDispatcherForTests()
   dispatcher.configureConversationAgentDispatcher({
@@ -275,8 +283,18 @@ describe('chain limits', () => {
     await settle()
     expect(paused.text).toContain('Paused after 6 agent hand-offs')
     expect(paused.text).toContain(`<@u:${seed.member}>`)
-    expect(paused.blocks).toEqual({ chainPaused: { limit: 'depth', depth: 6 } })
+    expect(paused.blocks).toEqual({ chainPaused: { limit: 'depth', depth: 6, turns: 6, max: 6 } })
     expect(invocations).toHaveLength(6)
+    const rootRow = await db.conversationMessage.findUnique({ where: { id: root } })
+    expect(pausedRecords).toEqual([{
+      limit: 'depth',
+      turns: 6,
+      depth: 6,
+      max: 6,
+      workspaceId: seed.workspaceId,
+      conversationId: rootRow.conversationId,
+      threadRootId: root,
+    }])
     const mention = await db.conversationMention.findFirst({ where: { messageId: paused.id, targetUserId: seed.member } })
     expect(mention).toBeTruthy()
 
@@ -297,7 +315,29 @@ describe('chain limits', () => {
     const paused = await waitFor(async () => db.conversationMessage.findFirst({ where: { threadRootId: root, authorType: 'system' } }), 5000)
     await settle()
     expect(paused.blocks.chainPaused.limit).toBe('ping_pong')
+    expect(paused.blocks).toEqual({ chainPaused: { limit: 'ping_pong', depth: 3, turns: 3, max: 3 } })
     expect(invocations).toHaveLength(3)
+    expect(pausedRecords).toMatchObject([{ limit: 'ping_pong', turns: 3, depth: 3, max: 3, threadRootId: root }])
+  })
+
+  test('several targets skipped in one post pause the chain once and are counted once', async () => {
+    const id = await channel('multi-target')
+    scripts[analyst] = () => `${tag(planner)} next`
+    scripts[planner] = () => `${tag(implementer)} next`
+    let implementerTurns = 0
+    scripts[implementer] = () => (++implementerTurns === 2
+      ? `${tag(analyst)} and ${tag(planner)} next`
+      : `${tag(analyst)} next`)
+    const root = await post(seed.member, id, `${tag(analyst)} start`)
+
+    const paused = await waitFor(async () => db.conversationMessage.findFirst({ where: { threadRootId: root, authorType: 'system' } }), 5000)
+    await settle()
+    // The 7th hop was refused for both targets of that one post: one note, one count.
+    expect(invocations).toHaveLength(6)
+    expect(await db.conversationMessage.count({ where: { threadRootId: root, authorType: 'system' } })).toBe(1)
+    expect(paused.blocks).toEqual({ chainPaused: { limit: 'depth', depth: 6, turns: 6, max: 6 } })
+    expect(pausedRecords).toHaveLength(1)
+    expect(pausedRecords[0]).toMatchObject({ limit: 'depth', turns: 6, depth: 6, max: 6, threadRootId: root })
   })
 
   test('agents never wake themselves', async () => {

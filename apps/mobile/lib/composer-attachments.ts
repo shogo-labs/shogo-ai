@@ -29,14 +29,33 @@ import type { NativePickedAttachment } from "./native-attachment-picker";
 export const MAX_FILES = 10;
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
+/**
+ * Above this size a picked file keeps its `File`/`uri` and is uploaded at send
+ * time instead of being read into a base64 data URL in the composer.
+ */
+export const MAX_INLINE_PICK_BYTES = 8 * 1024 * 1024;
+
 export interface ComposerAttachedFile {
   id: string;
+  /**
+   * Inline bytes. Empty for an attachment picked without a base64 read — a
+   * large document or archive, whose bytes are uploaded straight from `uri`
+   * (native) or `file` (web) instead (SHO-213).
+   */
   dataUrl: string;
   name: string;
   type: string;
   size: number;
-  /** Voice notes: the recorder's local file on native, so the upload can skip base64. */
+  /** Native: the picked file on disk, so the upload can skip base64. */
   uri?: string;
+  /** Web: the picked `File`, so the upload can stream it. */
+  file?: File;
+  /**
+   * Web: `URL.createObjectURL(file)` for a pick that has no inline bytes.
+   * The chip and the optimistic bubble need something to paint before the
+   * upload replaces the local source with a workspace URL (SHO-213).
+   */
+  previewUrl?: string;
   /** Voice notes: clip length in ms. */
   durationMs?: number;
   /** Voice notes: waveform levels 0-100, space separated. */
@@ -83,6 +102,35 @@ export function estimateDataUrlSize(dataUrl: string): number {
     ? dataUrl.split(",").pop() || ""
     : dataUrl;
   return Math.max(0, Math.floor((base64.length * 3) / 4));
+}
+
+/**
+ * A URL a web pick can paint from without reading its bytes: an object URL over
+ * the same `File`. Null on native or where the API is missing.
+ */
+export function objectUrlFor(file: File | undefined): string | null {
+  if (!file) return null;
+  if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+    return null;
+  }
+  try {
+    return URL.createObjectURL(file);
+  } catch {
+    return null;
+  }
+}
+
+/** Drop an object URL once the attachment is gone; a no-op for other URLs. */
+export function releasePreviewUrl(url: string | undefined): void {
+  if (!url || !url.startsWith("blob:")) return;
+  if (typeof URL === "undefined" || typeof URL.revokeObjectURL !== "function") {
+    return;
+  }
+  try {
+    URL.revokeObjectURL(url);
+  } catch {
+    /* already revoked */
+  }
 }
 
 export function getFileIcon(fileType: string): ReactNode {
@@ -134,9 +182,11 @@ export function useComposerAttachments({
   );
 
   const handleRemoveFile = useCallback((fileId: string) => {
-    setPendingFiles((previous) =>
-      previous.filter((file) => file.id !== fileId),
-    );
+    setPendingFiles((previous) => {
+      const removed = previous.find((file) => file.id === fileId);
+      if (removed) releasePreviewUrl(removed.previewUrl);
+      return previous.filter((file) => file.id !== fileId);
+    });
     setFileError(null);
   }, []);
 
@@ -166,6 +216,7 @@ export function useComposerAttachments({
         name: file.name,
         type: file.type,
         size: file.size,
+        ...(file.uri ? { uri: file.uri } : {}),
       }));
       setPendingFiles((previous) => [
         ...previous,
@@ -200,15 +251,14 @@ export function useComposerAttachments({
           return;
         }
 
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl =
-            typeof reader.result === "string" ? reader.result : "";
-          if (!dataUrl) {
-            reportError(`Could not read "${file.name}".`);
-            finished();
-            return;
-          }
+        const push = (attachment: {
+          dataUrl: string;
+          name: string;
+          type: string;
+          size: number;
+          file?: File;
+          previewUrl?: string;
+        }) => {
           setPendingFiles((previous) => {
             if (previous.length >= maxFiles) {
               reportError(`Maximum ${maxFiles} files allowed`);
@@ -219,14 +269,41 @@ export function useComposerAttachments({
               ...previous,
               {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                dataUrl,
-                name: file.name,
-                type: file.type,
-                size: file.size,
+                ...attachment,
               },
             ];
           });
           finished();
+        };
+
+        // A large file (or an archive, which has no size limit) is uploaded
+        // straight from the `File` at send time — reading it into a base64 data
+        // URL here is what made big attachments time out (SHO-213). It still
+        // needs a URL to paint from, so the chip and the optimistic bubble use
+        // an object URL over the same `File` (no bytes copied).
+        if (isFileSizeExempt(file) || file.size > MAX_INLINE_PICK_BYTES) {
+          const previewUrl = objectUrlFor(file);
+          push({
+            dataUrl: "",
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            file,
+            ...(previewUrl ? { previewUrl } : {}),
+          });
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl =
+            typeof reader.result === "string" ? reader.result : "";
+          if (!dataUrl) {
+            reportError(`Could not read "${file.name}".`);
+            finished();
+            return;
+          }
+          push({ dataUrl, name: file.name, type: file.type, size: file.size });
         };
         reader.onerror = () => {
           reportError(`Could not read "${file.name}".`);
@@ -249,10 +326,11 @@ export function useComposerAttachments({
       type: string;
       size: number;
       uri?: string;
+      file?: File;
       durationMs?: number;
       peaks?: string;
     }) => {
-      if (!attachment.dataUrl && !attachment.uri) return;
+      if (!attachment.dataUrl && !attachment.uri && !attachment.file) return;
       if (attachment.size > maxFileSizeBytes) {
         reportError(
           `File "${attachment.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)}MB limit`,
@@ -335,6 +413,9 @@ export function useComposerAttachments({
   );
 
   const resetAttachments = useCallback(() => {
+    // Preview object URLs are deliberately not revoked here: this runs on
+    // submit, and the optimistic bubble still paints from the same URL until
+    // the real message (with its workspace URL) replaces it.
     setPendingFiles([]);
     setFileError(null);
     setIsProcessingFiles(false);

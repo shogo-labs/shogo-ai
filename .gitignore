@@ -201,6 +201,10 @@ load-tests/venv/
 *.p12
 *.pfx
 shogo.db
+# SQLite's write-ahead log and shared-memory sidecars: a local API run leaves
+# these beside shogo.db, and they are not part of the database file to commit.
+shogo.db-wal
+shogo.db-shm
 
 # SWE-bench data and repo caches
 .swe-bench/

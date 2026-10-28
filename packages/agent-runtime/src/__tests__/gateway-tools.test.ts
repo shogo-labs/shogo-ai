@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync } from 'fs'
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync, existsSync } from 'fs'
 import { join } from 'path'
+import { tmpdir } from 'os'
 import { createTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, hostToContainer, containerToHost, type ToolContext } from '../gateway-tools'
+import { PermissionEngine } from '../permission-engine'
 import { FileStateCache } from '../file-state-cache'
+import { TaskRegistry } from '../task-registry'
+import { taskOutputDir } from '../task-output'
 import { MCPClientManager } from '../mcp-client'
 import { MockChannel } from './helpers/mock-channel'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
@@ -72,11 +76,11 @@ describe('gateway-tools', () => {
       expect(result.exitCode).toBe(0)
     })
 
-    test('blocks destructive commands', async () => {
-      // Lightweight isBlockedCommand only catches a recursive-star remove; the
-      // PermissionEngine has broader patterns but isn't active in this test context.
-      const result = await exec(createCtx(), 'exec', { command: 'cd /tmp && ' + ['r','m',' -','r','f',' *'].join('') })
-      expect(result.error).toContain('Blocked command')
+    test('does not block a recursive-star remove', async () => {
+      writeFileSync(join(TEST_DIR, 'stale.log'), 'x')
+      const result = await exec(createCtx(), 'exec', { command: 'rm -rf *.log' })
+      expect(String(result.error ?? '')).not.toContain('Blocked command')
+      expect(existsSync(join(TEST_DIR, 'stale.log'))).toBe(false)
     })
 
     test('returns stderr on failure', async () => {
@@ -87,6 +91,76 @@ describe('gateway-tools', () => {
     test('runs in workspace directory', async () => {
       const result = await exec(createCtx(), 'exec', { command: 'pwd' })
       expect(result.stdout).toContain('test-gateway-tools')
+    })
+
+    test('does not refuse a command that only mentions gh pr create', async () => {
+      // The old guard matched the raw command string, so `echo`/`rg`/a heredoc
+      // that merely contained the phrase was refused as if it were the command.
+      const result = await exec(createCtx(), 'exec', { command: 'echo "gh pr create --title x"' })
+      expect(result.error).toBeUndefined()
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe('gh pr create --title x')
+    })
+
+    test('runs gh pr create and reports gh own output and argv', async () => {
+      // The test that would have caught the 52 prod refusals: a fake `gh` on
+      // PATH, so nothing leaves the machine and no token is needed.
+      const binDir = join(TEST_DIR, 'bin')
+      mkdirSync(binDir, { recursive: true })
+      const shim = join(binDir, 'gh')
+      writeFileSync(
+        shim,
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$(dirname "$0")/gh-argv.txt"\necho "https://github.com/o/r/pull/7"\nexit 0\n',
+        { mode: 0o755 },
+      )
+
+      const command = 'gh pr create --repo o/r --base main --head b --title t --body-file .tmp/pr-body.md'
+      const result = await exec(createCtx(), 'exec', {
+        command: `PATH="${binDir}:$PATH" ${command}`,
+      })
+
+      expect(result.error).toBeUndefined()
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('https://github.com/o/r/pull/7')
+      expect(readFileSync(join(binDir, 'gh-argv.txt'), 'utf8').trim().split('\n')).toEqual([
+        'pr',
+        'create',
+        '--repo',
+        'o/r',
+        '--base',
+        'main',
+        '--head',
+        'b',
+        '--title',
+        't',
+        '--body-file',
+        '.tmp/pr-body.md',
+      ])
+    })
+  })
+
+  describe('github tool guidance', () => {
+    test('the connect description teaches gh pr create and does not require the tool', () => {
+      const connect = getTool(createCtx(), 'connect')
+      expect(connect.description).toContain('gh pr create')
+      expect(connect.description).toContain('optional alternative')
+      expect(connect.description).not.toContain('Use the `github_create_pr` tool to create a PR')
+    })
+
+    test('github_merge_pr does not claim gh pr merge is blocked', () => {
+      const merge = getTool(createCtx(), 'github_merge_pr')
+      expect(merge.description).not.toContain('that is blocked')
+    })
+
+    test('github_create_pr names the gh command when the App path is unavailable', async () => {
+      // No API configured in this test context, so the API call fails before the
+      // no-connection branch: the passthrough error must still name the way out.
+      const result = await exec(createCtx(), 'github_create_pr', {
+        title: 't',
+        head: 'sho-1-test',
+      })
+      expect(result.error).toContain('gh pr create')
+      expect(result.error).toContain('--head sho-1-test')
     })
   })
 
@@ -109,6 +183,32 @@ describe('gateway-tools', () => {
         expect(true).toBe(false)
       } catch (err: any) {
         expect(err.message).toContain('outside workspace')
+      }
+    })
+
+    test('a folder-linked desktop runtime in full_autonomy reads a path outside the roots (SHO-209)', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'sho-209-outside-'))
+      const outsideFile = join(outsideDir, 'note.txt')
+      writeFileSync(outsideFile, 'outside the project')
+
+      const oldLocal = process.env.SHOGO_LOCAL_MODE
+      const oldLinked = process.env.LINKED_FOLDERS
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      process.env.LINKED_FOLDERS = JSON.stringify([TEST_DIR])
+      try {
+        const engine = (mode: 'full_autonomy' | 'balanced') =>
+          createCtx({ permissionEngine: new PermissionEngine({ workspaceDir: TEST_DIR, preference: { mode } }) })
+
+        const allowed = await exec(engine('full_autonomy'), 'read_file', { path: outsideFile })
+        expect(allowed.content).toBe('outside the project')
+
+        await expect(exec(engine('balanced'), 'read_file', { path: outsideFile })).rejects.toThrow(/allowed folders/i)
+      } finally {
+        if (oldLocal === undefined) delete process.env.SHOGO_LOCAL_MODE
+        else process.env.SHOGO_LOCAL_MODE = oldLocal
+        if (oldLinked === undefined) delete process.env.LINKED_FOLDERS
+        else process.env.LINKED_FOLDERS = oldLinked
+        rmSync(outsideDir, { recursive: true, force: true })
       }
     })
 
@@ -452,12 +552,13 @@ describe('gateway-tools', () => {
       // opts in (`filterDisabledCapabilityTools`). Plus the background task
       // tools: wait, task_list, task_cancel. `terminal_exec` is only
       // registered when the desktop terminal bridge (ctx.terminalExec) is wired.
-      // Media tools add list_media_models, generate_image and generate_video
-      // (registered, then hidden unless image/video generation is on).
+      // Media tools add list_media_models, generate_image, generate_video and
+      // generate_music (registered, then hidden unless that kind is on).
       // The 3D tools add generate_3d_model and edit_3d_model (registered, then
       // hidden unless threeDGenEnabled).
       // `chat_handoff` (SHO-52) adds one more: handing a turn to another chat.
-      expect(createTools(createCtx())).toHaveLength(76)
+      // `list_models` adds one: the workspace's chat models for project_configure.
+      expect(createTools(createCtx())).toHaveLength(78)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
@@ -614,9 +715,9 @@ describe('gateway-tools', () => {
     }
 
     // Reuse the same ctx across calls within a single test to verify persistence
-    async function execStateful(ctx: ToolContext, command: string) {
+    async function execStateful(ctx: ToolContext, command: string, extra: Record<string, any> = {}) {
       const tool = getTool(ctx, 'exec')
-      const result = await tool.execute('test-call', { command })
+      const result = await tool.execute('test-call', { command, ...extra })
       return result.details
     }
 
@@ -828,7 +929,10 @@ describe('gateway-tools', () => {
     test('command producing massive stdout still captures cwd', async () => {
       mkdirSync(join(TEST_DIR, 'bigout'), { recursive: true })
       const ctx = createStatefulCtx()
-      const result = await execStateful(ctx, 'cd bigout && yes | head -10000')
+      // Not `yes | head`: with pipefail on, `yes` is SIGPIPE'd by `head` and the
+      // pipeline reports 141 (locked in exec-pipefail.test.ts). This test is
+      // about cwd survival under a flood of stdout, not pipeline status.
+      const result = await execStateful(ctx, 'cd bigout && seq 1 10000')
       expect(result.cwd).toBe(join(REAL_TEST_DIR, 'bigout'))
       expect(result.exitCode).toBe(0)
     })
@@ -875,6 +979,31 @@ describe('gateway-tools', () => {
 
     // --- Temp file hygiene ---
 
+    /** Every cwd marker still on disk, at the workspace root and in `.shogo/exec-cwd`. */
+    function leftoverMarkers(): string[] {
+      const root = readdirSync(TEST_DIR).filter((f) => f.startsWith('.shogo-cwd-'))
+      let nested: string[] = []
+      try {
+        nested = readdirSync(join(TEST_DIR, '.shogo', 'exec-cwd')).filter((f) => f.startsWith('.shogo-cwd-'))
+      } catch {}
+      return [...root, ...nested]
+    }
+
+    /** Let a task reach a terminal status WITHOUT draining its result (no `wait`). */
+    async function settle(registry: TaskRegistry, taskId: string): Promise<void> {
+      const startedAt = Date.now()
+      while (registry.get(taskId)?.status === 'running') {
+        if (Date.now() - startedAt > 10_000) throw new Error(`task ${taskId} did not finish`)
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      // The exit-time capture runs on `handle.done`, alongside the settle.
+      await new Promise((r) => setTimeout(r, 50))
+    }
+
+    function newRegistry(): TaskRegistry {
+      return new TaskRegistry({ outputDir: taskOutputDir(TEST_DIR, 'chat-1'), workspaceDir: TEST_DIR })
+    }
+
     test('temp file cleaned up on success', async () => {
       const ctx = createStatefulCtx()
       await execStateful(ctx, 'echo clean')
@@ -887,6 +1016,69 @@ describe('gateway-tools', () => {
       await execStateful(ctx, 'false')
       const remaining = readdirSync(TEST_DIR).filter(f => f.startsWith('.shogo-cwd-'))
       expect(remaining).toHaveLength(0)
+    })
+
+    test('the marker lives under .shogo/exec-cwd, not the workspace root', async () => {
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'true')
+      expect(existsSync(join(TEST_DIR, '.shogo', 'exec-cwd'))).toBe(true)
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('a background command nobody waits on leaves no marker', async () => {
+      const registry = newRegistry()
+      const ctx = createStatefulCtx({ commandRegistry: registry })
+      const started = await execStateful(ctx, 'sleep 0.2', { background: true })
+      expect(started.status).toBe('running')
+      await settle(registry, started.task_id)
+      expect(registry.get(started.task_id)?.status).toBe('completed')
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('a command past its soft timeout leaves no marker', async () => {
+      const registry = newRegistry()
+      const ctx = createStatefulCtx({ commandRegistry: registry })
+      const started = await execStateful(ctx, 'sleep 0.5', { timeout: 50 })
+      expect(started.status).toBe('running')
+      await settle(registry, started.task_id)
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('a cancelled command leaves no marker', async () => {
+      const registry = newRegistry()
+      const ctx = createStatefulCtx({ commandRegistry: registry })
+      const started = await execStateful(ctx, 'sleep 30', { background: true })
+      await exec(ctx, 'task_cancel', { task_id: started.task_id })
+      await settle(registry, started.task_id)
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('wait still updates the shell cwd from the task final cwd', async () => {
+      mkdirSync(join(TEST_DIR, 'bgdir'), { recursive: true })
+      const registry = newRegistry()
+      const shell = { cwd: REAL_TEST_DIR }
+      const ctx = createCtx({
+        sessionId: 'test-session',
+        commandRegistry: registry,
+        shellState: { getCwd: () => shell.cwd, setCwd: (cwd: string) => { shell.cwd = cwd } },
+      })
+      const started = await exec(ctx, 'exec', { command: 'cd bgdir', background: true })
+      await exec(ctx, 'wait', { task_ids: [started.task_id], timeout_ms: 10_000 })
+      expect(shell.cwd).toBe(join(REAL_TEST_DIR, 'bgdir'))
+      expect(leftoverMarkers()).toEqual([])
+    })
+
+    test('a background exec adds nothing to a folder-linked repo working tree', async () => {
+      const registry = newRegistry()
+      const ctx = createCtx({ sessionId: 'test-session', commandRegistry: registry })
+      // A folder-linked project gets no managed exclude block, so the repo's
+      // own `.gitignore` covers `.shogo/` (as this project's does). What must
+      // not appear is a marker: before SHO-139 each exec left one here.
+      await exec(ctx, 'exec', { command: 'git init -q . && printf ".shogo/\\n" > .gitignore' })
+      const started = await exec(ctx, 'exec', { command: 'sleep 0.2', background: true })
+      await settle(registry, started.task_id)
+      const status = await exec(ctx, 'exec', { command: 'git status --porcelain --untracked-files=all' })
+      expect(status.stdout.split('\n')).toEqual(['?? .gitignore'])
     })
   })
 

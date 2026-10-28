@@ -48,6 +48,12 @@ export interface CreateSessionOptions {
   rows?: number
   env?: Record<string, string | undefined>
   cmd?: string[]
+  /**
+   * Project this terminal belongs to. Dev-server URL detection is keyed by it
+   * so one project's banner can never surface as another's in a shared
+   * workspace runtime (SHO-200 S6).
+   */
+  projectId?: string | null
 }
 
 interface SessionRecord {
@@ -143,7 +149,7 @@ export class PtySessionManager {
     // never block, transform, or buffer the data path for the WS handler
     // — `onData` listeners run independently.
     session.onData(({ bytes }) => {
-      try { ingestDetectedUrlChunk(id, bytes) } catch {}
+      try { ingestDetectedUrlChunk(id, bytes, opts.projectId ?? null) } catch {}
     })
 
     return rec

@@ -712,6 +712,45 @@ export async function getPublishState(projectId: string): Promise<CheckpointCall
   })
 }
 
+/**
+ * Tell the workspace's user that something needs them (SHO-180). Goes through
+ * the same internal route as `notify_user`, which resolves the recipient
+ * (the workspace owner) server-side — a runtime has no user id to name.
+ *
+ * Best-effort by design: this reports a durability problem, so it must never
+ * throw into the durability path that reported it.
+ */
+export async function postWorkspaceNotification(input: {
+  workspaceId: string
+  title: string
+  body: string
+  actionUrl?: string
+}): Promise<boolean> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl || !input.workspaceId) return false
+  try {
+    const res = await fetch(`${apiUrl}/api/internal/reminders/notify`, {
+      method: 'POST',
+      headers: getInternalHeaders(),
+      body: JSON.stringify({
+        workspaceId: input.workspaceId,
+        title: input.title,
+        body: input.body,
+        ...(input.actionUrl ? { actionUrl: input.actionUrl } : {}),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) {
+      console.warn(`[internal-api] notify returned HTTP ${res.status}`)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    console.warn(`[internal-api] notify failed: ${err?.message ?? err}`)
+    return false
+  }
+}
+
 export async function publishProject(
   projectId: string,
   opts: PublishOptions,
@@ -1454,6 +1493,14 @@ export interface RunningAgent {
   startedAt: string
   preview: string
   canStop: boolean
+  /**
+   * `running` = working now, `waiting` = parked on a tool (a `wait`, a `exec_wait`,
+   * a subagent), holding no slot, `queued` = in line for a slot and not started.
+   */
+  state?: 'queued' | 'running' | 'waiting'
+  /** Place in line, for a queued run. */
+  position?: number | null
+  queuedAt?: string | null
 }
 
 /** A workspace-wide pause, as `agent_run_stop`/`agent_runs_list` report it. */
@@ -1684,6 +1731,11 @@ export interface MemberActivityQuery {
   since?: string
   until?: string
   timezone?: string
+  /** summary (default) | messages | board */
+  detail?: 'summary' | 'messages' | 'board'
+  audience?: 'person' | 'agent' | 'mixed' | 'channel'
+  cursor?: string
+  limit?: number
 }
 
 /** Admin-only summary of what one teammate did in a window; the API enforces who may ask. */
@@ -1696,9 +1748,15 @@ export async function getMemberActivity(
   if (query.since) params.set('since', query.since)
   if (query.until) params.set('until', query.until)
   if (query.timezone) params.set('tz', query.timezone)
-  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/member-activity?${params}`, {
+  if (query.audience) params.set('audience', query.audience)
+  if (query.cursor) params.set('cursor', query.cursor)
+  if (query.limit) params.set('limit', String(query.limit))
+  // `messages` is the records route; `board` narrows the summary on the same one.
+  const path = query.detail === 'messages' ? 'member-activity/messages' : 'member-activity'
+  if (query.detail === 'board') params.set('detail', 'board')
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/${path}?${params}`, {
     method: 'GET',
-    parse: (j) => (j?.activity ?? {}) as Record<string, unknown>,
+    parse: (j) => (query.detail === 'messages' ? j : (j?.activity ?? {})) as Record<string, unknown>,
   })
 }
 
@@ -2302,6 +2360,8 @@ export interface AgentCallResult {
   sessionId?: string
   /** The project chat (API ChatSession id) that records this call, when persisted. */
   chatSessionId?: string
+  /** Present when the callee reports why it could not run or reply. */
+  error?: { code?: string; message: string }
 }
 
 interface TrackedAgentCall {
@@ -2379,7 +2439,23 @@ export async function callProjectAgent(
   })
   if (!started.ok || !started.data) return started
   // An API without tracking already started the turn untracked; its reply lands in the project chat.
-  if (started.data.tracked !== true) return { ...started, data: { ...started.data, runId } }
+  if (started.data.tracked !== true) {
+    // `202 accepted` means the request was taken for processing, not that a turn
+    // ran (RFC 9110 §15.3.3) — and with no tracking we cannot poll for a reply,
+    // so reporting this as success hands the caller an empty answer.
+    if (!started.data.reply) {
+      const chat = started.data.chatSessionId ? ` in project chat ${started.data.chatSessionId}` : ''
+      return {
+        ok: false,
+        status: 502,
+        code: 'call_not_followed',
+        error:
+          'The call was accepted but not followed (this API cannot track calls), so its reply cannot be read ' +
+          `here. Read it${chat}, or call again without \`wait\` once the target API supports tracked calls.`,
+      }
+    }
+    return { ...started, data: { ...started.data, runId } }
+  }
 
   const deadline = Date.now() + timeoutMs
   let failures = 0
@@ -2545,6 +2621,24 @@ export async function notifyTaskCompletions(
   return lifecycleFetch(`${tasksPath}/notify`, {
     method: 'POST',
     body: JSON.stringify({ chatSessionId, tasks }),
+    timeoutMs: 10_000,
+  })
+}
+
+/**
+ * Tell the API a turn was interrupted mid-work, so it can say so in the
+ * transcript and (first attempt only) queue the resumed turn (SHO-121).
+ *
+ * The note and the resume prompt are built API-side from `toolName`, so the
+ * cloud and desktop paths cannot drift apart.
+ */
+export async function postInterruptedResume(
+  chatSessionId: string,
+  input: { toolName?: string | null; resume?: boolean },
+): Promise<CheckpointCallResult<{ noted: boolean; queued: boolean }>> {
+  return lifecycleFetch(`/api/internal/chat/${encodeURIComponent(chatSessionId)}/resume`, {
+    method: 'POST',
+    body: JSON.stringify(input),
     timeoutMs: 10_000,
   })
 }

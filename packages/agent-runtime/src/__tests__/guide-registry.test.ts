@@ -70,10 +70,11 @@ describe('buildCapabilitiesIndex flags', () => {
     expect(idx).toContain('- **integrations**')
     expect(idx).toContain('- **channel**')
     expect(idx).toContain('- **media**')
-    expect(idx).toContain('- **devops**')
-    // subagent line still advertises the delegated types — media is not one
-    // of them: the project's own agent calls the media tools.
-    expect(idx).toContain('integration, channel, devops')
+    expect(idx).toContain('- **heartbeat**')
+    // subagent line still advertises the delegated types — media and devops
+    // are not among them: the main agent calls those tools directly.
+    expect(idx).toContain('integration, channel, fork mode')
+    expect(idx).not.toMatch(/devops/i)
   })
 
   test('the media line calls the tools directly and never delegates', () => {
@@ -123,10 +124,10 @@ describe('buildCapabilitiesIndex flags', () => {
     expect(idx).toContain('- **channel**')
   })
 
-  test('media + devops false drop their respective lines', () => {
-    const idx = buildCapabilitiesIndex({ media: false, devops: false })
+  test('media + heartbeat false drop their respective lines', () => {
+    const idx = buildCapabilitiesIndex({ media: false, heartbeat: false })
     expect(idx).not.toContain('- **media**')
-    expect(idx).not.toContain('- **devops**')
+    expect(idx).not.toContain('- **heartbeat**')
     expect(idx).toContain('- **channel**')
     expect(idx).toContain('- **integrations**')
   })
@@ -136,9 +137,9 @@ describe('buildCapabilitiesIndex flags', () => {
       integrations: false,
       channels: false,
       media: false,
-      devops: false,
+      heartbeat: false,
     })
-    for (const line of ['integrations', 'channel', 'media', 'devops']) {
+    for (const line of ['integrations', 'channel', 'media', 'heartbeat']) {
       expect(idx).not.toContain(`- **${line}**`)
     }
     for (const line of ['subagent', 'browser', 'memory', 'skill-matching', 'self-evolution', 'tool-planning', 'personality', 'constraint-awareness']) {

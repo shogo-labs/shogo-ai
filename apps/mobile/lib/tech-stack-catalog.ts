@@ -91,3 +91,45 @@ export function mergeTechStacks(
 ): TechStackSummary[] {
   return fetched && fetched.length > 0 ? fetched : fallback
 }
+
+/**
+ * Last list `GET /api/tech-stacks` returned, shared by every picker on the
+ * page. The stack chip is part of the builder's first frame, so it paints from
+ * this (or the fallback catalog) and the request only refreshes labels.
+ */
+let cached: TechStackSummary[] | null = null
+let request: Promise<TechStackSummary[]> | null = null
+
+/** What a picker paints before the request answers, and if it never does. */
+export function cachedTechStacks(): TechStackSummary[] {
+  return cached ?? FALLBACK_TECH_STACKS
+}
+
+/**
+ * One request per page: the toolbar chip and the plus-sheet's list mount
+ * together, and a second visit must not refetch before showing the chip.
+ * A failed request clears itself so the next mount can retry.
+ */
+export function loadTechStacks(
+  fetch: () => Promise<TechStackSummary[]>,
+): Promise<TechStackSummary[]> {
+  if (!request) {
+    request = fetch()
+      .then((fetched) => {
+        cached = mergeTechStacks(fetched)
+        return cached
+      })
+      .catch((error) => {
+        request = null
+        console.error('[tech-stacks] Failed to fetch the catalog:', error)
+        return cachedTechStacks()
+      })
+  }
+  return request
+}
+
+/** Tests drop the cache so a run starts from the fallback again. */
+export function resetTechStackCache(): void {
+  cached = null
+  request = null
+}

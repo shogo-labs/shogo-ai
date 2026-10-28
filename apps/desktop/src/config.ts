@@ -5,7 +5,11 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
-import { computeDefaultRuntimeMemoryMB } from './runtime-memory'
+import {
+  computeDefaultRuntimeMemoryMB,
+  normalizeExecMemoryMB,
+  type ExecMemorySetting,
+} from './runtime-memory'
 import { DEFAULT_ISLAND_SHORTCUT, DEFAULT_ISLAND_SOUND_VOLUME, type IslandConfig } from './island-protocol'
 
 import { DEFAULT_DICTATION_CONFIG, normalizeDictationConfig, type DictationConfig } from './dictation-protocol'
@@ -15,8 +19,14 @@ export type { IslandConfig, DictationConfig }
 export interface HostRuntimeConfig {
   /** Per-project RAM ceiling in MB for the host-spawned agent-runtime process
    *  group (bun + vite + preview sidecars). Enforced via cgroup v2 on Linux, a
-   *  Job Object on Windows, and an RSS watchdog on macOS. */
+   *  Job Object on Windows, and an RSS watchdog on macOS. This is the runtime's
+   *  leak ceiling — it does NOT bound the commands the agent runs. */
   memoryMB: number
+  /** MB the agent's `exec` commands may use before the guard stops them, or
+   *  `'auto'` to size it from this machine's RAM (see
+   *  `computeDefaultExecMemoryMB`). Published to the runtime live through
+   *  `host-limits.json`, so a change here lands without a restart. */
+  execMemoryMB: ExecMemorySetting
   /** CPU ceiling as a percentage of a single core (100 = one full core). Only
    *  enforced where the OS supports it (cgroup CPUQuota on Linux). 0 = no cap. */
   cpuPercent: number
@@ -60,6 +70,9 @@ export interface DesktopConfig {
   deviceId: string
   /** Defaults to 'stable'. User-controlled via Settings → Updates. */
   updateChannel: UpdateChannel
+  /** True once the user has been told — and has dismissed — that macOS
+   *  Spotlight keeps indexing the workspaces dir. See `spotlight-hint.ts`. */
+  spotlightHintDismissed: boolean
 }
 
 /** Default Shogo Cloud endpoint used when SHOGO_CLOUD_URL is not set. */
@@ -81,6 +94,7 @@ function getDefaultHostRuntimeConfig(): HostRuntimeConfig {
   const totalMemMB = Math.round(os.totalmem() / 1024 / 1024)
   return {
     memoryMB: computeDefaultRuntimeMemoryMB(totalMemMB),
+    execMemoryMB: 'auto',
     cpuPercent: 0,  // 0 = no CPU cap
   }
 }
@@ -111,6 +125,7 @@ const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   island: { ...DEFAULT_ISLAND_CONFIG },
   dictation: { ...DEFAULT_DICTATION_CONFIG },
   updateChannel: 'stable',
+  spotlightHintDismissed: false,
 }
 
 function getConfigPath(): string {
@@ -139,6 +154,7 @@ export function readConfig(): DesktopConfig {
       ...(typeof parsed.hostRuntime === 'object' && parsed.hostRuntime !== null
         ? parsed.hostRuntime
         : {}),
+      execMemoryMB: normalizeExecMemoryMB(parsed.hostRuntime?.execMemoryMB),
     },
     meetings: {
       ...DEFAULT_MEETING_CONFIG,
@@ -176,6 +192,7 @@ export function readConfig(): DesktopConfig {
     dictation: normalizeDictationConfig(parsed.dictation),
     deviceId: existingDeviceId || generateDeviceId(),
     updateChannel: parsed.updateChannel === 'beta' ? 'beta' : 'stable',
+    spotlightHintDismissed: parsed.spotlightHintDismissed === true,
   }
 
   // Persist the freshly generated deviceId so all subsequent reads are stable.

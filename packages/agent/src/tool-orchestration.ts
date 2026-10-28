@@ -18,6 +18,11 @@
  */
 
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
+import {
+  emptyArgsMessage,
+  findEmptyFromNames,
+  requiredStringProps,
+} from './tool-arg-guard'
 
 // ============================================================================
 // Concurrency-safe tool registry
@@ -199,6 +204,11 @@ export interface OrchestrationState {
 
 /**
  * Wrap a single tool with orchestration (semaphore + optional write mutex).
+ *
+ * The wrapped `execute` also enforces the empty-argument guard: a required
+ * string argument that is missing or blank rejects the call before it runs.
+ * The required-string list comes from the tool's own schema, so every tool is
+ * covered without tool-specific code.
  */
 function wrapSingleTool(
   tool: AgentTool,
@@ -206,6 +216,12 @@ function wrapSingleTool(
   writeMutex: WriteMutex,
 ): AgentTool {
   const safe = isConcurrencySafe(tool.name)
+  const requiredStrings = requiredStringProps(tool.parameters)
+
+  const assertRequiredArgsPresent = (params: unknown): void => {
+    const empty = findEmptyFromNames(requiredStrings, params)
+    if (empty.length > 0) throw new Error(emptyArgsMessage(tool.name, empty))
+  }
 
   if (safe) {
     return {
@@ -216,6 +232,7 @@ function wrapSingleTool(
         signal?: AbortSignal,
         onUpdate?: any,
       ): Promise<AgentToolResult<any>> => {
+        assertRequiredArgsPresent(params)
         await semaphore.acquire()
         try {
           return await tool.execute(toolCallId, params, signal, onUpdate)
@@ -234,6 +251,7 @@ function wrapSingleTool(
       signal?: AbortSignal,
       onUpdate?: any,
     ): Promise<AgentToolResult<any>> => {
+      assertRequiredArgsPresent(params)
       await semaphore.acquire()
       await writeMutex.acquire()
       try {

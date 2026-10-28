@@ -11,7 +11,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import {
   ingestChunk,
   getDetectedForSession,
-  getMostRecentDetection,
+  getMostRecentDetectionForProject,
   onDetectedUrl,
   _resetForTests,
 } from '../detected-urls'
@@ -74,7 +74,7 @@ describe('detected-urls', () => {
   test('updates most-recent across sessions', () => {
     ingestChunk('a', 'Local: http://localhost:5173/\n')
     ingestChunk('b', 'Local: http://localhost:3000/\n')
-    expect(getMostRecentDetection()?.url).toBe('http://localhost:3000')
+    expect(getMostRecentDetectionForProject(null)?.url).toBe('http://localhost:3000')
     expect(getDetectedForSession('a')?.url).toBe('http://localhost:5173')
     expect(getDetectedForSession('b')?.url).toBe('http://localhost:3000')
   })
@@ -95,7 +95,7 @@ describe('detected-urls', () => {
   })
 })
 
-import { listAllDetections, clearDetection } from '../detected-urls'
+import { listDetectionsForProject, clearDetection } from '../detected-urls'
 
 describe('detected-urls gap coverage', () => {
   afterEach(() => _resetForTests())
@@ -109,10 +109,10 @@ describe('detected-urls gap coverage', () => {
     expect(ingestChunk('overflow', filler)).toBeNull()
   })
 
-  test('DA:172 — listAllDetections returns sorted detections', () => {
+  test('DA:172 — listDetectionsForProject returns sorted detections', () => {
     ingestChunk('a', 'Local: http://localhost:3001')
     ingestChunk('b', 'Local: http://localhost:3002')
-    const all = listAllDetections()
+    const all = listDetectionsForProject(null)
     expect(all.length).toBe(2)
     expect(all[0].sessionId).toBe('b')
     expect(all[1].sessionId).toBe('a')
@@ -123,19 +123,19 @@ describe('detected-urls gap coverage', () => {
     ingestChunk('y', 'Local: http://localhost:4002')
     clearDetection('x')
     expect(getDetectedForSession('x')).toBeNull()
-    expect(getMostRecentDetection()?.sessionId).toBe('y')
+    expect(getMostRecentDetectionForProject(null)?.sessionId).toBe('y')
   })
 
   test('DA:179-181 — clearDetection updates lastAny when it matches', () => {
     ingestChunk('p', 'Local: http://localhost:5001')
     ingestChunk('q', 'Local: http://localhost:5002')
     clearDetection('q')
-    expect(getMostRecentDetection()?.sessionId).toBe('p')
+    expect(getMostRecentDetectionForProject(null)?.sessionId).toBe('p')
   })
 
   test('clearDetection sets lastAny to null when no sessions remain', () => {
     ingestChunk('only', 'Local: http://localhost:6001')
     clearDetection('only')
-    expect(getMostRecentDetection()).toBeNull()
+    expect(getMostRecentDetectionForProject(null)).toBeNull()
   })
 })

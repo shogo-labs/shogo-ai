@@ -262,11 +262,12 @@ describe('SHO-68 E2E: pod → hosted TTS', () => {
     const res = await postApiTts({ text: 'Fallback check.', modelId: 'eleven_v4' })
 
     expect(res.status).toBe(200)
-    expect(res.headers.get('x-tts-model-used')).toBe('eleven_v4_turbo')
+    expect(res.headers.get('x-tts-model-used')).toBe('eleven_flash_v2_5')
     expect(res.headers.get('x-tts-model-requested')).toBe('eleven_v4')
     expect(res.headers.get('warning')).toContain('199')
-    // Tried the requested model first, then the fallback.
-    expect(elCalls.map((c) => c.body.model_id)).toEqual(['eleven_v4', 'eleven_v4_turbo'])
+    // Tried the requested model first, then the last-resort fallback (SHO-73:
+    // flash v2.5, not the convai v4-turbo target — a BYO plan may have no v4).
+    expect(elCalls.map((c) => c.body.model_id)).toEqual(['eleven_v4', 'eleven_flash_v2_5'])
   })
 
   test('a 401 from ElevenLabs is surfaced, never retried on another model', async () => {

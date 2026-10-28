@@ -9,6 +9,10 @@
  *   <WORKSPACES_DIR>/.workspace-roots/<id>    this workspace's merged runtime root
  *   <WORKSPACES_DIR>/.workspace-roots/proj-<anchorProjectId>
  *                                             the same thing, for a project-anchored runtime
+ *   <WORKSPACES_DIR>/.shogo-state/<projectId>/tasks
+ *                                             a project's durable task logs (SHO-151), written
+ *                                             by the runtime from inside the VM — app-owned for
+ *                                             every project, folder-linked ones included
  *
  * A *folder-linked* project (`workingMode: 'external'`) has no app-owned tree:
  * its content is the user's own folder (`ProjectFolder.path`), which is only
@@ -31,6 +35,24 @@ const SIZE_WALK_BUDGET_MS = 2_000
 
 export function resolveWorkspacesDir(explicit?: string): string {
   return resolve(explicit || process.env.WORKSPACES_DIR || join(PROJECT_ROOT, 'workspaces'))
+}
+
+/**
+ * Where a project's durable task logs live on host-backed storage.
+ *
+ * In a 9p-mounted VM the agent runtime keeps task logs outside the project tree
+ * so they survive the VM that wrote them, at
+ * `<host-workspaces>/.shogo-state/<projectId>/tasks`
+ * (`packages/agent-runtime/src/task-log-durability.ts`,
+ * `durableTaskLogRoot`). `<host-workspaces>` is this same `workspacesDir` shared
+ * into the guest, so on the host the directory to sweep is this one — the two
+ * packages cannot share code, so keep the pair in step by hand.
+ *
+ * `.shogo-state` itself is deliberately left in place when it empties: it is
+ * app-owned scaffolding a concurrent assign writes into.
+ */
+export function projectTaskStateDir(workspacesDir: string, projectId: string): string {
+  return join(workspacesDir, '.shogo-state', projectId)
 }
 
 export interface InventoryProject {
@@ -174,6 +196,17 @@ export async function workspaceFileInventory(
     const primary = project.projectFolders?.find((f) => f.isPrimary) ?? project.projectFolders?.[0]
     const projectDir = join(workspacesDir, project.id)
     const path = folderLinked ? null : projectDir
+
+    // Task logs are app-owned whatever the working mode: they live outside the
+    // project tree and outside the user's folder, and nothing else can ever
+    // read them once the project is gone.
+    const stateDir = projectTaskStateDir(workspacesDir, project.id)
+    if (existsSync(stateDir)) {
+      removedDirs.push(stateDir)
+      const stateSize = directorySize(stateDir, deadline)
+      if (stateSize === null || totalBytes === null) totalBytes = null
+      else totalBytes += stateSize
+    }
 
     if (path && existsSync(path)) {
       removedDirs.push(path)

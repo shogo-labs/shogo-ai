@@ -146,7 +146,7 @@ export function ProjectTopBar({
   onCanvasOpenInNewTab,
   onCanvasPrewarm,
   onOpenCodeWorkbench,
-  onOpenSidebar,
+  onBack,
   idePrimarySideBarPosition = 'left',
   onIdePrimarySideBarPositionChange,
   ideEmbed = false,
@@ -363,7 +363,7 @@ export function ProjectTopBar({
         <NativePhoneHeader
           projectName={projectName}
           projectMenu={projectMenu}
-          onOpenSidebar={onOpenSidebar}
+          onBack={onBack}
           showTrustBadge={showTrustBadge}
           trustLevel={trustLevel}
           onToggleTrust={onToggleTrust}
@@ -716,7 +716,7 @@ export function ProjectTopBar({
                 onPress={() => overlayState.setChatMoreOpen((o) => !o)}
                 className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
                 accessibilityLabel="More options"
-                accessibilityState={{ expanded: overlayState.chatMoreOpen }}
+                aria-expanded={overlayState.chatMoreOpen}
               >
                 <MoreHorizontal size={14} className="text-muted-foreground" />
               </Pressable>

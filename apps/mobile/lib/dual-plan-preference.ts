@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * Dual Plan preference — when on, plans generated in Plan mode also produce
+ * Dual Plan preference — when on, plans the agent writes also produce
  * a stakeholder summary alongside the technical body.
  *
  * Implemented as a tiny singleton cache + listener set so every surface

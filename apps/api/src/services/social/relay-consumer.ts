@@ -90,6 +90,14 @@ export async function drainRelayedEvents(deps: RelayConsumerDeps = {}): Promise<
     return empty
   }
   if (config.mode !== 'relay') return empty
+  if (!config.apiKey) {
+    // The key may live only in `localConfig`; without one there is nothing to
+    // poll with and the next tick retries.
+    const { relayCredential } = await import('./client')
+    const apiKey = await relayCredential()
+    if (!apiKey) return empty
+    config = { ...config, apiKey }
+  }
 
   const scopes = await (deps.localScopes ?? localScopes)().catch(() => [] as string[])
   if (scopes.length === 0) return empty

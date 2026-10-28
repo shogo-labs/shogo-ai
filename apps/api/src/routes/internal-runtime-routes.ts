@@ -27,6 +27,11 @@ import {
 import { prisma } from '../lib/prisma'
 import type { Permission } from '@shogo/authz'
 import { accessibleProjectsWhere, decide, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
+import {
+  authorizeAttachmentAction,
+  filterReadableAttachments,
+  type AttachmentAuthorizer,
+} from '../services/project-attachment.authz'
 import { hydrateRepo } from '../services/git-repo-store'
 import {
   attachProject,
@@ -40,7 +45,7 @@ import { REMOTE_IMPORT_MAX_BASE64_CHARS, remoteToolPermission } from '../lib/rem
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { resolve as resolvePath } from 'path'
-import { searchWorkspaceHistory, renderWorkspaceTranscript, readWorkspacePlan } from '../lib/history-search'
+import { searchWorkspaceHistory, renderWorkspaceTranscript, readRuntimeChatTranscript, readWorkspacePlan } from '../lib/history-search'
 import {
   workspaceAgentRoutes,
   type WorkspaceAgentAuthContext,
@@ -189,6 +194,40 @@ async function enforceProjectPermission(
   return null
 }
 
+/**
+ * Authorizer for a cluster-internal runtime request. Mirrors
+ * `sessionAttachmentAuthorizer` but resolves identity through the internal
+ * actor model (service accounts stay unscoped) and uses the internal error
+ * envelope.
+ */
+function internalAttachmentAuthorizer(
+  c: Context,
+  identity: InternalIdentity,
+  workspaceId: string,
+): AttachmentAuthorizer {
+  return {
+    async requireProject(projectId: string, permission: Permission) {
+      const denied = await enforceProjectPermission(c, identity, workspaceId, projectId, permission)
+      if (denied) return denied
+      return { workspaceId }
+    },
+    async readableProjectsWhere() {
+      return readableProjectFilter(c, identity, workspaceId)
+    },
+    crossWorkspace(targetProjectId: string) {
+      return c.json(
+        {
+          error: {
+            code: 'cross_workspace',
+            message: `Project ${targetProjectId} is not in the same workspace as the anchor project`,
+          },
+        },
+        409,
+      )
+    },
+  }
+}
+
 function hideInaccessibleEdges<T extends { id: string; attachments?: Array<{ attachedProjectId: string }> }>(projects: T[]): T[] {
   const ids = new Set(projects.map((p) => p.id))
   return projects.map((p) => ({
@@ -201,6 +240,13 @@ function hideInaccessibleEdges<T extends { id: string; attachments?: Array<{ att
 function metalMountingRemoved(): boolean {
   return process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalEnabled()
 }
+
+/**
+ * How long the internal preview route waits for a project runtime to start its
+ * build before it answers `building`. Bounded well under Cloudflare's ~100s
+ * silence limit, and the URL it returns is already valid.
+ */
+const PREVIEW_START_TIMEOUT_MS = 75_000
 
 function mountingRemovedResponse(c: Context, extra: Record<string, unknown> = {}) {
   return c.json(
@@ -398,7 +444,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   /**
    * POST /api/internal/reminders/notify
-   *   body: { workspaceId, projectId?, userId, title, body, actionUrl?,
+   *   body: { workspaceId, projectId?, userId?, title, body, actionUrl?,
    *           dedupeKey?, metadata?, type?, pushType?, channelId? }
    *
    * Boundary capability behind the runtime `notify_user` tool: write one
@@ -407,6 +453,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * the user" half of the reminder path — the agent detects a due reminder in
    * MEMORY.md and calls the tool; there is no server-side reminder row or
    * scheduler here (see issue #1046).
+   *
+   * `userId` is optional: without it the workspace owner is the recipient, so a
+   * runtime-side notice that is not about one specific user (the workspace
+   * backup parking itself, SHO-180) can still reach a human.
    *
    * `type` is an existing `NotificationType` member (the enum is deliberately
    * NOT migrated — reminder-specific context rides in `metadata`), and
@@ -430,7 +480,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: 'Unauthorized' }, 401)
     }
 
-    const userId = typeof body.userId === 'string' ? body.userId : ''
+    const userId = typeof body.userId === 'string' && body.userId
+      ? body.userId
+      // A runtime knows its workspace, not its users: fall back to the
+      // workspace owner so a runtime-originated notice (e.g. "your workspace
+      // backup is failing", SHO-180) can reach a human.
+      : workspaceId
+        ? ((await prisma.member.findFirst({
+            where: { workspaceId, projectId: null, role: 'owner' },
+            orderBy: { createdAt: 'asc' },
+            select: { userId: true },
+          }))?.userId ?? '')
+        : ''
     const title = typeof body.title === 'string' ? body.title.trim() : ''
     const message = typeof body.body === 'string' ? body.body : ''
     if (!userId || !title || !message) {
@@ -966,7 +1027,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       const plan = await readWorkspacePlan(id, { workspaceId, userId })
       return plan ? c.json(plan) : c.json({ error: 'Not found' }, 404)
     }
-    const transcript = await renderWorkspaceTranscript(id, {
+    const transcript = await readRuntimeChatTranscript(id, {
       workspaceId,
       userId,
       from: Number(c.req.query('from') || 0),
@@ -1136,6 +1197,140 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   // GET /projects/:projectId/trust — see ./internal-project-trust.ts
   app.route('/', projectTrustRoutes({ authorize: validateAuth }))
+
+  /**
+   * POST /api/internal/workspaces/:workspaceId/sessions/:sessionId/projects/:projectId/preview
+   *   body: { userId? }
+   *
+   * Internal twin of the user-auth
+   * `.../projects/:projectId/preview-url` route, for a workspace runtime that
+   * has to hand out a member project's app. On metal each project is served by
+   * its OWN runtime, and other projects are never mounted here, so the
+   * runtime's local `/p/<id>/preview/start` answers 410 and `preview_project`
+   * used to have no successful path at all (SHO-125).
+   *
+   * Resolves the project's runtime, kicks its own `/preview/start` so the app
+   * is actually built, and returns `<podUrl>/p/<projectId>/` — the same URL the
+   * app's canvas uses. Everything else is an error the agent can act on:
+   * 404 `project_not_attached`, 502 `target_unavailable`, 503
+   * `target_not_ready`, 409 `use_local_runtime` for the anchor (whose app this
+   * runtime already serves itself).
+   */
+  app.post('/workspaces/:workspaceId/sessions/:sessionId/projects/:projectId/preview', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const sessionId = c.req.param('sessionId')
+    const projectId = c.req.param('projectId')
+    const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => ({}))
+    const visible = await readableProjectFilter(c, identity, workspaceId, body?.userId)
+    if (visible instanceof Response) return visible
+    const projects = await accessibleWorkspaceProjects(workspaceId, visible)
+    if (!projects.some((row) => row.id === projectId)) {
+      return c.json(
+        {
+          error: {
+            code: 'project_not_attached',
+            message: `Project ${projectId} is not part of workspace ${workspaceId}.`,
+          },
+        },
+        404,
+      )
+    }
+
+    if (!metalMountingRemoved() || projectId === process.env.WORKSPACE_ANCHOR_PROJECT_ID) {
+      // Non-metal: this runtime multiplexes the projects it has mounted on its
+      // own port. Anchor on metal: its app is this runtime's own app. Either
+      // way the caller's local `/p/<id>/preview/start` is the right path.
+      return c.json(
+        {
+          error: {
+            code: 'use_local_runtime',
+            message: 'This project is served by the calling runtime; start its preview there.',
+          },
+        },
+        409,
+      )
+    }
+
+    const agentCallSvc = await loadAgentCall?.()
+    let runtimeUrl: string
+    if (agentCallSvc) {
+      // Same resolver (and wake) every remote tool call uses, so the preview
+      // and a `project:` read land on the same pod.
+      const resolved = await agentCallSvc.resolveRemoteProjectUrl(projectId, 'WorkspacePreview')
+      if ('status' in resolved) return c.json(resolved.body, resolved.status as any)
+      runtimeUrl = resolved.url
+    } else {
+      try {
+        const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
+        runtimeUrl = (await resolveProjectPodUrl(projectId, { logTag: 'WorkspacePreview' })).url
+      } catch (err: any) {
+        return c.json(
+          {
+            error: {
+              code: 'target_unavailable',
+              message: `Project ${projectId}'s runtime is unavailable: ${err?.message ?? err}`,
+            },
+          },
+          502,
+        )
+      }
+    }
+
+    const previewUrl = `${runtimeUrl}/p/${projectId}/`
+    if (!agentCallSvc) {
+      // Capability not wired on this API (slim desktop composer): the URL is
+      // still correct — the app builds on first request — so say so, don't
+      // pretend the start ran.
+      return c.json({ projectId, sessionId, mode: 'metal', url: previewUrl, status: 'unstarted' })
+    }
+
+    const outcome = await agentCallSvc.forwardToProjectRuntime(
+      c,
+      projectId,
+      workspaceId,
+      '/preview/start',
+      '{}',
+      {
+        runtimeUrl,
+        timeoutMs: PREVIEW_START_TIMEOUT_MS,
+        // `/preview/start` is idempotent: it either starts a build or reports
+        // the one already running.
+        retryOnTransportError: true,
+        reportUndelivered: true,
+      },
+    )
+    if (outcome.status === 503) {
+      for (const [key, value] of Object.entries(outcome.headers ?? {})) c.header(key, value)
+      return c.json(outcome.body, 503)
+    }
+    if (outcome.status >= 500 && outcome.status !== 504) {
+      return c.json(
+        {
+          error: {
+            code: 'target_unavailable',
+            message:
+              `Project ${projectId}'s runtime refused to start the preview: ` +
+              `${outcome.body?.error?.message ?? `HTTP ${outcome.status}`}`,
+          },
+        },
+        502,
+      )
+    }
+
+    // A 504 here means the build is still running (the tool's budget is the
+    // build's, not the caller's). The URL is live either way — the project pod
+    // serves it as soon as `dist/` exists.
+    return c.json({
+      projectId,
+      sessionId,
+      mode: 'metal',
+      url: previewUrl,
+      status: outcome.status === 504 ? 'building' : outcome.status < 400 ? 'ready' : 'error',
+    })
+  })
 
   /**
    * POST /api/internal/projects/:projectId/shared-files
@@ -2234,23 +2429,25 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const projectId = c.req.param('projectId')
     const authz = await authorizeLifecycleProject(c, projectId)
     if (!authz) return c.json({ error: 'Unauthorized' }, 401)
-    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:read')
+    const authorizer = internalAttachmentAuthorizer(c, authz.identity, authz.workspaceId)
+    const denied = await authorizeAttachmentAction(authorizer, 'list', projectId)
     if (denied) return denied
     const { listAttachments } = await import('../services/project-attachment.service')
     const rows = await listAttachments(projectId)
-    const visible = await readableProjectFilter(c, authz.identity, authz.workspaceId)
-    if (visible instanceof Response) return visible
-    if (!visible || rows.length === 0) return c.json({ projectId, attachments: rows })
-    const allowed = new Set(
-      ((await prisma.project.findMany({
-        where: { AND: [{ id: { in: rows.map((row) => row.attachedProjectId) } }, visible] },
-        select: { id: true },
-      })) as Array<{ id: string }>).map((row) => row.id),
+    const visible = await filterReadableAttachments(
+      authorizer,
+      authz.workspaceId,
+      rows,
+      async (ids, where) => {
+        const readable = (await prisma.project.findMany({
+          where: { AND: [{ id: { in: ids } }, where] },
+          select: { id: true },
+        })) as Array<{ id: string }>
+        return readable.map((row) => row.id)
+      },
     )
-    return c.json({
-      projectId,
-      attachments: rows.filter((row) => allowed.has(row.attachedProjectId)),
-    })
+    if (visible instanceof Response) return visible
+    return c.json({ projectId, attachments: visible })
   })
 
   /**
@@ -2273,18 +2470,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'attachedProjectId is required' } }, 400)
     }
     const attachMode = body.attachMode === 'readonly' ? 'readonly' : 'readwrite'
-    const anchorDenied = await enforceProjectPermission(
-      c, authz.identity, authz.workspaceId, projectId, 'project:update',
-    )
-    if (anchorDenied) return anchorDenied
-    const targetDenied = await enforceProjectPermission(
-      c,
-      authz.identity,
-      authz.workspaceId,
-      body.attachedProjectId,
-      attachMode === 'readonly' ? 'project:read' : 'project:update',
-    )
-    if (targetDenied) return targetDenied
+    const authorizer = internalAttachmentAuthorizer(c, authz.identity, authz.workspaceId)
+    const denied = await authorizeAttachmentAction(authorizer, 'attach', projectId, {
+      projectId: body.attachedProjectId,
+      attachMode,
+    })
+    if (denied) return denied
 
     try {
       const svc = await import('../services/project-attachment.service')
@@ -2338,7 +2529,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const attachedProjectId = c.req.param('attachedProjectId')
     const authz = await authorizeLifecycleProject(c, projectId)
     if (!authz) return c.json({ error: 'Unauthorized' }, 401)
-    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:update')
+    const denied = await authorizeAttachmentAction(
+      internalAttachmentAuthorizer(c, authz.identity, authz.workspaceId),
+      'detach',
+      projectId,
+    )
     if (denied) return denied
     try {
       const { detachProjectFromProject } = await import('../services/project-attachment.service')
@@ -2609,6 +2804,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     })
     if (wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
     const outcome = await work
+    if (outcome.headers) for (const [key, value] of Object.entries(outcome.headers)) c.header(key, value)
     return c.json(outcome.body, outcome.status as any)
   })
 
@@ -2840,6 +3036,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const { cancelTask, viewOf } = await tasksSvc()
     const updated = await cancelTask(row.id)
     return c.json({ task: updated ? viewOf(updated) : null })
+  })
+
+  /** POST /api/internal/chat/:id/resume  body: { toolName?, resume? } — a turn died mid-work. */
+  app.post('/chat/:id/resume', async (c) => {
+    const chatSessionId = c.req.param('id')
+    if (!chatSessionId || !(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
+    const body = (await c.req.json().catch(() => null)) as { toolName?: unknown; resume?: unknown } | null
+    const toolName = typeof body?.toolName === 'string' ? body.toolName : null
+    const resume = body?.resume !== false
+    const { postInterruptedResume } = await import('../services/chat-resume.service')
+    const result = await postInterruptedResume(chatSessionId, { toolName, resume })
+    return c.json(result)
   })
 
   return app

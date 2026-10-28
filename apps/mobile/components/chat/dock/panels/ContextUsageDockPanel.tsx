@@ -20,6 +20,11 @@ export interface ContextUsageDockPanelProps {
   contextBreakdown: ContextBreakdownData | null | undefined
   /** Project owning this chat, for the manual summarize call. */
   projectId?: string | null
+  /**
+   * Workspace id for a workspace-scoped chat: its session lives on the
+   * workspace runtime, so the summarize call must target that route (SHO-230).
+   */
+  workspaceId?: string | null
   /** Chat session the compaction applies to. */
   chatSessionId?: string | null
 }
@@ -28,6 +33,7 @@ export function ContextUsageDockPanel({
   contextUsage,
   contextBreakdown,
   projectId,
+  workspaceId,
   chatSessionId,
 }: ContextUsageDockPanelProps) {
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
@@ -45,12 +51,13 @@ export function ContextUsageDockPanel({
           inputTokens={contextUsage.inputTokens}
           contextWindowTokens={contextUsage.contextWindowTokens}
           projectId={projectId}
+          workspaceId={workspaceId}
           chatSessionId={chatSessionId}
         />
       ),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contextUsage, contextBreakdown, projectId, chatSessionId])
+  }, [contextUsage, contextBreakdown, projectId, workspaceId, chatSessionId])
 
   useDockPanel(descriptor)
   return null

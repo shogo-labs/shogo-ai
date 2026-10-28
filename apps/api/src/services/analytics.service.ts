@@ -10,6 +10,10 @@
  */
 
 import { createHash } from 'crypto'
+import {
+  heartbeatSessionProjectId,
+  isHeartbeatChatSessionId,
+} from '@shogo/shared-runtime/heartbeat-session'
 import { prisma, Prisma } from '../lib/prisma'
 import { resolveModelLabels } from './model-registry.service'
 import { countLineChanges } from '../lib/tool-line-stats'
@@ -31,6 +35,10 @@ import {
   type ReleaseChannel,
 } from '../lib/device-platform'
 import { deployedAppVersion } from '../lib/app-version'
+import {
+  newestVersionPerDevice,
+  type DeviceVersionObservation,
+} from '../lib/device-version-events'
 
 /** Parse actionMetadata that may have been double-JSON-stringified. */
 function parseMeta(raw: unknown): Record<string, any> {
@@ -1446,13 +1454,34 @@ interface DeviceSnapshot {
   deviceId: string
   /** Newest row: drives activity, platform and creation date. */
   row: InstallAggregateRow
-  /** Newest row that actually carries a version: drives the version bucket. */
+  /**
+   * Drives the version bucket: the device's newest version *event* when it has
+   * one, otherwise the newest row in `api_keys` that carries a version.
+   */
   versionRow: InstallAggregateRow | null
   version: string
   channel: ReleaseChannel
   client: DeviceClient
   os: DeviceOs
   arch: DeviceArch
+}
+
+/** The version each device last reported, from `device_version_events`. */
+type CurrentDeviceVersions = Map<string, DeviceVersionObservation>
+
+/**
+ * Load the version each device is on now.
+ *
+ * One query over the whole table: it holds one row per (device, version) written
+ * only by callers that carried a version, so it is bounded by installs × shipped
+ * versions — cheap next to the `api_keys` scan these endpoints already do, and
+ * it cannot mislabel a device the way a version-less `lastSeenAt` touch can.
+ */
+async function loadCurrentDeviceVersions(): Promise<CurrentDeviceVersions> {
+  const events = await prisma.deviceVersionEvent.findMany({
+    select: { deviceId: true, version: true, firstSeenAt: true, lastSeenAt: true },
+  })
+  return newestVersionPerDevice(events)
 }
 
 function hasVersion(row: InstallAggregateRow): boolean {
@@ -1466,15 +1495,20 @@ function isNewer(a: Date | null, b: Date | null): boolean {
 }
 
 /**
- * Pick the row that decides a device's version.
+ * Pick the row that decides a device's version when the device has no version
+ * history (`device_version_events` wins whenever it has a row — see
+ * {@link buildDeviceSnapshots}).
  *
- * Highest version wins, not the newest timestamp: `lastSeenAt` is bumped by
- * callers that send no version at all (the ai-proxy `lastUsedAt` touch, a bare
- * heartbeat), so the newest-timestamp row can be an older version the device
- * already moved off — that mislabelled 6 devices in production. A device only
- * moves forward, so the newest version it has ever reported is the one it
- * runs. Timestamps only break ties (e.g. two betas of the same base version
- * compare equal in the numeric parts).
+ * This is the pre-migration / no-version-event path, so it keeps the rule that
+ * was right for `api_keys` alone: highest version wins, not the newest
+ * timestamp. `lastSeenAt` is bumped by callers that send no version at all (the
+ * ai-proxy `lastUsedAt` touch, a bare heartbeat), so the newest-timestamp row
+ * can be an older version the device already moved off — that mislabelled 6
+ * devices in production. Timestamps only break ties (e.g. two betas of the same
+ * base version compare equal in the numeric parts).
+ *
+ * It cannot see a downgrade; a device that reports one does have a history row,
+ * so it takes the branch above.
  */
 function preferredVersionRow(
   candidate: InstallAggregateRow,
@@ -1490,8 +1524,16 @@ function preferredVersionRow(
 /**
  * One entry per physical device. Device API keys are minted per workspace, so
  * a stable deviceId is what keeps one machine from being counted 34 times.
+ *
+ * Version comes from `currentVersions` (the newest row in
+ * `device_version_events`) because that table is the record of what the device
+ * actually reported, and it alone can express a move *down*; `api_keys` is the
+ * fallback for a device with no history row.
  */
-function buildDeviceSnapshots(rows: InstallAggregateRow[]): DeviceSnapshot[] {
+function buildDeviceSnapshots(
+  rows: InstallAggregateRow[],
+  currentVersions: CurrentDeviceVersions = new Map(),
+): DeviceSnapshot[] {
   const byDevice = new Map<string, { row: InstallAggregateRow; versionRow: InstallAggregateRow | null }>()
   for (const row of rows) {
     if (!row.deviceId) continue
@@ -1510,15 +1552,26 @@ function buildDeviceSnapshots(rows: InstallAggregateRow[]): DeviceSnapshot[] {
   }
 
   return [...byDevice.entries()].map(([deviceId, entry]) => {
-    const version = entry.versionRow?.version?.trim() || 'unknown'
+    const observed = currentVersions.get(deviceId)
+    const versionRow: InstallAggregateRow | null = observed
+      ? {
+          deviceId,
+          platform: entry.row.platform,
+          version: observed.version,
+          lastSeenAt: observed.lastSeenAt,
+          createdAt: observed.firstSeenAt,
+          userId: entry.row.userId,
+        }
+      : entry.versionRow
+    const version = versionRow?.version?.trim() || 'unknown'
     const { os, arch } = parseDevicePlatform(entry.row.platform)
     return {
       deviceId,
       row: entry.row,
-      versionRow: entry.versionRow,
+      versionRow,
       version,
-      channel: parseChannel(entry.versionRow?.version),
-      client: parseClient(entry.versionRow?.version, entry.row.platform),
+      channel: parseChannel(versionRow?.version),
+      client: parseClient(versionRow?.version, entry.row.platform),
       os,
       arch,
     }
@@ -1549,6 +1602,8 @@ interface AggregateOptions {
   latestMode?: LatestMode
   /** Override for tests / callers that already resolved the tag. */
   deployedVersion?: string | null
+  /** Newest version event per device — the versions the devices are actually on. */
+  currentVersions?: CurrentDeviceVersions
 }
 
 /**
@@ -1567,7 +1622,7 @@ function aggregateInstalls(
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
   const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const snapshots = buildDeviceSnapshots(rows)
+  const snapshots = buildDeviceSnapshots(rows, options.currentVersions)
   const activeSince = (snapshot: DeviceSnapshot, since: Date) =>
     snapshot.row.lastSeenAt !== null && snapshot.row.lastSeenAt >= since
 
@@ -1701,12 +1756,15 @@ function aggregateInstalls(
  * device-level decision the aggregation makes (one row can be the CLI's while
  * another row of the same device is stale).
  */
-function partitionRowsByClient(rows: InstallAggregateRow[]): {
+function partitionRowsByClient(
+  rows: InstallAggregateRow[],
+  currentVersions: CurrentDeviceVersions = new Map(),
+): {
   desktop: InstallAggregateRow[]
   cli: InstallAggregateRow[]
 } {
   const clientByDevice = new Map<string, DeviceClient>()
-  for (const snapshot of buildDeviceSnapshots(rows)) {
+  for (const snapshot of buildDeviceSnapshots(rows, currentVersions)) {
     clientByDevice.set(snapshot.deviceId, snapshot.client)
   }
 
@@ -1754,17 +1812,20 @@ const DEVICE_KEY_SELECT = {
  * Worker/CLI device keys are excluded — they are not desktop installs.
  */
 export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
-  const keys = await prisma.apiKey.findMany({
-    where: {
-      kind: 'device',
-      revokedAt: null,
-      deviceId: { not: null },
-    },
-    select: DEVICE_KEY_SELECT,
-  })
+  const [keys, currentVersions] = await Promise.all([
+    prisma.apiKey.findMany({
+      where: {
+        kind: 'device',
+        revokedAt: null,
+        deviceId: { not: null },
+      },
+      select: DEVICE_KEY_SELECT,
+    }),
+    loadCurrentDeviceVersions(),
+  ])
 
-  const { desktop } = partitionRowsByClient(toInstallRows(keys))
-  return aggregateInstalls(desktop)
+  const { desktop } = partitionRowsByClient(toInstallRows(keys), currentVersions)
+  return aggregateInstalls(desktop, { currentVersions })
 }
 
 /**
@@ -1774,7 +1835,7 @@ export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
  * matrix (`byOs`, `versions`, `onLatest`) and a `cli` segment.
  */
 export async function getAppInstalls(): Promise<AppInstallsData> {
-  const [keys, appInstalls] = await Promise.all([
+  const [keys, appInstalls, currentVersions] = await Promise.all([
     prisma.apiKey.findMany({
       where: {
         kind: 'device',
@@ -1795,6 +1856,7 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
         userId: true,
       },
     }),
+    loadCurrentDeviceVersions(),
   ])
 
   const desktopRows = toInstallRows(keys)
@@ -1807,9 +1869,9 @@ export async function getAppInstalls(): Promise<AppInstallsData> {
     userId: install.userId,
   }))
 
-  const partitioned = partitionRowsByClient(desktopRows)
-  const desktop = aggregateInstalls(partitioned.desktop, { latestMode: 'deploy' })
-  const cli = aggregateInstalls(partitioned.cli, { latestMode: 'none' })
+  const partitioned = partitionRowsByClient(desktopRows, currentVersions)
+  const desktop = aggregateInstalls(partitioned.desktop, { latestMode: 'deploy', currentVersions })
+  const cli = aggregateInstalls(partitioned.cli, { latestMode: 'none', currentVersions })
   const ios = aggregateInstalls(
     mobileRows.filter((row, index) => appInstalls[index]?.platform === 'ios'),
     { latestMode: 'infer' },
@@ -1887,7 +1949,6 @@ export async function getAppVersions(options: { days?: number } = {}): Promise<A
       select: DEVICE_KEY_SELECT,
     }),
     prisma.deviceVersionEvent.findMany({
-      where: { lastSeenAt: { gte: windowStart } },
       select: {
         deviceId: true,
         version: true,
@@ -1898,7 +1959,10 @@ export async function getAppVersions(options: { days?: number } = {}): Promise<A
     }),
   ])
 
-  const partitioned = partitionRowsByClient(toInstallRows(keys))
+  // One read serves both halves: the adoption series below (window-bounded by
+  // the loop) and the current version per device (SHO-126).
+  const currentVersions = newestVersionPerDevice(events)
+  const partitioned = partitionRowsByClient(toInstallRows(keys), currentVersions)
   const deployedVersion = deployedAppVersion()
 
   const byDay = new Map<string, { version: string; channel: ReleaseChannel; devices: Set<string> }>()
@@ -1942,8 +2006,8 @@ export async function getAppVersions(options: { days?: number } = {}): Promise<A
     generatedAt: now.toISOString(),
     deployedVersion,
     windowDays: days,
-    desktop: aggregateInstalls(partitioned.desktop, { latestMode: 'deploy', deployedVersion }),
-    cli: aggregateInstalls(partitioned.cli, { latestMode: 'none' }),
+    desktop: aggregateInstalls(partitioned.desktop, { latestMode: 'deploy', deployedVersion, currentVersions }),
+    cli: aggregateInstalls(partitioned.cli, { latestMode: 'none', currentVersions }),
     adoption,
   }
 }
@@ -2014,10 +2078,13 @@ export async function getActiveDevices(
   const activeCutoff = now.getTime() - days * 24 * 60 * 60 * 1000
   const onlineCutoff = now.getTime() - ONLINE_WINDOW_MINUTES * 60 * 1000
 
-  const keys = await prisma.apiKey.findMany({
-    where: { kind: 'device', revokedAt: null, deviceId: { not: null } },
-    select: DEVICE_KEY_SELECT,
-  })
+  const [keys, currentVersions] = await Promise.all([
+    prisma.apiKey.findMany({
+      where: { kind: 'device', revokedAt: null, deviceId: { not: null } },
+      select: DEVICE_KEY_SELECT,
+    }),
+    loadCurrentDeviceVersions(),
+  ])
   const rows = toInstallRows(keys)
 
   const firstSeen = new Map<string, number>()
@@ -2028,7 +2095,7 @@ export async function getActiveDevices(
     if (previous === undefined || at < previous) firstSeen.set(row.deviceId, at)
   }
 
-  const scoped = buildDeviceSnapshots(rows)
+  const scoped = buildDeviceSnapshots(rows, currentVersions)
     .map<ActiveDeviceRow>((snapshot) => {
       const last = snapshot.row.lastSeenAt ? snapshot.row.lastSeenAt.getTime() : null
       return {
@@ -4690,6 +4757,443 @@ export async function getCreatorProfileDetail(
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
     })),
     affiliate: affiliateSummary,
+  }
+}
+
+// ============================================================================
+// Workspace Heartbeats (SHO-182)
+// ============================================================================
+
+export type HeartbeatPeriod = '24h' | '7d' | '30d'
+
+export const HEARTBEAT_PERIODS: readonly HeartbeatPeriod[] = ['24h', '7d', '30d']
+
+/** The window an admin cares about first: the incident SHO-178 found was 24h. */
+export const DEFAULT_HEARTBEAT_PERIOD: HeartbeatPeriod = '24h'
+
+export function parseHeartbeatPeriod(raw: unknown): HeartbeatPeriod {
+  return typeof raw === 'string' && (HEARTBEAT_PERIODS as readonly string[]).includes(raw)
+    ? (raw as HeartbeatPeriod)
+    : DEFAULT_HEARTBEAT_PERIOD
+}
+
+const HEARTBEAT_PERIOD_HOURS: Record<HeartbeatPeriod, number> = {
+  '24h': 24,
+  '7d': 24 * 7,
+  '30d': 24 * 30,
+}
+
+export interface WorkspaceHeartbeatsAgent {
+  projectId: string
+  projectName: string
+  owner: { userId: string; name: string | null; email: string | null } | null
+  enabled: boolean
+  intervalSeconds: number
+  quietHours: { start: string; end: string; timezone: string | null } | null
+  lastHeartbeatAt: string | null
+  nextHeartbeatAt: string | null
+  /** `AgentConfig.modelName` — what the heartbeat is *configured* to run on. */
+  configuredModel: string
+  /** Display label for `configuredModel` (a catalog id is a UUID post-migration). */
+  configuredModelLabel: string | null
+  /** What the charges actually ran on, so a config/actual mismatch is visible. */
+  modelsUsed: Array<{ model: string; billedUsd: number }>
+  ticks: number
+  billedUsd: number
+  rawUsd: number
+  totalTokens: number
+  avgUsdPerTick: number | null
+  /** Filled by the route: whether the caller may PATCH this project's heartbeat. */
+  canEdit: boolean
+}
+
+export interface WorkspaceHeartbeats {
+  period: HeartbeatPeriod
+  window: { from: string; to: string }
+  totals: {
+    /** Projects with `heartbeatEnabled` in the caller's scope. */
+    agentsEnabled: number
+    /** Of those (and the turned-off ones), how many charged in the window. */
+    agentsWithSpend: number
+    ticks: number
+    billedUsd: number
+    rawUsd: number
+    totalTokens: number
+    /** Every metered charge in the window, so the UI can show "x% of spend". */
+    workspaceBilledUsd: number
+  }
+  daily: Array<{ date: string; heartbeatUsd: number; otherUsd: number }>
+  agents: WorkspaceHeartbeatsAgent[]
+}
+
+/**
+ * One (day, project, heartbeat?) bucket of `usage_events`. Both dialects produce
+ * exactly this, so the shaping below is written once.
+ */
+interface HeartbeatChargeGroup {
+  day: string
+  /** Project the charge belongs to, or '' when nothing names one. */
+  projectId: string
+  heartbeat: boolean
+  model: string
+  charges: number
+  billedUsd: number
+  rawUsd: number
+  totalTokens: number
+}
+
+function heartbeatWindow(period: HeartbeatPeriod, now: Date): { from: Date; to: Date } {
+  return { from: new Date(now.getTime() - HEARTBEAT_PERIOD_HOURS[period] * 3_600_000), to: now }
+}
+
+/** UTC day keys covering `[from, to]`, so the chart never jumps a gap. */
+function heartbeatDayKeys(from: Date, to: Date): string[] {
+  const keys: string[] = []
+  const cursor = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()))
+  const last = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate())
+  while (cursor.getTime() <= last) {
+    keys.push(isoDay(cursor))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return keys
+}
+
+/**
+ * The charge the row actually cost. `billedUsd` is 0 for included-quota and
+ * local-mode usage, so the provider cost is the fallback — the same rule
+ * `getSpendTimeseries` uses, which is what makes the totals here reconcile with
+ * the Usage tab for the same window.
+ */
+function effectiveCost(billedUsd: number, rawUsd: number, metaRawUsd: number): number {
+  if (billedUsd > 0) return billedUsd
+  if (rawUsd > 0) return rawUsd
+  return metaRawUsd
+}
+
+/**
+ * Heartbeat (and total) charges for a workspace window, one row per
+ * (day, project, heartbeat?, model).
+ *
+ * Same dialect split as `scanUsageGroups` (SHO-140, measured): Postgres rolls the
+ * JSON up in the database so the window's `actionMetadata` never crosses the
+ * wire; SQLite has no index for `json_extract` and ships the rows to Node
+ * instead. Both return identical groups — the parity test runs the same fixture
+ * through both.
+ */
+async function scanHeartbeatCharges(
+  workspaceId: string,
+  from: Date,
+  to: Date,
+): Promise<HeartbeatChargeGroup[]> {
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return scanHeartbeatChargesInNode(workspaceId, from, to)
+  return scanHeartbeatChargesInSql(workspaceId, from, to)
+}
+
+async function scanHeartbeatChargesInNode(
+  workspaceId: string,
+  from: Date,
+  to: Date,
+): Promise<HeartbeatChargeGroup[]> {
+  const events = await prisma.usageEvent.findMany({
+    where: {
+      workspaceId,
+      actionType: { in: [...USAGE_METERED_ACTION_TYPES] },
+      createdAt: { gte: from, lt: to },
+    },
+    select: {
+      projectId: true,
+      billedUsd: true,
+      rawUsd: true,
+      actionMetadata: true,
+      createdAt: true,
+    },
+  })
+
+  const groups = new Map<string, HeartbeatChargeGroup>()
+  for (const event of events) {
+    const meta = parseMeta(event.actionMetadata)
+    const numOrNull = (key: string): number | null => {
+      const value = meta[key]
+      return typeof value === 'number' && Number.isFinite(value) ? value : null
+    }
+    const num = (key: string) => numOrNull(key) ?? 0
+
+    const sessionId = typeof meta.chatSessionId === 'string' ? meta.chatSessionId : null
+    const heartbeat = isHeartbeatChatSessionId(sessionId)
+    // A per-tick session id names the project the tick ran for; before SHO-178
+    // every tick shared `heartbeat`, so the row's own project is all there is.
+    const projectId = (heartbeat ? heartbeatSessionProjectId(sessionId) : null) ?? event.projectId ?? ''
+    const billedUsd = Number(event.billedUsd ?? 0)
+    const metaRaw = numOrNull('rawUsd') ?? numOrNull('dollarCost') ?? 0
+    const rawUsd = event.rawUsd ?? metaRaw
+    const totalTokensField = num('totalTokens')
+    const totalTokens = totalTokensField !== 0
+      ? totalTokensField
+      : num('inputTokens') + num('outputTokens') + num('cachedInputTokens') + num('cacheWriteTokens')
+
+    const day = isoDay(event.createdAt)
+    const model = String(meta.model ?? meta.modelUsed ?? 'unknown')
+    const key = `${day}::${projectId}::${heartbeat ? 1 : 0}::${model}`
+
+    let group = groups.get(key)
+    if (!group) {
+      group = { day, projectId, heartbeat, model, charges: 0, billedUsd: 0, rawUsd: 0, totalTokens: 0 }
+      groups.set(key, group)
+    }
+    group.charges += 1
+    group.billedUsd += effectiveCost(billedUsd, rawUsd, metaRaw)
+    group.rawUsd += rawUsd
+    group.totalTokens += totalTokens
+  }
+
+  return [...groups.values()]
+}
+
+async function scanHeartbeatChargesInSql(
+  workspaceId: string,
+  from: Date,
+  to: Date,
+): Promise<HeartbeatChargeGroup[]> {
+  const params: unknown[] = []
+  const bind = (value: unknown) => {
+    params.push(value)
+    return `$${params.length}`
+  }
+
+  const numOrNull = (key: string) => `(CASE WHEN jsonb_typeof("actionMetadata"->'${key}') = 'number'`
+    + ` THEN ("actionMetadata"->>'${key}')::numeric ELSE NULL END)`
+  const num = (key: string) => `COALESCE(${numOrNull(key)}, 0)`
+
+  const session = `COALESCE("actionMetadata"->>'chatSessionId', '')`
+  // Exact id or the `heartbeat:` prefix — never `heartbeat-notes`.
+  const isHeartbeat = `(${session} = 'heartbeat' OR ${session} LIKE 'heartbeat:%')`
+  // `heartbeat:<projectId>:<tickId>` names its project; the bare id does not.
+  const sessionProject = `NULLIF(split_part(${session}, ':', 2), '')`
+  const project = `COALESCE(CASE WHEN ${isHeartbeat} THEN ${sessionProject} END, "projectId", '')`
+  const modeled = `COALESCE("actionMetadata"->>'model', "actionMetadata"->>'modelUsed', 'unknown')`
+  const input = num('inputTokens')
+  const output = num('outputTokens')
+  const cached = num('cachedInputTokens')
+  const cacheWrite = num('cacheWriteTokens')
+  const totalTokens = num('totalTokens')
+  const metaRaw = `COALESCE(${numOrNull('rawUsd')}, ${numOrNull('dollarCost')}, 0)`
+
+  const actionTypes = USAGE_METERED_ACTION_TYPES.map((t) => bind(t)).join(', ')
+
+  const sql = `SELECT
+      DATE_TRUNC('day', "createdAt")   AS "day",
+      ${project}                       AS "projectId",
+      (${isHeartbeat})                 AS "heartbeat",
+      ${modeled}                       AS "model",
+      COUNT(*)                         AS "charges",
+      COALESCE(SUM(
+        CASE
+          WHEN "billedUsd" > 0 THEN "billedUsd"
+          WHEN COALESCE("rawUsd", 0) > 0 THEN "rawUsd"
+          ELSE ${metaRaw}
+        END
+      ), 0)                            AS "billedUsd",
+      COALESCE(SUM(COALESCE("rawUsd", ${metaRaw})), 0) AS "rawUsd",
+      COALESCE(SUM(
+        CASE WHEN ${totalTokens} <> 0 THEN ${totalTokens}
+             ELSE ${input} + ${output} + ${cached} + ${cacheWrite} END
+      ), 0)                            AS "totalTokens"
+    FROM "usage_events"
+    WHERE "workspaceId" = ${bind(workspaceId)}
+      AND "createdAt" >= ${bind(from)}
+      AND "createdAt" < ${bind(to)}
+      AND "actionType" IN (${actionTypes})
+    GROUP BY 1, 2, 3, 4`
+
+  const rows = await prisma.$queryRawUnsafe<any[]>(sql, ...params)
+
+  return rows.map((r) => ({
+    day: r.day instanceof Date ? isoDay(r.day) : isoDay(new Date(String(r.day))),
+    projectId: String(r.projectId ?? ''),
+    heartbeat: r.heartbeat === true || r.heartbeat === 1 || r.heartbeat === 't',
+    model: String(r.model ?? 'unknown'),
+    charges: Number(r.charges),
+    billedUsd: Number(r.billedUsd),
+    rawUsd: Number(r.rawUsd),
+    totalTokens: Number(r.totalTokens),
+  }))
+}
+
+/**
+ * Every agent in the workspace with a heartbeat on — plus any that spent in the
+ * window and has since been switched off — with its schedule and what it cost.
+ *
+ * Read-side only: the heartbeat session id that tags these charges has been
+ * written since the billing session existed, so no backfill is needed. A
+ * heartbeat tick opens and closes one billing session, so `ticks` is the count
+ * of `usage_events` rows (one per turn) and `avgUsdPerTick` is meaningful.
+ *
+ * `projectWhere` narrows the report to the projects the caller can see (members
+ * get their own; the route passes nothing for admins).
+ */
+export async function getWorkspaceHeartbeats(
+  workspaceId: string,
+  options: {
+    period?: HeartbeatPeriod
+    projectWhere?: Record<string, unknown>
+    now?: Date
+  } = {},
+): Promise<WorkspaceHeartbeats> {
+  const period = options.period ?? DEFAULT_HEARTBEAT_PERIOD
+  const { from, to } = heartbeatWindow(period, options.now ?? new Date())
+  const scoped = options.projectWhere !== undefined
+
+  const [projects, groups] = await Promise.all([
+    prisma.project.findMany({
+      where: {
+        workspaceId,
+        ...(scoped ? { AND: [options.projectWhere as Record<string, unknown>] } : {}),
+      },
+      select: { id: true, name: true, createdBy: true },
+    }),
+    scanHeartbeatCharges(workspaceId, from, to),
+  ])
+
+  const projectIds = projects.map((p) => p.id)
+  const [configs, users] = await Promise.all([
+    projectIds.length
+      ? prisma.agentConfig.findMany({
+        where: { projectId: { in: projectIds } },
+        select: {
+          projectId: true,
+          heartbeatEnabled: true,
+          heartbeatInterval: true,
+          nextHeartbeatAt: true,
+          lastHeartbeatAt: true,
+          quietHoursStart: true,
+          quietHoursEnd: true,
+          quietHoursTimezone: true,
+          modelName: true,
+        },
+      })
+      : Promise.resolve([]),
+    (async () => {
+      const createdBy = [...new Set(projects.map((p) => p.createdBy).filter((id): id is string => !!id))]
+      if (!createdBy.length) return new Map<string, { name: string | null; email: string | null }>()
+      const rows = await prisma.user.findMany({
+        where: { id: { in: createdBy } },
+        select: { id: true, name: true, email: true },
+      })
+      return new Map(rows.map((u) => [u.id, { name: u.name ?? null, email: u.email ?? null }]))
+    })(),
+  ])
+
+  const configByProject = new Map(configs.map((c) => [c.projectId, c]))
+  const allowed = new Set(projectIds)
+
+  // A member's report must not be diluted by spend on projects they cannot see,
+  // so their denominator is their own scope. An admin's is the whole workspace.
+  const inScope = groups.filter((g) => !scoped || allowed.has(g.projectId))
+
+  const perProject = new Map<string, {
+    ticks: number
+    billedUsd: number
+    rawUsd: number
+    totalTokens: number
+    models: Map<string, number>
+  }>()
+  const daily = new Map<string, { heartbeatUsd: number; otherUsd: number }>()
+  const totals = {
+    agentsEnabled: 0,
+    agentsWithSpend: 0,
+    ticks: 0,
+    billedUsd: 0,
+    rawUsd: 0,
+    totalTokens: 0,
+    workspaceBilledUsd: 0,
+  }
+
+  for (const group of inScope) {
+    const bucket = daily.get(group.day) ?? { heartbeatUsd: 0, otherUsd: 0 }
+    if (group.heartbeat) {
+      bucket.heartbeatUsd += group.billedUsd
+      totals.ticks += group.charges
+      totals.billedUsd += group.billedUsd
+      totals.rawUsd += group.rawUsd
+      totals.totalTokens += group.totalTokens
+
+      const usage = perProject.get(group.projectId) ?? (() => {
+        const fresh = { ticks: 0, billedUsd: 0, rawUsd: 0, totalTokens: 0, models: new Map<string, number>() }
+        perProject.set(group.projectId, fresh)
+        return fresh
+      })()
+      usage.ticks += group.charges
+      usage.billedUsd += group.billedUsd
+      usage.rawUsd += group.rawUsd
+      usage.totalTokens += group.totalTokens
+      usage.models.set(group.model, (usage.models.get(group.model) ?? 0) + group.billedUsd)
+    } else {
+      bucket.otherUsd += group.billedUsd
+    }
+    daily.set(group.day, bucket)
+    totals.workspaceBilledUsd += group.billedUsd
+  }
+
+  const modelLabels = await resolveModelLabels(
+    configs.map((c) => c.modelName ?? '').filter((id) => !!id),
+  )
+
+  const agents: WorkspaceHeartbeatsAgent[] = []
+  for (const project of projects) {
+    const config = configByProject.get(project.id)
+    const usage = perProject.get(project.id)
+    const enabled = config?.heartbeatEnabled === true
+    // Off-but-spent still shows: the money was spent in this window either way.
+    if (!enabled && !usage) continue
+
+    if (enabled) totals.agentsEnabled += 1
+    if (usage && usage.ticks > 0) totals.agentsWithSpend += 1
+
+    const configuredModel = config?.modelName ?? ''
+    const quietStart = config?.quietHoursStart ?? null
+    const quietEnd = config?.quietHoursEnd ?? null
+    const ownerId = project.createdBy ?? null
+
+    agents.push({
+      projectId: project.id,
+      projectName: project.name,
+      owner: ownerId ? { userId: ownerId, ...(users.get(ownerId) ?? { name: null, email: null }) } : null,
+      enabled,
+      intervalSeconds: config?.heartbeatInterval ?? 1800,
+      quietHours: quietStart && quietEnd
+        ? { start: quietStart, end: quietEnd, timezone: config?.quietHoursTimezone ?? null }
+        : null,
+      lastHeartbeatAt: config?.lastHeartbeatAt ? config.lastHeartbeatAt.toISOString() : null,
+      nextHeartbeatAt: enabled && config?.nextHeartbeatAt ? config.nextHeartbeatAt.toISOString() : null,
+      configuredModel,
+      configuredModelLabel: configuredModel ? (modelLabels.get(configuredModel) ?? configuredModel) : null,
+      modelsUsed: usage
+        ? [...usage.models.entries()]
+          .map(([model, billedUsd]) => ({ model, billedUsd }))
+          .sort((a, b) => b.billedUsd - a.billedUsd)
+        : [],
+      ticks: usage?.ticks ?? 0,
+      billedUsd: usage?.billedUsd ?? 0,
+      rawUsd: usage?.rawUsd ?? 0,
+      totalTokens: usage?.totalTokens ?? 0,
+      avgUsdPerTick: usage && usage.ticks > 0 ? usage.billedUsd / usage.ticks : null,
+      canEdit: false,
+    })
+  }
+
+  // Highest spend first: the whole point is spotting the burn.
+  agents.sort((a, b) => b.billedUsd - a.billedUsd || a.projectName.localeCompare(b.projectName))
+
+  return {
+    period,
+    window: { from: from.toISOString(), to: to.toISOString() },
+    totals,
+    daily: heartbeatDayKeys(from, to).map((date) => ({
+      date,
+      heartbeatUsd: daily.get(date)?.heartbeatUsd ?? 0,
+      otherUsd: daily.get(date)?.otherUsd ?? 0,
+    })),
+    agents,
   }
 }
 

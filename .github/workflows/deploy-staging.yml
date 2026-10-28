@@ -135,6 +135,8 @@ jobs:
           if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
           if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
           if [ -n "${{ secrets.HIGGSFIELD_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=HIGGSFIELD_API_KEY="${{ secrets.HIGGSFIELD_API_KEY }}"); fi
+          if [ -n "${{ secrets.ZERNIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_API_KEY="${{ secrets.ZERNIO_API_KEY }}"); fi
+          if [ -n "${{ secrets.ZERNIO_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_WEBHOOK_SECRET="${{ secrets.ZERNIO_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
@@ -258,6 +260,49 @@ jobs:
           carry_forward shogo-web "${{ steps.release.outputs.web_changed }}" "${{ steps.release.outputs.web_image }}"
           carry_forward shogo-docs "${{ steps.release.outputs.docs_changed }}" "${{ steps.release.outputs.docs_image }}"
           carry_forward shogo-runtime "${{ steps.release.outputs.runtime_changed }}" "${{ steps.release.outputs.runtime_image }}"
+
+      # Reclaim superseded Shogo image digests BEFORE anything looks at disk.
+      # Nothing else covers the 80-85% dead zone (SHO-233): the gate below
+      # fails at 80%, the kubelet's own image GC only starts at 85%, and
+      # SHO-136's 70/60 kubelet flags never reached a running node
+      # (`node_metadata` is in the OKE pool's ignore_changes). See
+      # k8s/base/node-image-gc.yaml and scripts/node-image-gc.sh.
+      # Deliberately here and not with the inotify-tuner apply after the
+      # rollout: a node that filled up between deploys has to be reclaimed
+      # before the gate samples it.
+      - name: Apply node image GC
+        run: |
+          set -euo pipefail
+          kubectl create configmap node-image-gc --namespace=kube-system \
+            --from-file=node-image-gc.sh=scripts/node-image-gc.sh \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f k8s/base/node-image-gc.yaml
+          # A changed ConfigMap updates the mounted file, but a running `sh`
+          # has already parsed it — so without this the pod keeps executing the
+          # old logic forever, which is the SHO-136 failure class one level up.
+          # The checksum goes on the POD TEMPLATE, not the DaemonSet's own
+          # metadata: only a template change triggers a rollout. An unchanged
+          # checksum is a no-op, so a redeploy with the same script does not
+          # churn every node.
+          SCRIPT_SUM=$(sha256sum scripts/node-image-gc.sh | cut -d' ' -f1)
+          cat > /tmp/node-image-gc-patch.json <<JSON
+          {"spec":{"template":{"metadata":{"annotations":{"checksum/script":"${SCRIPT_SUM}"}}}}}
+          JSON
+          kubectl --namespace=kube-system patch daemonset/node-image-gc --type=merge \
+            --patch-file /tmp/node-image-gc-patch.json
+          # The DaemonSet's pods only report Ready once their first pass has
+          # finished (startupProbe), so this waits for the reclaim rather than
+          # for the pod. Never fatal: a slow pass must not fail the deploy, the
+          # gate's own re-sampling still covers a node that stays full.
+          kubectl --namespace=kube-system rollout status daemonset/node-image-gc --timeout=600s || true
+
+      # Disk telemetry FIRST, then the gate: the summary shows per-node nodefs /
+      # imagefs usage, total image GB and digest counts on every run, and warns
+      # at 70% — the level the kubelet now starts reclaiming at (SHO-136).
+      # Before this, "69% and 7 stale runtime digests" was only visible from a
+      # kubectl session, after the node had already started evicting.
+      - name: Report node disk
+        run: .github/scripts/report-node-disk.sh 70
 
       # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
       # manifests / patch ksvcs into a disk-starved cluster. A node above the
@@ -418,7 +463,11 @@ jobs:
             # Standing-headroom floor: see the production "Deploy Cluster
             # Autoscaler" step. MIN>=2 default prevents the old scale-to-1
             # regression; keep vars in sync with terraform system_pool_min/max.
-            NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '2' }}"
+            # Staging floor is 3 (SHO-136): a suite plus a deploy needs three
+            # nodes, and a floor of 1 let the pool oscillate between 1 and 3
+            # while the suite ran, putting a cold-node image pull on the
+            # critical path.
+            NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '3' }}"
             NODE_POOL_MAX="${{ vars.NODE_POOL_MAX || '10' }}"
             sed -e "s|NODE_POOL_MIN_PLACEHOLDER|$NODE_POOL_MIN|g" \
                 -e "s|NODE_POOL_MAX_PLACEHOLDER|$NODE_POOL_MAX|g" \
@@ -580,9 +629,41 @@ jobs:
     permissions:
       contents: read
       statuses: write
+      issues: write
     uses: ./.github/workflows/e2e-hosted.yml
     with:
       target: staging
       suite: critical
       report_status: true
+      # Scopes this call's artifact names (`<attempt>-<run_attempt>`). The retry
+      # is a second invocation in the *same* run, so it must not reuse them:
+      # actions/upload-artifact@v4 fails on a duplicate name, which would fail
+      # the retry's preflight and skip its Playwright job outright.
+      attempt: first
+    secrets: inherit
+
+  # One retry, and it is a safety net — never a capacity fix (SHO-136).
+  #
+  # A green retry is reported as `degraded: first attempt was <classification>`
+  # in the commit status and the run summary, so a platform red can never be
+  # quietly turned into a clean green. Red twice fails exactly as before; there
+  # is no third attempt.
+  e2e-critical-retry:
+    name: Staging critical-path e2e (retry)
+    needs: [e2e-critical]
+    if: failure() && needs.e2e-critical.result == 'failure'
+    permissions:
+      contents: read
+      statuses: write
+      issues: write
+    uses: ./.github/workflows/e2e-hosted.yml
+    with:
+      target: staging
+      suite: critical
+      report_status: true
+      # `|| 'unknown'` keeps the retry flagged as degraded even when the first
+      # attempt failed too early to publish its classification.
+      previous_classification: ${{ needs.e2e-critical.outputs.classification || 'unknown' }}
+      # Its own artifact namespace — see `attempt: first` above.
+      attempt: retry
     secrets: inherit

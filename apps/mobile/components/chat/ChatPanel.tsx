@@ -73,6 +73,7 @@ import {
   type OptimisticEchoInput as OptimisticUserInput,
 } from "./optimistic-echo"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
+import { useMachineWorkspace } from "../instance/MachineWorkspaceBanner"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
@@ -107,7 +108,7 @@ import {
   useSDKHttpOptional,
 } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
-import { resolveHistoryPaint } from "./history-paint"
+import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
 import { useResolvedTheme } from "../../contexts/theme"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
@@ -121,9 +122,11 @@ import {
   externalPromptHasResponse,
   LATE_TURN_MAX_WAIT_MS,
   LATE_TURN_POLL_INTERVAL_MS,
+  messageTurnStartedAt,
   pendingExternalPromptIndex,
   persistedTailAwaitsReply,
   persistedTailIsUnseen,
+  persistedTailQuery,
   pollForLateTurn,
   taskWakeHasResponse,
   type PersistedTail,
@@ -163,6 +166,12 @@ import { useBillingData } from "@shogo/shared-app/hooks"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceHttp } from "../../lib/workspace-http"
 import { agentProxyBase } from "../../lib/agent-proxy-base"
+import {
+  prepareOutgoingFiles,
+  shouldUploadAttachmentFirst,
+  type OutgoingFilePart,
+} from "../../lib/chat-attachment-upload"
+import { releasePreviewUrl } from "../../lib/composer-attachments"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import {
@@ -203,7 +212,6 @@ import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import {
   ChatInput,
   DEFAULT_MODEL,
-  type InteractionMode,
   type FileAttachment,
   type ChatReference,
   type ProjectMentionOption,
@@ -211,10 +219,6 @@ import {
   type RestoreDraftRequest,
 } from "./ChatInput"
 import type { AgentHistoryResult } from "@shogo-ai/sdk/agent"
-import {
-  loadInteractionModePreference,
-  saveInteractionModePreference,
-} from "../../lib/interaction-mode-preference"
 import { useDualPlan } from "../../lib/dual-plan-preference"
 import {
   isChatStalled,
@@ -496,8 +500,6 @@ export interface ChatPanelProps {
   onCollapsedChange?: (collapsed: boolean) => void
   initialMessage?: string
   initialFiles?: FileAttachment[]
-  /** When set (e.g. from home composer), overrides stored interaction mode for this session and first message */
-  initialInteractionMode?: InteractionMode
   /** Personal-shell composer prefill; stages text without sending it. */
   prefillRequest?: RestoreDraftRequest | null
   /**
@@ -996,7 +998,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onCollapsedChange,
   initialMessage,
   initialFiles,
-  initialInteractionMode,
   prefillRequest,
   onPrefillConsumed,
   composer: composerProp,
@@ -1026,6 +1027,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   readOnlyReason,
   phoneTranscriptTopPadding = "chrome",
 }: ChatPanelProps) {
+  // A machine workspace cannot take a write while its Mac is asleep, so the
+  // composer is refused from the same state the banner renders (SHO-185 AC4).
+  // The banner's own line is the reason, so the input says why it is off.
+  const { instance: machineInstance } = useActiveInstance()
+  const machineView = useMachineWorkspace({ machineName: machineInstance?.name })
+  const machineStop = machineView.composeDisabled ? machineView.banner ?? undefined : undefined
   const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
   const chatDockStore = useChatDockStore()
   const {
@@ -1564,63 +1571,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     !isModelControlled && modelPrefLoaded,
   )
 
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>(
-    () => initialInteractionMode ?? "agent",
-  )
-
-  useEffect(() => {
-    // A forced mode (e.g. the personal companion shell always forcing
-    // "agent") wins outright — loading/restoring a persisted preference here
-    // would just be immediately overridden by the forced-mode effect below,
-    // and doing so on every mount is a wasted async round trip at best.
-    if (composer.forcedMode) return
-    if (initialInteractionMode) {
-      setInteractionMode(initialInteractionMode)
-      void saveInteractionModePreference(initialInteractionMode)
-      return
-    }
-    void loadInteractionModePreference().then((stored) => {
-      if (stored) {
-        setInteractionMode(stored)
-      }
-    })
-  }, [initialInteractionMode, composer.forcedMode])
-
-  // Mirror interactionMode in a ref so callbacks (sendMessageInternal, queue
-  // processor) always observe the latest value even when fired in the same
-  // tick as a mode change (e.g. plan confirm → switch to agent → send).
-  const interactionModeRef = useRef<InteractionMode>(interactionMode)
-  useEffect(() => {
-    interactionModeRef.current = interactionMode
-  }, [interactionMode])
-
-  useEffect(() => {
-    if (!composer.forcedMode) return
-    interactionModeRef.current = composer.forcedMode
-    setInteractionMode(composer.forcedMode)
-  }, [composer.forcedMode])
-
-  const handleInteractionModeChange = useCallback((mode: InteractionMode) => {
-    interactionModeRef.current = mode
-    setInteractionMode(mode)
-    void saveInteractionModePreference(mode)
-  }, [])
-
-  // Dual Plan preference — singleton-backed hook so the chat input, Plans
-  // panel header, and user settings page all stay in sync. Persistent
-  // per-device; the toggle stays sticky across sessions. Default is ON.
-  const [dualPlan, setDualPlanAsync] = useDualPlan()
+  // Dual Plan preference — singleton-backed hook so the Plans panel header and
+  // user settings page stay in sync. Persistent per-device; the toggle stays
+  // sticky across sessions. Default is ON.
+  const [dualPlan] = useDualPlan()
   const dualPlanRef = useRef<boolean>(dualPlan)
   useEffect(() => {
     dualPlanRef.current = dualPlan
   }, [dualPlan])
-  const handleDualPlanChange = useCallback(
-    (next: boolean) => {
-      dualPlanRef.current = next
-      void setDualPlanAsync(next)
-    },
-    [setDualPlanAsync],
-  )
 
   const [restoreDraftRequest, setRestoreDraftRequest] =
     useState<RestoreDraftRequest | null>(null)
@@ -3115,7 +3073,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             liveSessionId: currentSessionIdRef.current,
           })
         ) {
-          setActiveWorkspaceId(workspaceId)
+          setActiveWorkspaceId(workspaceId, { reason: "automatic" })
         }
         refetchUsageWallet()
 
@@ -3328,6 +3286,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // but tight enough to kill a tight reconnect loop.
   const autoResumeTimestampsRef = useRef<number[]>([])
   const autoResumeCircuitTrippedRef = useRef(false)
+  // One reload per blocked attach: repainting history is what puts the missing
+  // prompt on screen, and the reload's own probe attaches from there.
+  const blockedAttachReloadAtRef = useRef(0)
+  /** A probe found a live turn whose prompt the screen has not painted (SHO-147). */
+  const reportLiveTurnAttachBlocked = useCallback(
+    (context: string, reason: string) => {
+      console.warn(
+        `[ChatPanel] Refused to attach the live turn (${context}, reason=${reason}); reloading history first`,
+      )
+      try {
+        Sentry.captureMessage("chat_live_turn_attach_blocked", {
+          level: "warning",
+          tags: { context, reason },
+          extra: {
+            sessionId: currentSessionIdRef.current,
+            turnId: currentTurnIdRef.current,
+            screenRows: cachedMessagesRef.current?.length ?? 0,
+            historyRows: sessionMessages?.all?.length ?? 0,
+          },
+        })
+      } catch (err) {
+        console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+      }
+    },
+    [sessionMessages],
+  )
   const guardedAutoResumeStream = useCallback(
     (reason: "live-turn-probe" | "stall-recovery") => {
       if (autoResumeCircuitTrippedRef.current) {
@@ -3338,6 +3322,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (
         resumeStreamInFlightRef.current.current?.sessionId === currentSessionId
       ) {
+        return
+      }
+      // Never attach to a turn whose prompt is not on screen (SHO-147). The
+      // stream carries only the assistant reply, so with no user row between it
+      // and the reply above, the one-assistant-per-turn grouping gives the new
+      // reply the previous turn's bubble. Painting history is what puts the
+      // missing prompt there — and that load's own probe attaches from there.
+      const gate = resolveLiveTurnAttach({
+        screen: cachedMessagesRef.current ?? [],
+        history: sessionMessages?.all ?? [],
+      })
+      if (!gate.attach) {
+        reportLiveTurnAttachBlocked(reason, gate.reason)
+        if (Date.now() - blockedAttachReloadAtRef.current > 1000) {
+          blockedAttachReloadAtRef.current = Date.now()
+          reloadAndAttachLiveTurnRef.current({ settle: false })
+        }
         return
       }
       const { timestamps, tripped } = recordAutoResumeAttempt(
@@ -3373,7 +3374,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
       void resumeStreamSingleFlight()
     },
-    [currentSessionId, projectId, resumeStreamSingleFlight],
+    [currentSessionId, projectId, resumeStreamSingleFlight, reportLiveTurnAttachBlocked, sessionMessages],
   )
   // A session switch means the user navigated away from whatever was
   // looping — give the (new) session a clean breaker rather than carrying a
@@ -3652,6 +3653,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(
     null,
   )
+  // Non-null while an attachment's bytes are going up, so a 200 MB file shows
+  // movement instead of a frozen composer (the chips are cleared on submit).
+  const [uploadStatus, setUploadStatus] = useState<{
+    name: string
+    fraction: number
+  } | null>(null)
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
   const [errorDismissed, setErrorDismissed] = useState(false)
   const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
@@ -3836,6 +3843,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [currentSessionId, messagesWithQueued, optimisticUserInput])
 
+  // A big web pick paints its echo from a `blob:` object URL, and the real
+  // message carries a workspace URL instead — so once this echo is replaced or
+  // dropped, nothing can reach that blob again and it is released here. The
+  // composer deliberately keeps its own copy alive through the send (see
+  // `resetAttachments`), so the release belongs to the echo's lifetime.
+  useEffect(() => {
+    const files = optimisticUserInput?.files ?? []
+    return () => {
+      for (const file of files) releasePreviewUrl(file.previewUrl)
+    }
+  }, [optimisticUserInput])
+
   const displayMessages = useMemo((): UIMessage[] => {
     // While the stop snapshot is held, the window still shows it — merged with
     // the live array so a message sent after Stop appears under the reply it
@@ -4010,32 +4029,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
   /**
    * The newest saved row for this chat, one row wide. A refocus has to tell
    * "this chat is up to date" from "a turn was written while this window was
-   * in the background" without pulling the transcript (SHO-53), and the id of
-   * the newest row is enough: if it is not the row on screen, history moved.
+   * in the background" without pulling the transcript (SHO-53). The row is
+   * read newest-first: the list route only orders when it is told to, and an
+   * unordered `limit=1` hands back an arbitrary row — in local mode the oldest
+   * one, which made every refocus reload the transcript (SHO-99).
    */
   const probePersistedTail = useCallback(
     async (sessionId: string): Promise<PersistedTail | null> => {
       if (!API_URL) return null
-      const params = new URLSearchParams({
-        sessionId,
-        agent: "technical",
-        limit: "1",
-        offset: "0",
-      })
+      const query = persistedTailQuery(sessionId)
       try {
         // Same insert point as the transcript itself (`/api/chat-messages` is
         // routed by the SDK interceptor): read the row from the same places the
         // messages come from, or a machine workspace would compare its
         // transcript against a cloud chat and think history moved.
         const body = domainHttp
-          ? (await domainHttp.get<{ items?: any[] }>("/api/chat-messages", {
-              sessionId,
-              agent: "technical",
-              limit: "1",
-              offset: "0",
-            })).data
+          ? (await domainHttp.get<{ items?: any[] }>("/api/chat-messages", query)).data
           : await (expoFetch ?? globalThis.fetch)(
-              `${API_URL}/api/chat-messages?${params.toString()}`,
+              `${API_URL}/api/chat-messages?${new URLSearchParams(query).toString()}`,
               {
                 headers: nativeHeaders ? nativeHeaders() : {},
                 credentials: Platform.OS === "web" ? "include" : undefined,
@@ -4045,9 +4056,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
               .catch(() => null)
         const newest = Array.isArray(body?.items) ? body.items[0] : null
         if (!newest?.id) return null
+        let parts: any = newest.parts
+        if (typeof parts === "string") {
+          try {
+            parts = JSON.parse(parts)
+          } catch {
+            parts = []
+          }
+        }
         return {
           id: String(newest.id),
           role: typeof newest.role === "string" ? newest.role : null,
+          content: typeof newest.content === "string" ? newest.content : null,
+          turnStartedAt: messageTurnStartedAt({ parts }),
+          contentLength:
+            typeof newest.content === "string" ? newest.content.length : null,
         }
       } catch {
         // A failed read is not evidence of a missed turn: leave the panel be.
@@ -4198,16 +4221,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
         reportHistoryPaintKeptLiveTail("paintLoadedHistory", paint.reason, aiMessages)
         return
       }
+      // Paint the decision's transcript, not raw history: when history is ahead
+      // of the screen it carries the reply that only exists on screen (SHO-147).
+      const painted = paint.messages as any[]
       const unchanged =
-        cached?.length === aiMessages.length &&
-        cached?.[aiMessages.length - 1]?.id === aiMessages[aiMessages.length - 1]?.id &&
-        cached?.[aiMessages.length - 1]?.content === aiMessages[aiMessages.length - 1]?.content
+        cached?.length === painted.length &&
+        cached?.[painted.length - 1]?.id === painted[painted.length - 1]?.id &&
+        cached?.[painted.length - 1]?.content === painted[painted.length - 1]?.content
       if (!unchanged) {
-        cachedMessagesRef.current = aiMessages
-        setMessages(aiMessages)
-        liveReplySessionRef.current = null
+        cachedMessagesRef.current = painted
+        setMessages(painted)
       }
-      sessionMessageCache.set(sessionId, aiMessages)
+      // History accounts for the screen again: the reply it was missing has been
+      // written (or was never this panel's), so the next paint may go ahead
+      // without the live-tail guard (SHO-85).
+      if (!paint.carriedLiveReply) liveReplySessionRef.current = null
+      sessionMessageCache.set(sessionId, painted)
     },
     [sessionMessages, setMessages, reportHistoryPaintKeptLiveTail],
   )
@@ -4249,7 +4278,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return
     const tail = await probePersistedTail(sessionId)
     if (currentSessionIdRef.current !== sessionId) return
-    if (!persistedTailIsUnseen(tail, messagesRef.current)) return
+    if (
+      !persistedTailIsUnseen(tail, messagesRef.current, {
+        // A reply this window streamed is on screen under the AI SDK's id
+        // until a paint adopts the saved row (SHO-85/SHO-99).
+        streamedHere: liveReplySessionRef.current === sessionId,
+      })
+    )
+      return
     // A repaint that requires the reply keeps SHO-31's rule: another window's
     // ordinary turn is not this window's to overwrite. A tail that is still a
     // user row is a prompt answered elsewhere (the queue's `[Task update]`
@@ -5034,6 +5070,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
           reportHistoryPaintKeptLiveTail("effect-1", paint.reason, aiMessages)
           return
         }
+        // Paint the decision's transcript rather than raw history: when history
+        // is ahead of the screen it also carries the reply that only exists on
+        // screen, spliced in front of the prompt that started the next turn
+        // (SHO-147).
+        const painted = paint.messages as any[]
         const textLength = (m: any): number => {
           const fromParts = (m?.parts ?? []).reduce(
             (n: number, p: any) =>
@@ -5046,26 +5087,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // only grows, so compare its text too.
         const changed =
           !cached ||
-          cached.length !== aiMessages.length ||
+          cached.length !== painted.length ||
           cached[cached.length - 1]?.id !==
-            aiMessages[aiMessages.length - 1]?.id ||
+            painted[painted.length - 1]?.id ||
           textLength(cached[cached.length - 1]) !==
-            textLength(aiMessages[aiMessages.length - 1])
+            textLength(painted[painted.length - 1])
 
         if (changed) {
-          cachedMessagesRef.current = aiMessages
-          sessionMessageCache.set(loadSessionId, aiMessages)
-          setMessages(aiMessages)
-          // History accounts for the screen again: the reply it was missing has
-          // been written (or was never this panel's), so the next paint may go
-          // ahead without the live-tail guard (SHO-85).
-          liveReplySessionRef.current = null
+          cachedMessagesRef.current = painted
+          sessionMessageCache.set(loadSessionId, painted)
+          setMessages(painted)
           historyPaintAttemptRef.current = 0
         } else {
           // Same shape as cache — still refresh the module cache entry so any
           // later in-flight mutations (status flips, etc.) don't drift.
-          sessionMessageCache.set(loadSessionId, aiMessages)
+          sessionMessageCache.set(loadSessionId, painted)
         }
+        // History accounts for the screen again: the reply it was missing has
+        // been written (or was never this panel's), so the next paint may go
+        // ahead without the live-tail guard (SHO-85).
+        if (!paint.carriedLiveReply) liveReplySessionRef.current = null
       })
       .catch((err: any) =>
         console.error("[ChatPanel] Failed to load messages:", err),
@@ -5270,10 +5311,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return
       }
 
-      cachedMessagesRef.current = aiMessages
-      sessionMessageCache.set(currentSessionId, aiMessages)
-      setMessages(aiMessages)
-      liveReplySessionRef.current = null
+      cachedMessagesRef.current = paint.messages as any[]
+      sessionMessageCache.set(currentSessionId, paint.messages as any[])
+      setMessages(paint.messages as any[])
+      if (!paint.carriedLiveReply) liveReplySessionRef.current = null
       historyPaintAttemptRef.current = 0
       // NOTE: isLoadingOlderRef is intentionally NOT reset here.
       // It is reset in onContentSizeChange after scroll position is adjusted,
@@ -5399,16 +5440,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const planStreamRef = useRef(planStream)
   planStreamRef.current = planStream
 
-  useEffect(() => {
-    if (!isActivePanel) return
-    const next = isStreaming && interactionMode === "plan"
-    const ctx = planStreamRef.current
-    if (!ctx) return
-    if (ctx.isPlanStreaming === next) return
-    ctx.setIsPlanStreaming(next)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStreaming, interactionMode, isActivePanel])
-
   // Track the last plan we published so we can return the SAME object
   // identity when nothing about the create_plan args has changed. Without
   // this, every streaming token rebuilt a fresh `normalizePlanData({...})`
@@ -5481,6 +5512,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
     lastDerivedPlanRef.current = { sig, plan: fresh }
     return fresh
   }, [isStreaming, messages])
+
+  // A plan is "streaming" while a `create_plan` call is still arriving — that
+  // is what lights the Plans panel's streaming row.
+  useEffect(() => {
+    if (!isActivePanel) return
+    const next = derivedStreamingPlan != null
+    const ctx = planStreamRef.current
+    if (!ctx) return
+    if (ctx.isPlanStreaming === next) return
+    ctx.setIsPlanStreaming(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedStreamingPlan, isActivePanel])
 
   // Throttle the publish to the shared `PlanStreamContext` so a long
   // `create_plan` stream doesn't notify every `usePlanStream()` consumer
@@ -5688,7 +5731,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const match = dataUrl.match(/^data:([^;]+);/)
     return match?.[1] || "application/octet-stream"
   }, [])
-
   // Internal function that actually sends a message (used by queue processor)
   // Isolated "actually put it on the wire" step, factored out of
   // `sendMessageInternal` so a network-class failure can be queued for
@@ -5811,25 +5853,55 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setIsFollowing(true)
       showOptimisticEcho(trimmedContent, fileArray)
 
+      // The turn is in flight from here: the upload below is the first thing
+      // that can take real time on a big attachment, and the composer must
+      // already be locked and the transcript already painting the bubble
+      // (QA round 1 on SHO-213: it looked frozen for the whole upload).
+      isSendingMessageRef.current = true
+
+      // Seed the progress row before the first byte moves: a transport that
+      // reports no intermediate events (a small file, a fast link) would
+      // otherwise leave the composer looking idle for the whole upload.
+      const uploading = fileArray.find(
+        (file) => !file.savedPath && shouldUploadAttachmentFirst(file),
+      )
+      if (uploading) setUploadStatus({ name: uploading.name, fraction: 0 })
+
+      // Attachments go up BEFORE the turn. The bytes are PUT to the runtime's
+      // streaming route and the message carries a reference part (`savedPath`),
+      // so a large archive never becomes a base64 JSON body — that inflation,
+      // repeated through the client, the API and the runtime, is what made big
+      // attachments time out (SHO-213). Small images stay inline: vision needs
+      // their bytes on this very request.
+      let outgoingParts: OutgoingFilePart[] = []
+      try {
+        outgoingParts = await prepareOutgoingFiles(fileArray, {
+          agentUrl: agentBaseUrl,
+          headers: nativeHeaders ? nativeHeaders() : undefined,
+          fetchImpl: expoFetch ?? undefined,
+          onUploadProgress: (name, fraction) => setUploadStatus({ name, fraction }),
+        })
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Could not upload the attachment."
+        console.warn("[ChatPanel] Attachment upload failed:", err)
+        isSendingMessageRef.current = false
+        setEmptyResponseError(message)
+        return
+      } finally {
+        setUploadStatus(null)
+      }
+
       const parts: Array<
         | { type: "text"; text: string }
-        | { type: "file"; mediaType: string; url: string; name?: string }
+        | OutgoingFilePart
       > = []
 
       if (trimmedContent) {
         parts.push({ type: "text", text: trimmedContent })
       }
 
-      fileArray.forEach((file) => {
-        parts.push({
-          type: "file",
-          mediaType: file.type || extractMediaType(file.dataUrl),
-          url: file.dataUrl,
-          ...(file.name ? { name: file.name } : {}),
-        })
-      })
-
-      isSendingMessageRef.current = true
+      parts.push(...outgoingParts)
 
       // Let EZ Mode know a new turn is starting. This is what
       // triggers the overlay to arm its heartbeat / activity buffer.
@@ -5872,6 +5944,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
         )
       }
 
+      // The chat lists keep their own rows (they are not MST collections), so
+      // the same bump has to reach them: this re-stamps just this row and
+      // re-sorts it to "now" without a list re-fetch.
+      chatSessionEvents.emit({
+        touchedSessionId: currentSessionId,
+        lastActiveAt: Date.now(),
+      })
+
       const messagePayload: {
         text: string
         files?: Array<{
@@ -5899,13 +5979,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
       }
 
-      if (fileArray.length > 0) {
-        messagePayload.files = fileArray.map((file) => ({
-          type: "file" as const,
-          mediaType: file.type || extractMediaType(file.dataUrl),
-          url: file.dataUrl,
-          ...(file.name ? { name: file.name } : {}),
-        }))
+      if (outgoingParts.length > 0) {
+        messagePayload.files = outgoingParts
       }
 
       try {
@@ -5937,7 +6012,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
           projectId,
           focusedProjectId,
           agentMode: perMsgModel || selectedModel,
-          interactionMode: interactionModeRef.current,
           dualPlan: dualPlanRef.current,
           clientTurnId,
           // Live canvas preview size (phone vs desktop). The runtime
@@ -5961,9 +6035,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           extra: extraBody,
         })
         console.log(
-          "[ChatPanel][send] bodyExtra — interactionMode:",
-          bodyExtra.interactionMode,
-          "agentMode:",
+          "[ChatPanel][send] bodyExtra — agentMode:",
           bodyExtra.agentMode,
           "hasConfirmedPlan:",
           !!bodyExtra.confirmedPlan,
@@ -5984,7 +6056,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       deliverMessage,
       featureId,
       phase,
-      extractMediaType,
+      agentBaseUrl,
+      nativeHeaders,
+      expoFetch,
       workspaceId,
       userId,
       projectId,
@@ -6002,8 +6076,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     ],
   )
 
-  // Register bridge endpoints so the EZ Mode overlay can send messages
-  // and toggle interaction mode on our behalf. The registrar is a no-op
+  // Register bridge endpoints so the EZ Mode overlay can send messages on our
+  // behalf. The registrar is a no-op
   // when no <ChatBridgeProvider> is mounted (e.g. tests), so it's safe to
   // call unconditionally.
   const bridgeSend = useCallback(
@@ -6012,12 +6086,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [sendMessageInternal],
   )
-  const bridgeSetMode = useCallback(
-    (mode: InteractionMode) => {
-      handleInteractionModeChange(mode)
-    },
-    [handleInteractionModeChange],
-  )
   const {
     emitTurnStart: bridgeEmitTurnStart,
     emitToolActivity: bridgeEmitToolActivity,
@@ -6025,7 +6093,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     setSubagentCards: bridgeSetSubagentCards,
   } = useChatBridgeRegistrar({
     send: bridgeSend,
-    setMode: bridgeSetMode,
   })
   useEffect(() => {
     emitTurnStartRef.current = bridgeEmitTurnStart
@@ -6484,6 +6551,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [clearOptimisticEcho, serverQueue],
   )
 
+  /**
+   * Local queue rows the person clicked "Send now" on while a turn was
+   * streaming. The local queue is drained by this window, not the server: the
+   * row leaves `messageQueue` only when the drain takes it on the falling edge
+   * of the stop this click asks for, so the dock would keep showing a message
+   * the person has already sent. Cleared when the row leaves the queue, and on
+   * that falling edge — a row the drain did not take is still queued.
+   */
+  const [sentNowIds, setSentNowIds] = useState<Set<string>>(() => new Set())
+
   // "Send now" — interrupt the current streaming turn and immediately drain
   // the chosen queued message. Implemented as "promote to front + stop" so we
   // re-use the existing falling-edge drain effect (see `processMessageQueue`
@@ -6514,6 +6591,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       })
       if (!promoted) return
       if (isStreaming) {
+        setSentNowIds((current) => {
+          if (current.has(messageId)) return current
+          const next = new Set(current)
+          next.add(messageId)
+          return next
+        })
         handleStop()
       } else {
         void processMessageQueue()
@@ -6521,6 +6604,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [isStreaming, handleStop, processMessageQueue, serverQueue],
   )
+
+  // A hidden local row is gone from the queue (the drain took it) or the turn
+  // came to rest without taking it (still queued, so it has to be visible).
+  useEffect(() => {
+    if (sentNowIds.size === 0) return
+    if (!isStreaming) {
+      setSentNowIds(new Set())
+      return
+    }
+    const queued = new Set(messageQueue.map((m) => m.id))
+    let stale = false
+    for (const id of sentNowIds) if (!queued.has(id)) stale = true
+    if (!stale) return
+    setSentNowIds((current) => {
+      const next = new Set(current)
+      for (const id of current) if (!queued.has(id)) next.delete(id)
+      return next
+    })
+  }, [isStreaming, messageQueue, sentNowIds])
 
   /**
    * The waiting chip's Resume: deliver the updates a paused session is holding.
@@ -6535,9 +6637,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [serverQueue],
   )
 
+  // A team-chat message queued behind this session's turn is its own queue row:
+  // Send now and ✕ reach the agent-wake routes, never the session's own queue.
+  // The promise goes back to the row so a refusal (409 not_pending, 403 viewer)
+  // is shown where the person pressed, not just logged.
+  const handleSendAgentWakeNow = useCallback(
+    (wakeId: string) => serverQueue.sendWakeNow(wakeId),
+    [serverQueue],
+  )
+  const handleRemoveAgentWake = useCallback(
+    (wakeId: string) => serverQueue.removeWake(wakeId),
+    [serverQueue],
+  )
+
   const displayedQueue = useMemo(
-    () => [...serverQueue.queuedMessages, ...messageQueue],
-    [messageQueue, serverQueue.queuedMessages],
+    () =>
+      [...serverQueue.queuedMessages, ...messageQueue].filter(
+        (message) => !sentNowIds.has(message.id),
+      ),
+    [messageQueue, sentNowIds, serverQueue.queuedMessages],
   )
 
   const enqueueServerMessage = useCallback(
@@ -6574,7 +6692,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
         projectId,
         focusedProjectId,
         agentMode: perMsgModel || selectedModel,
-        interactionMode: interactionModeRef.current,
         dualPlan: dualPlanRef.current,
         viewer: canvasViewerPayload({
           isPhoneViewport,
@@ -6765,7 +6882,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [handleSendMessage],
   )
 
-  // Plan confirmation: switch to Agent mode and execute.
+  // Plan confirmation: execute the plan in this same chat.
   // Keep the PlanCard visible with confirmed state for a few seconds before dismissing.
   const confirmDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -6779,20 +6896,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setConfirmedPlan(planToBuild)
       pendingPlanRef.current = null
       setPendingPlan(null)
-      console.log(
-        "[ChatPanel][confirm-plan] BEFORE mode change — stateMode:",
-        interactionMode,
-        "refMode:",
-        interactionModeRef.current,
-        "selectedModel:",
-        selectedModel,
-      )
-      handleInteractionModeChange("agent")
-      console.log(
-        "[ChatPanel][confirm-plan] AFTER mode change — refMode:",
-        interactionModeRef.current,
-        "(state will update on next render)",
-      )
       handleSendMessage("Execute the confirmed plan.", undefined, modelId)
       if (confirmDismissTimerRef.current)
         clearTimeout(confirmDismissTimerRef.current)
@@ -6800,7 +6903,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setConfirmedPlan(null)
       }, 4000)
     },
-    [handleSendMessage, handleInteractionModeChange],
+    [handleSendMessage],
   )
 
   // Build from Plans panel: execute a saved plan with selected model
@@ -6812,14 +6915,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
     )
       return
     lastBuildNonceRef.current = buildPlanRequest.nonce
-    const { plan, modelId: requestedMode } = buildPlanRequest
+    const { plan, modelId } = buildPlanRequest
     const planToBuild = normalizePlanData(plan)
     confirmedPlanRef.current = planToBuild
     setConfirmedPlan(planToBuild)
     pendingPlanRef.current = null
     setPendingPlan(null)
-    handleInteractionModeChange("agent")
-    handleSendMessage("Execute the confirmed plan.", undefined, requestedMode)
+    handleSendMessage("Execute the confirmed plan.", undefined, modelId)
     if (confirmDismissTimerRef.current)
       clearTimeout(confirmDismissTimerRef.current)
     confirmDismissTimerRef.current = setTimeout(() => {
@@ -6828,7 +6930,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onBuildPlanConsumed?.(buildPlanRequest.nonce)
   }, [
     buildPlanRequest,
-    handleInteractionModeChange,
     handleSendMessage,
     onBuildPlanConsumed,
   ])
@@ -6982,6 +7083,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       dataUrl: p.url,
       name: p.name ?? p.filename ?? "file",
       type: p.mediaType ?? extractMediaType(p.url),
+      ...(typeof p.savedPath === "string" ? { savedPath: p.savedPath } : {}),
     }))
     const files: FileAttachment[] | undefined =
       cachedFiles && cachedFiles.length > 0
@@ -7316,6 +7418,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               dataUrl: p.url,
               name: p.name ?? p.filename ?? "file",
               type: p.mediaType ?? extractMediaType(p.url),
+              ...(typeof p.savedPath === "string" ? { savedPath: p.savedPath } : {}),
             }))
           : undefined
       if (!content && !files) return
@@ -7798,7 +7901,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (pendingPlanRef.current) handleConfirmPlan(pendingPlanRef.current, modelId)
   }
   islandPlanFeedbackRef.current = (text) => {
-    handleInteractionModeChange("plan")
     handleSendMessage(text)
   }
   islandSendRef.current = (text, files) => handleSendMessage(text, files)
@@ -8804,21 +8906,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   <ExecutionBadge />
                   <ChatInput
                     onSubmit={handleInputSubmit}
-                    disabled={!currentSessionId || !!readOnlyReason}
+                    uploadStatus={uploadStatus}
+                    disabled={!currentSessionId || !!readOnlyReason || machineView.composeDisabled}
                     placeholder={
-                      readOnlyReason
-                        ? readOnlyReason
+                      readOnlyReason ?? machineStop
+                        ? (readOnlyReason ?? machineStop)!
                         : !featureId
                         ? "Message"
                         : hasPendingQuestion
                           ? questionPresentation === "sheet"
                             ? "Respond to the question, or type a message..."
                             : "Respond to the question below, or type a message..."
-                          : interactionMode === "plan"
-                            ? "Describe what you want to plan..."
-                            : interactionMode === "ask"
-                              ? "Ask a question..."
-                              : "Ask Shogo..."
+                          : "Ask Shogo..."
                     }
                     isStreaming={isStreaming}
                     onStop={handleStop}
@@ -8831,11 +8930,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onReorderQueuedMessage={handleReorderQueuedMessage}
                     onEditQueuedMessage={handleEditQueuedMessage}
                     onSendQueuedMessageNow={handleSendQueuedMessageNow}
+                    onSendAgentWakeNow={handleSendAgentWakeNow}
+                    onRemoveAgentWake={handleRemoveAgentWake}
                     onResumeTaskWakes={handleResumeTaskWakes}
-                    interactionMode={interactionMode}
-                    onInteractionModeChange={handleInteractionModeChange}
-                    dualPlan={dualPlan}
-                    onDualPlanChange={handleDualPlanChange}
                     contextUsage={contextUsage}
                     contextBreakdown={contextBreakdown}
                     quickActions={quickActions}
@@ -8846,6 +8943,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     projectId={projectId}
                     projects={projectMentionOptions}
                     chatSessionId={currentSessionId}
+                    chatWorkspaceId={chatWorkspaceId}
                     workspaceHistorySearch={workspaceHistorySearch}
                     chatMentionables={chatMentionables}
                     ideMode={ideMode}

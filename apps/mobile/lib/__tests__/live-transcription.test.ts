@@ -115,6 +115,37 @@ describe('startAdaptiveLive', () => {
     expect(t.chunks[0].start).toBeGreaterThanOrEqual(1.9)
     expect(summary.complete).toBe(false)
   })
+
+  test('sends nothing while the mic is muted, and everything after it comes back', async () => {
+    const t = base()
+    const tap = createPushTap(RATE)
+    let muted = true
+    const capture = startAdaptiveLive({ ...t.options(tap), isMuted: () => muted })
+    tap.push(noise(1))
+    await new Promise((r) => setTimeout(r, 10))
+    tap.push(noise(1))
+    expect(FakeSocket.last.audioSeconds()).toBe(0)
+    muted = false
+    tap.push(noise(1))
+    const summary = await capture.stop()
+    // Only the unmuted second is transcibed — and only that second is billed.
+    expect(FakeSocket.last.audioSeconds()).toBeCloseTo(1, 1)
+    expect(summary.seconds).toBeLessThan(1.5)
+  })
+
+  test('a muted mic costs nothing on the chunk path either', async () => {
+    FakeSocket.reset('error')
+    const t = base()
+    const tap = createPushTap(RATE)
+    const capture = startAdaptiveLive({ ...t.options(tap), isMuted: () => true })
+    tap.push(noise(8))
+    await new Promise((r) => setTimeout(r, 20))
+    tap.push(noise(8))
+    const summary = await capture.stop()
+    expect(t.modes).toEqual(['chunks'])
+    expect(t.chunks).toHaveLength(0)
+    expect(summary.seconds).toBe(0)
+  })
 })
 
 describe('reduceLiveMeeting', () => {

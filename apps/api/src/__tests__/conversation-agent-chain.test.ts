@@ -7,6 +7,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   chainLimitHit,
+  chainLimitMax,
+  envInt,
   humanChain,
   MAX_AGENT_CHAIN_DEPTH,
   MAX_AGENT_PING_PONG_TURNS,
@@ -30,8 +32,14 @@ const C = { projectId: 'c' }
 describe('chain limits', () => {
   test('defaults', () => {
     expect(MAX_AGENT_CHAIN_DEPTH).toBe(24)
-    expect(MAX_AGENT_TURNS_PER_THREAD).toBe(40)
+    expect(MAX_AGENT_TURNS_PER_THREAD).toBe(100)
     expect(MAX_AGENT_PING_PONG_TURNS).toBe(12)
+  })
+
+  test('each limit reports the ceiling it compares against', () => {
+    expect(chainLimitMax('depth')).toBe(MAX_AGENT_CHAIN_DEPTH)
+    expect(chainLimitMax('thread_turns')).toBe(MAX_AGENT_TURNS_PER_THREAD)
+    expect(chainLimitMax('ping_pong')).toBe(MAX_AGENT_PING_PONG_TURNS)
   })
 
   test('a person starts at depth 0; each hop is one deeper and records the agent', () => {
@@ -60,6 +68,24 @@ describe('chain limits', () => {
   test('thread turns trip past the maximum', () => {
     const chain = nextChain(humanChain({ id: 'm' }, 'u'), A, MAX_AGENT_TURNS_PER_THREAD)
     expect(chainLimitHit(chain)).toBe('thread_turns')
+  })
+
+  test('the 100th turn in a thread runs; the 101st is the one that pauses', () => {
+    const at100 = nextChain(humanChain({ id: 'm' }, 'u'), A, MAX_AGENT_TURNS_PER_THREAD - 1)
+    expect(at100.turns).toBe(100)
+    expect(chainLimitHit(at100)).toBeNull()
+    expect(chainLimitHit(nextChain(at100, B, at100.turns))).toBe('thread_turns')
+  })
+
+  test('an env override still wins over the default', () => {
+    const name = 'SHOGO_AGENT_CHAIN_MAX_THREAD_TURNS'
+    process.env[name] = '250'
+    try {
+      expect(envInt(name, MAX_AGENT_TURNS_PER_THREAD)).toBe(250)
+    } finally {
+      delete process.env[name]
+    }
+    expect(envInt(name, MAX_AGENT_TURNS_PER_THREAD)).toBe(100)
   })
 
   test('ping-pong counts the alternating run at the end', () => {

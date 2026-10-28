@@ -48,11 +48,36 @@ export interface DictationHotkeyState {
   fnAvailable: boolean
 }
 
+/**
+ * The machine-level limits a desktop agent runtime runs under. `execMemoryMB`
+ * is what the *agent's commands* may use — separate from `memoryMB`, which is
+ * the runtime's own leak ceiling.
+ */
+export interface HostRuntimeConfigView {
+  memoryMB: number
+  cpuPercent: number
+  execMemoryMB: number | 'auto'
+  /** What `execMemoryMB` resolves to on this machine right now. */
+  resolvedExecMemoryMB: number
+  totalMemMB: number
+}
+
+export interface HostRuntimeConfigSetResult {
+  ok: boolean
+  error?: string
+  config: HostRuntimeConfigView
+}
+
 export interface DesktopBridge {
   isDesktop?: boolean
   platform?: string
   ensureMicAccess?: () => Promise<MicAccessResult>
   openMicrophoneSettings?: () => Promise<{ ok: boolean }>
+  /** Memory budget for the commands an agent runs (SHO-203). Desktop only. */
+  getHostRuntimeConfig?: () => Promise<HostRuntimeConfigView>
+  setHostRuntimeConfig?: (patch: {
+    execMemoryMB?: number | 'auto'
+  }) => Promise<HostRuntimeConfigSetResult>
   pickFolders?: (opts?: { multi?: boolean; defaultPath?: string }) => Promise<
     { ok: true; paths: string[] } | { ok: false; error?: string }
   >

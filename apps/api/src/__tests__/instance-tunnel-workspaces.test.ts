@@ -14,13 +14,42 @@
 
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
-const tunnelInstances: any[] = []
+const tunnelInstances: Array<{ apiKey: string; connected: boolean; stopped: boolean }> = []
+
+/**
+ * Stand-in for the threaded host that `ThreadedTunnel` really creates (SHO-185
+ * §5). The threading itself has its own test — `tunnel-worker-block.test.ts` —
+ * and what these tests are about is the fan-out: which device keys get a tunnel,
+ * and whether stopping reaches all of them. So the host is a record plus the two
+ * notifications `ThreadedTunnel` reads its state from.
+ */
+mock.module('@shogo-ai/worker/tunnel-host', () => ({
+  startTunnelInWorker: (options: any) => {
+    const host = { apiKey: options.apiKey, connected: false, stopped: false }
+    tunnelInstances.push(host)
+    // The socket came up: the worker reports the same thing as `connected`.
+    host.connected = true
+    options.onConnection?.(true)
+    return {
+      stop() {
+        host.stopped = true
+        host.connected = false
+        options.onConnection?.(false)
+      },
+      instanceId: () => null,
+      isConnected: () => host.connected,
+      ready: () => Promise.resolve(),
+    }
+  },
+}))
 
 mock.module('@shogo-ai/worker/tunnel', () => {
   class WorkerTunnel {
+    apiKey: string
     connected = false
     stopped = false
     constructor(public opts: any) {
+      this.apiKey = opts.apiKey
       tunnelInstances.push(this)
     }
     start() {
@@ -116,7 +145,7 @@ describe('startInstanceTunnel', () => {
     await settle()
 
     // The primary key's workspace is skipped: its tunnel is already running.
-    expect(tunnelInstances.map((t) => t.opts.apiKey).sort()).toEqual(
+    expect(tunnelInstances.map((t) => t.apiKey).sort()).toEqual(
       [PRIMARY_KEY, 'shogo_sk_odin', 'shogo_sk_samsara'].sort(),
     )
     const status = getInstanceTunnelStatus()
@@ -139,7 +168,7 @@ describe('startInstanceTunnel', () => {
     await settle()
 
     expect(tunnelInstances).toHaveLength(1)
-    expect(tunnelInstances[0].opts.apiKey).toBe(PRIMARY_KEY)
+    expect(tunnelInstances[0].apiKey).toBe(PRIMARY_KEY)
   })
 
   test('a stored key identical to the primary is not duplicated', async () => {

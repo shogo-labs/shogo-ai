@@ -92,7 +92,7 @@ mock.module('../../lib/prisma', () => ({ prisma: mockPrisma }))
 const s3State: {
   uploadShouldFail: boolean
   factoryReturnsNull: boolean
-  createCalls: Array<{ localDir: string; projectId: string }>
+  createCalls: Array<{ localDir: string; projectId: string; opts: any }>
   uploadCalls: number
 } = {
   uploadShouldFail: false,
@@ -102,8 +102,11 @@ const s3State: {
 }
 
 mock.module('@shogo/shared-runtime', () => ({
-  createS3SyncForProject: (localDir: string, projectId: string) => {
-    s3State.createCalls.push({ localDir, projectId })
+  createS3SyncForProject: (localDir: string, projectId: string, opts?: any) => {
+    // Record the third argument too: the import seeds a brand-new project id
+    // wholesale, so it MUST opt out of the archive lineage guard or every k8s
+    // import dies with "downloadAll() was never called on this instance".
+    s3State.createCalls.push({ localDir, projectId, opts })
     if (s3State.factoryReturnsNull) return null
     return {
       uploadAll: async (_force: boolean) => {
@@ -236,6 +239,13 @@ describe('runImport — S3 seed (k8s mode)', () => {
     expect(s3State.createCalls[0]!.projectId).toBe(result.project.id)
     // localDir should be the per-project subdir under WORKSPACES_DIR.
     expect(s3State.createCalls[0]!.localDir).toContain(result.project.id)
+
+    // Regression (SHO-212): the import seeds a brand-new project id wholesale,
+    // so it must opt out of the `project-src.tar.gz` lineage guard. Without
+    // this option every k8s import fails at syncToS3 with
+    // "downloadAll() was never called on this instance" and the project row is
+    // rolled back. Drop the option in the route and this assertion fails.
+    expect(s3State.createCalls[0]!.opts).toMatchObject({ allowUnconditionalWrite: true })
 
     // uploadAll(false) called exactly once.
     expect(s3State.uploadCalls).toBe(1)

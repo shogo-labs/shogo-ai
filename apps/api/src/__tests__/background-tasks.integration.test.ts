@@ -75,6 +75,15 @@ async function newSession(): Promise<string> {
   return session.id
 }
 
+/** A session belonging to another agent: the assigner who watches a card it handed off. */
+async function newWatcherSession(): Promise<string> {
+  const project = await db.project.create({ data: { name: 'Watcher', workspaceId: seed.workspaceId } })
+  const session = await db.chatSession.create({
+    data: { inferredName: 'Chat', contextType: 'project', contextId: project.id, createdByUserId: seed.owner },
+  })
+  return session.id
+}
+
 beforeAll(async () => {
   await bus._resetConversationBusForTests(null)
   seed = await seedWorkspace(db)
@@ -193,7 +202,8 @@ describe('tasks', () => {
     const item = await db.workItem.findUnique({ where: { id: card.json.item.id } })
     expect(item.threadRootMessageId).toBeTruthy()
 
-    const chatSessionId = await newSession()
+    // The assigner watches the card it handed off: a session of another agent.
+    const chatSessionId = await newWatcherSession()
     const watch = await tasks.createTask({ id: tasks.newTaskId(), chatSessionId, source: 'work_item', targetRef: item.id, title: card.json.item.key, until })
     expect(new Date(watch.expiresAt).getTime() - Date.now()).toBeGreaterThan(tasks.TASK_TTL_MS)
 
@@ -221,6 +231,115 @@ describe('tasks', () => {
     const moved = await db.workItem.findUnique({ where: { id: item.id }, include: { column: true } })
     expect(moved.column.name).toBe('Needs attention')
     expect(await db.workItemEvent.count({ where: { workItemId: item.id, type: 'agent_failed' } })).toBe(1)
+  })
+
+  /**
+   * SHO-129. The agent the card is assigned to also watches it, so its own
+   * run-end used to settle that watch: the wake re-armed, ran, ended the same
+   * way, and the next run was written by the previous wake. One mention became
+   * twelve runs.
+   */
+  test('a run ending on a card does not wake the watch its own agent holds', async () => {
+    const { noteCardRunEnded } = await import('../services/work-boards.service')
+    const until = 'moved to [^\\n]*\\((review|waiting|done|dismissed)\\)|(^|\\n)agent (stopped|failed)'
+    const owner = { 'x-user': seed.member }
+    const channel = await call('POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'phase-1' }, owner)
+    expect(channel.status).toBe(201)
+    const agent = (method: string, path: string, body?: unknown) =>
+      call(method, `/internal/workspaces/${seed.workspaceId}${path}`, body, { 'x-project': seed.projectId })
+    const board = await agent('POST', '/agent-boards', {
+      channel: '#phase-1', name: 'Phase 1',
+      columns: [{ name: 'Backlog', category: 'backlog' }, { name: 'QA & Review', category: 'active' }, { name: 'Done', category: 'done' }],
+    })
+    const engineer = `project:${seed.projectId}`
+    const card = await agent('POST', `/agent-boards/${board.json.board.slug}/items`, { title: 'Loop proof', assignee_agent: engineer })
+    const item = await db.workItem.findUnique({ where: { id: card.json.item.id } })
+    await agent('POST', `/agent-work-items/${item.key}/move`, { column: 'QA & Review' })
+
+    const chatSessionId = await newSession()
+    const watch = await tasks.createTask({ id: tasks.newTaskId(), chatSessionId, source: 'work_item', targetRef: item.id, title: item.key, until })
+
+    // The holder's run ends without moving the card. That is not news to the
+    // agent that just ran, so its own watch stays armed and nothing is queued.
+    for (const messageId of ['m-1', 'm-2', 'm-3']) {
+      await noteCardRunEnded({ threadRootId: item.threadRootMessageId, projectId: seed.projectId, messageId, agentStatus: 'done' })
+    }
+    await noteCardRunEnded({ threadRootId: item.threadRootMessageId, projectId: seed.projectId, messageId: 'm-4', agentStatus: 'error' })
+    const still = await tasks.getTask(watch.id)
+    expect(still!.status).toBe('running')
+    expect(still!.output ?? '').not.toContain('agent stopped')
+    expect(await tasks.enqueueTaskWake(chatSessionId)).toBe(false)
+
+    // A different agent's run stopping is news, so this watch still settles.
+    const { recordEvent } = await import('../services/work-boards.service')
+    const other = await db.project.create({ data: { name: 'QA', workspaceId: seed.workspaceId } })
+    await recordEvent(item, 'agent_stopped', { agentRef: `project:${other.id}` }, { column: 'QA & Review' })
+    await waitFor(async () => (await tasks.getTask(watch.id))!.status === 'completed')
+    expect((await tasks.getTask(watch.id))!.output).toContain('agent stopped with the card still in QA & Review')
+  })
+
+  test('a re-armed card watch counts each milestone, so a watch waking itself is capped (SHO-129)', async () => {
+    const chatSessionId = await newSession()
+    const watch = await tasks.createTask({
+      id: tasks.newTaskId(), chatSessionId, source: 'work_item', targetRef: 'card-loop', title: 'SHO-1 loop', until: 'agent (stopped|failed)',
+    })
+    const base = Date.now() - 60_000
+    // One row re-armed for every milestone: the wakes share a task id and the
+    // row's own timestamps are cleared on re-arm, so the wake messages are the
+    // only place the repeat is visible.
+    for (let i = 0; i < 3; i++) {
+      await db.chatMessage.create({
+        data: {
+          sessionId: chatSessionId,
+          role: 'user',
+          content: `[Task update] ${watch.title} (${watch.id}) completed.`,
+          parts: JSON.stringify([{ type: 'text', text: 'wake' }, { type: 'data-task-notification', data: { taskIds: [watch.id] } }]),
+          createdAt: new Date(base + i * 10_000),
+        },
+      })
+    }
+    expect(await tasks.consecutiveWakeWaits(chatSessionId, 40)).toBe(3)
+    // The same 45-milestone probe QA ran against the first attempt: past the cap.
+    for (let i = 3; i < 45; i++) {
+      await db.chatMessage.create({
+        data: {
+          sessionId: chatSessionId,
+          role: 'user',
+          content: '[Task update] milestone',
+          parts: JSON.stringify([{ type: 'data-task-notification', data: { taskIds: [watch.id] } }]),
+          createdAt: new Date(base + i * 10_000),
+        },
+      })
+    }
+    expect(await tasks.consecutiveWakeWaits(chatSessionId, 45)).toBeGreaterThan(tasks.MAX_CONSECUTIVE_CARD_WAKES)
+  })
+
+  test('tasks finishing one after another in one burst are still one wait', async () => {
+    const chatSessionId = await newSession()
+    // Three tasks that were already running when the burst started, finishing
+    // one at a time: no new work arrived, so the session must not pause.
+    const t0 = Date.now()
+    const ids = [tasks.newTaskId(), tasks.newTaskId(), tasks.newTaskId()]
+    for (const [i, id] of ids.entries()) {
+      await db.backgroundTask.create({
+        data: {
+          id, chatSessionId, source: 'agent_reply', targetRef: `req-${i}:ws`, title: `@Ops reply ${i}`,
+          status: 'completed', consumed: true, finishedAt: new Date(t0), expiresAt: new Date(t0 + 60_000),
+        },
+      })
+    }
+    for (const [i, id] of ids.entries()) {
+      await db.chatMessage.create({
+        data: {
+          sessionId: chatSessionId,
+          role: 'user',
+          content: '[Task update] reply',
+          parts: JSON.stringify([{ type: 'data-task-notification', data: { taskIds: [id] } }]),
+          createdAt: new Date(t0 + 1_000 + i * 1_000),
+        },
+      })
+    }
+    expect(await tasks.consecutiveWakeWaits(chatSessionId, tasks.MAX_CONSECUTIVE_WAKES)).toBe(1)
   })
 
   test('cancel stops tracking without waking anyone', async () => {

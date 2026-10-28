@@ -305,6 +305,21 @@ export class LocalFs implements WorkspaceService {
     return { mtime: file.lastModified, size: file.size };
   }
 
+  /**
+   * Write raw bytes — what an OS file drop needs (SHO-215). Same shape as
+   * `writeFile`, minus the text round-trip, so images/binaries survive a drop
+   * into an "Add local folder" root. `resolve(…, { create: true })` makes the
+   * intermediate folders a dropped folder tree needs.
+   */
+  async writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
+    const { parent, name } = await this.resolve(path, { create: true });
+    if (!name) throw new Error("Invalid path");
+    const handle = await parent.getFileHandle(name, { create: true });
+    const w = await handle.createWritable();
+    await w.write(bytes as unknown as FileSystemWriteChunkType);
+    await w.close();
+  }
+
   async mkdir(path: string) {
     const parts = path.split("/").filter(Boolean);
     let cur: FileSystemDirectoryHandle = this.root;

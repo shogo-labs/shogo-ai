@@ -9,7 +9,7 @@
  * This proves the prompt surface matches tool registration in BOTH states.
  */
 import { describe, test, expect, afterEach, afterAll } from 'bun:test'
-import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs'
+import { mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { FileStateCache } from '../file-state-cache'
@@ -128,13 +128,6 @@ describe('search advertisement contract (WS6)', () => {
     }
     process.env.SHOGO_SEARCH_ENABLED = '1'
     expect(getBuiltinSubagentConfig('code-reviewer', makeCtx(), [])!.toolNames).toContain('search')
-  })
-
-  test('plan-mode prompt and PLAN_MODE_ALLOWED gate search on isSearchEnabled()', () => {
-    const src = readFileSync(join(__dirname, '..', 'gateway.ts'), 'utf-8')
-    expect(src).toContain("read-only tools (read_file, ${isSearchEnabled() ? 'search, ' : ''}web, etc.)")
-    expect(src).toContain("'read_file', ...(isSearchEnabled() ? ['search'] : []),")
-    expect(src).not.toContain("'read_file', 'search',")
   })
 })
 

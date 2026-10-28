@@ -97,8 +97,19 @@ export async function runDigestPass(now = new Date()): Promise<number> {
     if (homeIds) where.workspaceId = { in: Array.from(homeIds) }
   }
   const rows = await db.chatUserSettings.findMany({ where, take: 5000 })
+  // A machine workspace's chat is the desktop's (SHO-185): the copy must not
+  // email digests for messages the cloud did not receive.
+  const machineWorkspaceIds = new Set(
+    (
+      await db.workspace.findMany({
+        where: { machineInstanceId: { not: null } },
+        select: { id: true },
+      })
+    ).map((w: { id: string }) => w.id),
+  )
   let sent = 0
   for (const row of rows) {
+    if (machineWorkspaceIds.has(row.workspaceId)) continue
     if (!isDigestDue(row, now)) continue
     if (!nativeChatEnabled(await getWorkspaceChatConfig(row.workspaceId))) continue
     try {

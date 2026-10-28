@@ -13,9 +13,12 @@
 # all pre-applied. The production stage now just COPY --from=workspace and
 # rebuilds module resolution links.
 #
-# The production base is node:25-slim (debian) rather than node:25-alpine to
+# The production base is node:26-slim (debian) rather than node:26-alpine to
 # match workspace-deps' libc (glibc), so prisma engines and other native
 # binaries copy across cleanly without rebuilding.
+#
+# Node 26 is the current release line and carries the Node2Shell
+# (CVE-2026-111497) Brotli fix from 26.12.1. EOL lines (20/23/25) never get it.
 # =============================================================================
 
 ARG WORKSPACE_DEPS
@@ -27,7 +30,7 @@ FROM ${WORKSPACE_DEPS} AS workspace
 # =============================================================================
 # Production image (debian-slim, glibc — matches workspace-deps libc)
 # =============================================================================
-FROM node:25-slim
+FROM node:26-slim
 
 WORKDIR /app
 
@@ -55,9 +58,24 @@ ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl bash git unzip ca-certificates netcat-openbsd && \
-    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.4.3" && \
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.4.4" && \
     command -v git && git --version && \
     rm -rf /root/.bun /var/lib/apt/lists/*
+
+# Node2Shell (CVE-2026-111497): the Brotli decoder in Bun < 1.4.4 and
+# Node < 26.12.1 has an out-of-bounds write that reaches RCE through
+# `fetch()` on a `br` response — and this API fetches user-controlled URLs.
+# Fail the build instead of shipping a stale base image or a cached Bun.
+RUN set -eu; \
+    ver_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$1" ]; }; \
+    bun_need=1.4.4; node_need=26.12.1; \
+    bun_have="$(bun --version)"; node_have="$(node --version | sed 's/^v//')"; \
+    if ! ver_ge "$bun_need" "$bun_have" || ! ver_ge "$node_need" "$node_have"; then \
+      echo "FATAL: toolchain below the Node2Shell floor: bun $bun_have (need >= $bun_need), node v$node_have (need >= v$node_need)" >&2; \
+      echo "CVE-2026-111497: Brotli out-of-bounds write — see the Node.js/Bun security releases." >&2; \
+      exit 1; \
+    fi; \
+    echo "Node2Shell guard OK: bun $bun_have, node v$node_have"
 
 RUN groupadd -g 1001 appgroup && useradd -u 1001 -g appgroup -m -s /bin/bash appuser
 

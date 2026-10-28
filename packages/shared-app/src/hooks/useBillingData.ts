@@ -63,6 +63,23 @@ export interface UsageWindows {
   weekly: UsageWindowView
 }
 
+/**
+ * Signup promo credit as reported by workspace-plan. Spendable on the models the
+ * workspace's plan allows (economy tier on Free and Basic).
+ */
+export interface PromoCreditView {
+  /** Spendable now. 0 once expired. */
+  availableUsd: number
+  /** Total granted to this workspace, net of admin revokes. */
+  grantedUsd: number
+  /** ISO timestamp when unspent credit expires, or null. */
+  expiresAt: string | null
+  /** Whether the signup's email address has been verified. */
+  emailVerified: boolean
+  /** Credit that unlocks on email verification (0 when verified or none held). */
+  pendingVerificationUsd: number
+}
+
 export interface BillingDataState {
   subscription: any | undefined
   usageWallet: any | undefined
@@ -94,6 +111,12 @@ export interface BillingDataState {
   // Rolling 5-hour + weekly usage windows (time-gated "unlimited"). Undefined
   // until the workspace-plan endpoint resolves.
   usageWindows: UsageWindows | undefined
+  /** Signup promo credit. Undefined until workspace-plan resolves. */
+  promoCredit: PromoCreditView | undefined
+  /** The workspace can start the 7-day free trial (card required). */
+  trialEligible: boolean
+  /** When the current trial ends (ISO), only while `status === 'trialing'`. */
+  trialEndsAt: string | null
 }
 
 /** Usage events are fetched one page at a time via the collection's offset/limit. */
@@ -136,6 +159,8 @@ export function useBillingData(
   // UI as the current plan.
   const [effectivePlan, setEffectivePlan] = useState<{ planId: string; source: PlanSource } | null>(null)
   const [usageWindows, setUsageWindows] = useState<UsageWindows | undefined>(undefined)
+  const [promoCredit, setPromoCredit] = useState<PromoCreditView | undefined>(undefined)
+  const [trial, setTrial] = useState<{ eligible: boolean; endsAt: string | null }>({ eligible: false, endsAt: null })
   // `null` = not yet loaded. Kept separate from `effectivePlan` so callers
   // can distinguish "still loading" from "definitely not paid" and avoid a
   // flash of "entitlement expired" before the first fetch resolves.
@@ -162,6 +187,9 @@ export function useBillingData(
           planId?: string
           source?: PlanSource
           usageWindows?: UsageWindows
+          promoCredit?: PromoCreditView
+          trialEligible?: boolean
+          trialEndsAt?: string | null
           paidTier?: boolean
           overagePaymentPending?: boolean
           overageOutstandingUsd?: number
@@ -178,6 +206,8 @@ export function useBillingData(
               source: (data.source as PlanSource) ?? (data.planId === "free" ? "free" : "subscription"),
             })
             if (data.usageWindows) setUsageWindows(data.usageWindows as UsageWindows)
+            if (data.promoCredit) setPromoCredit(data.promoCredit as PromoCreditView)
+            setTrial({ eligible: !!data.trialEligible, endsAt: data.trialEndsAt ?? null })
             if (typeof data.paidTier === "boolean") setPaidTier(data.paidTier)
             setOveragePayment(
               data.overagePaymentPending
@@ -404,5 +434,8 @@ export function useBillingData(
     effectivePlanId,
     planSource,
     usageWindows: liveUsageWindows,
+    promoCredit,
+    trialEligible: trial.eligible,
+    trialEndsAt: trial.endsAt,
   }
 }

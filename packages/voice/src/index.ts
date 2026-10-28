@@ -63,6 +63,7 @@ export {
   ElevenLabsApiError,
   ElevenLabsClient,
   MEMORY_CLIENT_TOOLS,
+  TTS_FALLBACK_MODEL,
   VOICE_SOUND_GENERATION_MODEL_IDS,
   VOICE_SPEECH_TO_TEXT_MODEL_IDS,
   VOICE_STS_MODEL_IDS,
@@ -167,3 +168,8 @@ export {
   type LiveErrorEvent,
   type LiveWebRtcSession,
 } from './live/client.js'
+
+export {
+  readRuntimeAuthSecret,
+  WORKSPACE_RUNTIME_TOKEN_MESSAGE,
+} from './runtime-token.js'

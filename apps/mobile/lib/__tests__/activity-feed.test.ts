@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ActiveChatTurn, AgentTask } from '../api'
 import type { InboxItem, SentMessage } from '../team-chat-api'
-import { ACTIVITY_FILTERS, activityBadge, buildFeed, inboxEntry, matchesFilter, relativeTime, sentEntry, taskEntry } from '../activity-feed'
+import { ACTIVITY_FILTERS, activityBadge, buildFeed, groupFeed, inboxEntry, matchesFilter, relativeTime, sectionFor, sentEntry, taskEntry, type ActivityEntry } from '../activity-feed'
 
 const NOW = Date.parse('2026-10-01T12:00:00Z')
 const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString()
@@ -237,5 +237,82 @@ describe('relativeTime', () => {
     expect(relativeTime(NOW - 3 * 3_600_000, NOW)).toBe('3h')
     expect(relativeTime(NOW - 2 * 86_400_000, NOW)).toBe('2d')
     expect(relativeTime(0, NOW)).toBe('')
+  })
+})
+
+describe('sectionFor', () => {
+  /** Local-time day arithmetic, matching how the section is computed. */
+  const dayAt = (daysAgo: number, hour = 12) => {
+    const d = new Date(NOW)
+    d.setDate(d.getDate() - daysAgo)
+    d.setHours(hour, 0, 0, 0)
+    return d.getTime()
+  }
+
+  test('groups by calendar day, not by 24-hour blocks', () => {
+    expect(sectionFor(dayAt(0, 13), NOW)).toBe('today')
+    expect(sectionFor(dayAt(1), NOW)).toBe('yesterday')
+    expect(sectionFor(dayAt(3), NOW)).toBe('earlier')
+  })
+
+  test('late yesterday and early today are different sections', () => {
+    // 24 hours apart is not the point — crossing midnight is.
+    expect(sectionFor(dayAt(1, 23), NOW)).toBe('yesterday')
+    expect(sectionFor(dayAt(0, 1), NOW)).toBe('today')
+  })
+
+  test('an unparseable date falls back to the oldest section', () => {
+    expect(sectionFor(0, NOW)).toBe('earlier')
+  })
+})
+
+describe('groupFeed', () => {
+  const dayAt = (daysAgo: number, hour = 12) => {
+    const d = new Date(NOW)
+    d.setDate(d.getDate() - daysAgo)
+    d.setHours(hour, 0, 0, 0)
+    return d.getTime()
+  }
+  const entry = (id: string, at: number): ActivityEntry => ({
+    id,
+    source: 'inbox',
+    kind: 'message',
+    title: id,
+    context: 'Direct Message',
+    preview: '',
+    at,
+    unread: true,
+  })
+
+  test('puts a header before each section, newest first, with its count', () => {
+    const rows = groupFeed(
+      [entry('a', dayAt(0, 13)), entry('b', dayAt(0, 9)), entry('c', dayAt(1)), entry('d', dayAt(4))],
+      NOW,
+    )
+
+    expect(rows.map((r) => (r.type === 'header' ? `${r.label}:${r.count}` : r.entry.id))).toEqual([
+      'Today:2',
+      'a',
+      'b',
+      'Yesterday:1',
+      'c',
+      'Earlier:1',
+      'd',
+    ])
+  })
+
+  test('omits sections that have nothing in them', () => {
+    const rows = groupFeed([entry('a', dayAt(0, 13))], NOW)
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ type: 'header', section: 'today', count: 1 })
+  })
+
+  test('keys are unique, so the list can recycle rows', () => {
+    const rows = groupFeed([entry('a', dayAt(0, 13)), entry('b', dayAt(1))], NOW)
+    expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length)
+  })
+
+  test('an empty feed produces no rows at all', () => {
+    expect(groupFeed([], NOW)).toEqual([])
   })
 })

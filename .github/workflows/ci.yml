@@ -147,7 +147,7 @@ jobs:
           changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
           printf '%s\n' "$changed"
           if printf '%s\n' "$changed" | grep -Eq \
-            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes|pty-[a-z-]+|runtime-terminal-routes|quick-commands|detected-urls)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode|pty-session|pty-ws-e2e|runtime-terminal-routes)\.test\.ts$|packages/agent-runtime/src/__tests__/helpers/pty-shell\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|package\.json$|\.github/workflows/ci\.yml$)'; then
+            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes|pty-[a-z-]+|runtime-terminal-routes|quick-commands|detected-urls|process-tree|sandbox-exec)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode|pty-session|pty-ws-e2e|runtime-terminal-routes|process-tree|qa-sho144-cancel-truth\.acceptance|qa-sho144-windows-tree\.acceptance)\.test\.ts$|packages/sdk/src/(child-ledger|vite-watch)\.ts$|packages/agent-runtime/src/__tests__/helpers/pty-shell\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|package\.json$|\.github/workflows/ci\.yml$)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
@@ -201,7 +201,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Restore node_modules
         id: node-modules-cache
@@ -380,6 +380,16 @@ jobs:
         if: needs.prelude.outputs.verified != 'true'
         run: bun run check:publication
 
+      - name: Check no migration derives a primary key from row content
+        if: needs.prelude.outputs.verified != 'true'
+        # 2026-10-22 (SHO-142): a migration backfilled ids as
+        # `'dve_' || md5(deviceId, version)` on a published table. Both regions
+        # ran it against already-replicated `api_keys`, so both minted the same
+        # primary keys, EU's tablesync COPY died on a duplicate key and
+        # `sub_from_us` was disabled — US -> EU replication down 25 minutes.
+        # A derived key is identical in every region by construction.
+        run: bun run check:migration-ids
+
       - name: Check generated What's New catalog
         if: needs.prelude.outputs.verified != 'true'
         run: bun run check:whats-new
@@ -464,7 +474,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Restore node_modules
         id: mobile-node-modules-cache
@@ -596,6 +606,16 @@ jobs:
           # than joining the job above: that one runs 1 worker at a time and
           # already finishes at 34m37s of a 35m cap.
           - { name: 'E2E (chat context)', spec: 'chat-context-survives-idle' }
+          # chat-task-interrupted-restart (SHO-141) runs a background task, then
+          # restarts the host runtime under it via /api/local/system/restart-runtime,
+          # so it needs the fake-model stack. Own entry, not a place in the list
+          # above: that job is already at 34m37s of its 35m cap (SHO-133).
+          - { name: 'E2E (task restart)', spec: 'chat-task-interrupted-restart' }
+          # agent-model-truth (SHO-145) seeds two `local` models into the stack's
+          # SQLite file and checks /ai/v1/models against the runtime's model
+          # cache entry by entry, so it needs the fake-model stack. Own entry:
+          # the chat-resume job already runs to its cap.
+          - { name: 'E2E (agent model truth)', spec: 'agent-model-truth' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
@@ -610,7 +630,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Restore node_modules
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -656,6 +676,10 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      # The phone specs (`PHONE_SPECS` in the config, the `iphone-15-pro` and
+      # `pixel-7` projects) are testIgnore'd by `--project=chromium` and run in
+      # .github/workflows/e2e-phone.yml, which installs WebKit. Do not add those
+      # projects here: this job has no WebKit and no room in its cap (SHO-222).
       - name: Run e2e/local
         if: ${{ !matrix.spec }}
         env:
@@ -698,7 +722,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Restore node_modules
         id: known-node-modules-cache
@@ -811,7 +835,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Restore node_modules
         id: test-node-modules-cache
@@ -966,6 +990,12 @@ jobs:
     timeout-minutes: 15
     env:
       CHANNELS_TEST_PG_URL: postgresql://shogo:shogo@127.0.0.1:5432/shogo
+      # SHO-185's two-pod relay and machine-copy suites need a real Redis next to
+      # the real Postgres. `CI_REQUIRE_MACHINE_INFRA` makes a missing service a
+      # failure instead of a silent skip.
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      CI_REQUIRE_REDIS: '1'
+      CI_REQUIRE_MACHINE_INFRA: '1'
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -980,13 +1010,22 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Restore node_modules
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -1053,6 +1092,18 @@ jobs:
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/agent-call-restart.integration.test.ts
 
+      # SHO-185: the cross-pod tunnel relay and the machine copy, both on real
+      # API processes against the real Postgres and the real Redis above. The
+      # relay test used to be mocked, and mocked relay tests passed while
+      # prod-US answered "Machine is offline" for two hours.
+      - name: Machine relay + machine copy (two pods, Postgres + Redis)
+        working-directory: apps/api
+        run: |
+          for f in src/__tests__/machine-relay-two-pods.integration.test.ts src/__tests__/machine-workspaces.integration.test.ts; do
+            echo "::group::$f"
+            bun --no-env-file test "$f" || exit 1
+            echo "::endgroup::"
+          done
 
   test-windows:
     name: Test (Windows path handling)
@@ -1069,7 +1120,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       # No node_modules cache on Windows: installing over a restored tree fails
       # with EPERM inside node_modules/.bun during postinstall's prisma generate.
@@ -1148,7 +1199,12 @@ jobs:
         run: |
           set -euo pipefail
           cd packages/agent-runtime
-          bun --no-env-file test src/__tests__/path-boundary.test.ts src/__tests__/permission-engine.test.ts src/__tests__/runtime-trust.test.ts src/__tests__/canvas-file-watcher.test.ts src/__tests__/fs-tree-walker.test.ts src/__tests__/workspace-file-routes.test.ts src/__tests__/canvas-file-watcher-mounts.test.ts src/__tests__/trust-resolver-workspace-mounts.test.ts src/__tests__/runtime-lsp-routes-scope.test.ts src/__tests__/workspace-runtime-mode.test.ts
+          bun --no-env-file test src/__tests__/path-boundary.test.ts src/__tests__/permission-engine.test.ts src/__tests__/runtime-trust.test.ts src/__tests__/canvas-file-watcher.test.ts src/__tests__/fs-tree-walker.test.ts src/__tests__/workspace-file-routes.test.ts src/__tests__/canvas-file-watcher-mounts.test.ts src/__tests__/trust-resolver-workspace-mounts.test.ts src/__tests__/runtime-lsp-routes-scope.test.ts src/__tests__/workspace-runtime-mode.test.ts src/__tests__/process-tree.test.ts src/__tests__/qa-sho144-windows-tree.acceptance.test.ts
+          # SHO-180 / #1686: the two halves that only exist on this platform —
+          # the `>nul` -> `/dev/null` rewrite in the exec path, and a real repo
+          # whose backup parks itself (Windows cannot create a reserved name, so
+          # the test scopes those assertions to the names the host can make).
+          bun --no-env-file test src/__tests__/exec-nul-redirect.test.ts src/__tests__/qa-sho180-park-notify.acceptance.test.ts
           cd ../..
           bun --no-env-file test scripts/__tests__/desktop-next-beta-version.test.ts
           # The Windows installer ships this bundle; build it on the platform that packages it.
@@ -1201,7 +1257,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
       - run: bash scripts/ci/check-metal-agent-bundle.sh
 
   # Thin aggregator so branch protection's required status check keeps its

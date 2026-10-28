@@ -6,6 +6,7 @@ import type { IRuntimeManager } from '../lib/runtime'
 import { prisma } from '../lib/prisma'
 import { resolveProjectPodUrl } from '../lib/resolve-pod-url'
 import { deriveProjectRuntimeToken } from '../lib/project-runtime-token'
+import { isChatAttachmentUpload } from '../lib/chat-attachment-upload'
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -85,15 +86,27 @@ export function localAgentProxyRoutes(config: { runtimeManager: IRuntimeManager 
         workspaceId: project.workspaceId,
       }))
 
-      const body = c.req.method === 'GET' || c.req.method === 'HEAD'
-        ? undefined
-        : await c.req.arrayBuffer()
+      // An attachment upload is a file, not a JSON document: buffer it and a
+      // large archive costs two full copies in memory before the runtime even
+      // starts writing (SHO-213). Stream it instead, and forward the declared
+      // length so the runtime can refuse an over-cap upload up front.
+      const streamUpload = isChatAttachmentUpload(c.req.method, path)
+      if (streamUpload) {
+        const declared = c.req.header('content-length')
+        if (declared) headers.set('content-length', declared)
+      }
+      const body = streamUpload
+        ? c.req.raw.body
+        : c.req.method === 'GET' || c.req.method === 'HEAD'
+          ? undefined
+          : await c.req.arrayBuffer()
       const upstream = await fetch(target, {
         method: c.req.method,
         headers,
         body,
         signal: c.req.raw.signal,
-      })
+        ...(streamUpload ? { duplex: 'half' } : {}),
+      } as RequestInit)
 
       return new Response(upstream.body, {
         status: upstream.status,

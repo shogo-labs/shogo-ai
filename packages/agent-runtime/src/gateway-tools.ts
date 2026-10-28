@@ -16,6 +16,7 @@ import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
+import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
 import {
   REMOTE_READONLY_TOOLS,
@@ -33,7 +34,7 @@ import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
 import { createGenerateImageTool, createMediaTools } from './media-tools'
-import { IMAGE_TOOL_NAMES, THREE_D_TOOL_NAMES } from './media-tool-names'
+import { IMAGE_TOOL_NAMES, MUSIC_TOOL_NAMES, THREE_D_TOOL_NAMES } from './media-tool-names'
 import { createAgentRunTools, createChannelTools } from './channel-tools'
 import { createBoardTools } from './board-tools'
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
@@ -50,12 +51,16 @@ import {
 import { isSearchEnabled } from './search-flag'
 import { isInQuietHours } from './quiet-hours'
 import { PROFILE_TOOL_GROUPS, disabledToolNamesForProfile } from './capability-profiles'
+import { survivorHint } from './process-tree'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
+import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle, type ShellExitResult } from './sandbox-exec'
+import { resolveProjectCredentialEnv } from './project-process-env'
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
+import { consumeExecCwdMarker, execCwdDirFor, newExecCwdMarker } from './exec-cwd'
 import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
+import { findPolledTasks, type PollMatch } from './exec-poll'
 import { CommandRegistry, type CommandEntry } from './command-registry'
 import type { TaskEntry } from './task-registry'
 import { tailLines } from './task-output'
@@ -128,12 +133,17 @@ import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agen
  * layer doesn't know what an `AgentToolResult` looks like — we keep
  * the dependency direction "tools → trust", not the reverse.
  */
-function assertAllowedPath(targetPath: string, mode: 'read' | 'write' | 'exec', workspaceDir?: string) {
+function assertAllowedPath(
+  targetPath: string,
+  mode: 'read' | 'write' | 'exec',
+  workspaceDir?: string,
+  opts?: { unrestricted?: boolean },
+) {
   const result = assertAllowedPathRaw(targetPath, mode)
   if (result.ok || !workspaceDir || result.reason !== 'outside_allowed_roots') return result
 
   try {
-    const resolved = assertWithinWorkspace(workspaceDir, targetPath)
+    const resolved = assertWithinWorkspace(workspaceDir, targetPath, opts)
     return { ok: true, resolved }
   } catch {
     return result
@@ -303,6 +313,12 @@ export interface ToolContext {
   }
   /** Background tasks of this session (shell, subagents, remote tasks) — backs `wait` / `task_list` / `task_cancel`. */
   commandRegistry?: import('./task-registry').TaskRegistry
+  /**
+   * Steering state for the current turn (sleep polls already made, repeated
+   * `wait` timeouts). Built per turn by the gateway, so a new turn steers
+   * afresh; see `turnSteeringState`.
+   */
+  turnState?: TurnSteeringState
   /** On-demand guide registry populated by buildGuideRegistry() */
   guideRegistry?: Map<string, string>
   /**
@@ -373,28 +389,22 @@ export interface ToolContext {
   depsReady?: boolean
 }
 
-// Legacy blocked-command check kept as lightweight fallback for contexts
-// without a PermissionEngine (e.g. heartbeat tools in cloud mode).
-// The PermissionEngine's HARD_BLOCKED_COMMAND_PATTERNS is the authoritative
-// version and supersedes this when available.
-const BLOCKED_COMMANDS: string[] = ['rm -rf *']
-
-function isBlockedCommand(command: string): boolean {
-  const lower = command.toLowerCase()
-  return BLOCKED_COMMANDS.some((pattern: string) => {
-    if (pattern.includes('.*')) {
-      try {
-        return new RegExp(pattern, 'i').test(command)
-      } catch {
-        return false
-      }
-    }
-    return lower.includes(pattern.toLowerCase())
-  })
+/**
+ * Desktop full_autonomy blocks nothing, including paths (SHO-209). The cloud pod
+ * has no `SHOGO_LOCAL_MODE`, so its workspace boundary stays.
+ */
+function pathPolicy(ctx: ToolContext): { unrestricted: boolean } {
+  return {
+    unrestricted: process.env.SHOGO_LOCAL_MODE === 'true' && ctx.permissionEngine?.mode === 'full_autonomy',
+  }
 }
 
-function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
-  return assertWithinWorkspaceSecure(workspaceDir, filePath)
+function assertWithinWorkspace(
+  workspaceDir: string,
+  filePath: string,
+  opts?: { unrestricted?: boolean },
+): string {
+  return assertWithinWorkspaceSecure(workspaceDir, filePath, opts)
 }
 
 /**
@@ -587,6 +597,12 @@ function workspaceMetaToolEnabled(ctx: ToolContext): boolean {
  */
 const WORKSPACE_MEMBER_TIMEOUT_MS = 180_000
 
+/**
+ * The internal preview route waits on the target's build (its own budget is
+ * 75s), so the tool has to outlast that plus the round-trip.
+ */
+const PREVIEW_START_REQUEST_TIMEOUT_MS = 100_000
+
 async function workspaceMetaFetch(
   ctx: ToolContext,
   path: string,
@@ -618,16 +634,22 @@ async function workspaceMetaFetch(
   }
   if (!response.ok) {
     const detail = result?.error?.message || result?.error
-    if (typeof detail === 'string' && detail.trim() && !detail.trim().startsWith('<')) {
-      throw new Error(detail)
-    }
     const snippet = text.trim().slice(0, 200)
-    // Cloudflare and other proxies answer 502 with an HTML page. Don't hand
-    // that document to the agent; the status is the useful part.
-    if (!snippet || snippet.startsWith('<')) {
-      throw new Error(`Workspace API HTTP ${response.status}`)
-    }
-    throw new Error(`Workspace API HTTP ${response.status}: ${snippet}`)
+    // Carry the status and the API's error code so the caller can say what is
+    // actually wrong (project_not_attached vs target_not_ready vs auth) instead
+    // of parsing a message (SHO-125).
+    const failure = new Error(
+      typeof detail === 'string' && detail.trim() && !detail.trim().startsWith('<')
+        ? detail
+        : // Cloudflare and other proxies answer 502 with an HTML page. Don't
+          // hand that document to the agent; the status is the useful part.
+          !snippet || snippet.startsWith('<')
+          ? `Workspace API HTTP ${response.status}`
+          : `Workspace API HTTP ${response.status}: ${snippet}`,
+    ) as Error & { status?: number; code?: string }
+    failure.status = response.status
+    if (typeof result?.error?.code === 'string') failure.code = result.error.code
+    throw failure
   }
   return result
 }
@@ -825,11 +847,47 @@ function remoteFailure(err: unknown, project: { id: string; name: string }): Age
   const message = err instanceof Error ? err.message : String(err)
   const code = err instanceof RemoteToolError ? err.code : undefined
   const status = err instanceof RemoteToolError ? err.status : undefined
+  const details = err instanceof RemoteToolError ? err.details : undefined
   if (code === 'project_not_attached' || /project_not_attached/.test(message)) {
     return textResult({
       error: projectNotAttachedMessage(project.id),
       code: 'project_not_attached',
       project,
+    })
+  }
+  // A token mismatch between the caller and the target's runtime is a
+  // configuration fault: no number of retries fixes it, and the raw 401 body
+  // reads like a transient failure — which is exactly why it was retried into
+  // a burst (SHO-125). `tokenScope`/`apiVerdict` are identity only, never token
+  // material, so they can be shown to the agent.
+  if (status === 401 || code === 'auth_mismatch') {
+    const scope = typeof details?.tokenScope === 'string' ? details.tokenScope : undefined
+    const verdict = typeof details?.apiVerdict === 'string' ? details.apiVerdict : undefined
+    return textResult({
+      error:
+        `${project.name}'s runtime rejected the runtime token this call presented` +
+        `${scope ? ` (token scope: ${scope})` : ''}${verdict ? `, API verdict: ${verdict}` : ''}. ` +
+        'This is an authentication mismatch, not a transient failure — retrying will not help.',
+      code: 'auth_mismatch',
+      project,
+      ...(scope ? { tokenScope: scope } : {}),
+      ...(verdict ? { apiVerdict: verdict } : {}),
+      hint: 'Tell the user this failed; do not retry it.',
+    })
+  }
+  // The target resolved but was not accepting connections yet; the API already
+  // retried the read-only tools once (SHO-125).
+  if (code === 'target_not_ready') {
+    const retryAfter =
+      typeof (details?.error as Record<string, unknown> | undefined)?.retryAfterSeconds === 'number'
+        ? (details!.error as { retryAfterSeconds: number }).retryAfterSeconds
+        : undefined
+    return textResult({
+      error: message,
+      code: 'target_not_ready',
+      project,
+      ...(retryAfter ? { retryAfterSeconds: retryAfter } : {}),
+      hint: 'The project runtime was still starting. Retry once after the delay; do not retry a write blindly.',
     })
   }
   return textResult({
@@ -1064,18 +1122,73 @@ function createCopyToProjectTool(ctx: ToolContext): AgentTool {
 }
 
 /**
- * Builds (or reuses) a mounted member's static preview and returns the ONE
+ * Metal-only preview: ask the API for the project's own runtime URL and start
+ * its build there. The response is the contract the agent sees; every failure
+ * becomes a code it can act on instead of the mount-era 410 (SHO-125).
+ */
+async function previewProjectViaApi(ctx: ToolContext, projectId: string): Promise<AgentToolResult<any>> {
+  const workspaceId = resolveWorkspaceId(ctx)
+  // One literal, not concatenation: `local-route-parity.test.ts` scans this
+  // file for internal-API paths, and a `+` would stop it at the workspace
+  // segment — hiding the rest of the route from the desktop 404 check.
+  const path = `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/projects/${encodeURIComponent(projectId)}/preview`
+  try {
+    const result = await workspaceMetaFetch(
+      ctx,
+      path,
+      { method: 'POST', body: JSON.stringify({ userId: ctx.userId, sessionId: ctx.sessionId }) },
+      PREVIEW_START_REQUEST_TIMEOUT_MS,
+    )
+    return textResult({
+      projectId,
+      url: result.url,
+      mode: result.mode ?? 'metal',
+      status: result.status ?? 'ready',
+    })
+  } catch (error: any) {
+    const code = typeof error?.code === 'string' ? error.code : undefined
+    if (code === 'project_not_attached') {
+      return textResult({
+        error: `Project ${projectId} is not part of this workspace, so it has no preview. Check the id with list_projects.`,
+        code: 'project_not_attached',
+      })
+    }
+    if (code === 'target_not_ready') {
+      return textResult({
+        error: `${error?.message ?? 'The project runtime is still starting.'} Retry in a couple of seconds.`,
+        code: 'target_not_ready',
+        retryAfterSeconds: 2,
+        noFallbackUrl: true,
+        guidance: 'There is no working localhost/fallback link. Retry this tool; do not construct a URL.',
+      })
+    }
+    return textResult({
+      error: error?.message || 'preview start failed',
+      ...(code ? { code } : {}),
+      noFallbackUrl: true,
+      guidance:
+        'There is no working localhost/fallback link. Tell the user this failed — do not construct or offer any other URL.',
+    })
+  }
+}
+
+/**
+ * Builds (or reuses) a member project's static preview and returns the ONE
  * URL that's actually reachable — never this runtime's own control-plane
  * port (`process.env.PORT`), which only serves the chat/tool API and is
  * meaningless to open in a browser.
  *
- * A workspace runtime multiplexes every mounted project's `dist/` under
- * `/p/<projectId>/` on its own HTTP port (see `workspace-runtime-mode.ts` +
- * the `/p/:projectId/*` routes in `server.ts`); mounted (non-anchor) members
- * don't auto-build on mount (cross-folder editing is the common case, and
- * spinning up a vite watch + API sidecar per attachment would be wasteful),
- * so this tool is what actually triggers that on-demand build via the
- * runtime's own `POST /p/<projectId>/preview/start`.
+ * Two substrates, two mechanisms:
+ *
+ *   - Merged-root (local / cloud): this runtime multiplexes every mounted
+ *     project's `dist/` under `/p/<projectId>/` on its own HTTP port (see
+ *     `workspace-runtime-mode.ts` + the `/p/:projectId/*` routes in
+ *     `server.ts`); mounted members don't auto-build on mount, so this tool
+ *     triggers that on-demand build via `POST /p/<projectId>/preview/start`.
+ *   - Metal: each project has its OWN runtime and other projects are never
+ *     mounted here, so the local route can only answer 410. The API resolves
+ *     the project's runtime, starts its build and returns
+ *     `<podUrl>/p/<projectId>/` (SHO-125).
  */
 function createPreviewProjectTool(ctx: ToolContext): AgentTool {
   return {
@@ -1083,7 +1196,8 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
     label: 'Preview Project',
     description:
       "Build and serve a project's app so it can be opened in a browser, and return the one URL that is " +
-      'actually reachable. If the project is not mounted yet, this mounts it first and then starts the preview. ' +
+      'actually reachable. Works for any project of this workspace: each project runs in its own runtime, ' +
+      'and this tool starts that project\'s build (it never mounts the project here). ' +
       'Call this before sharing any "preview"/"running app" link — never construct or hand out ' +
       "a localhost/port link yourself (e.g. from this runtime's own base URL or an env var); only the URL this " +
       'tool returns is guaranteed to work. If this tool errors, there is NO working localhost fallback — report ' +
@@ -1091,7 +1205,7 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
       "runtime's own base URL.",
     parameters: Type.Object({
       projectId: Type.String({
-        description: 'The project id to preview. Mounts it first when it is not already attached.',
+        description: "The project id to preview. Not needed when it is the project this runtime serves.",
       }),
     }),
     execute: async (_toolCallId, params: any) => {
@@ -1101,6 +1215,13 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
         })
       const projectId = String(params?.projectId || '')
       if (!projectId) return textResult({ error: 'projectId is required' })
+
+      // Metal: the project's own runtime serves its app; this runtime has no
+      // route to it and never will (mounting was removed). Ask the API.
+      if (isMetalRuntime() && projectId !== currentRuntimeProjectId()) {
+        return previewProjectViaApi(ctx, projectId)
+      }
+
       const port = process.env.PORT || '8080'
       const startPreview = () =>
         fetch(`http://localhost:${port}/p/${encodeURIComponent(projectId)}/preview/start`, {
@@ -1192,22 +1313,31 @@ interface ExecRunMetadata {
   isSandboxed: boolean
   previousCwd: string
   cwdReset: boolean
+  /**
+   * Final cwd the trap reported, captured when the process exits — see the
+   * `handle.done` handler where the meta is registered. Cached because the
+   * marker file is gone by then.
+   */
+  resolvedCwd?: string
 }
 
 const execRunMetadata = new WeakMap<CommandHandle, ExecRunMetadata>()
 
-/** Read the trap-written cwd file and update shellState. Idempotent on retry. */
+/**
+ * The run's final cwd: from the exit-time capture when we have it, otherwise
+ * by reading (and removing) the marker now. Both routes unlink the marker, so
+ * a run that exits without anyone draining its result leaves nothing behind.
+ */
+function resolveRunCwd(ctx: ToolContext, meta: ExecRunMetadata): string | undefined {
+  if (meta.resolvedCwd) return meta.resolvedCwd
+  const rawCwd = consumeExecCwdMarker(meta.cwdFileHost)
+  if (!rawCwd) return undefined
+  return meta.isSandboxed ? containerToHost(rawCwd, ctx.workspaceDir) : rawCwd
+}
+
+/** Apply the trap-written cwd to shellState. Idempotent on retry. */
 function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
-  let newCwd = meta.previousCwd
-  try {
-    const rawCwd = readFileSync(meta.cwdFileHost, 'utf-8').trim()
-    if (rawCwd) {
-      newCwd = meta.isSandboxed ? containerToHost(rawCwd, ctx.workspaceDir) : rawCwd
-    }
-    unlinkSync(meta.cwdFileHost)
-  } catch {
-    /* trap may not have fired or already cleaned up */
-  }
+  const newCwd = resolveRunCwd(ctx, meta) ?? meta.previousCwd
   ctx.shellState?.setCwd(newCwd)
   return newCwd
 }
@@ -1215,13 +1345,7 @@ function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
 interface BuildExecResultOpts {
   ctx: ToolContext
   entry: CommandEntry
-  finalResult: {
-    exitCode: number
-    stdout: string
-    stderr: string
-    killed: boolean
-    killReason?: string
-  }
+  finalResult: ShellExitResult
 }
 
 function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOpts): AgentToolResult<any> {
@@ -1245,7 +1369,9 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
   }
   return textResult({
     cwd: newCwd,
-    exitCode: finalResult.exitCode,
+    ...(finalResult.exitCodeReliable === false
+      ? { exit_code_reliable: false, pipeline_status: finalResult.pipelineStatus ?? 'last-stage', status_note: `pipeline status unavailable — ${finalResult.shellLabel ?? 'this shell'} cannot report a pipeline's exit code` }
+      : { exitCode: finalResult.exitCode }),
     stdout: truncateExecOutput(stdoutTrimmed),
     stderr: stderrTrimmed ? truncateExecOutput(stderrTrimmed) : undefined,
     durationMs,
@@ -1289,10 +1415,90 @@ function buildSoftTimeoutResult(ctx: ToolContext, entry: CommandEntry, softTimeo
 export const BACKGROUND_TASK_HINT =
   'Call wait({ task_ids: [task_id] }) to block on it, or end your turn and you will get a [Task update] when it finishes.'
 
-function createExecTool(ctx: ToolContext): AgentTool {
+/**
+ * Per-turn steering state. A tool instance is built per turn, but a test (or a
+ * subagent) may build several from one context, so the state lives on the
+ * context: one turn shares it, the next turn starts empty.
+ */
+export interface TurnSteeringState {
+  /** Running-task sets already sleep-polled this turn. */
+  sleepPolls: Set<string>
+  /** Consecutive `wait` timeouts per task-id set this turn. */
+  waitTimeouts: Map<string, number>
+}
+
+export function turnSteeringState(ctx: ToolContext): TurnSteeringState {
+  if (!ctx.turnState) ctx.turnState = { sleepPolls: new Set(), waitTimeouts: new Map() }
+  return ctx.turnState
+}
+
+function waitCallFor(ids: string[], until?: string): string {
+  const list = `[${ids.map((id) => `"${id}"`).join(', ')}]`
+  return until ? `wait({ task_ids: ${list}, until: ${until} })` : `wait({ task_ids: ${list} })`
+}
+
+function waitInsteadOfPollHint(ids: string[], reason: PollMatch['reason']): string {
+  const reads = reason === 'reads_task_output'
+  return (
+    `${waitCallFor(ids)} returns the moment the task finishes${reads ? ' and gives you the output you are about to read' : ' or its stdout matches'}; ` +
+    'a sleep cannot — it always spends the whole delay and then only tells you to look again. ' +
+    `To wait for a server to accept connections, use ${waitCallFor(ids, "'<ready line>'")}. ` +
+    'If you would rather not block, end your turn: the [Task update] is guaranteed.'
+  )
+}
+
+/** Merge a steering note into a tool result the model and the UI both read. */
+function withSteering(result: AgentToolResult<any>, steering: Record<string, unknown>): AgentToolResult<any> {
+  const details = result?.details
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return result
+  return { ...result, ...textResult({ ...(details as Record<string, unknown>), steering }) }
+}
+
+/**
+ * A sleep that waits on a running task cannot see that task finish early, so it
+ * is a poll. Only a sleep tied to the task counts — one that reads its output or
+ * does nothing but wait (see `findPolledTasks`); a sleep waiting on CI, a port or
+ * a rebuild is left alone. The first poll still runs (it may be a real delay the
+ * command needs) and carries the steering; a second identical one is refused,
+ * naming the `wait` call that would have returned as soon as the task settled.
+ */
+function withSleepPollSteering(tool: AgentTool, ctx: ToolContext): AgentTool {
+  const run = tool.execute
   return {
+    ...tool,
+    execute: async (toolCallId, params, signal) => {
+      const { command = '', background = false } = params as { command?: string; background?: boolean }
+      // `background: true` starts a new task; its sleep is that task's own delay.
+      const running = background ? [] : (ctx.commandRegistry?.listRunning() ?? [])
+      const match = findPolledTasks(command, running)
+      if (!match) return run(toolCallId, params, signal)
+
+      const ids = match.ids
+      const key = [...ids].sort().join(',')
+      const state = turnSteeringState(ctx)
+      if (state.sleepPolls.has(key)) {
+        return textResult({
+          ok: false,
+          code: 'use_wait_instead',
+          running_tasks: ids,
+          hint: waitInsteadOfPollHint(ids, match.reason),
+        })
+      }
+      state.sleepPolls.add(key)
+      const result = await run(toolCallId, params, signal)
+      return withSteering(result, {
+        code: 'wait_instead_of_poll',
+        running_tasks: ids,
+        hint: waitInsteadOfPollHint(ids, match.reason),
+      })
+    },
+  }
+}
+
+function createExecTool(ctx: ToolContext): AgentTool {
+  return withSleepPollSteering({
     name: 'exec',
-    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -1326,16 +1532,6 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // and task execution are disabled until trust is granted.
       const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
       if (!execTrust.ok) return textResult({ error: execTrust.message })
-
-      if (/\bgh\s+pr\s+create\b/.test(command)) {
-        return textResult({
-          error: 'Use the github_create_pr tool to create pull requests so Shogo can add attribution.',
-        })
-      }
-
-      if (isBlockedCommand(attributedCommand)) {
-        return textResult({ error: `Blocked command: ${command}` })
-      }
 
       // Stop the agent from killing the runtime that hosts its own tools. A
       // broad `pkill -f`/`killall` in the agent's shell otherwise reaches the
@@ -1413,8 +1609,13 @@ function createExecTool(ctx: ToolContext): AgentTool {
         cwdReset = true
         ctx.shellState?.setCwd(currentCwd)
       }
-      const cwdMarker = `.shogo-cwd-${Date.now()}-${Math.random().toString(36).slice(2)}`
-      const cwdFileHost = join(ctx.workspaceDir, cwdMarker)
+      // The cwd marker is a temp file with a lifetime, not workspace state, so
+      // it goes under `.shogo/exec-cwd/` — already excluded from checkpoints,
+      // exports and the managed git ignore block — instead of the workspace
+      // root, where a folder-linked repo would show it as untracked junk.
+      const cwdMarker = newExecCwdMarker()
+      const cwdDirHost = execCwdDirFor(ctx.workspaceDir)
+      const cwdFileHost = cwdDirHost ? join(cwdDirHost, cwdMarker) : join(ctx.workspaceDir, cwdMarker)
 
       const isSandboxed = shouldSandbox({
         command: attributedCommand,
@@ -1424,7 +1625,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         mainSessionIds: ctx.mainSessionIds,
       })
 
-      const cwdFileCmd = isSandboxed ? `/workspace/${cwdMarker}` : cwdFileHost
+      const cwdFileCmd = isSandboxed ? hostToContainer(cwdFileHost, ctx.workspaceDir) : cwdFileHost
       const cdTarget = isSandboxed ? hostToContainer(currentCwd, ctx.workspaceDir) : currentCwd
 
       const wrappedCommand = [
@@ -1437,8 +1638,18 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // a soft timeout and hand the agent a run_id if it overruns.
       // GH_TOKEN is the App installation token when the project is connected,
       // so `gh` comments and git commits are the bot rather than a user PAT.
+      //
+      // On a workspace runtime the shell's cwd decides which project's
+      // credentials it gets: `RUNTIME_AUTH_SECRET` is the *workspace* token
+      // there, and anything the agent starts (an app server, a test script)
+      // must hold the cwd project's own `rt_v1_` token instead, or none.
       const STOPPED = Symbol('stopped')
       const stoppedBeforeSpawn = onAbort(signal, STOPPED)
+      const credentials = await Promise.race([
+        resolveProjectCredentialEnv({ workspaceDir: ctx.workspaceDir, cwd: currentCwd }),
+        stoppedBeforeSpawn.promise,
+      ])
+      if (credentials === STOPPED) return textResult({ error: 'Stopped before the command started.' })
       const githubEnv = await Promise.race([githubCliEnvForProject(ctx.projectId), stoppedBeforeSpawn.promise])
       stoppedBeforeSpawn.dispose()
       if (githubEnv === STOPPED) return textResult({ error: 'Stopped before the command started.' })
@@ -1455,7 +1666,8 @@ function createExecTool(ctx: ToolContext): AgentTool {
         sandboxConfig: ctx.sandbox,
         sessionId: ctx.sessionId,
         mainSessionIds: ctx.mainSessionIds,
-        extraEnv: githubEnv,
+        extraEnv: { ...githubEnv, ...credentials.env },
+        unsetEnv: credentials.unset,
       })
 
       const meta: ExecRunMetadata = {
@@ -1465,6 +1677,19 @@ function createExecTool(ctx: ToolContext): AgentTool {
         cwdReset,
       }
       execRunMetadata.set(handle, meta)
+
+      // Capture the trap's cwd the moment the process exits, not only when a
+      // result is drained: `background: true`, a soft timeout, an abort and a
+      // crash all hand back "running" and may never be waited on, and the
+      // marker must not outlive the shell that wrote it.
+      handle.done
+        .then(() => {
+          const resolved = resolveRunCwd(ctx, meta)
+          if (resolved) meta.resolvedCwd = resolved
+        })
+        .catch(() => {
+          consumeExecCwdMarker(cwdFileHost)
+        })
 
       // Always register so a follow-up exec_wait can find this run, even if it
       // completes within the soft timeout (defensive against races where the
@@ -1499,7 +1724,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
 
       return withOtherProjectFolderWarning(ctx.workspaceDir, topLevelBefore, buildCompletedExecResult({ ctx, entry, finalResult: winner }))
     },
-  }
+  }, ctx)
 }
 
 /**
@@ -1582,6 +1807,20 @@ function requesterCredentialBlockResult(result: CheckpointCallResult<unknown>) {
   })
 }
 
+/**
+ * The `gh` command that achieves the same thing, appended to every
+ * `github_create_pr` failure so the tool never dead-ends. `gh` is not gated,
+ * so this is always a working next step.
+ */
+function ghPrFallbackHint(repository: { owner: string; repo: string } | null, head: string): string {
+  const repo = repository ? `${repository.owner}/${repository.repo}` : '<owner>/<repo>'
+  const branch = head || '<branch>'
+  return (
+    'Open the PR with gh instead: ' +
+    `exec({ command: 'gh pr create --repo ${repo} --base main --head ${branch} --title "..." --body-file .tmp/pr-body.md' }).`
+  )
+}
+
 function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
   return {
     name: 'github_create_pr',
@@ -1590,7 +1829,8 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       'Create a GitHub pull request after the current branch has been pushed. With a project GitHub connection it is opened by the ' +
       'Shogo GitHub App, or by the connected user when the project is connected with an access token. ' +
       'The PR body always includes a Made with Shogo footer and an optional issue-pipeline runId marker. ' +
-      'If the project has no GitHub connection, the tool falls back to the user GITHUB_TOKEN from workspace .env.',
+      'If the project has no GitHub connection, the tool falls back to the user GITHUB_TOKEN from workspace .env; ' +
+      'with neither, use `gh pr create` in exec instead — that is the normal route and is never blocked.',
     parameters: Type.Object({
       title: Type.String({ description: 'Pull request title' }),
       head: Type.Optional(
@@ -1687,20 +1927,20 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
         return textResult({
-          error: botResult.error || 'Shogo GitHub App could not create the pull request.',
+          error: `${botResult.error || 'Shogo GitHub App could not create the pull request.'} ${ghPrFallbackHint(repository, head)}`,
           status: botResult.status,
         })
       }
 
       if (!repository) {
         return textResult({
-          error: 'No GitHub App connection exists and the origin remote is not a GitHub repository.',
+          error: `No GitHub App connection exists and the origin remote is not a GitHub repository. ${ghPrFallbackHint(repository, head)}`,
         })
       }
       const token = loadWorkspaceEnvForAttribution(ctx.workspaceDir).GITHUB_TOKEN || process.env.GITHUB_TOKEN
       if (!token) {
         return textResult({
-          error: 'No GitHub App connection exists. Save GITHUB_TOKEN in workspace .env to create a user-authored PR.',
+          error: `No GitHub App connection exists. Save GITHUB_TOKEN in workspace .env to create a user-authored PR, or open it with gh. ${ghPrFallbackHint(repository, head)}`,
         })
       }
 
@@ -1901,7 +2141,7 @@ export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
     label: 'Merge GitHub Pull Request',
     description:
       'Merge a GitHub pull request by number. A person on the team is asked to approve before it runs, so call it only when the work ' +
-      'is reviewed and ready. Use squash unless the project says otherwise. Do not merge with `gh pr merge`; that is blocked.',
+      'is reviewed and ready. Use squash unless the project says otherwise. Prefer this tool over `gh pr merge` so the merge is attributed and approved.',
     parameters: Type.Object({
       number: Type.Number({ description: 'Pull request number' }),
       method: Type.Optional(
@@ -2025,7 +2265,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
       const found = registry.get(run_id)
       if (!found) {
         return textResult({
-          error: `Unknown run_id: ${run_id}. The run may have been cleaned up (entries are kept ~10 min after completion).`,
+          error: `Unknown run_id: ${run_id}. It is not in this conversation's tasks, and no output file to recover it from.` + ' Call task_list for the tasks that are still here.',
         })
       }
       if (!found.handle) {
@@ -2180,13 +2420,21 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30_000
 const MAX_WAIT_TIMEOUT_MS = 10 * 60 * 1000
 
 function taskView(ctx: ToolContext, entry: TaskEntry) {
+  const registry = ctx.commandRegistry
+  // Never hand the agent a log path the restart already deleted (SHO-141).
+  const outputFile = registry?.displayExistingPath(entry.outputFile)
   return {
     task_id: entry.id,
     source: entry.source,
     title: entry.title,
     status: entry.status,
     elapsed_ms: (entry.finishedAt ?? Date.now()) - entry.startedAt,
-    output_file: taskOutputPath(ctx, entry),
+    ...(outputFile
+      ? { output_file: outputFile }
+      : registry?.outputMissing(entry.outputFile)
+        ? { output_missing: 'the runtime restart removed this task\'s log' }
+        : {}),
+    ...(entry.status === 'interrupted' ? { interrupted_reason: entry.result?.summary ?? 'runtime restarted' } : {}),
   }
 }
 
@@ -2196,6 +2444,15 @@ function finishedTaskResult(ctx: ToolContext, entry: TaskEntry): Record<string, 
   const base: Record<string, unknown> = {
     ...taskView(ctx, entry),
     exit_code: entry.result?.exitCode,
+    ...(entry.recovered ? { recovered: true } : {}),
+  }
+  // A pipeline the shell could not verify has no exit code to report: say so
+  // instead of printing the last stage's number as the command's.
+  if (entry.result?.exitCodeReliable === false) {
+    delete base.exit_code
+    base.exit_code_reliable = false
+    base.pipeline_status = entry.result.pipelineStatus ?? 'last-stage'
+    base.status_note = entry.result.summary
   }
   if (entry.handle && entry.finalResult) {
     const meta = execRunMetadata.get(entry.handle)
@@ -2264,14 +2521,61 @@ function createWaitTool(ctx: ToolContext): AgentTool {
       const registry = ctx.commandRegistry
       if (!registry) return textResult({ error: 'Background tasks are not available in this context.' })
 
-      const unknown = task_ids.filter((id) => !registry.get(id))
+      // A result whose entry was evicted is still in its output file, so a late
+      // `wait` recovers it instead of claiming the task never existed.
+      const unknown: string[] = []
+      for (const id of task_ids) {
+        if (registry.get(id)) continue
+        if (await registry.resolveFinished(id)) continue
+        unknown.push(id)
+      }
       if (unknown.length === task_ids.length) {
+        const paths = unknown.map((id) => registry.outputPathFor(id)).filter((p): p is string => !!p)
         return textResult({
-          error: `Unknown task id${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}. Finished tasks are kept ~10 min; call task_list to see current tasks.`,
+          error:
+            `Unknown task id${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')} — not in this conversation's tasks, ` +
+            `and no output file to recover a result from${paths.length ? ` (looked at ${paths.join(', ')})` : ''}. ` +
+            'Call task_list for the tasks that are still here.',
+          code: 'task_result_gone',
+          ...(paths.length ? { output_file: paths.join(', ') } : {}),
+          hint: 'Call task_list for the tasks that are still here.',
         })
       }
 
       const ids = task_ids.filter((id) => registry.get(id))
+
+      // Waiting again on the same tasks after two full timeouts teaches nothing:
+      // the [Task update] is already guaranteed, so the third call stops here —
+      // unless something settled meanwhile, which the agent must still be told.
+      const waitKey = [...ids].sort().join(',')
+      const timeoutsSpent = turnSteeringState(ctx).waitTimeouts.get(waitKey) ?? 0
+      if (timeoutMs > 0 && timeoutsSpent >= 2) {
+        const settled = ids.map((id) => registry.get(id)!).find((e) => e.status !== 'running')
+        if (settled) {
+          turnSteeringState(ctx).waitTimeouts.delete(waitKey)
+          registry.markConsumed([settled.id])
+          return textResult({
+            ...finishedTaskResult(ctx, settled),
+            waited_ms: 0,
+            ...(unknown.length ? { unknown_task_ids: unknown } : {}),
+            still_running: ids
+              .map((id) => registry.get(id)!)
+              .filter((e) => e.id !== settled.id && e.status === 'running')
+              .map((e) => e.id),
+          })
+        }
+        return textResult({
+          status: 'timeout',
+          code: 'stop_waiting',
+          repeated: timeoutsSpent,
+          waited_ms: 0,
+          tasks: ids.map((id) => taskView(ctx, registry.get(id)!)),
+          hint:
+            'Stop waiting — end your turn. The [Task update] is guaranteed when it finishes, and waiting again only ' +
+            'spends another timeout.',
+        })
+      }
+
       const emitWait = (active: boolean) => {
         try {
           ctx.uiWriter?.write({
@@ -2291,6 +2595,7 @@ function createWaitTool(ctx: ToolContext): AgentTool {
       }
 
       if (outcome.kind === 'finished' && outcome.task) {
+        turnSteeringState(ctx).waitTimeouts.delete(waitKey)
         return textResult({
           ...finishedTaskResult(ctx, outcome.task),
           ...(unknown.length ? { unknown_task_ids: unknown } : {}),
@@ -2302,6 +2607,7 @@ function createWaitTool(ctx: ToolContext): AgentTool {
       }
 
       if (outcome.kind === 'matched' && outcome.task) {
+        turnSteeringState(ctx).waitTimeouts.delete(waitKey)
         return textResult({
           ...taskView(ctx, outcome.task),
           matched: outcome.matched,
@@ -2309,6 +2615,7 @@ function createWaitTool(ctx: ToolContext): AgentTool {
         })
       }
 
+      if (timeoutMs > 0) turnSteeringState(ctx).waitTimeouts.set(waitKey, timeoutsSpent + 1)
       return textResult({
         status: 'timeout',
         waited_ms: Date.now() - startedAt,
@@ -2335,9 +2642,10 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
           task_id: t.id,
           source: t.source,
           title: t.title,
-          status: t.stale ? 'unknown (runtime restarted)' : t.status,
+          // A stale row is one the restart ended, not one we cannot name.
+          status: t.stale ? 'interrupted (runtime restarted)' : t.status,
           elapsed_ms: t.elapsedMs,
-          output_file: t.outputFile,
+          ...(registry.displayExistingPath(t.outputFile) ? { output_file: registry.displayExistingPath(t.outputFile) } : {}),
         })),
       })
     },
@@ -2347,7 +2655,7 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
 function createTaskCancelTool(ctx: ToolContext): AgentTool {
   return {
     name: 'task_cancel',
-    description: 'Cancel a background task you started (stops the command, subagent, or tracking).',
+    description: 'Cancel a background task you started (stops the command, subagent, or tracking). Reports the processes still running if the tree could not be emptied.',
     label: 'Cancel Task',
     parameters: Type.Object({
       task_id: Type.String({ description: 'Task id to cancel' }),
@@ -2357,8 +2665,21 @@ function createTaskCancelTool(ctx: ToolContext): AgentTool {
       const registry = ctx.commandRegistry
       const entry = registry?.get(task_id)
       if (!registry || !entry) return textResult({ error: `Unknown task id: ${task_id}` })
-      registry.kill(entry.id)
-      return textResult({ ok: true, task_id: entry.id, status: registry.get(entry.id)?.status ?? 'cancelled' })
+      // `cancelled` is a claim about the process tree, not about the signal we
+      // sent: the registry waits for the kill to be verified and tells us what
+      // is still running (SHO-144).
+      const { survivors } = await registry.cancel(entry.id)
+      const status = registry.get(entry.id)?.status ?? 'cancelled'
+      if (survivors.length > 0) {
+        return textResult({
+          ok: false,
+          task_id: entry.id,
+          status: 'cancel_incomplete',
+          survivors,
+          hint: survivorHint(survivors),
+        })
+      }
+      return textResult({ ok: true, task_id: entry.id, status, survivors: [] })
     },
   }
 }
@@ -2561,8 +2882,8 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       } else {
         offset = coerceNum(raw.offset)
       }
-      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
-      const readTrust = assertAllowedPath(resolved, 'read', ctx.workspaceDir)
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))
+      const readTrust = assertAllowedPath(resolved, 'read', ctx.workspaceDir, pathPolicy(ctx))
       if (!readTrust.ok && readTrust.reason === 'other_project_path') return textResult({ error: readTrust.message })
       if (!existsSync(resolved)) {
         const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
@@ -2855,7 +3176,10 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
     label: 'Write File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace. /tmp/... is rewritten to .tmp/...' }),
-      content: Type.String({ description: 'Content to write. UTF-8 text, or base64 when encoding is "base64".' }),
+      content: Type.String({
+        description: 'Content to write. UTF-8 text, or base64 when encoding is "base64". Pass "" for an empty file.',
+        'x-empty-ok': true,
+      }),
       append: Type.Optional(
         Type.Boolean({
           description: 'Append instead of overwrite (default: false). Ignored for base64 writes.',
@@ -2890,7 +3214,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       }
       const scratch = scratchPathForWrite(ctx.workspaceDir, requestedPath)
       const filePath = scratch.path
-      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))
       const scratchFields = scratch.remappedFrom
         ? {
             remappedFrom: scratch.remappedFrom,
@@ -2900,7 +3224,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       // Workspace Trust gate for external (VS Code-style) projects.
       // For managed projects (the historical case) `assertAllowedPath`
       // returns ok=true because trustLevel is 'trusted' by default.
-      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir)
+      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir, pathPolicy(ctx))
       if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
@@ -3573,10 +3897,14 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
       old_string: Type.String({
-        description: 'Exact text to find in the file',
+        description:
+          'Exact text to find in the file. Pass "" to create a file that does not exist yet.',
+        'x-empty-ok': true,
       }),
       new_string: Type.String({
-        description: 'Replacement text (must differ from old_string)',
+        description:
+          'Replacement text (must differ from old_string). Pass "" to delete the matched text.',
+        'x-empty-ok': true,
       }),
       replace_all: Type.Optional(
         Type.Boolean({
@@ -3600,8 +3928,8 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       if (old_string === new_string) {
         return textResult({ error: 'old_string and new_string must differ' })
       }
-      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
-      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir)
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))
+      const trustCheck = assertAllowedPath(resolved, 'write', ctx.workspaceDir, pathPolicy(ctx))
       if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
@@ -3963,7 +4291,26 @@ END APP_MODE_DISABLED */
 // TodoWrite Tool (session task checklist)
 // ---------------------------------------------------------------------------
 
-const todoStores = new Map<string, Array<{ id: string; content: string; status: string }>>()
+const todoStores = new Map<string, SessionTodo[]>()
+/** When each list was last written, so a stale plan cannot restart a turn. */
+const todoUpdatedAt = new Map<string, number>()
+
+/**
+ * The session's todo list, as the plan-continuation loop sees it (SHO-121).
+ * `updatedAt` is the last `todo_write` for that session: a turn only continues
+ * on a list written during the turn that is ending.
+ */
+export function getSessionTodos(sessionId: string): SessionTodosSnapshot | null {
+  const todos = todoStores.get(sessionId)
+  if (!todos) return null
+  return { todos: todos.map((todo) => ({ ...todo })), updatedAt: todoUpdatedAt.get(sessionId) ?? 0 }
+}
+
+/** Drop a session's list (cleared history, or a test's workspace teardown). */
+export function clearSessionTodos(sessionId: string): void {
+  todoStores.delete(sessionId)
+  todoUpdatedAt.delete(sessionId)
+}
 
 function createTodoWriteTool(ctx: ToolContext): AgentTool {
   return {
@@ -3987,6 +4334,7 @@ function createTodoWriteTool(ctx: ToolContext): AgentTool {
       }
       const key = ctx.sessionId || ctx.projectId
       todoStores.set(key, todos)
+      todoUpdatedAt.set(key, Date.now())
       return textResult({ ok: true, todos, count: todos.length })
     },
   }
@@ -4473,6 +4821,7 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
         path,
         requestedProjectId,
         mountedProjectIds: workspaceAttachedProjectIds(),
+        anchorProjectId: projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID),
         workspaceRuntime: isWorkspaceRuntimeMode(),
       })
       const projectId = target.projectId
@@ -5477,7 +5826,8 @@ function createReadHistoryTool(ctx: ToolContext): AgentTool {
   const local = () => (index ??= new HistoryIndex(ctx.workspaceDir))
   return {
     name: 'read_history',
-    description: 'Read a previous chat transcript or plan returned by search_history.',
+    description:
+      'Read a previous chat transcript or plan returned by search_history, or a chat the person tagged with @.',
     label: 'Read Chat History',
     parameters: Type.Object({
       kind: Type.Union([Type.Literal('chat'), Type.Literal('plan')]),
@@ -7094,7 +7444,7 @@ function createConnectTool(ctx: ToolContext): AgentTool {
     description:
       'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to the MCP catalog (postgres, etc.), then to a remote URL if provided. Files and shell commands are built in (read_file, write_file, edit_file, exec) — do not connect filesystem or computer-use. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
-      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
+      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec (`gh issue list`, `gh issue create`, `gh pr list`, `gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md`, `gh run list`). Opening a PR is normally `gh pr create` in exec after pushing the source branch; the `github_create_pr` tool is an optional alternative that opens the PR as the Shogo GitHub App and adds the standard footer. Either way end the body with the standard Made with Shogo footer and a `Card: <KEY>` line. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({
@@ -7319,7 +7669,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
   return {
     name: 'agent_spawn',
     description:
-      'Launch an instance of a registered or built-in agent type. Waits for its report, or with background: true runs it as a background task. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
+      'Launch an instance of a registered or built-in agent type. Waits for its report, or with background: true runs it as a background task. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
       type: Type.Optional(
@@ -7517,7 +7867,11 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         if (task && inst) {
           ctx.commandRegistry!.addAlias(instanceId, task.entry.id)
           void inst.promise.then((result) => {
-            const report = result.responseText?.trim() || '(Subagent returned no output.)'
+            // A failed background run must finish with its cause: the [Task
+            // update] is the only thing the parent sees.
+            const report = result.error?.message?.trim()
+              || result.responseText?.trim()
+              || '(Subagent completed but returned no output.)'
             task.append(`\n\n=== Final report ===\n${report}\n`)
             const status = inst.status === 'cancelled'
               ? 'cancelled'
@@ -7563,6 +7917,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       }
 
       const accumulated = spawn?.getAccumulatedOutput()
+      const failed = inst.status === 'failed' || result.responseEmpty === true
       return subagentToolResult({
         instance_id: instanceId,
         agent_id: result.agentId,
@@ -7572,6 +7927,13 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         tokens: { input: result.inputTokens, output: result.outputTokens },
         parts: accumulated?.parts,
         model: accumulated?.model || result.effectiveModelId || inst.model,
+        ...(result.responseEmpty ? { responseEmpty: true } : {}),
+        // A spawn that dies at setup used to reach the parent as a placeholder;
+        // the reason and where it got to are what make it actionable.
+        ...(result.error ? { error: result.error } : {}),
+        ...(failed && (inst.recentActivity?.length ?? 0) > 0
+          ? { activity: inst.recentActivity!.slice(-5).map((a) => a.summary) }
+          : {}),
       }, result.responseText)
     },
   }
@@ -7614,6 +7976,10 @@ export function capSubagentResponse(text: string): string {
  * streamed `parts` transcript) is kept whole, but the model only sees the
  * capped final report and a per-tool call count. Re-sending the subagent's
  * full transcript to the parent defeats the point of delegating.
+ *
+ * A failed run answers with its cause. A placeholder ("returned no output")
+ * reads as a successful run of a silent agent, so it is kept only for a run
+ * that genuinely completed without text.
  */
 export function subagentToolResult(
   details: Record<string, any>,
@@ -7624,9 +7990,15 @@ export function subagentToolResult(
   for (const p of (parts ?? []) as any[]) {
     if (p?.type === 'tool' && p.tool?.toolName) toolCounts[p.tool.toolName] = (toolCounts[p.tool.toolName] ?? 0) + 1
   }
+  const error = rest.error as { code?: string; message: string } | undefined
+  const failed = rest.status === 'failed' || !!error || rest.responseEmpty === true
+  const response = error?.message
+    ? error.message
+    : responseText?.trim() || (failed ? '(Subagent failed without a message.)' : '(Subagent completed but returned no output.)')
   const modelFacing = {
     ...rest,
-    response: capSubagentResponse(responseText?.trim() || '(Subagent completed but returned no output.)'),
+    response: capSubagentResponse(response),
+    ...(failed ? { reason: error?.code ?? 'no_output' } : {}),
     ...(Object.keys(toolCounts).length > 0 ? { tools_used: toolCounts } : {}),
   }
   return {
@@ -8656,8 +9028,7 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
       // environment — strictly more dangerous than the sandboxed `exec` tool.
       // Apply the same guards exec uses so prompt-injection can't bypass them:
       //   1. Workspace Trust (restricted-mode projects refuse shell commands)
-      //   2. Hard-blocked destructive commands
-      //   3. Gateway self-protect (don't let the agent kill its own runtime)
+      //   2. Gateway self-protect (don't let the agent kill its own runtime)
       // The PermissionEngine ask/allow/deny gate is applied by the `g(..., 'shell')`
       // wrapper in createTools().
       const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
@@ -8668,10 +9039,6 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
       if (cwd) {
         const cwdTrust = assertAllowedPath(cwd, 'exec', ctx.workspaceDir)
         if (!cwdTrust.ok) return textResult({ error: cwdTrust.message })
-      }
-
-      if (isBlockedCommand(command)) {
-        return textResult({ error: `Blocked command: ${command}` })
       }
 
       const gatewayGuard = commandTargetsGateway(command)
@@ -8839,7 +9206,7 @@ async function socialInternalCall(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
   body?: Record<string, unknown>,
-): Promise<{ ok: true; data: any } | { ok: false; error: string; suggestion?: string }> {
+): Promise<{ ok: true; data: any } | { ok: false; error: string; code?: string; suggestion?: string }> {
   const workspaceId = ctx.workspaceId
   if (!workspaceId) {
     return { ok: false, error: 'No workspace in scope for social inbox calls.' }
@@ -8858,18 +9225,235 @@ async function socialInternalCall(
     )
     const data = await response.json().catch(() => ({}))
     if (!response.ok) {
+      const rawCode = (data as any)?.error?.code
+      const code = typeof rawCode === 'string' ? rawCode : undefined
       return {
         ok: false,
         error: (data as any)?.error?.message ?? (data as any)?.error ?? `HTTP ${response.status}`,
+        code,
         suggestion:
-          response.status === 409
-            ? 'Connect the account, then run action "inbox" with kind "dms" or "comments" to sync first.'
-            : undefined,
+          code === 'social_relay_unavailable'
+            ? 'Sign in to Shogo Cloud in Settings, then retry.'
+            : code === 'social_profile_missing'
+              ? 'Run action "connect" for that platform first — the connect creates the workspace’s profile.'
+              : code === 'social_profile_unresolved'
+                ? 'The social provider did not return a profile id. Retry once, then report it if it keeps happening.'
+                : code === 'social_not_configured'
+                  ? 'Social is not configured on the server: the workspace owner has to set the provider key.'
+                  : code === 'account_out_of_scope' || code === 'profile_out_of_scope'
+                    ? 'That resource belongs to another workspace. Connect this workspace’s own account.'
+                    : code === 'account_owned_elsewhere'
+                      ? 'Disconnect that account from the other workspace first, then connect it here.'
+                      : response.status === 409
+                        ? 'Connect the account, then run action "inbox" with kind "dms" or "comments" to sync first.'
+                        : undefined,
       }
     }
     return { ok: true, data }
   } catch (err: any) {
     return { ok: false, error: `Social inbox request failed: ${err?.message ?? err}` }
+  }
+}
+
+/**
+ * Platforms a person can connect from the app / with the agent. Zernio serves
+ * the OAuth for each of them; the list is here so a typo is refused with the
+ * accepted values instead of a provider 404.
+ */
+const SOCIAL_CONNECT_PLATFORMS = [
+  'instagram',
+  'tiktok',
+  'facebook',
+  'x',
+  'linkedin',
+  'youtube',
+  'threads',
+  'pinterest',
+  'reddit',
+  'bluesky',
+  'googlebusiness',
+]
+
+const SOCIAL_PLATFORM_LABELS: Record<string, string> = {
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+  facebook: 'Facebook',
+  x: 'X',
+  linkedin: 'LinkedIn',
+  youtube: 'YouTube',
+  threads: 'Threads',
+  pinterest: 'Pinterest',
+  reddit: 'Reddit',
+  bluesky: 'Bluesky',
+  googlebusiness: 'Google Business Profile',
+}
+
+function platformLabel(platform: string): string {
+  return SOCIAL_PLATFORM_LABELS[platform] ?? platform
+}
+
+/** A password-shaped argument, or null. Nothing in this tool ever needs one. */
+function credentialShapedParams(rawParams: unknown): string | null {
+  if (!rawParams || typeof rawParams !== 'object') return null
+  const blocked = ['password', 'passwd', 'pass', 'credentials', 'credential', 'otp', 'two_factor_code']
+  for (const key of Object.keys(rawParams as Record<string, unknown>)) {
+    if (!blocked.includes(key.toLowerCase())) continue
+    const value = (rawParams as Record<string, unknown>)[key]
+    if (typeof value === 'string' && value.trim()) return key
+  }
+  return null
+}
+
+/** A JSON object passed as a string (models do this) or already an object. */
+function parseJsonObject(raw: unknown): Record<string, any> | undefined {
+  if (!raw) return undefined
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, any>
+  if (typeof raw !== 'string' || !raw.trim()) return undefined
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The MIME type Zernio's presign accepts for a file, from its extension. A file
+ * whose type cannot be named is refused rather than uploaded as
+ * `application/octet-stream`, which the provider rejects.
+ */
+const SOCIAL_MEDIA_CONTENT_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  mp4: 'video/mp4',
+  mov: 'video/quicktime',
+  m4v: 'video/x-m4v',
+  webm: 'video/webm',
+  mpeg: 'video/mpeg',
+  mpg: 'video/mpeg',
+  avi: 'video/x-msvideo',
+  pdf: 'application/pdf',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/x-m4a',
+  wav: 'audio/wav',
+  aac: 'audio/aac',
+  ogg: 'audio/ogg',
+  srt: 'application/x-subrip',
+  vtt: 'text/vtt',
+}
+
+function socialContentTypeFor(filename: string): string | undefined {
+  const match = /\.([A-Za-z0-9]+)$/.exec(filename)
+  return match ? SOCIAL_MEDIA_CONTENT_TYPES[match[1]!.toLowerCase()] : undefined
+}
+
+const MAX_SOCIAL_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024
+
+/**
+ * Turn post media into URLs Zernio can publish.
+ *
+ * A public https URL is used as-is. A workspace path is minted an upload slot,
+ * the bytes are PUT to it from here — so a 200 MB MP4 never travels through the
+ * API — and the slot's `publicUrl` is what the post names. Paths outside the
+ * workspace are refused, the same guard the other file tools apply.
+ */
+async function resolveSocialMedia(
+  ctx: ToolContext,
+  entries: string[],
+): Promise<{ ok: true; urls: string[] } | { ok: false; error: string }> {
+  const urls: string[] = []
+  for (const entry of entries) {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(entry)) {
+      if (!entry.startsWith('https://')) {
+        return { ok: false, error: `Media URLs must be https, so the platform can fetch them: ${entry}` }
+      }
+      urls.push(entry)
+      continue
+    }
+
+    const path = entry.replace(/\\/g, '/').replace(/^\.\//, '')
+    let resolved: string
+    try {
+      resolved = assertWithinWorkspaceSecure(ctx.workspaceDir, path, pathPolicy(ctx))
+    } catch {
+      return { ok: false, error: `Media path is outside the workspace: ${entry}` }
+    }
+
+    let bytes: Uint8Array
+    try {
+      const stat = statSync(resolved)
+      if (!stat.isFile()) return { ok: false, error: `Not a file: ${entry}` }
+      if (stat.size > MAX_SOCIAL_UPLOAD_BYTES) {
+        return { ok: false, error: `${entry} is larger than the 5 GB Zernio accepts.` }
+      }
+      bytes = new Uint8Array(readFileSync(resolved))
+    } catch {
+      return { ok: false, error: `Media file not found: ${entry}` }
+    }
+
+    const filename = path.split('/').pop() ?? path
+    const contentType = socialContentTypeFor(filename)
+    if (!contentType) {
+      return {
+        ok: false,
+        error: `Cannot tell the media type of ${filename}. Supported: png, jpg, gif, webp, mp4, mov, m4v, webm, mpeg, avi, pdf, mp3, m4a, wav.`,
+      }
+    }
+
+    const slot = await socialInternalCall(ctx, 'POST', '/social/media/presign', {
+      filename,
+      contentType,
+      size: bytes.byteLength,
+    })
+    if (!slot.ok) return { ok: false, error: slot.error }
+    const uploadUrl = typeof slot.data?.uploadUrl === 'string' ? slot.data.uploadUrl : ''
+    const publicUrl = typeof slot.data?.publicUrl === 'string' ? slot.data.publicUrl : ''
+    if (!uploadUrl || !publicUrl) {
+      return { ok: false, error: 'The media upload slot came back incomplete.' }
+    }
+
+    try {
+      // A presigned storage URL carries its own credential; the runtime's own
+      // token must never ride along with it.
+      const put = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body: bytes as unknown as BodyInit,
+        signal: AbortSignal.timeout(120_000),
+      })
+      if (!put.ok) {
+        return { ok: false, error: `Uploading ${filename} failed (HTTP ${put.status}).` }
+      }
+    } catch (err: any) {
+      return { ok: false, error: `Uploading ${filename} failed: ${err?.message ?? err}` }
+    }
+    urls.push(publicUrl)
+  }
+  return { ok: true, urls }
+}
+
+/** A post, in the shape an agent (or a person reading chat) can act on. */
+function summarizeSocialPost(post: any) {
+  if (!post || typeof post !== 'object') return null
+  return {
+    post_id: post.id,
+    status: post.status,
+    content: post.content,
+    scheduled_for: post.scheduledFor ?? null,
+    published_at: post.publishedAt ?? null,
+    targets: (Array.isArray(post.targets) ? post.targets : []).map((target: any) => ({
+      account_id: target.accountId,
+      platform: target.platform,
+      username: target.account?.username ?? null,
+      status: target.status,
+      url: target.platformPostUrl ?? null,
+      error: target.error ?? null,
+    })),
   }
 }
 
@@ -8888,12 +9472,19 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
     name: 'social_media',
     description:
       `Look up a public social profile or its recent posts (views, likes, comments, shares), ` +
-      `or work the connected accounts' inbox. ` +
+      `or work a workspace's connected accounts: connect one, publish and schedule posts, ` +
+      `read the calendar and analytics, and run the inbox. ` +
       `Enabled lookup platforms: ${platformList}. ` +
       `Actions: "profile" and "recent_posts" take a handle; ` +
+      `"connect" takes a platform and returns a sign-in LINK to give the person — never ask for or accept a username, password or 2FA code; ` +
+      `"accounts" lists the connected accounts and their ids; ` +
+      `"post" publishes or schedules one post to one or more accounts (content, account_ids, media, scheduled_for/publish_now/draft); ` +
+      `"posts" lists posts, "calendar" the schedule and "analytics" the numbers; ` +
       `"inbox" lists DM threads (kind "dms") or comments (kind "comments"); ` +
       `"reply" takes conversation_id + text; "comment_reply" takes comment_id + text; ` +
       `"automate" manages comment→DM automations (automation_action create/list/pause/resume/delete). ` +
+      `Media for a post is a public https URL or a workspace file path, which is uploaded for you. ` +
+      `Instagram and TikTok refuse a post with no image or video; TikTok defaults to an inbox draft unless direct-post settings are given. ` +
       `Lookups spend paid API units — prefer one call with a sufficient limit over several small ones. ` +
       `Inbox replies are public/sent as the connected account: quote the user's own words when unsure.`,
     label: 'Social Media',
@@ -8906,8 +9497,17 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           Type.Literal('reply'),
           Type.Literal('comment_reply'),
           Type.Literal('automate'),
+          Type.Literal('connect'),
+          Type.Literal('accounts'),
+          Type.Literal('post'),
+          Type.Literal('posts'),
+          Type.Literal('calendar'),
+          Type.Literal('analytics'),
         ],
-        { description: 'profile | recent_posts | inbox | reply | comment_reply | automate' },
+        {
+          description:
+            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | calendar | analytics',
+        },
       ),
       platform: Type.Optional(socialPlatformSchema(platforms)),
       handle: Type.Optional(Type.String({ description: 'Account handle, with or without a leading @. Required for profile/recent_posts.' })),
@@ -8946,6 +9546,66 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       dm_message: Type.Optional(Type.String({ description: 'For automate create: the DM to send the commenter.' })),
       comment_reply: Type.Optional(Type.String({ description: 'For automate create: a public reply under the comment (required on reply-only platforms).' })),
       messages: Type.Optional(Type.String({ description: 'For a sequence: comma-separated DM messages sent in order, 1-3.' })),
+      content: Type.Optional(
+        Type.String({ description: 'For action "post": the caption or text of the post.' }),
+      ),
+      account_ids: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            'For action "post": the connected account ids to publish to, from action "accounts". One post fans out to all of them.',
+        }),
+      ),
+      media: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            'For action "post": images or videos. Each entry is either a public https URL or a workspace-relative file path (e.g. "renders/hero.png"), which is uploaded through the media presign flow first. Instagram and TikTok require at least one.',
+        }),
+      ),
+      variants: Type.Optional(
+        Type.String({
+          description:
+            'For action "post": JSON object keyed by account id with per-target overrides, e.g. {"<account_id>": {"content": "different caption", "media": ["renders/alt.mp4"], "platform_specific_data": {"title": "..."}}}.',
+        }),
+      ),
+      scheduled_for: Type.Optional(
+        Type.String({
+          description:
+            'For action "post": ISO timestamp to schedule the post for (omit, with no publish_now and no draft, to publish now).',
+        }),
+      ),
+      publish_now: Type.Optional(
+        Type.Boolean({ description: 'For action "post": publish immediately instead of scheduling.' }),
+      ),
+      draft: Type.Optional(
+        Type.Boolean({ description: 'For action "post": save as a draft and publish nothing.' }),
+      ),
+      tiktok: Type.Optional(
+        Type.String({
+          description:
+            'For action "post": JSON TikTok settings, e.g. {"privacyLevel":"PUBLIC_TO_EVERYONE","contentPreviewConfirmed":true,"expressConsentGiven":true} for a direct post. Omit it and the video goes to the creator\'s TikTok inbox as a draft (the safe default).',
+        }),
+      ),
+      expected_username: Type.Optional(
+        Type.String({
+          description:
+            'For action "connect": the handle the person says they are connecting. A sign-in that lands on a different account is refused instead of connected.',
+        }),
+      ),
+      force_reauth: Type.Optional(
+        Type.Boolean({
+          description:
+            'For action "connect": Instagram only. Show Instagram\'s own login page instead of reusing whichever account is already signed in on the device.',
+        }),
+      ),
+      status: Type.Optional(
+        Type.String({ description: 'For action "posts": only posts in this status (draft, scheduled, published, partial, failed).' }),
+      ),
+      from: Type.Optional(
+        Type.String({ description: 'For "posts" / "calendar" / "analytics": start of the window, ISO date. Defaults to 7 days ago (calendar) or 30 days (analytics).' }),
+      ),
+      to: Type.Optional(
+        Type.String({ description: 'For "posts" / "calendar" / "analytics": end of the window, ISO date.' }),
+      ),
     }),
     execute: async (_toolCallId, rawParams) => {
       // The platform enum is built from the enabled set, so TypeBox cannot
@@ -8969,6 +9629,19 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         dm_message?: unknown
         comment_reply?: unknown
         messages?: unknown
+        content?: unknown
+        account_ids?: unknown
+        media?: unknown
+        variants?: unknown
+        scheduled_for?: unknown
+        publish_now?: unknown
+        draft?: unknown
+        tiktok?: unknown
+        expected_username?: unknown
+        force_reauth?: unknown
+        status?: unknown
+        from?: unknown
+        to?: unknown
       }
       const action = String(params.action ?? '')
       const allowed = enabledSocialPlatforms(ctx.config)
@@ -8980,11 +9653,223 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       // managing the connected accounts does not. Turning one on must not turn
       // the other on, so neither may be read as the other's gate. The lookup
       // path keeps its own platform check further down.
-      const managementActions = new Set(['inbox', 'reply', 'comment_reply', 'automate'])
+      const managementActions = new Set([
+        'inbox',
+        'reply',
+        'comment_reply',
+        'automate',
+        'connect',
+        'accounts',
+        'post',
+        'posts',
+        'calendar',
+        'analytics',
+      ])
       if (managementActions.has(action) && ctx.config.socialManagementEnabled !== true) {
         return textResult({
-          error: 'Social management is off for this project: the inbox, replies and automations are disabled. Turn on the Social management capability to use them.',
+          error:
+            'Social management is off for this project: connecting accounts, posting and the inbox are disabled. Turn on the Social management capability to use them.',
         })
+      }
+
+      if (action === 'connect') {
+        // A connect is a link plus a person's own sign-in. Credentials typed into
+        // this tool are a bug in the conversation, so they are refused rather
+        // than passed anywhere — nothing here ever needs them.
+        const credentials = credentialShapedParams(rawParams)
+        if (credentials) {
+          return textResult({
+            refused: true,
+            error: `Never accept a ${credentials} — not to connect an account, not to sign in. Give the person the sign-in link instead and ask them to change that password now.`,
+          })
+        }
+        const platform = String(params.platform ?? '').trim().toLowerCase()
+        if (!SOCIAL_CONNECT_PLATFORMS.includes(platform)) {
+          return textResult({
+            error: `platform must be one of: ${SOCIAL_CONNECT_PLATFORMS.join(', ')}.`,
+          })
+        }
+        const expected = String(params.expected_username ?? '').trim().replace(/^@+/, '')
+        const result = await socialInternalCall(ctx, 'POST', '/social/connect', {
+          platform,
+          ...(expected ? { expectedUsername: expected } : {}),
+          ...(params.force_reauth === true ? { forceReauth: true } : {}),
+        })
+        if (!result.ok) {
+          return textResult({ error: result.error, code: result.code, suggestion: result.suggestion })
+        }
+        const url = typeof result.data?.url === 'string' ? result.data.url : ''
+        if (!url) return textResult({ error: 'No sign-in link was returned.' })
+        return textResult({
+          platform,
+          url,
+          instructions:
+            `Give the person this link and ask them to open it in a browser and sign in on ${platformLabel(platform)}'s own page. ` +
+            `When they finish they land on a page saying the account is connected; run action "accounts" to see it. ` +
+            (platform === 'instagram'
+              ? 'Instagram needs a professional (Business or Creator) account to publish — Instagram converts a personal one during sign-in.'
+              : ''),
+          never:
+            'Never ask for, accept or store a username, password or 2FA code: Shogo never sees them, and this flow never needs them.',
+        })
+      }
+
+      if (action === 'accounts') {
+        // Sync first: a connect that just finished in a browser wrote nothing
+        // locally, and the person expects the account to be there now.
+        const result = await socialInternalCall(ctx, 'POST', '/social/accounts/sync')
+        if (!result.ok) {
+          return textResult({ error: result.error, code: result.code, suggestion: result.suggestion })
+        }
+        const accounts = Array.isArray(result.data?.accounts) ? result.data.accounts : []
+        return textResult({
+          count: accounts.length,
+          accounts: accounts.map((account: any) => ({
+            account_id: account.id,
+            platform: account.platform,
+            username: account.username,
+            active: account.isActive !== false,
+            needs_reconnect: account.needsReconnect === true,
+          })),
+        })
+      }
+
+      if (action === 'post') {
+        const content = String(params.content ?? '').trim()
+        const isDraft = params.draft === true
+        const targetIds = Array.isArray(params.account_ids)
+          ? params.account_ids.map((id) => String(id).trim()).filter(Boolean)
+          : []
+        if (!isDraft && targetIds.length === 0) {
+          return textResult({
+            error: 'account_ids is required: run action "accounts" first and pass the account_id values to publish to.',
+          })
+        }
+        const mediaEntries = Array.isArray(params.media)
+          ? params.media.map((entry) => String(entry).trim()).filter(Boolean)
+          : []
+
+        const accountsResult = await socialInternalCall(ctx, 'GET', '/social/accounts')
+        if (!accountsResult.ok) {
+          return textResult({ error: accountsResult.error, suggestion: accountsResult.suggestion })
+        }
+        const known = new Map<string, any>(
+          (Array.isArray(accountsResult.data?.accounts) ? accountsResult.data.accounts : []).map(
+            (account: any) => [String(account.id), account],
+          ),
+        )
+        const unknown = targetIds.filter((id) => !known.has(id))
+        if (unknown.length) {
+          return textResult({
+            error: `Unknown account id(s): ${unknown.join(', ')}.`,
+            suggestion: 'Run action "accounts" to list the connected accounts and their ids.',
+          })
+        }
+        // Instagram and TikTok refuse a post without media, so the refusal
+        // happens here — before an upload slot is minted or a post is created.
+        const needingMedia = targetIds
+          .map((id) => known.get(id))
+          .filter((account: any) => account?.platform === 'instagram' || account?.platform === 'tiktok')
+        if (needingMedia.length && mediaEntries.length === 0) {
+          return textResult({
+            error: `${needingMedia.map((account: any) => `@${account.username} (${account.platform})`).join(', ')} need at least one image or video: pass it in "media".`,
+          })
+        }
+
+        const media = mediaEntries.length
+          ? await resolveSocialMedia(ctx, mediaEntries)
+          : ({ ok: true, urls: [] } as const)
+        if (!media.ok) return textResult({ error: media.error })
+
+        const variantInput = parseJsonObject(params.variants)
+        const variants: Record<string, unknown> = {}
+        for (const [accountId, raw] of Object.entries(variantInput ?? {})) {
+          if (!raw || typeof raw !== 'object') continue
+          const entry = raw as Record<string, unknown>
+          const entryMedia = Array.isArray(entry.media)
+            ? entry.media.map((item) => String(item).trim()).filter(Boolean)
+            : []
+          const resolvedEntry = entryMedia.length
+            ? await resolveSocialMedia(ctx, entryMedia)
+            : ({ ok: true, urls: [] } as const)
+          if (!resolvedEntry.ok) return textResult({ error: resolvedEntry.error })
+          variants[accountId] = {
+            ...(typeof entry.content === 'string' ? { content: entry.content } : {}),
+            ...(resolvedEntry.urls.length ? { mediaUrls: resolvedEntry.urls } : {}),
+            ...(entry.platform_specific_data && typeof entry.platform_specific_data === 'object'
+              ? { platformSpecificData: entry.platform_specific_data }
+              : {}),
+          }
+        }
+
+        const scheduledFor = String(params.scheduled_for ?? '').trim()
+        const tiktok = parseJsonObject(params.tiktok)
+        const created = await socialInternalCall(ctx, 'POST', '/social/posts', {
+          content,
+          accountIds: targetIds,
+          ...(media.urls.length ? { mediaUrls: media.urls } : {}),
+          ...(Object.keys(variants).length ? { variants } : {}),
+          ...(scheduledFor ? { scheduledFor } : {}),
+          ...(params.publish_now === true ? { publishNow: true } : {}),
+          ...(isDraft ? { draft: true } : {}),
+          ...(tiktok ? { tiktok } : {}),
+        })
+        if (!created.ok) return textResult({ error: created.error, suggestion: created.suggestion })
+        return textResult({
+          post: summarizeSocialPost(created.data?.post),
+          media_uploaded: media.urls.length,
+          note: isDraft
+            ? 'Saved as a draft: nothing is published until it is scheduled or sent.'
+            : scheduledFor
+              ? `Scheduled for ${scheduledFor}.`
+              : 'Publishing now: check each target below for its own result.',
+        })
+      }
+
+      if (action === 'posts') {
+        const status = String(params.status ?? '').trim()
+        const query = new URLSearchParams({ limit: String(limit) })
+        if (status) query.set('status', status)
+        const result = await socialInternalCall(ctx, 'GET', `/social/posts?${query.toString()}`)
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        const posts = Array.isArray(result.data?.posts) ? result.data.posts : []
+        return textResult({ count: posts.length, posts: posts.map(summarizeSocialPost) })
+      }
+
+      if (action === 'calendar') {
+        const query = new URLSearchParams()
+        for (const key of ['from', 'to'] as const) {
+          const value = String(params[key] ?? '').trim()
+          if (value) query.set(key, value)
+        }
+        const result = await socialInternalCall(
+          ctx,
+          'GET',
+          `/social/calendar${query.toString() ? `?${query.toString()}` : ''}`,
+        )
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        const posts = Array.isArray(result.data?.posts) ? result.data.posts : []
+        return textResult({
+          from: result.data?.from ?? null,
+          to: result.data?.to ?? null,
+          count: posts.length,
+          posts: posts.map(summarizeSocialPost),
+        })
+      }
+
+      if (action === 'analytics') {
+        const query = new URLSearchParams()
+        for (const key of ['from', 'to'] as const) {
+          const value = String(params[key] ?? '').trim()
+          if (value) query.set(key, value)
+        }
+        const result = await socialInternalCall(
+          ctx,
+          'GET',
+          `/social/analytics${query.toString() ? `?${query.toString()}` : ''}`,
+        )
+        if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+        return textResult(result.data)
       }
 
       if (action === 'automate') {
@@ -9137,7 +10022,10 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         })
       }
       if (action !== 'profile' && action !== 'recent_posts') {
-        return textResult({ error: 'action must be profile, recent_posts, inbox, reply, comment_reply or automate.' })
+        return textResult({
+          error:
+            'action must be profile, recent_posts, connect, accounts, post, posts, calendar, analytics, inbox, reply, comment_reply or automate.',
+        })
       }
       const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
       if (!handle) return textResult({ error: 'handle is required.' })
@@ -9254,7 +10142,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   // Subagents and orchestration tools draw their parent tool set from here.
   // Filter out capability-disabled tools so a delegated subagent (media,
-  // devops, channel, integration, …) cannot reach a tool the project has
+  // channel, integration, …) cannot reach a tool the project has
   // turned off — matching how the main agent's tool list is gated.
   const allToolsGetter = () => filterDisabledCapabilityTools(tools, ctx.config)
   tools.push(createSkillTool(ctx, allToolsGetter))
@@ -9859,33 +10747,26 @@ export function expectedCoreToolsForAgentMode(config: import('./gateway').Gatewa
   return core
 }
 
-export type RestrictedMode = 'plan' | 'ask' | 'coordinator'
+export type RestrictedMode = 'coordinator'
 
 /**
- * Build a dispatch-only stub for a tool that exists in agent mode but was
- * filtered out by the current restricted mode. The agent loop resolves tools by
- * name via `tools.find()`; without a stub a hallucinated call to a filtered tool
- * surfaces an opaque "Tool X not found". This returns a mode-aware error instead
- * so the model self-corrects (switch to Agent mode / delegate) rather than
- * looping. Stubs are NOT advertised (kept out of the iterated/mapped tool list),
- * so they don't reintroduce the tool the mode intentionally hides.
+ * Build a dispatch-only stub for a tool that exists normally but was filtered
+ * out by coordinator mode. The agent loop resolves tools by name via
+ * `tools.find()`; without a stub a hallucinated call to a filtered tool
+ * surfaces an opaque "Tool X not found". This returns a coordinator-specific
+ * error instead so the model self-corrects (delegate) rather than looping.
+ * Stubs are NOT advertised (kept out of the iterated/mapped tool list), so they
+ * don't reintroduce the tool coordinator mode intentionally hides.
  */
 export function createModeUnavailableTool(name: string, mode: RestrictedMode): AgentTool {
-  const modeLabel = mode === 'plan' ? 'Plan mode' : mode === 'ask' ? 'Ask mode' : 'Coordinator mode'
-  const guidance =
-    mode === 'plan'
-      ? 'Plan mode is read-only — finish planning, then switch to Agent mode to edit files or run commands.'
-      : mode === 'ask'
-        ? 'Ask mode is read-only — switch to Agent mode to take this action.'
-        : 'This coordinator session is read-only — delegate the action to a worker agent instead of calling the tool directly.'
   return {
     name,
-    description: `(${name} is unavailable in ${modeLabel})`,
+    description: `(${name} is unavailable in coordinator mode)`,
     label: name,
     parameters: Type.Object({}, { additionalProperties: true }),
     execute: async () =>
       textResult({
-        error: `The "${name}" tool is not available in ${modeLabel}. ${guidance}`,
+        error: `The "${name}" tool is not available in coordinator mode. This coordinator session is read-only — delegate the action to a worker agent instead of calling the tool directly.`,
         toolUnavailableInMode: mode,
       }),
   }
@@ -10004,7 +10885,7 @@ export function resolveToolNames(refs: string[]): string[] {
  * subagents (via `allToolsGetter`), so a disabled capability — image
  * generation, heartbeat, channels, managed integrations, etc. — is truly
  * unreachable rather than merely dropped from the main agent's prompt. Without
- * this, a delegated subagent (media / devops / channel / integration) would
+ * this, a delegated subagent (media / channel / integration) would
  * still receive the tool because subagents draw from the unfiltered set.
  *
  * Capability flags default to enabled, so only an explicit `=== false`
@@ -10024,11 +10905,15 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   if (config.heartbeatToolsEnabled === false) for (const n of TOOL_GROUP_MAP.heartbeat) disabled.add(n)
   if (config.imageGenEnabled === false) for (const n of IMAGE_TOOL_NAMES) disabled.add(n)
   if (config.videoGenEnabled !== true) disabled.add('generate_video')
+  if (config.musicGenEnabled !== true) for (const n of MUSIC_TOOL_NAMES) disabled.add(n)
   if (config.threeDGenEnabled !== true) for (const n of THREE_D_TOOL_NAMES) disabled.add(n)
   // The listing stays available while ANY generation capability is on, so a
   // 3D-only (or video-only) project can still price a model before spending.
   const anyGenerationOn =
-    config.imageGenEnabled !== false || config.videoGenEnabled === true || config.threeDGenEnabled === true
+    config.imageGenEnabled !== false ||
+    config.videoGenEnabled === true ||
+    config.musicGenEnabled === true ||
+    config.threeDGenEnabled === true
   if (!anyGenerationOn) disabled.add('list_media_models')
   if (config.quickActionsEnabled === false) disabled.add('quick_action')
   if (config.channelsEnabled === false) for (const n of TOOL_GROUP_MAP.messaging) disabled.add(n)
@@ -10060,7 +10945,11 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
 /**
  * Tools delegated to dedicated subagents — removed from the main agent's tool
  * list to reduce per-request token cost. The main agent is expected to reach
- * them via `agent_spawn({ type: "browser"|"devops", ... })`.
+ * them via `agent_spawn({ type: "browser", ... })`.
+ *
+ * `server_sync` is deliberately NOT here (SHO-184): it repairs the agent's own
+ * project server, so it must be callable directly on every profile — personal
+ * workspaces and the workspace agent have no subagents to delegate to.
  *
  * Media tools are deliberately NOT here: the project's own agent calls
  * `generate_image` and friends directly. Their gate is the capability itself
@@ -10069,7 +10958,6 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
  */
 export const SUBAGENT_ONLY_TOOLS = new Set([
   'browser', // -> browser subagent
-  'server_sync', // -> devops subagent
 ])
 
 /**
@@ -10085,7 +10973,7 @@ export function subagentOrchestrationDisabled(
 
 /**
  * Remove `SUBAGENT_ONLY_TOOLS` from the main agent's tool list. Today that is
- * `browser` and `server_sync` only, on every profile — including personal
+ * `browser` only, on every profile — including personal
  * workspaces and the workspace agent, which have no subagents to delegate to.
  *
  * Media tools are intentionally not part of the set: the main agent calls
@@ -11003,7 +11891,7 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
         language?: string
       }
 
-      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))
       if (!existsSync(resolved)) {
         return textResult({ error: `Audio file not found: ${filePath}` })
       }
@@ -11695,7 +12583,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       const autoScopedPaths = editedThisTurn.length > 0 ? editedThisTurn : null
 
       const workspacePrefix = `file://${ctx.workspaceDir}/`
-      const targetUri = filePath ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath)}` : undefined
+      const targetUri = filePath ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath, pathPolicy(ctx))}` : undefined
 
       await new Promise((resolve) => setTimeout(resolve, 1500))
 

@@ -22,7 +22,9 @@ import {
   parseByteRange,
   putConversationFile,
   readConversationFile,
+  readConversationFileStream,
   verifyAttachmentToken,
+  wantsInlineBytes,
 } from '../lib/conversation-files'
 import {
   ConversationError,
@@ -69,6 +71,8 @@ import { getFrontendUrl } from '../lib/cloud-urls'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp, registerConversationActivity } from '../services/conversation-activity'
 import { agentPostTargets, respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
+import { agentReplySlotState, drainAgentReplyWaiters, slotSnapshot } from '../services/agent-reply-slots'
+import { invalidateAgentReplyCapacity, resolveAgentReplyCapacity } from '../services/agent-reply-capacity'
 import { createReplyTasks } from '../services/background-tasks.service'
 import { decideApproval, listPendingApprovals } from '../services/conversation-approvals'
 import { liveActivityApprovalAnswered } from '../services/approval-live-activity'
@@ -217,14 +221,99 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   })
 
   mountConversationExtras(router, { requireUser, requireWorkspace, errorResponse, readJson })
-  mountHuddleRoutes(router, { requireUser, requireWorkspace, errorResponse })
+  mountHuddleRoutes(router, { optionalUser: (c) => config.resolveUserId(c), requireUser, requireWorkspace, errorResponse })
+
+  /**
+   * How many agent replies may work at once, and how busy the queue is now. The
+   * banner and the Chat settings stepper read this; the same route serves
+   * desktop and cloud, so neither surface can drift.
+   */
+  router.get('/workspaces/:workspaceId/agent-capacity', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    try {
+      const [capacity, snapshot, canManage] = await Promise.all([
+        resolveAgentReplyCapacity(auth.workspaceId),
+        slotSnapshot(auth.workspaceId),
+        userCan(auth.userId, 'workspace.settings:manage', auth.workspaceId),
+      ])
+      return c.json({
+        ...capacity,
+        running: snapshot.running,
+        parked: snapshot.parked,
+        queued: snapshot.queued,
+        canManage,
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Set how many agent replies may work at once (`null` = the maximum). An admin
+   * may lower it; only local mode allows raising it past the default, and the
+   * plan is the ceiling in the cloud.
+   */
+  router.put('/workspaces/:workspaceId/agent-capacity', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    if (!(await userCan(auth.userId, 'workspace.settings:manage', auth.workspaceId))) {
+      return c.json({ error: { code: 'forbidden', message: 'Only workspace admins can change how many agents work at once' } }, 403)
+    }
+    const body = await readJson(c)
+    const raw = body.agentReplyConcurrency
+    if (!(raw === null || (typeof raw === 'number' && Number.isInteger(raw)))) {
+      return c.json({ error: { code: 'invalid', message: 'agentReplyConcurrency must be a whole number or null' } }, 400)
+    }
+    const { max, source, planId } = await resolveAgentReplyCapacity(auth.workspaceId)
+    if (raw !== null && (raw < 1 || raw > max)) {
+      const planName = planId.charAt(0).toUpperCase() + planId.slice(1)
+      return c.json({
+        error: {
+          code: 'above_max',
+          message: source === 'local'
+            ? `Choose between 1 and ${max} agents at once.`
+            : `Your ${planName} plan allows at most ${max} agents working at once. Upgrade to raise it.`,
+        },
+      }, 400)
+    }
+    try {
+      await db.workspace.update({ where: { id: auth.workspaceId }, data: { agentReplyConcurrency: raw } })
+      invalidateAgentReplyCapacity(auth.workspaceId)
+      // A raised limit should start the replies that were waiting on it, not
+      // wait for the next run to release a slot.
+      await drainAgentReplyWaiters(auth.workspaceId).catch(() => {})
+      const [capacity, snapshot] = await Promise.all([
+        resolveAgentReplyCapacity(auth.workspaceId),
+        slotSnapshot(auth.workspaceId),
+      ])
+      return c.json({
+        ...capacity,
+        configured: raw,
+        running: snapshot.running,
+        parked: snapshot.parked,
+        queued: snapshot.queued,
+        canManage: true,
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
 
   // ─── Workspace-level ─────────────────────────────────────────────────────
 
   router.get('/workspaces/:workspaceId/conversations', async (c) => {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
-    return c.json({ conversations: await listConversationsForUser(auth.workspaceId, auth.userId) })
+    // `since` is the reconnect/foreground catch-up: only what changed, merged
+    // into the list the client already has, instead of a full re-download.
+    const sinceRaw = c.req.query('since')
+    const parsed = sinceRaw ? new Date(sinceRaw) : null
+    const since = parsed && !Number.isNaN(parsed.getTime()) ? parsed : undefined
+    return c.json({
+      conversations: await listConversationsForUser(auth.workspaceId, auth.userId, { since }),
+      syncedAt: new Date().toISOString(),
+    })
   })
 
   /** Approvals agents are waiting on that this person can answer (viewers see none). */
@@ -974,8 +1063,6 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       // so following one of those links would open the file rather than save
       // it — this is what makes the card's download actually download.
       const download = c.req.query('dl') === '1'
-      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined)
-      if (file.kind === 'redirect') return c.redirect(file.url, 302)
       const inline = !download && (/^(image|video|audio)\//.test(row.mimeType) || row.mimeType === 'application/pdf')
       const disposition = `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`
       const baseHeaders = {
@@ -984,8 +1071,37 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         'Cache-Control': 'private, max-age=300',
         'Accept-Ranges': 'bytes',
       }
+      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined)
+      if (file.kind === 'redirect') {
+        // An <img>, <video>, iframe or link click follows the redirect to object
+        // storage happily, and a native client does too. A script fetch does
+        // not: the bucket's wildcard ACAO is refused for a credentialed
+        // cross-origin request, so the bytes come back through the API instead.
+        if (!wantsInlineBytes(c)) return c.redirect(file.url, 302)
+        const range = row.size > 0 ? parseByteRange(c.req.header('range'), row.size) : { kind: 'none' as const }
+        if (range.kind === 'unsatisfiable') {
+          return new Response(null, {
+            status: 416,
+            headers: { ...baseHeaders, 'Content-Range': `bytes */${row.size}` },
+          })
+        }
+        const stream = await readConversationFileStream(row.storageKey, {
+          range: range.kind === 'range' ? range : null,
+        })
+        return new Response(stream.body as any, {
+          status: range.kind === 'range' ? 206 : 200,
+          headers: {
+            ...baseHeaders,
+            'X-Content-Type-Options': 'nosniff',
+            ...(stream.contentLength !== null ? { 'Content-Length': String(stream.contentLength) } : {}),
+            ...(range.kind === 'range'
+              ? { 'Content-Range': `bytes ${range.start}-${range.end}/${row.size}` }
+              : {}),
+          },
+        })
+      }
       // Served locally the whole file is in memory, so a range is a slice of
-      // it. Cloud mode redirects to S3 above, which handles ranges itself.
+      // it.
       const bytes = file.bytes as Uint8Array
       const range = parseByteRange(c.req.header('range'), bytes.byteLength)
       if (range.kind === 'unsatisfiable') {
@@ -1704,7 +1820,15 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
   const inThread = (threadRootId: string) => ({ OR: [{ threadRootId }, { id: threadRootId }] })
   const optionalString = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
 
-  function runView(row: any, access: Access) {
+  /**
+   * One run, as `GET running-agents`, `agent_runs_list` and the agent tools see
+   * it. `state` says whether it is working, parked on a tool, or still in line.
+   */
+  async function runView(row: any, access: Access) {
+    const queuedAt = (row.blocks as { queued?: { since?: string } } | null | undefined)?.queued?.since ?? null
+    const slot = await agentReplySlotState(row.workspaceId, row.id).catch(() => null)
+    const waiting = slot?.state === 'waiting'
+    const queued = !!queuedAt || slot?.state === 'queued'
     return {
       messageId: row.id,
       agent: row.authorAgentRef?.name ?? 'Agent',
@@ -1714,6 +1838,9 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       startedAt: row.createdAt,
       preview: String(row.text ?? '').trim().slice(-200),
       canStop: access.role !== 'viewer',
+      state: queued ? 'queued' : waiting ? 'waiting' : 'running',
+      position: queued ? slot?.position ?? null : null,
+      queuedAt: queuedAt ?? (queued ? row.createdAt : null),
     }
   }
 
@@ -1749,7 +1876,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     for (const row of rows) {
       if (sessionId && row.agentSessionId === sessionId) continue
       const access = await accessOrNull(row.conversationId, userId, cache)
-      if (access) runs.push(runView(row, access))
+      if (access) runs.push(await runView(row, access))
       if (runs.length >= 50) break
     }
     // The pause is part of the answer: a wake that finds nothing to do still
@@ -1790,7 +1917,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
         include,
         take: 200,
       })
-      const stopped: ReturnType<typeof runView>[] = []
+      const stopped: Awaited<ReturnType<typeof runView>>[] = []
       const skipped: Array<{ messageId: string; reason: 'not_running' | 'self' | 'not_visible' }> = []
       for (const row of running) {
         const access = await accessOrNull(row.conversationId, userId, cache)
@@ -1807,7 +1934,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
           continue
         }
         await stopAgentReply(row, userId)
-        stopped.push(runView(row, access))
+        stopped.push(await runView(row, access))
       }
       return c.json({ paused: await readWorkspacePause(auth.workspaceId), stopped, skipped, resumed: false })
     }
@@ -1833,7 +1960,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     } else {
       return c.json({ error: { code: 'invalid_input', message: 'Pass messageId, or channel and threadRootId' } }, 400)
     }
-    const stopped: ReturnType<typeof runView>[] = []
+    const stopped: Awaited<ReturnType<typeof runView>>[] = []
     const skipped: Array<{ messageId: string; reason: 'not_running' | 'self' }> = []
     for (const row of rows) {
       if (row.agentStatus !== 'running') {
@@ -1847,7 +1974,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       const access = await accessOrNull(row.conversationId, userId, cache)
       if (!access) continue
       await stopAgentReply(row, userId)
-      stopped.push(runView(row, access))
+      stopped.push(await runView(row, access))
     }
     return c.json({ stopped, skipped })
   })

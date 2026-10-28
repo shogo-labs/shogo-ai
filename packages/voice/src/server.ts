@@ -84,6 +84,7 @@ import {
   type VoiceOp,
 } from './ops.js'
 import { extractBasePrompt } from './prompt.js'
+import { readRuntimeAuthSecret } from './runtime-token.js'
 import type {
   Companion,
   CompanionStore,
@@ -303,7 +304,7 @@ function resolveProxyOptions(
       LOG_WARN_CACHE.apiKeyIgnored(config.logger)
     }
     if (typeof process === 'undefined' || !process.env) return null
-    const runtimeToken = process.env.RUNTIME_AUTH_SECRET
+    const runtimeToken = readRuntimeAuthSecret()
     const projectId = process.env.PROJECT_ID
     if (!runtimeToken || !projectId) return null
     return {

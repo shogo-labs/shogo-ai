@@ -6,8 +6,29 @@
  *
  * Runs in the `iphone-15-pro` and `pixel-7` projects (see playwright.config.ts).
  */
+import { mkdirSync, writeFileSync } from "fs"
+import { dirname } from "path"
 import { expect, test, type Page } from "@playwright/test"
-import { activateTeamWorkspace, api, cleanupTeamNav, seedTeamNav, signIn, type TeamNavSeed } from "./team-nav-seed"
+import { activateTeamWorkspace, api, cleanupTeamNav, seedTeamNav, signIn, SCRIPT_PATH, type TeamNavSeed } from "./team-nav-seed"
+
+/**
+ * The scripted agent's stream speed is global, so a run that has to stay open
+ * while the test looks at the composer gets a slow one — and the seed's own
+ * script is put back in `finally`.
+ */
+function writeScript(seed: TeamNavSeed, delayMs: number, extra: Record<string, unknown[]>) {
+  mkdirSync(dirname(SCRIPT_PATH), { recursive: true })
+  writeFileSync(
+    SCRIPT_PATH,
+    JSON.stringify({
+      delayMs,
+      agents: {
+        [seed.dmAgent]: [{ reply: seed.dmReply }],
+        ...extra,
+      },
+    }),
+  )
+}
 
 const backButton = (page: Page) => page.getByRole("button", { name: "Back to conversation" })
 
@@ -68,6 +89,45 @@ test.describe("Team chat thread on phone: back to conversation", () => {
 
     await expect(page).not.toHaveURL(/thread=/, { timeout: 15_000 })
     await expect(page.getByTestId("floating-thread-header")).toHaveCount(0)
+  })
+
+  test("a running agent's dock floats above the phone composer", async ({ page }) => {
+    test.setTimeout(180_000)
+    const reply = `Read the build logs: three flakes, all from the same checkout timeout (${seed.suffix}).`
+    // 2500ms per streamed chunk keeps the run open for the length of the test.
+    writeScript(seed, 2500, { [seed.idleAgent]: [{ reply }] })
+    try {
+      await page.goto(`/c/${seed.channelId}?thread=${rootId}`)
+      await expect(page.getByTestId("floating-thread-header")).toBeVisible({ timeout: 60_000 })
+
+      const mention = `<@a:p:${seed.idleAgentProjectId}> read the build logs`
+      await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, { text: mention, threadRootId: rootId })
+
+      const dockRow = page.getByLabel(`Jump to ${seed.idleAgent}'s reply`)
+      await expect(dockRow).toBeVisible({ timeout: 30_000 })
+
+      // Posted under the agent's marker, which is what pushes it up the thread.
+      await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, { text: `any update${seed.suffix}?`, threadRootId: rootId })
+      await expect(page.getByText(`any update${seed.suffix}?`)).toBeVisible({ timeout: 30_000 })
+      await expect(dockRow).toBeVisible()
+
+      // It floats inside the composer footer, above the input box.
+      const footer = page.getByTestId("floating-composer")
+      await expect(footer.getByTestId("running-agents-dock")).toBeVisible()
+      const dockBox = await page.getByTestId("running-agents-dock").boundingBox()
+      const composerBox = await page.getByLabel("Message", { exact: true }).last().boundingBox()
+      expect(dockBox, "the dock is laid out").toBeTruthy()
+      expect(composerBox, "the composer is laid out").toBeTruthy()
+      expect(dockBox!.y + dockBox!.height).toBeLessThanOrEqual(composerBox!.y + 1)
+
+      // The typing line names people only.
+      await expect(page.getByText(`${seed.idleAgent} is typing…`)).toHaveCount(0)
+
+      await expect(page.getByText(reply, { exact: false })).toBeVisible({ timeout: 60_000 })
+      await expect(page.getByTestId("running-agents-dock")).toHaveCount(0)
+    } finally {
+      writeScript(seed, 100, {})
+    }
   })
 
   test("browser back closes a thread opened from the Reply in thread action", async ({ page }) => {

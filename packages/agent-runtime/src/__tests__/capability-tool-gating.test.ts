@@ -10,6 +10,7 @@
 
 import { describe, test, expect } from 'bun:test'
 import { createTools, enabledSocialPlatforms, filterDisabledCapabilityTools, filterSubagentOnlyTools, type ToolContext } from '../gateway-tools'
+import { disabledToolNamesForProfile } from '../capability-profiles'
 import type { GatewayConfig } from '../gateway'
 
 function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -193,12 +194,13 @@ describe('filterDisabledCapabilityTools', () => {
 
   test('returns the same array reference when nothing is disabled (no-op fast path)', () => {
     // EVERY opt-in has to be on or its tools are gated and the fast path is
-    // skipped: worktrees, social, video, 3D, board admin, company ops, problems.
+    // skipped: worktrees, social, video, music, 3D, board admin, company ops, problems.
     // (The last three were already missing here, so this test failed on main.)
     const config = makeConfig({
       gitWorktreesEnabled: true,
       socialMediaEnabled: true,
       videoGenEnabled: true,
+      musicGenEnabled: true,
       threeDGenEnabled: true,
       boardAdminEnabled: true,
       companyOpsEnabled: true,
@@ -220,7 +222,7 @@ describe('filterDisabledCapabilityTools', () => {
     }
   })
 
-  test('personal profile removes builder/shell/team tools but keeps delegation and goals', () => {
+  test('personal profile removes builder/shell/team tools and every project tool, but keeps goals', () => {
     const n = personalNames(makeConfig({ capabilityProfile: 'personal', gitWorktreesEnabled: true }))
     for (const tool of [
       'exec',
@@ -235,6 +237,14 @@ describe('filterDisabledCapabilityTools', () => {
       'team_create',
       'team_task_create',
       'list_projects',
+      // SHO-221: a personal companion doesn't build software, so it has no
+      // way to start a hidden builder project either.
+      'project_list',
+      'project_create',
+      'project_configure',
+      'project_call',
+      'connect_project',
+      'copy_to_project',
     ]) {
       expect(n.has(tool)).toBe(false)
     }
@@ -242,11 +252,7 @@ describe('filterDisabledCapabilityTools', () => {
       'read_file',
       'write_file',
       'edit_file',
-      'project_list',
-      'project_create',
-      'project_configure',
       'capabilities_configure',
-      'project_call',
       'agent_profile_get',
       'agent_profile_set',
       'goal_create',
@@ -257,6 +263,16 @@ describe('filterDisabledCapabilityTools', () => {
     ]) {
       expect(n.has(tool)).toBe(true)
     }
+  })
+
+  test('team profile keeps all six project tools', () => {
+    const n = names(makeConfig({ capabilityProfile: 'team' }))
+    // `copy_to_project` only registers on a metal workspace runtime, so it is
+    // asserted through the profile's disabled set, not the registered tools.
+    for (const tool of ['project_list', 'project_create', 'project_configure', 'project_call', 'connect_project']) {
+      expect(n.has(tool)).toBe(true)
+    }
+    expect(disabledToolNamesForProfile('team').has('copy_to_project')).toBe(false)
   })
 })
 
@@ -317,7 +333,8 @@ describe('work capabilities', () => {
 
 describe('filterSubagentOnlyTools', () => {
   // Media tools are called directly by the project's own agent (SHO-49).
-  // `browser` and `server_sync` stay delegated to their subagents. The image
+  // `browser` stays delegated to its subagent; `server_sync` is a main-agent
+  // tool on every profile (SHO-184). The image
   // tools' gate is the capability flag, applied by
   // filterDisabledCapabilityTools — not the subagent-only set.
   function mainAgentTools(config: GatewayConfig): Set<string> {
@@ -326,13 +343,59 @@ describe('filterSubagentOnlyTools', () => {
     return new Set(filterSubagentOnlyTools(tools, config).map(t => t.name))
   }
 
-  test('team profile keeps the media tools on the main agent and still strips browser/server_sync', () => {
+  test('team profile keeps the media tools and server_sync on the main agent and still strips browser', () => {
     const n = mainAgentTools(makeConfig())
     expect(n.has('generate_image')).toBe(true)
     expect(n.has('list_media_models')).toBe(true)
     expect(n.has('transcribe_audio')).toBe(true)
     expect(n.has('browser')).toBe(false)
-    expect(n.has('server_sync')).toBe(false)
+    expect(n.has('server_sync')).toBe(true)
+  })
+
+  test('server_sync is a direct main-agent tool on project and workspace-agent runtimes; heartbeat tools on every profile', () => {
+    const prevRuntime = process.env.WORKSPACE_RUNTIME
+    const prevAnchor = process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    try {
+      const team = mainAgentTools(makeConfig())
+      expect(team.has('server_sync')).toBe(true)
+      expect(team.has('heartbeat_configure')).toBe(true)
+      expect(team.has('heartbeat_status')).toBe(true)
+      // Personal workspaces build in a hidden builder project, not their own
+      // runtime, so the profile's `code_review` group (not the subagent
+      // filter) keeps server_sync off there. Heartbeat stays direct.
+      const personal = mainAgentTools(makeConfig({ capabilityProfile: 'personal' }))
+      expect(personal.has('server_sync')).toBe(false)
+      expect(personal.has('heartbeat_configure')).toBe(true)
+      expect(personal.has('heartbeat_status')).toBe(true)
+      process.env.WORKSPACE_RUNTIME = '1'
+      process.env.WORKSPACE_ANCHOR_PROJECT_ID = 'p1'
+      const ws = mainAgentTools(makeConfig())
+      expect(ws.has('server_sync')).toBe(true)
+      expect(ws.has('heartbeat_configure')).toBe(true)
+    } finally {
+      if (prevRuntime === undefined) delete process.env.WORKSPACE_RUNTIME
+      else process.env.WORKSPACE_RUNTIME = prevRuntime
+      if (prevAnchor === undefined) delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+      else process.env.WORKSPACE_ANCHOR_PROJECT_ID = prevAnchor
+    }
+  })
+
+  test('main agent repairs a dead project server itself: server_sync from its own tool list returns the route table', async () => {
+    const config = makeConfig()
+    const ctx = makeCtx(config)
+    ctx.skillServerManager = {
+      sync: async () => ({ ok: true, phase: 'healthy' }),
+      getActiveRoutes: () => ['leads', 'notes'],
+      getSchemaModels: () => ['Lead', 'Note'],
+      url: 'http://localhost:0',
+      phase: 'healthy',
+    } as any
+    const tools = filterSubagentOnlyTools(filterDisabledCapabilityTools(createTools(ctx), config), config)
+    const sync = tools.find(t => t.name === 'server_sync')!
+    const r: any = (await sync.execute('c1', {} as any)).details
+    expect(r.ok).toBe(true)
+    expect(r.activeRoutes).toEqual(['/api/leads', '/api/notes'])
+    expect(r.schemaModels).toEqual(['Lead', 'Note'])
   })
 
   test('imageGenEnabled: false still removes the image tools from the main agent', () => {
@@ -345,6 +408,13 @@ describe('filterSubagentOnlyTools', () => {
   test('generate_video appears only with videoGenEnabled: true', () => {
     expect(mainAgentTools(makeConfig()).has('generate_video')).toBe(false)
     expect(mainAgentTools(makeConfig({ videoGenEnabled: true })).has('generate_video')).toBe(true)
+  })
+
+  test('generate_music appears only with musicGenEnabled: true, and keeps the listing alive', () => {
+    expect(mainAgentTools(makeConfig()).has('generate_music')).toBe(false)
+    expect(mainAgentTools(makeConfig({ musicGenEnabled: true })).has('generate_music')).toBe(true)
+    const musicOnly = mainAgentTools(makeConfig({ imageGenEnabled: false, musicGenEnabled: true }))
+    expect(musicOnly.has('list_media_models')).toBe(true)
   })
 
   test('the 3D tools appear only with threeDGenEnabled: true', () => {
@@ -363,6 +433,7 @@ describe('filterSubagentOnlyTools', () => {
     expect(n.has('transcribe_audio')).toBe(true)
     expect(n.has('list_media_models')).toBe(true)
     expect(n.has('browser')).toBe(false)
+    // Off by the personal profile's code_review group, not by the subagent filter.
     expect(n.has('server_sync')).toBe(false)
   })
 })

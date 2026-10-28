@@ -20,7 +20,9 @@ import {
   deleteConversationFile,
   putConversationFile,
   readConversationFile,
+  readConversationFileStream,
   verifyConversationFileToken,
+  wantsInlineBytes,
 } from '../lib/conversation-files'
 
 type AuthContext = {
@@ -467,7 +469,18 @@ export function userProfileRoutes(): Hono {
 
     try {
       const file = await readConversationFile(avatarStorageKey(userId, contentKey))
-      if (file.kind === 'redirect') return c.redirect(file.url, 302)
+      if (file.kind === 'redirect') {
+        if (!wantsInlineBytes(c)) return c.redirect(file.url, 302)
+        const stream = await readConversationFileStream(avatarStorageKey(userId, contentKey))
+        return new Response(stream.body as any, {
+          headers: {
+            'Content-Type': mime,
+            ...(stream.contentLength !== null ? { 'Content-Length': String(stream.contentLength) } : {}),
+            'Cache-Control': 'private, max-age=86400, immutable',
+            'X-Content-Type-Options': 'nosniff',
+          },
+        })
+      }
       return new Response(file.bytes as any, {
         headers: {
           'Content-Type': mime,

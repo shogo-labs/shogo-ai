@@ -115,12 +115,17 @@ function writeManifest(): void {
       '',
       `This is a multi-project workspace runtime (workspace \`${state.workspaceId}\`).`,
       ...(metal
-        ? ['You are a meta-agent.', remoteProjectsGuidance({ copyToProject: copyToProjectAvailable() })]
+        ? [
+            'You are a meta-agent.',
+            'To build an app or site, call `project_create` with a short brief and then `project_call` to build it in that project; never scaffold `package.json`, `src/` or `prisma/` in this root.',
+            remoteProjectsGuidance({ copyToProject: copyToProjectAvailable() }),
+          ]
         : [
             'You are a meta-agent. Keep the runtime empty until a request requires',
             'project files or commands, then use `mount_project` for the smallest',
             'relevant project. Use `unmount_project` when a project is no longer',
             'needed. Mounted projects are sibling folders under this directory.',
+            'To build an app or site, call `project_create` with a short brief and then `project_call` to build it in that project; never scaffold `package.json`, `src/` or `prisma/` in this root.',
           ]),
       '',
       ...renderCurrentProjectSection(

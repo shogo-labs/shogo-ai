@@ -567,10 +567,13 @@ export function createMemberActivityTool(ctx: ToolContext): AgentTool {
     name: 'member_activity',
     label: 'Teammate Activity',
     description:
-      'Summarise what one teammate did: approvals they decided, tasks they started or finished, messages they sent, ' +
-      'meetings, the tools they used and when they were active. Use it to answer "what did Sam work on today?". ' +
-      'Owners and admins only; for anyone else the API refuses. The answer is private to the person asking, so reply ' +
-      'to them directly and never post it to a channel. Default window is today in the given timezone.',
+      'Summarise what one teammate did: approvals they decided, tasks they started or finished, messages they sent ' +
+      '(split into messages to people vs to agents vs plain channel posts), cards they created, moved, commented on ' +
+      'or assigned, meetings, the tools they used and when they were active. Use it to answer "what did Sam work on ' +
+      'today?". With detail="messages" it returns a page of exactly what they sent — full text, ids and who it was ' +
+      'aimed at — so you can quote specifics; page with cursor. With detail="board" it returns only their card ' +
+      'activity. Owners and admins only; for anyone else the API refuses. The answer is private to the person asking, ' +
+      'so reply to them directly and never post it to a channel. Default window is today in the given timezone.',
     parameters: Type.Object({
       user: Type.String({ description: 'The teammate: their email, or a user id from team_directory.' }),
       range: Type.Optional(Type.Union(
@@ -580,6 +583,16 @@ export function createMemberActivityTool(ctx: ToolContext): AgentTool {
       since: Type.Optional(Type.String({ description: 'ISO start time. Overrides range.' })),
       until: Type.Optional(Type.String({ description: 'ISO end time. Defaults to now.' })),
       timezone: Type.Optional(Type.String({ description: 'IANA timezone that defines "today", e.g. America/Los_Angeles. Default UTC.' })),
+      detail: Type.Optional(Type.Union(
+        [Type.Literal('summary'), Type.Literal('messages'), Type.Literal('board')],
+        { description: 'What to return: summary (default), messages (records of what they sent, with ids) or board (their card activity only).' },
+      )),
+      audience: Type.Optional(Type.Union(
+        [Type.Literal('person'), Type.Literal('agent'), Type.Literal('mixed'), Type.Literal('channel')],
+        { description: 'With detail="messages": only messages to people, to agents, tagged both, or untagged channel posts.' },
+      )),
+      cursor: Type.Optional(Type.String({ description: 'With detail="messages": the nextCursor from the previous page.' })),
+      limit: Type.Optional(Type.Number({ description: 'With detail="messages": rows per page, max 200. Default 50.' })),
     }),
     execute: async (_id, params: any) => {
       const workspaceId = workspaceIdOf(ctx)
@@ -600,8 +613,17 @@ export function createMemberActivityTool(ctx: ToolContext): AgentTool {
         since: params.since,
         until: params.until,
         timezone: params.timezone,
+        detail: params.detail,
+        audience: params.audience,
+        cursor: params.cursor,
+        limit: typeof params.limit === 'number' ? params.limit : undefined,
       })
-      return result.ok ? textResult({ ok: true, activity: result.data }) : apiError(result, 'Could not load teammate activity')
+      if (!result.ok) return apiError(result, 'Could not load teammate activity')
+      return textResult(
+        params?.detail === 'messages'
+          ? { ok: true, ...(result.data as Record<string, unknown>) }
+          : { ok: true, activity: result.data },
+      )
     },
   }
 }
@@ -728,9 +750,11 @@ export function createAgentRunsListTool(ctx: ToolContext): AgentTool {
     name: 'agent_runs_list',
     label: 'List Running Agents',
     description:
-      'List the agents working right now in team chat: replying in a channel or thread, or working a card. Only runs ' +
-      'in channels the person who asked can see are listed. Each run has a message_id to pass to agent_run_stop, and ' +
-      'can_stop says whether that person may stop it.',
+      'List the agents in team chat that have a run in flight: replying in a channel or thread, or working a card. ' +
+      'Only runs in channels the person who asked can see are listed. Each run has a message_id to pass to ' +
+      'agent_run_stop, state (running = working now, waiting = parked on a tool and holding no slot, queued = in ' +
+      'line for a slot, with position telling how many runs are ahead of it), and can_stop says whether that ' +
+      'person may stop it.',
     parameters: Type.Object({
       channel: Type.Optional(Type.String({ description: 'Only runs in this channel (name without # or conversation id).' })),
       thread: Type.Optional(Type.String({ description: 'Only runs in this thread (its root message id).' })),
@@ -753,6 +777,9 @@ export function createAgentRunsListTool(ctx: ToolContext): AgentTool {
           channel: r.channel.name ?? r.channel.id,
           thread_id: r.threadRootId,
           started_at: r.startedAt,
+          state: r.state ?? 'running',
+          position: r.position ?? null,
+          queued_at: r.queuedAt ?? null,
           preview: r.preview,
           can_stop: r.canStop,
         })),

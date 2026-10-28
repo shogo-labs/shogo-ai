@@ -54,6 +54,9 @@ model User {
   // region's REGION_ID on signup; null is treated as the primary region by the
   // router. Cloud-only (single-region desktop ignores it).
   homeRegion                  String?
+  // Normalized email (lowercased; Gmail dots and plus tags removed) used by the
+  // signup risk scorer to detect duplicate accounts. Cloud-only.
+  emailCanonical              String?
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 
@@ -85,6 +88,7 @@ model User {
 
   @@index([createdAt])
   @@index([homeRegion])
+  @@index([emailCanonical])
   @@map("users")
 }
 
@@ -204,6 +208,16 @@ model Workspace {
   chatMode          String?
   // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
   chatProvider      String?
+  // How many agent replies may be *working at once* in this workspace, or null
+  // for the maximum the plan (or local mode) allows. An admin can lower it; the
+  // plan value is the ceiling in the cloud (see `agent-reply-capacity.ts`).
+  agentReplyConcurrency Int?
+  // Set when this workspace is a copy of a paired desktop's workspace: the
+  // machine's id. The cloud holds the records (copied into the normal tables
+  // with their desktop ids), serves reads from them, and refuses its own writes
+  // to them — see `lib/machine-workspace.ts`. Null means a normal cloud
+  // workspace. Added to both schemas; the desktop leaves it null.
+  machineInstanceId String?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -265,6 +279,7 @@ model Workspace {
   @@index([createdAt])
   @@index([homeRegion])
   @@index([parentWorkspaceId])
+  @@index([machineInstanceId])
   @@map("workspaces")
 }
 
@@ -303,7 +318,6 @@ model ProxyTurn {
   @@unique([workspaceId, turnKey])
   @@index([workspaceId, lastAt])
   @@index([chatSessionId, lastAt])
-  @@index([source])
   @@map("proxy_turns")
 }
 
@@ -1594,6 +1608,16 @@ model UsageWallet {
   fiveHourUsedUsd              Float     @default(0)
   weeklyWindowStart            DateTime?
   weeklyUsedUsd                Float     @default(0)
+  // Signup promo credit (services/signup-credit.service.ts). Spent after the
+  // rolling windows and before overage. `promoCreditUsd` is the remaining
+  // balance; `promoCreditGrantedUsd` is the total granted, net of admin
+  // revokes (each revoke is also a `signup_credit_revoked` usage event);
+  // `promoCreditStage` is 0 (none), 1 (initial grant issued), 2 (fully
+  // granted). The stage only moves forward, which makes grants idempotent.
+  promoCreditUsd               Float     @default(0)
+  promoCreditGrantedUsd        Float     @default(0)
+  promoCreditExpiresAt         DateTime?
+  promoCreditStage             Int       @default(0)
   createdAt                    DateTime  @default(now())
   updatedAt                    DateTime  @updatedAt
 
@@ -1638,6 +1662,59 @@ enum UsageSource {
   monthly
   overage
   window
+  promo
+}
+
+/// Signup risk assessment, one row per new account. Written from the Better
+/// Auth `user.create.after` hook by services/signup-risk.service.ts. `band`
+/// decides how much signup credit the account gets and whether it may start
+/// a free trial. `reviewDecision` records a manual admin override.
+model SignupRiskAssessment {
+  id               String    @id @default(uuid())
+  userId           String    @unique
+  score            Int
+  band             String
+  signals          Json
+  decision         String
+  ip               String?
+  ipPrefix         String?
+  country          String?
+  deviceId         String?
+  emailCanonical   String?
+  reviewDecision   String?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([ipPrefix, createdAt])
+  @@index([deviceId, createdAt])
+  @@index([emailCanonical])
+  @@index([band, createdAt])
+  @@map("signup_risk_assessments")
+}
+
+/// Records each workspace (and card fingerprint) that has used its one free
+/// trial. Rows are written from the checkout webhook, not at checkout time, so
+/// an abandoned checkout does not consume the trial.
+model TrialRedemption {
+  id                   String   @id @default(uuid())
+  userId               String
+  workspaceId          String   @unique
+  stripeCustomerId     String
+  stripeSubscriptionId String?
+  /// Stripe `card.fingerprint`. Unique so one physical card can only fund one
+  /// free trial, across all accounts.
+  cardFingerprint      String?  @unique
+  planId               String
+  /// trialing | converted | ended | blocked_duplicate_card | blocked_duplicate_user
+  /// (see `TRIAL_STATUS` in services/trial.service.ts)
+  status               String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([userId])
+  @@map("trial_redemptions")
 }
 
 /// Super-admin-managed credit grant. Each row gives a workspace a fixed
@@ -1917,6 +1994,12 @@ model ChatMessage {
   /// picker can default to a chat's last-used model when switching chats.
   /// Null for legacy rows and rows authored before this column existed.
   model     String?
+  /// The person who typed this row, stamped server-side for `role: user`
+  /// prompts from the authenticated request (never from the request body).
+  /// Null for assistant rows and for prompts the server wrote on someone's
+  /// behalf (project_call relays, wake notes). Older project-chat rows are
+  /// null too: those chats are shared, so the sender is unknown.
+  authorUserId String?
 
   // Relations
   session  ChatSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -1925,6 +2008,7 @@ model ChatMessage {
   @@index([sessionId])
   @@index([sessionId, createdAt])
   @@index([sessionId, agent, createdAt])
+  @@index([authorUserId, createdAt])
   @@map("chat_messages")
 }
 
@@ -2024,6 +2108,14 @@ model AgentWake {
   reason           String    @default("wake")
   /// Earliest time the drain may start this row. Null runs as soon as it can.
   notBefore        DateTime?
+  /// The chat session the live run held, so the session's queue dock finds
+  /// this row and can send it now from there.
+  chatSessionId    String?
+  /// The system note that says it is queued, so its status can follow the row.
+  noteMessageId    String?
+  /// Set when a person presses Send now: the drain takes the newest first, the
+  /// way the chat queue's send-now marks a row ahead of the rest.
+  sendNowAt        DateTime?
   /// pending | claimed | done | failed | superseded
   status           String    @default("pending")
   attempts         Int       @default(0)
@@ -2036,6 +2128,7 @@ model AgentWake {
   @@index([conversationId, threadRootId, agentRef, status])
   @@index([status, createdAt])
   @@index([status, notBefore])
+  @@index([chatSessionId, status])
   @@map("agent_wakes")
 }
 
@@ -3003,6 +3096,11 @@ model AppInstall {
 /// (`lib/device-platform.ts`) so legacy platform spellings stay collapsed.
 model DeviceVersionEvent {
   id          String   @id @default(cuid())
+  /// Region that wrote the row (`REGION_ID`, or `local` in single-region and
+  /// desktop mode). NULL means the row predates region tagging; the app never
+  /// writes NULL. Part of the unique key so two regions cannot conflict on one
+  /// (device, version) — see the 2026-10-22 replication incident (SHO-142).
+  region      String?
   deviceId    String
   /// macos | windows | linux | unknown
   os          String   @default("unknown")
@@ -3015,7 +3113,7 @@ model DeviceVersionEvent {
   firstSeenAt DateTime @default(now())
   lastSeenAt  DateTime
 
-  @@unique([deviceId, version])
+  @@unique([region, deviceId, version])
   @@index([lastSeenAt])
   @@index([version])
   @@map("device_version_events")
@@ -4360,15 +4458,92 @@ model Huddle {
   startedById    String
   /// The "started a huddle" system message, updated when the huddle ends.
   messageId      String?
+  /// Secret in the shareable join link. Null until someone asks for a link; rotating it revokes old links.
+  linkToken      String?   @unique
   startedAt      DateTime  @default(now())
   endedAt        DateTime?
+  /// Notes (a speaker-labelled transcript and an auto summary) are on for this call. Any participant may turn them off.
+  notesEnabled   Boolean   @default(true)
+  /// Set when the notes summary was posted, claimed with `updateMany where notesMessageId: null`
+  /// so exactly one pod posts it. Holds the summary message id once it is posted.
+  notesMessageId String?
+  /// Audit: audio seconds the client path actually forwarded to STT for this call.
+  notesClientSeconds  Int @default(0)
+  /// Audit: audio seconds the LiveKit fallback forwarded to Inference STT for this call.
+  notesLivekitSeconds Int @default(0)
+  /// When someone last said "hey Shogo" out loud and woke the workspace agent.
+  /// Written with a compare-and-set so one wake runs per huddle per 10 s, whatever the pod.
+  lastWakeAt DateTime?
 
   conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   participants HuddleParticipant[]
+  invites      HuddleInvite[]
+  joinRequests HuddleJoinRequest[]
+  wakes        HuddleWake[]
 
   @@index([workspaceId, endedAt])
   @@index([conversationId, startedAt])
   @@map("huddles")
+}
+
+/// One spoken "hey Shogo" and the agent turn it started. `@@unique([huddleId, itemId])`
+/// is the replay guard: a re-sent final can never wake twice. status: running | replied | failed.
+model HuddleWake {
+  id        String   @id @default(uuid())
+  huddleId  String
+  /// The person whose words woke it; the turn runs as them, with their permissions.
+  speakerId String
+  /// The transcript item that carried the phrase, so a replay is recognised.
+  itemId    String
+  /// The note posted into the huddle's chat, which is the agent's trigger.
+  messageId String?
+  status    String   @default("running")
+  reason    String?
+  createdAt DateTime @default(now())
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@unique([huddleId, itemId])
+  @@index([huddleId, createdAt])
+  @@map("huddle_wakes")
+}
+
+/// Someone a participant rang into a live huddle. An invite lets the person
+/// join the huddle (not the conversation). status: ringing | joined | declined | missed | cancelled.
+model HuddleInvite {
+  id          String   @id @default(uuid())
+  huddleId    String
+  userId      String
+  invitedById String
+  status      String   @default("ringing")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@unique([huddleId, userId])
+  @@index([userId, status])
+  @@map("huddle_invites")
+}
+
+/// Someone who opened the huddle link without access and is waiting to be let in.
+/// A workspace member has `userId`; an outside guest has `guestId` and `guestName`.
+/// status: waiting | admitted | denied | expired.
+model HuddleJoinRequest {
+  id         String    @id @default(uuid())
+  huddleId   String
+  userId     String?
+  guestId    String?
+  guestName  String?
+  status     String    @default("waiting")
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@index([huddleId, status])
+  @@index([guestId])
+  @@map("huddle_join_requests")
 }
 
 /// One stay in a huddle. Rejoining after leaving opens a new row.
@@ -4501,6 +4676,7 @@ model ConversationMessage {
   authorUser   User?                         @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
   mentions     ConversationMention[]
   reactions    ConversationReaction[]
+  votes        ConversationVote[]
   attachments  ConversationAttachment[]
   pin          ConversationPin?
   savedBy      SavedMessage[]
@@ -4546,6 +4722,21 @@ model ConversationReaction {
   @@unique([messageId, userId, emoji])
   @@index([messageId])
   @@map("conversation_reactions")
+}
+
+/// A vote on a poll option, or an upvote on a question (`optionId` = "up").
+model ConversationVote {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  optionId  String
+  createdAt DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, optionId])
+  @@index([messageId])
+  @@map("conversation_votes")
 }
 
 /// Uploaded file. Created before the message is sent, then attached.
@@ -4630,6 +4821,8 @@ model ChatUserSettings {
   lastDigestAt    DateTime?
   /// Sound for chat messages: "default", "subtle", or "off".
   messageSound    String    @default("default")
+  /// Which sound a chat message plays on web and desktop: "knock", "chirp", "pristine", "definite", "juntos", "confirmation", "question", or "glass".
+  messageTone     String    @default("knock")
   /// Sound for incoming huddles: "ring", "chime", or "off".
   huddleSound     String    @default("ring")
   /// Put direct messages in the Activity inbox too.
@@ -5493,4 +5686,62 @@ model SocialAutomationRun {
   @@index([workspaceId, startedAt])
   @@index([automationId])
   @@map("social_automation_runs")
+}
+
+// ─── Machine workspaces (SHO-185) ───────────────────────────────────────────
+// A paired desktop is the single writer of its own data; the cloud keeps a copy
+// of those records in the normal tables (same ids) so reads never touch the
+// tunnel. These three models track that copy. The desktop leaves them empty
+// apart from `MachineSyncChange`, which is its change log.
+
+/// Per-machine ingest bookkeeping: which `epoch` of the desktop's database the
+/// copy represents (`epoch_mismatch` when the desktop recreates its DB), how far
+/// the push cursor has been acknowledged, and whether syncing is on at all.
+model MachineSyncState {
+  instanceId   String    @id
+  /// Opaque token the desktop generates per database lifetime.
+  epoch        String    @default("")
+  /// Highest `MachineSyncChange.seq` the cloud has applied.
+  cursor       Int       @default(0)
+  lastIngestAt DateTime?
+  /// The per-machine "Sync to cloud" switch. Off deletes the copy.
+  enabled      Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("machine_sync_states")
+}
+
+/// Which machine owns each copied row. `(model, recordId)` is unique because a
+/// desktop id belongs to exactly one row; ingest rejects a row it does not own
+/// with `409 mirror_ownership`, so a desktop can never overwrite cloud data or
+/// another machine's copy by guessing an id.
+model MachineMirrorRow {
+  model      String
+  recordId   String
+  instanceId String
+  epoch      String   @default("")
+  createdAt  DateTime @default(now())
+
+  @@id([model, recordId])
+  @@index([instanceId])
+  @@index([instanceId, model])
+  @@map("machine_mirror_rows")
+}
+
+/// Desktop change log, written by SQLite triggers on each mirrored table. Unused
+/// in the cloud; the model lives in both schemas because they must stay equal.
+model MachineSyncChange {
+  /// Autoincrement so the pusher can resume from an acked cursor. `Int`, not
+  /// `BigInt`: SQLite only autoincrements an INTEGER PRIMARY KEY, and the seq
+  /// travels in JSON, where BigInt cannot be serialised. Acked rows are pruned
+  /// on every ack, so the table stays small.
+  seq       Int      @id @default(autoincrement())
+  model     String
+  recordId  String
+  op        String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("machine_sync_changes")
 }

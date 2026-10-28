@@ -111,6 +111,7 @@ const EXEMPT: Record<string, string> = {
   scheduledMessage: 'Mutated via workspace-scoped scheduled-message routes — resolved by path workspaceId.',
   storageUsage: 'Counter table written via workspace-scoped usage routes — resolved by path workspaceId.',
   subagentModelOverride: 'Mutated via workspace/project-scoped routes — resolved by path params.',
+  trialRedemption: 'Written only by the signed Stripe webhook (/api/webhooks/stripe, skipped by the router) alongside the subscription and usage wallet rows the same event updates (services/trial.service.ts); never mutated via REST.',
   userGroup: 'Mutated via workspace-scoped user-group routes — resolved by path workspaceId.',
   userIntegrationGrant: 'Mutated via /api/projects/:projectId/integrations/:provider/connect (path projectId), /api/me/integrations (the user\'s own rows), /api/workspaces/:workspaceId/integrations/:provider/my-access/agents/:projectId (path workspaceId), and the GitHub OAuth callback (projectId from signed state).',
   userIntegrationWorkspaceGrant: 'Mutated via /api/workspaces/:workspaceId/integrations/:provider/my-access (path workspaceId), /api/projects/:projectId/integrations/:provider/connect (path projectId; the grant is for that project\'s workspace), and DELETE /api/me/integrations/:provider (revokes the user\'s own rows).',

@@ -60,7 +60,8 @@ export function applyMessageSnapshot<T extends UIMessage>(
  * The rest of a snapshot stream lands in a new message the SDK appends after
  * the snapshot, and the turn list shows only a turn's last assistant message.
  * Shows the two as one message: the snapshot's parts, then the rest of the
- * turn. The snapshot ends at a step boundary, so no part is split across them.
+ * turn. The snapshot ends where the last part closed, so no part is split
+ * across them.
  */
 export function foldSnapshotContinuation<T extends UIMessage>(
   messages: T[],
@@ -98,11 +99,32 @@ export function dropUnfinishedAssistantTail<T extends UIMessage>(
 /**
  * A runtime that was asked for `?snapshot=1` (see `useChatTransportConfig`'s
  * `resumeSnapshot`) opens the stream with one of these: the assistant message
- * assembled up to the last finished step. The rest of the stream continues
- * that message, so the client applies the snapshot instead of rebuilding the
- * turn chunk by chunk.
+ * assembled up to the last point where no part was open. The rest of the stream
+ * continues that message, so the client applies the snapshot instead of
+ * rebuilding the turn chunk by chunk.
  */
 export const MESSAGE_SNAPSHOT_CHUNK_TYPE = "data-message-snapshot"
+
+/**
+ * A snapshot always needs an id: `foldSnapshotContinuation` joins the
+ * continuation to it by id, and without one the turn shows only its latest
+ * action (the 2.4.1 regression). Runtimes before the fix send `id: ""`, so the
+ * client names it the way the runtime now does: after the turn.
+ */
+export function withSnapshotId<T extends UIMessage>(snapshot: T | undefined): T | undefined {
+  if (!snapshot || snapshot.id) return snapshot
+  let turnId: string | undefined
+  for (const part of (snapshot.parts ?? []) as Array<Record<string, any>>) {
+    if (part?.type === "data-turn-start" && typeof part.data?.turnId === "string") {
+      turnId = part.data.turnId
+      break
+    }
+  }
+  const id = turnId
+    ? `turn-${turnId}`
+    : `turn-snapshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return { ...snapshot, id }
+}
 
 /** How long to wait for the first chunk before assuming there is no snapshot. */
 const SNAPSHOT_PEEK_MS = 1500
@@ -206,7 +228,9 @@ export function withResumeReplayReset<T extends UIMessage>(
       const peek = peekFirstChunk(stream, SNAPSHOT_PEEK_MS)
       const first = await peek.peeked
       const isSnapshotChunk = first?.type === MESSAGE_SNAPSHOT_CHUNK_TYPE
-      const snapshot = isSnapshotChunk ? ((first as any).data?.message as T | undefined) : undefined
+      const snapshot = isSnapshotChunk
+        ? withSnapshotId((first as any).data?.message as T | undefined)
+        : undefined
       if (snapshot && onSnapshot) onSnapshot(snapshot)
       else if (
         replayRebuildsMessage({

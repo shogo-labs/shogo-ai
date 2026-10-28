@@ -28,6 +28,23 @@ import {
   createRemoteAwareHttpClient,
   type RemoteInterceptorConfig,
 } from '../services/remote-http-interceptor'
+import { machineWorkspaceState } from '../services/machine-workspace-state'
+
+/**
+ * The interceptor reports every machine-workspace outcome here, and this is the
+ * only place that decides what it means: a null report is a request that came
+ * back (so the machine is up), anything else goes through the classifier, which
+ * ignores ordinary errors.
+ */
+function withMachineStateReporting(config: RemoteInterceptorConfig): RemoteInterceptorConfig {
+  return {
+    ...config,
+    onMachineState: (error) => {
+      if (error === null) machineWorkspaceState.markOk()
+      else machineWorkspaceState.report(error)
+    },
+  }
+}
 
 let moduleRawHttpClient: HttpClient | null = null
 let moduleProxiedHttpClient: HttpClient | null = null
@@ -104,7 +121,7 @@ function getOrCreateStore(
   // goes through the interceptor and routes to desktop when connected.
   moduleProxiedHttpClient = createRemoteAwareHttpClient(
     moduleRawHttpClient,
-    () => moduleRemoteConfigRef!.current,
+    () => withMachineStateReporting(moduleRemoteConfigRef!.current),
   )
 
   const env: ISDKEnvironment = {

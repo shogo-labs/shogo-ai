@@ -973,7 +973,7 @@ function FeatureFlagsCard() {
                       disabled && 'opacity-60',
                     )}
                     accessibilityRole="switch"
-                    accessibilityState={{ checked: isOn, disabled }}
+                    aria-checked={isOn} aria-disabled={disabled}
                     accessibilityLabel={`${def.label} feature flag`}
                   >
                     <View
@@ -1171,7 +1171,7 @@ function SandboxExecCard() {
                     saveStatus === 'saving' && 'opacity-60',
                   )}
                   accessibilityRole="radio"
-                  accessibilityState={{ checked: isActive }}
+                  aria-checked={isActive}
                 >
                   <Text className={cn(
                     'text-sm font-medium text-center',

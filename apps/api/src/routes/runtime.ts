@@ -46,6 +46,16 @@ export interface RuntimeRoutesConfig {
 const SANDBOX_ATTRIBUTES = 'allow-scripts allow-same-origin allow-forms allow-popups'
 
 /**
+ * True when this API is serving cloud runtimes (k8s / metal) rather than host
+ * (desktop / local) ones. Metal's API pod also runs in Kubernetes, so the
+ * service-host probe covers both.
+ */
+function isCloudRuntime(): boolean {
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return false
+  return !!process.env.KUBERNETES_SERVICE_HOST
+}
+
+/**
  * Create runtime routes.
  *
  * @param config - Route configuration
@@ -312,6 +322,57 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
           error: { code: "sandbox_failed", message: error.message || "Failed to get sandbox URL" } 
         },
         500
+      )
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/preview/active — "this project's preview is on
+   * screen right now".
+   *
+   * The canvas pings this every 60s while it is mounted and visible (and stops
+   * when it is hidden). On a host runtime the manager uses it to pin the
+   * preview out of the warm-preview LRU for a few minutes and to reset the
+   * worker's idle slot, so the project the user is looking at is never the one
+   * evicted — not even while agents are mid-turn (SHO-226). It never resolves,
+   * starts or restarts a runtime; `running:false` or a changed `agentPort` is
+   * how the client learns its iframe is pointing at a dead or replaced port
+   * and should re-resolve `/sandbox/url`.
+   *
+   * Same auth as `/sandbox/url`. In cloud (k8s / metal) it is a no-op: pod
+   * lifetime belongs to keep-warm and Knative scale-to-zero there.
+   */
+  router.post("/projects/:projectId/preview/active", async (c) => {
+    const projectId = c.req.param("projectId")
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404,
+        )
+      }
+      if (isCloudRuntime()) {
+        // Nothing to pin: the runtime's lifetime is not this manager's.
+        return c.json({ ok: true, running: true, agentPort: null, status: null })
+      }
+      runtimeManager.markPreviewActive(projectId)
+      const runtime = runtimeManager.status(projectId)
+      return c.json({
+        ok: true,
+        running: runtime?.status === 'running',
+        agentPort: runtime?.agentPort ?? null,
+        // The lifecycle state, so the client can tell "still coming up"
+        // (`starting`) from "was here and is gone" (`stopped`/`error`/absent).
+        // Without it a canvas treats a cold start as a lost runtime and
+        // re-resolves `/sandbox/url` — which restarts it — under the user.
+        status: runtime?.status ?? null,
+      })
+    } catch (error: any) {
+      console.error("[Runtime] preview/active error:", error)
+      return c.json(
+        { error: { code: "preview_active_failed", message: error?.message || "Failed" } },
+        500,
       )
     }
   })

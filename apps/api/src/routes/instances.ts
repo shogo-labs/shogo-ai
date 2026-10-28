@@ -24,6 +24,7 @@ import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { can } from '../lib/authz'
+import { deleteMachineCopy } from '../lib/machine-sync/ingest'
 import { resolveApiKey } from './api-keys'
 import { logRemoteAction, classifyAction } from './remote-audit'
 import {
@@ -45,6 +46,8 @@ import {
   verifyPodAlive,
 } from '../lib/tunnel-redis'
 import { sendPushToInstance } from '../lib/push-notifications'
+import { PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
+import { RelayTimeoutError } from '../lib/tunnel-errors'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
 import { trackUsageFromStream } from './project-chat'
@@ -81,7 +84,6 @@ const POLL_INTERVAL_VIEWER_S = 5
 const POLL_INTERVAL_WS_REQUESTED_S = 3
 const WS_REQUEST_TTL_MS = 2 * 60 * 1000
 const VIEWER_ACTIVE_TTL_MS = 2 * 60 * 1000
-const PROXY_TIMEOUT_MS = 30_000
 const STREAM_FIRST_CHUNK_TIMEOUT_MS = 90_000
 const STREAM_IDLE_TIMEOUT_MS = 120_000
 const STREAM_MAX_TIMEOUT_MS = 600_000
@@ -116,8 +118,18 @@ export async function isViewerActive(workspaceId: string): Promise<boolean> {
   return true
 }
 
-async function markViewerActive(workspaceId: string) {
-  activeViewers.set(workspaceId, Date.now())
+/**
+ * Machine relay calls mark the viewer on every request, so a busy panel would
+ * SET the same Redis key many times a second. The key lives 2 min; refreshing
+ * it at most every 30 s per pod keeps it alive with a wide margin (PERF-6).
+ */
+const VIEWER_REFRESH_MS = 30_000
+
+export async function markViewerActive(workspaceId: string) {
+  const now = Date.now()
+  const last = activeViewers.get(workspaceId)
+  if (last !== undefined && now - last < VIEWER_REFRESH_MS) return
+  activeViewers.set(workspaceId, now)
   await markViewerActiveRedis(workspaceId).catch((err) => {
     console.warn('[RemoteControl] markViewerActiveRedis failed:', (err as Error).message)
   })
@@ -166,7 +178,8 @@ async function getActiveControllers(instanceId: string): Promise<ActiveControlle
 // ─── In-memory tunnel registry ──────────────────────────────────────────────
 
 interface TunnelConnection {
-  ws: WebSocket
+  /** Bun attaches `.data` to the socket; we keep the socket's last pong there. */
+  ws: WebSocket & { data?: any }
   instanceId: string
   workspaceId: string
   pendingRequests: Map<string, {
@@ -553,14 +566,20 @@ export async function sendTunnelRequest(instanceId: string, req: TunnelRequest):
     throw new Error('Instance is offline')
   }
 
+  // The owner pod is demonstrably alive (it answered the probe), so a relay
+  // timeout means the *machine* was slow, not that the pod died. Evicting here
+  // used to delete a live tunnel's owner key, and the heartbeat could not put
+  // it back — every later call then 503'd "Machine is offline" (SHO-185).
   try {
     const response = await relayTunnelRequest(ownerPod, instanceId, req)
     if (!response) throw new Error('Empty relay response')
     return response as TunnelResponse
   } catch (err: any) {
-    if (err.message === 'Cross-pod relay timed out') {
-      await evictTunnelOwnership(instanceId).catch(() => {})
-      console.warn(`[RemoteControl] Evicted stale tunnel owner ${ownerPod} for instance ${instanceId} after relay timeout`)
+    if (err?.message === 'Cross-pod relay timed out') {
+      console.warn(
+        `[RemoteControl] Relay to ${ownerPod} for instance ${instanceId} timed out; pod answered our probe, keeping ownership`,
+      )
+      throw new RelayTimeoutError(instanceId, RELAY_TIMEOUT_MS)
     }
     throw err
   }
@@ -653,7 +672,6 @@ export function sendTunnelStreamRequest(
   }).catch((err) => {
     onChunk({ type: 'stream-error', requestId: req.requestId, error: (err as Error).message })
   })
-
   return { cancel: () => cancelRef.cancel() }
 }
 
@@ -704,39 +722,55 @@ export function instanceRoutes() {
     // The worker sends both, the desktop sends neither, so the default
     // 'desktop' here keeps existing clients on the existing row shape.
     const kind = parseInstanceKind(c.req.header('x-shogo-kind') || body.kind)
-
-    const instance = await prisma.instance.upsert({
-      where: {
-        workspaceId_userId_hostname: {
-          workspaceId: resolved.workspaceId,
-          userId: resolved.userId,
-          hostname: body.hostname,
-        },
-      },
-      update: {
-        name: body.name || body.hostname,
-        os: body.os || null,
-        arch: body.arch || null,
-        kind,
-        lastSeenAt: new Date(),
-        metadata: (body.metadata ?? undefined) as any,
-      },
-      create: {
+    const where = {
+      workspaceId_userId_hostname: {
         workspaceId: resolved.workspaceId,
         userId: resolved.userId,
-        name: body.name || body.hostname,
         hostname: body.hostname,
-        os: body.os || null,
-        arch: body.arch || null,
-        kind,
-        lastSeenAt: new Date(),
-        metadata: (body.metadata ?? undefined) as any,
       },
-    })
+    }
+
+    // A viewer puts the desktop on a 5 s poll; writing the row on every one of
+    // those was ~190k upserts/day for a lastSeenAt nobody reads that finely
+    // (PERF-6). Read first and only write when something changed or the
+    // timestamp is getting old. The read is a unique-index lookup.
+    const fields = {
+      name: body.name || body.hostname,
+      os: body.os || null,
+      arch: body.arch || null,
+      kind,
+      metadata: body.metadata,
+    }
+    const existing = await prisma.instance.findUnique({ where })
+    const instance =
+      existing && !heartbeatNeedsWrite(existing, fields)
+        ? existing
+        : await prisma.instance.upsert({
+            where,
+            update: {
+              name: fields.name,
+              os: fields.os,
+              arch: fields.arch,
+              kind,
+              lastSeenAt: new Date(),
+              metadata: (body.metadata ?? undefined) as any,
+            },
+            create: {
+              workspaceId: resolved.workspaceId,
+              userId: resolved.userId,
+              name: fields.name,
+              hostname: body.hostname,
+              os: fields.os,
+              arch: fields.arch,
+              kind,
+              lastSeenAt: new Date(),
+              metadata: (body.metadata ?? undefined) as any,
+            },
+          })
 
     const wsRequested = isWsRequested(instance.wsRequestedAt)
     const nextPollIn = await computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
-    const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
+    const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })
 
     // Where the desktop should open its on-demand WebSocket. In staging
     // / production this points at a non-DomainMapping host
@@ -806,7 +840,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
-    if (tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)) {
+    if (tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })) {
       return c.json({ ok: true, status: 'already_connected' })
     }
 
@@ -927,7 +961,7 @@ export function instanceRoutes() {
 
     const online = (await Promise.all(
       instances.map(async (inst) => {
-        const isOnline = tunnels.has(inst.id) || (await isTunnelConnectedAnywhere(inst.id))
+        const isOnline = tunnels.has(inst.id) || (await isTunnelConnectedAnywhere(inst.id, { retry: false }))
         return isOnline ? inst : null
       })
     )).filter((x): x is NonNullable<typeof x> => x !== null)
@@ -984,7 +1018,7 @@ export function instanceRoutes() {
     return c.json({
       ...instance,
       kind: formatInstanceKind(instance.kind),
-      status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
+      status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })
         ? 'online'
         : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),
       origin: 'local' as const,
@@ -1054,6 +1088,12 @@ export function instanceRoutes() {
     if (conn) {
       conn.ws.close(4000, 'Instance removed')
     }
+
+    // Unpairing takes the cloud copy with it (SHO-185): a machine that is gone
+    // must not leave its records readable in the workspace it was copied into.
+    await deleteMachineCopy(prisma, instance.id).catch((err: any) => {
+      console.warn(`[Instances] could not remove the copy for ${instance.id}: ${err?.message ?? err}`)
+    })
 
     await prisma.instance.delete({ where: { id: instance.id } })
     return c.json({ ok: true })
@@ -1678,7 +1718,69 @@ export function instanceRoutes() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
+/**
+ * Rewrite `lastSeenAt` at least this often. Well inside the 2 min
+ * `isRecentlySeenViaHeartbeat` window, so a skipped write never turns a live
+ * machine into `offline`.
+ */
+const HEARTBEAT_WRITE_MIN_INTERVAL_MS = 30_000
+
+/** Key-order independent: Postgres `jsonb` hands keys back in its own order. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    return `{${Object.keys(obj)
+      .filter((k) => obj[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value ?? null)
+}
+
+/**
+ * `uptime` ticks on every beat and `machine.generatedAt` on every snapshot
+ * (20 s); neither is a reason to write the row.
+ */
+function stableMetadata(metadata: unknown): string {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return canonicalJson(metadata)
+  const { uptime: _uptime, ...rest } = metadata as Record<string, unknown>
+  const machine = rest.machine
+  if (machine && typeof machine === 'object' && !Array.isArray(machine)) {
+    const { generatedAt: _generatedAt, ...machineRest } = machine as Record<string, unknown>
+    rest.machine = machineRest
+  }
+  return canonicalJson(rest)
+}
+
+export function heartbeatNeedsWrite(
+  existing: {
+    name: string | null
+    os: string | null
+    arch: string | null
+    kind: InstanceKind
+    lastSeenAt: Date | null
+    metadata: unknown
+  },
+  next: {
+    name: string
+    os: string | null
+    arch: string | null
+    kind: InstanceKind
+    metadata: Record<string, unknown> | undefined
+  },
+  now: number = Date.now(),
+): boolean {
+  if (!existing.lastSeenAt) return true
+  if (now - existing.lastSeenAt.getTime() >= HEARTBEAT_WRITE_MIN_INTERVAL_MS) return true
+  if (existing.name !== next.name || existing.os !== next.os || existing.arch !== next.arch) return true
+  if (existing.kind !== next.kind) return true
+  if (next.metadata !== undefined && stableMetadata(existing.metadata) !== stableMetadata(next.metadata)) return true
+  return false
+}
+
+export function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
   if (!lastSeenAt) return false
   return Date.now() - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
 }
@@ -1693,7 +1795,7 @@ export async function getMachineLiveStatus(
   instanceId: string,
   lastSeenAt: Date | null,
 ): Promise<'online' | 'heartbeat' | 'offline'> {
-  if (tunnels.has(instanceId) || (await isTunnelConnectedAnywhere(instanceId))) return 'online'
+  if (tunnels.has(instanceId) || (await isTunnelConnectedAnywhere(instanceId, { retry: false }))) return 'online'
   return isRecentlySeenViaHeartbeat(lastSeenAt) ? 'heartbeat' : 'offline'
 }
 
@@ -1708,13 +1810,9 @@ export async function getMachineLiveStatus(
 export async function getMachineGroupStatus(
   rows: Array<{ id: string; lastSeenAt: Date | null }>,
 ): Promise<'online' | 'heartbeat' | 'offline'> {
-  let sawHeartbeat = false
-  for (const row of rows) {
-    const status = await getMachineLiveStatus(row.id, row.lastSeenAt)
-    if (status === 'online') return 'online'
-    if (status === 'heartbeat') sawHeartbeat = true
-  }
-  return sawHeartbeat ? 'heartbeat' : 'offline'
+  const statuses = await Promise.all(rows.map((row) => getMachineLiveStatus(row.id, row.lastSeenAt)))
+  if (statuses.includes('online')) return 'online'
+  return statuses.includes('heartbeat') ? 'heartbeat' : 'offline'
 }
 
 /**
@@ -1748,7 +1846,8 @@ export async function ensureTunnelConnected(
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, TUNNEL_WAIT_POLL_MS))
     if (tunnels.has(instanceId)) return true
-    if (await getTunnelOwner(instanceId)) return true
+    // The loop re-polls every TUNNEL_WAIT_POLL_MS, so the cold-start retry would only add delay.
+    if (await getTunnelOwner(instanceId, { retry: false })) return true
   }
   return false
 }

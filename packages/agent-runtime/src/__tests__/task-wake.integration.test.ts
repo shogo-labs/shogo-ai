@@ -396,6 +396,47 @@ describe('task wake', () => {
     expect(tasks.filter((t) => t.status === 'running')).toHaveLength(0)
   }, 15_000)
 
+  /**
+   * SHO-196: a card watch the API owns must never be handed to the API as a
+   * local task. `forget()` evicts entries under memory pressure; the note it
+   * used to leave behind failed every ownership guard (the entry was gone), so
+   * each turn end re-POSTed it, and the API turned it back into a wake carrying
+   * the old milestone text — 15+ times in one Planner session.
+   */
+  test('an evicted API-tracked task is never handed to the API as a local task', async () => {
+    const gw = await startGateway([buildTextResponse('one'), buildTextResponse('two')])
+    const reg = (gw as any).getOrCreateCommandRegistry('evicted') as import('../task-registry').TaskRegistry
+
+    // The registry keeps at most 20 unread results. 21 settled card watches push
+    // the oldest out of memory, exactly as a busy Planner session did.
+    for (let i = 0; i < 21; i++) {
+      reg.registerRemote({
+        id: `t_evict${String(i).padStart(3, '0')}`,
+        source: 'work_item',
+        title: `SUP-${i}`,
+        apiTracked: true,
+        client: {
+          async get(id) { return { id, status: 'completed', output: `moved to Done (done) #${i}` } },
+          async cancel() {},
+          async consume() {},
+        },
+      })
+      await sleep(2)
+      await reg.refreshRemote()
+    }
+
+    expect(reg.get('t_evict000')).toBeUndefined()
+    expect(reg.peekNotifications().map((n) => n.taskId)).not.toContain('t_evict000')
+
+    // Two turn ends, and the coalesce window after them: nothing is reported.
+    await gw.processChatMessageStream('one', writer() as any, { chatSessionId: 'evicted' })
+    await gw.processChatMessageStream('two', writer() as any, { chatSessionId: 'evicted' })
+    await sleep(2_500)
+
+    const notified = apiCalls.filter((c) => c.path === '/api/internal/tasks/notify')
+    expect(notified).toHaveLength(0)
+  }, 30_000)
+
   test('clearing a session\'s history stops its background tasks', async () => {
     const calls: Message[][] = []
     const gw = await startGateway([

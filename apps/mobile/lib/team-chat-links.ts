@@ -35,6 +35,11 @@ export function messageLink(target: MessageLinkTarget, base = linkBase()): strin
   return `${base}/c/${encodeURIComponent(target.conversationId)}?${q}`
 }
 
+/** The page where someone asks to join a huddle (works for guests without an account). */
+export function huddleJoinLink(token: string, base = linkBase()): string {
+  return `${base}/huddle/join/${encodeURIComponent(token)}`
+}
+
 /** Link that opens a channel with its doc showing. */
 export function docLink(conversationId: string, base = linkBase()): string {
   return `${base}/c/${encodeURIComponent(conversationId)}?doc=1`

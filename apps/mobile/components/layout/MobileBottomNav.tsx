@@ -34,6 +34,7 @@ import {
 } from "../../hooks/useLastProjectContext";
 import type { BottomTabId } from "@shogo/shared-app";
 import { chatColumn } from "../../lib/chat-column";
+import { settingsTargetFor } from "../../lib/bottom-nav-settings";
 import { nativeComposerKeyboardOpenFromSource } from "../../lib/native-composer-keyboard";
 import {
   nativeComposerKeyboardOverlapFromEvent,
@@ -337,14 +338,23 @@ export function MobileBottomNav() {
           : {}),
       } as any),
   };
+  const openSettings = (target: { openProjectSettings: boolean }) => {
+    setOpenProjectSettings(target.openProjectSettings);
+    setSettingsOpen(true);
+  };
   const moreItem = {
     id: "more",
     label: "More",
     Icon: Settings,
-    onPress: () => {
-      setOpenProjectSettings(false);
-      setSettingsOpen(true);
-    },
+    onPress: () => openSettings(settingsTargetFor(false)),
+  };
+  // In a project the ⚙️ is that project's settings, the way Slack's channel
+  // details are — workspace settings stay reachable from the sidebar.
+  const projectMoreItem = {
+    id: "more",
+    label: "More",
+    Icon: Settings,
+    onPress: () => openSettings(settingsTargetFor(true)),
   };
   const projectItems = [
     {
@@ -371,7 +381,7 @@ export function MobileBottomNav() {
       Icon: ClipboardList,
       onPress: () => openProjectSurface("plans"),
     },
-    moreItem,
+    projectMoreItem,
   ];
 
   // The team vs. personal tab set (and order) is owned by the experience

@@ -32,6 +32,9 @@ mock.module("../../chat/MarkdownMediaNative", () => ({
     <div data-testid="native-image" data-src={src} data-agent-url={agentUrl ?? ""} />
   ),
 }))
+mock.module("../../project/panels/ide/CodeEditor", () => ({
+  CodeEditor: ({ value }: { value: string }) => <div data-testid="code-editor">{value}</div>,
+}))
 mock.module("../../chat/MarkdownText", () => ({
   MarkdownText: ({ children }: { children: string }) => <div data-testid="markdown-body">{children}</div>,
 }))

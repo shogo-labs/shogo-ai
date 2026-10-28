@@ -179,6 +179,35 @@ test.describe("Agent preview hygiene scope", () => {
       }
     })
   }
+
+  /**
+   * The publish spec's assertions are all about what the agent *said* — "use the
+   * requested subdomain", "report that it is taken" — and the prompts it sends
+   * name the requested subdomain. A page-body read therefore makes them pass on
+   * the user's own echo, even when the agent published to a completely different
+   * name, and `transcript()` additionally lowercases chrome and build logs into
+   * the value (SHO-132). The ban is whole-file rather than per-matcher: nothing
+   * in this file has a reason to read the page body.
+   */
+  test("agent-publish.test.ts reads the agent's own messages, never the page body", () => {
+    const file = "agent-publish.test.ts"
+    const source = readFileSync(join(dirname(test.info().file), file), "utf8")
+    expect(
+      source,
+      `${file}: the publish spec must still assert on the agent's reply (agentMessageText) — ` +
+        `this guard is not a licence to drop the assertions`,
+    ).toContain("agentMessageText(page)")
+    const offenders = source
+      .split("\n")
+      .map((line, index) => ({ number: index + 1, line: line.trim() }))
+      .filter(({ line }) => WHOLE_PAGE.test(line) || /\btranscript\s*\(/.test(line))
+      .map(({ number, line }) => `${file}:${number} ${line}`)
+    expect(
+      offenders,
+      `${file}: a whole-page read makes the subdomain assertions satisfiable by the ` +
+        `echoed prompt (SHO-132) — assert on agentMessageText(page) instead`,
+    ).toEqual([])
+  })
 })
 
 /**

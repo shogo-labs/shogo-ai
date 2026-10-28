@@ -331,11 +331,19 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
 
   const openWorkspaceChat = (sessionId: string) => {
     closeSessions();
+    workspaceChats.markSeen(sessionId);
     router.push({
       pathname: "/(app)/agent",
       params: { chatSessionId: sessionId },
     } as any);
   };
+
+  // The chat the route opens is read, so a turn ending while it is on screen
+  // clears its dot instead of flagging it as new activity.
+  useEffect(() => {
+    if (!routeParams.chatSessionId) return;
+    workspaceChats.markSeen(routeParams.chatSessionId);
+  }, [routeParams.chatSessionId, workspaceChats.markSeen]);
 
   const createSideChat = async () => {
     const session = await workspaceChats.createChat();
@@ -595,7 +603,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                 accessibilityLabel={
                   sessionsOpen ? "Close chat sessions" : "Open chat sessions"
                 }
-                accessibilityState={{ expanded: sessionsOpen }}
+                aria-expanded={sessionsOpen}
                 onPress={() =>
                   sessionsOpen ? closeSessions() : openSessions()
                 }
@@ -797,9 +805,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                             accessibilityLabel={`${
                               showArchivedSideChats ? "Collapse" : "Expand"
                             } archived side chats`}
-                            accessibilityState={{
-                              expanded: showArchivedSideChats,
-                            }}
+                            aria-expanded={showArchivedSideChats}
                             onPress={() =>
                               setArchivedSideChatsExpanded((value) => !value)
                             }
@@ -970,7 +976,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                 } chats for ${
                                   project.name || "Untitled project"
                                 }`}
-                                accessibilityState={{ expanded }}
+                                aria-expanded={expanded}
                                 onPress={(event) => {
                                   event.stopPropagation?.();
                                   toggleProjectChats(project.id);
@@ -1123,9 +1129,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                           } archived chats for ${
                                             project.name || "this project"
                                           }`}
-                                          accessibilityState={{
-                                            expanded: archivedChatsExpanded,
-                                          }}
+                                          aria-expanded={archivedChatsExpanded}
                                           onPress={() =>
                                             setExpandedArchivedProjectIds(
                                               (current) => {

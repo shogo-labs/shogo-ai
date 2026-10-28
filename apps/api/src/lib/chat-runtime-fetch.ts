@@ -62,7 +62,17 @@ export async function fetchFromProjectRuntime(
   projectId: string,
   path: string,
   init?: RequestInit,
-  opts: { resolveUrl?: (projectId: string) => Promise<string>; runtimeManager?: IRuntimeManager } = {},
+  opts: {
+    resolveUrl?: (projectId: string) => Promise<string>
+    runtimeManager?: IRuntimeManager
+    /**
+     * Agent-initiated traffic (the agent dispatcher, agent-call wakes) resolves
+     * the callee into the BACKGROUND pool: waking a project to read a file for
+     * a turn must never take one of the three warm-preview slots and evict the
+     * preview the user is looking at (SHO-226). UI chat routes leave it unset.
+     */
+    background?: boolean
+  } = {},
 ): Promise<Response> {
   let baseUrl: string
   if (opts.resolveUrl) {
@@ -70,7 +80,13 @@ export async function fetchFromProjectRuntime(
   } else {
     const { resolveProjectPodUrl } = await import('./resolve-pod-url')
     const runtimeManager = await runtimeManagerFor(opts)
-    baseUrl = (await resolveProjectPodUrl(projectId, { logTag: 'ChatRuntimeFetch', runtimeManager })).url
+    baseUrl = (
+      await resolveProjectPodUrl(projectId, {
+        logTag: 'ChatRuntimeFetch',
+        runtimeManager,
+        ...(opts.background ? { background: true } : {}),
+      })
+    ).url
   }
   const { deriveProjectRuntimeToken } = await import('./project-runtime-token')
   const headers = new Headers(init?.headers)

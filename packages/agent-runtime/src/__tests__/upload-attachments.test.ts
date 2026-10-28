@@ -6,7 +6,9 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   buildUploadedFilesNote,
+  isReferenceAttachmentPart,
   isZipUpload,
+  resolveReferenceAttachment,
   saveUploadedFileParts,
   type UploadedFilePart,
 } from '../upload-attachments'
@@ -282,6 +284,92 @@ describe('saveUploadedFileParts', () => {
     expect(saved).toHaveLength(0)
     expect(savedSummaries).toHaveLength(0)
     expect(zipUploaded).toBe(false)
+  })
+})
+
+describe('isReferenceAttachmentPart', () => {
+  test('treats a savedPath with no inline bytes as a reference', () => {
+    expect(isReferenceAttachmentPart({ type: 'file', savedPath: 'files/a.txt' })).toBe(true)
+  })
+
+  test('treats a savedPath plus a non-data url as a reference', () => {
+    expect(
+      isReferenceAttachmentPart({
+        type: 'file',
+        savedPath: 'files/a.txt',
+        url: 'https://example.com/a.txt',
+      }),
+    ).toBe(true)
+  })
+
+  test('leaves legacy data-url parts and non-file parts alone', () => {
+    expect(
+      isReferenceAttachmentPart({
+        type: 'file',
+        savedPath: 'files/a.txt',
+        url: dataUrl('text/plain', 'hi'),
+      }),
+    ).toBe(false)
+    expect(isReferenceAttachmentPart({ type: 'file', url: dataUrl('text/plain', 'hi') })).toBe(false)
+    expect(isReferenceAttachmentPart({ type: 'text', savedPath: 'files/a.txt' } as UploadedFilePart)).toBe(false)
+  })
+})
+
+describe('resolveReferenceAttachment', () => {
+  let workspaceDir: string
+
+  beforeEach(() => {
+    workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-upload-test-'))
+  })
+
+  afterEach(() => {
+    rmSync(workspaceDir, { recursive: true, force: true })
+  })
+
+  test('resolves a saved path to its size and media type', () => {
+    saveUploadedFileParts({
+      workspaceDir,
+      parts: [{ type: 'file', mediaType: 'text/plain', name: 'note.txt', url: dataUrl('text/plain', 'abc') }],
+      log: SILENT_LOG,
+      logError: SILENT_ERR,
+    })
+
+    const resolved = resolveReferenceAttachment(workspaceDir, {
+      type: 'file',
+      savedPath: 'files/note.txt',
+      mediaType: 'text/plain',
+    })
+
+    expect(resolved).not.toBe('outside')
+    expect(resolved).not.toBe('missing')
+    if (resolved === 'outside' || resolved === 'missing') throw new Error('unreachable')
+    expect(resolved.absolutePath).toBe(join(workspaceDir, 'files', 'note.txt'))
+    expect(resolved.bytes).toBe(3)
+    expect(resolved.isZip).toBe(false)
+  })
+
+  test('refuses a path that escapes the workspace', () => {
+    expect(resolveReferenceAttachment(workspaceDir, { type: 'file', savedPath: '../secret.txt' })).toBe('outside')
+    expect(resolveReferenceAttachment(workspaceDir, { type: 'file', savedPath: '/etc/passwd' })).toBe('outside')
+    expect(resolveReferenceAttachment(workspaceDir, { type: 'file', savedPath: '   ' })).toBe('outside')
+  })
+
+  test('reports a legal but absent path as missing rather than failing the turn', () => {
+    expect(resolveReferenceAttachment(workspaceDir, { type: 'file', savedPath: 'files/gone.txt' })).toBe('missing')
+  })
+
+  test('defaults a part without a media type and detects zips by name', () => {
+    saveUploadedFileParts({
+      workspaceDir,
+      parts: [{ type: 'file', mediaType: 'application/zip', name: 'bundle.zip', url: dataUrl('application/zip', 'PK') }],
+      log: SILENT_LOG,
+      logError: SILENT_ERR,
+    })
+
+    const resolved = resolveReferenceAttachment(workspaceDir, { type: 'file', savedPath: 'bundle.zip' })
+    if (resolved === 'outside' || resolved === 'missing') throw new Error('expected a resolved attachment')
+    expect(resolved.mediaType).toBe('application/octet-stream')
+    expect(resolved.isZip).toBe(true)
   })
 })
 

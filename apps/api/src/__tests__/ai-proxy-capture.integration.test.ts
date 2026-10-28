@@ -169,8 +169,9 @@ globalThis.fetch = (async (input: any, init?: RequestInit) => {
 const { Hono } = await import('hono')
 const { aiProxyRoutes } = await import('../routes/ai-proxy')
 const { generateProxyToken } = await import('../lib/ai-proxy-token')
-const { clearConsentCache } = await import('../lib/proxy-capture')
-const { flushArchive } = await import('../lib/proxy-capture/archive-writer')
+const { clearConsentCache, flushAndStopArchive } = await import('../lib/proxy-capture')
+const { reconstructRequest } = await import('../lib/proxy-capture/reconstruct')
+const { stableStringify } = await import('../lib/proxy-capture/chain')
 
 const TOKEN = await generateProxyToken('proj-1', 'ws-1', 'user-1')
 
@@ -192,13 +193,36 @@ async function postChat(body: Record<string, unknown>, headers: Record<string, s
   }))
 }
 
-async function flushAndReadArchive(): Promise<any> {
-  await flushArchive()
-  const archive = objectWrites
-    .filter((write) => write.ContentType === 'application/jsonl')
-    .at(-1)
-  if (!archive) return null
-  return JSON.parse(gunzipSync(archive.Body).toString('utf8').trim())
+async function readArchive(format: 'v1' | 'v2'): Promise<any[]> {
+  await flushAndStopArchive()
+  return objectWrites
+    .filter((write) => write.ContentType === 'application/jsonl' && write.Key.startsWith(`${format}/region=`))
+    .flatMap((write) => gunzipSync(write.Body).toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)))
+}
+
+async function flushAndReadArchive(format: 'v1' | 'v2' = 'v1'): Promise<any> {
+  return (await readArchive(format)).at(-1) ?? null
+}
+
+function storedObjects(format: 'v1' | 'v2' | 'chain'): typeof objectWrites {
+  const match = (key: string): boolean => {
+    if (format === 'chain') return key.includes('/chain/')
+    return key.startsWith(`${format}/region=`)
+  }
+  return objectWrites.filter((write) => match(write.Key))
+}
+
+function objectLoader(objects: typeof objectWrites) {
+  const byKey = new Map(objects.map((write) => [write.Key, write.Body]))
+  return async (key: string): Promise<unknown> => {
+    const body = byKey.get(key)
+    if (!body) return null
+    try {
+      return JSON.parse(gunzipSync(body).toString('utf8'))
+    } catch {
+      return null
+    }
+  }
 }
 
 beforeEach(() => {
@@ -214,6 +238,7 @@ beforeEach(() => {
   delete process.env.SHOGO_LOCAL_MODE
   delete process.env.SHOGO_API_KEY
   delete process.env.SHOGO_CLOUD_URL
+  delete process.env.PROXY_CAPTURE_ARCHIVE_FORMAT
   clearConsentCache()
 })
 
@@ -362,6 +387,87 @@ describe('AI proxy capture integration', () => {
     expect(new Headers(lastFetchInit?.headers).get('x-chat-session-id')).toBeNull()
     expect(await flushAndReadArchive()).toBeNull()
     expect(summaryUpserts).toHaveLength(0)
+  })
+
+  describe('append-only chain archive', () => {
+    const reply = (step: number) => () => new Response(JSON.stringify({
+      id: `chatcmpl-chain-${step}`,
+      choices: [{ message: { role: 'assistant', content: `step ${step}: ${'context '.repeat(120)}` } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+
+    test('stores a tool loop as a chain and reconstructs v1 and v2 identically', async () => {
+      const history: any[] = [
+        { role: 'system', content: 'You are a release agent.' },
+        { role: 'user', content: 'Investigate the failing deploy.' },
+      ]
+      for (let step = 0; step < 10; step += 1) {
+        nextFetchResponses.push(reply(step))
+        const response = await postChat(
+          { model: 'gpt-4o-mini', messages: [...history] },
+          { 'x-chat-session-id': 'chat-chain-1' },
+        )
+        expect(response.status).toBe(200)
+        history.push(
+          { role: 'assistant', content: `step ${step}: ${'context '.repeat(120)}` },
+          { role: 'user', content: `result ${step}: ${'output '.repeat(120)}` },
+        )
+      }
+
+      const v1Records = await readArchive('v1')
+      const v2Records = await readArchive('v2')
+      expect(v1Records).toHaveLength(10)
+      expect(v2Records).toHaveLength(10)
+      expect(v2Records.filter((record) => record.request.chain).length).toBeGreaterThanOrEqual(5)
+      expect(v2Records.at(-1).request.chain).toBeDefined()
+      expect(v2Records.at(-1).request.messages).toBeUndefined()
+      expect(storedObjects('chain').length).toBeGreaterThan(0)
+      expect(summaryUpserts.at(-1).create.archivePrefix).toStartWith('v2/region=')
+
+      const load = objectLoader(objectWrites)
+      for (const record of v2Records) {
+        const v1Record = v1Records.find((candidate) => candidate.id === record.id)
+        expect(v1Record).toBeDefined()
+        const rebuilt = await reconstructRequest(record, load)
+        expect(stableStringify(rebuilt)).toBe(stableStringify(await reconstructRequest(v1Record, load)))
+      }
+      const lastRebuilt = await reconstructRequest(v2Records.at(-1), load) as any
+      expect(lastRebuilt.messages).toEqual(history.slice(0, -2))
+
+      const lastV1 = JSON.stringify(v1Records.at(-1).request)
+      const lastV2 = JSON.stringify(v2Records.at(-1).request)
+      expect(lastV2.length * 5).toBeLessThan(lastV1.length)
+    })
+
+    test('writes only the configured archive format', async () => {
+      process.env.PROXY_CAPTURE_ARCHIVE_FORMAT = 'v1'
+      nextFetchResponses.push(reply(0))
+      expect((await postChat({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: `${'history '.repeat(200)}` }],
+      })).status).toBe(200)
+
+      const records = await readArchive('v1')
+      expect(records).toHaveLength(1)
+      expect(records[0].request.messages).toBeDefined()
+      expect(objectWrites.filter((write) => write.Key.startsWith('v2/'))).toHaveLength(0)
+      expect(summaryUpserts[0].create.archivePrefix).toStartWith('v1/region=')
+    })
+
+    test('keeps a large history untruncated when the new messages are small', async () => {
+      const history: any[] = [{ role: 'system', content: 'You are a release agent.' }]
+      for (let index = 0; index < 200; index += 1) {
+        history.push({ role: index % 2 ? 'assistant' : 'user', content: 'x'.repeat(30_000) })
+      }
+      nextFetchResponses.push(reply(0))
+      expect((await postChat({ model: 'gpt-4o-mini', messages: history })).status).toBe(200)
+
+      const v2Record = (await readArchive('v2')).at(-1)
+      expect(v2Record.truncated).toBe(false)
+      expect(v2Record.request.chain).toBeDefined()
+      const v1Record = (await readArchive('v1')).at(-1)
+      expect(v1Record.truncated).toBe(true)
+    })
   })
 
   describe('desktop cloud forwarding relays the chat session id', () => {

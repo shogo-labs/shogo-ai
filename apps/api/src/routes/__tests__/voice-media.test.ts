@@ -126,6 +126,40 @@ describe('POST /voice/tts', () => {
     expect(res.headers.get('x-tts-model-used')).toBe('eleven_v4_turbo')
   })
 
+  it('falls back to flash v2.5 (never v4 turbo) when the model is refused, and warns', async () => {
+    let attempt = 0
+    const calls = stubFetch(() => {
+      attempt += 1
+      if (attempt === 1) {
+        return new Response(
+          JSON.stringify({
+            detail: { status: 'model_not_in_plan', message: 'model not available on your plan' },
+          }),
+          { status: 403, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(new Uint8Array([9]), {
+        status: 200,
+        headers: { 'content-type': 'audio/mpeg' },
+      })
+    })
+    const app = makeApp()
+
+    const res = await post(app, '/voice/tts?projectId=proj_1', {
+      text: 'hi',
+      modelId: 'eleven_v3',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('x-tts-model-requested')).toBe('eleven_v3')
+    // SHO-73: a BYO account without v4 entitlement must still get audio, so the
+    // last-resort retry is flash v2.5 — not the convai v4 turbo target.
+    expect(res.headers.get('x-tts-model-used')).toBe('eleven_flash_v2_5')
+    expect(res.headers.get('warning')).toContain('eleven_flash_v2_5')
+    expect(calls).toHaveLength(2)
+    expect(calls[1]!.body).toMatchObject({ model_id: 'eleven_flash_v2_5' })
+  })
+
   it('rejects an unknown model with the allowed list (never clamps)', async () => {
     const calls = stubFetch(() => new Response('should not be called', { status: 500 }))
     const app = makeApp()
@@ -256,6 +290,27 @@ describe('POST /voice/music', () => {
     expect(res.status).toBe(502)
     const body = (await res.json()) as { elBody?: string }
     expect(body.elBody ?? '').toContain('bad plan')
+  })
+
+  it('answers 400 for a malformed body even with no server key', async () => {
+    // SHO-73 §3: the body is parsed and validated before the ElevenLabs client
+    // is resolved, so a keyless host never answers 503 for a bad request.
+    delete process.env.ELEVENLABS_API_KEY
+    const calls = stubFetch(() => new Response('nope', { status: 500 }))
+    const app = makeApp()
+
+    const notJson = await app.fetch(
+      new Request('http://api.test/voice/music?projectId=proj_1', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{',
+      }),
+    )
+    expect(notJson.status).toBe(400)
+
+    const missingField = await post(app, '/voice/music?projectId=proj_1', { nope: true })
+    expect(missingField.status).toBe(400)
+    expect(calls).toHaveLength(0)
   })
 })
 

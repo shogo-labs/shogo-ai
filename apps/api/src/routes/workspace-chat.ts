@@ -23,6 +23,7 @@ import { context, metrics, propagation, SpanStatusCode, trace } from '@opentelem
 import type { IRuntimeManager } from '../lib/runtime'
 import { ChatLatency } from '../lib/chat-latency'
 import { workspaceDownloadPath } from '../lib/chat-attachments'
+import { isChatAttachmentUpload } from '../lib/chat-attachment-upload'
 import { captureWake, type WakeInfo } from '../lib/wake-capture'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
@@ -33,6 +34,7 @@ import { wrapSseStreamWithKeepalive } from '@shogo/shared-runtime/sse-keepalive'
 import { createStreamTrace, traceStream } from '@shogo/shared-runtime/stream-trace'
 import { stampModelProvider } from '../lib/stamp-model-provider'
 import { stampWorkspacePlan } from '../lib/stamp-workspace-plan'
+import { stampTeamWorkspaceNames } from '../lib/stamp-team-workspace-names'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
@@ -63,23 +65,20 @@ import { requesterTicketHeader, workspaceTicketKey } from '../lib/requester-tick
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from '../lib/chat-references'
-import {
-  chatHandoffText,
-  deliverChatMentions,
-  isChatHandoff,
-} from '../services/chat-mention-delivery.service'
+import { chatHandoffText } from '../services/chat-mention-delivery.service'
+import { chatReferenceIds } from '../services/conversation-mentions'
 import {
   attachProjectToProject,
   syncPinnedSessionAttachments,
 } from '../services/project-attachment.service'
 import {
   clearActiveTurn,
-  markTurnEnded,
+  endTurnAndDrain,
   markTurnStarted,
   startTurnHeartbeat,
 } from '../services/chat-turn-state.service'
-import { dispatchNext } from '../services/chat-queue-dispatcher.service'
 import { historySeedForTurn, lastUserPromptText } from '../services/chat-history-seed.service'
+import { compactChatSession } from '../services/chat-compact.service'
 import { trackUsageFromStream } from './project-chat'
 
 // Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
@@ -323,8 +322,24 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
 
     try {
       const method = c.req.method
-      const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.arrayBuffer()
-      const response = await fetch(`${runtimeRes.url}${path}${qs}`, { method, headers, body })
+      // Attachment bytes are streamed, never buffered — see
+      // `chat-attachment-upload.ts` (SHO-213).
+      const streamUpload = isChatAttachmentUpload(method, path)
+      if (streamUpload) {
+        const declared = c.req.header('content-length')
+        if (declared) headers.set('content-length', declared)
+      }
+      const body = streamUpload
+        ? c.req.raw.body
+        : method === 'GET' || method === 'HEAD'
+          ? undefined
+          : await c.req.arrayBuffer()
+      const response = await fetch(`${runtimeRes.url}${path}${qs}`, {
+        method,
+        headers,
+        body,
+        ...(streamUpload ? { duplex: 'half' } : {}),
+      } as RequestInit)
       const responseHeaders = new Headers()
       const respContentType = response.headers.get('content-type')
       if (respContentType) responseHeaders.set('content-type', respContentType)
@@ -702,7 +717,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // `chatSessionId` (its durable buffer + resume key) that we billed under.
     if (parsedBody.chatSessionId !== sessionId) {
       parsedBody.chatSessionId = sessionId
-      body = JSON.stringify(parsedBody)
     }
 
     let attachedProjectIds: string[]
@@ -723,7 +737,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       const seed = await historySeedForTurn(sessionId, lastUserPromptText(parsedBody)).catch(() => null)
       if (seed) {
         parsedBody.historySeed = seed
-        body = JSON.stringify(parsedBody)
       }
     }
 
@@ -752,7 +765,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     } else {
       delete parsedBody.focusedProjectId
     }
-    body = JSON.stringify(parsedBody)
+
+    // Never trusted from the client: only a personal chat carries
+    // `teamWorkspaceNames` (stamped below), so drop anything a client sent.
+    delete parsedBody.teamWorkspaceNames
 
     // Personal companions hide the model picker — one companion per person,
     // not a per-message user pick (see `useWorkspaceExperience`'s
@@ -767,7 +783,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     if (auth.kind === 'personal') {
       parsedBody.agentMode = getPersonalCompanionModelId()
       stampModelProvider(parsedBody)
-      body = JSON.stringify(parsedBody)
+      // A personal companion doesn't build software (SHO-221): it points the
+      // user at their Team workspace. Name theirs so it can say which one.
+      await stampTeamWorkspaceNames(parsedBody, auth.userId)
     } else if (parsedBody.agentMode) {
       // Model-tier guard: models the workspace's plan doesn't cover fall back
       // to Auto, whose tiers are already entitlement-capped (same as project
@@ -783,7 +801,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       // the forwarded body (after any tier-downgrade) so a UUID-addressed DB
       // model routes natively instead of being inferred as `custom`.
       stampModelProvider(parsedBody)
-      body = JSON.stringify(parsedBody)
     }
     await stampWorkspacePlan(parsedBody, workspaceId)
     // Tell the runtime which surface this chat is, so capability toggles and
@@ -791,7 +808,26 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // is anchored on the project the user happens to have open. Never trusted
     // from the client: always overwritten here.
     parsedBody.chatContext = 'workspace'
-    body = JSON.stringify(parsedBody)
+
+    // A `<@c:CHAT_ID>` in a workspace chat is a *reference*, not a send
+    // (SHO-191): nothing is posted to the tagged chat and no turn starts there.
+    // A chat picked from the "@" menu already arrives as a `{type:'chat'}`
+    // reference; a token typed, pasted or sent by a client that only encodes the
+    // text is promoted to one here, so both reach the enrich step below and get
+    // the same pointer block. The chat being written in is never a reference.
+    if (auth.userId) {
+      const mentionedText = chatHandoffText(parsedBody)
+      if (mentionedText.includes('<@c:')) {
+        const refs: any[] = Array.isArray(parsedBody?.references) ? parsedBody.references : []
+        const knownChatRefs = refs
+          .filter((ref: any) => ref?.type === 'chat' && typeof ref.id === 'string')
+          .map((ref: any) => ref.id as string)
+        const added = chatReferenceIds(mentionedText, { selfSessionId: sessionId, existing: knownChatRefs })
+        if (added.length > 0) {
+          parsedBody.references = [...refs, ...added.map((id) => ({ type: 'chat', id }))]
+        }
+      }
+    }
 
     // Harden "@" references before forwarding to the runtime:
     //  - workspace refs: re-derive the summary from the DB after membership;
@@ -801,6 +837,8 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     //    attachments are env-coupled (LINKED_FOLDERS is parsed once at boot), so
     //    the anchor runtime is restarted before we resolve; refs that are
     //    already attached are a no-op and stay warm.
+    //  - chat refs: pointer mode — name the chat and how to read it, and inline
+    //    no transcript (SHO-191: this surface never sends to a tagged chat).
     if (Array.isArray(parsedBody?.references) && parsedBody.references.length > 0) {
       const wsChanged = await enrichWorkspaceReferences(parsedBody, auth.userId)
       const projectRefs = await enrichProjectReferences(parsedBody, auth.userId, workspaceId)
@@ -809,6 +847,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         parsedBody,
         auth.userId,
         workspaceId,
+        { mode: 'pointer' },
       )
       if (anchorProjectId && projectRefs.attachProjectIds.length > 0) {
         const alreadyAttached = new Set(attachedProjectIds)
@@ -837,29 +876,16 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           }
         }
       }
-      if (wsChanged || projectRefs.changed || historyChanged) body = JSON.stringify(parsedBody)
     }
 
-    // A `<@c:CHAT_ID>` token addresses another chat (SHO-52): the message is
-    // delivered there with a one-line origin and that chat's turn starts —
-    // including when it lives in another workspace, because the queue
-    // dispatches against the target session's own runtime. A message that
-    // arrived as a handoff never fans out again.
-    if (auth.userId && !isChatHandoff(parsedBody)) {
-      const handoffText = chatHandoffText(parsedBody)
-      if (handoffText.includes('<@c:')) {
-        try {
-          await deliverChatMentions({
-            text: handoffText,
-            actingUserId: auth.userId,
-            sourceSessionId: sessionId,
-            references: parsedBody?.references,
-          })
-        } catch (err: any) {
-          console.warn('[WorkspaceChat] Chat handoff failed:', err?.message ?? err)
-        }
-      }
-    }
+    // Nothing here delivers a tag to the chat it names: in the workspace chat a
+    // `<@c:CHAT_ID>` is context (see the promotion above and `chat_handoff` when
+    // the person explicitly wants something sent).
+
+    // Serialise once, after every mutation above. Each of those steps used to
+    // re-`JSON.stringify` the whole body, which was fine until attachments rode
+    // inside it as base64 (SHO-213) — the same 15 MB string was built six times.
+    body = JSON.stringify(parsedBody)
 
     // Billing anchor: the AI proxy accumulates usage keyed by projectId, and
     // build-workspace-env mints the first attached project's token as the
@@ -1175,14 +1201,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             },
           ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err)).finally(() => {
             stopTurnHeartbeat?.()
-            const ended = turnId
-              ? markTurnEnded(sessionId, turnId)
-              : Promise.resolve()
-            void ended
-              .then(() => dispatchNext(sessionId))
-              .catch((error) =>
-                console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
-              )
+            // Clearing the turn hands the session on (chat-turn-state): its own
+            // queue first, then the thread's wakes. Every ender does it there.
+            void endTurnAndDrain(sessionId, turnId).catch((error) =>
+              console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
+            )
           })
 
           // Multi-project auto-checkpoint for the NON-anchor attached projects
@@ -1264,14 +1287,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         )
       }
       if (!streamHandedOff) {
-        const ended = activityTurnId
-          ? markTurnEnded(sessionId, activityTurnId)
-          : Promise.resolve()
-        void ended
-          .then(() => dispatchNext(sessionId))
-          .catch((error) =>
-            console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
-          )
+        void endTurnAndDrain(sessionId, activityTurnId).catch((error) =>
+          console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
+        )
       }
     }
   }
@@ -1465,6 +1483,59 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     }
   })
 
+  // "Summarize now" on a workspace-scoped chat (SHO-230).
+  //
+  // The dock used to call the project compact route for every chat. A
+  // workspace chat's session lives on the *workspace* runtime, so that request
+  // reached a runtime that had never heard of it, took the "evicted" branch,
+  // and folded the entire ChatMessage history inline — minutes of spinner on a
+  // long chat, and never the `queued` answer a live turn should get.
+  router.post('/workspaces/:workspaceId/chat/compact', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const workspaceId = c.req.param('workspaceId')
+
+    let parsed: any = {}
+    try {
+      parsed = JSON.parse((await c.req.text()) || '{}')
+    } catch {
+      /* empty body */
+    }
+    const sessionId: string | undefined =
+      c.req.header('X-Chat-Session-Id') || parsed?.chatSessionId || parsed?.sessionId
+    if (!sessionId) {
+      return c.json({ compacted: false, queued: false, reason: 'missing chatSessionId' }, 400)
+    }
+
+    let attachedProjectIds: string[] = []
+    let runtimeExtra: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] } = {}
+    try {
+      const args = await loadRuntimeArgs(workspaceId, sessionId, auth.userId)
+      attachedProjectIds = args.attachedProjectIds
+      runtimeExtra = args.extra
+    } catch (err) {
+      return mapSessionError(c, err)
+    }
+    const runtimeRes = await resolveOr501(
+      c,
+      workspaceId,
+      attachedProjectIds,
+      'WorkspaceCompact',
+      runtimeExtra,
+      auth.kind,
+    )
+    if ('res' in runtimeRes) return runtimeRes.res
+
+    const { body, status } = await compactChatSession({
+      chatSessionId: sessionId,
+      logTag: '[WorkspaceChat]',
+      signal: c.req.raw.signal,
+      fetchRuntime: (path, init) =>
+        fetchFromWorkspaceRuntime(workspaceId, attachedProjectIds, path, init, runtimeExtra),
+    })
+    return c.json(body, status as any)
+  })
+
   // Stop/interrupt active generation on the workspace runtime.
   router.post('/workspaces/:workspaceId/chat/stop', async (c) => {
     const auth = await authorize(c)
@@ -1507,10 +1578,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         )
       }
       if (sessionId && response.ok) {
-        await clearActiveTurn({
-          id: sessionId,
-          OR: [{ workspaceId }, { project: { workspaceId } }],
-        }).catch((error) =>
+        await clearActiveTurn(
+          {
+            id: sessionId,
+            OR: [{ workspaceId }, { project: { workspaceId } }],
+          },
+          // Send now dispatches the row itself and answers with the outcome;
+          // starting the queue here too would race it for the same turn.
+          { handOff: parsed?.handOff === 'caller' ? 'caller' : 'queue' },
+        ).catch((error) =>
           console.warn(`[WorkspaceChat] Failed to clear stopped chat ${sessionId}:`, error),
         )
       }

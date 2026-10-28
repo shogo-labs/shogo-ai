@@ -45,6 +45,22 @@ export function mentionedChatIds(text: string): string[] {
   return ids
 }
 
+/**
+ * Chat ids a message names that are worth pointing at: not the chat it is
+ * written in, and not one already carried as a `{type:'chat'}` reference.
+ *
+ * The workspace chat turns these into pointer references (SHO-191) instead of
+ * delivering to them, so a token typed or pasted reaches the agent exactly like
+ * one picked from the "@" menu.
+ */
+export function chatReferenceIds(
+  text: string,
+  options: { selfSessionId?: string | null; existing?: Iterable<string> } = {},
+): string[] {
+  const existing = new Set(options.existing ?? [])
+  return mentionedChatIds(text).filter((id) => id !== options.selfSessionId && !existing.has(id))
+}
+
 
 export function userMentionToken(userId: string): string {
   return `<@u:${userId}>`
@@ -106,7 +122,7 @@ export function renderMentionsAsText(text: string, names: MentionNames = {}): st
     if (chatId) return `@${names.chats?.get(chatId) ?? 'chat'}`
     if (projectId) return `@${names.projects?.get(projectId) ?? 'agent'}`
     if (broadcast) return `@${broadcast}`
-    if (conversationId) return `#${names.conversations?.get(conversationId) ?? 'channel'}`
+    if (conversationId) return `#${names.conversations?.get(conversationId) ?? 'privatechannel'}`
     if (token === '<@a:ws>') return `@${names.workspaceAgentName ?? 'Shogo'}`
     return token
   })
@@ -309,17 +325,30 @@ export async function groupNames(db: any, workspaceId: string, groupIds: string[
 /**
  * Names for every token in `texts`, in one lookup per kind regardless of how
  * many texts are passed. Feed the result to `renderMentionsAsText`, or every
- * token renders as its fallback (`@someone`, `#channel`).
+ * token renders as its fallback (`@someone`, `#privatechannel`).
+ *
+ * `visibleConversationIds` is the reader's own channel set. A `<#c:ID>`
+ * reference is only named when it is in there, so a private channel someone
+ * is not in degrades to `#privatechannel` instead of leaking its name. Callers
+ * that have no reader (agent prompts) pass nothing, which names no channel.
  *
  * `workspaceAgentName` is left to the caller: the agent is a workspace setting
  * rather than an id lookup, and callers already have their own way to read it.
  */
-export async function loadNamesForTexts(db: any, workspaceId: string, texts: string[]): Promise<MentionNames> {
+export async function loadNamesForTexts(
+  db: any,
+  workspaceId: string,
+  texts: string[],
+  visibleConversationIds?: Set<string>,
+): Promise<MentionNames> {
   const ids = collectMentionIds(texts)
+  const channelIds = visibleConversationIds
+    ? ids.conversationIds.filter((id) => visibleConversationIds.has(id))
+    : []
   const [users, projects, conversations, groups, chats] = await Promise.all([
     ids.userIds.length ? db.user.findMany({ where: { id: { in: ids.userIds } }, select: { id: true, name: true, email: true } }) : [],
     ids.projectIds.length ? db.project.findMany({ where: { id: { in: ids.projectIds } }, select: { id: true, name: true } }) : [],
-    ids.conversationIds.length ? db.conversation.findMany({ where: { id: { in: ids.conversationIds } }, select: { id: true, name: true } }) : [],
+    channelIds.length ? db.conversation.findMany({ where: { id: { in: channelIds } }, select: { id: true, name: true } }) : [],
     groupNames(db, workspaceId, ids.groupIds),
     ids.chatIds.length ? db.chatSession.findMany({ where: { id: { in: ids.chatIds } }, select: { id: true, name: true, inferredName: true } }) : [],
   ])

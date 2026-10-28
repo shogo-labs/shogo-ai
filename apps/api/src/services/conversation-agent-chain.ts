@@ -29,7 +29,7 @@ export function envInt(name: string, fallback: number): number {
  * real work needs (a build/review loop runs several rounds).
  */
 export const MAX_AGENT_CHAIN_DEPTH = envInt('SHOGO_AGENT_CHAIN_MAX_DEPTH', 24)
-export const MAX_AGENT_TURNS_PER_THREAD = envInt('SHOGO_AGENT_CHAIN_MAX_THREAD_TURNS', 40)
+export const MAX_AGENT_TURNS_PER_THREAD = envInt('SHOGO_AGENT_CHAIN_MAX_THREAD_TURNS', 100)
 /** Consecutive turns allowed between the same two agents (A→B→A→B). */
 export const MAX_AGENT_PING_PONG_TURNS = envInt('SHOGO_AGENT_CHAIN_MAX_PING_PONG', 12)
 const MAX_HOPS_KEPT = 32
@@ -110,6 +110,13 @@ export function chainLimitHit(next: AgentChain): ChainLimit | null {
   if (next.turns > MAX_AGENT_TURNS_PER_THREAD) return 'thread_turns'
   if (pingPongRun(next.hops) > MAX_AGENT_PING_PONG_TURNS) return 'ping_pong'
   return null
+}
+
+/** The configured ceiling `chainLimitHit` compares a turn against. */
+export function chainLimitMax(limit: ChainLimit): number {
+  if (limit === 'depth') return MAX_AGENT_CHAIN_DEPTH
+  if (limit === 'thread_turns') return MAX_AGENT_TURNS_PER_THREAD
+  return MAX_AGENT_PING_PONG_TURNS
 }
 
 /**

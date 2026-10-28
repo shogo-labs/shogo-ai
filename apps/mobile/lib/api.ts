@@ -333,6 +333,8 @@ export interface CheckoutParams {
   referralId?: string
   successUrl?: string
   cancelUrl?: string
+  /** Start the 7-day free trial (card required). Ignored when not eligible. */
+  trial?: boolean
 }
 
 export interface WorkspaceCheckoutParams {
@@ -816,13 +818,25 @@ export const api = {
     return res.data
   },
 
-  async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string } = {}) {
+  async listAgentTasksPage(
+    http: HttpClient,
+    params: { status?: string; projectId?: string; workspaceId?: string; limit?: number; before?: string; beforeId?: string } = {},
+  ) {
     const query = new URLSearchParams()
     if (params.status) query.set('status', params.status)
     if (params.projectId) query.set('projectId', params.projectId)
+    if (params.workspaceId) query.set('workspaceId', params.workspaceId)
+    if (params.limit) query.set('limit', String(params.limit))
+    if (params.before) query.set('before', params.before)
+    if (params.beforeId) query.set('beforeId', params.beforeId)
     const suffix = query.toString() ? `?${query.toString()}` : ''
-    const res = await http.get<{ ok?: boolean; items?: AgentTask[] }>(`/api/agent-tasks${suffix}`)
-    return res.data?.items ?? []
+    const res = await http.get<{ ok?: boolean; items?: AgentTask[]; hasMore?: boolean }>(`/api/agent-tasks${suffix}`)
+    return { items: res.data?.items ?? [], hasMore: res.data?.hasMore === true }
+  },
+
+  async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string; workspaceId?: string } = {}) {
+    const { items } = await this.listAgentTasksPage(http, params)
+    return items
   },
 
   async createAgentTask(
@@ -1249,6 +1263,12 @@ export const api = {
       serverBacked?: boolean
       /** Whether the workspace plan (Pro+) may publish to a new subdomain. */
       canPublish?: boolean
+      /**
+       * The apex this environment mints `{subdomain}.<domain>` URLs under —
+       * `staging.shogo.one` on staging, `shogo.one` in production. Render this
+       * instead of hardcoding the apex.
+       */
+      publishDomain?: string
     }>(
       `/api/projects/${projectId}/publish`,
     )
@@ -2407,8 +2427,9 @@ export const api = {
   },
 
   /**
-   * Fetch a project with its persistent attachments (the anchor merged-root
-   * runtime mounts these). Returns `{ project, attachments }`.
+   * Fetch a local project with its folders. Desktop only (`/api/local/*`);
+   * resolves to `{ project: null }` elsewhere, which the Folders panel reads as
+   * "no linked folders on this surface".
    */
   async getLocalProjectWithAttachments(
     http: HttpClient,
@@ -2434,6 +2455,32 @@ export const api = {
   },
 
   /**
+   * List the projects attached to this anchor. Available on every surface
+   * (cloud, web, desktop) — only the attachments the caller can read come back.
+   */
+  async listProjectAttachments(
+    http: HttpClient,
+    projectId: string,
+  ): Promise<{
+    attachments: Array<{
+      id: string
+      attachedProjectId: string
+      attachedProjectName: string | null
+      attachMode: 'readwrite' | 'readonly'
+    }>
+    error?: string
+  }> {
+    try {
+      const res = await http.get<any>(
+        `/api/projects/${encodeURIComponent(projectId)}/attachments`,
+      )
+      return { attachments: Array.isArray(res.data?.attachments) ? res.data!.attachments : [] }
+    } catch (err: any) {
+      return { attachments: [], error: err?.message ?? 'Failed to load attached projects' }
+    }
+  },
+
+  /**
    * Attach another Shogo project (same workspace) to this anchor project so
    * its files mount into the anchor merged-root runtime. `attachMode`
    * defaults to `readwrite`; `readonly` mounts it write-protected.
@@ -2446,7 +2493,7 @@ export const api = {
   ): Promise<{ attachment?: any; error?: string }> {
     try {
       const res = await http.post<any>(
-        `/api/local/projects/${encodeURIComponent(projectId)}/attachments`,
+        `/api/projects/${encodeURIComponent(projectId)}/attachments`,
         { attachedProjectId, attachMode },
       )
       if (res.data?.attachment) return { attachment: res.data.attachment }
@@ -2465,7 +2512,7 @@ export const api = {
   ): Promise<{ ok: boolean; error?: string }> {
     try {
       await http.delete(
-        `/api/local/projects/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachedProjectId)}`,
+        `/api/projects/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachedProjectId)}`,
       )
       return { ok: true }
     } catch (err: any) {
@@ -3304,6 +3351,7 @@ export interface TechStackSummary {
     heartbeatToolsEnabled?: boolean
     imageGenEnabled?: boolean
     videoGenEnabled?: boolean
+    musicGenEnabled?: boolean
     threeDGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean

@@ -70,8 +70,10 @@ import {
   commitBuildOutputAsync,
   cleanupStagingOutput,
 } from './build-output-commit'
+import { consumeBuildInputChange } from './build-input-fingerprint'
 import { emitBuildLine } from './preview-manager'
 import { previewBuildLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
+import { resolveProjectChildEnv } from './project-process-env'
 
 /**
  * Staging directory name owned exclusively by `CanvasBuildManager`.
@@ -122,7 +124,13 @@ const STACK_TO_BUNDLER: Readonly<Record<string, BundlerKind>> = {
 }
 
 export interface CanvasBuildCallbacks {
-  onBuildComplete: () => void
+  /**
+   * `outputChanged` is false when the rebuild reproduced the site that was
+   * already being served — the canvas reload toast is skipped then. Omitting
+   * it means "assume it changed", which is what every caller did before the
+   * gate existed.
+   */
+  onBuildComplete: (info?: { outputChanged: boolean }) => void
   onBuildError: (error: string) => void
   /**
    * Optional gate awaited before each `runBuild()` spawns the bundler.
@@ -400,6 +408,10 @@ export class CanvasBuildManager {
       cmd: bundler.bin,
       argsPrefix: [],
     }
+    // The bundler runs the project's own config (vite.config, app.config),
+    // i.e. user code — same credentials as the preview sidecar, never the
+    // workspace token (SHO-228).
+    const buildEnv = await resolveProjectChildEnv({ cwd: this.workspaceDir })
     try {
       await new Promise<void>((resolve, reject) => {
         const cmd = isWindows ? `"${invocation.cmd}"` : invocation.cmd
@@ -413,7 +425,7 @@ export class CanvasBuildManager {
             // shape of the spawn calls in PreviewManager.
             shell: isWindows,
             env: {
-              ...process.env,
+              ...buildEnv,
               NODE_ENV: 'development',
               // Keep Expo non-interactive so a missing dep doesn't deadlock
               // the spawn waiting on stdin.
@@ -484,7 +496,14 @@ export class CanvasBuildManager {
       const successMsg = `Build #${this.buildCount} (${bundler.kind}) complete → ${this.outDir}`
       console.log(`${LOG_PREFIX} ${successMsg}`)
       emitBuildLine(this.buildLogPath, LOG_PREFIX, successMsg, 'stdout')
-      this.callbacks.onBuildComplete()
+      // Metro's own output is not byte-stable between two runs over identical
+      // sources (module ids follow traversal order), so "did it change?" is
+      // answered from the inputs the build consumed. The build's own output
+      // directories are excluded: this manager always builds to `dist` via a
+      // staging dir. See build-input-fingerprint.ts.
+      this.callbacks.onBuildComplete({
+        outputChanged: consumeBuildInputChange(this.workspaceDir, { ignore: ['dist', CANVAS_STAGING_DIR] }),
+      })
     } catch (err: any) {
       // Failed build: drop the partial staging output so it doesn't
       // poison the next swap, and leave `dist/` untouched.

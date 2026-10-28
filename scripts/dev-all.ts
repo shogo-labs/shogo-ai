@@ -286,6 +286,10 @@ const PRISMA_CONFIG = "prisma.config.local.ts";
 const DEFAULT_DB_FILE = "shogo.db";
 const MAX_AUTO_RESOLVE_RETRIES = 10;
 
+export function isPostgresDatabaseUrl(url: string | undefined): boolean {
+  return /^postgres(ql)?:\/\//i.test((url ?? "").trim());
+}
+
 /**
  * Resolve the on-disk path of the local SQLite DB exactly the way Prisma
  * does for `prisma.config.local.ts`: prefer `DATABASE_URL` and fall back to
@@ -862,6 +866,19 @@ export async function migrate() {
  * an immediate exit.
  */
 async function runMigratePhase(): Promise<void> {
+  // The SQLite ledger/recovery below only applies to the desktop/local
+  // SQLite database. When DATABASE_URL points at Postgres (the README /
+  // SELF_HOSTING flow: `docker:infra` -> `db:migrate:deploy` -> `dev:all`),
+  // `prisma.config.local.ts` rejects the URL with P1013 ("must start with
+  // file:"). Postgres migrations are applied by `bun run db:migrate:deploy`.
+  if (isPostgresDatabaseUrl(process.env.DATABASE_URL)) {
+    console.log(
+      "[dev:all] DATABASE_URL is Postgres — skipping SQLite migrations " +
+        "(run `bun run db:migrate:deploy` to apply Postgres migrations).",
+    );
+    return;
+  }
+
   let interruptCount = 0;
   let interruptRequested = false;
   const onSigint = () => {

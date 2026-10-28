@@ -10,6 +10,7 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import type { AuthClient } from './client'
+import { signupFetchOptions } from './signup-device-id'
 
 export interface AuthUser {
   id: string
@@ -167,7 +168,7 @@ export function AuthProvider({ authClient, children, onSignOut }: AuthProviderPr
       const { data, error: err } = await authClient.signUp.email({
         name, email, password,
         callbackURL,
-      })
+      }, signupFetchOptions())
       if (err) throw new Error(err.message || 'Sign up failed')
       const hasSession = !!(data as any)?.session || !!(data as any)?.token
       if (hasSession && data?.user) {

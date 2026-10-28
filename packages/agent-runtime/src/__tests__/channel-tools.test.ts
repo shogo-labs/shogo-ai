@@ -109,11 +109,26 @@ describe('running agents', () => {
     reply = { runs: [run] }
     const result = payload(await runTool('agent_runs_list').execute('t', { channel: '#eng', thread: 'root-1' }))
     expect(result.runs).toEqual([{
-      message_id: 'm-run', agent: 'Builder', channel: 'eng', thread_id: 'root-1', started_at: run.startedAt, preview: 'working', can_stop: true,
+      message_id: 'm-run', agent: 'Builder', channel: 'eng', thread_id: 'root-1', started_at: run.startedAt,
+      state: 'running', position: null, queued_at: null, preview: 'working', can_stop: true,
     }])
     const url = new URL(calls[0].url)
     expect(url.pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/running-agents')
     expect(Object.fromEntries(url.searchParams)).toEqual({ channel: 'eng', threadRootId: 'root-1', sessionId: 'sess-ws' })
+  })
+
+  test('agent_runs_list says where a queued run stands, and that a parked one holds no slot', async () => {
+    reply = {
+      runs: [
+        { ...run, state: 'queued', position: 2, queuedAt: '2026-10-16T20:00:05Z' },
+        { ...run, messageId: 'm-parked', state: 'waiting' },
+      ],
+    }
+    const result = payload(await runTool('agent_runs_list').execute('t', { channel: 'eng' }))
+    expect(result.runs.map((r: any) => [r.message_id, r.state, r.position, r.queued_at])).toEqual([
+      ['m-run', 'queued', 2, '2026-10-16T20:00:05Z'],
+      ['m-parked', 'waiting', null, null],
+    ])
   })
 
   test('agent_run_stop stops one run, or a whole thread, and sends its session so it never stops itself', async () => {
@@ -258,6 +273,45 @@ describe('channel tools call the internal agent-channel API', () => {
     expect(url.searchParams.get('requestedBy')).toBe('admin-1')
     expect(url.searchParams.get('range')).toBe('yesterday')
     expect(url.searchParams.get('tz')).toBe('America/Los_Angeles')
+  })
+
+  test('member_activity with detail=messages returns the records, with the filters passed through', async () => {
+    reply = {
+      items: [{ id: 'msg-1', source: 'team_chat', audience: 'person', text: 'take this' }],
+      hasMore: true,
+      nextCursor: 'cursor-2',
+    }
+    const out = payload(await tool('member_activity', ctx({ userId: 'admin-1' })).execute('t', {
+      user: 'sam@example.com',
+      detail: 'messages',
+      audience: 'person',
+      since: '2026-07-01T00:00:00.000Z',
+      limit: 25,
+    }))
+    // A page, not the summary envelope: the model gets the rows and the cursor directly.
+    expect(out.items[0].id).toBe('msg-1')
+    expect(out.nextCursor).toBe('cursor-2')
+
+    const url = new URL(calls[0].url)
+    expect(url.pathname).toBe('/api/internal/workspaces/ws-1/member-activity/messages')
+    expect(url.searchParams.get('requestedBy')).toBe('admin-1')
+    expect(url.searchParams.get('audience')).toBe('person')
+    expect(url.searchParams.get('since')).toBe('2026-07-01T00:00:00.000Z')
+    expect(url.searchParams.get('limit')).toBe('25')
+    // Never a summary-only param on the records route.
+    expect(url.searchParams.get('detail')).toBeNull()
+  })
+
+  test('member_activity with detail=board narrows the summary instead of switching route', async () => {
+    reply = { activity: { user: { userId: 'u2', name: 'Sam' }, totals: { cardsMoved: 2 } } }
+    const out = payload(await tool('member_activity', ctx({ userId: 'admin-1' })).execute('t', {
+      user: 'sam@example.com',
+      detail: 'board',
+    }))
+    expect(out.activity.totals.cardsMoved).toBe(2)
+    const url = new URL(calls[0].url)
+    expect(url.pathname).toBe('/api/internal/workspaces/ws-1/member-activity')
+    expect(url.searchParams.get('detail')).toBe('board')
   })
 
   test('member_activity fails closed without a signed-in user, and passes API refusals through', async () => {

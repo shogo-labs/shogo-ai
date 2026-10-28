@@ -204,6 +204,218 @@ export function projectIdFromAgentProxyUrl(agentUrl: string | null | undefined):
   return match?.[1] ?? null
 }
 
+// ---------------------------------------------------------------------------
+// "Is the preview I am looking at still alive?" (SHO-226)
+// ---------------------------------------------------------------------------
+
+/**
+ * How often a visible canvas pings `POST /projects/:id/preview/active`.
+ *
+ * The iframe talks straight to `localhost:<agentPort>/p/<id>`, so after
+ * `/sandbox/url` returns, the API never hears from that preview again — the
+ * warm-preview LRU and the worker's idle reaper both see it as idle and one of
+ * them eventually stops it under the user. A minute is frequent enough to keep
+ * the pin fresh (the manager's view TTL is 3 minutes) without adding chatter.
+ */
+export const PREVIEW_ACTIVE_PING_MS = 60_000
+
+/**
+ * How many times the canvas re-resolves before it stops trying and shows the
+ * recovery UI. Re-resolving restarts the runtime, so an unbounded loop would
+ * respawn it forever on a genuinely broken project.
+ */
+export const PREVIEW_RECOVERY_MAX_ATTEMPTS = 3
+
+/**
+ * Runtime states that positively mean "the runtime this canvas was showing is
+ * not running any more". `null` (no runtime known to this API) and `starting`
+ * are deliberately absent: a machine workspace, a remote/metal runtime and a
+ * project this API does not own all answer that way, and none of them is a
+ * reason to re-resolve.
+ */
+const LOST_RUNTIME_STATUSES = new Set(['stopped', 'error'])
+
+/** Subset of the `/preview/active` JSON this module reads. */
+export interface PreviewActivePing {
+  ok?: boolean
+  running?: boolean
+  /**
+   * Agent-runtime port of the live runtime. `null`/absent when the mode does
+   * not own a host runtime (cloud no-op) — the port check is then skipped
+   * rather than treated as a mismatch.
+   */
+  agentPort?: number | null
+  /**
+   * Lifecycle state of the runtime: `starting` | `running` | `stopping` |
+   * `stopped` | `error`, or `null` when this API has no record of one (cloud
+   * no-op, a remote/machine runtime, a project that never started).
+   */
+  status?: string | null
+}
+
+export function previewActiveUrl(apiBaseUrl: string, projectId: string): string {
+  return `${apiBaseUrl.replace(/\/+$/, '')}/api/projects/${encodeURIComponent(projectId)}/preview/active`
+}
+
+/**
+ * Recovery attempts per project, kept at module scope on purpose.
+ *
+ * Recovering re-resolves `/sandbox/url`, which drops `ready` to false and
+ * unmounts the canvas (its loading gate renders instead) — so a counter held in
+ * a component ref restarts at zero on every attempt and
+ * {@link PREVIEW_RECOVERY_MAX_ATTEMPTS} can never be reached. That turned one
+ * false "lost runtime" signal into an endless re-resolve/remount loop in which
+ * the composer and "+ new chat" never settled. Keyed by project alone: keying
+ * on the URL would reset the count exactly when a runtime flaps between ports.
+ */
+const recoveryAttempts = new Map<string, number>()
+
+export function previewRecoveryAttempts(projectId: string | null | undefined): number {
+  return (projectId && recoveryAttempts.get(projectId)) || 0
+}
+
+export function recordPreviewRecovery(
+  projectId: string | null | undefined,
+  attempts: number,
+): void {
+  if (!projectId) return
+  if (attempts <= 0) recoveryAttempts.delete(projectId)
+  else recoveryAttempts.set(projectId, attempts)
+}
+
+/** Test hook. */
+export function resetPreviewRecoveryAttempts(): void {
+  recoveryAttempts.clear()
+}
+
+/**
+ * The agent-runtime port the canvas iframe is currently pointed at, from
+ * `/sandbox/url`'s `canvasBaseUrl` (`http://localhost:5173/p/<id>` → 5173).
+ * `null` when the URL carries no explicit port (subdomain / cloud mode), which
+ * makes the port comparison a no-op there.
+ */
+export function agentPortFromCanvasBaseUrl(
+  canvasBaseUrl: string | null | undefined,
+): number | null {
+  if (!canvasBaseUrl) return null
+  try {
+    const port = new URL(canvasBaseUrl).port
+    const parsed = Number(port)
+    return port && Number.isFinite(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** Did this ping say the runtime the iframe points at is up and unchanged? */
+export function isPreviewPingHealthy(
+  ping: PreviewActivePing | null,
+  canvasBaseUrl: string | null | undefined,
+): boolean {
+  if (!ping || ping.ok !== true) return false
+  if (ping.running === false) return false
+  return !previewPortMoved(ping, canvasBaseUrl)
+}
+
+/**
+ * Did the runtime respawn on a different port than the iframe is on? That is
+ * positive evidence — a *successful* ping that names a different live port means
+ * the URL in the WebView is stale.
+ */
+export function previewPortMoved(
+  ping: PreviewActivePing | null,
+  canvasBaseUrl: string | null | undefined,
+): boolean {
+  const expected = agentPortFromCanvasBaseUrl(canvasBaseUrl)
+  const actual = typeof ping?.agentPort === 'number' ? ping.agentPort : null
+  // A port we can't compare on either side is not evidence of a problem.
+  return expected != null && actual != null && expected !== actual
+}
+
+export type PreviewPingDecision = 'keep' | 'recover' | 'give-up'
+
+export interface PreviewPingVerdict {
+  decision: PreviewPingDecision
+  /** Consecutive *lost-runtime* signals; 0 as soon as a ping shows it alive. */
+  failures: number
+  /** Whether this canvas has ever seen this project's runtime reported live. */
+  seenRunning: boolean
+}
+
+/**
+ * Turn a `/preview/active` ping into "keep the iframe, re-resolve it, or give
+ * up". Pure so the recovery policy can be unit-tested without a canvas.
+ *
+ * Recovering is expensive — it re-resolves `/sandbox/url`, which *restarts* the
+ * runtime — so only positive evidence counts as a failure signal:
+ *
+ *  - a successful ping that reports a **different live port** (it respawned), or
+ *  - a successful ping that reports **not running** *after this canvas had seen
+ *    it running* (it was stopped under us), or
+ *  - a successful ping whose `status` is `stopped`/`error`, i.e. the API still
+ *    knows a runtime for this project and it is not up.
+ *
+ * Everything else keeps the iframe. A ping that never reached the API (offline,
+ * a blip, a non-2xx, a 404 for a project this API does not own) says nothing
+ * about the runtime, and `running:false` on the *first* ping says nothing
+ * either: a sleeping machine workspace, a remote/metal runtime and a preview
+ * that has not started yet all answer that way, and none of them may be
+ * woken or restarted by a canvas that is merely on screen. After
+ * {@link PREVIEW_RECOVERY_MAX_ATTEMPTS} consecutive lost-runtime signals the
+ * caller stops re-resolving and surfaces its recovery UI.
+ */
+export function decidePreviewPing(input: {
+  ping: PreviewActivePing | null
+  canvasBaseUrl?: string | null
+  /** Failure count from the previous verdict. */
+  failures?: number
+  /** Whether a previous ping reported this project's runtime as running. */
+  seenRunning?: boolean
+  /** `navigator.onLine`; false means we cannot know anything about the runtime. */
+  online?: boolean
+}): PreviewPingVerdict {
+  const failures = input.failures ?? 0
+  const seenRunning = input.seenRunning ?? false
+  const online = input.online ?? true
+  const ping = input.ping ?? null
+
+  // The request never reached the API. Unreachable is not dead.
+  if (!ping || ping.ok !== true) return { decision: 'keep', failures, seenRunning }
+
+  if (ping.running !== false) {
+    if (previewPortMoved(ping, input.canvasBaseUrl)) {
+      const next = failures + 1
+      return {
+        decision: next >= PREVIEW_RECOVERY_MAX_ATTEMPTS ? 'give-up' : 'recover',
+        failures: next,
+        seenRunning: true,
+      }
+    }
+    return { decision: 'keep', failures: 0, seenRunning: true }
+  }
+
+  // `running:false`. Only a runtime this canvas actually had — or one the API
+  // still names as stopped/errored — counts as lost.
+  //
+  // `starting` is not lost: a cold start answers `running:false` for tens of
+  // seconds, and re-resolving then re-enters the project's loading gate, which
+  // is what made the whole screen (composer, "+ new chat") unreachable while a
+  // preview was simply warming up.
+  if (ping.status === 'starting') return { decision: 'keep', failures, seenRunning }
+
+  const lost =
+    seenRunning ||
+    (online && typeof ping.status === 'string' && LOST_RUNTIME_STATUSES.has(ping.status))
+  if (!lost) return { decision: 'keep', failures, seenRunning }
+
+  const next = failures + 1
+  return {
+    decision: next >= PREVIEW_RECOVERY_MAX_ATTEMPTS ? 'give-up' : 'recover',
+    failures: next,
+    seenRunning,
+  }
+}
+
 export function previewWakeUrl(apiBaseUrl: string, projectId: string): string {
   return `${apiBaseUrl.replace(/\/+$/, '')}/api/preview/${encodeURIComponent(projectId)}/wake`
 }

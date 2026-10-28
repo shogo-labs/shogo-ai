@@ -16,9 +16,29 @@ import type { UIMessage } from "ai"
 import { extractTextContent } from "@shogo/shared-app/chat"
 
 export type OptimisticEchoFile = {
-  dataUrl: string
+  /**
+   * Inline bytes, when the composer read them. Attachments that were only
+   * picked (a native file on disk, a web `File`) carry no data URL — the
+   * upload that replaces them happens after this bubble is painted, so the
+   * echo has to render from whatever source the composer still holds.
+   */
+  dataUrl?: string
+  /** Local file the echo can show directly (`file://…`, `blob:…`). */
+  uri?: string
+  /**
+   * Web: an object URL over the picked `File`. A big pick never gets a data
+   * URL, and the upload only replaces it with a workspace URL after this
+   * bubble is on screen — without this the attachment silently vanished from
+   * the echo (QA round 1 on SHO-213).
+   */
+  previewUrl?: string
   name?: string
   type?: string
+}
+
+/** What the echo's file part points at, or null when there is nothing to show. */
+export function optimisticFileUrl(file: OptimisticEchoFile): string | null {
+  return file.dataUrl || file.previewUrl || file.uri || null
 }
 
 export type OptimisticEchoInput = {
@@ -52,10 +72,12 @@ export function buildOptimisticUserMessage(
   }
 
   for (const file of input.files ?? []) {
+    const url = optimisticFileUrl(file)
+    if (!url) continue
     parts.push({
       type: "file",
       mediaType: file.type || "application/octet-stream",
-      url: file.dataUrl,
+      url,
       ...(file.name ? { name: file.name } : {}),
     })
   }

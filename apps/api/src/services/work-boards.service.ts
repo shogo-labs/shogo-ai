@@ -380,7 +380,16 @@ export async function recordEvent(item: { id: string; workspaceId: string }, typ
   const line = cardEventLine(type, data)
   if (line) {
     const { emitTaskEvent } = await import('./background-tasks.service')
-    await emitTaskEvent('work_item', item.id, { line, card: cardEventState(data) })
+    // Only a run *ending* is withheld from the agent that ran: it already knows
+    // it stopped, and letting that settle its own watch is the wake loop
+    // (SHO-129). A move, assignment or comment an agent makes stays news for
+    // every watch, its own included.
+    const fromAgent = (type === 'agent_stopped' || type === 'agent_failed') && actor.agentRef ? actor.agentRef : null
+    await emitTaskEvent('work_item', item.id, {
+      line,
+      card: cardEventState(data),
+      ...(fromAgent ? { fromAgentRef: fromAgent } : {}),
+    })
   }
 }
 
@@ -938,6 +947,11 @@ export async function nudgeAgentOnMove(itemId: string, agentRef: string, actor: 
       attempts: 0,
       claimedAt: null,
       lastError: null,
+      // A hint has no note and no send-now: clear anything the row picked up
+      // while it was a real wake for this trigger.
+      chatSessionId: null,
+      noteMessageId: null,
+      sendNowAt: null,
     },
   })
   if (!rearmed.count) {
@@ -1685,7 +1699,8 @@ export async function getBoardView(board: any, opts: { includeArchived?: boolean
       ...(oneOf(PRIORITIES, opts.priority) ? { priority: opts.priority } : {}),
       ...(opts.q ? { OR: [{ title: { contains: opts.q } }, { key: { contains: opts.q.toUpperCase() } }] } : {}),
     },
-    orderBy: [{ position: 'asc' }],
+    // Newest first, so the row cap below drops the oldest cards rather than an arbitrary set.
+    orderBy: [{ createdAt: 'desc' }, { number: 'desc' }],
     take: MAX_ITEMS_PER_BOARD_VIEW,
   })
   const working = await runningCardReplies(items.map((i: any) => i.threadRootMessageId).filter(Boolean))

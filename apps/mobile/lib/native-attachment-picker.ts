@@ -18,11 +18,25 @@ import { isComposerArchive } from "./composer-attachments"
 
 export interface NativePickedAttachment {
   id: string
+  /**
+   * Inline bytes, or `""` for a large file picked without a base64 read (see
+   * `uri`): a 200 MB archive is uploaded straight from disk instead of being
+   * inflated into a JS string first (SHO-213).
+   */
   dataUrl: string
   name: string
   type: string
   size: number
+  /** Local file URI, when the picker kept the file on disk. */
+  uri?: string
 }
+
+/**
+ * Above this size a document is not read into base64 at pick time. The
+ * composer only needs its name and size to render the chip, and the upload
+ * streams the file from `uri`.
+ */
+const MAX_PICK_BASE64_BYTES = 8 * 1024 * 1024
 
 export type NativeAttachAction = "library" | "camera" | "documents"
 
@@ -170,6 +184,18 @@ export function executeNativeAttachAction(
     const out: NativePickedAttachment[] = []
     for (const doc of result.assets) {
       const mime = doc.mimeType?.trim() || mimeFromName(doc.name)
+      const size = doc.size ?? 0
+      if (!isComposerArchive(doc.name, mime) && size > maxFileSizeBytes) {
+        onError(`"${doc.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
+        return
+      }
+      // Archives bypass the size limit and can be enormous; anything past the
+      // base64 threshold is uploaded from disk instead of being read here.
+      const streamFromDisk = isComposerArchive(doc.name, mime) || size > MAX_PICK_BASE64_BYTES
+      if (streamFromDisk) {
+        out.push({ id: uid(), dataUrl: "", name: doc.name, type: mime, size, uri: doc.uri })
+        continue
+      }
       let dataUrl: string
       try {
         dataUrl = await uriToDataUrl(doc.uri, mime)
@@ -177,13 +203,7 @@ export function executeNativeAttachAction(
         onError(`Could not read "${doc.name}".`)
         return
       }
-      const size = doc.size ?? dataUrl.length;
-      if(!isComposerArchive(doc.name,
-        mime) && size > maxFileSizeBytes) {
-        onError(`"${doc.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
-        return
-      }
-      out.push({ id: uid(), dataUrl, name: doc.name, type: mime, size })
+      out.push({ id: uid(), dataUrl, name: doc.name, type: mime, size: size || dataUrl.length })
     }
     if (out.length > 0) onFiles(out)
   }

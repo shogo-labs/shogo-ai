@@ -26,6 +26,7 @@
 import { prisma } from '../../lib/prisma'
 import { SocialError, getSocialClient } from './client'
 import { ensureProfile } from './profiles.service'
+import { zernioId } from './provider-ids'
 import { meterOutboundMessage } from './usage.service'
 
 const db = prisma as any
@@ -129,7 +130,7 @@ async function upsertConversation(args: {
     platform: args.platform,
   }
   if (args.accountId) base.accountId = args.accountId
-  const participantId = str(participant.id)
+  const participantId = zernioId(participant)
   const participantName = str(participant.name)
   const participantPicture = str(participant.picture)
   if (participantId) base.participantId = participantId
@@ -223,7 +224,7 @@ async function upsertMessage(args: {
     const encoded = jsonOrNull(args.attachments)
     if (encoded) base.attachmentsJson = encoded
   }
-  const authorId = str(author.id)
+  const authorId = zernioId(author)
   const authorName = str(author.name)
   const authorUsername = str(author.username)
   const authorPicture = str(author.picture)
@@ -265,7 +266,7 @@ async function upsertComment(args: {
   occurredAt: Date
 }): Promise<{ id: string; created: boolean } | null> {
   const detail = args.detail
-  const providerCommentId = str(detail.id)
+  const providerCommentId = zernioId(detail)
   if (!providerCommentId) return null
 
   const existing = await db.socialComment.findUnique({
@@ -276,7 +277,8 @@ async function upsertComment(args: {
 
   const post = asRecord(detail.post) ?? asRecord(args.payload?.post) ?? {}
   const author = asRecord(detail.author) ?? {}
-  const zernioPostId = str(post.id) ?? str(post.platformPostId) ?? str(detail.postId) ?? str(detail.platformPostId)
+  const zernioPostId =
+    zernioId(post) ?? str(post.platformPostId) ?? str(detail.postId) ?? str(detail.platformPostId)
   if (!zernioPostId) return null
   const platformPostId = str(detail.platformPostId) ?? str(post.platformPostId) ?? zernioPostId
 
@@ -291,7 +293,7 @@ async function upsertComment(args: {
 
   const accountId = await resolveAccountId(
     args.workspaceId,
-    args.providerAccountId ?? str(asRecord(detail.account)?.id),
+    args.providerAccountId ?? zernioId(asRecord(detail.account)),
   )
   const isOwn = author.isOwnAccount === true
 
@@ -306,7 +308,7 @@ async function upsertComment(args: {
   }
   if (ourPost?.id) base.postId = ourPost.id
   if (accountId) base.accountId = accountId
-  const authorId = str(author.id)
+  const authorId = zernioId(author)
   const authorName = str(author.name)
   const authorUsername = str(author.username)
   const authorPicture = str(author.picture)
@@ -378,7 +380,7 @@ export async function ingestSocialEvent(input: IngestInput): Promise<IngestResul
   const conversationBlock = asRecord(payload?.conversation)
   const message = detail ?? asRecord(payload?.message)
   const providerConversationId =
-    str(message?.conversationId) ?? str(conversationBlock?.id) ?? str(asRecord(payload?.conversation)?.id)
+    str(message?.conversationId) ?? zernioId(conversationBlock) ?? zernioId(asRecord(payload?.conversation))
 
   if (!providerConversationId) {
     // `conversation.started` always names one; anything else that does not is
@@ -408,7 +410,7 @@ export async function ingestSocialEvent(input: IngestInput): Promise<IngestResul
 
   if (!message) return { handled: false }
 
-  const providerMessageId = str(message.id) ?? str(message.platformMessageId)
+  const providerMessageId = zernioId(message) ?? str(message.platformMessageId)
   if (!providerMessageId) return { handled: false }
 
   const direction = message.direction === 'outgoing' ? 'outgoing' : 'incoming'
@@ -776,7 +778,7 @@ export async function replyToComment(workspaceId: string, commentId: string, inp
   })
 
   const sent = asRecord(result?.data) ?? asRecord(result) ?? {}
-  const providerReplyId = str(sent.commentId) ?? str(sent.id)
+  const providerReplyId = str(sent.commentId) ?? zernioId(sent)
   const now = new Date()
 
   // Our own reply, so the thread shows it without waiting for the echo
@@ -853,7 +855,7 @@ export async function backfillInbox(workspaceId: string, options: { limit?: numb
   }
 
   for (const raw of listOf(conversations, 'data', 'conversations')) {
-    const providerConversationId = str(raw?.id)
+    const providerConversationId = zernioId(raw)
     if (!providerConversationId) continue
     const providerAccountId = str(raw?.accountId)
     const accountId = await resolveAccountId(workspaceId, providerAccountId)
@@ -885,7 +887,7 @@ export async function backfillInbox(workspaceId: string, options: { limit?: numb
         query: { accountId: providerAccountId, limit: pageSize, sortOrder: 'desc' },
       })
       for (const message of listOf(page, 'messages', 'data')) {
-        const providerMessageId = str(message?.id)
+        const providerMessageId = zernioId(message)
         if (!providerMessageId) continue
         const delivered = await upsertMessage({
           workspaceId,
@@ -928,7 +930,7 @@ export async function backfillInbox(workspaceId: string, options: { limit?: numb
   }
 
   for (const raw of listOf(posts, 'data', 'comments')) {
-    const postId = str(raw?.id)
+    const postId = zernioId(raw)
     const providerAccountId = str(raw?.accountId)
     if (!postId) continue
     result.posts++

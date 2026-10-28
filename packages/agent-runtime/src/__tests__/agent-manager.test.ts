@@ -256,7 +256,22 @@ describe('AgentManager — spawn happy path', () => {
     const m = new AgentManager()
     const r = m.spawn('nope', 'x', ctx, tools)
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.error).toMatch(/Unknown agent type/)
+    if (!r.ok) {
+      expect(r.error).toMatch(/Unknown agent type/)
+      expect(r.error).toContain('Valid types: explore, general-purpose')
+    }
+  })
+
+  it('spawning the removed devops type explains what to call instead (SHO-184)', () => {
+    const m = new AgentManager()
+    const r = m.spawn('devops', 'run server_sync', ctx, tools)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.error).toContain('devops subagent was removed')
+      expect(r.error).toContain('`server_sync`')
+      expect(r.error).toContain('Valid types:')
+      expect(r.error).not.toMatch(/Valid types:[^.]*devops/)
+    }
   })
 
   it('rejects when maxTotalSpawns is hit', () => {

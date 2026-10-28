@@ -70,6 +70,16 @@ export const CONVAI_SUPPORTED_TTS_MODELS = new Set<string>(
 
 export const CONVAI_TTS_MODEL_FALLBACK = 'eleven_v4_turbo'
 
+/**
+ * Last-resort model for a one-shot {@link ElevenLabsClient.textToSpeech} retry.
+ *
+ * Deliberately *not* {@link CONVAI_TTS_MODEL_FALLBACK}: a BYO account on an
+ * older plan can have neither v4 model, and the whole point of the retry is to
+ * land on one that is available to everybody. Flash v2.5 is the
+ * widest-available and cheapest of the current models.
+ */
+export const TTS_FALLBACK_MODEL = 'eleven_flash_v2_5'
+
 /** Look up a model's metadata, or `undefined` when the id is unknown. */
 export function getVoiceTtsModel(modelId: string | null | undefined): VoiceTtsModel | undefined {
   if (!modelId) return undefined
@@ -544,7 +554,7 @@ export class ElevenLabsClient {
    * produced them.
    *
    * The requested model is never swapped silently: we only retry on
-   * {@link CONVAI_TTS_MODEL_FALLBACK} when the failure is plausibly about
+   * {@link TTS_FALLBACK_MODEL} when the failure is plausibly about
    * the model (400/403/404/422 whose body mentions model/plan/permission,
    * or 402 for an out-of-plan model). Auth (401), rate limit (429), 5xx and
    * network errors are surfaced as-is. When a fallback does happen the
@@ -579,12 +589,12 @@ export class ElevenLabsClient {
     if (!res.ok) {
       const body = await res.text()
       if (
-        requestedModel !== CONVAI_TTS_MODEL_FALLBACK &&
+        requestedModel !== TTS_FALLBACK_MODEL &&
         isModelRelatedTtsFailure(res.status, body)
       ) {
         fallbackReason = `elevenlabs ${res.status} for ${requestedModel}: ${body.slice(0, 200)}`
-        res = await attempt(CONVAI_TTS_MODEL_FALLBACK)
-        used = CONVAI_TTS_MODEL_FALLBACK
+        res = await attempt(TTS_FALLBACK_MODEL)
+        used = TTS_FALLBACK_MODEL
         fellBack = true
         if (!res.ok) {
           const retryBody = await res.text()

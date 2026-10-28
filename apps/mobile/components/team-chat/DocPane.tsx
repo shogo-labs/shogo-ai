@@ -571,7 +571,7 @@ function DocView({
             disabled={!canToggle}
             onPress={() => onToggle(s.line)}
             accessibilityRole="checkbox"
-            accessibilityState={{ checked: s.checked }}
+            aria-checked={s.checked}
             accessibilityLabel={s.text}
             className="flex-row items-start gap-2 py-0.5"
             style={{ paddingLeft: s.indent * 16 }}

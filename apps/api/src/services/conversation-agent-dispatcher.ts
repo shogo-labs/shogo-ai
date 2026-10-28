@@ -12,7 +12,8 @@
 
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
-import { finishAgentReply, startAgentReply, streamAgentReply } from './chat-providers/outbound'
+import { notMachineWorkspaceWhere } from '../lib/machine-workspace'
+import { finishAgentReply, queueAgentReplyNotice, startAgentReply, streamAgentReply } from './chat-providers/outbound'
 import {
   agentKey,
   loadNamesForTexts,
@@ -30,13 +31,18 @@ import {
   replaceMentions,
   setAgentMuted,
   serializeMessage,
+  updateMessageInternal,
   type PostMessageResult,
 } from './conversation.service'
 import type { IRuntimeManager } from '../lib/runtime'
-import { tryAcquireSharedSlot } from '../lib/chat-limits'
+import { publishConversationEvent } from '../lib/conversation-bus'
+import { recordChainPaused } from '../lib/agent-chain-metrics'
+import { enqueueAgentReplySlot, agentReplySlotState, type AgentReplySlot, type QueuedPosition } from './agent-reply-slots'
+import { resolveAgentReplyCapacity } from './agent-reply-capacity'
 import {
   agentTurnsSinceHuman,
   chainLimitHit,
+  chainLimitMax,
   envInt,
   humanChain,
   MAX_AGENT_CHAIN_DEPTH,
@@ -75,7 +81,6 @@ import {
 const db = prisma as any
 
 export const MAX_AGENTS_PER_MESSAGE = 3
-export const MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE = envInt('SHOGO_CHANNEL_AGENT_CONCURRENCY', 6)
 /** Backoff for a runtime that is still waking. The last delay repeats until the budget is spent. */
 const DEFAULT_START_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 15_000]
 const DEFAULT_START_RETRY_BUDGET_MS = 3 * 60_000
@@ -148,6 +153,9 @@ export async function settleOrphanedAgentReplies(minAgeMs = 0): Promise<number> 
       createdAt: { lt: cutoff },
       deletedAt: null,
       ...(home ? { conversation: { workspace: home } } : {}),
+      // A copy's running reply is live on the desktop that owns it: settling it
+      // here would flip the copy to `error` behind a run that never died.
+      ...(await notMachineWorkspaceWhere()),
     },
     select: { id: true, threadRootId: true, authorAgentRef: true, agentSessionId: true, createdAt: true },
     take: 500,
@@ -220,6 +228,9 @@ export async function sweepDeadAgentReplies(opts: { staleAfterMs?: number } = {}
       deletedAt: null,
       threadRootId: { not: null },
       ...(home ? { conversation: { workspace: home } } : {}),
+      // Same reason as settleOrphanedAgentReplies: a card run on the desktop is
+      // not this pod's to end.
+      ...(await notMachineWorkspaceWhere()),
     },
     select: { id: true, threadRootId: true, authorAgentRef: true, agentSessionId: true, createdAt: true },
     take: 200,
@@ -268,43 +279,44 @@ export interface InvokeArgs {
 }
 
 const running = new Map<string, AbortController>()
-const activeByWorkspace = new Map<string, number>()
-const waiters = new Map<string, Array<() => void>>()
 
-// A lease outlives the longest run so a crashed pod's slots free themselves.
-const SLOT_LEASE_MS = AGENT_REPLY_TIMEOUT_MS + 60_000
-const SLOT_POLL_MS = 1_000
+/**
+ * How long an open tool may hold a slot before the run parks. A run blocked in
+ * `wait`, `exec_wait`, `agent_result`, a subagent or a slow `exec` is not
+ * working, so it gives the slot back and the next tagged message starts.
+ */
+const PARK_AFTER_MS = Math.max(1_000, envInt('SHOGO_CHANNEL_AGENT_PARK_AFTER_MS', 30_000))
+/** No content frame (text, reasoning, a tool input/output) for this long and no open tool: parked too. */
+const STUCK_AFTER_MS = Math.max(1_000, envInt('SHOGO_CHANNEL_AGENT_STUCK_AFTER_MS', 5 * 60_000))
+/** How often a working run re-checks whether it is only waiting. */
+const SLOT_WATCH_MS = 5_000
+/** Frames the runtime sends on a timer rather than because the agent did something. */
+const TRANSIENT_FRAMES = new Set(['data-turn-seq', 'data-connectivity-wait', 'data-heartbeat'])
 
-async function acquireLocalSlot(workspaceId: string): Promise<() => void> {
-  const active = activeByWorkspace.get(workspaceId) ?? 0
-  if (active >= MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE) {
-    await new Promise<void>((resolve) => {
-      const queue = waiters.get(workspaceId) ?? []
-      queue.push(resolve)
-      waiters.set(workspaceId, queue)
-    })
-  }
-  activeByWorkspace.set(workspaceId, (activeByWorkspace.get(workspaceId) ?? 0) + 1)
-  let released = false
-  return () => {
-    if (released) return
-    released = true
-    activeByWorkspace.set(workspaceId, Math.max(0, (activeByWorkspace.get(workspaceId) ?? 1) - 1))
-    const next = waiters.get(workspaceId)?.shift()
-    if (next) next()
-  }
+/** Mark a reply as waiting for a slot, so the thread can say "Queued" after a reload. */
+async function setQueuedBlock(messageId: string): Promise<void> {
+  await updateMessageInternal(messageId, { blocks: { queued: { since: new Date().toISOString() } } })
 }
 
-/** One of the workspace's agent-reply slots, shared across pods when Redis is up. */
-async function acquireSlot(workspaceId: string, signal?: AbortSignal): Promise<() => void> {
-  for (;;) {
-    signal?.throwIfAborted()
-    const shared = await tryAcquireSharedSlot(`agent-replies:${workspaceId}`, MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE, SLOT_LEASE_MS)
-    if (shared) return shared
-    if (shared === null) return acquireLocalSlot(workspaceId)
-    await new Promise((resolve) => setTimeout(resolve, SLOT_POLL_MS + Math.random() * 250))
-  }
+/**
+ * A live status change for a reply that is not text: its place in the queue, or
+ * that it parked on a tool. `text` stays empty so the client keeps what it has.
+ */
+function publishReplyStatus(
+  conversation: { id: string; workspaceId: string },
+  messageId: string,
+  patch: { queue?: QueuedPosition | null; waiting?: { tool: string | null } | null },
+): void {
+  publishConversationEvent(conversation.workspaceId, {
+    type: 'agent.delta',
+    conversationId: conversation.id,
+    messageId,
+    text: '',
+    tool: null,
+    ...patch,
+  })
 }
+
 
 // ─── Target selection ────────────────────────────────────────────────────────
 
@@ -542,7 +554,7 @@ async function startChained(conversation: any, row: any, targets: AgentTarget[])
     void runAgentReply({ conversation, trigger: row, target, userId: chain.originUserId!, chain: next })
       .catch((err) => console.error('[ChannelAgent] chained reply failed:', err))
   }
-  if (tripped) await postChainPaused(conversation, row, chain, tripped)
+  if (tripped) await postChainPaused(conversation, row, chain, tripped, turns + started.length)
   return started
 }
 
@@ -553,13 +565,32 @@ function pausedReason(limit: ChainLimit): string {
 }
 
 /** Stop a chain: a system note in the thread that tags (and notifies) whoever started it. */
-async function postChainPaused(conversation: any, trigger: any, chain: AgentChain, limit: ChainLimit): Promise<void> {
+async function postChainPaused(
+  conversation: any,
+  trigger: any,
+  chain: AgentChain,
+  limit: ChainLimit,
+  turns: number,
+): Promise<void> {
+  const threadRootId = replyThreadRoot(conversation, trigger)
+  const max = chainLimitMax(limit)
+  // Counted before the note is posted: the pause happened either way, and a
+  // failed post must not make the limit look quieter than it is.
+  recordChainPaused({
+    limit,
+    turns,
+    depth: chain.depth,
+    max,
+    workspaceId: conversation.workspaceId,
+    conversationId: conversation.id,
+    threadRootId,
+  })
   const result = await postMessage({
     conversationId: conversation.id,
     authorType: 'system',
-    threadRootId: replyThreadRoot(conversation, trigger),
+    threadRootId,
     text: `Paused ${pausedReason(limit)}. <@u:${chain.originUserId}>, reply here to continue.`,
-    blocks: { chainPaused: { limit, depth: chain.depth } },
+    blocks: { chainPaused: { limit, depth: chain.depth, turns, max } },
     systemMentions: true,
   })
   const { afterMessagePosted } = await import('./conversation-pipeline')
@@ -605,11 +636,17 @@ interface QueuedWake {
   chain: AgentChain
   threadRootId: string | null
   runningMessageId: string | null
+  /** The session the live run holds — how the session's queue dock finds the wake. */
+  chatSessionId: string | null
 }
 
-/** What the thread says when nothing more specific is going on. */
-async function queuedNote(workspaceId: string, target: AgentTarget): Promise<string> {
-  return `_Queued — ${await agentName(workspaceId, target)} is still working on the previous message here; this wake will run when that reply ends._`
+/**
+ * What the thread says when nothing more specific is going on. The app paints
+ * the `wakeQueued` block beside this line (with its Send now); Slack and other
+ * outbound mirrors only ever see the text.
+ */
+function queuedNote(agent: string): string {
+  return `_Queued for ${agent}. It runs when the current reply ends._`
 }
 
 export interface AgentWakeInput {
@@ -624,6 +661,8 @@ export interface AgentWakeInput {
   reason?: string
   /** Earliest time the drain may start this row. */
   notBefore?: Date | null
+  /** The session the run in front of this wake holds, so its queue dock finds it. */
+  chatSessionId?: string | null
   /** What the thread says about the wait; the caller's own line when it has one. */
   note?: { text: string; blocks?: Record<string, unknown> } | null
 }
@@ -652,6 +691,7 @@ export async function enqueueAgentWake(input: AgentWakeInput): Promise<string | 
         chain: input.chain ?? null,
         reason: input.reason ?? 'wake',
         notBefore: input.notBefore ?? null,
+        chatSessionId: input.chatSessionId ?? null,
         status: 'pending',
       },
       select: { id: true },
@@ -663,17 +703,29 @@ export async function enqueueAgentWake(input: AgentWakeInput): Promise<string | 
     throw err
   }
   if (!input.note) return wakeId
+  const blocks = withWakeId(input.note.blocks, wakeId)
   const posted = await postMessage({
     conversationId: input.conversationId,
     authorType: 'system',
     threadRootId: input.threadRootId,
     systemMentions: true,
     text: input.note.text,
-    blocks: input.note.blocks,
+    blocks,
+  })
+  // The note follows the row from here on: every state change calls `syncWakeNote`.
+  await db.agentWake.update({ where: { id: wakeId }, data: { noteMessageId: posted.message.id } }).catch((err: Error) => {
+    console.warn('[ChannelAgent] recording the queued note failed:', err.message)
   })
   const { afterMessagePosted } = await import('./conversation-pipeline')
   void afterMessagePosted(posted, { actorUserId: null, origin: 'system' })
   return wakeId
+}
+
+/** The queued note carries the row's id, so the app can act on it. */
+function withWakeId(blocks: Record<string, unknown> | undefined, wakeId: string): Record<string, unknown> | undefined {
+  const queued = blocks?.wakeQueued
+  if (!queued || typeof queued !== 'object') return blocks
+  return { ...blocks, wakeQueued: { ...(queued as Record<string, unknown>), wakeId, status: 'pending' } }
 }
 
 /**
@@ -681,9 +733,17 @@ export async function enqueueAgentWake(input: AgentWakeInput): Promise<string | 
  */
 async function queueWake(args: QueuedWake): Promise<void> {
   const agentRef = agentRefForTarget(args.target)
+  const agent = await agentName(args.conversation.workspaceId, args.target)
   const note = {
-    text: await queuedNote(args.conversation.workspaceId, args.target),
-    blocks: { wakeQueued: { agentRef, triggerMessageId: args.trigger.id, runningMessageId: args.runningMessageId } },
+    text: queuedNote(agent),
+    blocks: {
+      wakeQueued: {
+        agentRef,
+        agentName: agent,
+        triggerMessageId: args.trigger.id,
+        runningMessageId: args.runningMessageId,
+      },
+    },
   }
   const wakeId = await enqueueAgentWake({
     conversationId: args.conversation.id,
@@ -692,6 +752,7 @@ async function queueWake(args: QueuedWake): Promise<void> {
     agentRef,
     userId: args.userId,
     chain: args.chain,
+    chatSessionId: args.chatSessionId,
     note,
   })
   if (!wakeId || !args.threadRootId) return
@@ -700,11 +761,43 @@ async function queueWake(args: QueuedWake): Promise<void> {
     .catch((err: Error) => console.warn('[ChannelAgent] queued-wake note failed:', err.message))
 }
 
-/** A run ended: start the oldest wake waiting for this agent in this thread. */
+/**
+ * A wake's place in line: one a person pressed Send now on goes first (newest
+ * press first, the way the chat queue moves a row ahead), then the oldest wait.
+ */
+function drainPriority(a: { sendNowAt: Date | null; createdAt: Date }, b: { sendNowAt: Date | null; createdAt: Date }): number {
+  const aSent = a.sendNowAt ? new Date(a.sendNowAt).getTime() : null
+  const bSent = b.sendNowAt ? new Date(b.sendNowAt).getTime() : null
+  if (aSent !== bSent) {
+    if (aSent === null) return 1
+    if (bSent === null) return -1
+    return bSent - aSent
+  }
+  return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+}
+
+/**
+ * Is a person's queued message waiting on this session?
+ *
+ * A `ChatQueuedMessage` row is someone waiting — a message typed while the agent
+ * was busy, or the row they just pressed Send now on. An `AgentWake` is the
+ * automatic starter, and letting it take a freshly freed session is exactly how
+ * a Send now ended with its own row promoted, unclaimed and invisible while a
+ * rival wake ran instead (SHO-205).
+ */
+async function chatQueueAhead(chatSessionId: string | null | undefined): Promise<boolean> {
+  if (!chatSessionId) return false
+  const waiting = await db.chatQueuedMessage
+    .findFirst({ where: { sessionId: chatSessionId, status: 'pending' }, select: { id: true } })
+    .catch(() => null)
+  return !!waiting
+}
+
+/** A run ended: start the most urgent wake waiting for this agent in this thread. */
 async function drainWakes(conversationId: string, threadRootId: string | null, agentRef: string): Promise<number> {
   let ran = 0
   for (;;) {
-    const next = await db.agentWake.findFirst({
+    const waiting = await db.agentWake.findMany({
       // A row inside its debounce window is not ready yet; anything else pending
       // goes now, so a waiting nudge cannot hold a real wake back.
       where: {
@@ -714,10 +807,13 @@ async function drainWakes(conversationId: string, threadRootId: string | null, a
         status: 'pending',
         OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }],
       },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true },
+      select: { id: true, sendNowAt: true, createdAt: true, chatSessionId: true },
     })
-    if (!next) return ran
+    if (!waiting.length) return ran
+    const next = [...waiting].sort(drainPriority)[0]!
+    // The session's own queue goes first: its turn-end drains this wake, so
+    // yielding here costs nothing but starts one turn instead of two.
+    if (await chatQueueAhead(next.chatSessionId)) return ran
     const claimed = await db.agentWake.updateMany({
       where: { id: next.id, status: 'pending' },
       data: { status: 'claimed', claimedAt: new Date(), attempts: { increment: 1 } },
@@ -726,17 +822,153 @@ async function drainWakes(conversationId: string, threadRootId: string | null, a
     if (!claimed.count) continue
     const wake = await db.agentWake.findUnique({ where: { id: next.id } })
     if (!wake) return ran
+    await syncWakeNote(wake.id, 'running')
+    let failure: string | null = null
     try {
       await runWake(wake)
       await db.agentWake.updateMany({ where: { id: wake.id, status: 'claimed' }, data: { status: 'done', lastError: null } })
     } catch (err: any) {
-      const lastError = String(err?.message ?? err).slice(0, 1000)
-      await db.agentWake.updateMany({ where: { id: wake.id, status: 'claimed' }, data: { status: 'failed', lastError } })
+      failure = String(err?.message ?? err).slice(0, 1000)
+      await db.agentWake.updateMany({ where: { id: wake.id, status: 'claimed' }, data: { status: 'failed', lastError: failure } })
         .catch(() => {})
-      console.warn(`[ChannelAgent] queued wake ${wake.id} failed:`, lastError)
+      console.warn(`[ChannelAgent] queued wake ${wake.id} failed:`, failure)
     }
+    // A wake that threw is not done: the note has to say so, or the thread
+    // claims a reply that never happened.
+    await syncWakeNote(wake.id, failure ? 'failed' : 'done', failure ? { error: failure } : undefined)
     ran++
   }
+}
+
+/**
+ * Hand a chat session on now that its turn is gone: start the row waiting on its
+ * own chat queue.
+ *
+ * `chat-turn-state.service` calls this whenever a turn is cleared, so no ender
+ * can forget it — the HTTP chat routes, a channel run's `endTurn`, the stop
+ * routes, the stale-turn recovery. A pending row with no starter was how "Send
+ * now" stopped a reply and then sent nothing.
+ *
+ * Wakes are deliberately not started here. Their single starter is the run's own
+ * `finally` (`drainWakes`) plus the sweep behind it, and starting one from here
+ * as well put two runs on one key: the second found the first still reserving
+ * the thread, re-queued it, and the `(triggerMessageId, agentRef)` row it was
+ * re-queuing already existed. A wake that yields to a person's row (see
+ * `chatQueueAhead`) is picked up by that same starter once the row's own turn
+ * ends, so nothing is stranded.
+ */
+export async function drainSessionAfterTurn(chatSessionId: string): Promise<void> {
+  const { dispatchNext } = await import('./chat-queue-dispatcher.service')
+  await dispatchNext(chatSessionId)
+}
+
+/** How the note beside a queued message reads its row's state. */
+export type WakeNoteStatus = 'pending' | 'sending' | 'running' | 'done' | 'failed' | 'removed'
+
+/**
+ * Keep the thread's queued note in step with its wake. One helper for every
+ * state change — claim, finish, send-now, remove — so the note can never say
+ * something the row doesn't. It edits the message through the normal path, so
+ * realtime pushes the new state to anyone looking at the thread.
+ */
+export async function syncWakeNote(wakeId: string, status: WakeNoteStatus, extra?: Record<string, unknown>): Promise<void> {
+  const wake = await db.agentWake.findUnique({ where: { id: wakeId }, select: { noteMessageId: true } })
+  if (!wake?.noteMessageId) return
+  const note = await db.conversationMessage.findUnique({ where: { id: wake.noteMessageId }, select: { blocks: true } })
+  if (!note) return
+  const blocks = parseMessageBlocks(note.blocks)
+  const queued = blocks.wakeQueued && typeof blocks.wakeQueued === 'object' ? blocks.wakeQueued as Record<string, unknown> : {}
+  await updateMessageInternal(wake.noteMessageId, {
+    blocks: { ...blocks, wakeQueued: { ...queued, ...extra, status } },
+  }).catch((err: Error) => console.warn('[ChannelAgent] updating the queued note failed:', err.message))
+}
+
+/** `blocks` is an object on Postgres and JSON text on SQLite. */
+function parseMessageBlocks(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+    } catch {
+      return {}
+    }
+  }
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
+/** What a send-now or a remove could not do, in the shape the route answers with. */
+export type AgentWakeRefusal = { ok: false; status: 403 | 404 | 409; code: string; message: string }
+export type AgentWakeResult = { ok: true; wake: { id: string; status: string; sendNowAt: Date | null } } | AgentWakeRefusal
+
+/**
+ * Send a queued wake now, the way the chat queue's Send now works: it goes to
+ * the front, and the reply in front of it is stopped (the same Stop the button
+ * does) so the drain starts it immediately. One queue, one stop path.
+ */
+export async function sendAgentWakeNow(wakeId: string, userId: string): Promise<AgentWakeResult> {
+  const wake = await db.agentWake.findUnique({ where: { id: wakeId } })
+  if (!wake) return { ok: false, status: 404, code: 'not_found', message: 'Queued message not found' }
+  if (wake.status !== 'pending' || wake.reason !== 'wake') {
+    return { ok: false, status: 409, code: 'not_pending', message: 'That message is not waiting any more' }
+  }
+  const now = new Date()
+  const claimed = await db.agentWake.updateMany({ where: { id: wakeId, status: 'pending' }, data: { sendNowAt: now } })
+  if (!claimed.count) {
+    return { ok: false, status: 409, code: 'not_pending', message: 'That message is not waiting any more' }
+  }
+  const sender = await db.user.findUnique({ where: { id: userId }, select: { name: true } }).catch(() => null)
+  await syncWakeNote(wakeId, 'sending', { sentNowBy: { id: userId, name: sender?.name ?? null } })
+
+  // The reply holding the thread is stopped the way the Stop button stops it,
+  // so its own settle drains this wake — first in line, because of `sendNowAt`.
+  const running = await db.conversationMessage.findMany({
+    where: {
+      conversationId: wake.conversationId,
+      authorType: 'agent',
+      agentStatus: 'running',
+      deletedAt: null,
+      ...(wake.threadRootId ? { OR: [{ threadRootId: wake.threadRootId }, { id: wake.threadRootId }] } : { threadRootId: null }),
+    },
+    orderBy: { seq: 'asc' },
+    take: 10,
+  })
+  const agentRef = wake.agentRef
+  const reply = running.find((row: any) => {
+    const owner = row.authorAgentRef
+    return (owner?.projectId ? `project:${owner.projectId}` : 'workspace') === agentRef
+  })
+  if (reply) {
+    await stopAgentReply(reply, userId)
+  } else {
+    await startDrainIfIdle({ conversationId: wake.conversationId, threadRootId: wake.threadRootId, agentRef })
+      .catch((err: Error) => console.warn('[ChannelAgent] starting a sent-now wake failed:', err.message))
+  }
+  return { ok: true, wake: { id: wakeId, status: wake.status, sendNowAt: now } }
+}
+
+/** Take a queued wake off the queue: it never runs, and its note says so. */
+export async function removeAgentWake(wakeId: string): Promise<AgentWakeResult> {
+  const wake = await db.agentWake.findUnique({ where: { id: wakeId } })
+  if (!wake) return { ok: false, status: 404, code: 'not_found', message: 'Queued message not found' }
+  const removed = await db.agentWake.updateMany({ where: { id: wakeId, status: 'pending' }, data: { status: 'superseded' } })
+  if (!removed.count) {
+    return { ok: false, status: 409, code: 'not_pending', message: 'That message is not waiting any more' }
+  }
+  await syncWakeNote(wakeId, 'removed')
+  return { ok: true, wake: { id: wakeId, status: 'superseded', sendNowAt: wake.sendNowAt } }
+}
+
+/** A queued wake as the session's queue dock reads it. */
+export async function listPendingAgentWakes(sessionId: string) {
+  return db.agentWake.findMany({
+    where: { chatSessionId: sessionId, status: 'pending', reason: 'wake' },
+    orderBy: { createdAt: 'asc' },
+    take: 50,
+    select: {
+      id: true, status: true, sendNowAt: true, createdAt: true, conversationId: true,
+      threadRootId: true, triggerMessageId: true,
+    },
+  })
 }
 
 /** Post the wake's trigger again, now that nothing else is running in the thread. */
@@ -889,6 +1121,9 @@ export async function sweepPendingAgentWakes(minAgeMs = WAKE_SWEEP_MIN_AGE_MS): 
       status: 'pending',
       createdAt: { lt: cutoff },
       attempts: { lt: WAKE_MAX_ATTEMPTS },
+      // A queued wake in a machine workspace's thread belongs to the desktop:
+      // the cloud only holds a copy of that conversation.
+      ...(await notMachineWorkspaceWhere()),
       // A debounced row still inside its window waits for its own timer.
       OR: [{ notBefore: null }, { notBefore: { lte: now } }],
     },
@@ -1286,7 +1521,6 @@ async function invokeChat(args: InvokeArgs): Promise<Response> {
     chatSessionId: args.sessionId,
     userId: args.userId,
     agentMode: await agentModeFor(args.projectId, args.workspaceId),
-    interactionMode: 'agent',
     clientTurnId: `channel-agent-${args.sessionId}-${crypto.randomUUID()}`,
   })
   const headers = {
@@ -1394,13 +1628,15 @@ export interface StreamSummary {
 /**
  * Read an AI SDK UI-message SSE stream, reporting text and tool progress.
  * `onActivity` fires for every frame, including the runtime's turn heartbeat,
- * so a caller can tell a turn that is still alive from one that went silent.
+ * so a caller can tell a turn that is still alive from one that went silent,
+ * and tell a *working* run (content frames) from one that is only waiting on an
+ * open tool (`kind: 'content'` with `tool` set).
  */
 export async function readAgentStream(
   response: Response,
   onProgress: (state: StreamProgress) => void,
   onPermission?: (request: ApprovalRequest) => void,
-  onActivity?: () => void,
+  onActivity?: (frame: { kind: 'content' | 'heartbeat'; tool: string | null }) => void,
 ): Promise<StreamSummary> {
   if (!response.ok) {
     const raw = await response.text().catch(() => '')
@@ -1429,8 +1665,15 @@ export async function readAgentStream(
     if (!raw || raw === '[DONE]') return
     let chunk: any
     try { chunk = JSON.parse(raw) } catch { return }
-    onActivity?.()
+    // `tool` is the tool still open (null between calls): a frame that arrives
+    // with one open is progress, but the run is waiting on it, not working.
+    // A frame that *opens* a tool already carries the wait, so report the tool
+    // it opens — otherwise a stream that goes straight to a 60 s `wait` after
+    // `tool-input-start` reports "no tool open" for that frame.
     const type = chunk?.type
+    const opens = type === 'tool-input-start' || type === 'tool-call-start'
+    const frameTool = opens ? String(chunk.toolName || chunk.name || 'a tool') : tool
+    onActivity?.({ kind: TRANSIENT_FRAMES.has(String(type)) ? 'heartbeat' : 'content', tool: frameTool })
     if (type === 'text-start') {
       segments++
       if (segments > 1 && text) text += '\n\n'
@@ -1528,9 +1771,10 @@ export async function runWorkspaceAgentPrompt(args: {
   const timeout = setTimeout(() => controller.abort(new Error('timed out')), args.timeoutMs ?? 5 * 60_000)
   ;(timeout as any).unref?.()
   const startedAt = new Date()
-  let release: (() => void) | null = null
+  let slot: AgentReplySlot | null = null
   try {
-    release = await acquireSlot(args.workspaceId, controller.signal)
+    slot = await enqueueAgentReplySlot({ workspaceId: args.workspaceId, runId: sessionId, signal: controller.signal })
+    await slot.acquired
     const response = await invokeUntilReady({
       workspaceId: args.workspaceId,
       projectId: null,
@@ -1546,7 +1790,7 @@ export async function runWorkspaceAgentPrompt(args: {
     return { text: '', failed: true, error: err?.message ?? 'The agent run failed', sessionId }
   } finally {
     clearTimeout(timeout)
-    release?.()
+    slot?.release()
   }
 }
 
@@ -1557,6 +1801,13 @@ export interface RunAgentReplyArgs {
   userId: string
   /** Chain state for this reply; a fresh human-started chain when omitted. */
   chain?: AgentChain
+  /**
+   * Where the reply lands, when the caller knows better than the default rule:
+   * `null` posts at the top level. A huddle wake in a DM or group DM sets this,
+   * because the call's chat panel shows top-level messages only there, so a
+   * reply nested under the wake note would be invisible in the call.
+   */
+  threadRootId?: string | null
 }
 
 /**
@@ -1571,7 +1822,7 @@ async function workspaceFileFetcher(input: { workspaceId: string; projectId: str
   return async (path: string) => {
     try {
       return input.projectId
-        ? await fetchFromProjectRuntime(input.projectId, workspaceDownloadPath(path), init)
+        ? await fetchFromProjectRuntime(input.projectId, workspaceDownloadPath(path), init, { background: true })
         : await fetchFromWorkspaceRuntime(input.workspaceId, [], workspaceDownloadPath(path), init)
     } catch {
       return null
@@ -1581,7 +1832,9 @@ async function workspaceFileFetcher(input: { workspaceId: string; projectId: str
 
 export async function runAgentReply(args: RunAgentReplyArgs, opts: { drained?: boolean } = {}): Promise<string | null> {
   const { conversation, trigger, target, userId } = args
-  const threadRootId = replyThreadRoot(conversation, trigger)
+  // A caller that knows where the answer belongs (a huddle wake) wins over the
+  // default rule; `null` means top level.
+  const threadRootId = args.threadRootId === undefined ? replyThreadRoot(conversation, trigger) : args.threadRootId
   // Any wake that reaches this point carries its own instruction, so a move
   // hint still waiting out its window for this agent is now redundant.
   await supersedePendingMoveNudges(threadRootId, agentRefForTarget(target))
@@ -1611,7 +1864,7 @@ export async function runAgentReply(args: RunAgentReplyArgs, opts: { drained?: b
     // starting a second turn on the same session.
     try {
       const chain = args.chain ?? nextChain(humanChain(trigger, userId, await rootChain(trigger.threadRootId)), target, 0)
-      await queueWake({ conversation, trigger, target, userId, chain, threadRootId, runningMessageId: holder.messageId })
+      await queueWake({ conversation, trigger, target, userId, chain, threadRootId, runningMessageId: holder.messageId, chatSessionId: holder.sessionId })
     } catch (err: any) {
       console.error('[ChannelAgent] queueing the wake failed:', err?.message ?? err)
     }
@@ -1709,7 +1962,7 @@ async function runReservedReply(
     state.lost = true
     await db.conversationMessage.delete({ where: { id: messageId } }).catch(() => {})
     await endTurn()
-    await queueWake({ conversation, trigger, target, userId, chain, threadRootId, runningMessageId: earlier.id })
+    await queueWake({ conversation, trigger, target, userId, chain, threadRootId, runningMessageId: earlier.id, chatSessionId: sessionId })
     return null
   }
   let work: AgentWork | null = null
@@ -1753,8 +2006,8 @@ async function runReservedReply(
   running.set(messageId, controller)
   const capMs = config.replyTimeoutMs ?? AGENT_REPLY_TIMEOUT_MS
   const idleMs = config.idleTimeoutMs ?? AGENT_REPLY_IDLE_TIMEOUT_MS
-  const timeout = setTimeout(() => controller.abort(new ReplyTimeout('cap', capMs)), capMs)
-  ;(timeout as any).unref?.()
+  // Armed when the slot is taken, not before: queueing is not part of the run.
+  let timeout: ReturnType<typeof setTimeout> | null = null
   let idle: ReturnType<typeof setTimeout> | null = null
   const armIdle = () => {
     if (idle) clearTimeout(idle)
@@ -1779,8 +2032,74 @@ async function runReservedReply(
     void streamAgentReply(reply, latest)
   }
 
+  // ── Slot parking ──
+  // The slot means "actively working". A run that is only blocked on a tool gives
+  // it back so the next tagged message starts, then takes it again (ahead of the
+  // queue) on its next content frame. Parking never stops the run.
+  let slot: AgentReplySlot | null = null
+  let watch: ReturnType<typeof setInterval> | null = null
+  let queued = false
+  let parked = false
+  let openTool: string | null = null
+  let toolOpenedAt = 0
+  let lastContentAt = Date.now()
+  let stuckLogged = false
+
+  const clearQueuedBlock = async () => {
+    if (!queued) return
+    queued = false
+    await updateMessageInternal(messageId, { blocks: null }).catch((err: Error) => {
+      console.warn('[ChannelAgent] clearing the queued marker failed:', err.message)
+    })
+    publishReplyStatus(conversation, messageId, { queue: null })
+    // External channels go back to "Working on it…" now that the run has a slot.
+    void queueAgentReplyNotice(reply, null).catch(() => {})
+  }
+
+  const takeSlot = () => {
+    parked = false
+    publishReplyStatus(conversation, messageId, { waiting: null })
+  }
+
+  const park = (waitingOn: string | null) => {
+    if (!slot || parked) return
+    parked = true
+    slot.park()
+    publishReplyStatus(conversation, messageId, { waiting: { tool: waitingOn } })
+  }
+
+  const onFrame = (frame: { kind: 'content' | 'heartbeat'; tool: string | null }) => {
+    armIdle()
+    if (frame.kind === 'heartbeat') return
+    lastContentAt = Date.now()
+    // A tool that is still open does not keep the run "working": only its output does.
+    if (frame.tool !== openTool) {
+      openTool = frame.tool
+      toolOpenedAt = Date.now()
+    }
+    if (parked) {
+      slot?.unpark()
+      takeSlot()
+    }
+  }
+
+  const checkSlot = () => {
+    if (!slot || controller.signal.aborted) return
+    if (openTool) {
+      if (Date.now() - toolOpenedAt >= PARK_AFTER_MS) park(openTool)
+      return
+    }
+    if (parked) return
+    if (Date.now() - lastContentAt >= STUCK_AFTER_MS) {
+      if (!stuckLogged) {
+        stuckLogged = true
+        console.log(`[ChannelAgent] run ${messageId} idle ${Math.round(STUCK_AFTER_MS / 60_000)}m — slot released`)
+      }
+      park(null)
+    }
+  }
+
   const startedAt = new Date()
-  let release: (() => void) | null = null
   try {
     // Saved before the slot, so opening the session while the runtime is busy
     // or still waking already shows what was asked.
@@ -1809,7 +2128,27 @@ async function runReservedReply(
       where: { id: sessionId },
       data: { lastActiveAt: now, updatedAt: now },
     }).catch(() => {})
-    release = await acquireSlot(conversation.workspaceId, controller.signal)
+    slot = await enqueueAgentReplySlot({
+      workspaceId: conversation.workspaceId,
+      runId: messageId,
+      conversationId: conversation.id,
+      signal: controller.signal,
+    })
+    if (slot.state() === 'queued') {
+      queued = true
+      await setQueuedBlock(messageId).catch((err: Error) => {
+        console.warn('[ChannelAgent] marking the reply queued failed:', err.message)
+      })
+      // Slack/Teams say "Queued (#n)" instead of claiming the agent is working.
+      void queueAgentReplyNotice(reply, { position: slot.position() }).catch(() => {})
+    }
+    await slot.acquired
+    timeout = setTimeout(() => controller.abort(new ReplyTimeout('cap', capMs)), capMs)
+    ;(timeout as any).unref?.()
+    await clearQueuedBlock()
+    lastContentAt = Date.now()
+    watch = setInterval(checkSlot, SLOT_WATCH_MS)
+    ;(watch as any).unref?.()
     const response = await invokeUntilReady({
       workspaceId: conversation.workspaceId,
       projectId: target.projectId,
@@ -1840,7 +2179,7 @@ async function runReservedReply(
       })
         .then((cardId) => { if (cardId) approvalCards.push(cardId) })
         .catch((err) => console.error('[ChannelAgent] approval card failed:', err))
-    }, armIdle)
+    }, onFrame)
     if (idle) clearTimeout(idle)
     if (pending) {
       clearTimeout(pending)
@@ -1882,9 +2221,12 @@ async function runReservedReply(
   } finally {
     if (pending) clearTimeout(pending)
     if (idle) clearTimeout(idle)
-    clearTimeout(timeout)
+    if (timeout) clearTimeout(timeout)
+    if (watch) clearInterval(watch)
     running.delete(messageId)
-    release?.()
+    slot?.release()
+    if (queued) await clearQueuedBlock()
+    if (parked) publishReplyStatus(conversation, messageId, { waiting: null })
     // Once the run ends nothing is waiting on an approval card any more.
     if (approvalCards.length) await expirePendingApprovals(approvalCards)
     await noteRunEnded()
@@ -2023,8 +2365,6 @@ export async function respondToPermission(input: { projectId: string; requestId:
 
 export function _resetDispatcherForTests(): void {
   running.clear()
-  activeByWorkspace.clear()
-  waiters.clear()
   liveRuns.clear()
   draining.clear()
   config = {}

@@ -72,9 +72,10 @@ describe('code-graph tools (impact_radius / detect_changes / review_context)', (
 })
 
 describe('server_sync', () => {
-  test('main agent is not told to call server_sync (it is devops-subagent only)', () => {
-    expect(gatewaySrc).not.toContain("'server_sync({})'")
-    expect(gatewaySrc).toContain('agent_spawn({ type: "devops", prompt: "Run server_sync')
+  test('main agent is told to call server_sync itself, never to spawn a devops subagent (SHO-184)', () => {
+    expect(gatewaySrc).toContain('call `server_sync` yourself (no subagent)')
+    expect(gatewaySrc).not.toContain('type: "devops"')
+    expect(gatewaySrc).not.toMatch(/devops/i)
   })
 })
 

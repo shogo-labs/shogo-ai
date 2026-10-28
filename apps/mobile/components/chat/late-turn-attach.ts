@@ -103,32 +103,145 @@ export function externalPromptHasResponse(messages: readonly any[], promptIndex:
   return messages.some((message, index) => index > promptIndex && message?.role === 'assistant')
 }
 
+/**
+ * The query that reads a chat's newest saved row, one row wide (SHO-53).
+ *
+ * `orderBy` is not optional: the generated list route only orders when the
+ * request says so, and an unordered `limit=1` returns an arbitrary row — in
+ * local mode the *oldest* one, which made every refocus read "history moved"
+ * and reload the whole transcript (SHO-99). Kept here so the request is
+ * testable without a running API.
+ */
+export function persistedTailQuery(sessionId: string): Record<string, string> {
+  return {
+    sessionId,
+    agent: 'technical',
+    limit: '1',
+    offset: '0',
+    orderBy: 'createdAt:desc',
+  }
+}
+
 /** The newest saved row of a chat, as the one-shot refocus check reads it. */
 export interface PersistedTail {
   id?: string | null
   role?: string | null
+  /** The row's text, to recognise the prompt this panel's own reply answers. */
+  content?: string | null
+  /**
+   * Wall-clock start of the turn the row was written for, read off the
+   * `data-turn-timing` part the API appends when it persists a reply.
+   */
+  turnStartedAt?: number | null
+  /** Length of the saved text, to notice a reply that grew after a cut stream. */
+  contentLength?: number | null
+}
+
+export interface PersistedTailCheck {
+  /**
+   * This panel streamed (or joined) the reply on screen and no history paint
+   * has adopted it yet, so the reply is this window's own.
+   */
+  streamedHere?: boolean
+}
+
+/**
+ * The turn a transcript message belongs to. The runtime stamps every turn with
+ * `data-turn-start` (which the AI SDK appends to the message's parts) and the
+ * API copies that stamp into the persisted row as `data-turn-timing`, so the
+ * same number identifies the same turn on both sides of the wire.
+ */
+export function messageTurnStartedAt(message: any): number | null {
+  const parts = Array.isArray(message?.parts) ? message.parts : []
+  for (const part of parts) {
+    if (part?.type !== 'data-turn-start' && part?.type !== 'data-turn-timing') continue
+    const startedAt = part?.data?.startedAt
+    if (typeof startedAt === 'number') return startedAt
+  }
+  return null
+}
+
+/** Characters of reply text a message carries, from its parts or its content. */
+export function messageTextLength(message: any): number {
+  const parts = Array.isArray(message?.parts) ? message.parts : []
+  const fromParts = parts.reduce(
+    (total: number, part: any) =>
+      total + (part?.type === 'text' && typeof part?.text === 'string' ? part.text.length : 0),
+    0,
+  )
+  return fromParts || (typeof message?.content === 'string' ? message.content.length : 0)
 }
 
 /**
  * Whether saved history holds a row this panel never rendered: the newest
- * persisted message is not the newest one on screen (SHO-53).
+ * persisted message is not the one on screen (SHO-53).
  *
  * A window that was not in front when a turn ran somewhere else watches
  * nothing (the wake watch only runs for an active panel), and its refocus
  * probe sees a turn that is already `completed` — the reply was saved while
- * nobody here was looking. This one comparison is what tells that apart from a
+ * nobody here was looking. This comparison is what tells that apart from a
  * chat that is simply up to date, so a refocus costs one cheap read of the
  * newest row instead of a transcript reload.
+ *
+ * Ids alone cannot answer it (SHO-99). A reply this panel streamed stays on
+ * screen under the AI SDK's own id: the post-turn reconcile paints the saved
+ * row over it only when the row has been written by then, and the row can land
+ * after that window. Comparing ids then reads the panel's own reply as unseen
+ * and pays the full reload on every refocus. Two things close that gap:
+ *
+ * - The saved row carries its turn's `startedAt`, the same stamp the live
+ *   message got from `data-turn-start`, so the same turn is recognised
+ *   whichever id the screen shows.
+ * - While that reply is still unwritten the newest saved row is the panel's
+ *   own prompt. The reply is on screen and only its row is missing, so that is
+ *   history behind the screen, not ahead of it (`streamedHere`).
  */
 export function persistedTailIsUnseen(
   tail: PersistedTail | null | undefined,
   messages: readonly any[],
+  check: PersistedTailCheck = {},
 ): boolean {
   const persistedId = tail?.id
   if (!persistedId) return false
   const newest = messages[messages.length - 1]
   if (!newest) return true
-  return String(newest?.id ?? '') !== String(persistedId)
+  if (String(newest?.id ?? '') === String(persistedId)) return false
+
+  const tailTurn = tail?.turnStartedAt ?? null
+  if (tailTurn === null) {
+    // An assistant tail with no stamp is an older row (the API only stamps
+    // turns it saw start), so it cannot be this window's reply.
+    if (tail?.role !== 'user') return true
+    // A prompt row with no reply written yet. When it is the prompt this
+    // panel's own reply answers, nothing is unseen.
+    return !(check.streamedHere && tailAnswersScreenPrompt(tail, newest, messages))
+  }
+  if (messageTurnStartedAt(newest) !== tailTurn) return true
+  // Same turn, same reply — unless the saved row carries more text than the
+  // one on screen, which is how a stream that was cut and finished server-side
+  // gets its remainder painted (SHO-121).
+  const savedLength = typeof tail?.contentLength === 'number' ? tail.contentLength : null
+  return savedLength !== null && savedLength > messageTextLength(newest)
+}
+
+/**
+ * Whether a saved prompt row is the one the reply on screen answers: the same
+ * text as the newest prompt this panel shows, with that reply still unwritten.
+ */
+function tailAnswersScreenPrompt(
+  tail: PersistedTail,
+  newest: any,
+  messages: readonly any[],
+): boolean {
+  if (newest?.role !== 'assistant') return false
+  const saved = String(tail?.content ?? '').trim()
+  if (!saved) return false
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== 'user') continue
+    return String(message?.content ?? '').trim() === saved
+  }
+  return false
 }
 
 /**

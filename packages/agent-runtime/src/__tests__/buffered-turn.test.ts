@@ -122,6 +122,119 @@ describe('pipeline calls into an openable chat', () => {
   })
 })
 
+describe('a call into a busy chat queues instead of dropping', () => {
+  test('the call runs once the chat finishes its own turn, however long that takes', async () => {
+    store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const turns = createBufferedTurns({ store, gate })
+    const live = store.create('busy-chat')
+
+    const order: string[] = []
+    let queued = false
+    let started = false
+    const pending = turns.runPipelineCall(
+      async (call) => {
+        order.push('call')
+        return { reply: 'ran after the chat', sessionId: call.sessionId! }
+      },
+      { message: 'go', sessionId: 'busy-chat' },
+      { onQueued: () => { queued = true }, onTurnStarted: () => { started = true } },
+    )
+
+    // Held far longer than any start budget: still queued, never failed.
+    await new Promise((r) => setTimeout(r, 120))
+    expect(queued).toBe(true)
+    expect(started).toBe(false)
+    expect(gate.queued('busy-chat')).toMatchObject({ depth: 1 })
+    // The live turn is untouched, and no second buffer was created over it.
+    expect(store.snapshot('busy-chat')?.turnId).toBe(live.turnId)
+
+    order.push('chat done')
+    live.complete()
+    await expect(pending).resolves.toMatchObject({ reply: 'ran after the chat' })
+    expect(order).toEqual(['chat done', 'call'])
+    expect(started).toBe(true)
+    expect(gate.queued('busy-chat')).toBeNull()
+    live.complete()
+  })
+
+  test('the gate answers for the call by name: queued, then its own turn', async () => {
+    store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const turns = createBufferedTurns({ store, gate })
+    const live = store.create('busy-named')
+
+    const pending = turns.runPipelineCall(
+      async (call) => ({ reply: 'the call answer', sessionId: call.sessionId! }),
+      { message: 'go', sessionId: 'busy-named', callId: 'run-42' },
+    )
+
+    // While the chat's own turn runs, the call is queued — and the chat's turn
+    // is not offered as the call's.
+    await new Promise((r) => setTimeout(r, 40))
+    expect(gate.callState('busy-named', 'run-42')?.queuedSince).toBeNumber()
+    expect(gate.callState('busy-named', 'run-42')?.turnId).toBeUndefined()
+    expect(store.snapshot('busy-named')!.turnId).toBe(live.turnId)
+
+    live.complete()
+    await pending
+
+    // Once the call ran, the gate names the turn it got — not the chat's.
+    const started = gate.callState('busy-named', 'run-42')
+    expect(started?.turnId).toBeString()
+    expect(started?.turnId).not.toBe(live.turnId)
+    expect(started?.turnId).toBe(store.snapshot('busy-named')!.turnId)
+    expect(started?.queuedSince).toBeUndefined()
+    // An unknown name is a loss, which is what the follower fails the call on.
+    expect(gate.callState('busy-named', 'run-unknown')).toBeNull()
+  })
+
+  test('a Stop while queued cancels the call instead of running it', async () => {
+    store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const turns = createBufferedTurns({ store, gate })
+    const live = store.create('busy-stop')
+
+    let ran = false
+    const pending = turns.runPipelineCall(
+      async (call) => {
+        ran = true
+        return { reply: 'should not run', sessionId: call.sessionId! }
+      },
+      { message: 'go', sessionId: 'busy-stop' },
+    )
+
+    await new Promise((r) => setTimeout(r, 30))
+    gate.markStopped('busy-stop')
+
+    await expect(pending).rejects.toThrow('stopped')
+    expect(ran).toBe(false)
+    expect(gate.queued('busy-stop')).toBeNull()
+    live.complete()
+  })
+
+  test('onTurnStarted fires only once a buffer exists', async () => {
+    store = new StreamBufferStore()
+    const gate = new LiveTurnGate(store, 5)
+    const turns = createBufferedTurns({ store, gate })
+    const live = store.create('busy-chat')
+
+    let started = false
+    const pending = turns.runPipelineCall(
+      async (call) => ({ reply: 'done', sessionId: call.sessionId! }),
+      { message: 'go', sessionId: 'busy-chat' },
+      { onTurnStarted: () => { started = true } },
+    )
+
+    await new Promise((r) => setTimeout(r, 60))
+    expect(started).toBe(false)
+
+    live.complete()
+    await pending
+    expect(started).toBe(true)
+  })
+})
+
 describe('isOpenableChatSession', () => {
   test('only real chat ids are openable', () => {
     expect(isOpenableChatSession('8a1c7e2e-0000-5000-8000-000000000000')).toBe(true)

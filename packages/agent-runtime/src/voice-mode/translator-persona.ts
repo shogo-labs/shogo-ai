@@ -11,9 +11,6 @@
  *
  *   - `send_to_chat(text)`       — queue the user's request to Shogo's
  *                                  background build subsystem.
- *   - `set_mode(mode)`           — switch between `'agent'` (direct
- *                                  execution) and `'plan'` (explore/
- *                                  review first).
  *   - `get_recent_activity()`    — fetch a short log of recent
  *                                  background activity. Used sparingly
  *                                  to ground accurate summaries.
@@ -52,8 +49,7 @@ How to think about this conversation:
 When the user wants something built or changed in the app:
 
 1. Briefly confirm intent in one sentence — what you understood and what you're going to do.
-2. Call \`send_to_chat\` with a clear natural-language instruction describing the outcome. No code, no file paths, no identifiers — just the outcome. It's fine to ask one quick clarifying question first if the request is ambiguous.
-3. If the user wants to explore or review before executing, call \`set_mode\` with \`"plan"\` first. For straight execution, leave it on \`"agent"\`. Only switch when the user's intent clearly implies it.
+2. Call \`send_to_chat\` with a clear natural-language instruction describing the outcome. No code, no file paths, no identifiers — just the outcome. It's fine to ask one quick clarifying question first if the request is ambiguous. If the user wants to explore or review before anything changes, say so in that instruction and you will plan first.
 
 When work is happening in the background:
 
@@ -106,20 +102,11 @@ export const SEND_TO_CHAT_PARAMS = z.object({
     ),
 })
 
-export const SET_MODE_PARAMS = z.object({
-  mode: z
-    .enum(['agent', 'plan'])
-    .describe(
-      'The interaction mode for the background build subsystem. "plan" for explore/review before executing; "agent" for direct execution.',
-    ),
-})
-
 export const GET_RECENT_ACTIVITY_PARAMS = z.object({}).describe(
   'No arguments — returns a short plain-text log of what your background build subsystem has been doing recently.',
 )
 
 export type SendToChatArgs = z.infer<typeof SEND_TO_CHAT_PARAMS>
-export type SetModeArgs = z.infer<typeof SET_MODE_PARAMS>
 export type GetRecentActivityArgs = z.infer<typeof GET_RECENT_ACTIVITY_PARAMS>
 
 /**
@@ -149,25 +136,6 @@ export const TRANSLATOR_ELEVENLABS_TOOLS: ReadonlyArray<ConvaiClientTool> = [
   },
   {
     type: 'client',
-    name: 'set_mode',
-    description:
-      'Toggle the interaction mode for your background build subsystem. Use "plan" when the user wants to explore or review before executing, "agent" for direct execution.',
-    expects_response: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        mode: {
-          type: 'string',
-          enum: ['agent', 'plan'],
-          description:
-            'The new mode. "plan" for explore/review, "agent" for direct execution.',
-        },
-      },
-      required: ['mode'],
-    },
-  },
-  {
-    type: 'client',
     name: 'get_recent_activity',
     description:
       'Fetch a short plain-text log of what your background build subsystem has been doing recently. Use sparingly — only when you need more detail before producing a high-level summary (for example, just before a heartbeat or turn-complete summary).',
@@ -188,7 +156,7 @@ export const TRANSLATOR_ELEVENLABS_TOOLS: ReadonlyArray<ConvaiClientTool> = [
  */
 export const TRANSLATOR_LIVE_CONVERSATION_PROMPT = `You are Shogo, the voice of a friendly, thoughtful product partner helping the user build and use their app. You handle the spoken conversation. The part of you that edits code, runs builds, and tracks progress works in the background; reach it by delegating.
 
-Delegate whenever the user wants something built, changed, fixed, or undone in the app; wants to switch between planning and doing; asks what you've been working on or how a change is going; or asks about the project in a way you can't answer from the context below. Answer chitchat, domain questions, brainstorming, and opinions yourself without delegating.
+Delegate whenever the user wants something built, changed, fixed, or undone in the app; wants a plan before anything changes; asks what you've been working on or how a change is going; or asks about the project in a way you can't answer from the context below. Answer chitchat, domain questions, brainstorming, and opinions yourself without delegating.
 
 While a delegated request is running, say one short neutral filler such as "Let me take care of that." Never claim something is done, changed, or fixed until the result comes back. When a result arrives, say it naturally in your own words, briefly.
 
@@ -221,11 +189,6 @@ export const TRANSLATOR_AI_SDK_TOOLS = {
     description:
       'Queue the user\'s request to your background build subsystem. Call this after confirming intent.',
     inputSchema: SEND_TO_CHAT_PARAMS,
-  },
-  set_mode: {
-    description:
-      'Toggle the interaction mode for your background build subsystem. Use "plan" to explore or review before executing, "agent" for direct execution.',
-    inputSchema: SET_MODE_PARAMS,
   },
   get_recent_activity: {
     description:

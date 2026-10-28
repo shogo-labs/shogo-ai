@@ -9,6 +9,7 @@
  * Runs in the `iphone-15-pro` and `pixel-7` projects (see playwright.config.ts).
  */
 import { expect, test, type Page } from "@playwright/test"
+import { ignoreDevErrorToast } from "./helpers"
 import { activateTeamWorkspace, cleanupTeamNav, seedTeamNav, signIn, type TeamNavSeed } from "./team-nav-seed"
 
 const dock = (page: Page) => page.getByTestId("team-dock")
@@ -35,6 +36,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
   })
 
   test.beforeEach(async ({ page }) => {
+    await ignoreDevErrorToast(page)
     await signIn(page)
     await activateTeamWorkspace(page, seed.workspaceId)
     await page.goto("/")
@@ -48,8 +50,9 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(dock(page).getByRole("button", { name: "Search" })).toBeVisible()
     await expect(page.getByRole("navigation", { name: "Workspace tabs" })).toHaveCount(0)
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
-    // The scripted agent replied to the seeded DM while nobody was looking.
-    await expect(dock(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible({ timeout: 30_000 })
+    // `seedTeamNav` waited for the scripted reply, so the DM is already unread:
+    // this line only fails if the dock's badge is broken (SHO-222).
+    await expect(dock(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible()
   })
 
   test("Home is a feed with the workspace agent, not a settings list", async ({ page }) => {
@@ -58,7 +61,32 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     const feed = page.getByTestId("mobile-home-feed")
     await expect(feed).toBeVisible()
     await expect(feed.getByRole("button", { name: "Ask the workspace agent" })).toBeVisible()
-    await expect(feed.getByRole("button", { name: /switch workspace$/ })).toBeVisible()
+    // The workspace avatar is the sidebar's only button (SHO-220): Home has no
+    // hamburger, and the title is a title rather than a workspace switcher.
+    await expect(feed.getByRole("button", { name: /open workspace sidebar$/ })).toBeVisible()
+    await expect(feed.getByRole("button", { name: /switch workspace$/ })).toHaveCount(0)
+  })
+
+  test("the workspace avatar opens the sidebar, and the drawer closes again", async ({ page }) => {
+    await page.goto("/home")
+    const feed = page.getByTestId("mobile-home-feed")
+    const avatar = feed.getByRole("button", { name: /open workspace sidebar$/ })
+    await expect(avatar).toBeVisible({ timeout: 30_000 })
+    await avatar.click()
+    const sidebar = page.getByLabel("App sidebar")
+    await expect(sidebar).toBeVisible({ timeout: 15_000 })
+    await expect(sidebar.getByText("Channels", { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+  })
+
+  test("a project is a screen you go into: Back, not a hamburger", async ({ page }) => {
+    await page.goto(`/projects/${seed.projectIds[1]}`)
+    // SHO-220: a project header never opens the workspace sidebar; its leading
+    // control pops back to Home, where the avatar is.
+    const back = page.getByTestId("project-native-back")
+    await expect(back).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId("project-native-sidebar")).toHaveCount(0)
+    await back.click()
+    await expect(page).not.toHaveURL(new RegExp(`/projects/${seed.projectIds[1]}`), { timeout: 30_000 })
   })
 
   test("tapping a project on Home opens the project", async ({ page }) => {
@@ -68,7 +96,11 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(row).toBeVisible({ timeout: 30_000 })
     await row.click()
     await expect(page).toHaveURL(new RegExp(`/projects/${seed.projectIds[1]}`), { timeout: 30_000 })
-    await expect(page.getByTestId("mobile-home-feed")).toHaveCount(0)
+    // SHO-220: the phone navigator is a Stack, so Home stays mounted underneath
+    // — that is what makes Back pop to a feed that was never rebuilt. It is off
+    // screen, not gone from the DOM.
+    await expect(page.getByTestId("mobile-home-feed")).not.toBeVisible()
+    await expect(page.getByTestId("project-native-back")).toBeVisible({ timeout: 30_000 })
   })
 
   test("DMs lists conversations with the latest message and opens one", async ({ page }) => {
@@ -83,7 +115,11 @@ test.describe("Team workspace: phone dock and tab screens", () => {
 
     await row.click()
     await expect(page).toHaveURL(new RegExp(`/c/${seed.dmId}`))
-    await expect(page.getByText(seed.dmReply, { exact: false }).first()).toBeVisible({ timeout: 30_000 })
+    // The DMs list stays mounted underneath the conversation (SHO-220's Stack),
+    // and its row preview carries the same text — assert on the visible copy.
+    await expect(
+      page.getByText(seed.dmReply, { exact: false }).filter({ visible: true }).first(),
+    ).toBeVisible({ timeout: 30_000 })
     // The dock stays put while reading, with DMs still the selected tab.
     await expect(tab(page, "DMs")).toHaveAttribute("aria-selected", "true")
   })
@@ -116,20 +152,23 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(page).toHaveURL(/\/more/)
     const more = page.getByTestId("more-screen")
     await expect(more).toBeVisible()
-    await expect(more.getByText("Tasks", { exact: true })).toBeVisible()
-    // SHO-7: the overflow screen names Settings, and it is always the last row.
+    // Analytics is the one row every workspace kind gets (`moreItems` pushes it
+    // unconditionally); the Tasks row this used to assert is behind
+    // TASKS_NAV_HIDDEN, which is `true` on main.
     const rows = more.getByRole("link")
+    await expect(rows.first()).toHaveAccessibleName("Analytics")
+    // SHO-7: the overflow screen names Settings, and it is always the last row.
     await expect(rows.last()).toHaveAccessibleName("Settings")
     await expect(rows.last()).toContainText("Account, workspace, integrations and billing")
-    await more.getByText("Tasks", { exact: true }).click()
-    await expect(page).toHaveURL(/\/tasks/)
+    await more.getByRole("link", { name: "Analytics" }).click()
+    await expect(page).toHaveURL(/\/analytics/)
   })
 
   test("the Settings row in More opens the settings screen", async ({ page }) => {
     await tab(page, "More").click()
     const more = page.getByTestId("more-screen")
     await more.getByRole("link", { name: "Settings" }).click()
-    await expect(page).toHaveURL(/\/settings/, { timeout: 30_000 })
+    await expect(page).toHaveURL(/\/account/, { timeout: 30_000 })
     await expect(page.getByText("Settings", { exact: true }).last()).toBeVisible({ timeout: 30_000 })
   })
 
@@ -140,7 +179,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(menu).toBeVisible()
     await expect(menu.getByRole("menuitem", { name: "Pause notifications" })).toBeVisible()
     await menu.getByRole("menuitem", { name: "Settings" }).click()
-    await expect(page).toHaveURL(/\/settings/)
+    await expect(page).toHaveURL(/\/account/)
   })
 
   test("New message is a full screen with people and agents, not a dialog", async ({ page }) => {
@@ -152,7 +191,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(page.getByTestId("new-conversation-screen")).toBeVisible()
     await expect(page.getByRole("dialog")).toHaveCount(0)
     // The dock steps aside so the picker (and keyboard) own the screen.
-    await expect(dock(page)).toHaveCount(0)
+    await expect(dock(page)).not.toBeVisible()
 
     const picker = page.getByTestId("new-message-picker")
     await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toBeVisible({ timeout: 30_000 })
@@ -163,7 +202,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     // An agent opens its DM straight away.
     await picker.getByRole("button", { name: `${seed.idleAgent}, agent` }).click()
     await expect(page).toHaveURL(/\/c\/(?!new)[^/]+/, { timeout: 30_000 })
-    await expect(page.getByTestId("new-conversation-screen")).toHaveCount(0)
+    await expect(page.getByTestId("new-conversation-screen")).not.toBeVisible()
   })
 
   test("Message an agent from DMs opens the same screen on the agents list", async ({ page }) => {
@@ -197,6 +236,7 @@ test.describe("Personal workspace: phone bottom bar and page titles", () => {
   const selected = (page: Page) => page.locator('[role="tab"][aria-selected="true"]')
 
   test.beforeEach(async ({ page }) => {
+    await ignoreDevErrorToast(page)
     await signIn(page)
     await page.goto("/")
     await expect(bar(page).first()).toBeVisible({ timeout: 60_000 })

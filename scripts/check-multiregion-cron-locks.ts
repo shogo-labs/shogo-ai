@@ -172,6 +172,13 @@ interface HomeRegionPartitioned {
  */
 const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
   {
+    fn: 'runExpireSignupCredits',
+    file: 'apps/api/src/jobs/expire-signup-credits.ts',
+    reason:
+      'Each region zeroes only the expired signup promo credit on usage_wallets it owns, via homeWorkspaceIds() inside expireSignupCredits(). usage_wallets is never replicated, so a global lock would let one region settle a peer-owned wallet it cannot see.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runAgentScheduleDispatch',
     file: 'apps/api/src/jobs/run-agent-schedule-dispatch.ts',
     reason:
@@ -252,6 +259,25 @@ interface UniqueKeyRule {
 }
 
 const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
+  // --- signup risk / free trial (added with the signup credit rollout) ----
+  {
+    key: 'SignupRiskAssessment.userId',
+    category: 'request_scoped',
+    reason:
+      'One assessment per new user, written by the signup hook and re-scored by the email-verification hook for that same user; the two requests are sequential and the user is homed to one region.',
+  },
+  {
+    key: 'TrialRedemption.workspaceId',
+    category: 'single_tenant_upsert',
+    reason:
+      'One trial record per workspace; checkout and subscription webhooks for a workspace are routed to that workspace home region and upsert the same row.',
+  },
+  {
+    key: 'TrialRedemption.cardFingerprint',
+    category: 'external_global_id',
+    reason:
+      'Stripe assigns the card fingerprint and it is globally stable per card. The dedupe check is racy only if the same card starts two trials in two regions within the same second; the second is still cancelled by the subscription webhook path.',
+  },
   // --- random secrets / cryptographically-unique tokens --------------------
   {
     key: 'User.email',
@@ -271,10 +297,16 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'One queued wake per (trigger message, agent): written by the message-post, card-move and chained-hand-off paths in the region serving that conversation. A cross-region duplicate would only queue the same wake twice, which the drain runs serially anyway — dedupe, not leader election.',
   },
   {
-    key: 'DeviceVersionEvent.(deviceId,version)',
+    key: 'HuddleWake.(huddleId,itemId)',
     category: 'request_scoped',
     reason:
-      'One history row per (device, version), upserted by the device mint / heartbeat / resolveApiKey touch in the region serving that device\'s requests. A cross-region duplicate would need the same device to report the same version to two regions mid-failover; the row is analytics-only (no side effects), so a conflict is deduped by the unique index rather than leader-elected.',
+      'One agent turn per (huddle, transcript item): inserted by the API pod that stored that final, in the region holding the huddle. It is the replay guard, not a lock — a cross-region duplicate would already be stopped by the Huddle.lastWakeAt compare-and-set that runs first, and a lost duplicate only means one wake did not happen.',
+  },
+  {
+    key: 'DeviceVersionEvent.(deviceId,region,version)',
+    category: 'request_scoped',
+    reason:
+      '`region` is part of the unique key, so two regions can never mint the same key: the row written in US is (us-ashburn-1, device, version) and the one in EU is (eu-*, device, version). A peer\'s row is a second tag for the same (device, version) rather than a conflict, and the analytics reader collapses tags through a `Set` (analytics.service.ts adoption series). Before 2026-10-22 the key was (deviceId, version) — an insert/insert there aborts the apply worker, which is exactly what took `sub_from_us` down (SHO-142) and why this is no longer "a conflict is deduped by the unique index".',
   },
   {
     key: 'Huddle.roomName',
@@ -286,6 +318,17 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'request_scoped',
     reason:
       'One live huddle per conversation, written by the join/leave request in the workspace\'s home region (LiveKit webhooks forward there via routeToHomeRegion); a cross-region race needs a failover mid-join.',
+  },
+  {
+    key: 'Huddle.linkToken',
+    category: 'random_secret',
+    reason: 'Random secret in the shareable join link; collision astronomically improbable.',
+  },
+  {
+    key: 'HuddleInvite.(huddleId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One invite per (huddle, person), upserted by the invite/ring request in the workspace\'s home region; a re-invite just resets the status on the same row.',
   },
   {
     key: 'Account.(accountId,providerId)',
@@ -517,7 +560,7 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     key: 'StorageUsage.workspaceId',
     category: 'cron_locked',
     reason:
-      'Written by recalculateAllStorageUsage (boot + 6h cron) and only by that cron. Wrapped in withGlobalJobLock.',
+      'Written by recalculateAllStorageUsage (boot + 6h cron) and only by that cron. Wrapped in withGlobalJobLock (de-dupes pods within a region) and filtered to homeRegionWorkspaceWhere() (PERF-8), so each region upserts only its own home workspaces and the workspaceId unique never collides across regions.',
     writer: 'storage-recalculate-all',
   },
   {
@@ -898,6 +941,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'single_tenant_upsert',
     reason:
       'Reaction toggle under /api/conversation-messages/:id/reactions by the reacting user only; create-or-ignore / deleteMany on the same triple.',
+  },
+  {
+    key: 'ConversationVote.(messageId,optionId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Poll vote / question upvote by the voting user only; create-or-ignore / deleteMany on the same triple.',
   },
   {
     key: 'SocialProfile.(localWorkspaceId,workspaceId)',

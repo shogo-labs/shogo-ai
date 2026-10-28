@@ -87,6 +87,7 @@ import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from './routes/chat-message-feedback'
 import { createChatSessionForkRoutes } from './routes/chat-session-fork'
 import { chatQueuedMessageActionsRoutes } from './routes/chat-queued-message-actions'
+import { agentWakeRoutes } from './routes/agent-wakes'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { socialRelayRoutes, socialRoutes, socialWebhookRoutes } from './routes/social'
 import {
@@ -109,6 +110,7 @@ import {
 } from './lib/title-parse'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
 import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
+import { isChatAttachmentUpload } from './lib/chat-attachment-upload'
 import { techStackRoutes } from './routes/tech-stacks'
 import { apiKeyRoutes, resolveApiKey } from './routes/api-keys'
 import { parseProjectSettings, encodeProjectSettingsForWrite } from './lib/project-settings'
@@ -139,10 +141,14 @@ import { loadPlatformModelSetting, platformModelSettingRoutes } from './routes/p
 import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
+import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
+import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, promoCreditAvailableUsd } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
+import { projectAttachmentRoutes } from './routes/project-attachments'
 import { localLogsRoutes } from './routes/local-logs'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
+import { publishedSiteSweepRoutes } from './routes/internal-published-sites'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
 import { DOCKER_CLASS_SETTING_KEY, setDockerClassOverride, loadDockerClassOverride } from './lib/runtime-class-setting'
@@ -158,7 +164,7 @@ import { historyRoutes } from './routes/history'
 import { voiceMediaRoutes } from './routes/voice-media'
 import { chatMentionRoutes } from './routes/chat-mentions'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
-import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
+import { createRuntimeManager, resolveRuntimeMaxCount, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
@@ -179,6 +185,7 @@ import {
   isTokenGatedThumbnailPath,
 } from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
+import { machineWorkspaceWriteGuard } from './lib/machine-workspace'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
 
@@ -215,6 +222,10 @@ const INSTANCE_SIZES: any = cloud.INSTANCE_SIZES ?? {}
 const INSTANCE_SIZE_ORDER: any = cloud.INSTANCE_SIZE_ORDER ?? []
 const getInstanceDisplayPrice: any = cloud.getInstanceDisplayPrice ?? (() => undefined)
 const sendPlanUpgradedEmail: any = cloud.sendPlanUpgradedEmail ?? (async () => {})
+const sendTrialEndingEmail: any = cloud.sendTrialEndingEmail ?? (async () => {})
+const sendTrialUnavailableEmail: any = cloud.sendTrialUnavailableEmail ?? (async () => {})
+const trialService: any = cloud.trialService ?? {}
+const signupCreditService: any = cloud.signupCreditService ?? {}
 const sendInvitationEmail: any = cloud.sendInvitationEmail ?? (async () => {})
 const sendProjectInviteEmail: any = cloud.sendProjectInviteEmail ?? (async () => {})
 const sendMemberRemovedEmail: any = cloud.sendMemberRemovedEmail ?? (async () => {})
@@ -358,15 +369,17 @@ async function verifyProjectAccess(
  * Get or create the RuntimeManager singleton.
  *
  * Configurable via environment variables:
- * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: 10)
+ * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: preview + background pools + headroom,
+ *   see resolveRuntimeMaxCount)
  * - RUNTIME_DOMAIN_SUFFIX: Domain suffix for URLs (default: localhost)
  * - WORKSPACES_DIR: Directory containing project workspaces (default: PROJECT_ROOT/workspaces)
  */
 function getRuntimeManager(): IRuntimeManager {
   if (!runtimeManager) {
     const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    const maxRuntimes = resolveRuntimeMaxCount()
     runtimeManager = createRuntimeManager({
-      maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
       templateDir: '_template',
@@ -382,7 +395,7 @@ function getRuntimeManager(): IRuntimeManager {
     setRuntimeManager(runtimeManager as ReturnType<typeof createRuntimeManager>)
     console.log('[Runtime] RuntimeManager initialized:', {
       portRange: '37100-37900 (random)',
-      maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
+      maxRuntimes,
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
     })
@@ -835,6 +848,12 @@ app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion({ skip: isPro
 // project routes have already cached c.get('workspaceId').
 app.use('/api/*', homeRegionWriteProxy)
 
+// A workspace whose rows live on a paired desktop is read-only here: the desktop
+// is its only writer, so a cloud write that names one is refused with
+// `409 machine_workspace_write_via_tunnel` instead of silently diverging from
+// the machine the user is looking at (SHO-185).
+app.use('/api/*', machineWorkspaceWriteGuard())
+
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
 app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
@@ -1102,6 +1121,12 @@ app.get('/api/platform/visible-models', async (c) => {
 // workspace-scoped and already capped to the key holder's plan, so a local
 // Auto router cannot select a model that this cloud workspace will reject.
 app.get('/api/platform/agent-model-defaults', agentModelDefaultsRoute)
+
+// ── Project attachments: attach / list / detach (Folders panel) ──────────────
+// Mounted in BOTH cloud and local mode — the Folders panel shows project
+// attachments on every surface, and the route carries its own workspace authz.
+// Only the desktop-only *folder* picker (`/api/local/projects`) is mode-gated.
+app.route('/api/projects', projectAttachmentRoutes())
 
 // ── Local mode: folder / cloud-project pickers ──────────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
@@ -1648,6 +1673,18 @@ app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
 // stable API URL, then route each request to an enabled project runtime.
 app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
+
+// A blocked event loop here is invisible from the outside except as a tunnel
+// dropping with 1006 and `/health` missing its probes — which is how the SHO-185
+// incident looked. Log it at the moment the stall ends, with the size of the
+// stall, so the next one is diagnosable. `SHOGO_EVENT_LOOP_LAG_MS=0` disables it.
+if (process.env.SHOGO_EVENT_LOOP_LAG_MS !== '0') {
+  void import('./lib/event-loop-lag').then(({ startEventLoopLagMonitor }) => {
+    startEventLoopLagMonitor({
+      thresholdMs: Number(process.env.SHOGO_EVENT_LOOP_LAG_THRESHOLD_MS) || undefined,
+    })
+  }).catch(() => {})
+}
 
 // SHO-105 / #1597: checkpoint repos seeded before this build still carry
 // `.shogo/sessions.db` (+ its live WAL) in their history and in `.git/lfs`.
@@ -3474,6 +3511,22 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // canonical project URL work for external webhooks regardless of
   // where the agent actually runs.
   if (resolution.kind === 'tunnel') {
+    // An attachment upload is raw file bytes, and the tunnel relays bodies as
+    // text frames — which would corrupt them. Refuse explicitly so the client
+    // can fall back to the inline (data URL) path it used before SHO-213
+    // instead of hanging on a mangled upload.
+    if (isChatAttachmentUpload(c.req.method, path)) {
+      return c.json(
+        {
+          error: {
+            code: 'attachment_upload_unsupported',
+            message:
+              'Streamed attachment uploads are not available through a paired machine tunnel — send the file inline instead.',
+          },
+        },
+        501,
+      )
+    }
     try {
       const { relayAgentProxyViaTunnel } = await import('./lib/tunnel-relay')
       const tunnelHeaders: Record<string, string> = {}
@@ -3543,8 +3596,16 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     headers.set('x-chat-session-id', chatSessionIdHeader)
   }
 
-  let requestBody: ArrayBuffer | undefined
-  if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+  // Attachment bytes are streamed, never buffered: a 200 MB archive would
+  // otherwise sit in this process's memory twice (SHO-213). A stream can only
+  // be forwarded once, so that path also skips the cold-start retry loop.
+  const streamUpload = isChatAttachmentUpload(c.req.method, path)
+  let requestBody: ArrayBuffer | ReadableStream<Uint8Array> | undefined
+  if (streamUpload) {
+    const declaredLength = c.req.header('content-length')
+    if (declaredLength) headers.set('content-length', declaredLength)
+    requestBody = c.req.raw.body ?? undefined
+  } else if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     requestBody = await c.req.arrayBuffer()
   }
 
@@ -3552,7 +3613,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
 
   // Retry with exponential backoff for cold-start transient errors.
   // Knative pods can take 60-90s to cold start (S3 restore + deps install).
-  const MAX_RETRIES = 24
+  const MAX_RETRIES = streamUpload ? 1 : 24
   const BASE_DELAY_MS = 500
   const MAX_DELAY_MS = 5000
   const FETCH_TIMEOUT_MS = 1_800_000
@@ -3573,9 +3634,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       const response = await fetch(targetUrl, {
         method: c.req.method,
         headers,
-        body: requestBody,
+        body: requestBody as any,
         signal: proxyFetchSignal,
-      })
+        ...(streamUpload ? { duplex: 'half' } : {}),
+      } as RequestInit)
 
       if (!response.ok && response.status >= 500 && attempt < MAX_RETRIES) {
         const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
@@ -5924,6 +5986,12 @@ app.post('/api/projects/:projectId/permission-response', async (c) => {
 // =============================================================================
 
 app.use('/api/admin/pods/*', authMiddleware, requireAuth, requireSuperAdmin)
+// Signup risk review (cloud only: the desktop schema has no risk tables).
+if (!LOCAL_MODE) {
+  app.use('/api/admin/signup-risk', authMiddleware, requireAuth, requireSuperAdmin)
+  app.use('/api/admin/signup-risk/*', authMiddleware, requireAuth, requireSuperAdmin)
+  app.route('/api/admin/signup-risk', adminSignupRiskRoutes())
+}
 app.use('/api/admin/pods', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/pod-stats', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/warm-pool', authMiddleware, requireAuth, requireSuperAdmin)
@@ -7136,6 +7204,42 @@ async function affiliateCheckoutOverrides(
   }
 }
 
+/** Owner email and workspace name for a billing email, or null when there is no owner. */
+async function workspaceOwnerContact(
+  workspaceId: string,
+): Promise<{ email: string; workspaceName: string } | null> {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: {
+      name: true,
+      members: {
+        where: { role: 'owner', projectId: null },
+        select: { user: { select: { email: true } } },
+        orderBy: { createdAt: 'asc' },
+        take: 1,
+      },
+    },
+  })
+  const email = workspace?.members?.[0]?.user?.email
+  return email && workspace ? { email, workspaceName: workspace.name } : null
+}
+
+function planDisplayName(planId: string): string {
+  return planId.charAt(0).toUpperCase() + planId.slice(1)
+}
+
+/** Fire-and-forget: the trial checkout was cancelled as a duplicate; tell the owner. */
+function notifyTrialBlocked(workspaceId: string, planId: string): void {
+  workspaceOwnerContact(workspaceId)
+    .then((owner) => owner && sendTrialUnavailableEmail({
+      to: owner.email,
+      workspaceName: owner.workspaceName,
+      planName: planDisplayName(planId),
+      dashboardUrl: `${getFrontendUrl()}/billing`,
+    }))
+    .catch((err: any) => console.error('[Webhook] trial-unavailable email failed:', err?.message ?? err))
+}
+
 app.post('/api/billing/checkout', async (c) => {
   try {
     if (!stripe) {
@@ -7146,7 +7250,7 @@ app.post('/api/billing/checkout', async (c) => {
     const userId = authCtx?.userId as string | undefined
 
     const body = await c.req.json()
-    const { workspaceId, planId, seats: rawSeats, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+    const { workspaceId, planId, seats: rawSeats, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl, trial: wantsTrial } = body
 
     if (!workspaceId || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
@@ -7183,14 +7287,20 @@ app.post('/api/billing/checkout', async (c) => {
       || `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
 
     const affiliateOverrides = await affiliateCheckoutOverrides(userId)
-    const sessionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
+    const trialFields = await trialService.buildCheckoutTrialFields({
+      wantsTrial: Boolean(wantsTrial),
+      userId,
+      workspaceId,
+      planId,
+      metadata,
+      affiliate: affiliateOverrides,
+    })
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: seats }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata: sessionMetadata,
       ...(userEmail && { customer_email: userEmail }),
       // `referralId` was the Rewardful query parameter. Kept for one
       // release so in-flight mobile clients don't 500; ignored server-side
@@ -7198,7 +7308,9 @@ app.post('/api/billing/checkout', async (c) => {
       // is authoritative).
       ...(referralId && { client_reference_id: referralId }),
       ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
-      ...(affiliateOverrides.subscription_data && { subscription_data: affiliateOverrides.subscription_data }),
+      // Session metadata, subscription_data (affiliate + trial) and, for a
+      // trial, card-only payment collection.
+      ...trialFields,
     })
 
     return c.json({ sessionId: session.id, url: session.url }, 200)
@@ -7268,6 +7380,28 @@ app.get('/api/billing/workspace-plan', async (c) => {
       billingService.getUsageWindows(workspaceId),
       billingService.getOverageStatus(workspaceId),
     ])
+    // Signup promo credit + trial eligibility for the billing UI. Cloud only
+    // (local mode has no signup risk rows and no Stripe).
+    const cloudUserId = userId && !LOCAL_MODE ? userId : null
+    const [promoUser, promoRisk, trialCheck] = await Promise.all([
+      cloudUserId
+        ? prisma.user.findUnique({ where: { id: cloudUserId }, select: { emailVerified: true } })
+        : null,
+      cloudUserId
+        ? prisma.signupRiskAssessment.findUnique({ where: { userId: cloudUserId }, select: { decision: true } })
+        : null,
+      !sub && cloudUserId
+        ? trialService.trialEligibility({ userId: cloudUserId, workspaceId })
+        : { eligible: false },
+    ])
+    const promoEmailVerified = Boolean(promoUser?.emailVerified)
+    const promoPendingUsd = promoEmailVerified
+      ? 0
+      : promoRisk?.decision === 'credit_initial'
+        ? SIGNUP_CREDIT_VERIFIED_USD
+        : promoRisk?.decision === 'credit_held'
+          ? SIGNUP_CREDIT_TOTAL_USD
+          : 0
     const source: 'subscription' | 'grant' | 'free' =
       sub ? 'subscription' : effective !== 'free' ? 'grant' : 'free'
     return c.json({
@@ -7314,6 +7448,19 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // Rolling usage windows (time-gated "unlimited"). `limitUsd: null`
       // means the window is uncapped (enterprise).
       usageWindows,
+      // Signup promo credit: spendable balance (0 once expired), what unlocks
+      // on email verification, and the expiry.
+      promoCredit: {
+        availableUsd: wallet ? promoCreditAvailableUsd(wallet) : 0,
+        grantedUsd: wallet?.promoCreditGrantedUsd ?? 0,
+        expiresAt: wallet?.promoCreditExpiresAt ?? null,
+        emailVerified: promoEmailVerified,
+        pendingVerificationUsd: promoPendingUsd,
+      },
+      // Free trial: eligible to start one (card required), and when the
+      // current trial ends.
+      trialEligible: trialCheck.eligible,
+      trialEndsAt: sub?.status === 'trialing' ? (sub as any).currentPeriodEnd ?? null : null,
     })
   } catch (error: any) {
     return c.json({ error: { code: 'plan_query_failed', message: error.message } }, 500)
@@ -7353,7 +7500,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceName, planId, seats: rawSeats, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+    const { workspaceName, planId, seats: rawSeats, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl, trial: wantsTrial } = body
 
     if (!workspaceName || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields: workspaceName, planId, billingInterval' } }, 400)
@@ -7395,18 +7542,26 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       : `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=canceled`
 
     const affiliateOverrides = await affiliateCheckoutOverrides(userId)
-    const sessionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
+    const trialFields = await trialService.buildCheckoutTrialFields({
+      wantsTrial: Boolean(wantsTrial),
+      userId,
+      workspaceId: newWorkspaceId,
+      planId,
+      metadata,
+      affiliate: affiliateOverrides,
+    })
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: seats }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata: sessionMetadata,
       ...(userEmail && { customer_email: userEmail }),
       ...(referralId && { client_reference_id: referralId }),
       ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
-      ...(affiliateOverrides.subscription_data && { subscription_data: affiliateOverrides.subscription_data }),
+      // Session metadata, subscription_data (affiliate + trial) and, for a
+      // trial, card-only payment collection.
+      ...trialFields,
     })
 
     return c.json({ sessionId: session.id, url: session.url, workspaceId: newWorkspaceId }, 200)
@@ -8161,6 +8316,26 @@ app.post('/api/webhooks/stripe', async (c) => {
             const item = subscription.items?.data?.[0]
             const quantity = Math.max(1, Math.floor(item?.quantity ?? 1))
             const billingInterval = (subscription.metadata?.billingInterval as 'monthly' | 'annual') || 'monthly'
+
+            // Free trial: enforce one trial per card/user before provisioning.
+            // A blocked card's subscription is cancelled inside recordTrialStart.
+            if (subscription.status === 'trialing') {
+              const trialOutcome = await trialService.recordTrialStart({
+                stripe,
+                workspaceId: wsId,
+                userId: null,
+                planId: metaPlanId,
+                subscriptionId: subscription.id,
+                stripeCustomerId: subscription.customer as string,
+              })
+              if (trialOutcome === 'blocked' || trialOutcome === 'already_blocked') {
+                if (trialOutcome === 'blocked') {
+                  console.warn('[Webhook] Trial blocked (card or account already used a trial):', wsId)
+                  notifyTrialBlocked(wsId, metaPlanId)
+                }
+                break
+              }
+            }
             const now = Date.now()
             const currentPeriodStart = subscription.current_period_start
               ? subscription.current_period_start * 1000
@@ -8187,7 +8362,11 @@ app.post('/api/webhooks/stripe', async (c) => {
             // mid-cycle quantity changes we want to preserve overage, so we
             // call it only on `created` (provisioning) — `updated` skips the
             // reset and only updates the included totals.
-            if (event.type === 'customer.subscription.created') {
+            if (subscription.status === 'trialing') {
+              // Trial: keep the free allowance. The paid monthly allocation and
+              // overage start with the first paid invoice (refill below).
+              await billingService.allocateFreeWallet(wsId)
+            } else if (event.type === 'customer.subscription.created') {
               await billingService.allocateMonthlyIncluded(wsId, metaPlanId, quantity)
             } else {
               // Stack any active super-admin grants on top of the plan's
@@ -8249,6 +8428,31 @@ app.post('/api/webhooks/stripe', async (c) => {
         }
         break
       }
+      case 'customer.subscription.trial_will_end': {
+        // Stripe fires this ~3 days before a trial ends. Remind the workspace
+        // owner so the charge isn't a surprise. The workspace is found through
+        // the local Subscription row (subscription metadata is not always set).
+        const subscription = event.data.object as StripeTypes.Subscription
+        try {
+          const sub = await prisma.subscription.findFirst({
+            where: { stripeSubscriptionId: subscription.id },
+            select: { workspaceId: true, planId: true },
+          })
+          const owner = sub ? await workspaceOwnerContact(sub.workspaceId) : null
+          if (sub && owner) {
+            sendTrialEndingEmail({
+              to: owner.email,
+              workspaceName: owner.workspaceName,
+              planName: planDisplayName(sub.planId),
+              trialEndsAt: new Date((subscription.trial_end ?? 0) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+              dashboardUrl: `${getFrontendUrl()}/billing`,
+            }).catch((err: any) => console.error('[Webhook] trial-ending email failed:', err))
+          }
+        } catch (err: any) {
+          console.error('[Webhook] trial_will_end handling failed:', err.message)
+        }
+        break
+      }
       case 'customer.subscription.deleted': {
         // Instance/capacity add-on cancellation (immediate cancel, or the
         // final event at period end for a `cancel_at_period_end` sub).
@@ -8269,6 +8473,11 @@ app.post('/api/webhooks/stripe', async (c) => {
           }
         } catch (err: any) {
           console.error('[Webhook] Failed to cancel plan subscription:', err.message)
+        }
+        try {
+          await trialService.markTrialEndedForSubscription(subscription.id)
+        } catch (err: any) {
+          console.error('[Webhook] Failed to mark trial ended:', err.message)
         }
         try {
           const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
@@ -8354,6 +8563,28 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000)
 
+            // Free trial: record it first (one trial per user/workspace/card). A
+            // card already used for a trial elsewhere gets cancelled inside
+            // recordTrialStart, so skip provisioning entirely in that case.
+            const trialing = stripeSubscription.status === 'trialing'
+            if (trialing) {
+              const trialOutcome = await trialService.recordTrialStart({
+                stripe,
+                workspaceId,
+                userId: null,
+                planId,
+                subscriptionId: stripeSubscription.id,
+                stripeCustomerId: session.customer as string,
+              })
+              if (trialOutcome === 'blocked' || trialOutcome === 'already_blocked') {
+                if (trialOutcome === 'blocked') {
+                  console.warn('[Webhook] Trial blocked (card or account already used a trial):', workspaceId)
+                  notifyTrialBlocked(workspaceId, planId)
+                }
+                break
+              }
+            }
+
             await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,
               stripeCustomerId: session.customer as string,
@@ -8367,8 +8598,16 @@ app.post('/api/webhooks/stripe', async (c) => {
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
             })
 
-            await billingService.allocateMonthlyIncluded(workspaceId, planId, checkoutSeats)
-            console.log('[Webhook] Subscription created + monthly included USD allocated for workspace:', workspaceId, 'plan:', planId, 'seats:', checkoutSeats)
+            if (trialing) {
+              // No paid invoice yet: keep the free allowance. The monthly
+              // allocation (and overage) starts with the first paid cycle, in
+              // invoice.payment_succeeded.
+              await billingService.allocateFreeWallet(workspaceId)
+              console.log('[Webhook] Trial started for workspace:', workspaceId, 'plan:', planId, 'seats:', checkoutSeats)
+            } else {
+              await billingService.allocateMonthlyIncluded(workspaceId, planId, checkoutSeats)
+              console.log('[Webhook] Subscription created + monthly included USD allocated for workspace:', workspaceId, 'plan:', planId, 'seats:', checkoutSeats)
+            }
 
             // Send plan-upgraded email to workspace owner
             try {
@@ -8442,11 +8681,18 @@ app.post('/api/webhooks/stripe', async (c) => {
               // checkout.session.completed handler above, so only refill on
               // the recurring cycle events.
               const reason = invoice.billing_reason
-              if (reason === 'subscription_cycle' || reason === 'subscription_update') {
+              // A trial's $0 invoices (including a mid-trial seat or plan
+              // change) must not unlock the paid allowance or overage early.
+              const trialing = sub.status === 'trialing'
+              if (!trialing && (reason === 'subscription_cycle' || reason === 'subscription_update')) {
                 try {
                   const cycleSeats = Math.max(1, Math.floor(sub.items?.data?.[0]?.quantity ?? 1))
                   await billingService.allocateMonthlyIncluded(wsId, planId, cycleSeats)
                   console.log('[Webhook] Monthly USD refilled for workspace:', wsId, 'plan:', planId, 'seats:', cycleSeats, 'reason:', reason)
+                  if (reason === 'subscription_cycle') {
+                    // First paid cycle after a trial (no-op for non-trial workspaces).
+                    await trialService.markTrialConverted(wsId)
+                  }
                 } catch (allocErr: any) {
                   console.error('[Webhook] Failed to refill monthly included USD:', allocErr.message)
                 }
@@ -8454,14 +8700,17 @@ app.post('/api/webhooks/stripe', async (c) => {
               // Receipt: in-app notification + email to all billing admins,
               // deduped on the invoice id so Stripe webhook retries can't
               // double-send. Fire-and-forget (already inside the webhook 200).
-              const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
-              void notifyPaymentReceipt(wsId, {
-                planName: planLabel,
-                amountUsd: (invoice.amount_paid || 0) / 100,
-                invoiceDate: new Date((invoice.created || 0) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-                invoiceId: invoice.id,
-                invoiceUrl: invoice.hosted_invoice_url ?? undefined,
-              })
+              // Skipped for a trial's $0 invoices: nothing was charged.
+              if (!(trialing && !invoice.amount_paid)) {
+                const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
+                void notifyPaymentReceipt(wsId, {
+                  planName: planLabel,
+                  amountUsd: (invoice.amount_paid || 0) / 100,
+                  invoiceDate: new Date((invoice.created || 0) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                  invoiceId: invoice.id,
+                  invoiceUrl: invoice.hosted_invoice_url ?? undefined,
+                })
+              }
             }
           } catch (err: any) {
             console.error('[Webhook] payment-receipt lookup failed:', err.message)
@@ -8806,6 +9055,13 @@ app.route('/api/internal/e2e', metalE2eRoutes())
 // apps/api/src/routes/metal.ts and lib/metal-warm-pool-controller.ts.
 app.route('/api/internal/metal', metalRoutes())
 
+// Orphaned published-site reconcile sweep (SHO-138). Mounted under
+// /api/internal/published-sites so it inherits the /api/internal/* auth-skip;
+// every handler requires the PUBLISHED_SITE_SWEEP_SECRET shared secret and is a
+// dry run unless it is explicitly asked to apply. See
+// apps/api/src/routes/internal-published-sites.ts.
+app.route('/api/internal/published-sites', publishedSiteSweepRoutes())
+
 // User/profile routes are shared by the local and cloud composers.
 app.route('/api', userProfileRoutes())
 
@@ -9063,6 +9319,9 @@ app.route('/api/invitations', invitationInfoRoutes())
 // to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
 app.route('/api/chat-messages', createChatMessageEditRoutes())
 app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
+// The queue of team-chat wakes waiting behind a live reply: send one now, or
+// take it off the queue (SHO-167). No generated router claims `/agent-wakes`.
+app.route('/api', agentWakeRoutes({ resolveUserId: getAuthUserId }))
 
 // Turn feedback (thumbs up/down) — PUT/DELETE /:id/feedback on a message,
 // GET /:id/feedback on a session (the caller's own reactions, keyed by
@@ -9844,6 +10103,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
       const previewMax = resolveWorkspacePreviewMax()
       const take = previewMax
       const workspaces = await prisma.workspace.findMany({
+        // A machine workspace's runtime is on the desktop (SHO-185): warming it
+        // here would spawn a runtime for a workspace this process cannot serve.
+        where: { machineInstanceId: null },
         orderBy: { updatedAt: 'desc' },
         take,
         select: { id: true },
@@ -9927,6 +10189,18 @@ setTimeout(async () => {
   }
 }, 15_000)
 
+// The hidden LiveKit fallback for huddle notes. It runs in this process (rtc-node
+// works under Bun, in the API and in the desktop's API), and is a no-op when
+// LiveKit is not configured, so cloud and desktop take the same path.
+setTimeout(async () => {
+  try {
+    const { startNotesWorker } = await import('./workers/huddle-notes-agent')
+    await startNotesWorker()
+  } catch (err: any) {
+    console.error('[huddle-notes] Failed to start the fallback worker (non-fatal):', err?.message ?? err)
+  }
+}, 20_000)
+
 // Voice telephony monthly rebill (runs everywhere; the debit itself
 // is a no-op if no VoiceProjectConfig rows exist).
 {
@@ -9980,6 +10254,12 @@ setTimeout(async () => {
         '[GrantRefill] failed to schedule grant refill (non-fatal):',
         err?.message ?? err,
       )
+    }
+    try {
+      const { startExpireSignupCreditsCron } = await import('./jobs/expire-signup-credits')
+      startExpireSignupCreditsCron()
+    } catch (err: any) {
+      console.error('[SignupCredit] failed to schedule expiry cron (non-fatal):', err?.message ?? err)
     }
   })()
 }

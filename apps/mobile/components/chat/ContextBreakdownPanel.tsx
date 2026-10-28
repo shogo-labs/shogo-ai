@@ -37,6 +37,8 @@ interface ContextBreakdownPanelProps {
   contextWindowTokens: number
   /** Project + chat session, so the panel can offer "Summarize now" (SHO-96). */
   projectId?: string | null
+  /** Workspace id for a workspace-scoped chat (no project) — SHO-230. */
+  workspaceId?: string | null
   chatSessionId?: string | null
 }
 
@@ -63,6 +65,7 @@ export function ContextBreakdownPanel({
   inputTokens,
   contextWindowTokens,
   projectId,
+  workspaceId,
   chatSessionId,
 }: ContextBreakdownPanelProps) {
   const categories = breakdown?.categories ?? []
@@ -108,7 +111,11 @@ export function ContextBreakdownPanel({
         </Text>
       )}
 
-      <ContextSummarySection projectId={projectId} chatSessionId={chatSessionId} />
+      <ContextSummarySection
+        projectId={projectId}
+        workspaceId={workspaceId}
+        chatSessionId={chatSessionId}
+      />
     </View>
   )
 }

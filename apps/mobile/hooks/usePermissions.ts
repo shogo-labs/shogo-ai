@@ -45,9 +45,13 @@ interface CacheEntry {
   data: ScopeAccess | null
   fetchedAt: number
   promise: Promise<ScopeAccess | null> | null
+  /** Earliest time a failed fetch may be retried (backoff while offline). */
+  retryAt: number
 }
 
 const STALE_MS = 30_000
+/** How long to wait before retrying a scope whose fetch failed on the wire. */
+export const PERMISSIONS_RETRY_MS = 5_000
 const NO_ACCESS: ScopeAccess = {
   permissions: [],
   workspaceRole: null,
@@ -93,6 +97,39 @@ function notify(key: string) {
   listeners.get(key)?.forEach((fn) => fn())
 }
 
+/**
+ * True only when the server itself said the caller cannot see this scope.
+ * Anything else (dropped connection, abort, timeout, 5xx) is transient and
+ * must not be cached as "no access" — that would leave a fully-privileged
+ * user looking at a read-only project until the cache went stale.
+ */
+export function isAccessDenial(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status
+  if (typeof status === 'number') return status === 401 || status === 403 || status === 404
+  const code = (error as { code?: unknown } | null)?.code
+  return code === 'UNAUTHORIZED' || code === 'FORBIDDEN' || code === 'NOT_FOUND'
+}
+
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function scheduleRetry(key: string) {
+  if (retryTimers.has(key)) return
+  const timer = setTimeout(() => {
+    retryTimers.delete(key)
+    notify(key)
+  }, PERMISSIONS_RETRY_MS + 50)
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  retryTimers.set(key, timer)
+}
+
+function clearRetry(key: string) {
+  const timer = retryTimers.get(key)
+  if (timer) {
+    clearTimeout(timer)
+    retryTimers.delete(key)
+  }
+}
+
 function load(http: HttpClient, key: string, force = false): Promise<ScopeAccess | null> {
   const entry = cache.get(key)
   if (entry?.promise) return entry.promise
@@ -106,14 +143,37 @@ function load(http: HttpClient, key: string, force = false): Promise<ScopeAccess
         ? api.getProjectPermissions(http, id).then(fromProject)
         : api.getWorkspacePermissions(http, id).then(fromWorkspace),
     )
-    // 403/404 mean "no access to this scope", not a transient failure.
-    .catch(() => NO_ACCESS)
     .then((data) => {
-      cache.set(key, { data, fetchedAt: Date.now(), promise: null })
+      clearRetry(key)
+      cache.set(key, { data, fetchedAt: Date.now(), promise: null, retryAt: 0 })
       notify(key)
       return data
     })
-  cache.set(key, { data: entry?.data ?? null, fetchedAt: entry?.fetchedAt ?? 0, promise })
+    .catch((error: unknown) => {
+      // 401/403/404 mean "no access to this scope", not a transient failure.
+      if (isAccessDenial(error)) {
+        clearRetry(key)
+        cache.set(key, { data: NO_ACCESS, fetchedAt: Date.now(), promise: null, retryAt: 0 })
+        notify(key)
+        return NO_ACCESS
+      }
+      // Transient: keep what we already knew, stay stale, retry after the backoff.
+      cache.set(key, {
+        data: entry?.data ?? null,
+        fetchedAt: entry?.fetchedAt ?? 0,
+        promise: null,
+        retryAt: Date.now() + PERMISSIONS_RETRY_MS,
+      })
+      scheduleRetry(key)
+      notify(key)
+      return entry?.data ?? null
+    })
+  cache.set(key, {
+    data: entry?.data ?? null,
+    fetchedAt: entry?.fetchedAt ?? 0,
+    promise,
+    retryAt: entry?.retryAt ?? 0,
+  })
   return promise
 }
 
@@ -122,7 +182,8 @@ export function invalidatePermissions(scope?: PermissionScope) {
   const keys = scope ? [scopeKey(scope)].filter((k): k is string => !!k) : [...cache.keys()]
   for (const key of keys) {
     const entry = cache.get(key)
-    if (entry) cache.set(key, { ...entry, fetchedAt: 0 })
+    if (entry) cache.set(key, { ...entry, fetchedAt: 0, retryAt: 0 })
+    clearRetry(key)
     notify(key)
   }
 }
@@ -145,7 +206,9 @@ export function usePermissions(scope: PermissionScope) {
   }, [key])
 
   const entry = key ? cache.get(key) : undefined
-  const isStale = !entry || (!entry.promise && Date.now() - entry.fetchedAt >= STALE_MS)
+  const isStale =
+    !entry ||
+    (!entry.promise && Date.now() - entry.fetchedAt >= STALE_MS && Date.now() >= entry.retryAt)
 
   useEffect(() => {
     if (!key || !http || !isStale) return

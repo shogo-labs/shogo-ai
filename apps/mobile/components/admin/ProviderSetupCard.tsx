@@ -39,6 +39,7 @@ export const SETUP_PROVIDERS: Array<{
 }> = [
   { id: 'openai', name: 'OpenAI', placeholder: 'sk-…' },
   { id: 'anthropic', name: 'Anthropic', placeholder: 'sk-ant-…' },
+  { id: 'google', name: 'Google (Gemini)', placeholder: 'AIza…' },
 ]
 
 interface DiscoveredProviderModel {

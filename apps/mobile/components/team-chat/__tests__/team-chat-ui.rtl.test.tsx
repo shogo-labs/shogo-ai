@@ -3,16 +3,19 @@
 
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { Fragment, createElement, createRef, forwardRef, useImperativeHandle } from 'react'
+import { Fragment, createElement, createRef, forwardRef, useImperativeHandle, useRef } from 'react'
 import { Linking } from 'react-native'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 
 const sentTyping: string[] = []
 const copied: string[] = []
 const pins: Array<{ id: string; pinned: boolean }> = []
+const reminders: Array<{ messageId: string; remindAt: string }> = []
 const uploaded: string[] = []
 const updates: Array<{ id: string; patch: unknown }> = []
 const decisions: Array<{ id: string; decision: string }> = []
+const sentWakes: string[] = []
+const removedWakes: string[] = []
 let decisionError: string | null = null
 const deletes: string[] = []
 let deleteError: string | null = null
@@ -20,10 +23,61 @@ let deleteError: string | null = null
 const personalLook = { color: '#FF7A8A', topper: 'cat-ears' }
 /** What `useMentionables` answers; null until a test needs the workspace agent. */
 const hookMentionables: { value: unknown } = { value: null }
+/** Layout handlers the View shim captured, so a test can report a width. */
+const layoutHandlers = new WeakMap<Element, (event: unknown) => void>()
+/** Image load handlers the Image shim captured, so a test can report a size. */
+const imageLoadHandlers = new WeakMap<Element, (event: unknown) => void>()
+/** `Image.getSize` requests, so a test can answer the way web measures an image. */
+const imageGetSizeRequests: { uri: string; success: (width: number, height: number) => void }[] = []
 
 mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
+    // onLayout is not a DOM event, so the shim keeps the handler and a test
+    // reports a width the way a real layout pass would. Everything else about
+    // a View is the shared passthrough shim.
+    View: forwardRef(function LayoutView({ children, onLayout, testID, style, ...props }: any, ref: any) {
+      return createElement(
+        'div',
+        {
+          ...props,
+          style: Array.isArray(style) ? Object.assign({}, ...style.filter(Boolean)) : style,
+          'data-rn-shim': testID ?? undefined,
+          ref: (node: any) => {
+            if (node && onLayout) layoutHandlers.set(node, onLayout)
+            if (typeof ref === 'function') ref(node)
+            else if (ref) ref.current = node
+          },
+        },
+        children,
+      )
+    }),
+    // An <img> as the shared shim renders it, plus a handle on `onLoad` so a
+    // test can report the natural size an attachment did not store.
+    Image: (() => {
+      const shim = forwardRef(function LayoutImage({ children, style, onLoad, ...props }: any, ref: any) {
+        return createElement(
+          'img',
+          {
+            ...props,
+            style: Array.isArray(style) ? Object.assign({}, ...style.filter(Boolean)) : style,
+            'data-rn-shim': props.testID ?? undefined,
+            ref: (node: any) => {
+              if (node && onLoad) imageLoadHandlers.set(node, onLoad)
+              if (typeof ref === 'function') ref(node)
+              else if (ref) ref.current = node
+            },
+          },
+          children,
+        )
+      })
+      // On web the load event carries no size, so this is what measures the
+      // image; a test answers it the way react-native-web would.
+      ;(shim as any).getSize = (uri: string, success: (width: number, height: number) => void) => {
+        imageGetSizeRequests.push({ uri, success })
+      }
+      return shim
+    })(),
     // A press goes to the innermost Pressable only, as in React Native — not
     // on to a modal's backdrop that closes it.
     Pressable: ({ accessibilityLabel, children, onPress, onHoverIn, onHoverOut, onPointerEnter, onPointerLeave, onContextMenu, disabled, testID }: any) =>
@@ -54,10 +108,17 @@ mock.module('react-native', () =>
       })
     }),
     FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent }: any, ref: any) {
-      useImperativeHandle(ref, () => ({ scrollToIndex() {}, scrollToOffset() {} }))
+      // The list's own scroll node, as react-native-web reports it — where its
+      // native `wheel` listener lives.
+      const scroller = useRef<HTMLDivElement | null>(null)
+      useImperativeHandle(ref, () => ({
+        scrollToIndex() {},
+        scrollToOffset() {},
+        getScrollableNode: () => scroller.current,
+      }))
       return createElement(
         'div',
-        null,
+        { ref: scroller, 'data-scroll-node': 'true' },
         data.length
           ? data.map((item: any, index: number) => createElement(Fragment, { key: keyExtractor ? keyExtractor(item, index) : index }, renderItem({ item, index })))
           : ListEmptyComponent,
@@ -105,6 +166,10 @@ mock.module('../../../lib/team-chat-api', () => ({
   isSelfDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'user' && p.self === true),
   teamChatApi: () => ({
     pin: async (id: string, pinned: boolean) => { pins.push({ id, pinned }) },
+    createReminder: async (_ws: string, input: { messageId: string; remindAt: string }) => {
+      reminders.push({ messageId: input.messageId, remindAt: input.remindAt })
+      return {}
+    },
     workLog: (id: string) => { workLogs.push(id); return workLogResult() },
     upload: async (_id: string, file: { name: string }) => {
       uploaded.push(file.name)
@@ -117,6 +182,12 @@ mock.module('../../../lib/team-chat-api', () => ({
     delete: async (id: string) => {
       if (deleteError) throw new Error(deleteError)
       deletes.push(id)
+    },
+    sendWakeNow: async (id: string) => {
+      sentWakes.push(id)
+    },
+    removeWake: async (id: string) => {
+      removedWakes.push(id)
     },
     decideApproval: async (id: string, decision: string) => {
       if (decisionError) throw Object.assign(new Error('failed'), { response: { data: { error: { message: decisionError } } } })
@@ -161,13 +232,16 @@ mock.module('../../../hooks/useChatShortcuts', () => ({
   requestEditMessage: () => {},
 }))
 const activityTimeline: { messages: any[]; channels: any[] } = { messages: [], channels: [] }
-/** People typing in the pane's scope; agents come from the running messages. */
+/** People typing in the pane's scope; a running agent is the dock's business. */
 const typingUsers: Array<{ id: string; name: string }> = []
+/** Replies a pane asked the server to stop. */
+const stoppedAgents: string[] = []
 const { resolveAgentLook } = await import('@shogo/shared-app/buddy-look')
 mock.module('../../../hooks/useTeamChat', () => ({
   TIMELINE_SOFT_LIMIT: 600,
   useAgentLook: (_workspaceId: string | null | undefined, projectId: string | null) => resolveAgentLook(null, projectId),
   useConversationList: () => ({ list: activityTimeline.channels, loading: false, error: null, refresh: async () => {} }),
+  useChannelDirectory: () => activityTimeline.channels,
   useConversationTimeline: () => ({
     state: { messages: activityTimeline.messages, hasMoreOlder: false, streaming: {} },
     loading: false,
@@ -177,7 +251,7 @@ mock.module('../../../hooks/useTeamChat', () => ({
     react: async () => {},
     edit: () => {},
     remove: async () => {},
-    stopAgent: async () => {},
+    stopAgent: async (id: string) => { stoppedAgents.push(id) },
     retry: () => {},
     discard: () => {},
     send: async () => {},
@@ -222,9 +296,23 @@ mock.module('@/components/ui/button', () => ({
   ButtonText: ({ children }: any) => createElement('div', null, children),
 }))
 mock.module('../../../lib/platform-config', () => ({ usePlatformConfig: () => ({ features: { billing: false, ezMode: false } }) }))
+// Dictation is unavailable in a DOM test, so `canRecord` is a switch: it is how
+// the composer's two voice affordances are told apart.
+const voiceInputState = { canRecord: false }
 mock.module('../../chat/useVoiceInput', () => ({
-  useVoiceInput: () => ({ isBusy: false, isRecording: false, liveTranscript: '', canRecord: false, error: null, clearError() {}, toggleRecording: async () => {} }),
+  useVoiceInput: () => ({ isBusy: false, isRecording: false, liveTranscript: '', canRecord: voiceInputState.canRecord, error: null, clearError() {}, toggleRecording: async () => {} }),
 }))
+// A voice note records through MediaRecorder on a device; the recorder here is a
+// switch so the composer's trigger can be observed.
+const recorderState = {
+  isRecording: false,
+  level: 0,
+  elapsedMs: 0,
+  start: mock(async () => {}),
+  stop: mock(async () => null),
+  cancel: mock(() => {}),
+}
+mock.module('../../../lib/use-voice-note', () => ({ useVoiceNoteRecorder: () => recorderState }))
 mock.module('../../chat/VoiceWaveform', () => ({ VoiceWaveform: () => null }))
 mock.module('../../chat/AttachSourceSheet', () => ({ AttachSourceSheet: () => null }))
 mock.module('../../chat/ContextTracker', () => ({ ContextTracker: () => null, formatTokenCount: (n: number) => String(n) }))
@@ -368,8 +456,48 @@ describe('Composer', () => {
 
   test('agent-only controls stay out of team chat', () => {
     render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
-    expect(screen.queryByTestId('interaction-mode-trigger')).toBeNull()
     expect(screen.queryByLabelText('Advanced controls')).toBeNull()
+    expect(screen.queryByTestId('ez-mode-toggle')).toBeNull()
+  })
+
+  // The mic used to record a voice note here, which made it the only composer in
+  // the product where it didn't dictate. The two affordances are now distinct:
+  // the mic dictates, the clip button on the left records.
+  test('the mic dictates and the clip button on the left records a voice note', () => {
+    voiceInputState.canRecord = true
+    try {
+      render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+      expect(screen.getByLabelText('Start voice recording')).toBeTruthy()
+      expect(screen.getByLabelText('Record a voice note')).toBeTruthy()
+    } finally {
+      voiceInputState.canRecord = false
+    }
+  })
+
+  test('where dictation is unsupported the mic explains itself instead of vanishing', () => {
+    render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+    expect(
+      screen.getByLabelText("Voice typing isn't supported in this browser. Try Chrome, Edge, or Safari."),
+    ).toBeTruthy()
+  })
+
+  test('the clip button starts a recording, which replaces the composer', () => {
+    const start = mock(async () => {})
+    recorderState.start = start
+    render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+    fireEvent.click(screen.getByLabelText('Record a voice note'))
+    expect(start).toHaveBeenCalled()
+  })
+
+  test('while a voice note records the recording bar stands in for the composer', () => {
+    recorderState.isRecording = true
+    try {
+      render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+      expect(screen.getByLabelText('Finish recording')).toBeTruthy()
+      expect(screen.queryByLabelText('Message')).toBeNull()
+    } finally {
+      recorderState.isRecording = false
+    }
   })
 })
 
@@ -441,7 +569,7 @@ const reactors = {
   agents: new Map<string, string>(),
 }
 const handlers = () => ({
-  onReact: mock(() => {}), onEdit: mock(async () => {}), onDelete: mock(() => {}), onStopAgent: mock(() => {}),
+  onReact: mock(() => {}), onEdit: mock(async () => {}), onDelete: mock(() => {}),
   onRetry: mock(() => {}), onDiscard: mock(() => {}), onReply: mock(() => {}), onOpenSession: mock(() => {}),
 })
 
@@ -470,7 +598,7 @@ describe('MessageRow', () => {
     expect(screen.getByText(/support team has no input there/)).toBeTruthy()
   })
 
-  test('renders mentions by name, and a running agent reply streams with a Stop control', () => {
+  test('renders mentions by name, and a running agent reply is a one-line marker', () => {
     const h = handlers()
     const { rerender } = render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
     expect(screen.getByText('@Billing Bot')).toBeTruthy()
@@ -485,29 +613,27 @@ describe('MessageRow', () => {
       <MessageRow message={agentReply} grouped={false} me="u-me" names={names} canManage={false} inThread streaming={{ text: 'Checking invoices', tool: 'exec', tools: [{ name: 'exec', done: false }] }} {...h} />,
     )
     expect(screen.getByText('AGENT')).toBeTruthy()
-    // A running agent shows its status; what it is writing appears once it is done.
+    // Nothing it is writing or doing shows in the row while it runs: the dock
+    // above the composer carries that, and the row keeps its place.
     expect(screen.queryByText('Checking invoices')).toBeNull()
-    expect(shim('group')!.textContent).toBe('1:true')
-    // The planning line is gone; the typing indicator reports the run instead.
+    expect(shim('running-reply-marker')!.textContent).toBe('Replying…')
+    expect(shim('group')).toBeNull()
+    expect(shim('agent-working-status')).toBeNull()
     expect(document.querySelector('[data-rn-shim="planning"]')).toBeNull()
-    // Stop sits in the header beside the AGENT tag, not beside the streamed work.
-    const stop = screen.getByLabelText('Stop agent')
-    expect(stop.parentElement?.textContent).toContain('AGENT')
-    // Open session sits beside Stop; the live status itself is not pressable.
-    expect(screen.getByLabelText('Open the session this agent is working in').parentElement).toBe(stop.parentElement)
-    expect(shim('group')!.closest('[aria-label="Open the session this agent is working in"]')).toBeNull()
-    fireEvent.click(stop)
-    expect(h.onStopAgent).toHaveBeenCalled()
+    expect(screen.queryByLabelText('Stop agent')).toBeNull()
+    expect(screen.queryByLabelText('Open the session this agent is working in')).toBeNull()
     expect(screen.queryByText('Open full session')).toBeNull()
 
     rerender(
       <MessageRow message={{ ...agentReply, agentStatus: 'done', text: 'All paid.' }} grouped={false} me="u-me" names={names} canManage={false} inThread {...h} />,
     )
+    expect(shim('running-reply-marker')).toBeNull()
+    expect(screen.getByText('All paid.')).toBeTruthy()
     fireEvent.click(screen.getByText('Open full session'))
     expect(h.onOpenSession).toHaveBeenCalled()
   })
 
-  test('a grouped running reply has no header, so Open session and Stop sit on a line of their own', () => {
+  test('a grouped running reply is just the marker, with no controls line of its own', () => {
     const h = handlers()
     const running = message({
       id: 'm5', authorType: 'agent', author: null, authorUserId: null,
@@ -517,13 +643,14 @@ describe('MessageRow', () => {
     render(
       <MessageRow message={running} grouped me="u-me" names={names} canManage={false} inThread streaming={{ text: '', tool: 'exec' }} {...h} />,
     )
-    const stop = screen.getByLabelText('Stop agent')
-    expect(stop.parentElement?.textContent).toBe('Open sessionStop')
-    fireEvent.click(stop)
-    expect(h.onStopAgent).toHaveBeenCalled()
+    // Grouped means no header at all, so the dock row is the only handle.
+    expect(screen.queryByText('Billing Bot')).toBeNull()
+    expect(shim('running-reply-marker')!.textContent).toBe('Replying…')
+    expect(screen.queryByLabelText('Stop agent')).toBeNull()
+    expect(screen.queryByLabelText('Open the session this agent is working in')).toBeNull()
   })
 
-  test('a running reply without a session offers Stop but no Open session', () => {
+  test('a running reply with no session still offers no buttons in the row', () => {
     const h = handlers()
     const running = message({
       id: 'm6', authorType: 'agent', author: null, authorUserId: null,
@@ -531,7 +658,8 @@ describe('MessageRow', () => {
       text: '', agentStatus: 'running', agentSessionId: null, threadRootId: 'm1',
     })
     render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} inThread {...h} />)
-    expect(screen.getByLabelText('Stop agent')).toBeTruthy()
+    expect(shim('running-reply-marker')).toBeTruthy()
+    expect(screen.queryByLabelText('Stop agent')).toBeNull()
     expect(screen.queryByLabelText('Open the session this agent is working in')).toBeNull()
   })
 
@@ -725,12 +853,56 @@ describe('MessageRow', () => {
     }
     expect(screen.queryByLabelText('More reactions')).toBeTruthy()
     fireEvent.click(screen.getByLabelText('More actions'))
-    for (const name of ['Copy link', 'Save for later', 'Remind me: in 1 hour', 'Pin to conversation', 'Edit message', 'Delete message']) {
+    for (const name of ['Copy link', 'Copy message', 'Save for later', 'Add a reminder', 'Pin to conversation', 'Edit message', 'Delete message']) {
       expect(screen.getByRole('menuitem', { name })).toBeTruthy()
     }
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete message' }))
     expect(h.onDelete).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  test('reminders are one row with a flyout, not four flat menu rows', async () => {
+    reminders.length = 0
+    const { container } = render(
+      <MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />,
+    )
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    // The four choices belong to one action, so they are not four menu rows.
+    expect(screen.queryByRole('menuitem', { name: 'Remind me: in 1 hour' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'In 1 hour' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add a reminder' }))
+    // The parent row only toggles the flyout: the menu stays open, no reminder yet.
+    expect(screen.getAllByRole('menu')).toHaveLength(2) // the menu plus its flyout
+    expect(screen.getByRole('menuitem', { name: 'In 1 hour' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Tomorrow' })).toBeTruthy()
+    expect(reminders).toHaveLength(0)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: 'In 1 hour' }))
+    })
+    expect(reminders).toHaveLength(1)
+    expect(reminders[0].messageId).toBe('m1')
+    // "In 1 hour" must land in the future, not silently schedule "now".
+    expect(Date.parse(reminders[0].remindAt)).toBeGreaterThan(Date.now() + 50 * 60_000)
+  })
+
+  test('copy message copies what the message reads as, not the stored wire tokens', async () => {
+    const { container } = render(
+      <MessageRow message={message({ text: '**hi** <@a:p:proj-1>' })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Copy message' }))
+    })
+    // Pasting outside Shogo must not hand anyone a UUID, and must not carry markup.
+    expect(copied.at(-1)).toBe('hi @Billing Bot')
+    expect(copied.at(-1)).not.toContain('p:proj-1')
+
+    fireEvent.click(screen.getByLabelText('More actions'))
+    expect(screen.getByRole('menuitem', { name: 'Message copied' })).toBeTruthy()
   })
 
   test('right-clicking a message opens the actions menu, with Delete only when permitted', () => {
@@ -798,6 +970,81 @@ describe('MessageRow', () => {
     expect(shim('emoji-picker')).toBeNull()
   })
 
+  test('the reaction picker opens anchored under its button, not centred', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 100, bottom: 120, width: 40, height: 20, x: 300, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    const popover = screen.getByTestId('reaction-picker-popover')
+    // Right edge follows the button (340 - 312), 6px under it.
+    expect(popover.style.position).toBe('fixed')
+    expect(popover.style.left).toBe('28px')
+    expect(popover.style.top).toBe('126px')
+  })
+
+  test('the picker flips above the button when it would overflow the bottom', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 700, bottom: 720, width: 40, height: 20, x: 300, y: 700, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    const popover = screen.getByTestId('reaction-picker-popover')
+    expect(popover.style.top).toBe('334px')
+  })
+
+  test('the picker stays inside the window when the button sits at the right edge', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    const right = window.innerWidth - 4
+    trigger.getBoundingClientRect = () => ({ left: right - 20, right, top: 100, bottom: 120, width: 20, height: 20, x: right - 20, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    const popover = screen.getByTestId('reaction-picker-popover')
+    expect(parseFloat(popover.style.left) + 312).toBeLessThanOrEqual(window.innerWidth - 8)
+  })
+
+  test('clicking outside or pressing Escape closes the anchored picker', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 100, bottom: 120, width: 40, height: 20, x: 300, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeTruthy()
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeNull()
+
+    fireEvent.click(trigger)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeTruthy()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeNull()
+  })
+
+  test('clicking the trigger again closes the picker instead of reopening it', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 100, bottom: 120, width: 40, height: 20, x: 300, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeTruthy()
+    fireEvent.mouseDown(trigger)
+    fireEvent.click(trigger)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeNull()
+  })
+
+  test('scrolling the timeline closes the anchored picker, but scrolling the emoji list does not', () => {
+    render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...handlers()} />)
+    fireEvent.pointerEnter(document.querySelector('[role="button"]')!)
+    const trigger = screen.getByLabelText('More reactions')
+    trigger.getBoundingClientRect = () => ({ left: 300, right: 340, top: 100, bottom: 120, width: 40, height: 20, x: 300, y: 100, toJSON: () => ({}) }) as DOMRect
+    fireEvent.click(trigger)
+    const popover = screen.getByTestId('reaction-picker-popover')
+    fireEvent.wheel(popover)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeTruthy()
+    fireEvent.wheel(document.body)
+    expect(screen.queryByTestId('reaction-picker-popover')).toBeNull()
+  })
+
   test('clicking a reaction you already have removes it', () => {
     const h = handlers()
     render(<MessageRow message={message({ reactions: [{ emoji: '👍', count: 1, userIds: ['u-me'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
@@ -832,7 +1079,28 @@ describe('MessageRow', () => {
     const chip = screen.getByLabelText('Ana Lopez, Bob Chen and 3 others reacted with 🎉')
     fireEvent.mouseEnter(chip.parentElement!)
     await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
-    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent).toContain('Ana Lopez, Bob Chen, Cid Rao, Dee Park and You reacted with :tada:')
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent)
+      .toContain('Ana Lopez, Bob Chen, Cid Rao, Dee Park and You (click to remove) reacted with :tada:')
+  })
+
+  test('the hover card says the click removes it, but only when you reacted', async () => {
+    const { rerender } = render(
+      <MessageRow message={message({ reactions: [{ emoji: '✅', count: 1, userIds: ['u-me'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    fireEvent.mouseEnter(screen.getByLabelText('You reacted with ✅').parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    expect(document.querySelector('[data-testid="reaction-tooltip"]')!.textContent)
+      .toContain('You (click to remove) reacted with :white_check_mark:')
+
+    rerender(
+      <MessageRow message={message({ reactions: [{ emoji: '✅', count: 1, userIds: ['u-ana'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    fireEvent.mouseLeave(screen.getByLabelText('Ana Lopez reacted with ✅').parentElement!)
+    fireEvent.mouseEnter(screen.getByLabelText('Ana Lopez reacted with ✅').parentElement!)
+    await waitFor(() => expect(document.querySelector('[data-testid="reaction-tooltip"]')).not.toBeNull())
+    const card = document.querySelector('[data-testid="reaction-tooltip"]')!
+    expect(card.textContent).toContain('Ana Lopez reacted with :white_check_mark:')
+    expect(card.textContent).not.toContain('to remove')
   })
 
   test('a pasted markdown attachment renders as a markdown card, not a file tile', () => {
@@ -846,14 +1114,93 @@ describe('MessageRow', () => {
     expect(shim('attachment-card-Pasted markdown.md')).toBeNull()
   })
 
-  test('any other pasted file stays the plain file card', () => {
-    const attachment = {
-      id: 'att-code', name: 'Pasted code.txt', mimeType: 'text/plain', size: 2100,
-      url: '/api/conversation-files/att-code?t=x', width: null, height: null,
-    }
-    render(<MessageRow message={message({ attachments: [attachment] })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
-    expect(shim('attachment-card-Pasted code.txt')).toBeTruthy()
-    expect(shim('pasted-markdown-card')).toBeNull()
+  test('a huddle notes summary shows the title and summary, and opens the transcript', () => {
+    const text = 'Huddle notes: Design review\n\n## Decisions\n- Ship it'
+    render(
+      <MessageRow
+        message={message({
+          authorType: 'system',
+          text,
+          blocks: { huddleNotes: { huddleId: 'h1', meetingId: 'm1', title: 'Design review', status: 'ready' } },
+        })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    const card = shim('huddle-notes-block')!
+    expect(card).toBeTruthy()
+    expect(card.textContent).toContain('Design review')
+    expect(card.textContent).toContain('Ship it')
+    // The title is the card's own line, not repeated in the body.
+    expect(card.textContent).not.toContain('Huddle notes:')
+
+    const before = routed.length
+    fireEvent.click(screen.getByLabelText('Open the full transcript'))
+    expect(routed.slice(before)).toEqual([
+      expect.objectContaining({ pathname: '/(app)/huddles/[huddleId]/notes', params: { huddleId: 'h1' } }),
+    ])
+  })
+
+  test('deleted notes keep the message, without a transcript to open', () => {
+    render(
+      <MessageRow
+        message={message({
+          authorType: 'system',
+          text: 'Huddle notes deleted.',
+          blocks: { huddleNotes: { huddleId: 'h1', meetingId: null, title: null, status: 'deleted' } },
+        })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    expect(shim('huddle-notes-block')!.textContent).toContain('Huddle notes deleted')
+    expect(screen.queryByLabelText('Open the full transcript')).toBeNull()
+  })
+
+  test('an ended huddle card links to the notes of the call it belongs to', () => {
+    render(
+      <MessageRow
+        message={message({
+          authorType: 'system',
+          text: 'Huddle ended',
+          blocks: { huddle: { id: 'h1', status: 'ended', notesMeetingId: 'm1' } },
+        })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    expect(shim('huddle-notes-link')).toBeTruthy()
+    expect(shim('huddle-notes-block')).toBeNull()
+
+    const before = routed.length
+    fireEvent.click(screen.getByLabelText("Open this huddle's notes"))
+    expect(routed.slice(before)).toEqual([
+      expect.objectContaining({ pathname: '/(app)/huddles/[huddleId]/notes', params: { huddleId: 'h1' } }),
+    ])
+  })
+
+  test('a huddle with no notes stays the plain call card', () => {
+    render(
+      <MessageRow
+        message={message({ authorType: 'system', text: 'Huddle ended', blocks: { huddle: { id: 'h1', status: 'ended' } } })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    expect(shim('huddle-notes-link')).toBeNull()
+    expect(shim('huddle-notes-block')).toBeNull()
   })
 })
 
@@ -1367,30 +1714,17 @@ describe('agent work', () => {
     workLogResult = async () => ({ parts: [], startedAt: 0, completedAt: 1, toolCalls: 0 })
   })
 
-  test('Open session in the header opens the session the agent is working in', () => {
-    const h = handlers()
-    const running = { ...reply(), agentStatus: 'running', text: '' }
-    render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
-    fireEvent.click(screen.getByLabelText('Open the session this agent is working in'))
-    expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
-  })
-
-  test('the workspace agent (no project) opens its session from Open session too', () => {
-    const h = handlers()
-    const running = { ...reply(), authorAgent: { projectId: null, name: 'Workspace agent' }, agentStatus: 'running', text: '' }
-    render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
-    fireEvent.click(screen.getByLabelText('Open the session this agent is working in'))
-    expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
-  })
-
-  test('a running reply has no planning line, before or during tools; the typing indicator reports the run', () => {
+  test('a running reply is a marker before and during tools; its work is the dock\'s job', () => {
     const running = { ...reply(), agentStatus: 'running', text: '' }
     const { rerender } = render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
     expect(shim('planning')).toBeNull()
     expect(shim('group')).toBeNull()
+    expect(shim('running-reply-marker')).toBeTruthy()
     rerender(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} streaming={{ text: '', tool: 'exec', tools: [{ name: 'exec', done: false }] }} {...handlers()} />)
-    expect(shim('group')).toBeTruthy()
+    // The tools it ran show here only once the run has finished.
+    expect(shim('group')).toBeNull()
     expect(shim('planning')).toBeNull()
+    expect(shim('running-reply-marker')).toBeTruthy()
   })
 })
 
@@ -1636,7 +1970,7 @@ describe('#activity filters', () => {
   })
 })
 
-describe('typing indicator in a channel', () => {
+describe('running agents in a channel', () => {
   const channel = {
     id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
     topic: null, lastSeq: 2, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
@@ -1648,7 +1982,7 @@ describe('typing indicator in a channel', () => {
       id, seq: 2, authorType: 'agent', author: null, authorUserId: null,
       authorAgent: { projectId, name }, text: '', agentStatus: 'running', agentSessionId: `s-${id}`, threadRootId: null,
     })
-  const renderChannel = () =>
+  const renderChannel = (props: Record<string, unknown> = {}) =>
     render(
       <TimelinePane
         workspaceId="ws"
@@ -1656,43 +1990,92 @@ describe('typing indicator in a channel', () => {
         me="u-me"
         mentionables={{ ...mentionables, agents: [] }}
         visible
+        {...props}
       />,
     )
 
+  /** The reply's own row, once it has been marked to jump to. */
+  const highlighted = () => document.querySelector('[data-testid="message-highlighted"]')
+
   beforeEach(() => {
     typingUsers.length = 0
+    stoppedAgents.length = 0
     activityTimeline.messages = []
   })
   afterEach(() => {
     cleanup()
     typingUsers.length = 0
+    stoppedAgents.length = 0
     activityTimeline.messages = []
   })
 
-  test('a running agent reply shows the agent as typing', () => {
+  test('a running agent gets a dock row above the composer, not a typing line', () => {
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
     renderChannel()
-    expect(screen.getByText('Billing Bot is typing…')).toBeTruthy()
+    expect(shim('running-agents-dock')!.textContent).toContain('Billing Bot')
+    expect(screen.getByTestId('running-agent-row-r1')).toBeTruthy()
+    // The grey line under the list never names an agent.
+    expect(document.body.textContent).not.toContain('is typing')
   })
 
-  test('two running replies from one agent list it once', () => {
+  test('two running replies from one agent are two dock rows', () => {
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot'), runningReply('r2', 'proj-1', 'Billing Bot')]
     renderChannel()
-    expect(screen.getByText('Billing Bot is typing…')).toBeTruthy()
+    expect(screen.getAllByTestId(/^running-agent-row-/)).toHaveLength(2)
   })
 
-  test('a person and an agent with the same name are both listed', () => {
+  test('a person and a running agent with the same name: only the person is typing', () => {
     typingUsers.push({ id: 'pat', name: 'Billing Bot' })
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
     renderChannel()
-    expect(screen.getByText('Billing Bot and Billing Bot are typing…')).toBeTruthy()
+    expect(screen.getByText('Billing Bot is typing')).toBeTruthy()
+    expect(document.body.textContent).not.toContain('Billing Bot and Billing Bot')
+    expect(shim('running-agents-dock')!.textContent).toContain('Billing Bot')
   })
 
-  test('four typists name the first two and count the rest', () => {
+  test('two people typing while two agents run: only the people are counted', () => {
     typingUsers.push({ id: 'pat', name: 'Pat' }, { id: 'lee', name: 'Lee' })
     activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot'), runningReply('r2', 'proj-2', 'Support Bot')]
     renderChannel()
-    expect(screen.getByText('Pat, Lee and 2 others are typing…')).toBeTruthy()
+    expect(screen.getByText('Pat and Lee are typing')).toBeTruthy()
+    expect(screen.getAllByTestId(/^running-agent-row-/)).toHaveLength(2)
+  })
+
+  test('a thread docks its own running replies', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel({ threadRootId: 'root-1' })
+    expect(screen.getByTestId('running-agent-row-r1')).toBeTruthy()
+  })
+
+  test('tapping a dock row jumps to and highlights that reply', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel()
+    expect(highlighted()).toBeNull()
+    fireEvent.click(screen.getByLabelText("Jump to Billing Bot's reply"))
+    expect(highlighted()).not.toBeNull()
+  })
+
+  test('Stop on a dock row stops that run', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel()
+    fireEvent.click(screen.getByLabelText('Stop agent'))
+    expect(stoppedAgents).toEqual(['r1'])
+  })
+
+  test('Open session on a dock row opens that reply\'s session', () => {
+    const onOpenSession = mock(() => {})
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel({ onOpenSession })
+    fireEvent.click(screen.getByLabelText('Open the session this agent is working in'))
+    expect(onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'r1', agentSessionId: 's-r1' }))
+  })
+
+  test('the phone pane floats the dock in the footer above the composer', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel({ floating: true, topInset: 0 })
+    const footer = shim('floating-composer')
+    expect(footer).toBeTruthy()
+    expect(footer!.querySelector('[data-rn-shim="running-agents-dock"]')).not.toBeNull()
   })
 })
 
@@ -1821,6 +2204,156 @@ describe('MessageRow image attachments', () => {
     expect(screen.queryByLabelText('Open shot-1.png')).toBeNull()
     expect(screen.queryByTestId('image-lightbox')).toBeNull()
   })
+
+  describe('sizing to the image and the pane', () => {
+    const sized = (id: string, name: string, width: number | null, height: number | null) => ({
+      id, name, mimeType: 'image/png', size: 2048, width, height, url: `/api/uploads/${id}`,
+    })
+
+    /** What a layout pass on the attachment row would report. */
+    const reportRowWidth = (width: number) => {
+      const row = document.querySelector('[data-rn-shim="message-attachments"]') as Element
+      const handler = layoutHandlers.get(row)
+      if (!handler) throw new Error('the attachment row registered no onLayout')
+      act(() => handler({ nativeEvent: { layout: { width, height: 40 } } }))
+    }
+
+    /** What an image reports once it has loaded, for attachments with no stored size. */
+    const reportImageSize = (
+      name: string,
+      width: number,
+      height: number,
+      shape: 'native' | 'web' | 'nulled' = 'native',
+    ) => {
+      const img = document.querySelector(`img[accessibilitylabel="${name}"]`) as Element
+      const handler = imageLoadHandlers.get(img)
+      if (!handler) throw new Error('the image registered no onLoad')
+      // Native puts the size in `nativeEvent.source`; a DOM load event carries it
+      // on its target, and on web it arrives after `decode()` with that target
+      // already nulled.
+      const event =
+        shape === 'nulled'
+          ? { nativeEvent: { type: 'load', target: null } }
+          : shape === 'web'
+            ? { nativeEvent: { type: 'load', target: { naturalWidth: width, naturalHeight: height } } }
+            : { nativeEvent: { source: { width, height, uri: '' } } }
+      act(() => handler(event))
+    }
+
+    const imageEl = (name: string) =>
+      document.querySelector(`img[accessibilitylabel="${name}"]`) as HTMLImageElement
+
+    /**
+     * What `Image.getSize` answers, which is the only measurement that survives
+     * a web load event: react-native-web defers `onLoad` through
+     * `image.decode()`, and Chromium has nulled the event's target by then.
+     */
+    const reportGetSize = (uriPart: string, width: number, height: number) => {
+      // The most recent request is the live one; an earlier uri's request is
+      // ignored by the hook on purpose.
+      const request = [...imageGetSizeRequests].reverse().find((entry) => entry.uri.includes(uriPart))
+      if (!request) throw new Error(`no Image.getSize request matching ${uriPart}`)
+      act(() => request.success(width, height))
+    }
+
+    beforeEach(() => {
+      imageGetSizeRequests.length = 0
+    })
+
+    test('a wide screenshot fills the row instead of a 220px strip', () => {
+      renderRow([sized('a1', 'shot.png', 1600, 900)])
+      reportRowWidth(900)
+
+      const img = imageEl('shot.png')
+      expect(img.style.width).toBe('462px')
+      expect(img.style.height).toBe('260px')
+      // The box matches the aspect, so the image is shown whole, never cropped.
+      expect(img.getAttribute('resizemode')).toBe('contain')
+    })
+
+    test('it shrinks with a narrow pane and never overflows it', () => {
+      renderRow([sized('a1', 'shot.png', 1600, 900)])
+      reportRowWidth(200)
+
+      expect(imageEl('shot.png').style.width).toBe('200px')
+      expect(imageEl('shot.png').style.height).toBe('113px')
+    })
+
+    test('a small image is not upscaled past its own pixels', () => {
+      renderRow([sized('a1', 'tiny.png', 120, 80)])
+      reportRowWidth(900)
+
+      expect(imageEl('tiny.png').style.width).toBe('120px')
+      expect(imageEl('tiny.png').style.height).toBe('80px')
+    })
+
+    test('a tall image stays within the max height', () => {
+      renderRow([sized('a1', 'tall.png', 900, 1600)])
+      reportRowWidth(900)
+
+      expect(imageEl('tall.png').style.height).toBe('260px')
+      // 146 wide, so the portrait keeps its aspect rather than being squeezed.
+      expect(imageEl('tall.png').style.width).toBe('146px')
+      expect(imageEl('tall.png').getAttribute('resizemode')).toBe('contain')
+    })
+
+    test('an extremely tall image is widened to the min width and cropped', () => {
+      renderRow([sized('a1', 'sliver.png', 300, 2400)])
+      reportRowWidth(900)
+
+      expect(imageEl('sliver.png').style.width).toBe('120px')
+      expect(imageEl('sliver.png').style.height).toBe('260px')
+      expect(imageEl('sliver.png').getAttribute('resizemode')).toBe('cover')
+    })
+
+    test('an attachment with no stored dimensions takes its aspect from the image', () => {
+      renderRow([sized('a1', 'old.png', null, null)])
+      reportRowWidth(900)
+      // Until it loads the fallback aspect fills the row, the size a 4:3 image would want.
+      expect(imageEl('old.png').style.width).toBe('347px')
+
+      reportImageSize('old.png', 1600, 900)
+
+      expect(imageEl('old.png').style.width).toBe('462px')
+      expect(imageEl('old.png').style.height).toBe('260px')
+    })
+
+    test('a stored smaller size is not overridden by what the image loads as', () => {
+      renderRow([sized('a1', 'small.png', 200, 100)])
+      reportRowWidth(900)
+
+      reportImageSize('small.png', 1600, 900, 'web')
+
+      expect(imageEl('small.png').style.width).toBe('200px')
+      expect(imageEl('small.png').style.height).toBe('100px')
+      // Stored dimensions win, so nothing is measured at all.
+      expect(imageGetSizeRequests).toHaveLength(0)
+    })
+
+    test('web sizes an attachment with no stored dimensions from Image.getSize', () => {
+      renderRow([sized('a1', 'old.png', null, null)])
+      reportRowWidth(900)
+      expect(imageEl('old.png').style.width).toBe('347px')
+
+      // react-native-web's load event arrives after `image.decode()` with a
+      // nulled target, so it carries no size at all.
+      reportImageSize('old.png', 0, 0, 'nulled')
+      expect(imageEl('old.png').style.width).toBe('347px')
+
+      reportGetSize('/api/uploads/a1', 1600, 900)
+
+      expect(imageEl('old.png').style.width).toBe('462px')
+      expect(imageEl('old.png').style.height).toBe('260px')
+      expect(imageEl('old.png').getAttribute('resizemode')).toBe('contain')
+    })
+
+    test('before the row is measured the preview keeps the old 220px width', () => {
+      renderRow([sized('a1', 'shot.png', 800, 600)])
+
+      expect(imageEl('shot.png').style.width).toBe('220px')
+      expect(imageEl('shot.png').style.height).toBe('165px')
+    })
+  })
 })
 
 describe('opening a person’s profile from a message', () => {
@@ -1940,5 +2473,258 @@ describe('opening a person’s profile from a message', () => {
     renderChannel()
     expect(mentions()).toHaveLength(1)
     expect(onOpenProfile).not.toHaveBeenCalled()
+  })
+})
+
+describe('Composer channel references', () => {
+  const channels = [
+    { id: 'c-ops', kind: 'public', name: 'ops', slug: 'ops' },
+    { id: 'c-itau', kind: 'private', name: 'client-itau', slug: 'client-itau' },
+  ]
+
+  afterEach(() => cleanup())
+
+  test('# lists the channels the reader can see and sends a channel token', async () => {
+    const onSend = mock(async () => {})
+    render(
+      <Composer workspaceId="ws" conversationId="c1" placeholder="Message" mentionables={mentionables} me="u-me" channels={channels} onSend={onSend} />,
+    )
+    const input = composerInput()
+    type(input, 'ask in #cli')
+    expect(screen.getByText('client-itau')).toBeTruthy()
+    expect(screen.queryByText('ops')).toBeNull()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+    })
+    const sent = (onSend.mock.calls[0] as any[])[0]
+    expect(sent.text).toContain('<#c:c-itau>')
+  })
+
+  test('the channel being read is not offered as a reference', () => {
+    render(
+      <Composer workspaceId="ws" conversationId="c-ops" placeholder="Message" mentionables={mentionables} me="u-me" channels={channels} onSend={async () => {}} />,
+    )
+    type(composerInput(), '#')
+    expect(screen.getByText('client-itau')).toBeTruthy()
+    expect(screen.queryByText('ops')).toBeNull()
+  })
+})
+
+describe('channel mentions in a message', () => {
+  const conversation = {
+    id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
+    topic: null, lastSeq: 2, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+    joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 2,
+    canPost: true, canReply: true, canManage: false, members: [],
+  }
+  const renderPane = () =>
+    render(
+      <TimelinePane
+        workspaceId="ws"
+        conversation={conversation as any}
+        me="u-me"
+        mentionables={{ ...mentionables, agents: [] }}
+        visible
+      />,
+    )
+  const mentions = () => document.querySelectorAll('[data-testid="chat-mention"]')
+
+  afterEach(() => {
+    cleanup()
+    routed.length = 0
+    activityTimeline.messages = []
+    activityTimeline.channels = []
+  })
+
+  test('a channel the reader can see opens from the message', () => {
+    activityTimeline.channels = [{ id: 'c-ops', kind: 'public', name: 'ops', slug: 'ops' }]
+    activityTimeline.messages = [message({ text: 'ask in <#c:c-ops>' })]
+    renderPane()
+    expect(mentions()).toHaveLength(1)
+    fireEvent.click(mentions()[0]!)
+    expect(routed).toEqual([{ pathname: '/(app)/c/[conversationId]', params: { conversationId: 'c-ops' } }])
+  })
+
+  test('a private channel the reader is not in shows no name and is not tappable', () => {
+    activityTimeline.channels = []
+    activityTimeline.messages = [message({ text: 'in <#c:secret-plans>' })]
+    const { container } = renderPane()
+    expect(mentions()).toHaveLength(0)
+    expect(container.textContent).toContain('#privatechannel')
+    expect(container.textContent).not.toContain('secret-plans')
+    expect(routed).toEqual([])
+  })
+})
+
+/**
+ * A team-chat message queued behind a reply the agent is still writing is a
+ * durable `AgentWake`, and its note is that wake's row: Send now starts it,
+ * ✕ takes it off the queue. Both act on the wake, not on the transcript.
+ */
+describe('a queued team-chat message', () => {
+  const queued = (wake: Record<string, unknown> = {}): any =>
+    message({
+      id: 'n1',
+      authorType: 'system',
+      author: null,
+      authorUserId: null,
+      text: 'Queued for Billing Bot — it runs when the current reply ends.',
+      blocks: {
+        wakeQueued: {
+          wakeId: 'w1',
+          agentRef: 'project:proj-1',
+          agentName: 'Billing Bot',
+          triggerMessageId: 'm2',
+          runningMessageId: 'm3',
+          ...wake,
+        },
+      },
+    })
+  const row = (msg: any) =>
+    render(<MessageRow message={msg} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+
+  afterEach(() => {
+    sentWakes.length = 0
+    removedWakes.length = 0
+  })
+
+  test('the note is the wake row, not the old sentence, and Send now starts it', async () => {
+    row(queued())
+
+    expect(screen.getByText('Queued for Billing Bot')).toBeInTheDocument()
+    expect(screen.getByLabelText('Send queued message now')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('it runs when the current reply ends')
+
+    fireEvent.click(screen.getByLabelText('Send queued message now'))
+    await waitFor(() => expect(sentWakes).toEqual(['w1']))
+  })
+
+  test('✕ takes the message off the queue', async () => {
+    row(queued())
+
+    fireEvent.click(screen.getByLabelText('Remove queued message'))
+    await waitFor(() => expect(removedWakes).toEqual(['w1']))
+    expect(sentWakes).toEqual([])
+  })
+
+  test('a note painted before the row knew its wake stays the plain system line', () => {
+    const legacy = queued()
+    delete legacy.blocks.wakeQueued.wakeId
+    row(legacy)
+
+    expect(screen.queryByLabelText('Send queued message now')).toBeNull()
+    expect(screen.queryByLabelText('Remove queued message')).toBeNull()
+    expect(document.body.textContent).toContain('it runs when the current reply ends')
+  })
+
+  test('a wake already running offers nothing to press and says who started it', () => {
+    row(queued({ status: 'running', sentNowBy: { id: 'u-ana', name: 'Ana Lopez' } }))
+
+    expect(screen.queryByLabelText('Send queued message now')).toBeNull()
+    expect(document.body.textContent).toContain('Sent now by Ana Lopez · running')
+  })
+})
+
+describe('MessageList wheel passthrough', () => {
+  /**
+   * A markdown table inside the inverted timeline is wider than the pane, and
+   * react-native-web's inverted wheel handler answers every gesture itself —
+   * it prevents the default and only ever moves the list. A nested scroller
+   * therefore has to be handed back to the browser from a capture-phase
+   * listener on the list (SHO-162).
+   */
+  const timeline = (messages: any[]) => ({ messages, streaming: {}, hasMoreOlder: false }) as any
+  const table = ['| a | b | c |', '| - | - | - |', '| 1 | 2 | 3 |'].join('\n')
+  const list = () => (
+    <MessageList
+      state={timeline([message({ id: 'a', seq: 1, text: 'before' }), message({ id: 'b', seq: 2, text: table })])}
+      loading={false}
+      me="u-me"
+      names={names}
+      canManage={false}
+      {...handlers()}
+    />
+  )
+  /** jsdom has no layout, so give the table wrapper the scroll box a browser would. */
+  const scrollBox = (element: HTMLElement, width: number, scrollWidth: number) => {
+    element.style.overflowX = 'auto'
+    element.style.overflowY = 'auto'
+    for (const [key, value] of Object.entries({ clientWidth: width, scrollWidth, clientHeight: 200, scrollHeight: 200, scrollLeft: 0, scrollTop: 0 })) {
+      Object.defineProperty(element, key, { value, configurable: true, writable: true })
+    }
+  }
+  /**
+   * A real WheelEvent carrying its modifiers. jsdom reports `shiftKey` as
+   * undefined (it has no KeyboardEvent base), and RTL's synthetic wheel drops
+   * `deltaY`, so neither stands in for the browser here.
+   */
+  const wheel = (target: Element, init: WheelEventInit) => {
+    const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init })
+    if (init.shiftKey) Object.defineProperty(event, 'shiftKey', { value: true })
+    target.dispatchEvent(event)
+    return event
+  }
+  /** Stands in for RN-web's own listener on the list's scroll node. */
+  const countListWheel = () => {
+    const scrollNode = document.querySelector('[data-scroll-node]') as HTMLElement
+    const seen: WheelEvent[] = []
+    scrollNode.addEventListener('wheel', (event) => seen.push(event as WheelEvent))
+    return seen
+  }
+  const tableParts = () => {
+    const cell = document.querySelector('[data-streamdown="table"] td') as HTMLElement | null
+    const wrapper = cell?.closest('table')?.parentElement as HTMLElement | undefined
+    return { cell, wrapper }
+  }
+
+  beforeEach(() => render(list()))
+  afterEach(() => cleanup())
+
+  test('a sideways swipe over a wide table scrolls it and never reaches the list', () => {
+    const { cell, wrapper } = tableParts()
+    expect(cell).toBeTruthy()
+    scrollBox(wrapper!, 300, 700)
+    const seen = countListWheel()
+
+    expect(wheel(cell!, { deltaX: 120, deltaY: 0 }).defaultPrevented).toBe(true)
+    expect(wrapper!.scrollLeft).toBe(120)
+
+    expect(wheel(cell!, { deltaX: 0, deltaY: 120, shiftKey: true }).defaultPrevented).toBe(true)
+    expect(wrapper!.scrollLeft).toBe(240)
+
+    expect(seen).toHaveLength(0)
+  })
+
+  test('a vertical wheel over a table wrapper that only scrolls sideways is the list\'s', () => {
+    const { cell, wrapper } = tableParts()
+    scrollBox(wrapper!, 300, 700)
+    const seen = countListWheel()
+
+    wheel(cell!, { deltaX: 0, deltaY: -120 })
+    expect(seen).toHaveLength(1)
+  })
+
+  test('a wheel over the table still reaches the list once the table is at its edge', () => {
+    const { cell, wrapper } = tableParts()
+    scrollBox(wrapper!, 300, 700)
+    Object.defineProperty(wrapper!, 'scrollLeft', { value: 400, configurable: true, writable: true })
+    const seen = countListWheel()
+
+    wheel(cell!, { deltaX: 120, deltaY: 0 })
+    expect(seen).toHaveLength(1)
+    expect(wrapper!.scrollLeft).toBe(400)
+  })
+
+  test('a wheel over plain text still reaches the list', () => {
+    const seen = countListWheel()
+    wheel(screen.getByText('before'), { deltaX: 0, deltaY: 120 })
+    expect(seen).toHaveLength(1)
+  })
+
+  test('a sideways swipe over plain text stays with the list', () => {
+    const seen = countListWheel()
+    wheel(screen.getByText('before'), { deltaX: 120, deltaY: 0 })
+    expect(seen).toHaveLength(1)
   })
 })

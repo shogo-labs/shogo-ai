@@ -115,6 +115,14 @@ const mockPrisma = {
   },
   toolCallLog: { createMany: async () => ({ count: 0 }) },
   remoteAction: { create: remoteActionCreate },
+  // The machine copy state SHO-185 added. `GET /machines` reads it for "Last
+  // synced"/"Sync to cloud"; without the model the list must still answer 200
+  // (the route treats a missing table as "no copy state"), so this stub is here
+  // to prove the list reads it rather than to make a 500 go away.
+  machineSyncState: {
+    findUnique: async () => null,
+    findMany: async () => [],
+  },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))

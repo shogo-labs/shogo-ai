@@ -451,29 +451,64 @@ async function participantNames(workspaceId: string, conversationIds: string[], 
   return { byConversation, orphanedDirectIds }
 }
 
-export async function listConversationsForUser(workspaceId: string, userId: string) {
-  const [general] = await ensureDefaultConversations(workspaceId)
-  // Gives every existing member their note-to-self on the next list load, so
-  // the workspace creator and older accounts need no separate backfill.
-  await ensureSelfConversation(workspaceId, userId)
-  const memberships = await db.conversationMember.findMany({
-    where: { userId, conversation: { workspaceId } },
-  })
-  if (general && !memberships.some((m: any) => m.conversationId === general.id)) {
-    const joined = await ensureGeneralMembership(general, userId)
-    if (joined) memberships.push(joined)
+export interface ListConversationsOptions {
+  /**
+   * Catch-up instead of a full list: only the conversations the reader can see
+   * that changed at or after this instant, plus their own membership rows. The
+   * client merges them into what it already has.
+   */
+  since?: Date
+}
+
+export async function listConversationsForUser(
+  workspaceId: string,
+  userId: string,
+  options: ListConversationsOptions = {},
+) {
+  const loadMemberships = () =>
+    db.conversationMember.findMany({ where: { userId, conversation: { workspaceId } } })
+  const loadConversations = () =>
+    db.conversation.findMany({
+      where: {
+        workspaceId,
+        OR: [
+          { kind: { in: ['public', 'activity'] } },
+          { id: { in: memberships.map((m: any) => m.conversationId) } },
+        ],
+      },
+      orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'asc' }],
+    })
+
+  let memberships = await loadMemberships()
+  let conversations = await loadConversations()
+  const general = conversations.find(
+    (c: any) => c.kind === 'public' && c.slug === DEFAULT_CHANNEL_SLUG,
+  )
+  // #general, #activity, the note-to-self DM and joining #general are set-up
+  // writes, not list reads: a steady-state call does the two reads above and
+  // nothing else. Only a workspace or account that is genuinely missing one of
+  // them pays for the write (and re-reads, so the new row is in the result).
+  const needsSetup =
+    !general ||
+    !conversations.some((c: any) => c.kind === 'activity') ||
+    !conversations.some((c: any) => c.dmKey === `u:${userId}`) ||
+    !memberships.some((m: any) => m.conversationId === general.id)
+  if (needsSetup) {
+    const [createdGeneral] = await ensureDefaultConversations(workspaceId)
+    // Gives every existing member their note-to-self, so the workspace creator
+    // and older accounts need no separate backfill.
+    await ensureSelfConversation(workspaceId, userId)
+    const target = general ?? createdGeneral
+    if (target && !memberships.some((m: any) => m.conversationId === target.id)) {
+      await ensureGeneralMembership(target, userId)
+    }
+    memberships = await loadMemberships()
+    conversations = await loadConversations()
+  }
+  if (options.since) {
+    conversations = await conversationsChangedSince(conversations, memberships, options.since)
   }
   const membershipByConv = new Map<string, any>(memberships.map((m: any) => [m.conversationId, m]))
-  const conversations = await db.conversation.findMany({
-    where: {
-      workspaceId,
-      OR: [
-        { kind: { in: ['public', 'activity'] } },
-        { id: { in: memberships.map((m: any) => m.conversationId) } },
-      ],
-    },
-    orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'asc' }],
-  })
 
   const directIds = conversations.filter((c: any) => c.kind === 'dm' || c.kind === 'group_dm').map((c: any) => c.id)
   const { byConversation: participants, orphanedDirectIds } = await participantNames(workspaceId, directIds, userId)
@@ -488,7 +523,11 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
   }
   const mentionCounts = await unreadMentionCounts(userId, memberships)
   const unread = await unreadCounts(userId, conversations, membershipByConv)
-  const lastMessages = await lastMessagePreviews(directIds, workspaceId)
+  const lastMessages = await lastMessagePreviews(
+    directIds,
+    workspaceId,
+    new Set(conversations.map((c: any) => c.id)),
+  )
   const docs = await docUpdatedAts(conversations.map((c: any) => c.id))
 
   return conversations.map((c: any) => {
@@ -519,11 +558,38 @@ export interface LastMessage {
 }
 
 /**
+ * The subset of a full conversation list that changed at or after `since`:
+ * the conversation row itself (a new message bumps `lastSeq`/`lastMessageAt`),
+ * the reader's own membership (a read, a star, a mute), or its doc.
+ */
+async function conversationsChangedSince(
+  conversations: any[],
+  memberships: any[],
+  since: Date,
+): Promise<any[]> {
+  if (!conversations.length) return conversations
+  const touched = new Set<string>()
+  for (const c of conversations) if (c.updatedAt >= since) touched.add(c.id)
+  for (const m of memberships) if (m.updatedAt && m.updatedAt >= since) touched.add(m.conversationId)
+  const docs = await db.conversationDoc.findMany({
+    where: { conversationId: { in: conversations.map((c: any) => c.id) }, updatedAt: { gte: since } },
+    select: { conversationId: true },
+  })
+  for (const doc of docs) touched.add(doc.conversationId)
+  return conversations.filter((c: any) => touched.has(c.id))
+}
+
+/**
  * The newest top-level message of each conversation, for the DM list's second
  * line. One grouped query finds the newest seq per conversation, one more
  * reads those rows, so cost does not grow with message history.
  */
-export async function lastMessagePreviews(conversationIds: string[], workspaceId: string): Promise<Map<string, LastMessage>> {
+export async function lastMessagePreviews(
+  conversationIds: string[],
+  workspaceId: string,
+  /** The reader's own channels, so a `#` reference is only named if they can see it. */
+  visibleConversationIds?: Set<string>,
+): Promise<Map<string, LastMessage>> {
   const out = new Map<string, LastMessage>()
   if (!conversationIds.length) return out
   const latest = await db.conversationMessage.groupBy({
@@ -540,7 +606,7 @@ export async function lastMessagePreviews(conversationIds: string[], workspaceId
     },
   })
   const names = {
-    ...(await loadNamesForTexts(db, workspaceId, rows.map((r: any) => r.text ?? ''))),
+    ...(await loadNamesForTexts(db, workspaceId, rows.map((r: any) => r.text ?? ''), visibleConversationIds)),
     workspaceAgentName: await agentDisplayName(workspaceId, null),
   }
   for (const row of rows as any[]) {
@@ -1015,11 +1081,38 @@ export async function openDirectConversation(workspaceId: string, userId: string
   const participants = [...new Set([userId, ...others])].sort()
   const dmKey = `u:${participants.join(',')}`
   const kind = participants.length <= 2 ? 'dm' : 'group_dm'
-  return findOrCreateDirect(workspaceId, dmKey, kind, userId, async (conversationId) => {
-    for (const uid of participants) {
-      await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId: uid } })
-    }
+  const conversation = await findOrCreateDirect(workspaceId, dmKey, kind, userId, async (conversationId) => {
+    for (const uid of participants) await ensureUserMember(conversationId, uid)
   })
+  // Someone else may have asked for the same group a moment ago (a call adding
+  // people has everyone ask at once) and be returned it before its members
+  // were written, and a person who left an earlier group with these people
+  // would otherwise be locked out of it. The key is exactly these people, so
+  // everyone in it belongs in it.
+  const added = await ensureUserMembers(conversation.id, participants)
+  if (added.length) {
+    await publish(conversation, { type: 'conversation.created', conversation: serializeConversation(conversation) })
+  }
+  return conversation
+}
+
+/** Add one person to a conversation unless they already are (safe to race). */
+async function ensureUserMember(conversationId: string, userId: string): Promise<boolean> {
+  const existing = await db.conversationMember.findFirst({ where: { conversationId, userId } })
+  if (existing) return false
+  try {
+    await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId } })
+    return true
+  } catch (err: any) {
+    if (err?.code === 'P2002') return false
+    throw err
+  }
+}
+
+async function ensureUserMembers(conversationId: string, userIds: string[]): Promise<string[]> {
+  const added: string[] = []
+  for (const uid of userIds) if (await ensureUserMember(conversationId, uid)) added.push(uid)
+  return added
 }
 
 export async function openAgentConversation(workspaceId: string, userId: string, target: AgentTarget) {

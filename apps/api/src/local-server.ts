@@ -33,6 +33,8 @@ import { isSecretCryptoConfigured } from './lib/secret-crypto'
 import { ensureTranscriptionEngine } from './services/transcription-install.service'
 import { startCloudWorkspaceSync } from './services/cloud-workspaces'
 import { startInstanceTunnel, stopInstanceTunnel } from './lib/instance-tunnel'
+import { startMachineSync, stopMachineSync } from './lib/machine-sync/local-sync'
+import { registerLocalShutdownHandler } from './lib/local-shutdown'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { cloudSocketRelayHandlers, isCloudSocketRelayData } from './routes/local-cloud-proxy'
 
@@ -113,6 +115,13 @@ console.log(`   Workspace runtime: ws:proj:<anchor>`)
 // Registers this machine with Shogo Cloud (heartbeat + on-demand WS). The
 // tunnel proxies cloud requests back to this server, so start it after listen.
 if (process.env.SHOGO_API_KEY) startInstanceTunnel()
+// Keeps the cloud's copy of this machine's records current over HTTPS, off every
+// request path (SHO-185). Waits for the first heartbeat to learn its id.
+if (process.env.SHOGO_API_KEY) {
+  void startMachineSync().catch((err) => {
+    console.warn('[LocalAPI] Machine sync did not start:', err?.message ?? err)
+  })
+}
 
 async function startBackgroundTranscriptionSetup(): Promise<void> {
   try {
@@ -137,6 +146,7 @@ void startBackgroundTranscriptionSetup()
 async function shutdown(signal: string): Promise<void> {
   console.log(`[LocalAPI] Received ${signal}, stopping runtimes...`)
   stopLocalBackgroundWorkers()
+  stopMachineSync()
   stopInstanceTunnel()
   void stopComposioListener?.()
   try {
@@ -147,6 +157,12 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(0)
   }
 }
+
+// The desktop's graceful stop on platforms without a usable SIGTERM (Windows):
+// `POST /api/local/system/shutdown` reaches this, so the runtimes get to record
+// their final state instead of being taken by `taskkill /F` (SHO-181).
+registerLocalShutdownHandler(shutdown)
+
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 process.on('SIGINT', () => void shutdown('SIGINT'))
 

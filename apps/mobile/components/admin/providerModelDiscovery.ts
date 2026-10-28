@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-export const SETUP_PROVIDER_IDS = ['openai', 'anthropic'] as const
+export const SETUP_PROVIDER_IDS = ['openai', 'anthropic', 'google'] as const
 
 export type SetupProviderId = (typeof SETUP_PROVIDER_IDS)[number]
 

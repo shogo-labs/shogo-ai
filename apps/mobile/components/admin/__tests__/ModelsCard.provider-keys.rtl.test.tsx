@@ -80,11 +80,11 @@ describe('provider-key rows', () => {
     render(createElement(ModelsCard, { platform, localMode: false }))
 
     await waitFor(() => expect(screen.getByText('Tripo (3D)')).toBeInTheDocument())
-    for (const name of ['Anthropic', 'OpenAI', 'OpenRouter', 'Higgsfield (video, images, Genjutsu)']) {
+    for (const name of ['Anthropic', 'OpenAI', 'Google (Gemini)', 'OpenRouter', 'Higgsfield (video, images, Genjutsu)']) {
       expect(screen.getByText(name)).toBeInTheDocument()
     }
-    // One "Not configured" per key row (5 providers), none of them pre-set.
-    expect(screen.getAllByText('Not configured')).toHaveLength(5)
+    // One "Not configured" per key row (6 providers), none of them pre-set.
+    expect(screen.getAllByText('Not configured')).toHaveLength(6)
   })
 
   test('cloud mode saves the Higgsfield key through the admin route', async () => {

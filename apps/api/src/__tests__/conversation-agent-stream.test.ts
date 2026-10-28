@@ -68,6 +68,21 @@ describe('readAgentStream', () => {
     expect(activity).toBe(3)
   })
 
+  test('the frame that opens a tool already reports it, and heartbeats stay heartbeats', async () => {
+    const seen: Array<{ kind: string; tool: string | null }> = []
+    await readAgentStream(chunkedResponse([
+      // A run that goes straight into a long wait: the opening frame is the
+      // only chance to notice the tool, since `wait` sends nothing until it returns.
+      frame({ type: 'tool-input-start', toolCallId: 'c1', toolName: 'wait' }),
+      frame({ type: 'tool-output-available', toolCallId: 'c1' }),
+      frame({ type: 'data-turn-seq', data: { turnId: 't', seq: 2 }, transient: true }),
+      frame({ type: 'finish' }),
+    ]), () => {}, undefined, (f) => seen.push({ ...f }))
+
+    expect(seen[0]).toEqual({ kind: 'content', tool: 'wait' })
+    expect(seen[2]).toEqual({ kind: 'heartbeat', tool: null })
+  })
+
   test('non-2xx responses surface the server error', async () => {
     const res = new Response(JSON.stringify({ error: { message: 'Project not found' } }), { status: 404 })
     expect(await readAgentStream(res, () => {})).toMatchObject({ failed: true, error: 'Project not found' })

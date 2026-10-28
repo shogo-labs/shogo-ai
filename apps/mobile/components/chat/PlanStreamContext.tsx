@@ -6,7 +6,7 @@ import type { PlanData } from "./PlanCard"
 export type PlanSummaryStatus = "idle" | "pending" | "ready" | "error"
 
 export interface PlanStreamContextValue {
-  /** True while the agent is streaming in plan mode (researching phase). */
+  /** True while a `create_plan` call is still streaming. */
   isPlanStreaming: boolean
   /** Partial PlanData extracted from the streaming create_plan tool args. */
   streamingPlan: PlanData | null

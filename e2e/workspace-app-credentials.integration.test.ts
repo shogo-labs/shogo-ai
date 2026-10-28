@@ -17,6 +17,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { Hono } from 'hono'
 
 const WORKSPACE_ID = 'ws-int'
 const OTHER_WORKSPACE_ID = 'ws-other'
@@ -61,6 +62,9 @@ const { runWorkspaceInstall } = await import('../packages/agent-runtime/src/work
 const { acceptsAppToolToken, _resetAppRuntimeTokensForTests } = await import(
   '../packages/agent-runtime/src/app-runtime-token'
 )
+const { voiceMediaRoutes } = await import('../apps/api/src/routes/voice-media')
+const { createTools } = await import('../packages/agent-runtime/src/gateway-tools')
+const { CommandRegistry } = await import('../packages/agent-runtime/src/command-registry')
 
 const WORKSPACE_TOKEN = deriveWorkspaceRuntimeToken(WORKSPACE_ID)
 
@@ -69,6 +73,10 @@ type ToolCall = { path: string; token: string | null; tool?: string }
 
 const llmCalls: LlmCall[] = []
 const toolCalls: ToolCall[] = []
+type VoiceCall = { path: string; via: string | null; tokenProject: string | null; projectId: string | null }
+const voiceCalls: VoiceCall[] = []
+const elCalls: { url: string; key: string | null }[] = []
+const MUSIC_BYTES = new Uint8Array([0xff, 0xfb, 0x90, 0x00, 0x2a])
 const tempDirs: string[] = []
 const managers: InstanceType<typeof PreviewManager>[] = []
 let apiServer: ReturnType<typeof Bun.serve>
@@ -96,6 +104,45 @@ function llmGateway(req: Request): Response {
     ],
     usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
   })
+}
+
+/**
+ * The hosted voice routes, mounted on the test API with the real executor and
+ * the real router. Only the runtime-token middleware is mirrored here (same
+ * shape `authMiddleware` sets for an `rt_v1_` caller), and the project check
+ * stays the router's own `runtimeScopeViolation`: a workspace token is not a
+ * project token, so `verifyRuntimeToken` refuses it before any of this runs.
+ */
+function voiceApi() {
+  const app = new Hono()
+  app.use('*', async (c, next) => {
+    const token = c.req.header('x-runtime-token') ?? ''
+    const verified = verifyRuntimeToken(token)
+    if (!verified.ok) return c.json({ error: 'unauthorized' }, 401)
+    c.set('auth', {
+      isAuthenticated: true,
+      userId: 'user-owner',
+      workspaceId: WORKSPACE_ID,
+      projectId: verified.projectId,
+      via: 'runtimeToken',
+    } as never)
+    voiceCalls.push({
+      path: c.req.path,
+      via: 'runtimeToken',
+      tokenProject: verified.projectId,
+      projectId: c.req.query('projectId')?.trim() || null,
+    })
+    await next()
+  })
+  app.route(
+    '/api',
+    voiceMediaRoutes({
+      authorize: async (_c, projectId) => ({ ok: true, status: 200, workspaceId: PROJECT_WORKSPACES.get(projectId) }),
+      resolveVoiceId: async () => 'voice-default',
+      recordUsage: async () => {},
+    }),
+  )
+  return app
 }
 
 async function freePort(): Promise<number> {
@@ -168,6 +215,26 @@ Bun.serve({
 })
 `
 
+/**
+ * A project app server whose only job is a hosted voice call. It runs the real
+ * `createVoiceHandlers` in runtime-token proxy mode, so whether the call works
+ * is decided entirely by the credentials the runtime handed this process.
+ */
+const VOICE_SRC = resolve(import.meta.dir, '../packages/voice/src')
+const MUSIC_SERVER_TSX = `
+import { createVoiceHandlers } from ${JSON.stringify(join(VOICE_SRC, 'server.ts'))}
+const voice = createVoiceHandlers({})
+Bun.serve({
+  port: Number(process.env.PORT),
+  async fetch(req) {
+    const { pathname } = new URL(req.url)
+    if (pathname === '/health') return new Response('ok')
+    if (pathname === '/music') return voice.music(req)
+    return new Response('not found', { status: 404 })
+  },
+})
+`
+
 const BUILD_TS = `
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { probe } from './sdk-probe'
@@ -189,15 +256,19 @@ function writeProject(root: string, projectId: string): string {
   return dir
 }
 
-async function startProject(root: string, projectId: string) {
+async function startProjectAt(dir: string, projectId: string) {
   const pm = new PreviewManager({
-    workspaceDir: writeProject(root, projectId),
+    workspaceDir: dir,
     runtimePort: runtimeServer.port!,
     apiPort: await freePort(),
     projectId,
   })
   managers.push(pm)
   return pm
+}
+
+async function startProject(root: string, projectId: string) {
+  return startProjectAt(writeProject(root, projectId), projectId)
 }
 
 async function serverProbe(pm: InstanceType<typeof PreviewManager>): Promise<any> {
@@ -214,11 +285,25 @@ async function buildProbe(pm: InstanceType<typeof PreviewManager>): Promise<any>
 }
 
 beforeAll(async () => {
+  const voiceApp = voiceApi()
   apiServer = Bun.serve({
     port: 0,
     fetch(req) {
       const url = new URL(req.url)
       if (url.pathname === '/api/ai/v1/chat/completions') return llmGateway(req)
+      if (url.pathname.startsWith('/api/voice/')) {
+        return req
+          .text()
+          .then((body) =>
+            voiceApp.fetch(
+              new Request(url, {
+                method: req.method,
+                headers: req.headers,
+                ...(body ? { body } : {}),
+              }),
+            ),
+          )
+      }
       if (url.pathname.startsWith('/api/internal/')) {
         url.pathname = url.pathname.slice('/api/internal'.length)
         return internalApp.fetch(new Request(url, req))
@@ -282,6 +367,8 @@ beforeEach(() => {
   _resetAppRuntimeTokensForTests()
   llmCalls.length = 0
   toolCalls.length = 0
+  voiceCalls.length = 0
+  elCalls.length = 0
   workspaceRoot = mkdtempSync(join(tmpdir(), 'ws-app-creds-'))
   tempDirs.push(workspaceRoot)
 })
@@ -374,5 +461,161 @@ describe('workspace runtime app credentials', () => {
       body: '{}',
     })
     expect(res.status).toBe(401)
+  })
+})
+
+/**
+ * SHO-228 — the workspace token must not reach code the runtime runs for a
+ * project. These are the paths the SDK never sees: an agent `exec` shell, a
+ * background task, and a project's voice/music call. The leak is planted, not
+ * hypothetical: `RUNTIME_AUTH_SECRET` is the workspace token for this whole
+ * file, exactly as it is in a real workspace runtime.
+ */
+describe('project credentials for runtime-spawned code', () => {
+  const realFetch = globalThis.fetch
+
+  beforeAll(() => {
+    setEnv('ELEVENLABS_API_KEY', 'test-elevenlabs-key')
+    setEnv(
+      'WORKSPACE_MOUNTS',
+      JSON.stringify([
+        { mount: 'proj-a', path: join(tmpdir(), 'unused-a'), projectId: 'proj-a', kind: 'managed' },
+        { mount: 'proj-b', path: join(tmpdir(), 'unused-b'), projectId: 'proj-b', kind: 'managed' },
+      ]),
+    )
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.startsWith('https://api.elevenlabs.io/')) {
+        const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+        elCalls.push({ url, key: headers.get('xi-api-key') })
+        return new Response(MUSIC_BYTES, { status: 200, headers: { 'content-type': 'audio/mpeg' } })
+      }
+      return realFetch(input, init)
+    }) as typeof fetch
+  })
+
+  afterAll(() => {
+    globalThis.fetch = realFetch
+  })
+
+  function shellCtx(workspaceDir: string, cwd: string) {
+    return {
+      workspaceDir,
+      channels: new Map(),
+      config: { model: { provider: 'anthropic', name: 'claude-sonnet-4-5' } },
+      projectId: `ws:${WORKSPACE_ID}`,
+      commandRegistry: new CommandRegistry(),
+      shellState: { getCwd: () => cwd, setCwd: () => {}, initialCwd: cwd },
+    } as any
+  }
+
+  /**
+   * The env a spawned command actually saw, written by the command itself into
+   * its own cwd (the shell's `cd` target), so no path quoting can hide a
+   * failure.
+   */
+  const ENV_PROBE = `bun -e "require('fs').writeFileSync('exec-env.json', JSON.stringify({ projectId: process.env.PROJECT_ID ?? null, secret: process.env.RUNTIME_AUTH_SECRET ?? null }))"`
+  const PROBE_FILE = 'exec-env.json'
+
+  async function runExec(ctx: any, params: Record<string, unknown>) {
+    const tool = createTools(ctx).find((t) => t.name === 'exec')!
+    expect(tool).toBeDefined()
+    return (await tool.execute('exec-call', params)) as any
+  }
+
+  async function waitForFile(path: string, timeoutMs = 30_000) {
+    const started = Date.now()
+    while (Date.now() - started < timeoutMs) {
+      try {
+        return JSON.parse(readFileSync(path, 'utf8'))
+      } catch {
+        await new Promise((r) => setTimeout(r, 100))
+      }
+    }
+    throw new Error(`timed out waiting for ${path}`)
+  }
+
+  test('an agent shell runs project code with the cwd project token, not the workspace token', async () => {
+    const dirA = writeProject(workspaceRoot, 'proj-a')
+
+    await runExec(shellCtx(workspaceRoot, dirA), { command: ENV_PROBE })
+
+    const seen = await waitForFile(join(dirA, PROBE_FILE))
+    expect(seen.projectId).toBe('proj-a')
+    expect(seen.secret).toBe(deriveRuntimeToken('proj-a'))
+    expect(seen.secret).not.toBe(WORKSPACE_TOKEN)
+  }, 60_000)
+
+  test('a background task gets the same project credentials as a foreground one', async () => {
+    const dirB = writeProject(workspaceRoot, 'proj-b')
+
+    const result = await runExec(shellCtx(workspaceRoot, dirB), {
+      command: ENV_PROBE,
+      background: true,
+    })
+    expect(JSON.stringify(result)).toContain('task_id')
+
+    const seen = await waitForFile(join(dirB, PROBE_FILE))
+    expect(seen.projectId).toBe('proj-b')
+    expect(seen.secret).toBe(deriveRuntimeToken('proj-b'))
+  }, 60_000)
+
+  test('a shell outside any project gets no runtime token at all', async () => {
+    await runExec(shellCtx(workspaceRoot, workspaceRoot), { command: ENV_PROBE })
+
+    const seen = await waitForFile(join(workspaceRoot, PROBE_FILE))
+    expect(seen.secret).toBeNull()
+    expect(seen.secret).not.toBe(WORKSPACE_TOKEN)
+  }, 60_000)
+
+  test('a project app server calls hosted voice as its own project', async () => {
+    const dir = writeProject(workspaceRoot, 'proj-a')
+    writeFileSync(join(dir, 'server.tsx'), MUSIC_SERVER_TSX)
+    const pm = await startProjectAt(dir, 'proj-a')
+
+    await pm.restartApiServerOnly()
+    const res = await fetch(`${pm.apiServerUrl}/music`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'lofi beats for a build log' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('audio/mpeg')
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(MUSIC_BYTES)
+
+    expect(voiceCalls).toHaveLength(1)
+    expect(voiceCalls[0]).toEqual({
+      path: '/api/voice/music',
+      via: 'runtimeToken',
+      tokenProject: 'proj-a',
+      projectId: 'proj-a',
+    })
+    expect(elCalls).toHaveLength(1)
+    expect(elCalls[0].key).toBe('test-elevenlabs-key')
+  }, 60_000)
+
+  test('the workspace token cannot call hosted voice for a project', async () => {
+    const res = await fetch(`${process.env.SHOGO_API_URL}/api/voice/music?projectId=proj-a`, {
+      method: 'POST',
+      headers: { 'x-runtime-token': WORKSPACE_TOKEN, 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'lofi' }),
+    })
+    expect(res.status).toBe(401)
+    expect(elCalls).toHaveLength(0)
+  })
+
+  test("one project's token cannot spend on a sibling project", async () => {
+    const res = await fetch(`${process.env.SHOGO_API_URL}/api/voice/music?projectId=proj-b`, {
+      method: 'POST',
+      headers: {
+        'x-runtime-token': deriveRuntimeToken('proj-a'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ prompt: 'lofi' }),
+    })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'forbidden', detail: 'Runtime token scope mismatch' })
+    expect(elCalls).toHaveLength(0)
   })
 })

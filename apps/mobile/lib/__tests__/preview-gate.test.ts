@@ -25,6 +25,15 @@ import {
   isApiGateLatched,
   latchApiGate,
   resetApiGateLatches,
+  previewActiveUrl,
+  agentPortFromCanvasBaseUrl,
+  isPreviewPingHealthy,
+  decidePreviewPing,
+  PREVIEW_ACTIVE_PING_MS,
+  PREVIEW_RECOVERY_MAX_ATTEMPTS,
+  previewRecoveryAttempts,
+  recordPreviewRecovery,
+  resetPreviewRecoveryAttempts,
 } from '../preview-gate'
 
 describe('API gate latch (survives canvas remounts)', () => {
@@ -264,5 +273,259 @@ describe('previewWakeUrl', () => {
     expect(previewWakeUrl('https://studio.shogo.ai', 'abc-123')).toBe(
       'https://studio.shogo.ai/api/preview/abc-123/wake',
     )
+  })
+})
+
+/**
+ * SHO-226: the canvas pings `preview/active` while it is on screen, which both
+ * pins the runtime out of the warm-preview LRU and is how the client notices
+ * its runtime was stopped or respawned on another port.
+ */
+describe('previewActiveUrl', () => {
+  test('targets the project preview-active route', () => {
+    expect(previewActiveUrl('https://studio.shogo.ai', 'abc-123')).toBe(
+      'https://studio.shogo.ai/api/projects/abc-123/preview/active',
+    )
+  })
+
+  test('tolerates a trailing slash on the API base', () => {
+    expect(previewActiveUrl('http://localhost:8787/', 'abc-123')).toBe(
+      'http://localhost:8787/api/projects/abc-123/preview/active',
+    )
+  })
+})
+
+describe('agentPortFromCanvasBaseUrl', () => {
+  test('reads the port the iframe is actually pointed at', () => {
+    expect(agentPortFromCanvasBaseUrl('http://localhost:5173/p/abc-123')).toBe(5173)
+  })
+
+  test('null when there is no explicit port (cloud / subdomain preview)', () => {
+    expect(agentPortFromCanvasBaseUrl('https://abc.preview.shogo.ai/p/abc-123')).toBeNull()
+    expect(agentPortFromCanvasBaseUrl(null)).toBeNull()
+    expect(agentPortFromCanvasBaseUrl('not a url')).toBeNull()
+  })
+})
+
+describe('isPreviewPingHealthy', () => {
+  test('healthy when the runtime is running on the port the iframe uses', () => {
+    expect(
+      isPreviewPingHealthy({ ok: true, running: true, agentPort: 5173 }, 'http://localhost:5173/p/a'),
+    ).toBe(true)
+  })
+
+  test('unhealthy when the API says the runtime is not running', () => {
+    expect(isPreviewPingHealthy({ ok: true, running: false }, null)).toBe(false)
+  })
+
+  test('unhealthy when the runtime respawned on a different port', () => {
+    expect(
+      isPreviewPingHealthy({ ok: true, running: true, agentPort: 6001 }, 'http://localhost:5173/p/a'),
+    ).toBe(false)
+  })
+
+  test('a port we cannot compare on either side is not evidence of a problem', () => {
+    // Cloud no-op answers `agentPort: null`; the canvas URL has no port either.
+    expect(
+      isPreviewPingHealthy({ ok: true, running: true, agentPort: null }, 'https://a.preview.shogo.ai/p/a'),
+    ).toBe(true)
+  })
+
+  test('a failed request or a non-ok body is unhealthy', () => {
+    expect(isPreviewPingHealthy(null, null)).toBe(false)
+    expect(isPreviewPingHealthy({ running: true }, null)).toBe(false)
+  })
+})
+
+describe('decidePreviewPing', () => {
+  const url = 'http://localhost:5173/p/a'
+  const live = { ok: true, running: true, agentPort: 5173 }
+  const dead = { ok: true, running: false, agentPort: null }
+
+  test('keeps the iframe on a healthy ping and clears the failure streak', () => {
+    expect(
+      decidePreviewPing({
+        ping: live,
+        canvasBaseUrl: url,
+        failures: 2,
+        seenRunning: true,
+      }),
+    ).toEqual({ decision: 'keep', failures: 0, seenRunning: true })
+  })
+
+  test('recovers when a runtime this canvas had running is stopped under it', () => {
+    expect(decidePreviewPing({ ping: dead, canvasBaseUrl: url, seenRunning: true })).toEqual({
+      decision: 'recover',
+      failures: 1,
+      seenRunning: true,
+    })
+  })
+
+  test('gives up at the attempt limit instead of restarting forever', () => {
+    let verdict = decidePreviewPing({ ping: dead, canvasBaseUrl: url, seenRunning: true })
+    for (let i = 1; i < PREVIEW_RECOVERY_MAX_ATTEMPTS; i++) {
+      verdict = decidePreviewPing({
+        ping: dead,
+        canvasBaseUrl: url,
+        failures: verdict.failures,
+        seenRunning: verdict.seenRunning,
+      })
+    }
+    // Re-resolving restarts the runtime, so the loop has to stop somewhere.
+    expect(verdict).toEqual({
+      decision: 'give-up',
+      failures: PREVIEW_RECOVERY_MAX_ATTEMPTS,
+      seenRunning: true,
+    })
+  })
+
+  test('recovers when the runtime respawned on a different live port', () => {
+    expect(
+      decidePreviewPing({
+        ping: { ok: true, running: true, agentPort: 6001 },
+        canvasBaseUrl: url,
+        seenRunning: true,
+      }),
+    ).toEqual({ decision: 'recover', failures: 1, seenRunning: true })
+  })
+
+  // The three regressions the E2E jobs caught on PR #1767. Each one used to
+  // re-resolve `/sandbox/url` — which restarts the runtime — for a preview that
+  // was perfectly healthy, or for a project this API does not own at all.
+  describe('never re-resolves without positive evidence', () => {
+    test('a ping that never reached the API (offline, blip, non-2xx) is not a lost runtime', () => {
+      // chat-resume-on-send: the window goes offline for a minute; the runtime
+      // must keep running the turn it is mid-way through.
+      expect(decidePreviewPing({ ping: null, canvasBaseUrl: url, seenRunning: true })).toEqual({
+        decision: 'keep',
+        failures: 0,
+        seenRunning: true,
+      })
+      expect(
+        decidePreviewPing({ ping: { running: true }, canvasBaseUrl: url, seenRunning: true }),
+      ).toEqual({ decision: 'keep', failures: 0, seenRunning: true })
+    })
+
+    test('offline means nothing about the runtime', () => {
+      expect(decidePreviewPing({ ping: dead, canvasBaseUrl: url, online: false })).toEqual({
+        decision: 'keep',
+        failures: 0,
+        seenRunning: false,
+      })
+    })
+
+    test('running:false on the first ping is not a loss — a sleeping machine answers that way', () => {
+      // machine-workspaces-live (SHO-185): waking the machine from a canvas that
+      // is merely on screen would put a read into the relay and break the "the
+      // machine stays asleep" contract.
+      expect(decidePreviewPing({ ping: dead, canvasBaseUrl: url })).toEqual({
+        decision: 'keep',
+        failures: 0,
+        seenRunning: false,
+      })
+    })
+
+    test('a preview that has not started yet is not a loss either', () => {
+      // project-chat-url: the panel must stay usable while the dev server comes
+      // up, instead of being replaced by the give-up recovery UI.
+      expect(decidePreviewPing({ ping: dead, canvasBaseUrl: null })).toEqual({
+        decision: 'keep',
+        failures: 0,
+        seenRunning: false,
+      })
+    })
+
+    test('a cold start (`status: starting`) is not a lost runtime, even after we saw it live', () => {
+      // The project route holds its whole screen behind `runtimeReady`, so
+      // re-resolving here is what left the composer and "+ new chat" missing.
+      const starting = { ok: true, running: false, agentPort: null, status: 'starting' }
+      expect(
+        decidePreviewPing({ ping: starting, canvasBaseUrl: url, seenRunning: true }),
+      ).toEqual({ decision: 'keep', failures: 0, seenRunning: true })
+    })
+
+    test('`status: stopped` after we saw it live IS a loss', () => {
+      const stopped = { ok: true, running: false, agentPort: null, status: 'stopped' }
+      expect(
+        decidePreviewPing({ ping: stopped, canvasBaseUrl: url, seenRunning: true }),
+      ).toEqual({ decision: 'recover', failures: 1, seenRunning: true })
+    })
+
+    test('a failing `/preview/status` poll is not evidence, however long it fails', () => {
+      // project-chat-url and machine-workspaces-live: a stubbed agentUrl or a
+      // machine workspace has no `/preview/status` to answer, so the poll fails
+      // forever. Feeding that in as a lost runtime re-resolved `/sandbox/url`
+      // over and over, and the remount detached "+ new chat" / the composer
+      // before Playwright could click them.
+      expect(decidePreviewPing({ ping: dead, canvasBaseUrl: url })).toEqual({
+        decision: 'keep',
+        failures: 0,
+        seenRunning: false,
+      })
+    })
+
+    test('a stopped/errored runtime the API still knows is a loss even if we never saw it live', () => {
+      for (const status of ['stopped', 'error']) {
+        expect(
+          decidePreviewPing({
+            ping: { ok: true, running: false, agentPort: null, status },
+            canvasBaseUrl: url,
+          }),
+        ).toEqual({ decision: 'recover', failures: 1, seenRunning: false })
+      }
+    })
+
+    test('an unknown runtime (status null) is not a loss, and neither is a cloud no-op', () => {
+      for (const status of [null, undefined, 'stopping']) {
+        expect(
+          decidePreviewPing({
+            ping: { ok: true, running: false, agentPort: null, status },
+            canvasBaseUrl: url,
+          }),
+        ).toEqual({ decision: 'keep', failures: 0, seenRunning: false })
+      }
+    })
+  })
+})
+
+describe('preview recovery attempts', () => {
+  // Recovering unmounts the canvas (it drops back to the loading gate), so the
+  // count lives at module scope. Kept in a ref it restarted at zero on every
+  // attempt, and a single false "lost runtime" signal looped forever.
+  test('the count survives the remount that recovering causes', () => {
+    resetPreviewRecoveryAttempts()
+    const project = 'proj-loop'
+    expect(previewRecoveryAttempts(project)).toBe(0)
+
+    let failures = previewRecoveryAttempts(project)
+    const stopped = { ok: true, running: false, agentPort: null, status: 'stopped' }
+    for (let attempt = 1; attempt <= PREVIEW_RECOVERY_MAX_ATTEMPTS; attempt++) {
+      const verdict = decidePreviewPing({ ping: stopped, canvasBaseUrl: null, failures })
+      recordPreviewRecovery(project, verdict.failures)
+      // A fresh mount reads the count back instead of starting from zero.
+      failures = previewRecoveryAttempts(project)
+      expect(failures).toBe(attempt)
+      if (attempt < PREVIEW_RECOVERY_MAX_ATTEMPTS) expect(verdict.decision).toBe('recover')
+      else expect(verdict.decision).toBe('give-up')
+    }
+  })
+
+  test('a healthy ping clears the count, and projects do not share one', () => {
+    resetPreviewRecoveryAttempts()
+    recordPreviewRecovery('a', 2)
+    recordPreviewRecovery('b', 1)
+    expect(previewRecoveryAttempts('a')).toBe(2)
+    expect(previewRecoveryAttempts('b')).toBe(1)
+    recordPreviewRecovery('a', 0)
+    expect(previewRecoveryAttempts('a')).toBe(0)
+    expect(previewRecoveryAttempts('b')).toBe(1)
+  })
+})
+
+describe('PREVIEW_ACTIVE_PING_MS', () => {
+  test('pings well inside the manager view TTL, so one missed ping is survivable', () => {
+    // The API pins a preview for 3 minutes; a minute leaves two misses of slack.
+    expect(PREVIEW_ACTIVE_PING_MS).toBeLessThanOrEqual(60_000)
+    expect(PREVIEW_ACTIVE_PING_MS * 2).toBeLessThan(3 * 60_000)
   })
 })

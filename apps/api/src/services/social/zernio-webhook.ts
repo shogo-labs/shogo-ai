@@ -10,6 +10,7 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { isScopeId } from './local-scope'
+import { zernioId } from './provider-ids'
 
 export const ZERNIO_SIGNATURE_HEADER = 'x-zernio-signature'
 export const ZERNIO_EVENT_ID_HEADER = 'x-zernio-event-id'
@@ -70,12 +71,28 @@ export interface ZernioEvent {
 
 function accountFromPayload(payload: any): ZernioEvent['account'] {
   const raw = payload?.account ?? payload?.accounts?.[0] ?? payload?.profiles?.[0]?.accounts?.[0]
-  const id = raw?.id ?? raw?.accountId ?? raw?.zernioAccountId
+  const legacy = raw?.zernioAccountId ?? raw?.accountId
+  const id = zernioId(raw) ?? (typeof legacy === 'string' ? legacy : null)
   if (typeof id !== 'string' || !id) return null
   return {
     zernioAccountId: id,
     platform: typeof raw.platform === 'string' ? raw.platform.toLowerCase() : '',
     username: typeof raw.username === 'string' ? raw.username : '',
+  }
+}
+
+/** Zernio's dashboard/API test delivery; it belongs to no profile. */
+export const ZERNIO_TEST_EVENT = 'webhook.test'
+
+/** The event name of a body, or null when it is not a JSON object naming one. */
+export function zernioEventType(rawBody: string): string | null {
+  try {
+    const payload = JSON.parse(rawBody)
+    if (!payload || typeof payload !== 'object') return null
+    const type = typeof payload.event === 'string' ? payload.event : typeof payload.type === 'string' ? payload.type : ''
+    return type || null
+  } catch {
+    return null
   }
 }
 
@@ -97,7 +114,7 @@ export function parseZernioEvent(rawBody: string, eventIdHeader: string | null |
     ''
   const id =
     (typeof eventIdHeader === 'string' && eventIdHeader.trim()) ||
-    (typeof payload.id === 'string' && payload.id) ||
+    zernioId(payload) ||
     (typeof payload.eventId === 'string' && payload.eventId) ||
     ''
   if (!type || !externalId || !id) return null

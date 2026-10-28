@@ -3,7 +3,8 @@
 /**
  * Region configuration shared across the API.
  *
- * Shogo Cloud runs three active-active regions (US / EU / India). Each pod is
+ * Shogo Cloud runs two active-active regions (US / EU); `ap-mumbai-1` (India)
+ * was decommissioned on 2026-07-07. Each pod is
  * told which region it is via `REGION_ID` and where its sibling regions live
  * via `REGION_PEERS` (a JSON array). This module centralizes that config so the
  * write-ownership router, the workspace-create path, and the admin region proxy

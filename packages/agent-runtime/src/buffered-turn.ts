@@ -26,6 +26,12 @@ export interface BufferedTurn {
 export interface PipelineCallOptions {
   message: string
   runId?: string
+  /**
+   * The caller's name for this call. The turn probe answers for that name, so a
+   * follower can tell "queued behind the chat's own turn" from "this is the
+   * chat's live turn" — the two look identical from the chat's state alone.
+   */
+  callId?: string
   sessionId?: string
   callerProjectId?: string
   requesterTicket?: string
@@ -37,14 +43,22 @@ export interface PipelineCallResult {
   runId?: string
 }
 
+/** Fired as the call queues (before it waits) and once it has a turn of its own. */
+export interface PipelineCallHooks {
+  onQueued?: () => void
+  onTurnStarted?: () => void
+}
+
 export interface BufferedTurnDeps {
   store: Pick<StreamBufferStore, 'create'> & Partial<Pick<StreamBufferStore, 'recordTurnReply'>>
-  gate: Pick<LiveTurnGate, 'isBusy' | 'waitUntilFree'>
+  gate: Pick<LiveTurnGate, 'isBusy' | 'waitUntilFree' | 'noteCallQueued' | 'noteCallStarted' | 'noteCallStopped'>
   onStreamStart?: () => void
   onStreamEnd?: () => void
 }
 
-/** Pipeline sessions that are runtime-internal keys rather than chats someone can open. */
+/**
+ * Pipeline sessions that are runtime-internal keys rather than chats someone can open.
+ */
 export function isOpenableChatSession(sessionId: string | undefined): sessionId is string {
   return !!sessionId && !sessionId.startsWith('run:') && sessionId !== 'pipeline'
 }
@@ -214,16 +228,32 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
    * Run a pipeline call. When the session is a real chat (the API records each
    * call as one), the turn is buffered like a chat turn so that chat can be
    * opened and watched while the call runs.
+   *
+   * A chat that is busy with its own turn queues the call instead of dropping
+   * it: `hooks.onQueued` fires straight away (so a `wait: false` caller can
+   * answer `queued` and keep following) and the call starts the moment that
+   * turn ends, exactly like a message from a second window. `hooks.onTurnStarted`
+   * fires once the call has a buffer of its own and is actually running.
    */
   async function runPipelineCall(
     runCall: (opts: PipelineCallOptions & { writer?: UiStreamWriter }) => Promise<PipelineCallResult>,
     opts: PipelineCallOptions,
+    hooks: PipelineCallHooks = {},
   ): Promise<PipelineCallResult> {
     const chatSessionKey = opts.sessionId?.trim()
-    if (!isOpenableChatSession(chatSessionKey)) return runCall(opts)
+    const callId = opts.callId?.trim() || undefined
+    if (!isOpenableChatSession(chatSessionKey)) {
+      hooks.onTurnStarted?.()
+      return runCall(opts)
+    }
     if (deps.gate.isBusy(chatSessionKey)) {
-      const { stopped } = await deps.gate.waitUntilFree(chatSessionKey)
-      if (stopped) throw new Error('The chat was stopped before this call started')
+      hooks.onQueued?.()
+      if (callId) deps.gate.noteCallQueued(chatSessionKey, callId)
+      const waited = await deps.gate.waitUntilFree(chatSessionKey)
+      if (waited.stopped) {
+        if (callId) deps.gate.noteCallStopped(chatSessionKey, callId)
+        throw new Error('The chat was stopped before this call started')
+      }
     }
     let result: PipelineCallResult | undefined
     let failure: unknown
@@ -235,6 +265,10 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
         throw err
       }
     })
+    // Name the turn for this call before anything can observe it, so a probe
+    // never has to guess "is the chat's live turn ours?" from a timestamp.
+    if (callId) deps.gate.noteCallStarted(chatSessionKey, callId, turn.turnId)
+    hooks.onTurnStarted?.()
     await turn.done
     if (failure) throw failure
     if (!result) throw new Error('The pipeline call ended without a reply')

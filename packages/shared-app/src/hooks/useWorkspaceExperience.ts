@@ -57,10 +57,6 @@ export type DockTabId = 'home' | 'dms' | 'activity' | 'more'
 export interface WorkspaceExperienceComposer {
   /** Show the model picker control in ChatInput. */
   showModelPicker: boolean
-  /** Show the interaction-mode (plan/agent/chat) selector and its Tab/Shift+Tab cycling in ChatInput. */
-  showInteractionModes: boolean
-  /** When interaction modes are hidden, the mode ChatPanel should force. */
-  forcedMode?: 'agent'
 }
 
 /**
@@ -170,8 +166,6 @@ export function workspaceExperience(
     chatReturnsToProjectContext: !isPersonal,
     composer: {
       showModelPicker: !isPersonal,
-      showInteractionModes: !isPersonal,
-      forcedMode: isPersonal ? 'agent' : undefined,
     },
     workspaceAgent: {
       primarySession: true,

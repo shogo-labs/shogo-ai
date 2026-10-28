@@ -276,4 +276,79 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     )
     expect(res.status).toBe(501)
   })
+
+  test('streams an attachment upload body to the pod instead of buffering it', async () => {
+    let capturedUrl = ''
+    let capturedInit: any = null
+    let received: number[] = []
+    store.fetchImpl = async (url, init) => {
+      capturedUrl = url
+      capturedInit = init
+      // Drain the forwarded body the way the runtime does, proving the bytes
+      // survive the proxy untouched.
+      const reader = (init!.body as ReadableStream<Uint8Array>).getReader()
+      const chunks: number[] = []
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(...value)
+      }
+      received = chunks
+      return new Response(JSON.stringify({ savedPath: 'files/big.zip', bytes: chunks.length }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+
+    const payload = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef])
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(payload)
+        controller.close()
+      },
+    })
+
+    const app = buildApp()
+    const res = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/agent-proxy/agent/chat/attachments?name=big.zip', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/zip', 'content-length': String(payload.byteLength) },
+        body,
+        // @ts-expect-error Bun accepts duplex on RequestInit; TS lib does not.
+        duplex: 'half',
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(capturedUrl).toBe('http://pod.internal:8080/agent/chat/attachments?name=big.zip')
+    expect(capturedInit.method).toBe('PUT')
+    // A buffered body would be an ArrayBuffer here; the upload must stay a
+    // stream so a 200 MB archive never lands in API memory.
+    expect(typeof (capturedInit.body as any)?.getReader).toBe('function')
+    expect(capturedInit.duplex).toBe('half')
+    expect(capturedInit.headers.get('content-length')).toBe(String(payload.byteLength))
+    expect(capturedInit.headers.get('x-runtime-token')).toBe('mock-workspace-runtime-token')
+    expect(received).toEqual(Array.from(payload))
+  })
+
+  test('still buffers a non-upload body (chat turn JSON)', async () => {
+    let capturedInit: any = null
+    store.fetchImpl = async (_url, init) => {
+      capturedInit = init
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+
+    const app = buildApp()
+    await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/agent-proxy/agent/workspace/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ q: 'hello' }),
+      }),
+    )
+
+    expect(typeof (capturedInit.body as any)?.getReader).toBe('undefined')
+    expect(capturedInit.duplex).toBeUndefined()
+    expect(new TextDecoder().decode(capturedInit.body)).toBe('{"q":"hello"}')
+  })
 })

@@ -704,6 +704,31 @@ Pass `null` to clear the provider (e.g. on sign-out).
   on the cloud directly with your Shogo key as `x-api-key`; the
   OpenAI-compatible path loses fidelity on conversion.
 
+### Music generation (Lyria)
+
+`client.generateMusic` uses the same credentials as `client.llm` (the pod's
+`RUNTIME_AUTH_SECRET`, or `shogoApiKey` outside a pod), so an app needs no
+Google key. It is server-only; call it from `custom-routes.ts`.
+
+```ts
+import { shogo } from '@/lib/shogo'
+
+app.post('/jingle', async (c) => {
+  const { prompt } = await c.req.json()
+  const song = await shogo.generateMusic!({
+    prompt,                 // style, mood, instruments, length
+    model: 'lyria-3-clip',  // default: 30-second clip; 'lyria-3.5' = full song
+    // lyrics: '[Verse]\n…\n[Chorus]\n…',  or  instrumental: true
+  })
+  await Bun.write('public/jingle.mp3', song.bytes)
+  return c.json({ url: '/jingle.mp3', lyrics: song.lyrics, billedUsd: song.billedUsd })
+})
+```
+
+Each song is billed to the workspace (about $0.04 per clip, $0.08 per full
+song before markup). Errors throw with the gateway's `message`, `status` and
+`code` (e.g. `402` when the workspace is out of usage).
+
 ## Machines & external triggers
 
 `client.machines` exposes the workspace's paired desktops + `shogo worker`
@@ -929,8 +954,11 @@ reported fallback.
   quietly becoming another model.
 - `textToSpeech()` only retries on the fallback model when the failure is
   model-related (402, or 400/403/404/422 whose body mentions
-  model/plan/permission). 401, 429, 5xx and network errors are surfaced. The
-  result carries `requestedModel`, `fellBack` and `fallbackReason`.
+  model/plan/permission). The retry target is `TTS_FALLBACK_MODEL`
+  (`eleven_flash_v2_5`, the widest-available model) — not the convai
+  `eleven_v4_turbo` default, so a BYO plan without v4 entitlement still gets
+  audio. 401, 429, 5xx and network errors are surfaced. The result carries
+  `requestedModel`, `fellBack` and `fallbackReason`.
 
 ### Hosted media through the proxy
 
@@ -1610,11 +1638,12 @@ chat agent through a translator persona — via voice **or** text, sharing the
 same system prompt and tools. The example below is exactly how the Shogo IDE
 mounts its own EZ Mode on top of the existing chat.
 
-The persona exposes two client-side tools:
+The persona exposes one client-side tool (plus an optional activity lookup):
 
 - `send_to_chat(text)` — forward a plain-English instruction to the technical
   chat agent.
-- `set_mode(mode)` — switch the chat between `"agent"` and `"plan"`.
+- `get_recent_activity()` — read a short log of recent background work, so a
+  spoken summary can be grounded in what actually happened.
 
 Step 1 — one shared ElevenLabs agent:
 

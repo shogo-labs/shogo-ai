@@ -228,11 +228,18 @@ export const chatMessageHooks: ChatMessageHooks = {
       input.parts,
       input.imageData,
     )
-    if (!externalized.changed) return { ok: true }
+    // The sender of a prompt is the authenticated user. Stamped here, at the
+    // one insert point, so a forged `authorUserId` in the body is ignored and
+    // every chat (project, workspace, voice) is attributable in one place.
+    const stamped = {
+      ...input,
+      authorUserId: input.role === 'user' ? userId : null,
+    }
+    if (!externalized.changed) return { ok: true, data: stamped }
     return {
       ok: true,
       data: {
-        ...input,
+        ...stamped,
         parts: externalized.parts,
         imageData: externalized.imageData,
       },
@@ -298,22 +305,45 @@ export const chatMessageHooks: ChatMessageHooks = {
    * so bumping it here keeps those dividers reflecting the most recent
    * message rather than the session's creation time.
    */
-  afterCreate: async (message, ctx) => {
-    const now = new Date()
-    await ctx.prisma.chatSession.update({
-      where: { id: message.sessionId },
-      data: { lastActiveAt: now, updatedAt: now },
-    })
+  afterCreate: bumpChatSessionActivity,
+}
 
-    const session = await ctx.prisma.chatSession.findUnique({
-      where: { id: message.sessionId },
-      select: { contextId: true, contextType: true },
-    })
-    if (session?.contextId && session.contextType === 'project') {
-      await ctx.prisma.project.update({
-        where: { id: session.contextId },
-        data: { lastMessageAt: now },
-      }).catch(() => {})
-    }
-  },
+/**
+ * Move a session's `lastActiveAt`/`updatedAt` to now, and the project's
+ * `lastMessageAt` behind a project chat.
+ *
+ * Shared by both tracks: the desktop route set reads the same columns, so a
+ * send that only moves `lastActiveAt` in the client snaps the row back to its
+ * old time on the next list read (SHO-190). Extracted rather than copied so
+ * the two tracks cannot drift.
+ */
+export async function bumpChatSessionActivity(
+  message: { sessionId: string },
+  ctx: HookContext,
+): Promise<void> {
+  const now = new Date()
+  await ctx.prisma.chatSession.update({
+    where: { id: message.sessionId },
+    data: { lastActiveAt: now, updatedAt: now },
+  })
+
+  const session = await ctx.prisma.chatSession.findUnique({
+    where: { id: message.sessionId },
+    select: { contextId: true, contextType: true },
+  })
+  if (session?.contextId && session.contextType === 'project') {
+    await ctx.prisma.project.update({
+      where: { id: session.contextId },
+      data: { lastMessageAt: now },
+    }).catch(() => {})
+  }
+}
+
+/**
+ * Hooks the desktop route set installs (`local-routes.ts`). Only the side
+ * effects the local database needs: the ownership checks the cloud set adds are
+ * meaningless when the SQLite file is the signed-in user's own.
+ */
+export const localChatMessageHooks: ChatMessageHooks = {
+  afterCreate: bumpChatSessionActivity,
 }

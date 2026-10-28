@@ -12,7 +12,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, readFileSync, rmSync, existsSync } from 'fs'
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
@@ -82,11 +82,21 @@ describe('createExecTool', () => {
     expect(String(result.error ?? '')).not.toContain('Blocked command')
   })
 
-  test('blocked command (recursive-star-remove) is rejected before spawn', async () => {
-    const ctx = makeCtx()
-    const blocked = 'cd /tmp && ' + ['r','m',' -','r','f',' *'].join('')
-    const result = await run(ctx, 'exec', { command: blocked })
-    expect(result.error).toContain('Blocked command')
+  test('a recursive remove of an absolute path is not rejected before spawn', async () => {
+    const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+    const nested = join(TEST_DIR, 'nested')
+    mkdirSync(nested, { recursive: true })
+    const result = await run(ctx, 'exec', { command: `rm -r ${nested}` })
+    expect(String(result.error ?? '')).not.toContain('Blocked command')
+    expect(existsSync(nested)).toBe(false)
+  })
+
+  test('a recursive-star remove is not rejected before spawn', async () => {
+    const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+    writeFileSync(join(TEST_DIR, 'stale.log'), 'x')
+    const result = await run(ctx, 'exec', { command: 'rm -rf *.log' })
+    expect(String(result.error ?? '')).not.toContain('Blocked command')
+    expect(existsSync(join(TEST_DIR, 'stale.log'))).toBe(false)
   })
 
   test('soft-timeout returns status:running with run_id, pid, and a hint string', async () => {

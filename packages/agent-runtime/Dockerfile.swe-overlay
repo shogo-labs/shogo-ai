@@ -17,7 +17,7 @@
 # =============================================================================
 # Stage 0: builder — install deps, copy source, fetch skills
 # =============================================================================
-FROM oven/bun:1.4.3-debian AS builder
+FROM oven/bun:1.4.4-debian AS builder
 
 WORKDIR /app
 
@@ -68,7 +68,7 @@ RUN rm -rf packages/*/node_modules apps/*/node_modules
 # =============================================================================
 # Stage 1: deps — full node_modules with workspace links
 # =============================================================================
-FROM oven/bun:1.4.3-debian AS deps
+FROM oven/bun:1.4.4-debian AS deps
 
 WORKDIR /app
 
@@ -103,9 +103,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl bash git ca-certificates ripgrep unzip && \
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
-    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.4.3" && \
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.4.4" && \
     apt-get purge -y unzip && apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
+
+# Node2Shell (CVE-2026-111497) guard: Bun is pinned above and Node comes from
+# the floating nodesource `setup_24.x` line, so assert both floors landed
+# (Bun 1.4.4 / Node 24.22.1) instead of trusting the mirror.
+RUN set -eu; \
+    ver_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$1" ]; }; \
+    bun_need=1.4.4; node_need=24.22.1; \
+    bun_have="$(bun --version)"; node_have="$(node --version | sed 's/^v//')"; \
+    if ! ver_ge "$bun_need" "$bun_have" || ! ver_ge "$node_need" "$node_have"; then \
+      echo "FATAL: toolchain below the Node2Shell floor: bun $bun_have (need >= $bun_need), node v$node_have (need >= v$node_need)" >&2; \
+      echo "CVE-2026-111497: Brotli out-of-bounds write — see the Node.js/Bun security releases." >&2; \
+      exit 1; \
+    fi; \
+    echo "Node2Shell guard OK: bun $bun_have, node v$node_have"
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared-runtime ./packages/shared-runtime

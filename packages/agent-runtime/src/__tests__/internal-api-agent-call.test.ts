@@ -144,13 +144,15 @@ describe('callProjectAgent', () => {
     expect(calls.filter((c) => c.method === 'GET')).toHaveLength(0)
   })
 
-  it('returns the 202 when the API ignored track, instead of starting a second turn', async () => {
+  it('reports an untracked 202 as a failure that names where the reply is read', async () => {
     route((url, init) => {
       if (init.method === 'GET') return unknownRun()
-      return json({ status: 'accepted', runId: 'run-1' }, 202)
+      return json({ status: 'accepted', runId: 'run-1', chatSessionId: 'chat-9' }, 202)
     })
     const res = await callProjectAgent('proj-2', { message: 'hi', runId: 'run-1' })
-    expect(res).toMatchObject({ ok: true, data: { status: 'accepted', runId: 'run-1' } })
+    expect(res.ok).toBe(false)
+    expect(res.code).toBe('call_not_followed')
+    expect(String(res.error)).toContain('chat-9')
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
   })
 })

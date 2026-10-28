@@ -101,6 +101,12 @@ export interface SubagentResult {
   escalated?: boolean
   /** True when the final response is empty or a "Subagent failed: ..." marker. */
   responseEmpty?: boolean
+  /**
+   * Why the run failed, when it did. `responseText` is what the subagent said;
+   * this is what stopped it (a provider 4xx, a missing tool, an empty loop), and
+   * without it a failed spawn reaches the parent as a placeholder string.
+   */
+  error?: { code?: string; message: string }
 }
 
 export interface SubagentStreamCallbacks {
@@ -227,20 +233,6 @@ read_file, write_file — save config or results to the workspace
 - For channel_connect: guide the user through required config (tokens, webhook URLs, etc.)
 - For send_message: confirm the target channel is connected first
 - Return clear status updates about what was configured`
-
-export const DEVOPS_SUBAGENT_PROMPT = `You are a DevOps subagent. Manage heartbeat schedules, monitoring, and the project API server.
-
-## Available Tools
-heartbeat_configure — set up or modify heartbeat scheduling (interval, quiet hours)
-heartbeat_status — check current heartbeat configuration
-server_sync — force the project API server (root server.tsx) to regenerate routes from prisma/schema.prisma and restart
-read_file, write_file — save config or results to the workspace
-
-## Guidelines
-- Check heartbeat_status before modifying configuration
-- When setting quiet hours, confirm the user's timezone
-- For server_sync: run after editing prisma/schema.prisma if routes are 404'ing, or to verify the API server is healthy
-- Return a clear summary of the current configuration state`
 
 export const BROWSER_SUBAGENT_PROMPT = `You are a browser automation subagent. Navigate web pages, interact with elements, and extract information.
 
@@ -392,6 +384,20 @@ read_file, write_file — read inputs and save results to the workspace
 - Always save results to the workspace so the parent agent can access them
 - Return a clear summary of what was produced, which model was used, and where files were saved`
 
+/** Every name `getBuiltinSubagentConfig` resolves. Keep in step with its switch. */
+export const BUILTIN_SUBAGENT_TYPES = [
+  'explore', 'general-purpose', 'code-reviewer', 'browser', 'browser_qa', 'channel', 'media',
+] as const
+
+/**
+ * Built-in types that were removed, mapped to what the caller should do
+ * instead. `agent_spawn` with one of these returns this hint, not a bare
+ * "unknown type".
+ */
+export const RETIRED_SUBAGENT_TYPES: Record<string, string> = {
+  devops: 'The devops subagent was removed. Call `server_sync`, `heartbeat_configure` and `heartbeat_status` directly — they are your own tools.',
+}
+
 export function getBuiltinSubagentConfig(
   name: string,
   ctx: ToolContext,
@@ -478,15 +484,6 @@ export function getBuiltinSubagentConfig(
         disallowedTools: ['task', 'skill'],
         model: AUTO_MODEL_ID,
         maxTurns: 15,
-      }
-    case 'devops':
-      return {
-        name: 'devops',
-        description: 'Heartbeat scheduling, monitoring, and skill server management',
-        systemPrompt: DEVOPS_SUBAGENT_PROMPT,
-        toolNames: ['heartbeat_configure', 'heartbeat_status', 'server_sync', 'read_file', 'write_file'],
-        disallowedTools: ['task', 'skill'],
-        maxTurns: 5,
       }
     default:
       return null
@@ -1168,6 +1165,7 @@ export async function runSubagent(
     const responseEmpty =
       !result.text || result.text.trim().length === 0
       || result.text.startsWith('Subagent failed:')
+      || !!result.error
 
     return {
       toolCalls: result.toolCalls.length,
@@ -1184,6 +1182,9 @@ export async function runSubagent(
       loopDetected: !!result.loopBreak,
       escalated: false,
       responseEmpty,
+      // The loop's own cause (`promptError || implicitError`) is the only thing
+      // that explains an empty run — a provider 4xx, a tool schema rejection.
+      ...(result.error ? { error: { message: result.error.message } } : {}),
     }
   }
 
@@ -1243,6 +1244,7 @@ export async function runSubagent(
       loopDetected: false,
       escalated: false,
       responseEmpty: true,
+      error: { message: err.message },
     }
   } finally {
     if (parentCtx.fileStateCache && subCtx.fileStateCache) {

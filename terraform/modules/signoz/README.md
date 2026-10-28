@@ -56,6 +56,10 @@ they're managed separately as YAML/JSON files under this directory:
   (error-level) publish failures within 5 minutes.
 - `alerts/prod-node-count-low.yaml` — pages when prod-us has fewer ready
   nodes than the terraform-declared `system_pool_min`.
+- `alerts/kourier-gateway-restarts.yaml` — pages when the ingress gateway
+  (`3scale-kourier-gateway`) restarts 3+ times in 10 minutes on prod-us or
+  prod-eu, i.e. the 2026-10-22 scanner-flood crash-loop that 502'd a region
+  (SHO-173). Staging is excluded.
 - `alerts/warm-pool-starvation.yaml` — pages when warm-pool depth
   stays below 3 for 10+ minutes (every new project hitting cold start).
 - `alerts/metal-fc-process-leak.yaml` — pages when a metal host carries
@@ -72,6 +76,15 @@ they're managed separately as YAML/JSON files under this directory:
 - `alerts/metal-resumed-wake-slow.yaml` — warns when snapshot resumes
   (`metal.wake_total_ms{mode="resumed"}`, the API's whole /assign time) pass
   5s at p95 for 15+ minutes.
+- `alerts/metal-time-to-ready-slow.yaml` — warns when the user-visible open
+  time (`metal.time_to_ready_ms`, first /assign attempt to ready URL,
+  including timeouts and retries) passes 60s at p95 for 15+ minutes.
+- `alerts/metal-assign-timeouts.yaml` — warns when a host's /assign runs past
+  the API's 30s budget 10+ times in 15 minutes (`metal.host_errors{reason="timeout"}`;
+  each one is a retry the user waits through).
+- `alerts/metal-repo-hydrate-failing.yaml` — warns when 5+ opens on a host in
+  30 minutes fail to restore git history (`metal.repo_hydrate{mode="failed"}`;
+  they run on the source's `.git` with git writes blocked).
 - `alerts/metal-cold-boot-ratio-high.yaml` — warns when cold boots exceed 40%
   of wakes that needed work for 30+ minutes (snapshots being discarded or
   never taken; the 2026-10 20s-wake regression).

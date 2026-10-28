@@ -3,7 +3,7 @@
 
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
 import { signSharedFileToken } from '../../lib/shared-file-token'
-import { sharedFileRoutes } from '../shared-files'
+import { sharedFileDownloadShapes, sharedFileRoutes } from '../shared-files'
 
 describe('shared file routes', () => {
   const originalSecret = process.env.BETTER_AUTH_SECRET
@@ -382,5 +382,17 @@ describe('shared file routes', () => {
     // The path as signed, the prefix-stripped read, and the same read from the
     // runtime's own project root.
     expect(calls).toBe(3)
+  })
+})
+
+// SHO-242: a project agent writes `plans/x.md` at its runtime's merged root,
+// which is the one root an unscoped read walks. Desktop now resolves that root
+// locally; this pins the cloud behaviour it matches, so the two cannot drift.
+describe('shared file download shapes', () => {
+  it('reads an unscoped project path from the merged root last', () => {
+    const shapes = sharedFileDownloadShapes('plans/x.md', 'project-1')
+
+    expect(shapes.at(-1)).toEqual({ path: 'plans/x.md' })
+    expect(shapes).toContainEqual({ path: 'project-1/plans/x.md' })
   })
 })

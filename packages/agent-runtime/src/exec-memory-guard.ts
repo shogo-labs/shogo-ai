@@ -10,13 +10,18 @@
  *
  *   - the PIDs of live exec shells are published to SHOGO_EXEC_PIDS_FILE,
  *     and the manager's watchdog leaves those process trees out of its sum;
- *   - this guard enforces SHOGO_EXEC_MEMORY_MB on those trees instead. On a
+ *   - this guard enforces the command budget on those trees instead. On a
  *     sustained breach it stops the largest command and leaves a note in its
  *     output, so the agent sees why in the tool result or `[Task update]`.
+ *
+ * The budget comes from `SHOGO_EXEC_MEMORY_MB` when it is set explicitly, and
+ * otherwise from the desktop's `host-limits.json` (SHOGO_HOST_LIMITS_FILE),
+ * which is re-read on every sample so a Settings change lands on a command that
+ * is already running (SHO-203).
  */
 
 import { execFile } from '@shogo/shared-runtime/child-process'
-import { mkdirSync, renameSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
 
 export interface TrackedExec {
@@ -25,14 +30,85 @@ export interface TrackedExec {
   killForMemory: (note: string) => void
 }
 
+/** What the budget was read from, so the OOM note can name the right fix. */
+export type ExecBudgetSource = 'env' | 'settings'
+
+export interface ExecBudget {
+  /** MB the agent's commands may use. 0 = no limit configured. */
+  mb: number
+  source: ExecBudgetSource
+  /** Total physical RAM in MB, when the limits file reports it. */
+  totalMemMB?: number
+}
+
+/** `host-limits.json`, as published by the desktop app (SHO-203). */
+interface HostLimitsFile {
+  execMemoryMB?: number
+  totalMemMB?: number
+}
+
 const tracked = new Map<number, TrackedExec>()
 let timer: ReturnType<typeof setInterval> | null = null
 let sampling = false
 let strikes = 0
 
+/**
+ * The limits file, cached by mtime: one `stat` per sample instead of a read of
+ * a file that changes only when the user moves the setting.
+ */
+let cachedLimits: { path: string; mtimeMs: number; value: HostLimitsFile | null } | null = null
+
+function readHostLimits(path: string): HostLimitsFile | null {
+  try {
+    const mtimeMs = statSync(path).mtimeMs
+    if (cachedLimits?.path === path && cachedLimits.mtimeMs === mtimeMs) return cachedLimits.value
+    let value: HostLimitsFile | null = null
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as HostLimitsFile
+      value = parsed && typeof parsed === 'object' ? parsed : null
+    } catch {
+      value = null
+    }
+    cachedLimits = { path, mtimeMs, value }
+    return value
+  } catch {
+    cachedLimits = null
+    return null
+  }
+}
+
+/**
+ * The budget for the commands the agent runs.
+ *
+ * An explicit `SHOGO_EXEC_MEMORY_MB` wins (headless worker, tests) and names
+ * itself in the OOM note. Otherwise the desktop's `host-limits.json` does, and
+ * because it is read on every sample, changing the setting applies to a command
+ * that is already running — the app and runtime never restart (SHO-203).
+ */
+export function execBudget(): ExecBudget {
+  const envMB = parseInt(process.env.SHOGO_EXEC_MEMORY_MB || '', 10)
+  if (Number.isFinite(envMB) && envMB > 0) return { mb: envMB, source: 'env' }
+
+  const file = process.env.SHOGO_HOST_LIMITS_FILE
+  if (!file) return { mb: 0, source: 'settings' }
+  const limits = readHostLimits(file)
+  const mb = limits?.execMemoryMB
+  if (typeof mb !== 'number' || !Number.isFinite(mb) || mb <= 0) return { mb: 0, source: 'settings' }
+  const totalMemMB = limits?.totalMemMB
+  return {
+    mb: Math.floor(mb),
+    source: 'settings',
+    totalMemMB: typeof totalMemMB === 'number' && totalMemMB > 0 ? Math.floor(totalMemMB) : undefined,
+  }
+}
+
 function budgetMB(): number {
-  const mb = parseInt(process.env.SHOGO_EXEC_MEMORY_MB || '', 10)
-  return Number.isFinite(mb) && mb > 0 ? mb : 0
+  return execBudget().mb
+}
+
+/** True when a budget could exist now or appear later (env or watched file). */
+function hasBudgetSource(): boolean {
+  return budgetMB() > 0 || !!process.env.SHOGO_HOST_LIMITS_FILE
 }
 
 function intervalMs(): number {
@@ -80,7 +156,10 @@ function publishPids(): void {
 }
 
 function ensureTimer(): void {
-  if (timer || budgetMB() <= 0) return
+  // Not `budgetMB() > 0`: with a limits file the budget may only appear after
+  // the command is already running (the user moves the setting), and that
+  // change has to land on it.
+  if (timer || !hasBudgetSource()) return
   timer = setInterval(() => { void sampleOnce() }, intervalMs())
   try { (timer as any).unref?.() } catch { /* unref is best-effort */ }
 }
@@ -98,7 +177,8 @@ function stopTimer(): void {
 export async function sampleOnce(
   sample: (roots: number[]) => Promise<Map<number, number>> = sampleTreeRssKb,
 ): Promise<void> {
-  const ceilingMB = budgetMB()
+  const budget = execBudget()
+  const ceilingMB = budget.mb
   if (sampling || ceilingMB <= 0 || tracked.size === 0) return
   sampling = true
   try {
@@ -124,7 +204,7 @@ export async function sampleOnce(
     if (!victim) return
     tracked.delete(largestPid)
     publishPids()
-    const note = memoryKillNote(Math.floor(largestKb / 1024), totalMB, ceilingMB)
+    const note = memoryKillNote(Math.floor(largestKb / 1024), totalMB, ceilingMB, budget)
     console.warn(`[exec-memory-guard] stopping pid ${largestPid}: ${note}`)
     try { victim.killForMemory(note) } catch { /* already gone */ }
     if (tracked.size === 0) stopTimer()
@@ -135,18 +215,44 @@ export async function sampleOnce(
   }
 }
 
-export function memoryKillNote(commandMB: number, totalMB: number, ceilingMB: number): string {
+/** Where the ceiling came from, and the host it belongs to. */
+export interface MemoryLimitOrigin {
+  source?: ExecBudgetSource
+  /** Total physical RAM in MB, when known — so the note can name the machine. */
+  totalMemMB?: number
+}
+
+export function memoryKillNote(
+  commandMB: number,
+  totalMB: number,
+  ceilingMB: number,
+  origin: MemoryLimitOrigin = {},
+): string {
+  const several = totalMB > commandMB
+  const fromEnv = origin.source === 'env'
+  const ram = origin.totalMemMB ? `; this computer has ${formatMB(origin.totalMemMB)}` : ''
+  const where = fromEnv
+    ? `for agent commands on this computer (SHOGO_EXEC_MEMORY_MB)${ram}`
+    : `for agent commands on this computer (set in Settings → Computer and files → ` +
+      `Memory for agent commands${ram})`
+  const fix = fromEnv
+    ? 'Raise SHOGO_EXEC_MEMORY_MB where it is set, restart the runtime, then retry the command.'
+    : 'Ask the user to raise it there — it applies right away, with no restart — then retry the command.'
   return (
     `[shogo] Stopped: out of memory. This command's processes were using ${formatMB(commandMB)}` +
-    (totalMB > commandMB ? ` (${formatMB(totalMB)} across all running commands)` : '') +
-    `, over the ${formatMB(ceilingMB)} limit for this project's commands. ` +
-    'Run fewer or lighter processes at once. If the workload really needs more memory, tell the user: ' +
-    'on Shogo desktop the limit is hostRuntime.memoryMB in config.json.'
+    (several ? ` (${formatMB(totalMB)} across all running commands)` : '') +
+    `, over the ${formatMB(ceilingMB)} limit ${where}. ` +
+    (several ? 'Run fewer or lighter processes at once. ' : '') +
+    fix
   )
 }
 
 function formatMB(mb: number): string {
-  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`
+  if (mb < 1024) return `${mb} MB`
+  const gb = mb / 1024
+  // Whole hundreds of gigabytes read better without the `.0` ("128 GB", not
+  // "128.0 GB"); everything smaller keeps a decimal for the precision.
+  return gb >= 100 ? `${Math.round(gb)} GB` : `${gb.toFixed(1)} GB`
 }
 
 /**

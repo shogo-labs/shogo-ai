@@ -43,7 +43,7 @@ function Chip({
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityState={{ selected: active, disabled }}
+      aria-selected={active} aria-disabled={disabled}
       className={cn(
         "rounded-full border px-3 py-1.5",
         active ? "border-primary bg-primary/15" : "border-border bg-card",
@@ -91,7 +91,7 @@ function Swatch({
       hitSlop={4}
       accessibilityRole="button"
       accessibilityLabel={label}
-      accessibilityState={{ selected: active }}
+      aria-selected={active}
       className={cn("items-center justify-center rounded-full border-2", active ? "border-primary" : "border-transparent")}
       style={{ width: SWATCH + 8, height: SWATCH + 8 }}
     >
@@ -243,7 +243,7 @@ function PresetThumb({
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={`${preset.label} preset`}
-      accessibilityState={{ selected: active }}
+      aria-selected={active}
       className={cn("mr-2 items-center rounded-xl border bg-muted px-1.5 pb-1.5", active ? "border-primary" : "border-border")}
     >
       {/* The buddy is a WebView on native; keep it from swallowing touches. */}
@@ -316,7 +316,7 @@ function CompactBuddyCustomizer({
               key={c.id}
               onPress={() => setCategory(c.id)}
               accessibilityRole="tab"
-              accessibilityState={{ selected: active }}
+              aria-selected={active}
               className={cn("flex-1 items-center rounded-lg py-1.5", active && "bg-card")}
             >
               <Text className={cn("text-xs", active ? "font-semibold text-foreground" : "text-muted-foreground")}>
@@ -533,7 +533,7 @@ function FullBuddyCustomizer({
               onPress={() => onChange(presetLook)}
               accessibilityRole="button"
               accessibilityLabel={`${preset.label} preset`}
-              accessibilityState={{ selected: active }}
+              aria-selected={active}
               className={cn(
                 "items-center rounded-xl border bg-zinc-950 px-1.5 pb-2",
                 active ? "border-primary" : "border-white/5 hover:border-white/20",

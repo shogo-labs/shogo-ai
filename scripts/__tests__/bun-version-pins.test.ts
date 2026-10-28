@@ -51,6 +51,27 @@ export function findPins(file: string, text: string): Pin[] {
 // is itself checked, so neither can drift behind.
 const isFloatingOrIndirect = (v: string) => v === 'latest' || v.startsWith('${{')
 
+const semver = (v: string) => v.split('.').map((n) => parseInt(n, 10))
+
+/** `have` >= `floor`, comparing major/minor/patch numerically. */
+export function versionAtLeast(have: string, floor: string): boolean {
+  const a = semver(have)
+  const b = semver(floor)
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0
+    const y = b[i] ?? 0
+    if (Number.isNaN(x) || Number.isNaN(y)) return false
+    if (x !== y) return x > y
+  }
+  return true
+}
+
+// Node2Shell (CVE-2026-111497): an out-of-bounds write in the bundled Brotli
+// decoder, reachable through `fetch()` on a `br` response. Fixed in Bun 1.4.4
+// and Node 22.23.4 / 24.22.1 / 26.12.1 — the EOL lines never get a patch.
+const BUN_SECURITY_FLOOR = '1.4.4'
+const NODE_SECURITY_FLOOR_BY_LINE = { 24: '24.22.1', 26: '26.12.1' } as const
+
 describe('Bun version pins', () => {
   it('packageManager pins an exact Bun version', () => {
     expect(expected).toMatch(/^\d+\.\d+\.\d+$/)
@@ -82,3 +103,61 @@ describe('Bun version pins', () => {
     expect(findPins('x', text).map((p) => p.version)).toEqual(['1.3.11', '1.3.11', '1.3', '1.3.11'])
   })
 })
+
+describe('Node2Shell (CVE-2026-111497) floors', () => {
+  const read = (file: string) => readFileSync(join(ROOT, file), 'utf-8')
+
+  it('pins a Bun at or above the patched release (1.4.4)', () => {
+    expect(versionAtLeast(expected, BUN_SECURITY_FLOOR)).toBe(true)
+  })
+
+  it('compares versions numerically past single digits', () => {
+    expect(versionAtLeast('1.4.4', '1.4.4')).toBe(true)
+    expect(versionAtLeast('1.10.0', '1.4.4')).toBe(true)
+    expect(versionAtLeast('1.4.3', '1.4.4')).toBe(false)
+    expect(versionAtLeast('26.12.1', '26.12.1')).toBe(true)
+    expect(versionAtLeast('26.9.0', '26.12.1')).toBe(false)
+  })
+
+  // Node 20/21/23/25 are past end-of-life, so a CVE fix never lands on them.
+  const EOL_NODE_LINES = /^\s*FROM\s+(?:--platform=\S+\s+)?node:(?:20|21|23|25)\b/m
+
+  it('no Dockerfile builds from an EOL Node line', () => {
+    const offenders = trackedFiles('*Dockerfile*')
+      .filter((f) => EOL_NODE_LINES.test(read(f)))
+      .map((f) => `${f} uses an EOL node base`)
+    expect(offenders).toEqual([])
+  })
+
+  it('API image builds from a patched Node line', () => {
+    const from = read('apps/api/Dockerfile').match(/^\s*FROM\s+node:(\d+)/m)
+    expect(Number(from?.[1])).toBeGreaterThanOrEqual(26)
+  })
+
+  // The guard is what stops a stale registry cache or a floating nodesource
+  // tag from silently shipping the vulnerable decoder again.
+  const GUARDED: Array<{ file: string; bun: string; node?: string }> = [
+    { file: 'apps/api/Dockerfile', bun: BUN_SECURITY_FLOOR, node: NODE_SECURITY_FLOOR_BY_LINE[26] },
+    { file: 'docker/workspace-deps/Dockerfile', bun: BUN_SECURITY_FLOOR },
+    {
+      file: 'packages/agent-runtime/Dockerfile.base',
+      bun: BUN_SECURITY_FLOOR,
+      node: NODE_SECURITY_FLOOR_BY_LINE[24],
+    },
+    {
+      file: 'packages/agent-runtime/Dockerfile.swe-overlay',
+      bun: BUN_SECURITY_FLOOR,
+      node: NODE_SECURITY_FLOOR_BY_LINE[24],
+    },
+  ]
+
+  for (const { file, bun, node } of GUARDED) {
+    it(`${file} fails its build below bun ${bun}${node ? ` / node ${node}` : ''}`, () => {
+      const text = read(file)
+      expect(text).toContain(`bun_need=${bun}`)
+      if (node) expect(text).toContain(`node_need=${node}`)
+      expect(text).toContain('Node2Shell guard OK')
+    })
+  }
+})
+

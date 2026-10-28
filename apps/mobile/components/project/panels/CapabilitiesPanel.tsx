@@ -9,6 +9,7 @@ import {
   Clock,
   ImageIcon,
   Clapperboard,
+  Music,
   Box,
   Brain,
   ChevronDown,
@@ -77,6 +78,7 @@ export interface CapabilitySettings {
   heartbeatToolsEnabled: boolean
   imageGenEnabled: boolean
   videoGenEnabled: boolean
+  musicGenEnabled: boolean
   threeDGenEnabled: boolean
   memoryEnabled: boolean
   quickActionsEnabled: boolean
@@ -186,6 +188,21 @@ const CAPABILITIES: CapabilityDef[] = [
     examples: [
       '"Animate the hero image into a 5 second loop for the landing page"',
       '"Make three 9:16 product shots for TikTok from these photos"',
+    ],
+  },
+  {
+    key: 'musicGenEnabled',
+    optIn: true,
+    label: 'Music Generation',
+    description: 'Write a song or a short music clip from a prompt',
+    detail:
+      'Creates music with Lyria: a full song with verses, choruses and vocals (Lyria 3.5, up to about three minutes) or a 30-second clip for a loop, sting or intro. Describe the genre, mood, instruments and structure, and ask for a length in the prompt. Billed per song, so this is off until you turn it on.',
+    disabledDescription: 'No music generation',
+    icon: Music,
+    toolNames: ['generate_music'],
+    examples: [
+      '"Write a 90 second lo-fi track for the onboarding video"',
+      '"A 30 second upbeat sting for the app launch"',
     ],
   },
   {

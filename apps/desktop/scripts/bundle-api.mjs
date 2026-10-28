@@ -11,6 +11,13 @@
  * Entry points bundled:
  *   1. apps/api/src/entry.ts       → bundle/api.js        (~17 MB)
  *   2. packages/agent-runtime/src/server.ts → bundle/agent-runtime.js (~14 MB)
+ *   3. packages/shogo-worker/src/lib/tunnel-worker.ts → bundle/tunnel-worker.js
+ *
+ * Entry 3 is not a program: it is the tunnel's Worker thread, and `api.js`
+ * spawns it by path. It has to sit in the same directory as `api.js`, because
+ * that is where the host looks for it — with no source tree shipped, a worker
+ * entry that is only a `.ts` next to the sources cannot be reached at all and
+ * remote control silently stops working.
  *
  * Structure created inside apps/desktop/resources/:
  *   bundle/             — compiled JS entry points
@@ -101,6 +108,13 @@ const ENTRY_POINTS = [
     name: 'agent-runtime',
     input: 'packages/agent-runtime/src/server.ts',
     output: 'agent-runtime.js',
+  },
+  {
+    // The tunnel's Worker thread. `api.js` resolves it as a sibling file, so it
+    // ships next to the API bundle rather than in its own directory.
+    name: 'tunnel-worker',
+    input: 'packages/shogo-worker/src/lib/tunnel-worker.ts',
+    output: 'tunnel-worker.js',
   },
 ]
 

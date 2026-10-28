@@ -29,6 +29,15 @@ const savedEnv = {
   WORKSPACE_DIR: process.env.WORKSPACE_DIR,
 }
 
+// `process.env.X = undefined` writes the literal string "undefined" (Bun 1.4.4+
+// keeps it), so a var that was unset at load has to be deleted, not assigned —
+// otherwise it leaks into later tests in this file as a bogus stack id.
+function restoreEnv(name: keyof typeof savedEnv): void {
+  const value = savedEnv[name]
+  if (value === undefined) delete process.env[name]
+  else process.env[name] = value
+}
+
 /** A react-app-ish project: the files a Vite starter owns. */
 function reactProject(): string {
   const dir = mkdtempSync(join(tmpdir(), 'shogo-stack-switch-'))
@@ -56,9 +65,9 @@ beforeEach(() => {
 afterEach(() => {
   setTechStackPreviewRestarter(null)
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
-  process.env.TECH_STACK_ID = savedEnv.TECH_STACK_ID
-  process.env.WORKSPACE_TECH_STACKS = savedEnv.WORKSPACE_TECH_STACKS
-  process.env.WORKSPACE_DIR = savedEnv.WORKSPACE_DIR
+  restoreEnv('TECH_STACK_ID')
+  restoreEnv('WORKSPACE_TECH_STACKS')
+  restoreEnv('WORKSPACE_DIR')
 })
 
 /** A directory with nothing in it yet. */

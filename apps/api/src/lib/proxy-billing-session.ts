@@ -162,6 +162,9 @@ interface BillingSession {
   threeDRawUsd: number
   threeDBilledUsd: number
   threeDGenerationCount: number
+  musicRawUsd: number
+  musicBilledUsd: number
+  musicGenerationCount: number
   quality: BillingSessionQualitySignals
   openedAt: number
   lastActivityAt: number
@@ -221,6 +224,9 @@ function emptySession(projectId: string, chatSessionId: string | null, workspace
     threeDRawUsd: 0,
     threeDBilledUsd: 0,
     threeDGenerationCount: 0,
+    musicRawUsd: 0,
+    musicBilledUsd: 0,
+    musicGenerationCount: 0,
     quality: {},
     openedAt: Date.now(),
     lastActivityAt: Date.now(),
@@ -252,6 +258,9 @@ function parseSessionHash(hash: Record<string, string>, imageModels: string[]): 
     threeDRawUsd: Number(hash.threeDRawUsd || 0),
     threeDBilledUsd: Number(hash.threeDBilledUsd || 0),
     threeDGenerationCount: Number(hash.threeDGenerationCount || 0),
+    musicRawUsd: Number(hash.musicRawUsd || 0),
+    musicBilledUsd: Number(hash.musicBilledUsd || 0),
+    musicGenerationCount: Number(hash.musicGenerationCount || 0),
     quality: {
       success: hash['quality:success'] === undefined ? undefined : hash['quality:success'] === '1',
       hitMaxTurns: hash['quality:hitMaxTurns'] === '1',
@@ -319,6 +328,18 @@ end
 redis.call('HINCRBYFLOAT', KEYS[1], 'threeDRawUsd', ARGV[1])
 redis.call('HINCRBYFLOAT', KEYS[1], 'threeDBilledUsd', ARGV[2])
 redis.call('HINCRBY', KEYS[1], 'threeDGenerationCount', 1)
+redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[3])
+redis.call('PEXPIRE', KEYS[1], ARGV[4])
+return 1
+`
+
+const ACCUMULATE_MUSIC_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 0
+end
+redis.call('HINCRBYFLOAT', KEYS[1], 'musicRawUsd', ARGV[1])
+redis.call('HINCRBYFLOAT', KEYS[1], 'musicBilledUsd', ARGV[2])
+redis.call('HINCRBY', KEYS[1], 'musicGenerationCount', 1)
 redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[3])
 redis.call('PEXPIRE', KEYS[1], ARGV[4])
 return 1
@@ -413,6 +434,21 @@ function accumulateVideoUsageLocal(
   session.videoBilledUsd += billedUsd
   session.videoSeconds += seconds
   session.videoGenerationCount += 1
+  session.lastActivityAt = Date.now()
+  return true
+}
+
+function accumulateMusicUsageLocal(
+  projectId: string,
+  rawUsd: number,
+  billedUsd: number,
+  chatSessionId?: string | null,
+): boolean {
+  const session = lookupSessionLocal(projectId, chatSessionId)
+  if (!session) return false
+  session.musicRawUsd += rawUsd
+  session.musicBilledUsd += billedUsd
+  session.musicGenerationCount += 1
   session.lastActivityAt = Date.now()
   return true
 }
@@ -569,6 +605,26 @@ async function accumulate3dUsageRedis(
   for (const key of composite ? [composite, legacy] : [legacy]) {
     const result = await r.eval(
       ACCUMULATE_3D_SCRIPT, 1, redisHashKey(key),
+      String(rawUsd), String(billedUsd), String(now), String(REDIS_TTL_MS),
+    )
+    if (result === 1) return true
+  }
+  return false
+}
+
+async function accumulateMusicUsageRedis(
+  r: NonNullable<ReturnType<typeof redisOrNull>>,
+  projectId: string,
+  rawUsd: number,
+  billedUsd: number,
+  chatSessionId?: string | null,
+): Promise<boolean> {
+  const composite = chatSessionId ? sessionKey(projectId, chatSessionId) : null
+  const legacy = projectId
+  const now = Date.now()
+  for (const key of composite ? [composite, legacy] : [legacy]) {
+    const result = await r.eval(
+      ACCUMULATE_MUSIC_SCRIPT, 1, redisHashKey(key),
       String(rawUsd), String(billedUsd), String(now), String(REDIS_TTL_MS),
     )
     if (result === 1) return true
@@ -880,6 +936,28 @@ export async function accumulateVideoUsage(
 }
 
 /**
+ * Accumulate music-generation USD (charged when a Lyria song comes back).
+ * Returns true if accumulated against an active session, false if no session
+ * exists (caller should charge per-call).
+ */
+export async function accumulateMusicUsage(
+  projectId: string,
+  rawUsd: number,
+  billedUsd: number,
+  chatSessionId?: string | null,
+): Promise<boolean> {
+  const r = redisOrNull()
+  if (r) {
+    try {
+      return await withRedisTimeout(accumulateMusicUsageRedis(r, projectId, rawUsd, billedUsd, chatSessionId))
+    } catch (err) {
+      console.warn(`[BillingSession] Redis accumulateMusicUsage failed, falling back to local map:`, (err as Error).message)
+    }
+  }
+  return accumulateMusicUsageLocal(projectId, rawUsd, billedUsd, chatSessionId)
+}
+
+/**
  * Accumulate 3D-generation USD (charged when a Tripo task succeeds). Returns
  * true if accumulated against an active session, false if no session exists
  * (caller should charge per-call).
@@ -973,6 +1051,7 @@ export async function closeSession(
     session.imageBilledUsd === 0 &&
     session.videoBilledUsd === 0 &&
     session.threeDBilledUsd === 0 &&
+    session.musicBilledUsd === 0 &&
     options.fallbackUsage &&
     !options.discardPartial &&
     !options.bookkeeping
@@ -1000,7 +1079,7 @@ export async function closeSession(
     }
   }
 
-  if (totalTokens === 0 && session.imageBilledUsd === 0 && session.videoBilledUsd === 0 && session.threeDBilledUsd === 0) {
+  if (totalTokens === 0 && session.imageBilledUsd === 0 && session.videoBilledUsd === 0 && session.threeDBilledUsd === 0 && session.musicBilledUsd === 0) {
     // Do not bill, but still record a metrics row so turns that die before
     // the LLM (pod unreachable, 402, stream abort with no tokens) are
     // countable. Skipping this made silent dropped turns invisible in
@@ -1092,8 +1171,8 @@ export async function closeSession(
     session.inputTokens, session.outputTokens, session.model,
     session.cachedInputTokens, session.cacheWriteTokens,
   )
-  const rawUsd = tokenCost.rawUsd + session.imageRawUsd + session.videoRawUsd + session.threeDRawUsd
-  const billedUsd = tokenCost.billedUsd + session.imageBilledUsd + session.videoBilledUsd + session.threeDBilledUsd
+  const rawUsd = tokenCost.rawUsd + session.imageRawUsd + session.videoRawUsd + session.threeDRawUsd + session.musicRawUsd
+  const billedUsd = tokenCost.billedUsd + session.imageBilledUsd + session.videoBilledUsd + session.threeDBilledUsd + session.musicBilledUsd
   const durationMs = Date.now() - session.openedAt
   const finalQuality = session.quality
 
@@ -1174,6 +1253,13 @@ export async function closeSession(
               threeDBilledUsd: session.threeDBilledUsd,
             }
           : {}),
+        ...(session.musicGenerationCount > 0
+          ? {
+              musicGenerationCount: session.musicGenerationCount,
+              musicRawUsd: session.musicRawUsd,
+              musicBilledUsd: session.musicBilledUsd,
+            }
+          : {}),
         durationMs,
         ...(session.chatSessionId ? { chatSessionId: session.chatSessionId } : {}),
         ...(usedStreamFallback ? { usageSource: 'stream-fallback' } : {}),
@@ -1182,7 +1268,7 @@ export async function closeSession(
 
     if (result.success) {
       console.log(
-        `[BillingSession] Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}), ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)}, ${session.videoGenerationCount} videos $${session.videoBilledUsd.toFixed(4)}, ${session.threeDGenerationCount} 3D models $${session.threeDBilledUsd.toFixed(4)} — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`
+        `[BillingSession] Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}), ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)}, ${session.videoGenerationCount} videos $${session.videoBilledUsd.toFixed(4)}, ${session.threeDGenerationCount} 3D models $${session.threeDBilledUsd.toFixed(4)}, ${session.musicGenerationCount} songs $${session.musicBilledUsd.toFixed(4)} — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`
       )
     } else {
       console.warn(`[BillingSession] Could not charge usage: ${result.error}`)

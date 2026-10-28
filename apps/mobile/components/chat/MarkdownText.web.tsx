@@ -16,6 +16,7 @@ import {
   mentionTargetFromHref,
   pathFromFileHref,
   rewriteWorkspaceMedia,
+  resolveRelativeLinks,
   type MentionTarget,
 } from "./file-links"
 import { MarkdownMedia } from "./MarkdownMedia.web"
@@ -228,7 +229,10 @@ export const MarkdownText = memo(
     const source = children || ""
     const body = useMemo(() => {
       const normalized = withHardBreaks(rewriteWorkspaceMedia(normalizeRichTextPaste(source)))
-      const fileLinked = onFilePress ? linkifyFilePaths(normalized) : normalized
+      // A relative link we wrote cannot be opened by a browser: Streamdown's
+      // hardener replaces it with `[blocked]`. Resolve it before it parses.
+      const resolved = resolveRelativeLinks(normalized, { fileLinks: !!onFilePress })
+      const fileLinked = onFilePress ? linkifyFilePaths(resolved) : resolved
       return linkifyBareUrls(fileLinked)
     }, [onFilePress, source])
     const components = useMemo(
