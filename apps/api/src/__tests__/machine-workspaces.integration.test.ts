@@ -50,6 +50,10 @@ type Topology = {
   deviceWorkspaceId: string
   desktop: Subprocess
   desktopUrl: string
+  /** The SQLite URL the desktop process opened — reused by a restart. */
+  desktopDbUrl: string
+  /** The minted device key, for a heartbeat or a `/sync` the test sends itself. */
+  deviceKey: string
   pods: Subprocess[]
   /** The HTTP port of each pod, in start order: A is the machine's, B is where a read lands. */
   ports: number[]
@@ -170,14 +174,30 @@ async function freePort(): Promise<number> {
   return port
 }
 
-let podCounter = 0
-const podId = () => `pod-mw-${++podCounter}`
+type TopologyOptions = {
+  /**
+   * Reuse the SQLite file a previous desktop process left behind. A restart on
+   * the same database is the shape that stayed broken in production.
+   */
+  desktopDbUrl?: string
+  /** Extra env for the desktop process (the recovery knobs). */
+  desktopEnv?: Record<string, string | undefined>
+  /** `instances` rows an older, fan-out desktop left behind, in other workspaces. */
+  siblingRows?: number
+}
+
+let dbCounter = 0
+const podId = () => `pod-mw-${++dbCounter}`
 
 /**
  * One desktop paired to a two-pod cloud. `suffix` keeps the ids of two
  * topologies distinct, so a test can run two desktops side by side.
+ *
+ * `options` exists for the recovery shapes (SHO-241 §D): a desktop whose first
+ * push was refused and then restarted on the same SQLite file, and a machine the
+ * cloud still holds one row per workspace for.
  */
-async function startTopology(suffix: string): Promise<Topology> {
+async function startTopology(suffix: string, options: TopologyOptions = {}): Promise<Topology> {
   const cloudUser = await db.user.create({
     data: { name: `Owner ${suffix}`, email: `owner-${suffix}@example.com` },
   })
@@ -219,6 +239,27 @@ async function startTopology(suffix: string): Promise<Topology> {
     devicePlatform: 'darwin-arm64',
   })
 
+  // The rows an older desktop left behind by opening one tunnel per stored
+  // device key (SHO-241 §C). The heartbeat has to fold them into the one row
+  // without losing what pointed at them.
+  for (let i = 0; i < (options.siblingRows ?? 0); i++) {
+    const workspace = await db.workspace.create({
+      data: { name: `Side ${suffix} ${i}`, slug: `side-${suffix}-${i}`, kind: 'team' },
+    })
+    await db.instance.create({
+      data: {
+        id: `${instanceId}-sib-${i}`,
+        userId: cloudUser.id,
+        workspaceId: workspace.id,
+        hostname: `mac-${suffix}`,
+        name: `Mac ${suffix}`,
+        kind: 'desktop',
+        lastSeenAt: new Date(),
+        metadata: {},
+      },
+    })
+  }
+
   const pods: Subprocess[] = []
   const ports: number[] = []
   let cloudUrl = ''
@@ -240,9 +281,10 @@ async function startTopology(suffix: string): Promise<Topology> {
   }
 
   const desktopPort = await freePort()
+  const desktopDbUrl = options.desktopDbUrl ?? freshDesktopDb()
   const desktop = run(['desktop', String(desktopPort)], {
     SHOGO_LOCAL_MODE: 'true',
-    SHOGO_APP_DATABASE_URL: freshDesktopDb(),
+    SHOGO_APP_DATABASE_URL: desktopDbUrl,
     DATABASE_URL: undefined,
     SHOGO_CLOUD_URL: cloudUrl,
     MACHINE_INSTANCE_ID: instanceId,
@@ -251,6 +293,7 @@ async function startTopology(suffix: string): Promise<Topology> {
     // The desktop is not a pod; it must not join the cloud's tunnel registry.
     REDIS_URL: undefined,
     POD_ID: undefined,
+    ...(options.desktopEnv ?? {}),
   })
   await waitForLine(desktop, (l) => l.startsWith('READY'))
 
@@ -261,6 +304,8 @@ async function startTopology(suffix: string): Promise<Topology> {
     deviceWorkspaceId: deviceWorkspace.id,
     desktop,
     desktopUrl: `http://127.0.0.1:${desktopPort}`,
+    desktopDbUrl,
+    deviceKey: deviceKey.fullKey,
     pods,
     ports,
     cloudUrl,
@@ -277,6 +322,45 @@ async function startTopology(suffix: string): Promise<Topology> {
  */
 function podB(topology: Topology): string {
   return `http://127.0.0.1:${topology.ports[1]}`
+}
+
+/**
+ * Start the desktop again on the database the last process left behind.
+ *
+ * This is the shape that stayed broken: a desktop whose first snapshot was
+ * refused restarts, finds its own state row (epoch set, nothing ingested) and has
+ * to send a snapshot rather than deltas the cloud cannot apply (SHO-241).
+ */
+async function restartDesktop(
+  topology: Topology,
+  extraEnv: Record<string, string | undefined> = {},
+): Promise<void> {
+  try {
+    topology.desktop.kill()
+  } catch {
+    /* already gone */
+  }
+  await topology.desktop.exited.catch(() => {})
+  const port = await freePort()
+  const proc = run(['desktop', String(port)], {
+    SHOGO_LOCAL_MODE: 'true',
+    SHOGO_APP_DATABASE_URL: topology.desktopDbUrl,
+    DATABASE_URL: undefined,
+    SHOGO_CLOUD_URL: topology.cloudUrl,
+    MACHINE_INSTANCE_ID: topology.instanceId,
+    MACHINE_DEVICE_KEY: topology.deviceKey,
+    MACHINE_SEED_SUFFIX: topology.label,
+    // The rows, the change log and the sync state are the previous process's.
+    MACHINE_RESTART: '1',
+    MACHINE_SKIP_SEED: '1',
+    REDIS_URL: undefined,
+    POD_ID: undefined,
+    ...extraEnv,
+  })
+  await waitForLine(proc, (l) => l.startsWith('READY'))
+  topology.desktop = proc
+  topology.desktopUrl = `http://127.0.0.1:${port}`
+  drain(proc)
 }
 
 /** Everything the pods said, for when an assertion about them fails. */
@@ -644,6 +728,198 @@ describeIfInfra('a real desktop and two real cloud pods', () => {
     expect(dispatched).toBe(0)
     expect(fired).toBeGreaterThanOrEqual(1)
     expect((await db.chatReminder.findUnique({ where: { id: cloudReminder.id } }))?.status).toBe('fired')
+  }, 180_000)
+
+  test('a desktop whose first push was refused copies itself after a restart', async () => {
+    // Prod, both machines: the first snapshot was refused at the door (the
+    // device key's header), so an epoch was minted and nothing was ever ingested.
+    // Every later launch then sent deltas against a copy that did not exist, and
+    // retried the same refusal every 30 s for four days (SHO-241).
+    const topology = await startTopology('recover', {
+      desktopEnv: { MACHINE_FIRST_PUSH_REFUSED: '50' },
+    })
+
+    // The refusal left the local state exactly as production had it: an epoch,
+    // no accepted ingest, and the change log filling up behind it.
+    const local = new Database(topology.desktopDbUrl.replace(/^file:/, ''))
+    const stranded = local
+      .query('select epoch, cursor, lastIngestAt from machine_sync_states')
+      .get() as { epoch: string; cursor: number; lastIngestAt: string | null } | null
+    local.close()
+    expect(stranded?.epoch).toBeString()
+    expect(stranded?.lastIngestAt ?? null).toBeNull()
+    expect(await db.machineSyncState.findUnique({ where: { instanceId: topology.instanceId } })).toBeNull()
+    expect(await db.workspace.count({ where: { id: 'ws-local-recover' } })).toBe(0)
+
+    // The app is started again with the key working.
+    await restartDesktop(topology)
+
+    const copied = await waitUntil(async () =>
+      db.workspace.findFirst({ where: { id: 'ws-local-recover' } }),
+    ).catch((err: unknown) => {
+      dumpLogs(topology)
+      throw err
+    })
+    expect(copied.machineInstanceId).toBe(topology.instanceId)
+
+    // Both ends now agree there is a copy, and the desktop keeps the epoch the
+    // cloud holds — otherwise the next delta is refused and it snapshots forever.
+    const cloudState = await db.machineSyncState.findUnique({
+      where: { instanceId: topology.instanceId },
+    })
+    expect(cloudState.lastIngestAt).toBeInstanceOf(Date)
+    const after = new Database(topology.desktopDbUrl.replace(/^file:/, ''))
+    const localAfter = after
+      .query('select epoch, lastIngestAt from machine_sync_states')
+      .get() as { epoch: string; lastIngestAt: string | null }
+    after.close()
+    expect(localAfter.epoch).toBe(cloudState.epoch)
+    expect(localAfter.lastIngestAt).not.toBeNull()
+
+    // The owner is a member, so the normal routes serve the copy.
+    const membership = await db.member.findFirst({
+      where: {
+        workspaceId: 'ws-local-recover',
+        userId: topology.ownerUserId,
+        projectId: null,
+      },
+    })
+    expect(membership).toBeTruthy()
+    const projects = await fetch(`${podB(topology)}/api/projects?workspaceId=ws-local-recover`, {
+      headers: authHeaders(topology.ownerUserId),
+    })
+    expect(projects.status).toBe(200)
+    expect(((await projects.json()) as any).items.map((p: any) => p.id)).toContain('p-local-recover')
+  }, 240_000)
+
+  test('a desktop left with an orphaned state and a full change log snapshots instead of replaying deltas', async () => {
+    // The same shape, reached from the other side: a database that already has a
+    // state row with an epoch and nothing ingested, plus a change log that has
+    // been growing since (563k rows on the real Mac). A pusher that reads the
+    // epoch as "already initialised" replays deltas forever.
+    const topology = await startTopology('orphan', {
+      desktopEnv: { MACHINE_ORPHANED_STATE: '1', MACHINE_PENDING_CHANGES: '500' },
+    })
+
+    await waitUntil(async () => db.workspace.findFirst({ where: { id: 'ws-local-orphan' } })).catch(
+      (err: unknown) => {
+        dumpLogs(topology)
+        throw err
+      },
+    )
+
+    const state = await db.machineSyncState.findUnique({ where: { instanceId: topology.instanceId } })
+    expect(state.lastIngestAt).toBeInstanceOf(Date)
+    // A new epoch: the stranded one never described a copy, so it was replaced
+    // rather than reused.
+    expect(state.epoch).not.toBe('epoch-stranded-orphan')
+
+    // The accepted snapshot pruned the change log instead of leaving it to grow.
+    const local = new Database(topology.desktopDbUrl.replace(/^file:/, ''))
+    const pending = local.query('select count(*) as n from machine_sync_changes').get() as { n: number }
+    local.close()
+    expect(pending.n).toBeLessThan(500)
+  }, 240_000)
+
+  test('one machine sends one heartbeat: the rows an older desktop left are folded into one', async () => {
+    // An older desktop opened a tunnel per stored device key, so the cloud holds
+    // one row per workspace for one machine (nine, on the real Mac). The first
+    // heartbeat from a single-tunnel desktop folds them in (SHO-241 §C).
+    const topology = await startTopology('fold', { siblingRows: 2 })
+    const siblings = await db.instance.findMany({
+      where: { userId: topology.ownerUserId, hostname: 'mac-fold', id: { not: topology.instanceId } },
+    })
+    expect(siblings).toHaveLength(2)
+
+    // What pointed at a sibling has to survive the cleanup.
+    const pinned = await db.project.create({
+      data: {
+        name: 'Pinned to the old row',
+        workspaceId: siblings[0].workspaceId,
+        preferredInstanceId: siblings[0].id,
+      },
+    })
+    await db.pushSubscription.create({
+      data: {
+        instanceId: siblings[1].id,
+        userId: topology.ownerUserId,
+        pushToken: 'tok-fold',
+        platform: 'darwin',
+      },
+    })
+
+    const beat = await fetch(`${podB(topology)}/api/instances/heartbeat`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${topology.deviceKey}`,
+        'content-type': 'application/json',
+        'x-shogo-kind': 'desktop',
+      },
+      body: JSON.stringify({ hostname: 'mac-fold', name: 'Mac fold', os: 'darwin', arch: 'arm64' }),
+    })
+    expect(beat.status).toBe(200)
+    expect(((await beat.json()) as any).instanceId).toBe(topology.instanceId)
+
+    const remaining = await db.instance.findMany({
+      where: { userId: topology.ownerUserId, hostname: 'mac-fold' },
+    })
+    expect(remaining.map((row: any) => row.id)).toEqual([topology.instanceId])
+    expect((await db.project.findUnique({ where: { id: pinned.id } }))?.preferredInstanceId).toBe(
+      topology.instanceId,
+    )
+    const subs = await db.pushSubscription.findMany({ where: { instanceId: topology.instanceId } })
+    expect(subs.map((row: any) => row.pushToken)).toEqual(['tok-fold'])
+
+    // And the machine list shows it once, carrying every workspace it was in.
+    const machines = await fetch(`${podB(topology)}/api/machines`, {
+      headers: authHeaders(topology.ownerUserId),
+    })
+    expect(machines.status).toBe(200)
+    const listed = ((await machines.json()) as any).machines.filter(
+      (m: any) => m.hostname === 'mac-fold',
+    )
+    expect(listed).toHaveLength(1)
+    expect(listed[0].id).toBe(topology.instanceId)
+  }, 180_000)
+
+  test("a workspace's picker lists the owner's machine wherever its row lives, and another member sees nothing", async () => {
+    const topology = await startTopology('owner')
+
+    // The machine's row is filed under the workspace its key was issued in.
+    const same = await fetch(
+      `${podB(topology)}/api/instances?workspaceId=${topology.deviceWorkspaceId}`,
+      { headers: authHeaders(topology.ownerUserId) },
+    )
+    expect(same.status).toBe(200)
+    expect(((await same.json()) as any).instances.map((i: any) => i.id)).toEqual([topology.instanceId])
+
+    // From a workspace the row is *not* filed in, the owner still sees the
+    // machine: it belongs to the person, not to the workspace the key came from.
+    const elsewhere = await db.workspace.create({
+      data: { name: 'Elsewhere', slug: 'elsewhere-owner', kind: 'team' },
+    })
+    await db.member.create({
+      data: { userId: topology.ownerUserId, workspaceId: elsewhere.id, role: 'owner' },
+    })
+    const fromElsewhere = await fetch(`${podB(topology)}/api/instances?workspaceId=${elsewhere.id}`, {
+      headers: authHeaders(topology.ownerUserId),
+    })
+    expect(fromElsewhere.status).toBe(200)
+    expect(((await fromElsewhere.json()) as any).instances.map((i: any) => i.id)).toEqual([
+      topology.instanceId,
+    ])
+
+    // Another member of that workspace sees no machine of their own — ownership
+    // is what scopes this list, not membership.
+    const other = await db.user.create({
+      data: { name: 'Other', email: 'other-owner@example.com' },
+    })
+    await db.member.create({ data: { userId: other.id, workspaceId: elsewhere.id, role: 'member' } })
+    const theirs = await fetch(`${podB(topology)}/api/instances?workspaceId=${elsewhere.id}`, {
+      headers: authHeaders(other.id),
+    })
+    expect(theirs.status).toBe(200)
+    expect(((await theirs.json()) as any).instances).toEqual([])
   }, 180_000)
 
   test('unpairing the machine deletes its copy', async () => {

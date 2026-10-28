@@ -45,6 +45,34 @@ export async function machineInstanceIdOf(workspaceId: string): Promise<string |
 }
 
 /**
+ * The instance rows that own a cloud copy — one per machine, the device key the
+ * desktop pushes under.
+ *
+ * A machine has one `instances` row per stored device key, and the copy belongs
+ * to exactly one of them. Every list that has to name a machine (`GET /machines`,
+ * `GET /instances?scope=owner`) picks the representative row from this set, so
+ * the id it returns is the same one in both lists and does not change every few
+ * seconds with the heartbeats (SHO-241).
+ */
+export async function machineCopyOwnerIds(instanceIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(instanceIds.filter(Boolean))]
+  if (!ids.length) return new Set()
+  const table = (prisma as any).machineSyncState
+  if (!table?.findMany) return new Set()
+  try {
+    const rows = (await table.findMany({
+      where: { instanceId: { in: ids } },
+      select: { instanceId: true },
+    })) as Array<{ instanceId: string }>
+    return new Set(rows.map((row) => row.instanceId))
+  } catch {
+    // A client generated before the copy tables existed: no copy owners, so the
+    // list falls back to its oldest row, which is still stable.
+    return new Set()
+  }
+}
+
+/**
  * Merge `{ machineInstanceId: null }` into a `where` without disturbing what the
  * caller already narrowed it to.
  */

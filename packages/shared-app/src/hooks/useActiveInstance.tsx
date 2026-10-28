@@ -260,6 +260,16 @@ export function ActiveInstanceProvider({
       )
       if (cancelled) return
       if (!result.valid) {
+        // The server could not be asked (a cold relay, a 5xx, a dropped fetch).
+        // That is not evidence the machine went away, and turning it into
+        // `offline` fired the "stopped heartbeating" toast at a machine that was
+        // heartbeating the whole time (SHO-241). Keep the last known status and
+        // let the next tick settle it — with nothing known yet, `offline` is
+        // still the honest answer, and it is what offers to wake the machine.
+        if (result.unreachable) {
+          setInstanceStatus((current) => (current === 'unknown' ? 'offline' : current))
+          return
+        }
         // Instance was deleted or no longer belongs to this workspace.
         setInstanceStatus('offline')
         return
@@ -353,6 +363,13 @@ type ValidationResult = {
   unreachable?: boolean
   status?: InstanceStatus
   kind?: InstanceKind
+  /**
+   * The id this machine should be stored under, when the server's representative
+   * row for it differs from the stored one. A machine has one `instances` row per
+   * device key and the server names it by a stable one; a client that stored any
+   * of the others would keep missing it (SHO-241).
+   */
+  instanceId?: string
   /** Machine workspaces only: the machine's own name and kind for the workspace. */
   localWorkspaceName?: string
   localWorkspaceKind?: 'personal' | 'team'
@@ -364,14 +381,16 @@ type ValidationResult = {
  */
 function applyValidation(inst: ActiveInstance, result: ValidationResult): ActiveInstance {
   const kindChanged = !!result.kind && result.kind !== inst.kind
+  const idChanged = !!result.instanceId && result.instanceId !== inst.instanceId
   const nameChanged =
     !!result.localWorkspaceName && result.localWorkspaceName !== inst.localWorkspaceName
   const workspaceKindChanged =
     !!result.localWorkspaceKind && result.localWorkspaceKind !== inst.localWorkspaceKind
-  if (!kindChanged && !nameChanged && !workspaceKindChanged) return inst
+  if (!kindChanged && !idChanged && !nameChanged && !workspaceKindChanged) return inst
   return {
     ...inst,
     ...(kindChanged ? { kind: result.kind } : {}),
+    ...(idChanged ? { instanceId: result.instanceId } : {}),
     ...(nameChanged ? { localWorkspaceName: result.localWorkspaceName } : {}),
     ...(workspaceKindChanged ? { localWorkspaceKind: result.localWorkspaceKind } : {}),
   }
@@ -385,10 +404,18 @@ async function validateInstance(
 ): Promise<ValidationResult> {
   if (!apiUrl) return { valid: false }
   if (inst.source === 'machine') return validateMachine(inst, apiUrl, fetchFn, fetchOptions)
+  let res: Response
   try {
-    const res = await fetchFn(`${apiUrl}/api/instances/${inst.instanceId}`, {
+    res = await fetchFn(`${apiUrl}/api/instances/${inst.instanceId}`, {
       ...fetchOptions,
     })
+  } catch {
+    // Could not ask. Not the same as "the instance is gone" — the caller keeps
+    // the last known status instead of reporting the machine offline (SHO-241).
+    return { valid: false, unreachable: true }
+  }
+  if (res.status >= 500) return { valid: false, unreachable: true }
+  try {
     if (!res.ok) return { valid: false }
     const data = await res.json()
     if (data.workspaceId !== inst.workspaceId) return { valid: false }
@@ -400,7 +427,7 @@ async function validateInstance(
       data.kind === 'desktop' || data.kind === 'cli-worker' ? data.kind : undefined
     return { valid: true, status, kind }
   } catch {
-    return { valid: false }
+    return { valid: false, unreachable: true }
   }
 }
 
@@ -427,7 +454,15 @@ async function validateMachine(
   if (!res.ok) return { valid: false }
   try {
     const data = await res.json()
-    const found = (data?.machines ?? []).find((m: any) => m.id === inst.instanceId)
+    const machines: any[] = data?.machines ?? []
+    // A machine is one entry with one `id` and every instance row it has in
+    // `instanceIds`. The stored id may be any of those rows (older builds stored
+    // whichever row heartbeated last), so match on either and then keep the
+    // representative id: that is what the relay route and every later poll use
+    // (SHO-241).
+    const found =
+      machines.find((m: any) => m.id === inst.instanceId) ??
+      machines.find((m: any) => Array.isArray(m.instanceIds) && m.instanceIds.includes(inst.instanceId))
     if (!found) return { valid: false }
     const status: InstanceStatus =
       found.status === 'online' || found.status === 'heartbeat' || found.status === 'offline'
@@ -443,6 +478,7 @@ async function validateMachine(
       valid: true,
       status,
       kind: 'desktop',
+      instanceId: typeof found.id === 'string' ? found.id : undefined,
       localWorkspaceName: typeof row?.name === 'string' ? row.name : undefined,
       localWorkspaceKind:
         row?.kind === 'personal' || row?.kind === 'team' ? row.kind : undefined,

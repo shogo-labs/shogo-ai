@@ -80,6 +80,12 @@ if (role === 'cloud') {
     await next()
   })
 
+  // The guard that turns "no access to this workspace" into "the copy is not
+  // here yet" (SHO-241) is registered *before* the routes, the way `server.ts`
+  // does it: it is a post-response hook, so the happy path pays nothing.
+  const { machineCopyPendingGuard } = await import('../../lib/machine-copy-pending')
+  app.use('/api/*', machineCopyPendingGuard())
+
   app.route('/api', machineRoutes())
   // The Studio's normal read routes: a machine workspace's GETs are served here,
   // from the copied rows, with the usual membership checks.
@@ -119,21 +125,77 @@ if (role === 'desktop') {
   const localWorkspaceId = `ws-local-${suffix}`
   const projectId = `p-local-${suffix}`
 
-  // What a fresh desktop has: one person, their personal workspace, a project
-  // and one chat. The cloud has never seen any of it.
-  await prisma.user.create({
-    data: { id: localUserId, name: 'Local Person', email: 'local@shogo.local' },
-  })
-  await prisma.workspace.create({
-    // The same name on every desktop — this is the collision the rewrites exist for.
-    data: { id: localWorkspaceId, name: 'Samsara', slug: 'samsara', kind: 'personal' },
-  })
-  await prisma.member.create({
-    data: { userId: localUserId, workspaceId: localWorkspaceId, role: 'owner' },
-  })
-  await prisma.project.create({
-    data: { id: projectId, name: 'Local Project', workspaceId: localWorkspaceId },
-  })
+  // A restart reuses the database it left behind (`MACHINE_DB_URL` is the same
+  // SQLite file), which is what makes the recovery cases real: the local sync
+  // state, the change log and the rows are the ones the previous process wrote.
+  const restarted = process.env.MACHINE_RESTART === '1'
+  const seedRows = process.env.MACHINE_SKIP_SEED !== '1'
+  const orphaned = process.env.MACHINE_ORPHANED_STATE === '1'
+  const pendingChanges = Number(process.env.MACHINE_PENDING_CHANGES ?? 0)
+
+  if (seedRows) {
+    // What a fresh desktop has: one person, their personal workspace, a project
+    // and one chat. The cloud has never seen any of it.
+    await prisma.user.create({
+      data: { id: localUserId, name: 'Local Person', email: 'local@shogo.local' },
+    })
+    await prisma.workspace.create({
+      // The same name on every desktop — this is the collision the rewrites exist for.
+      data: { id: localWorkspaceId, name: 'Samsara', slug: 'samsara', kind: 'personal' },
+    })
+    await prisma.member.create({
+      data: { userId: localUserId, workspaceId: localWorkspaceId, role: 'owner' },
+    })
+    await prisma.project.create({
+      data: { id: projectId, name: 'Local Project', workspaceId: localWorkspaceId },
+    })
+  }
+
+  /**
+   * The shape a desktop is left in when its first snapshot was refused: an epoch
+   * was minted, `lastIngestAt` is null, and the change log has been filling up
+   * ever since. Before SHO-241 this looked "already initialised" on the next
+   * launch, so it sent deltas the cloud had no copy to apply — forever.
+   */
+  if (orphaned) {
+    await prisma.machineSyncState.create({
+      data: {
+        instanceId,
+        epoch: `epoch-stranded-${suffix}`,
+        cursor: 0,
+        enabled: true,
+        lastIngestAt: null,
+      },
+    })
+    if (pendingChanges > 0) {
+      await prisma.machineSyncChange.createMany({
+        data: Array.from({ length: pendingChanges }, (_unused, index) => ({
+          model: 'ChatMessage',
+          recordId: `m-pending-${index}`,
+          op: 'upsert',
+        })),
+      })
+    }
+  }
+
+  // The desktop's `x-api-key` header was refused before PERF-9, so a real
+  // desktop's first snapshot failed at the door. `MACHINE_FIRST_PUSH_REFUSED`
+  // reproduces that on the wire: the first pushes get the 401 the old cloud gave.
+  const refusals = Number(process.env.MACHINE_FIRST_PUSH_REFUSED ?? 0)
+  let refused = 0
+  const fetchImpl: typeof fetch | undefined =
+    refusals > 0
+      ? ((async (input: any, init: any) => {
+          if (refused < refusals) {
+            refused++
+            console.log(`[desktop] refusing push ${refused}/${refusals} (401)`)
+            return new Response(JSON.stringify({ error: { code: 'unauthorized' } }), {
+              status: 401,
+            })
+          }
+          return fetch(input, init)
+        }) as unknown as typeof fetch)
+      : undefined
 
   const pusher = new MachineSyncPusher({
     prisma,
@@ -141,11 +203,15 @@ if (role === 'desktop') {
     getApiKey: () => deviceKey,
     getInstanceId: async () => instanceId,
     log: (line) => console.log(`[desktop] ${line}`),
+    ...(fetchImpl ? { fetchImpl } : {}),
   })
   await pusher.start()
   // The first push carries the whole database (backfill); force it now rather
   // than waiting for the interval.
   await pusher.syncNow()
+  console.log(
+    `[desktop] sync status ${JSON.stringify({ restarted, orphaned, pendingChanges, ...pusher.status })}`,
+  )
 
   // A desktop-side write, the way a route would do it: mutate, then report the
   // change-log position. The header is what makes read-your-writes work.

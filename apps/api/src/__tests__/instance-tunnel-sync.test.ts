@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * A workspace joined (or left) mid-session registers without an app restart.
+ * A machine heartbeats **once**, however many workspaces it is signed into.
  *
- * The fan-out tunnels are built once at boot from `SHOGO_CLOUD_WORKSPACES`.
- * `syncCloudWorkspaces()` refreshes that list every ten minutes, so without a
- * reconcile a workspace the user joined from another device would have no tunnel
- * — the machine would not appear in it — until the desktop was restarted, and a
- * workspace they left would keep receiving heartbeats.
+ * This file used to assert the opposite (SHO-87): one tunnel per stored device
+ * key, rebuilt when a workspace was joined, left or rotated. That fan-out is what
+ * gave a Mac nine `instances` rows — nine heartbeats, nine sockets, and a
+ * `/machines` id that changed every few seconds, so a live machine was reported
+ * as "stopped heartbeating" (SHO-241, Russell: "every workspace shouldnt
+ * heartbeat"). The stored keys are still there and still refreshed; they no
+ * longer open a tunnel.
  *
  *   bun test apps/api/src/__tests__/instance-tunnel-sync.test.ts
  */
@@ -16,13 +18,6 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 const tunnelInstances: Array<{ apiKey: string; connected: boolean; stopped: boolean }> = []
 
-/**
- * Stand-in for the threaded host that `ThreadedTunnel` really creates (SHO-185
- * §5). The threading itself has its own test — `tunnel-worker-block.test.ts` —
- * and what this file is about is the reconcile: which device keys hold a tunnel
- * after a join, a leave or a rotation. So the host is a record plus the two
- * notifications `ThreadedTunnel` reads its state from.
- */
 mock.module('@shogo-ai/worker/tunnel-host', () => ({
   startTunnelInWorker: (options: any) => {
     const host = { apiKey: options.apiKey, connected: false, stopped: false }
@@ -102,8 +97,9 @@ mock.module('../lib/prisma', () => ({
   },
 }))
 
-const { startInstanceTunnel, stopInstanceTunnel, syncWorkspaceTunnels, getInstanceTunnelStatus } =
-  await import('../lib/instance-tunnel')
+const { startInstanceTunnel, stopInstanceTunnel, getInstanceTunnelStatus } = await import(
+  '../lib/instance-tunnel'
+)
 
 const PRIMARY_KEY = 'shogo_sk_primary'
 const ORIGINAL_KEY = process.env.SHOGO_API_KEY
@@ -124,30 +120,10 @@ afterAll(() => {
   else process.env.SHOGO_API_KEY = ORIGINAL_KEY
 })
 
-describe('syncWorkspaceTunnels', () => {
-  test('opens a tunnel for a workspace joined after boot', async () => {
-    startInstanceTunnel()
-    await settle()
-    expect(getInstanceTunnelStatus().map((s) => s.id)).toEqual(['primary'])
-
-    // The user joins Odin AI from another device; the next sync stores its key.
-    stored = {
-      enabled: true,
-      reachable: true,
-      user: null,
-      workspaces: [
-        { id: 'ws-personal', name: 'Personal', key: PRIMARY_KEY },
-        { id: 'ws-odin', name: 'Odin AI', key: 'shogo_sk_odin' },
-      ],
-    }
-    await syncWorkspaceTunnels()
-    await settle()
-
-    expect(getInstanceTunnelStatus().map((s) => s.id).sort()).toEqual(['primary', 'ws-odin'])
-    expect(keysInUse()).toEqual([PRIMARY_KEY, 'shogo_sk_odin'].sort())
-  })
-
-  test('stops the tunnel of a workspace that was left', async () => {
+describe('one tunnel per machine', () => {
+  test('three stored device keys still open exactly one tunnel', async () => {
+    // Russell's Mac: signed into nine workspaces, one device key each. The old
+    // fan-out opened nine tunnels and the cloud kept nine heartbeating rows.
     stored = {
       enabled: true,
       reachable: true,
@@ -158,64 +134,53 @@ describe('syncWorkspaceTunnels', () => {
         { id: 'ws-samsara', name: 'Samsara', key: 'shogo_sk_samsara' },
       ],
     }
+
     startInstanceTunnel()
     await settle()
-    expect(getInstanceTunnelStatus()).toHaveLength(3)
 
-    stored = {
-      enabled: true,
-      reachable: true,
-      user: null,
-      workspaces: [{ id: 'ws-personal', name: 'Personal', key: PRIMARY_KEY }],
-    }
-    await syncWorkspaceTunnels()
-    await settle()
-
-    // The primary tunnel is never torn down: its key is the one this process was
-    // launched with, and the machine must stay reachable from it.
-    expect(getInstanceTunnelStatus().map((s) => s.id)).toEqual(['primary'])
+    expect(tunnelInstances).toHaveLength(1)
     expect(keysInUse()).toEqual([PRIMARY_KEY])
+    const status = getInstanceTunnelStatus()
+    expect(status).toHaveLength(1)
+    expect(status[0].state).toBe('connected')
   })
 
-  test('re-opens a workspace whose device key was rotated', async () => {
+  test('a workspace joined later cannot open a second tunnel', async () => {
+    startInstanceTunnel()
+    await settle()
+    expect(getInstanceTunnelStatus()).toHaveLength(1)
+
+    // The rebuild that used to open it is gone, so the stored key set no longer
+    // reaches the tunnel at all.
+    const tunnelModule: Record<string, unknown> = await import('../lib/instance-tunnel')
+    expect(tunnelModule.syncWorkspaceTunnels).toBeUndefined()
+
+    // `syncCloudWorkspaces()` refreshing the key list, and a restart of the one
+    // tunnel, both leave the machine registered exactly once.
     stored = {
       enabled: true,
       reachable: true,
       user: null,
       workspaces: [
         { id: 'ws-personal', name: 'Personal', key: PRIMARY_KEY },
-        { id: 'ws-odin', name: 'Odin AI', key: 'shogo_sk_odin_old' },
+        { id: 'ws-odin', name: 'Odin AI', key: 'shogo_sk_odin' },
       ],
     }
     startInstanceTunnel()
     await settle()
 
-    stored = {
-      enabled: true,
-      reachable: true,
-      user: null,
-      workspaces: [
-        { id: 'ws-personal', name: 'Personal', key: PRIMARY_KEY },
-        { id: 'ws-odin', name: 'Odin AI', key: 'shogo_sk_odin_new' },
-      ],
-    }
-    await syncWorkspaceTunnels()
-    await settle()
-
-    expect(keysInUse()).toEqual([PRIMARY_KEY, 'shogo_sk_odin_new'].sort())
-    expect(tunnelInstances.filter((t) => t.apiKey === 'shogo_sk_odin_old').every((t) => t.stopped)).toBe(true)
+    expect(tunnelInstances.filter((t) => !t.stopped)).toHaveLength(1)
+    expect(getInstanceTunnelStatus()).toHaveLength(1)
   })
 
-  test('does nothing without a key, and nothing extra when the set is unchanged', async () => {
+  test('stopping the tunnel leaves nothing claiming to be connected', async () => {
     startInstanceTunnel()
     await settle()
-    const before = tunnelInstances.length
-    await syncWorkspaceTunnels()
-    await settle()
-    expect(tunnelInstances.length).toBe(before)
+    expect(getInstanceTunnelStatus()).toHaveLength(1)
 
-    delete process.env.SHOGO_API_KEY
-    await syncWorkspaceTunnels()
-    expect(tunnelInstances.length).toBe(before)
+    stopInstanceTunnel()
+
+    expect(tunnelInstances.every((t) => t.stopped)).toBe(true)
+    expect(getInstanceTunnelStatus()).toEqual([])
   })
 })

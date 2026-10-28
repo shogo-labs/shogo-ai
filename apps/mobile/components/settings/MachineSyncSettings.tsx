@@ -33,6 +33,12 @@ interface MachineRow {
   kind?: 'desktop' | 'cli-worker'
   syncEnabled?: boolean
   lastSyncedAt?: string | null
+  /** A completed snapshot exists, so the cloud can read this machine's workspace. */
+  copyReady?: boolean
+  /** Why the last push was refused, as the desktop reported it (SHO-241). */
+  lastSyncError?: string | null
+  /** Change-log rows the desktop still has to push. */
+  pendingChanges?: number | null
 }
 
 function relativeTime(iso: string | null | undefined): string {
@@ -169,11 +175,22 @@ export function MachineSyncSettings() {
                 </View>
                 <Text className="mt-1 text-xs text-muted-foreground">
                   {enabled
-                    ? row.status === 'offline'
-                      ? `Offline — last synced ${relativeTime(row.lastSyncedAt)}`
-                      : `Last synced ${relativeTime(row.lastSyncedAt)}`
+                    ? row.copyReady === false
+                      ? row.status === 'offline'
+                        ? 'No cloud copy yet — last synced never'
+                        : `No cloud copy yet — first sync running${
+                            row.pendingChanges ? ` (${row.pendingChanges} changes queued)` : ''
+                          }`
+                      : row.status === 'offline'
+                        ? `Offline — last synced ${relativeTime(row.lastSyncedAt)}`
+                        : `Last synced ${relativeTime(row.lastSyncedAt)}`
                     : 'Not syncing — the cloud has no copy of this Mac'}
                 </Text>
+                {enabled && row.lastSyncError ? (
+                  <Text className="mt-1 text-xs text-destructive">
+                    Sync error: {row.lastSyncError}
+                  </Text>
+                ) : null}
               </View>
               {busyId === row.id ? (
                 <ActivityIndicator size="small" />

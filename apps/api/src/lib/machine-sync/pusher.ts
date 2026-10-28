@@ -39,6 +39,14 @@ const POLL_INTERVAL_MS = 500
  */
 const AUTH_RETRY_MS = 10 * 60_000
 
+/**
+ * Wait after the cloud refuses a batch for a reason a retry cannot fix
+ * (`mirror_ownership`, `unknown_model`). Retrying every 30 s does not repair it
+ * and hides it in a log nobody reads; ten minutes keeps the error visible in
+ * `status` without the noise (SHO-241).
+ */
+const STALLED_RETRY_MS = 10 * 60_000
+
 export interface SyncBatchModel {
   model: string
   rows: Record<string, unknown>[]
@@ -140,6 +148,9 @@ export class MachineSyncPusher {
   private triggersInstalled = false
   private pushes = 0
   private authBlockedUntil = 0
+  private stalledUntil = 0
+  private pendingChanges = 0
+  private copyReady = false
 
   constructor(opts: MachineSyncPusherOptions) {
     this.opts = opts
@@ -157,6 +168,10 @@ export class MachineSyncPusher {
     lastAckedAt: string | null
     lastError: string | null
     pushes: number
+    /** Change-log rows still waiting to be pushed, as of the last read. */
+    pendingChanges: number
+    /** A full snapshot has been accepted by the cloud: the copy is complete. */
+    copyReady: boolean
   } {
     return {
       running: this.running,
@@ -166,6 +181,8 @@ export class MachineSyncPusher {
       lastAckedAt: this.lastAckedAt ? new Date(this.lastAckedAt).toISOString() : null,
       lastError: this.lastError,
       pushes: this.pushes,
+      pendingChanges: this.pendingChanges,
+      copyReady: this.copyReady,
     }
   }
 
@@ -208,6 +225,8 @@ export class MachineSyncPusher {
   private nextDelay(): number {
     const authWait = this.authBlockedUntil - Date.now()
     if (authWait > 0) return authWait
+    const stallWait = this.stalledUntil - Date.now()
+    if (stallWait > 0) return stallWait
     if (this.failureCount > 0) {
       return Math.min(POLL_INTERVAL_MS * 2 ** Math.min(this.failureCount, 5), 30_000)
     }
@@ -218,6 +237,7 @@ export class MachineSyncPusher {
   async tick(): Promise<void> {
     if (this.stopped || this.ticking) return
     if (Date.now() < this.authBlockedUntil) return
+    if (Date.now() < this.stalledUntil) return
     this.ticking = true
     try {
       const apiKey = this.opts.getApiKey()
@@ -231,11 +251,13 @@ export class MachineSyncPusher {
         this.epoch = null
         this.cursor = 0
         this.snapshotNeeded = false
+        this.copyReady = false
       }
       const state = await this.loadState(instanceId)
       if (!state) return
       this.epoch = state.epoch
       this.cursor = state.cursor
+      this.copyReady = !state.fresh
       // Nothing has ever been pushed for this device: the rows it already has
       // predate the triggers, so only a snapshot can bring them across.
       if (state.fresh) this.snapshotNeeded = true
@@ -277,7 +299,14 @@ export class MachineSyncPusher {
         })
         return { epoch: updated.epoch, cursor: updated.cursor, fresh: true }
       }
-      return { epoch: existing.epoch, cursor: existing.cursor, fresh: false }
+      // `fresh` means "no snapshot of this database has ever been accepted by
+      // the cloud" — *not* "this row was just created". Marking it only on
+      // creation is what left a desktop whose first snapshot ever failed (a
+      // refused device key, a crash mid-snapshot) sending deltas forever: every
+      // one was refused, nothing ever retried the snapshot, and no copy was ever
+      // made (SHO-241). `lastIngestAt` is set only by an accepted push, so it is
+      // exactly the question to ask.
+      return { epoch: existing.epoch, cursor: existing.cursor, fresh: !existing.lastIngestAt }
     }
     // First ever push (or a fresh desktop database): the whole thing has to be
     // sent, so the epoch starts empty and the snapshot claims it.
@@ -303,6 +332,7 @@ export class MachineSyncPusher {
       take: CHANGE_BATCH_ROWS,
       where: this.cursor > 0 ? { seq: { gt: this.cursor } } : undefined,
     })
+    this.pendingChanges = changes.length
     if (!changes.length) return
 
     const highest = changes[changes.length - 1].seq
@@ -429,10 +459,33 @@ export class MachineSyncPusher {
     const result = (await response.json().catch(() => ({}))) as SyncBatchResponse
     const code = result.code ?? result.error?.code
     if (code === 'epoch_mismatch') {
-      // The cloud holds rows from a database that no longer exists here.
-      this.log('[MachineSync] Cloud epoch mismatch — sending a full snapshot')
+      // The cloud holds rows from a database that no longer exists here, or it
+      // has never accepted a snapshot from this one.
+      this.log('[MachineSync] Cloud asked for a snapshot — sending the whole database')
       this.snapshotNeeded = true
       this.epoch = null
+      this.copyReady = false
+      return false
+    }
+    if (code === 'workspace_ownership') {
+      // The cloud is missing the workspace these rows belong to: the copy was
+      // never completed, or it was deleted. A snapshot re-tags it, so do that
+      // instead of resending the same refused delta every 30 s.
+      this.log('[MachineSync] Cloud has no copy of this machine\'s workspace — sending a full snapshot')
+      this.snapshotNeeded = true
+      this.epoch = null
+      this.copyReady = false
+      this.failureCount = 0
+      return false
+    }
+    if (code === 'mirror_ownership' || code === 'unknown_model') {
+      // Not something a retry repairs (a row id the cloud believes belongs to
+      // someone else, or a model it does not know). Keep the error, surface it,
+      // and stop hammering the cloud: 10 minutes, not 30 seconds.
+      this.failureCount++
+      this.lastError = `${code}: ${result.error?.message ?? code}`
+      this.stalledUntil = Date.now() + STALLED_RETRY_MS
+      this.log(`[MachineSync] Sync stalled: ${this.lastError} (retrying in ${STALLED_RETRY_MS / 60_000} min)`)
       return false
     }
     this.failureCount++
@@ -442,7 +495,7 @@ export class MachineSyncPusher {
       this.log(`[MachineSync] Cloud refused the device key (${this.lastError}); retrying in ${AUTH_RETRY_MS / 60_000} min`)
       return false
     }
-    this.log(`[MachineSync] Cloud rejected batch: ${this.lastError}`)
+    this.log(`[MachineSync] Cloud rejected batch: ${this.lastError} (HTTP ${response.status})`)
     return false
   }
 
@@ -516,6 +569,7 @@ export class MachineSyncPusher {
 
     this.snapshotNeeded = false
     this.epoch = epoch
+    this.copyReady = true
     // The cloud now holds `epoch`; keep the same one here, or every later
     // delta goes out under a stale epoch and is answered with a full snapshot.
     await this.advance(instanceId, claimed, epoch)

@@ -23,6 +23,7 @@ import {
   generateRequestId,
   getMachineGroupStatus,
   getMachineLiveStatus,
+  hasLocalTunnel,
   isRecentlySeenViaHeartbeat,
   isStreamingRequest,
   markViewerActive,
@@ -31,10 +32,11 @@ import {
   sendTunnelStreamRequest,
 } from './instances'
 import { isMachineTimeoutError } from '../lib/tunnel-errors'
+import { isTunnelConnectedAnywhere } from '../lib/tunnel-redis'
 import { classifyAction, logRemoteAction } from './remote-audit'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { applyBatch, deleteMachineCopy, ownershipFailure } from '../lib/machine-sync/ingest'
-import { invalidateMachineWorkspaceIds } from '../lib/machine-workspace'
+import { invalidateMachineWorkspaceIds, machineCopyOwnerIds } from '../lib/machine-workspace'
 import { PRIMARY_REGION, RAW_REGION_ID } from '../lib/region'
 import { resolveApiKey } from './api-keys'
 
@@ -193,6 +195,26 @@ async function readMachineSyncStates(instanceIds: string[]): Promise<Map<string,
   }
 }
 
+/**
+ * Every refused push is logged, once a minute per machine and code.
+ *
+ * A desktop retries on a short timer, so a broken copy produced 526 identical
+ * 409s in two hours and **not one line** in the cloud logs: the API never logged
+ * a non-2xx from `/sync`, and the desktop's own log was a no-op. That silence is
+ * why nobody noticed a machine had no copy for four days (SHO-241). Rate-limited
+ * rather than sampled, so the *first* refusal of every new code is always there.
+ */
+const SYNC_REFUSAL_LOG_INTERVAL_MS = 60_000
+const lastSyncRefusal = new Map<string, { at: number; code: string }>()
+
+function logSyncRefusal(instanceId: string, status: number, code: string, message: string): void {
+  const now = Date.now()
+  const previous = lastSyncRefusal.get(instanceId)
+  if (previous && previous.code === code && now - previous.at < SYNC_REFUSAL_LOG_INTERVAL_MS) return
+  lastSyncRefusal.set(instanceId, { at: now, code })
+  console.warn(`[MachineSync] refused ${instanceId} ${status} ${code}: ${message}`)
+}
+
 async function awaitSyncCatchUp(instanceId: string, seq: number): Promise<void> {
   if (!Number.isFinite(seq) || seq <= 0) return
   const deadline = Date.now() + SYNC_CATCH_UP_DEADLINE_MS
@@ -247,6 +269,35 @@ function cachedSnapshot(instance: MachineRow): Record<string, any> | null {
   return machine && typeof machine === 'object' ? (machine as Record<string, any>) : null
 }
 
+/**
+ * A machine's rows, the one that can serve a request first.
+ *
+ * The representative `id` from `GET /machines` is stable by design (the row that
+ * owns the copy, else the oldest), and the desktop opens one tunnel per device
+ * key — so the row the client holds is not necessarily the row whose tunnel is
+ * up. Trying the others costs a Redis lookup only on the path that was about to
+ * answer "offline" anyway (SHO-241).
+ */
+async function findRelayTarget(instance: MachineRow): Promise<MachineRow | null> {
+  if (await ensureTunnelConnected(instance.id, wakeDeadlineMs)) return instance
+  const siblings = (await prisma.instance.findMany({
+    where: {
+      hostname: instance.hostname,
+      ...(instance.userId ? { userId: instance.userId } : {}),
+      kind: { not: InstanceKind.cli_worker },
+    },
+  })) as MachineRow[]
+  for (const sibling of siblings) {
+    if (sibling.id === instance.id) continue
+    // A pure check, not `ensureTunnelConnected`: waking every sibling would send
+    // a push notification per device key on one request.
+    if (hasLocalTunnel(sibling.id) || (await isTunnelConnectedAnywhere(sibling.id, { retry: false }))) {
+      return sibling
+    }
+  }
+  return null
+}
+
 export function machineRoutes() {
   const router = new Hono()
 
@@ -272,33 +323,63 @@ export function machineRoutes() {
     // desktop opens a tunnel per stored device key, so a machine signed into
     // three workspaces has three rows here.
     const names = await workspaceNamesById(rows.map((row) => row.workspaceId))
-    const grouped = groupMachinesByHostname(rows, { nameFor: (id) => names.get(id) })
+    // One read for every machine's copy state, so the Settings → Remote control
+    // switch can show "Last synced" without a second round trip, and so the
+    // machine's `id` can be the row that owns the copy instead of whichever row
+    // happened to heartbeat last (SHO-185, SHO-241).
+    const syncByInstance = await readMachineSyncStates(rows.map((row) => row.id))
+    const copyOwners = await machineCopyOwnerIds(rows.map((row) => row.id))
+    const grouped = groupMachinesByHostname(rows, {
+      nameFor: (id) => names.get(id),
+      copyOwners,
+    })
 
     // No viewer marking here: every open Studio tab polls this list, and
     // marking all of the caller's machines from it put every desktop on the
     // 5 s poll for as long as any tab was open (PERF-6). The relay below marks
     // the one machine whose workspace is actually in use.
 
-    // One read for every machine's copy state, so the Settings → Remote control
-    // switch can show "Last synced" without a second round trip (SHO-185).
-    const syncByInstance = await readMachineSyncStates(rows.map((row) => row.id))
-
     const machines = await Promise.all(
-      grouped.map(async ({ row, workspaces, rows: machineRows }) => ({
-        id: row.id,
-        name: row.name,
-        hostname: row.hostname,
-        os: row.os,
-        arch: row.arch,
-        kind: row.kind,
-        workspaceId: row.workspaceId,
-        workspaces,
-        status: await getMachineGroupStatus(machineRows),
-        lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
-        snapshot: cachedSnapshot(row),
-        syncEnabled: syncByInstance.get(row.id)?.enabled ?? true,
-        lastSyncedAt: syncByInstance.get(row.id)?.lastIngestAt?.toISOString() ?? null,
-      })),
+      grouped.map(async ({ row, workspaces, rows: machineRows }) => {
+        // The copy belongs to one row of the group (the key the desktop pushes
+        // under), which is not necessarily the representative one.
+        const copyRow = machineRows.find((candidate) => {
+          const state = syncByInstance.get(candidate.id)
+          return Boolean(state?.lastIngestAt)
+        })
+        const ownState = syncByInstance.get(row.id)
+        const copyState = copyRow ? syncByInstance.get(copyRow.id) : undefined
+        const snapshot =
+          cachedSnapshot(row) ??
+          (machineRows.map((candidate) => cachedSnapshot(candidate)).find(Boolean) ?? null)
+        return {
+          id: row.id,
+          name: row.name,
+          hostname: row.hostname,
+          os: row.os,
+          arch: row.arch,
+          kind: row.kind,
+          workspaceId: row.workspaceId,
+          workspaces,
+          /** Every instance row this machine has: one per device key. */
+          instanceIds: machineRows.map((candidate) => candidate.id),
+          status: await getMachineGroupStatus(machineRows),
+          lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
+          snapshot,
+          syncEnabled: (copyState ?? ownState)?.enabled ?? true,
+          lastSyncedAt: copyState?.lastIngestAt?.toISOString() ?? null,
+          /**
+           * A completed snapshot exists, so reads can come from the copy. Until
+           * it does, the client reads this machine's workspace through the relay
+           * — which is what makes the workspace usable before (and without) a
+           * copy, instead of answering "No access to this workspace" (SHO-241).
+           */
+          copyReady: Boolean(copyRow),
+          /** Why the copy is not moving, as the desktop last reported it. */
+          lastSyncError: snapshot?.sync?.lastError ?? null,
+          pendingChanges: snapshot?.sync?.pendingChanges ?? null,
+        }
+      }),
     )
 
     return c.json({ machines })
@@ -411,7 +492,8 @@ export function machineRoutes() {
     // Throttled inside markViewerActive.
     void markViewerActive(instance.workspaceId).catch(() => {})
 
-    if (!(await ensureTunnelConnected(instance.id, wakeDeadlineMs))) {
+    const target = await findRelayTarget(instance)
+    if (!target) {
       // Recently heartbeated means "not connected right now, but alive": say so
       // and let the client retry instead of claiming the machine is offline.
       if (isRecentlySeenViaHeartbeat(instance.lastSeenAt)) {
@@ -450,7 +532,7 @@ export function machineRoutes() {
     const streaming = isStreamingRequest(method, normalizeTransparentProxyPath(path.split('?')[0] || path))
     if (streaming) {
       void logRemoteAction({
-        instanceId: instance.id,
+        instanceId: target.id,
         userId: auth.userId,
         action: classifyAction(method, path),
         path: auditPath,
@@ -462,7 +544,7 @@ export function machineRoutes() {
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           const { cancel } = sendTunnelStreamRequest(
-            instance.id,
+            target.id,
             { type: 'request', requestId, method, path, headers: forwardHeaders, body },
             (chunk) => {
               if (chunk.type === 'stream-chunk' && chunk.data) {
@@ -496,7 +578,7 @@ export function machineRoutes() {
     }
 
     try {
-      const resp = await sendTunnelRequest(instance.id, {
+      const resp = await sendTunnelRequest(target.id, {
         type: 'request',
         requestId: generateRequestId(),
         method,
@@ -506,7 +588,7 @@ export function machineRoutes() {
       })
 
       void logRemoteAction({
-        instanceId: instance.id,
+        instanceId: target.id,
         userId: auth.userId,
         action: classifyAction(method, path),
         path: auditPath,
@@ -526,7 +608,7 @@ export function machineRoutes() {
       // Read-your-writes: the desktop stamps the change-log position it reached
       // with this write, so wait for the copy to catch up before answering.
       const syncSeq = Number(resp.headers?.['x-shogo-sync-seq'] ?? 0)
-      if (syncSeq > 0) await awaitSyncCatchUp(instance.id, syncSeq).catch(() => {})
+      if (syncSeq > 0) await awaitSyncCatchUp(target.id, syncSeq).catch(() => {})
 
       // A cold runtime on the desktop is a "retry in a moment", not an error:
       // the desktop starts it in the background and answers RUNTIME_STARTING.
@@ -541,7 +623,7 @@ export function machineRoutes() {
       })
     } catch (err: any) {
       void logRemoteAction({
-        instanceId: instance.id,
+        instanceId: target.id,
         userId: auth.userId,
         action: classifyAction(method, path),
         path: auditPath,
@@ -589,10 +671,12 @@ export function machineRoutes() {
     // issued in. Only that machine may push, and only for itself.
     const instanceId = c.req.param('id')
     if (!auth?.userId || !auth?.workspaceId || !auth?.via || auth.via !== 'apiKey') {
+      logSyncRefusal(instanceId, 401, 'unauthorized', 'a device key is required')
       return c.json({ error: { code: 'unauthorized', message: 'A device key is required' } }, 401)
     }
     const instance = (await prisma.instance.findUnique({ where: { id: instanceId } })) as MachineRow | null
     if (!instance || instance.userId !== auth.userId || instance.workspaceId !== auth.workspaceId) {
+      logSyncRefusal(instanceId, 403, 'forbidden', 'not this machine')
       return c.json({ error: { code: 'forbidden', message: 'Not this machine' } }, 403)
     }
     if (isCliWorker(instance.kind)) return c.json(notAMachine(), 409)
@@ -625,8 +709,10 @@ export function machineRoutes() {
       )
       if ('code' in result) {
         // `epoch_mismatch` is a normal step in a desktop's life (its database
-        // was recreated): 409 tells it to send a snapshot, not that it broke.
+        // was recreated, or it has never completed a snapshot): 409 tells it to
+        // send a snapshot, not that it broke.
         const detail = 'detail' in result ? result.detail : undefined
+        logSyncRefusal(instanceId, 409, result.code, result.message)
         return c.json({ error: { code: result.code, message: result.message, ...(detail ?? {}) } }, 409)
       }
       // A batch can tag a new machine workspace; background workers on this pod
@@ -638,8 +724,10 @@ export function machineRoutes() {
     } catch (err: any) {
       const failure = ownershipFailure(err)
       if (failure) {
+        logSyncRefusal(instanceId, 409, failure.code, failure.message)
         return c.json({ error: { code: failure.code, message: failure.message } }, 409)
       }
+      logSyncRefusal(instanceId, 500, 'ingest_failed', err?.message ?? 'sync failed')
       console.warn(`[Machines] sync ingest failed for ${instanceId}: ${err?.message ?? err}`)
       return c.json({ error: { code: 'ingest_failed', message: err?.message ?? 'sync failed' } }, 500)
     }

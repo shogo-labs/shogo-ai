@@ -18,6 +18,7 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { Hono } from 'hono'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
+import { matchesWhere } from './helpers/prisma-where'
 
 process.env.SHOGO_LOCAL_MODE = 'true'
 
@@ -30,6 +31,7 @@ type Instance = {
   os: string | null
   arch: string | null
   lastSeenAt: Date
+  createdAt: Date
   metadata: any
   wsRequestedAt: Date | null
 }
@@ -49,8 +51,7 @@ const mockPrisma = {
     findMany: async (args: any) => {
       const where = args?.where ?? {}
       return [...instancesById.values()]
-        .filter((i) => (where.workspaceId === undefined ? true : i.workspaceId === where.workspaceId))
-        .filter((i) => (where.userId === undefined ? true : i.userId === where.userId))
+        .filter((i) => matchesWhere(i as any, where))
         .sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime())
         .map((i) => ({ ...i }))
     },
@@ -108,6 +109,7 @@ function seedInstance(overrides: Partial<Instance> = {}): Instance {
     os: 'win32',
     arch: 'x64',
     lastSeenAt: new Date('2026-10-20T10:00:00.000Z'),
+    createdAt: new Date('2026-10-01T10:00:00.000Z'),
     metadata: {},
     wsRequestedAt: null,
     ...overrides,
@@ -133,7 +135,9 @@ describe('GET /api/instances?scope=owner', () => {
     seedInstance({
       id: 'i-team',
       workspaceId: 'ws-team',
+      // Heartbeats alternate between the rows, so "freshest" is not identity.
       lastSeenAt: new Date('2026-10-20T11:00:00.000Z'),
+      createdAt: new Date('2026-10-02T10:00:00.000Z'),
     })
     seedInstance({ id: 'i-other', workspaceId: 'ws-team', userId: 'u-2' })
 
@@ -144,12 +148,37 @@ describe('GET /api/instances?scope=owner', () => {
     // One machine, not one per workspace it registered in.
     expect(body.instances).toHaveLength(1)
     const [machine] = body.instances
-    expect(machine.id).toBe('i-team')
-    expect(machine.workspaceName).toBe('Samsara')
+    // The representative is the oldest row, not the one that heartbeated last:
+    // a client that stored a freshest-wins id lost the machine on the next poll
+    // and reported a live desktop as "offline — stopped heartbeating" (SHO-241).
+    expect(machine.id).toBe('i-personal')
+    expect(machine.workspaceName).toBe('Personal')
     expect(machine.workspaces).toEqual([
       { id: 'ws-team', name: 'Samsara' },
       { id: 'ws-personal', name: 'Personal' },
     ])
+  })
+
+  test('the id it reports does not move when another row of the machine heartbeats', async () => {
+    seedInstance({ id: 'i-personal', workspaceId: 'ws-personal' })
+    seedInstance({
+      id: 'i-team',
+      workspaceId: 'ws-team',
+      createdAt: new Date('2026-10-02T10:00:00.000Z'),
+    })
+    const first = (await (await buildApp().fetch(
+      new Request('http://x/api/instances?scope=owner'),
+    )).json()) as any
+
+    // The other tunnel's row reports in.
+    const team = instancesById.get('i-team') as Instance
+    instancesById.set('i-team', { ...team, lastSeenAt: new Date('2026-10-21T09:00:00.000Z') })
+    const second = (await (await buildApp().fetch(
+      new Request('http://x/api/instances?scope=owner'),
+    )).json()) as any
+
+    expect(first.instances.map((i: any) => i.id)).toEqual(['i-personal'])
+    expect(second.instances.map((i: any) => i.id)).toEqual(['i-personal'])
   })
 
   test('two different machines stay two rows', async () => {

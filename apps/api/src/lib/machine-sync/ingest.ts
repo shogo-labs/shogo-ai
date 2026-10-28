@@ -230,6 +230,21 @@ export async function applyBatch(
     }
   }
 
+  // A delta batch is only meaningful once a snapshot has been accepted: every
+  // row it names points at a copy the cloud already has. Without that it is
+  // applied against a workspace that was never tagged and refused as
+  // `workspace_ownership` — which is exactly how a desktop whose *first*
+  // snapshot ever failed (a refused device key, a crash mid-snapshot) stayed
+  // broken for days, retrying deltas every 30 s (SHO-241). Answering
+  // `epoch_mismatch` instead is the code every shipped pusher already handles by
+  // sending a full snapshot, so this one deploy repairs those desktops.
+  const snapshotAccepted = Boolean(state?.lastIngestAt)
+  if (mode === 'changes' && (!state || !snapshotAccepted)) {
+    return error('epoch_mismatch', 'No accepted snapshot for this machine — send a full one', {
+      epoch: state?.epoch ?? '',
+    })
+  }
+
   // A delta batch under an epoch the cloud does not hold means the desktop's
   // database was recreated; it has to send a snapshot before anything else.
   if (mode === 'changes' && state?.epoch && requestedEpoch && state.epoch !== requestedEpoch) {
@@ -358,19 +373,26 @@ export async function applyBatch(
       deleted += removed
     }
 
+    // `lastIngestAt` is the cloud's record of an *accepted* copy, and the desktop
+    // and `GET /machines` both read it as "the copy is ready". So only a
+    // completed snapshot — or a delta, which can only arrive after one — sets
+    // it: a snapshot page that lands and is never completed must not look like a
+    // finished copy (SHO-241).
+    const ingestedAt = mode === 'changes' || snapshotComplete ? new Date() : null
+
     await tx.machineSyncState.upsert({
       where: { instanceId },
       create: {
         instanceId,
         epoch,
         cursor: typeof body.cursor === 'number' ? body.cursor : 0,
-        lastIngestAt: new Date(),
+        lastIngestAt: ingestedAt,
         enabled: true,
       },
       update: {
         epoch,
         ...(typeof body.cursor === 'number' ? { cursor: body.cursor } : {}),
-        lastIngestAt: new Date(),
+        ...(ingestedAt ? { lastIngestAt: ingestedAt } : {}),
         },
       })
     })

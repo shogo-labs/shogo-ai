@@ -15,6 +15,7 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { Hono } from 'hono'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
+import { matchesWhere } from './helpers/prisma-where'
 
 process.env.SHOGO_LOCAL_MODE = 'true'
 
@@ -47,11 +48,7 @@ const mockPrisma = {
       return inst ? { ...inst } : null
     },
     findMany: async (args: any) =>
-      [...instancesById.values()].filter(
-        (i) =>
-          i.workspaceId === args.where.workspaceId &&
-          (args.where.userId === undefined || i.userId === args.where.userId),
-      ),
+      [...instancesById.values()].filter((i) => matchesWhere(i as any, args.where)),
     upsert: async (args: any) => {
       const w = args.where.workspaceId_userId_hostname
       const key = `${w.workspaceId}::${w.userId}::${w.hostname}`

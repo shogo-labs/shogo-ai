@@ -28,6 +28,51 @@ export function getMachineSyncPusher(): MachineSyncPusher | null {
 }
 
 /**
+ * What Settings → Remote control and the cloud's machine snapshot show about the
+ * copy: whether it exists, when it last landed, and — the part that was missing
+ * for four days — *why* it is not moving (SHO-241).
+ *
+ * `copyReady` is read from the local state's `lastIngestAt`, which only an
+ * accepted push sets, so it means "the cloud has a completed snapshot of this
+ * database", not "we have tried".
+ */
+export interface MachineSyncStatus {
+  running: boolean
+  instanceId: string | null
+  lastAckedAt: string | null
+  lastError: string | null
+  pendingChanges: number
+  copyReady: boolean
+}
+
+export async function readMachineSyncStatus(): Promise<MachineSyncStatus | null> {
+  if (!pusher) return null
+  const status = pusher.status
+  let pendingChanges = status.pendingChanges
+  let copyReady = status.copyReady
+  try {
+    const waiting = await (prisma as any).machineSyncChange.count()
+    if (typeof waiting === 'number') pendingChanges = waiting
+  } catch {
+    /* an older database without the change log: the pusher's own count stands */
+  }
+  if (!copyReady && status.instanceId) {
+    const state = await (prisma as any).machineSyncState
+      ?.findUnique({ where: { instanceId: status.instanceId } })
+      .catch(() => null)
+    copyReady = Boolean(state?.lastIngestAt)
+  }
+  return {
+    running: status.running,
+    instanceId: status.instanceId,
+    lastAckedAt: status.lastAckedAt,
+    lastError: status.lastError,
+    pendingChanges,
+    copyReady,
+  }
+}
+
+/**
  * Start the pusher. A no-op without a device key: an unpaired desktop has no
  * copy to keep, and asking for one would only log noise.
  */
@@ -41,6 +86,11 @@ export async function startMachineSync(): Promise<void> {
     // The instance row is created by the first heartbeat, so this stays null
     // for the first second or two of a launch; the pusher waits.
     getInstanceId: () => getInstanceId(),
+    // Without this every line the pusher emitted went nowhere: the desktop's
+    // log is what a support handoff reads, and a sync that had been broken for
+    // four days left no trace in it (SHO-241). The desktop pipes the API
+    // process's stdout into `main.log`.
+    log: (line) => console.log(line),
   })
   await pusher.start()
 }

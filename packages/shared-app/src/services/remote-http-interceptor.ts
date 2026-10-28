@@ -334,6 +334,12 @@ export const MACHINE_ERROR_CODES = {
    * is queued, so a send cannot be retried into a surprise later.
    */
   offlineReadonly: 'machine_offline_readonly',
+  /**
+   * The cloud has no copy of this machine workspace (yet, or at all): the read
+   * has to go through the relay. Never shown to a person — the interceptor
+   * retries it (SHO-241).
+   */
+  copyPending: 'machine_copy_pending',
 } as const
 
 export type MachineErrorCode = (typeof MACHINE_ERROR_CODES)[keyof typeof MACHINE_ERROR_CODES]
@@ -356,6 +362,22 @@ function isReadCall(prop: string, args: any[]): boolean {
   const init = args[1]
   const method = typeof init?.method === 'string' ? init.method.toUpperCase() : 'GET'
   return method === 'GET' || method === 'HEAD'
+}
+
+/**
+ * True for the cloud's "this workspace lives on your machine and I have no copy
+ * of it" answer (SHO-241).
+ *
+ * The cloud answers `409 machine_copy_pending` instead of the misleading
+ * `403 "No access to this workspace"`, and the read has to be retried through the
+ * machine relay — which is what makes a machine workspace usable before its first
+ * sync finishes (or while sync is off) rather than looking unshared.
+ */
+export function isMachineCopyPendingError(error: unknown): boolean {
+  const err = error as { status?: number; details?: any } | null
+  if (!err || err.status !== 409) return false
+  const code = err.details?.error?.code ?? err.details?.code
+  return code === MACHINE_ERROR_CODES.copyPending
 }
 
 // ─── Path Routing Logic ─────────────────────────────────────────────────────
@@ -480,70 +502,73 @@ export function createRemoteAwareHttpClient(
         // desktop), but a *read* of its records is answered by the cloud copy —
         // so the same panel opens with the machine asleep, and the machine is
         // woken by the edit, not by the page load.
+        const isRead = isReadCall(String(prop), args)
         const shouldRoute = shouldRouteToRemote(originalPath, {
           machineWorkspaceId: config.machineWorkspaceId,
-          isRead: isReadCall(String(prop), args),
+          isRead,
         })
 
-        if (!shouldRoute) {
-          return (original as Function).apply(target, args)
+        /** Point a request at the machine's own workspace, through the relay. */
+        const buildRelayArgs = (): any[] => {
+          const machinePath = config.machineWorkspaceId
+            ? rewriteMachineWorkspacePath(
+                rewriteMachineWorkspaceParam(originalPath, config.machineWorkspaceId),
+                config.machineWorkspaceId,
+              )
+            : originalPath
+          const rewrittenPath = rewritePathForRemote(machinePath, config.remoteProxyBaseUrl!)
+          const newArgs = [...args]
+          newArgs[0] = rewrittenPath
+          if (config.machineWorkspaceId && (prop === 'post' || prop === 'patch')) {
+            newArgs[1] = rewriteMachineWorkspaceBody(newArgs[1], config.machineWorkspaceId)
+          }
+          const remoteHeaders: Record<string, string> = {
+            'x-remote-control': 'true',
+            ...(config.protocolVersion
+              ? { 'x-remote-protocol-version': String(config.protocolVersion) }
+              : {}),
+            ...(config.syncVersion ? { 'x-sync-version': String(config.syncVersion) } : {}),
+            ...(config.clientVersion ? { 'x-client-version': config.clientVersion } : {}),
+          }
+          if (prop === 'request' && typeof newArgs[1] === 'object' && newArgs[1] !== null) {
+            newArgs[1] = { ...newArgs[1], headers: { ...(newArgs[1].headers || {}), ...remoteHeaders } }
+          } else if (prop === 'post' || prop === 'patch') {
+            newArgs[2] = { ...(newArgs[2] || {}), ...remoteHeaders }
+          }
+          return newArgs
         }
 
-        // Point the request at the machine's own workspace id — in the path
-        // (`/api/workspaces/:id/agent-proxy/…`), the query string and, for a
-        // create, the body.
+        if (!shouldRoute) {
+          const cloudResult = (original as Function).apply(target, args)
+          // A read of a machine workspace the cloud has no copy of comes back
+          // `409 machine_copy_pending`. Read it from the machine instead of
+          // showing "No access to this workspace" (SHO-241). One retry, and only
+          // for a machine workspace: nothing else emits that code.
+          if (
+            !config.machineWorkspaceId ||
+            !isRead ||
+            !cloudResult ||
+            typeof cloudResult.then !== 'function'
+          ) {
+            return cloudResult
+          }
+          return cloudResult.then(
+            (response: unknown) => response,
+            (error: unknown) => {
+              if (!isMachineCopyPendingError(error)) throw error
+              return (original as Function).apply(target, buildRelayArgs())
+            },
+          )
+        }
+
+        // Execute the rewritten request with error handling
         const machinePath = config.machineWorkspaceId
           ? rewriteMachineWorkspacePath(
               rewriteMachineWorkspaceParam(originalPath, config.machineWorkspaceId),
               config.machineWorkspaceId,
             )
           : originalPath
-
-        // Rewrite the path to go through the tunnel proxy
-        const rewrittenPath = rewritePathForRemote(machinePath, config.remoteProxyBaseUrl)
-        const newArgs = [...args]
-        newArgs[0] = rewrittenPath
-
-        // A create still carries the cloud workspaceId in its body; point it at
-        // the machine's own workspace so the record lands where the user is.
-        if (config.machineWorkspaceId && (prop === 'post' || prop === 'patch')) {
-          newArgs[1] = rewriteMachineWorkspaceBody(newArgs[1], config.machineWorkspaceId)
-        }
-
-        // Build the common header bag once
-        const remoteHeaders: Record<string, string> = {
-          'x-remote-control': 'true',
-          ...(config.protocolVersion
-            ? { 'x-remote-protocol-version': String(config.protocolVersion) }
-            : {}),
-          ...(config.syncVersion
-            ? { 'x-sync-version': String(config.syncVersion) }
-            : {}),
-          ...(config.clientVersion
-            ? { 'x-client-version': config.clientVersion }
-            : {}),
-        }
-
-        // For methods that accept headers, inject remote control headers
-        if (prop === 'request' && typeof newArgs[1] === 'object' && newArgs[1] !== null) {
-          newArgs[1] = {
-            ...newArgs[1],
-            headers: {
-              ...(newArgs[1].headers || {}),
-              ...remoteHeaders,
-            },
-          }
-        } else if (prop === 'post' || prop === 'patch') {
-          // post(path, body?, headers?) — headers is the 3rd arg
-          const existingHeaders = newArgs[2] || {}
-          newArgs[2] = {
-            ...existingHeaders,
-            ...remoteHeaders,
-          }
-        }
-
-        // Execute the rewritten request with error handling
-        const result = (original as Function).apply(target, newArgs)
+        const result = (original as Function).apply(target, buildRelayArgs())
 
         // If it's a promise (all HTTP methods return promises), add error handling
         if (result && typeof result.then === 'function') {

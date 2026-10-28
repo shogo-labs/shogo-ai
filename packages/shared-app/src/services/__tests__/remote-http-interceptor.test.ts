@@ -395,6 +395,72 @@ describe('rewriteMachineWorkspacePath', () => {
 })
 
 describe('createRemoteAwareHttpClient in a machine workspace', () => {
+  it('reads a workspace the cloud has no copy of from the machine instead of 403', async () => {
+    // The cloud's backstop answers `409 machine_copy_pending` for a read of a
+    // machine workspace it holds no copy of (first sync still running, sync off,
+    // or sync broken). Showing "No access to this workspace" for that was the
+    // bug; the read has to be retried through the relay, once (SHO-241).
+    const calls: string[] = []
+    const http = {
+      get: async (path: string) => {
+        calls.push(path)
+        if (path === '/api/workspaces/ws-cloud/conversations') {
+          throw Object.assign(new Error('Conflict'), {
+            status: 409,
+            details: { error: { code: 'machine_copy_pending', message: 'no copy yet' } },
+          })
+        }
+        return { data: {} }
+      },
+      post: async (path: string) => {
+        calls.push(path)
+        return { data: {} }
+      },
+      patch: async () => ({ data: {} }),
+      delete: async () => ({ data: {} }),
+      request: async () => ({ data: {} }),
+    } as any
+
+    const proxy = createRemoteAwareHttpClient(http, () => ({
+      remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1',
+      machineWorkspaceId: 'lw-1',
+    }))
+
+    const answer = await proxy.get('/api/workspaces/ws-cloud/conversations')
+
+    expect(answer).toEqual({ data: {} })
+    expect(calls).toEqual([
+      '/api/workspaces/ws-cloud/conversations',
+      'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/workspaces/lw-1/conversations',
+    ])
+  })
+
+  it('does not retry an answer that is about access, not a missing copy', async () => {
+    const calls: string[] = []
+    const denied = Object.assign(new Error('Forbidden'), {
+      status: 403,
+      details: { error: { code: 'forbidden', message: 'No access to this workspace' } },
+    })
+    const http = {
+      get: async (path: string) => {
+        calls.push(path)
+        throw denied
+      },
+      post: async () => ({ data: {} }),
+      patch: async () => ({ data: {} }),
+      delete: async () => ({ data: {} }),
+      request: async () => ({ data: {} }),
+    } as any
+
+    const proxy = createRemoteAwareHttpClient(http, () => ({
+      remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1',
+      machineWorkspaceId: 'lw-1',
+    }))
+
+    await expect(proxy.get('/api/workspaces/ws-cloud/conversations')).rejects.toBe(denied)
+    expect(calls).toHaveLength(1)
+  })
+
   it('sends writes through the relay with the local workspace id, and reads to the cloud copy', async () => {
     const calls: string[] = []
     const http = {

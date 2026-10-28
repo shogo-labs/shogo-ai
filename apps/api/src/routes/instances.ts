@@ -23,6 +23,8 @@
 import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
+import { machineCopyOwnerIds } from '../lib/machine-workspace'
+import { retireMachineSiblings } from '../lib/machine-siblings'
 import { can } from '../lib/authz'
 import { deleteMachineCopy } from '../lib/machine-sync/ingest'
 import { resolveApiKey } from './api-keys'
@@ -772,6 +774,26 @@ export function instanceRoutes() {
     const nextPollIn = await computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
     const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })
 
+    // One machine, one row (SHO-241 §C). Older desktops opened a tunnel per
+    // stored device key and so hold a row per workspace; this is the only place
+    // the cloud learns those are one machine. A `cli_worker` row is a workspace's
+    // dev box, not the person's machine, so it is left alone.
+    if (kind !== InstanceKind.cli_worker) {
+      try {
+        await retireMachineSiblings({
+          instanceId: instance.id,
+          workspaceId: resolved.workspaceId,
+          userId: resolved.userId,
+          hostname: body.hostname,
+          kind,
+        })
+      } catch (err) {
+        // Never fail a heartbeat over cleanup: the machine stays reachable and
+        // the next heartbeat tries again.
+        console.warn('[Instances] sibling cleanup failed:', (err as Error)?.message ?? err)
+      }
+    }
+
     // Where the desktop should open its on-demand WebSocket. In staging
     // / production this points at a non-DomainMapping host
     // (`tunnel.staging.shogo.ai` / `tunnel.shogo.ai`) that bypasses the
@@ -886,8 +908,19 @@ export function instanceRoutes() {
     // Scope to the machines this user paired. Ownership is stamped from the
     // API key used to register/heartbeat the machine (see resolveApiKey), so
     // each member only sees their own machines, not everyone's in the workspace.
+    //
+    // A desktop belongs to its owner, not to the workspace its key happened to be
+    // issued in (SHO-241 §C): asking for one workspace still lists the caller's
+    // desktops wherever their rows live, or a machine would vanish from the
+    // runtime picker the moment it was viewed from another workspace. `cli_worker`
+    // rows are a workspace's dev boxes and stay workspace-scoped.
     const instances = await prisma.instance.findMany({
-      where: ownerScoped ? { userId: auth.userId } : { workspaceId, userId: auth.userId },
+      where: ownerScoped
+        ? { userId: auth.userId }
+        : {
+            userId: auth.userId,
+            OR: [{ workspaceId }, { kind: { not: InstanceKind.cli_worker } }],
+          },
       orderBy: { lastSeenAt: 'desc' },
     })
 
@@ -895,14 +928,17 @@ export function instanceRoutes() {
 
     // Owner scope is a machine list, so a machine registered in several
     // workspaces appears once, carrying every workspace it is in — the same
-    // grouping `GET /api/machines` (the workspace switcher) applies. The
-    // workspace-scoped list asks for one workspace's row and stays 1:1.
-    const grouped = ownerScoped
-      ? groupMachinesByHostname(instances, {
-          preferWorkspaceId: workspaceId,
-          nameFor: (id) => workspaceNames.get(id),
-        })
-      : instances.map((inst) => ({ row: inst, workspaces: [], rows: [inst] }))
+    // grouping `GET /api/machines` (the workspace switcher) applies, and with
+    // the same representative row: the one that owns the cloud copy. Picking the
+    // freshest row instead gave a live machine a new `id` every few seconds, and
+    // the client's stored id then never matched (SHO-241). A workspace-scoped
+    // caller asks for one workspace's view: `preferWorkspaceId` keeps the id it
+    // already holds, and the machine still appears once.
+    const grouped = groupMachinesByHostname(instances, {
+      preferWorkspaceId: ownerScoped ? null : workspaceId,
+      nameFor: (id) => workspaceNames.get(id),
+      copyOwners: await machineCopyOwnerIds(instances.map((inst) => inst.id)),
+    })
 
     const withLiveStatus = await Promise.all(grouped.map(async ({ row: inst, workspaces, rows: machineRows }) => ({
       ...inst,
@@ -954,15 +990,30 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
+    // Same rule as `GET /instances` (SHO-241 §C): a desktop belongs to its owner
+    // wherever its row lives, so the chat environment picker sees the machine even
+    // when the row was filed under another workspace's device key. `cli_worker`
+    // rows stay workspace-scoped.
     const instances = await prisma.instance.findMany({
-      where: { workspaceId, userId: auth.userId },
+      where: {
+        userId: auth.userId,
+        OR: [{ workspaceId }, { kind: { not: InstanceKind.cli_worker } }],
+      },
       orderBy: { lastSeenAt: 'desc' },
     })
 
+    // A machine with a row per workspace must not appear once per row either.
+    const machines = groupMachinesByHostname(instances, { preferWorkspaceId: workspaceId })
     const online = (await Promise.all(
-      instances.map(async (inst) => {
-        const isOnline = tunnels.has(inst.id) || (await isTunnelConnectedAnywhere(inst.id, { retry: false }))
-        return isOnline ? inst : null
+      machines.map(async ({ row: inst, rows: machineRows }) => {
+        const live = await Promise.all(
+          machineRows.map(
+            async (candidate) =>
+              tunnels.has(candidate.id) ||
+              (await isTunnelConnectedAnywhere(candidate.id, { retry: false })),
+          ),
+        )
+        return live.some(Boolean) ? inst : null
       })
     )).filter((x): x is NonNullable<typeof x> => x !== null)
 
@@ -1813,6 +1864,18 @@ export async function getMachineGroupStatus(
   const statuses = await Promise.all(rows.map((row) => getMachineLiveStatus(row.id, row.lastSeenAt)))
   if (statuses.includes('online')) return 'online'
   return statuses.includes('heartbeat') ? 'heartbeat' : 'offline'
+}
+
+/**
+ * True when *this pod* holds a live tunnel for the instance.
+ *
+ * The machine relay uses it to look across a machine's rows for one that can
+ * serve the request: the representative `id` a client holds is stable, and the
+ * desktop opens one tunnel per device key, so the two are not necessarily the
+ * same row (SHO-241).
+ */
+export function hasLocalTunnel(instanceId: string): boolean {
+  return tunnels.has(instanceId)
 }
 
 /**

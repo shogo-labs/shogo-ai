@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * One tunnel per cloud workspace the desktop is signed into (SHO-87 §8).
+ * The tunnel's lifecycle: one per machine, started with the primary device key,
+ * stopped cleanly.
  *
- * A machine belongs to a person, but the cloud files its `instances` row under
- * the workspace its key was issued in. A desktop holding a device key for three
- * workspaces therefore opens three tunnels, so the machine registers in all of
- * them; without the dedupe the primary workspace would get two tunnels racing
- * over the same `(workspaceId, hostname)` row.
+ * This file used to assert the SHO-87 fan-out — one tunnel per stored device key
+ * — which is what gave a Mac nine `instances` rows and nine heartbeats and made
+ * a live machine show "Machine offline" (SHO-241). What survives is the
+ * lifecycle around the single tunnel.
  *
  *   bun test apps/api/src/__tests__/instance-tunnel-workspaces.test.ts
  */
@@ -19,15 +19,14 @@ const tunnelInstances: Array<{ apiKey: string; connected: boolean; stopped: bool
 /**
  * Stand-in for the threaded host that `ThreadedTunnel` really creates (SHO-185
  * §5). The threading itself has its own test — `tunnel-worker-block.test.ts` —
- * and what these tests are about is the fan-out: which device keys get a tunnel,
- * and whether stopping reaches all of them. So the host is a record plus the two
- * notifications `ThreadedTunnel` reads its state from.
+ * and what these tests are about is which key gets a tunnel and whether stopping
+ * reaches it. So the host is a record plus the two notifications `ThreadedTunnel`
+ * reads its state from.
  */
 mock.module('@shogo-ai/worker/tunnel-host', () => ({
   startTunnelInWorker: (options: any) => {
     const host = { apiKey: options.apiKey, connected: false, stopped: false }
     tunnelInstances.push(host)
-    // The socket came up: the worker reports the same thing as `connected`.
     host.connected = true
     options.onConnection?.(true)
     return {
@@ -110,11 +109,9 @@ const { startInstanceTunnel, stopInstanceTunnel, isTunnelConnected, getInstanceT
 const PRIMARY_KEY = 'shogo_sk_primary'
 const ORIGINAL_KEY = process.env.SHOGO_API_KEY
 
-/** Let the async fan-out settle. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
 
 beforeEach(() => {
-  tunnelInstances.length = 0
   process.env.SHOGO_API_KEY = PRIMARY_KEY
   keyInfo = { workspace: { id: 'ws-personal', name: 'Personal' } }
   stored = { enabled: true, workspaces: [], reachable: true, user: null }
@@ -129,7 +126,7 @@ afterAll(() => {
 })
 
 describe('startInstanceTunnel', () => {
-  test('opens one tunnel per stored device key, plus the primary', async () => {
+  test('opens one tunnel with the primary key, whatever workspaces are stored', async () => {
     stored = {
       enabled: true,
       reachable: true,
@@ -144,56 +141,24 @@ describe('startInstanceTunnel', () => {
     startInstanceTunnel()
     await settle()
 
-    // The primary key's workspace is skipped: its tunnel is already running.
-    expect(tunnelInstances.map((t) => t.apiKey).sort()).toEqual(
-      [PRIMARY_KEY, 'shogo_sk_odin', 'shogo_sk_samsara'].sort(),
-    )
+    expect(tunnelInstances.map((t) => t.apiKey)).toEqual([PRIMARY_KEY])
     const status = getInstanceTunnelStatus()
-    expect(status.map((entry) => entry.id).sort()).toEqual(['primary', 'ws-odin', 'ws-samsara'])
-    expect(status.every((entry) => entry.state === 'connected')).toBe(true)
+    expect(status).toHaveLength(1)
+    expect(status[0].id).toBe('primary')
+    expect(status[0].state).toBe('connected')
   })
 
-  test('a machine kept on one workspace (enabled: false) opens exactly one tunnel', async () => {
-    stored = {
-      enabled: false,
-      reachable: true,
-      user: null,
-      workspaces: [
-        { id: 'ws-personal', name: 'Personal', key: PRIMARY_KEY },
-        { id: 'ws-odin', name: 'Odin AI', key: 'shogo_sk_odin' },
-      ],
-    }
-
+  test('restarting the tunnel does not leave the old one running', async () => {
+    startInstanceTunnel()
+    await settle()
     startInstanceTunnel()
     await settle()
 
-    expect(tunnelInstances).toHaveLength(1)
-    expect(tunnelInstances[0].apiKey).toBe(PRIMARY_KEY)
+    expect(tunnelInstances.filter((t) => !t.stopped)).toHaveLength(1)
+    expect(getInstanceTunnelStatus()).toHaveLength(1)
   })
 
-  test('a stored key identical to the primary is not duplicated', async () => {
-    stored = {
-      enabled: true,
-      reachable: true,
-      user: null,
-      workspaces: [
-        { id: 'ws-elsewhere', name: 'Elsewhere', key: PRIMARY_KEY },
-      ],
-    }
-
-    startInstanceTunnel()
-    await settle()
-
-    expect(tunnelInstances).toHaveLength(1)
-  })
-
-  test('stopInstanceTunnel stops every tunnel, and nothing claims to be connected', async () => {
-    stored = {
-      enabled: true,
-      reachable: true,
-      user: null,
-      workspaces: [{ id: 'ws-odin', name: 'Odin AI', key: 'shogo_sk_odin' }],
-    }
+  test('stopInstanceTunnel stops the tunnel, and nothing claims to be connected', async () => {
     startInstanceTunnel()
     await settle()
     expect(isTunnelConnected()).toBe(true)
@@ -209,5 +174,6 @@ describe('startInstanceTunnel', () => {
     delete process.env.SHOGO_API_KEY
     startInstanceTunnel()
     expect(tunnelInstances).toHaveLength(0)
+    expect(getInstanceTunnelStatus()).toEqual([])
   })
 })

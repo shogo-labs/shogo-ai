@@ -104,7 +104,22 @@ describe('change capture triggers', () => {
 
 type FakeRow = Record<string, unknown>
 
-function fakeDesktopDb(options: { rows?: Record<string, FakeRow[]>; changes?: FakeRow[]; seedState?: boolean } = {}) {
+/**
+ * A desktop's SQLite, in the shape the pusher reads it.
+ *
+ * `seedState` is the local `machine_sync_states` row: a desktop that has synced
+ * before has one with `lastIngestAt` set (a snapshot was accepted). Pass
+ * `orphanedState: true` for the shape that broke in production — an epoch was
+ * minted, but no snapshot was ever accepted (SHO-241).
+ */
+function fakeDesktopDb(
+  options: {
+    rows?: Record<string, FakeRow[]>
+    changes?: FakeRow[]
+    seedState?: boolean
+    orphanedState?: boolean
+  } = {},
+) {
   const changes: FakeRow[] = options.changes ?? []
   const tables = new Map<string, Map<string, FakeRow>>()
   for (const [model, rows] of Object.entries(options.rows ?? {})) {
@@ -115,9 +130,13 @@ function fakeDesktopDb(options: { rows?: Record<string, FakeRow[]>; changes?: Fa
     epoch: 'epoch-1',
     cursor: 0,
     enabled: true,
-    lastIngestAt: null,
+    // Set = a snapshot of this database has been accepted by the cloud, which is
+    // what makes a delta meaningful.
+    lastIngestAt: options.orphanedState ? null : new Date('2026-10-20T00:00:00.000Z'),
   }
-  let seededState = options.seedState ?? (Boolean(options.rows) || Boolean(options.changes))
+  let seededState = options.orphanedState
+    ? true
+    : options.seedState ?? (Boolean(options.rows) || Boolean(options.changes))
 
   const delegate = (name: string) => {
     if (name === 'machineSyncChange') {
@@ -518,6 +537,112 @@ describe('the pusher', () => {
     expect(posted).toHaveLength(1)
   })
 
+  test('a state row whose snapshot never landed still sends a snapshot, not deltas', async () => {
+    // The production shape (SHO-241): sign-in minted an epoch, the first
+    // snapshot failed (a refused key, a crash mid-snapshot), so `lastIngestAt` is
+    // null. Treating this as "already initialised" meant every later push was a
+    // delta the cloud had no copy to apply — forever, and silently.
+    const { db, changes } = fakeDesktopDb({
+      rows: { workspace: [{ id: 'w1', name: 'Samsara', slug: 'samsara' }] },
+      orphanedState: true,
+    })
+    rowSeq(changes, 'Workspace', 'w1')
+
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: fakeFetch(),
+    })
+    await pusher.tick()
+
+    expect(posted.length).toBeGreaterThan(0)
+    expect(posted.every((request) => request.mode === 'snapshot')).toBe(true)
+    expect(posted[posted.length - 1].snapshot?.complete).toBe(true)
+  })
+
+  test('the copy only counts as ready once a snapshot is accepted', async () => {
+    const { db, changes } = fakeDesktopDb({
+      rows: { workspace: [{ id: 'w1', name: 'Samsara', slug: 'samsara' }] },
+      orphanedState: true,
+    })
+
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: fakeFetch(),
+    })
+    expect(pusher.status.copyReady).toBe(false)
+
+    await pusher.tick()
+    expect(pusher.status.copyReady).toBe(true)
+
+    // Pending work is reported, so Settings can say "1 change waiting" instead
+    // of showing a healthy machine that has actually stopped syncing.
+    rowSeq(changes, 'Workspace', 'w1')
+    responses = [{ status: 500, body: { error: { code: 'internal' } } }]
+    await pusher.tick()
+    expect(pusher.status.pendingChanges).toBe(1)
+    // Still in the log: the cursor only moves once the cloud has the batch.
+    expect(changes).toHaveLength(1)
+  })
+
+  test('a cloud with no copy of the workspace is answered with a snapshot, not the same delta', async () => {
+    const { db, changes } = fakeDesktopDb({
+      rows: { workspace: [{ id: 'w1', name: 'Samsara', slug: 'samsara' }] },
+    })
+    rowSeq(changes, 'Workspace', 'w1')
+    responses = [
+      { status: 409, body: { error: { code: 'workspace_ownership' } } },
+      ...Array.from({ length: 40 }, () => ({ status: 200, body: { ok: true } })),
+    ]
+
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: fakeFetch(),
+    })
+    await pusher.tick()
+    await pusher.tick()
+
+    expect(posted[0].mode).toBe('changes')
+    const snapshots = posted.filter((request) => request.mode === 'snapshot')
+    expect(snapshots.length).toBeGreaterThan(0)
+    expect(posted[posted.length - 1].snapshot?.complete).toBe(true)
+  })
+
+  test('a refusal a retry cannot fix stalls with an error instead of hammering', async () => {
+    const { db, changes } = fakeDesktopDb({
+      rows: { chatMessage: [{ id: 'm1', sessionId: 's1', content: 'hi' }] },
+    })
+    rowSeq(changes, 'ChatMessage', 'm1')
+    responses = [
+      { status: 409, body: { error: { code: 'mirror_ownership', message: 'row belongs to inst-OTHER' } } },
+    ]
+
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: fakeFetch(),
+    })
+    await pusher.tick()
+
+    expect(posted).toHaveLength(1)
+    expect(pusher.status.lastError).toContain('mirror_ownership')
+    // Ten minutes, not thirty seconds: the error stays visible in `status`
+    // without 2,880 identical log lines a day.
+    expect((pusher as any).nextDelay()).toBeGreaterThanOrEqual(9 * 60_000)
+    await pusher.syncNow()
+    expect(posted).toHaveLength(1)
+  })
+
   test('nothing is pushed without a device key or an instance id', async () => {
     const { db, changes } = fakeDesktopDb({ rows: { chatMessage: [] } })
     rowSeq(changes, 'ChatMessage', 'm1')
@@ -546,7 +671,20 @@ describe('the pusher', () => {
 
 // ─── The cloud ingest ──────────────────────────────────────────────────────
 
-function fakeCloudDb(options: { owned?: Record<string, string>; cloudRows?: Record<string, string[]> } = {}) {
+/**
+ * The cloud's side, in the shape `applyBatch` reads it.
+ *
+ * `noSnapshot` is the SHO-241 shape: the machine signed in and an epoch was
+ * minted, but no snapshot was ever accepted — so the cloud holds no copy and a
+ * delta cannot be applied to it.
+ */
+function fakeCloudDb(
+  options: {
+    owned?: Record<string, string>
+    cloudRows?: Record<string, string[]>
+    noSnapshot?: boolean
+  } = {},
+) {
   const tables = new Map<string, Map<string, FakeRow>>()
   const mirror = new Map<string, { model: string; recordId: string; instanceId: string; epoch: string }>()
   for (const [key, instanceId] of Object.entries(options.owned ?? {})) {
@@ -558,7 +696,14 @@ function fakeCloudDb(options: { owned?: Record<string, string>; cloudRows?: Reco
     for (const id of ids) table.set(id, { id })
     tables.set(model, table)
   }
-  const state: FakeRow = { instanceId: 'inst-1', epoch: 'epoch-1', cursor: 0, enabled: true, lastIngestAt: null }
+  const state: FakeRow = {
+    instanceId: 'inst-1',
+    epoch: 'epoch-1',
+    cursor: 0,
+    enabled: true,
+    // Set = a snapshot was accepted, which is what makes a delta applicable.
+    lastIngestAt: options.noSnapshot ? null : new Date('2026-10-20T00:00:00.000Z'),
+  }
   const members: FakeRow[] = []
 
   const table = (name: string) => {
@@ -762,6 +907,105 @@ describe('the ingest', () => {
       models: [],
     })
     expect('code' in result && result.code).toBe('epoch_mismatch')
+  })
+
+  test('a delta is refused until a snapshot has been accepted', async () => {
+    // The cloud has an epoch for this machine but no copy: the first snapshot
+    // never landed. Applying the delta would tag a workspace that is not there
+    // and fail as `workspace_ownership`, which no shipped pusher retries with a
+    // snapshot — so it answered `epoch_mismatch` instead, the code every pusher
+    // already recovers from (SHO-241).
+    const { db, tables } = fakeCloudDb({ noSnapshot: true })
+    const result = await applyBatch(ingestCtx(db), {
+      epoch: 'epoch-1',
+      mode: 'changes',
+      cursor: 3,
+      models: [{ model: 'Workspace', rows: [{ id: 'w1', name: 'Personal', slug: 'personal' }] }],
+    })
+
+    expect('code' in result && result.code).toBe('epoch_mismatch')
+    expect('message' in result && result.message).toContain('snapshot')
+    expect(tables.get('workspace')?.get('w1')).toBeUndefined()
+  })
+
+  test('the snapshot a refused delta asks for is accepted, and unblocks deltas', async () => {
+    const { db, syncState, tables } = fakeCloudDb({ noSnapshot: true })
+
+    const snapshot = await applyBatch(ingestCtx(db), {
+      epoch: 'epoch-2',
+      mode: 'snapshot',
+      cursor: 0,
+      models: [{ model: 'Workspace', rows: [{ id: 'w1', name: 'Personal', slug: 'personal' }] }],
+    })
+    expect('ok' in snapshot && snapshot.ok).toBe(true)
+    // A snapshot page on its own is not a copy: only `complete` marks it ready.
+    expect(syncState.lastIngestAt).toBeNull()
+
+    const done = await applyBatch(ingestCtx(db), {
+      epoch: 'epoch-2',
+      mode: 'snapshot',
+      cursor: 0,
+      models: [],
+      snapshot: { complete: true },
+    })
+    expect('ok' in done && done.ok).toBe(true)
+    expect(syncState.lastIngestAt).toBeInstanceOf(Date)
+    expect(tables.get('workspace')?.get('w1')).toMatchObject({ machineInstanceId: 'inst-1' })
+
+    const delta = await applyBatch(ingestCtx(db), {
+      epoch: 'epoch-2',
+      mode: 'changes',
+      cursor: 1,
+      models: [{ model: 'Workspace', rows: [{ id: 'w1', name: 'Renamed', slug: 'personal' }] }],
+    })
+    expect('ok' in delta && delta.ok).toBe(true)
+    expect(tables.get('workspace')?.get('w1')).toMatchObject({ name: 'Renamed' })
+  })
+
+  test('a desktop with a stranded epoch and a cloud with no copy recover on their own', async () => {
+    // Both ends in the broken state SHO-241 shipped in: the desktop minted an
+    // epoch whose snapshot never landed, and the cloud has no copy of it. The two
+    // ends are wired together through the real `applyBatch`, so this asserts they
+    // agree on the recovery — not just that each half behaves in isolation.
+    const desktop = fakeDesktopDb({
+      rows: { workspace: [{ id: 'w1', name: 'Samsara', slug: 'samsara' }] },
+      orphanedState: true,
+    })
+    const cloud = fakeCloudDb({ noSnapshot: true })
+    const modes: string[] = []
+
+    const pusher = new MachineSyncPusher({
+      prisma: desktop.db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: (async (_url: string, init: any) => {
+        const body = JSON.parse(init.body) as SyncBatchRequest
+        modes.push(body.mode)
+        const result = await applyBatch(ingestCtx(cloud.db), body as any)
+        if ('code' in result) {
+          return new Response(JSON.stringify({ error: { code: result.code, message: result.message } }), {
+            status: 409,
+          })
+        }
+        return new Response(JSON.stringify(result), { status: 200 })
+      }) as unknown as typeof fetch,
+    })
+
+    await pusher.tick()
+
+    expect(modes.every((mode) => mode === 'snapshot')).toBe(true)
+    expect(pusher.status.copyReady).toBe(true)
+    expect(pusher.status.lastError).toBeNull()
+    // Both ends agree there is a copy: the cloud stored the workspace and
+    // recorded when it accepted it, the desktop kept the epoch the cloud holds.
+    expect(cloud.tables.get('workspace')?.get('w1')).toMatchObject({
+      id: 'w1',
+      machineInstanceId: 'inst-1',
+    })
+    expect(cloud.syncState.lastIngestAt).toBeInstanceOf(Date)
+    expect(desktop.state.epoch).toBe(cloud.syncState.epoch)
+    expect(desktop.state.lastIngestAt).toBeInstanceOf(Date)
   })
 
   test('a child row pointing at a workspace this machine does not own is refused', async () => {

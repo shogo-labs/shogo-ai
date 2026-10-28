@@ -28,12 +28,16 @@ type Instance = {
   arch: string | null
   kind: string
   lastSeenAt: Date | null
+  createdAt: Date
   metadata: any
   wsRequestedAt: Date | null
 }
 
+type SyncState = { instanceId: string; enabled: boolean; cursor: number; lastIngestAt: Date | null }
+
 const rows: Instance[] = []
 const workspaceNames = new Map<string, string>()
+const syncStates: SyncState[] = []
 
 const mockPrisma = {
   instance: {
@@ -42,6 +46,8 @@ const mockPrisma = {
       const where = args?.where ?? {}
       return rows
         .filter((r) => (where.userId === undefined ? true : r.userId === where.userId))
+        .filter((r) => (where.hostname === undefined ? true : r.hostname === where.hostname))
+        .filter((r) => (where.kind?.not === undefined ? true : r.kind !== where.kind.not))
         .sort((a, b) => (b.lastSeenAt?.getTime() ?? 0) - (a.lastSeenAt?.getTime() ?? 0))
         .map((r) => ({ ...r }))
     },
@@ -56,12 +62,18 @@ const mockPrisma = {
       const ids: string[] = args?.where?.id?.in ?? []
       return ids.filter((id) => workspaceNames.has(id)).map((id) => ({ id, name: workspaceNames.get(id) as string }))
     },
+    findUnique: async (args: any) => (workspaceNames.has(args.where.id) ? { id: args.where.id } : null),
   },
   remoteAction: { create: async (args: any) => args.data },
-  // `GET /machines` reports `lastSyncedAt` / `syncEnabled` per machine (SHO-185).
+  // `GET /machines` reports `lastSyncedAt` / `syncEnabled` / `copyReady` per
+  // machine (SHO-185, SHO-241).
   machineSyncState: {
-    findMany: async () => [],
-    findUnique: async () => null,
+    findMany: async (args: any) => {
+      const ids: string[] = args?.where?.instanceId?.in ?? []
+      return syncStates.filter((state) => !ids.length || ids.includes(state.instanceId)).map((s) => ({ ...s }))
+    },
+    findUnique: async (args: any) =>
+      syncStates.find((state) => state.instanceId === args.where.instanceId) ?? null,
   },
 }
 
@@ -97,6 +109,7 @@ function seed(overrides: Partial<Instance> = {}): Instance {
     arch: 'x64',
     kind: 'desktop',
     lastSeenAt: new Date('2026-10-20T10:00:00.000Z'),
+    createdAt: new Date('2026-10-01T00:00:00.000Z'),
     metadata: {},
     wsRequestedAt: null,
     ...overrides,
@@ -108,6 +121,7 @@ function seed(overrides: Partial<Instance> = {}): Instance {
 beforeEach(() => {
   rows.length = 0
   workspaceNames.clear()
+  syncStates.length = 0
   _testing.resetWakeDeadlineMs()
   _testing.setWakeDeadlineMs(120)
 })
@@ -117,13 +131,14 @@ describe('GET /api/machines', () => {
     workspaceNames.set('ws-personal', 'Personal')
     workspaceNames.set('ws-odin', 'Odin AI')
     workspaceNames.set('ws-samsara', 'Samsara')
-    seed({ id: 'i-personal', workspaceId: 'ws-personal' })
+    seed({ id: 'i-personal', workspaceId: 'ws-personal', createdAt: new Date('2026-10-01T00:00:00.000Z') })
     seed({
       id: 'i-odin',
       workspaceId: 'ws-odin',
       lastSeenAt: new Date('2026-10-20T11:00:00.000Z'),
+      createdAt: new Date('2026-10-02T00:00:00.000Z'),
     })
-    seed({ id: 'i-samsara', workspaceId: 'ws-samsara' })
+    seed({ id: 'i-samsara', workspaceId: 'ws-samsara', createdAt: new Date('2026-10-03T00:00:00.000Z') })
 
     const res = await buildApp().fetch(new Request('http://x/api/machines'))
     expect(res.status).toBe(200)
@@ -131,14 +146,74 @@ describe('GET /api/machines', () => {
 
     expect(body.machines).toHaveLength(1)
     const [machine] = body.machines
-    // The most recently seen row represents the machine.
-    expect(machine.id).toBe('i-odin')
+    // The representative row is the *oldest* one, not the freshest heartbeat:
+    // the desktop's rows heartbeat in turn, and naming the machine by whichever
+    // one spoke last handed the client a new id every few seconds (SHO-241).
+    expect(machine.id).toBe('i-personal')
+    expect(machine.instanceIds.sort()).toEqual(['i-odin', 'i-personal', 'i-samsara'])
     expect(machine.hostname).toBe('odin')
     expect(machine.workspaces.map((w: any) => w.name).sort()).toEqual([
       'Odin AI',
       'Personal',
       'Samsara',
     ])
+  })
+
+  test('the representative id does not move as the rows heartbeat in turn', async () => {
+    seed({ id: 'i-a', createdAt: new Date('2026-10-01T00:00:00.000Z') })
+    seed({ id: 'i-b', createdAt: new Date('2026-10-02T00:00:00.000Z') })
+    seed({ id: 'i-c', createdAt: new Date('2026-10-03T00:00:00.000Z') })
+
+    const seen = new Set<string>()
+    for (let poll = 0; poll < 10; poll++) {
+      // One row at a time is the freshest, the way nine device keys heartbeat.
+      const row = rows[poll % rows.length]
+      row.lastSeenAt = new Date(Date.now() + poll * 1_000)
+      const body = (await (await buildApp().fetch(new Request('http://x/api/machines'))).json()) as any
+      seen.add(body.machines[0].id)
+    }
+    expect([...seen]).toEqual(['i-a'])
+  })
+
+  test('the row that owns the copy represents the machine', async () => {
+    seed({ id: 'i-a', createdAt: new Date('2026-10-01T00:00:00.000Z') })
+    seed({ id: 'i-b', createdAt: new Date('2026-10-02T00:00:00.000Z') })
+    syncStates.push({
+      instanceId: 'i-b',
+      enabled: true,
+      cursor: 12,
+      lastIngestAt: new Date('2026-10-20T12:00:00.000Z'),
+    })
+
+    const body = (await (await buildApp().fetch(new Request('http://x/api/machines'))).json()) as any
+    const [machine] = body.machines
+    expect(machine.id).toBe('i-b')
+    expect(machine.copyReady).toBe(true)
+    expect(machine.lastSyncedAt).toBe('2026-10-20T12:00:00.000Z')
+    expect(machine.instanceIds.sort()).toEqual(['i-a', 'i-b'])
+  })
+
+  test('no completed snapshot means no copy yet', async () => {
+    seed({ id: 'i-a' })
+    // The desktop created its state row but never got a snapshot through: the
+    // cloud has no rows for this machine, and the client has to read through the
+    // relay rather than being told "No access" (SHO-241).
+    syncStates.push({ instanceId: 'i-a', enabled: true, cursor: 0, lastIngestAt: null })
+
+    const body = (await (await buildApp().fetch(new Request('http://x/api/machines'))).json()) as any
+    expect(body.machines[0]).toMatchObject({ copyReady: false, lastSyncedAt: null })
+  })
+
+  test('a desktop-reported sync error is surfaced with the machine', async () => {
+    seed({
+      id: 'i-a',
+      metadata: { machine: { workspaces: [], sync: { lastError: 'mirror_ownership', pendingChanges: 7 } } },
+    })
+    const body = (await (await buildApp().fetch(new Request('http://x/api/machines'))).json()) as any
+    expect(body.machines[0]).toMatchObject({
+      lastSyncError: 'mirror_ownership',
+      pendingChanges: 7,
+    })
   })
 
   test('two machines stay two entries', async () => {

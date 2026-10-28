@@ -38,8 +38,6 @@ import { wipeCloudKey } from './cloud-key-wipe'
 import { deriveProjectRuntimeToken } from './project-runtime-token'
 import { getShogoCloudUrl } from './cloud-urls'
 import { resolveLocalApiPort } from './local-api-port'
-import { prisma } from './prisma'
-import { listCloudWorkspaces } from '../services/cloud-workspaces'
 
 // Re-export the worker's symbols so existing callers keep working.
 export const TUNNEL_PROTOCOL_VERSION = _TUNNEL_PROTOCOL_VERSION
@@ -209,19 +207,18 @@ const desktopResolver: RuntimeResolver = {
 const PRIMARY_TUNNEL = 'primary'
 
 /**
- * One tunnel per cloud workspace the desktop holds a device key for.
+ * One tunnel per **machine**, whichever workspaces it is signed into (SHO-241).
  *
- * A machine belongs to a *person*, but the cloud files its `instances` row under
- * the workspace its key was issued in — so a desktop signed into three
- * workspaces would only ever appear in one of them. Each stored device key gets
- * its own tunnel, and the machine registers in every workspace it is signed into.
- * Keyed by workspace id (`PRIMARY_TUNNEL` for the primary key until that id is
- * known).
+ * This used to be a map with one tunnel per stored device key, so a desktop
+ * signed into three workspaces opened three: three `instances` rows, three
+ * heartbeats, three sockets, and a `/machines` id that changed every few
+ * seconds — which is what told a live Mac it had stopped heartbeating
+ * (Russell: "every workspace shouldnt heartbeat"). A machine belongs to a
+ * person, and the cloud now files it once, under its owner.
+ *
+ * The other stored keys are still used for the workspace list and for
+ * `syncCloudWorkspaces`; they no longer buy a tunnel.
  */
-const activeTunnels = new Map<string, TunnelHandle>()
-const tunnelNames = new Map<string, string>()
-/** The device key each fan-out tunnel was opened with, so a rotated key can restart it. */
-const tunnelKeys = new Map<string, string>()
 let activeTunnel: TunnelHandle | null = null
 
 /**
@@ -414,58 +411,7 @@ function createTunnel(apiKey: string): TunnelHandle {
 function getOrCreateTunnel(): TunnelHandle {
   if (activeTunnel) return activeTunnel
   activeTunnel = createTunnel(process.env.SHOGO_API_KEY ?? '')
-  activeTunnels.set(PRIMARY_TUNNEL, activeTunnel)
-  tunnelNames.set(PRIMARY_TUNNEL, process.env.SHOGO_INSTANCE_NAME || osHostname())
-  tunnelKeys.set(PRIMARY_TUNNEL, process.env.SHOGO_API_KEY ?? '')
   return activeTunnel
-}
-
-/** The workspace the primary key was issued in, from `SHOGO_KEY_INFO`. */
-async function primaryWorkspaceId(): Promise<string | null> {
-  try {
-    const row = await (prisma as any).localConfig?.findUnique?.({ where: { key: 'SHOGO_KEY_INFO' } })
-    const id = row?.value ? JSON.parse(row.value)?.workspace?.id : null
-    return typeof id === 'string' && id ? id : null
-  } catch {
-    return null
-  }
-}
-
-/**
- * Start a tunnel for every other workspace the desktop is signed into.
- *
- * `SHOGO_CLOUD_WORKSPACES` holds one device key per workspace (written at
- * sign-in and refreshed by `syncCloudWorkspaces`). A stored key identical to the
- * primary is skipped — that workspace's tunnel is already running, and two
- * tunnels with the same key would race for the same `(workspaceId, hostname)`
- * row. With `enabled: false` (a pasted key, a headless worker) exactly one tunnel
- * runs, which is the pre-fan-out behaviour.
- */
-async function startWorkspaceTunnels(): Promise<void> {
-  try {
-    const { workspaces, enabled } = await listCloudWorkspaces()
-    if (!enabled || !workspaces.length) return
-    const primaryKey = process.env.SHOGO_API_KEY ?? ''
-    const primaryId = await primaryWorkspaceId()
-    for (const workspace of workspaces) {
-      const key = workspace.key
-      if (!key || key === primaryKey) continue
-      if (primaryId && workspace.id === primaryId) continue
-      if (activeTunnels.has(workspace.id)) continue
-      try {
-        const tunnel = createTunnel(key)
-        tunnel.start()
-        activeTunnels.set(workspace.id, tunnel)
-        tunnelNames.set(workspace.id, workspace.name || process.env.SHOGO_INSTANCE_NAME || osHostname())
-        tunnelKeys.set(workspace.id, key)
-        console.log(`[InstanceTunnel] Also registered in "${workspace.name}"`)
-      } catch (err: any) {
-        console.warn(`[InstanceTunnel] tunnel for ${workspace.id} failed to start: ${err?.message ?? err}`)
-      }
-    }
-  } catch (err: any) {
-    console.warn(`[InstanceTunnel] per-workspace tunnels unavailable: ${err?.message ?? err}`)
-  }
 }
 
 // ─── Public API (preserved verbatim from the pre-refactor module) ───────────
@@ -481,112 +427,60 @@ export function startInstanceTunnel(): void {
   stopQuietly()
   console.log('[InstanceTunnel] Starting heartbeat polling to Shogo Cloud...')
   getOrCreateTunnel().start()
-  // Fan out to the user's other workspaces; the read is async, the primary
-  // tunnel is already up by then.
-  void startWorkspaceTunnels()
-}
-
-/**
- * Bring the fan-out in line with the stored key set.
- *
- * `syncCloudWorkspaces()` runs every ten minutes and can both gain a workspace
- * (one joined from another device) and lose one (left, or revoked). Without this
- * a mid-session join would only register at the next app start, and a left
- * workspace would keep a heartbeat flowing until then. The primary tunnel is
- * never touched: its key is the one this process was launched with.
- */
-export async function syncWorkspaceTunnels(): Promise<void> {
-  if (!process.env.SHOGO_API_KEY) return
-  let stored: Awaited<ReturnType<typeof listCloudWorkspaces>>
-  try {
-    stored = await listCloudWorkspaces()
-  } catch {
-    return
-  }
-  const keep = new Set<string>([PRIMARY_TUNNEL])
-  if (stored.enabled) {
-    for (const workspace of stored.workspaces) keep.add(workspace.id)
-  }
-
-  // A workspace that was left, or whose key was rotated: stop it here so the
-  // start below can re-open it with the current key.
-  for (const [id, tunnel] of [...activeTunnels]) {
-    if (id === PRIMARY_TUNNEL) continue
-    const workspace = stored.workspaces.find((w) => w.id === id)
-    const stale = !keep.has(id) || (workspace && tunnelKeys.get(id) !== workspace.key)
-    if (!stale) continue
-    try {
-      tunnel.stop()
-    } catch {
-      /* nothing to do */
-    }
-    activeTunnels.delete(id)
-    tunnelKeys.delete(id)
-    const name = tunnelNames.get(id)
-    tunnelNames.delete(id)
-    if (name) console.log(`[InstanceTunnel] Unregistered from "${name}"`)
-  }
-
-  await startWorkspaceTunnels()
 }
 
 export function stopInstanceTunnel(): void {
-  if (!activeTunnels.size && !activeTunnel) return
-  for (const tunnel of activeTunnels.values()) {
-    try { tunnel.stop() } catch { /* nothing to do */ }
-  }
-  activeTunnels.clear()
-  tunnelNames.clear()
-  tunnelKeys.clear()
+  if (!activeTunnel) return
+  try { activeTunnel.stop() } catch { /* nothing to do */ }
   activeTunnel = null
   console.log('[InstanceTunnel] Tunnel stopped')
 }
 
-/** Restart without logging a stop for tunnels that were never started. */
+/** Restart without logging a stop for a tunnel that was never started. */
 function stopQuietly(): void {
-  for (const tunnel of activeTunnels.values()) {
-    try { tunnel.stop() } catch { /* nothing to do */ }
-  }
-  activeTunnels.clear()
-  tunnelNames.clear()
-  tunnelKeys.clear()
+  if (!activeTunnel) return
+  try { activeTunnel.stop() } catch { /* nothing to do */ }
   activeTunnel = null
 }
 
 /**
- * The cloud `instances` row id for this machine, from the primary tunnel's last
+ * The cloud `instances` row id for this machine, from the tunnel's last
  * heartbeat. Null until the cloud has answered one — the machine copy waits for
  * it rather than inventing an identity (SHO-185).
+ *
+ * One tunnel means one id: the sync pusher, the relay and the heartbeat all
+ * speak for the same row (SHO-241).
  */
 export function getInstanceId(): string | null {
-  if (activeTunnel) return activeTunnel.instanceId
-  return activeTunnels.values().next().value?.instanceId ?? null
+  return activeTunnel?.instanceId ?? null
 }
 
 export function isTunnelConnected(): boolean {
-  if (activeTunnel?.isConnected()) return true
-  for (const tunnel of activeTunnels.values()) {
-    if (tunnel.isConnected()) return true
-  }
-  return false
+  return activeTunnel?.isConnected() ?? false
 }
 
 /**
- * Which cloud workspaces this machine is currently registered in, for
- * Settings → Cloud Registration. `connecting` means the tunnel is up or
- * starting but has not completed its first heartbeat yet — never report
- * `connected` before the cloud has acknowledged one.
+ * The cloud workspace this machine is registered in, for Settings → Cloud
+ * Registration. `connecting` means the tunnel is up or starting but has not
+ * completed its first heartbeat yet — never report `connected` before the cloud
+ * has acknowledged one.
+ *
+ * Still a list so the client that read the old fan-out does not have to change
+ * shape; it holds one entry, because a machine registers once (SHO-241).
  */
 export function getInstanceTunnelStatus(): Array<{
   id: string
   name: string
   state: 'connected' | 'connecting'
 }> {
-  return [...activeTunnels.entries()].map(([id, tunnel]) => ({
-    id,
-    name: tunnelNames.get(id) ?? id,
-    state: tunnel.isConnected() ? 'connected' : 'connecting',
-  }))
+  if (!activeTunnel) return []
+  return [
+    {
+      id: PRIMARY_TUNNEL,
+      name: process.env.SHOGO_INSTANCE_NAME || osHostname(),
+      state: activeTunnel.isConnected() ? 'connected' : 'connecting',
+    },
+  ]
 }
 
 // ─── Test surface ───────────────────────────────────────────────────────────

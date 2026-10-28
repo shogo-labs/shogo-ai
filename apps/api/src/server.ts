@@ -186,6 +186,7 @@ import {
 } from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
 import { machineWorkspaceWriteGuard } from './lib/machine-workspace'
+import { machineCopyPendingGuard } from './lib/machine-copy-pending'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
 
@@ -853,6 +854,12 @@ app.use('/api/*', homeRegionWriteProxy)
 // `409 machine_workspace_write_via_tunnel` instead of silently diverging from
 // the machine the user is looking at (SHO-185).
 app.use('/api/*', machineWorkspaceWriteGuard())
+
+// A read of a machine workspace the cloud has no copy of yet answered "No access
+// to this workspace", which the client could not act on. It now answers
+// `409 machine_copy_pending` and the client retries through the relay (SHO-241).
+// Registered as a post-response hook, so a request that succeeds pays nothing.
+app.use('/api/*', machineCopyPendingGuard())
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.

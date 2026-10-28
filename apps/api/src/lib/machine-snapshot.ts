@@ -39,6 +39,18 @@ export interface MachineSnapshot {
   }
   workspaces: MachineWorkspaceSummary[]
   activity: MachineActivity
+  /**
+   * How the cloud copy is doing, so the cloud can show "Last synced 4m ago" and
+   * the reason it is not moving without asking the desktop again (SHO-241).
+   * Null when this machine was never paired (there is nothing to sync).
+   */
+  sync?: {
+    running: boolean
+    copyReady: boolean
+    lastAckedAt: string | null
+    lastError: string | null
+    pendingChanges: number
+  } | null
   generatedAt: string
 }
 
@@ -165,6 +177,28 @@ export async function collectMachineSnapshot(): Promise<MachineSnapshot> {
 
   const overall = latest(...summaries.map((ws) => ws.lastActivityAt))
 
+  // Imported lazily: `local-sync` pulls in the tunnel module, which imports this
+  // one for the heartbeat payload. The cycle is harmless at call time and fatal
+  // at module-evaluation time.
+  let sync: MachineSnapshot['sync'] = null
+  try {
+    const { readMachineSyncStatus } = await import('./machine-sync/local-sync')
+    const status = await readMachineSyncStatus()
+    sync = status
+      ? {
+          running: status.running,
+          copyReady: status.copyReady,
+          lastAckedAt: status.lastAckedAt,
+          lastError: status.lastError,
+          pendingChanges: status.pendingChanges,
+        }
+      : null
+  } catch {
+    // No pusher on this build (or an unpaired machine): the snapshot is still
+    // worth sending.
+    sync = null
+  }
+
   return {
     machine: {
       id: deviceId,
@@ -180,6 +214,7 @@ export async function collectMachineSnapshot(): Promise<MachineSnapshot> {
       chats: chats ?? 0,
       lastActivityAt: overall ? overall.toISOString() : null,
     },
+    sync,
     generatedAt: new Date().toISOString(),
   }
 }
