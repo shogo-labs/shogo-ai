@@ -187,6 +187,14 @@ describe('AC1: provider google renders through Lyria', () => {
     expect(googleCalls()[0].body.model).toBe('lyria-3.5')
     expect(res.headers.get('x-music-model')).toBe('lyria-3.5')
     expect(usageRows[0].actionMetadata.model).toBe('lyria-3.5')
+    // A full song's length is prompt-controlled, so the row says the seconds
+    // are an assumption rather than passing them off as measured.
+    expect(usageRows[0].actionMetadata.unitsEstimated).toBe(true)
+  })
+
+  test('a fixed-length model is metered as measured, not estimated', async () => {
+    await postMusic({ prompt: 'a sting', provider: 'google' })
+    expect(usageRows[0].actionMetadata.unitsEstimated).toBeUndefined()
   })
 
   test('lyrics and instrumental reach Lyria through the prompt, as the API requires', async () => {
@@ -278,9 +286,11 @@ describe('AC4: provider fields are validated, never silently dropped', () => {
     ['an unknown Lyria model', { prompt: 'x', provider: 'google', model: 'lyria-9' }, "Unknown music model 'lyria-9'"],
     ['compositionPlan with google', { compositionPlan: { sections: [] }, provider: 'google' }, 'ElevenLabs-only'],
     ['modelId with google', { prompt: 'x', provider: 'google', modelId: 'music_v1' }, 'ElevenLabs-only'],
+    ['musicLengthMs with google', { prompt: 'x', provider: 'google', musicLengthMs: 120000 }, 'ElevenLabs-only'],
     ['outputFormat with google', { prompt: 'x', provider: 'google', outputFormat: 'mp3_44100' }, 'ElevenLabs-only'],
     ['lyrics without google', { prompt: 'x', lyrics: '[Verse] hi' }, 'Google-only'],
     ['lyrics and instrumental together', { prompt: 'x', provider: 'google', lyrics: 'a', instrumental: true }, 'cannot both be set'],
+    ['a non-string Lyria model', { prompt: 'x', provider: 'google', model: 42 }, 'non-empty string'],
   ]
 
   for (const [name, body, message] of cases) {

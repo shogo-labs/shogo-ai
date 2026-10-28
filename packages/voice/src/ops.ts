@@ -305,6 +305,7 @@ export const VOICE_OPS = [
       const elevenLabsOnly: ReadonlyArray<[string, string]> = [
         ['compositionPlan', 'Lyria reads style and structure from `prompt`'],
         ['modelId', 'use `model` (`lyria-3-clip` or `lyria-3.5`)'],
+        ['musicLengthMs', 'Lyria takes the length from the model — use `model: lyria-3.5` for a full song'],
         ['forceInstrumental', 'use `instrumental`'],
         ['outputFormat', 'Lyria always returns mp3'],
       ]
@@ -313,6 +314,15 @@ export const VOICE_OPS = [
       }
       if (fields.lyrics !== undefined && fields.instrumental === true) {
         return '`lyrics` and `instrumental` cannot both be set'
+      }
+      if (fields.model !== undefined && (typeof fields.model !== 'string' || !fields.model.trim())) {
+        return '`model` must be a non-empty string'
+      }
+      if (fields.lyrics !== undefined && typeof fields.lyrics !== 'string') {
+        return '`lyrics` must be a string'
+      }
+      if (fields.instrumental !== undefined && typeof fields.instrumental !== 'boolean') {
+        return '`instrumental` must be a boolean'
       }
       return null
     },

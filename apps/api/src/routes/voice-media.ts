@@ -382,12 +382,12 @@ async function executeVoiceOp(
 
   const errorLabel = op.errorLabel ?? `${op.id} failed`
   const recordUsage = deps.recordUsage ?? defaultRecordUsage
-  const units =
-    provider === 'google' && googleModel
-      ? lyriaUnits(op, callFields, googleModel)
-      : op.cost
-        ? measureUnits(op, callFields, invocation.form)
-        : 0
+  const lyriaMeter = provider === 'google' && googleModel ? lyriaUnits(op, googleModel) : undefined
+  const units = lyriaMeter
+    ? lyriaMeter.units
+    : op.cost
+      ? measureUnits(op, callFields, invocation.form)
+      : 0
 
   try {
     let response: Response
@@ -501,7 +501,13 @@ async function executeVoiceOp(
         op,
         units,
         ...(provider === 'google' && googleModel
-          ? { metadata: { provider: 'google', model: googleModel.id } }
+          ? {
+              metadata: {
+                provider: 'google',
+                model: googleModel.id,
+                ...(lyriaMeter?.estimated ? { unitsEstimated: true } : {}),
+              },
+            }
           : {}),
       })
     }
@@ -553,6 +559,8 @@ function measureUnits(
 
 /** The cheapest Lyria track; a full song is an explicit choice. */
 const DEFAULT_LYRIA_MODEL = 'lyria-3-clip'
+/** Metered seconds for a Lyria model whose track length the prompt controls. */
+const ASSUMED_LYRIA_SECONDS = 30
 const MUSIC_MODEL_IDS: readonly string[] = Object.keys(MUSIC_MODEL_CATALOG)
 
 /**
@@ -582,16 +590,19 @@ function resolveMusicRequest(
 }
 
 /**
- * Lyria bills per track, not per requested length, so the metered seconds are
- * the model's own duration — a clip is fixed, a full song is whatever the
- * prompt produced.
+ * Lyria bills per track, not per requested length, so the metered seconds come
+ * from the model itself — a clip is a fixed 30 s, a full song is whatever the
+ * prompt produced. That is why `musicLengthMs` is rejected for this provider:
+ * metering a length Lyria never received would be a usage row lying about what
+ * was rendered. A model with no fixed duration meters an assumed track and says
+ * so, rather than passing the assumption off as measured.
  */
-function lyriaUnits(op: VoiceOp, fields: Record<string, unknown>, entry: MusicModelEntry): number {
-  if (!op.cost) return 0
-  if (op.cost.unit !== 'second') return 1
-  const seconds =
-    typeof fields.musicLengthMs === 'number' ? fields.musicLengthMs / 1000 : entry.durationSeconds
-  return Math.max(1, Math.round(seconds ?? 30))
+function lyriaUnits(op: VoiceOp, entry: MusicModelEntry): { units: number; estimated: boolean } {
+  if (!op.cost) return { units: 0, estimated: false }
+  if (op.cost.unit !== 'second') return { units: 1, estimated: false }
+  return entry.durationSeconds
+    ? { units: Math.max(1, Math.round(entry.durationSeconds)), estimated: false }
+    : { units: ASSUMED_LYRIA_SECONDS, estimated: true }
 }
 
 /**
@@ -866,9 +877,9 @@ export async function handleVoiceMusic(
       : {}),
     ...(typeof body.outputFormat === 'string' ? { outputFormat: body.outputFormat } : {}),
     ...(body.provider !== undefined ? { provider: body.provider } : {}),
-    ...(typeof body.model === 'string' ? { model: body.model } : {}),
-    ...(typeof body.lyrics === 'string' ? { lyrics: body.lyrics } : {}),
-    ...(typeof body.instrumental === 'boolean' ? { instrumental: body.instrumental } : {}),
+    ...(body.model !== undefined ? { model: body.model } : {}),
+    ...(body.lyrics !== undefined ? { lyrics: body.lyrics } : {}),
+    ...(body.instrumental !== undefined ? { instrumental: body.instrumental } : {}),
   })
   if (!parsed.ok) {
     return rejectVoiceOp(c, parsed)

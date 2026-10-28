@@ -239,6 +239,10 @@ describe('parseVoiceOpJsonBody', () => {
       ok: false,
       status: 400,
     })
+    // A length Lyria never receives must not be accepted (and then metered).
+    expect(
+      parseVoiceOpJsonBody(op, { prompt: 'a', provider: 'google', musicLengthMs: 120_000 }),
+    ).toMatchObject({ ok: false, status: 400 })
   })
 })
 
