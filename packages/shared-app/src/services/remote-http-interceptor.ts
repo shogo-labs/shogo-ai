@@ -116,6 +116,8 @@ const MACHINE_WORKSPACE_CLOUD_ONLY: RouteEntry[] = [
   // fall-through someone might "fix" later.
   { pattern: /^\/api\/billing(\/|$)/,       target: 'cloud' }, // no billing account on a machine
   { pattern: /^\/api\/subscriptions(\/|$)/, target: 'cloud' }, // same account, same reason
+  // The models a picker offers are the cloud plan's: the machine runs on it.
+  { pattern: /^\/api\/workspaces\/[^/]+\/visible-models(\/|$)/, target: 'cloud' },
   { pattern: /^\/api\/members(\/|$)/,       target: 'cloud' }, // cloud membership, not the machine's
   { pattern: /^\/api\/invitations(\/|$)/,   target: 'cloud' }, // you join cloud workspaces, not machines
   { pattern: /^\/api\/marketplace(\/|$)/,   target: 'cloud' }, // listings live in the cloud
@@ -539,7 +541,26 @@ export function createRemoteAwareHttpClient(
         }
 
         if (!shouldRoute) {
-          const cloudResult = (original as Function).apply(target, args)
+          // A read of the machine's rows is answered by the cloud copy, which
+          // keeps the desktop's ids: it has to name the machine's workspace,
+          // exactly as the relay would. Under the cloud workspace's id the copy
+          // answers for the cloud workspace — its projects, chats and activity
+          // shown under the machine's name.
+          const readsMachineRows =
+            !!config.machineWorkspaceId &&
+            isRead &&
+            shouldRouteToRemote(originalPath, {
+              machineWorkspaceId: config.machineWorkspaceId,
+              isRead: false,
+            })
+          const cloudArgs = readsMachineRows ? [...args] : args
+          if (readsMachineRows) {
+            cloudArgs[0] = rewriteMachineWorkspacePath(
+              rewriteMachineWorkspaceParam(originalPath, config.machineWorkspaceId!),
+              config.machineWorkspaceId!,
+            )
+          }
+          const cloudResult = (original as Function).apply(target, cloudArgs)
           // A read of a machine workspace the cloud has no copy of comes back
           // `409 machine_copy_pending`. Read it from the machine instead of
           // showing "No access to this workspace" (SHO-241). One retry, and only

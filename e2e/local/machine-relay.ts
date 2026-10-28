@@ -87,9 +87,17 @@ export async function installCloudRelay(
     log: RelayCall[]
     copies?: CopyCall[]
     power?: MachinePower
+    /**
+     * Who the cloud says is calling, stamped on every relayed request. In
+     * production that is the owner's *cloud* account, which the machine's
+     * database has never heard of; defaults to the local user for the specs
+     * written before that difference was modelled.
+     */
+    relayUserId?: string
   },
 ): Promise<void> {
   const { machineWorkspaceId, userId, log, copies, power } = opts
+  const relayUserId = opts.relayUserId ?? userId
   const isOnline = () => power?.online ?? true
   const machineWorkspaces = [{ id: MACHINE_WORKSPACE_ID, name: MACHINE_WORKSPACE_NAME, kind: "team" }]
 
@@ -204,7 +212,7 @@ export async function installCloudRelay(
     const upstream = await fetch(`${LOCAL_API_BASE}${machinePath}${machineQuery}`, {
       method,
       headers: {
-        "x-tunnel-auth-user-id": userId,
+        "x-tunnel-auth-user-id": relayUserId,
         "content-type": route.request().headerValue("content-type") ?? "application/json",
       },
       body: ["GET", "HEAD"].includes(method) ? undefined : route.request().postDataBuffer(),

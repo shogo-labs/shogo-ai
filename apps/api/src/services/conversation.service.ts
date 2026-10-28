@@ -67,6 +67,14 @@ export async function getWorkspaceRole(workspaceId: string, userId: string): Pro
   return (member?.role as WorkspaceRole) ?? null
 }
 
+async function isMachineCopy(workspaceId: string): Promise<boolean> {
+  const workspace = await db.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { machineInstanceId: true },
+  })
+  return !!workspace?.machineInstanceId
+}
+
 export interface ConversationAccess {
   conversation: any
   role: WorkspaceRole
@@ -493,7 +501,11 @@ export async function listConversationsForUser(
     !conversations.some((c: any) => c.kind === 'activity') ||
     !conversations.some((c: any) => c.dmKey === `u:${userId}`) ||
     !memberships.some((m: any) => m.conversationId === general.id)
-  if (needsSetup) {
+  // A machine copy (SHO-185) mirrors a desktop's rows under the desktop's ids;
+  // its channels are whatever the desktop has. Seeding them here would mint
+  // cloud-only #general/#activity rows the desktop never wrote, and a copy's
+  // reader (the owner's cloud account) is not one of its members anyway.
+  if (needsSetup && !(await isMachineCopy(workspaceId))) {
     const [createdGeneral] = await ensureDefaultConversations(workspaceId)
     // Gives every existing member their note-to-self, so the workspace creator
     // and older accounts need no separate backfill.

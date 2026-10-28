@@ -13,7 +13,7 @@ import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, Tex
 import { useFocusEffect, useRouter } from 'expo-router'
 import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
 import { useInbox, useSentMessages } from '../../hooks/useChatPrefs'
 import { useOpenQuestionCount } from '../../hooks/useOpenQuestions'
@@ -55,7 +55,7 @@ export interface ActivityFeedProps {
 
 export function ActivityFeed({ compact = false }: ActivityFeedProps) {
   const router = useRouter()
-  const workspace = useActiveWorkspace()
+  const workspace = useWorkspaceInView()
   const workspaceId = workspace?.id ?? null
   const focused = useFocused()
   const [filter, setFilter] = useState<ActivityFilter>('all')

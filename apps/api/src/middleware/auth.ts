@@ -179,6 +179,36 @@ async function runtimeTokenAuth(
   }
 }
 
+let tunnelPrincipalCache: { cloudUserId: string; userId: string; at: number } | null = null
+const TUNNEL_PRINCIPAL_TTL_MS = 60_000
+
+/**
+ * On the desktop, who a tunnelled request acts as.
+ *
+ * The cloud stamps its own account id: the machine's owner, the only account
+ * either relay admits (`/machines/:id/w/*`, `/instances/:id/p/*`). The desktop
+ * knows that person as its single local user under a different id, so a
+ * membership check (team chat's channels, DMs, agent DMs) refused every write
+ * from the cloud with "No access to this workspace". An id the desktop has a
+ * user for is kept as is.
+ */
+async function tunnelPrincipalId(cloudUserId: string): Promise<string> {
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') return cloudUserId
+  const cached = tunnelPrincipalCache
+  if (cached?.cloudUserId === cloudUserId && Date.now() - cached.at < TUNNEL_PRINCIPAL_TTL_MS) return cached.userId
+  try {
+    const known = await prisma.user.findUnique({ where: { id: cloudUserId }, select: { id: true } })
+    const owner = known
+      ? null
+      : await prisma.user.findFirst({ orderBy: { createdAt: 'asc' }, select: { id: true } })
+    const userId = known?.id ?? owner?.id ?? cloudUserId
+    tunnelPrincipalCache = { cloudUserId, userId, at: Date.now() }
+    return userId
+  } catch {
+    return cloudUserId
+  }
+}
+
 /**
  * Auth middleware that extracts session from Better Auth.
  * Sets c.get("auth") with user info for downstream handlers.
@@ -279,7 +309,7 @@ export async function authMiddleware(c: Context, next: Next) {
   const tunnelUserId = c.req.header("x-tunnel-auth-user-id")
   if (tunnelUserId) {
     c.set("auth", {
-      userId: tunnelUserId,
+      userId: await tunnelPrincipalId(tunnelUserId),
       email: c.req.header("x-tunnel-auth-email") || undefined,
       name: c.req.header("x-tunnel-auth-name") || undefined,
       isAuthenticated: true,

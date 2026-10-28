@@ -12,12 +12,11 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState } from 'react-native'
-import { useIsRemoteSource } from '@shogo/shared-app/domain'
 import { useDomainHttp, useNotificationCollection, useProjectCollection } from '../contexts/domain'
 import { api, type ActiveChatTurn, type AgentTask } from '../lib/api'
 import { agentTaskEvents } from '../lib/agent-task-events'
 import { notificationEvents } from '../lib/notification-events'
-import { useActiveWorkspace } from './useActiveWorkspace'
+import { useWorkspaceDataScope, useWorkspaceInView } from './useWorkspaceInView'
 
 const PROJECT_REFRESH_INTERVAL_MS = 30_000
 const POLL_MS = 5_000
@@ -77,10 +76,10 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
   // The domain client, so the task list and the workspace's activity follow the
   // workspace in view — including a paired computer's own workspace (SHO-108).
   const http = useDomainHttp()
-  const workspace = useActiveWorkspace()
+  const workspace = useWorkspaceInView()
   const notifications = useNotificationCollection()
   const projects = useProjectCollection()
-  const isRemoteSource = useIsRemoteSource()
+  const { everyWorkspace } = useWorkspaceDataScope()
   const [tasks, setTasks] = useState<AgentTask[]>([])
   const [activeChats, setActiveChats] = useState<ActiveChatTurn[]>([])
   const [loading, setLoading] = useState(true)
@@ -96,8 +95,8 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
       const request = (async () => {
         try {
           setError(null)
-          const projectFilter = !isRemoteSource && workspace?.id ? { workspaceId: workspace.id } : undefined
-          const projectScope = isRemoteSource ? 'remote' : workspace?.id || 'local'
+          const projectFilter = !everyWorkspace && workspace?.id ? { workspaceId: workspace.id } : undefined
+          const projectScope = everyWorkspace ? 'remote' : workspace?.id || 'local'
           const shouldLoadProjects =
             !light &&
             (refreshProjects ||
@@ -121,7 +120,7 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
           ])
           // A paired computer's workspace is resolved client-side, so keep the
           // local filter for that case; the server already scoped the rest.
-          const scoped = isRemoteSource || !workspace?.id
+          const scoped = everyWorkspace || !workspace?.id
             ? next.filter((task: { workspaceId?: string | null }) => !workspace?.id || task.workspaceId === workspace.id)
             : next
           setTasks((prev) => (sameTasks(prev, scoped) ? prev : scoped))
@@ -140,7 +139,7 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
       void request.then(clear, clear)
       return request
     },
-    [http, isRemoteSource, light, notifications, projects, workspace?.id],
+    [http, everyWorkspace, light, notifications, projects, workspace?.id],
   )
 
   useEffect(() => {
