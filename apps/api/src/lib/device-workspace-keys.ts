@@ -27,7 +27,9 @@ export interface DeviceInfo {
 async function memberships(prisma: PrismaClient, userId: string) {
   const members = await (prisma as any).member.findMany({
     where: { userId, workspaceId: { not: null }, projectId: null },
-    select: { workspace: { select: { id: true, name: true, slug: true, kind: true } } },
+    select: {
+      workspace: { select: { id: true, name: true, slug: true, kind: true, machineInstanceId: true } },
+    },
     orderBy: { createdAt: 'asc' },
   })
   const all = new Set<string>()
@@ -35,6 +37,11 @@ async function memberships(prisma: PrismaClient, userId: string) {
   for (const m of members) {
     if (!m.workspace || all.has(m.workspace.id)) continue
     all.add(m.workspace.id)
+    // A machine copy (SHO-185) is a read-only mirror of a desktop's own
+    // workspace, not a cloud workspace a device can be a client of. Handing it
+    // out made the desktop relay its own local workspace's writes to the cloud,
+    // which refuses them as `machine_workspace_write_via_tunnel`.
+    if (m.workspace.machineInstanceId) continue
     const kind = m.workspace.kind === 'personal' ? 'personal' : 'team'
     opened.push({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug ?? null, kind })
   }

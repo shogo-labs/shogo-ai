@@ -31,6 +31,10 @@ const workspaces = new Map([
   ['ws-acme', { id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' }],
   ['ws-beta', { id: 'ws-beta', name: 'Beta', slug: 'beta', kind: 'team' }],
   ['ws-new', { id: 'ws-new', name: 'New Team', slug: 'new', kind: 'team' }],
+  [
+    'ws-machine-copy',
+    { id: 'ws-machine-copy', name: 'Local Personal', slug: 'personal-m-inst1234', kind: 'personal', machineInstanceId: 'inst-1' },
+  ],
 ])
 let n = 0
 
@@ -177,6 +181,21 @@ describe('POST /api/cli/device-keys/sync', () => {
     const primaries = [...keys.values()].filter((k) => k.workspaceId === 'ws-personal')
     expect(primaries).toHaveLength(1)
     expect(primaries[0]!.revokedAt).toBeNull()
+  })
+
+  it('never hands out a machine copy, and leaves a key already minted for one alone', async () => {
+    const poll = await signIn(true)
+    // The sync ingest makes the machine's owner a member of its copy.
+    members.push({ id: 'm5', userId: 'user-1', workspaceId: 'ws-machine-copy', createdAt: new Date('2026-05-01') })
+    keys.set('copy-key', {
+      id: 'copy-key', keyHash: 'h', workspaceId: 'ws-machine-copy', userId: 'user-1', kind: 'device',
+      deviceId: device.deviceId, deviceName: null, devicePlatform: null, deviceAppVersion: null, revokedAt: null,
+    })
+
+    const body = await (await sync(poll.key, ['ws-personal', 'ws-acme', 'ws-beta', 'ws-machine-copy'])).json()
+    expect(body.workspaces.map((w: any) => w.workspace.id)).toEqual(['ws-personal', 'ws-acme', 'ws-beta'])
+    expect(body.removed).toEqual([])
+    expect(keys.get('copy-key')!.revokedAt).toBeNull()
   })
 
   it('re-mints a key the desktop claims but the cloud revoked', async () => {
