@@ -22,14 +22,33 @@ const store = {
 let idCounter = 0
 const nextId = (prefix: string) => `${prefix}_${++idCounter}`
 
-function hydratePost(post: Row): Row {
+/**
+ * Prisma returns only the columns a `select` names. The double has to do the
+ * same: a query that forgets `zernioAccountId` must fail here too, or a mocked
+ * row carrying the whole account hides a reconcile that never runs.
+ */
+function projectAccount(account: Row | undefined, select?: Row): Row | null {
+  if (!account) return null
+  if (!select) return account
+  const picked: Row = {}
+  for (const [key, wanted] of Object.entries(select)) {
+    if (wanted) picked[key] = account[key]
+  }
+  return picked
+}
+
+function hydratePost(post: Row, query?: Row): Row {
+  const accountSelect = query?.include?.targets?.include?.account?.select
   return {
     ...post,
     targets: store.targets
       .filter((target) => target.postId === post.id)
       .map((target) => ({
         ...target,
-        account: store.accounts.find((account) => account.id === target.accountId) ?? null,
+        account: projectAccount(
+          store.accounts.find((account) => account.id === target.accountId),
+          accountSelect,
+        ),
       })),
   }
 }
@@ -87,14 +106,16 @@ const dbMock = {
   },
   socialPost: {
     findUnique: async ({ where }: any) => store.posts.find((post) => matches(post, where)) ?? null,
-    findFirst: async ({ where }: any) => {
-      const post = store.posts.find((row) => matches(row, where))
-      return post ? hydratePost(post) : null
+    findFirst: async (query: any) => {
+      const post = store.posts.find((row) => matches(row, query.where))
+      return post ? hydratePost(post, query) : null
     },
-    findMany: async ({ where }: any) =>
+    findMany: async (query: any) =>
       store.posts
-        .filter((post) => (Array.isArray(where?.OR) ? matchesCalendar(post, where) : matches(post, where)))
-        .map(hydratePost),
+        .filter((post) =>
+          Array.isArray(query.where?.OR) ? matchesCalendar(post, query.where) : matches(post, query.where),
+        )
+        .map((post) => hydratePost(post, query)),
     create: async ({ data }: any) => {
       const { targets, ...rest } = data
       const post = {
