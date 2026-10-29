@@ -10,9 +10,9 @@
  * none → `failed`.
  */
 
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { prisma } from '../../lib/prisma'
-import { SocialError, getSocialClient } from './client'
+import { CREATE_POST_TIMEOUT_MS, SocialError, getSocialClient } from './client'
 import { ensureProfile } from './profiles.service'
 import { zernioId } from './provider-ids'
 import { assertSocialBudget, meterXPost, projectedPublishRawUsd } from './usage.service'
@@ -27,7 +27,34 @@ export const POST_STATUSES = [
   'published',
   'partial',
   'failed',
+  'cancelled',
 ] as const
+
+/**
+ * How long a retry of the same post returns the first one instead of publishing
+ * again. Zernio keys its own duplicate protection on the media URLs, and a retry
+ * re-uploads them, so this window has to be ours.
+ */
+export const POST_DEDUPE_WINDOW_MS = 15 * 60_000
+
+/**
+ * A `publishing` post has to be older than this before we ask the provider
+ * whether it landed — a publish that is still in flight has no answer yet.
+ */
+const RECONCILE_GRACE_MS = 30_000
+
+/**
+ * Platforms where Zernio cannot take a published post down: the person has to
+ * remove it in the platform's own app.
+ * https://docs.zernio.com/posts/unpublish-post
+ */
+export const UNPUBLISH_UNSUPPORTED_PLATFORMS = ['instagram', 'tiktok', 'snapchat'] as const
+
+const PLATFORM_LABELS: Record<string, string> = {
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+  snapchat: 'Snapchat',
+}
 
 export type PostStatus = (typeof POST_STATUSES)[number]
 
@@ -52,6 +79,11 @@ export interface CreatePostInput {
   tags?: unknown
   /** TikTok settings applied to every TikTok target (`tiktokSettings`). */
   tiktok?: unknown
+  /**
+   * Publish even though the same content, accounts and media went out in the
+   * last 15 minutes. A deliberate repost has to say so.
+   */
+  allowDuplicate?: boolean
   createdByUserId?: string | null
 }
 
@@ -150,8 +182,9 @@ function parseScheduledFor(raw: unknown): Date | null {
 
 /**
  * Stable per (workspace, content, schedule, targets). Immediate posts bucket by
- * the minute so a double submit dedupes but two deliberate posts an hour apart
- * do not collide.
+ * the minute, so the row a double submit would create collides on the unique
+ * key; the 15-minute retry window is `findRecentDuplicate`, because a bucket
+ * boundary must not let a retry through.
  */
 export function postIdempotencyKey(
   workspaceId: string,
@@ -221,6 +254,50 @@ function requireMedia(
   )
 }
 
+/** Same media, in the same order — a different reel is a different post. */
+function sameMedia(left: unknown, right: unknown): boolean {
+  const a = Array.isArray(left) ? (left as string[]) : []
+  const b = Array.isArray(right) ? (right as string[]) : []
+  return a.length === b.length && a.every((url, index) => url === b[index])
+}
+
+/**
+ * The post this submission would duplicate: same content, same media and the
+ * same accounts, published (or publishing) within the last 15 minutes.
+ *
+ * Only a post that reached the provider counts. A `failed` one never went out,
+ * so retrying it is the right thing to do, and a `draft`/`scheduled` one is
+ * matched by the idempotency key instead.
+ */
+async function findRecentDuplicate(
+  workspaceId: string,
+  input: { content: string; accountIds: string[]; mediaUrls: string[] },
+): Promise<any | null> {
+  const wanted = [...input.accountIds].sort().join(',')
+  if (!wanted) return null
+  const recent = await db.socialPost.findMany({
+    where: {
+      workspaceId,
+      createdAt: { gte: new Date(Date.now() - POST_DEDUPE_WINDOW_MS) },
+      status: { in: ['publishing', 'queued', 'published'] },
+    },
+    include: { targets: { select: { accountId: true } } },
+    orderBy: { createdAt: 'desc' },
+    take: 20,
+  })
+  for (const candidate of recent ?? []) {
+    if (String(candidate.content ?? '').trim() !== input.content) continue
+    if (!sameMedia(candidate.mediaJson, input.mediaUrls)) continue
+    const accounts = (candidate.targets ?? [])
+      .map((target: any) => String(target.accountId))
+      .sort()
+      .join(',')
+    if (accounts !== wanted) continue
+    return getPost(workspaceId, candidate.id)
+  }
+  return null
+}
+
 export async function createPost(workspaceId: string, workspaceName: string, input: CreatePostInput) {
   const content = typeof input.content === 'string' ? input.content.trim() : ''
   const mediaUrls = stringList(input.mediaUrls, 'mediaUrls')
@@ -253,10 +330,21 @@ export async function createPost(workspaceId: string, workspaceName: string, inp
   }
 
   const status: PostStatus = isDraft ? 'draft' : publishNow ? 'publishing' : 'scheduled'
-  const idempotencyKey = postIdempotencyKey(workspaceId, { content, accountIds, scheduledFor, mediaUrls })
+  const bucketKey = postIdempotencyKey(workspaceId, { content, accountIds, scheduledFor, mediaUrls })
+  // A deliberate repost of the same content cannot reuse the bucket key: the
+  // column is unique and it would collide with the post it means to repeat.
+  const idempotencyKey = input.allowDuplicate ? `${bucketKey}-${randomUUID()}` : bucketKey
 
-  const existing = await db.socialPost.findUnique({ where: { idempotencyKey } })
-  if (existing) return getPost(workspaceId, existing.id)
+  if (!input.allowDuplicate) {
+    const existing = await db.socialPost.findUnique({ where: { idempotencyKey } })
+    if (existing) return { ...(await getPost(workspaceId, existing.id)), deduped: true }
+
+    // The minute bucket above misses a retry that lands in the next one, which
+    // is exactly how the CON-19 duplicates happened: the publish timed out, the
+    // retry carried a new key and every account got a second copy.
+    const duplicate = await findRecentDuplicate(workspaceId, { content, accountIds, mediaUrls })
+    if (duplicate) return { ...duplicate, deduped: true }
+  }
 
   const post = await db.socialPost.create({
     data: {
@@ -303,10 +391,49 @@ export async function createPost(workspaceId: string, workspaceName: string, inp
   try {
     await dispatchPost(workspaceId, workspaceName, post.id, { publishNow, platformSpecificData: platformData })
   } catch (err) {
+    // A publish that timed out may already be live — Zernio accepted it and we
+    // simply stopped waiting. Failing the row and telling the caller to retry is
+    // how one reel became two, so the row stays `publishing` with an
+    // `unconfirmed` outcome and the next read reconciles it against Zernio.
+    if (err instanceof SocialError && (err.code === 'zernio_timeout' || err.status === 504)) {
+      return { ...(await getPost(workspaceId, post.id)), outcome: 'unconfirmed' as const }
+    }
     await markPostFailed(post.id, err)
     throw err
   }
-  return getPost(workspaceId, post.id)
+  return { ...(await getPost(workspaceId, post.id)), outcome: 'confirmed' as const }
+}
+
+/**
+ * The Zernio account id a provider target names. Zernio answers with an id
+ * string on a create and with the populated account object on a list, so both
+ * have to read.
+ */
+function providerAccountId(target: any): string | null {
+  const raw = target?.accountId ?? target?.account_id
+  if (typeof raw === 'string') return raw || null
+  return zernioId(raw)
+}
+
+/**
+ * Where a provider target's live post can be found: Zernio names it
+ * `platformPostUrl` on a list and `url`/`postUrl` on a create.
+ */
+function providerPostUrl(target: any): string | null {
+  for (const key of ['platformPostUrl', 'url', 'postUrl']) {
+    const value = target?.[key]
+    if (typeof value === 'string' && value) return value
+  }
+  return null
+}
+
+/** A provider target's own status, in our per-target vocabulary. */
+function targetStatusFrom(remote: any): string {
+  const status = typeof remote?.status === 'string' ? remote.status : ''
+  if (status === 'failed' || remote?.error) return 'failed'
+  if (status === 'pending' || status === 'publishing') return 'publishing'
+  if (status === 'cancelled' || status === 'deleted') return 'cancelled'
+  return 'published'
 }
 
 function detailOf(err: unknown): { message: string; details: Record<string, unknown> } {
@@ -409,6 +536,9 @@ export async function dispatchPost(
     path: '/posts',
     body,
     idempotencyKey: post.idempotencyKey,
+    // The create carries the media and waits for the platform to accept it, so
+    // it gets the publish budget rather than the 15 s read default.
+    timeoutMs: CREATE_POST_TIMEOUT_MS,
   })
 
   const providerTargets: any[] = Array.isArray(result?.targets)
@@ -418,21 +548,21 @@ export async function dispatchPost(
       : []
   const byProviderAccount = new Map(
     providerTargets
-      .filter((t: any) => typeof (t?.accountId ?? t?.account_id) === 'string')
-      .map((t: any) => [t.accountId ?? t.account_id, t]),
+      .map((t: any) => [providerAccountId(t), t] as const)
+      .filter(([id]) => !!id),
   )
 
   for (const target of post.targets) {
     const remote = byProviderAccount.get(target.account.zernioAccountId)
     if (!remote) continue
-    const failed = remote.status === 'failed' || !!remote.error
+    const failed = targetStatusFrom(remote) === 'failed'
     await db.socialPostTarget.update({
       where: { id: target.id },
       data: {
-        status: failed ? 'failed' : remote.status === 'pending' ? 'publishing' : 'published',
+        status: targetStatusFrom(remote),
         platformPostId:
-          typeof remote.postId === 'string' ? remote.postId : zernioId(remote),
-        platformPostUrl: typeof remote.url === 'string' ? remote.url : typeof remote.postUrl === 'string' ? remote.postUrl : null,
+          typeof remote.postId === 'string' ? remote.postId : zernioId(remote, 'platformPost'),
+        platformPostUrl: providerPostUrl(remote),
         error: failed ? String(remote.error ?? remote.platformError ?? 'Publish failed') : null,
       },
     })
@@ -483,6 +613,112 @@ export async function dispatchPost(
   return getPost(workspaceId, post.id)
 }
 
+/**
+ * Ask the provider whether a `publishing` post actually landed.
+ *
+ * A publish that timed out is left at `publishing` with no provider id, and
+ * Zernio may well have accepted it. Rather than publish again, the next read
+ * finds the post at Zernio by its content and accounts and adopts the result —
+ * so the person sees what is really live instead of a stuck row.
+ */
+async function reconcilePublishingPost(workspaceId: string, post: any) {
+  if (!post || post.status !== 'publishing' || post.zernioPostId) return post
+  const createdAt = post.createdAt instanceof Date ? post.createdAt : new Date(post.createdAt)
+  if (!Number.isFinite(createdAt.getTime())) return post
+  if (Date.now() - createdAt.getTime() < RECONCILE_GRACE_MS) return post
+
+  const wanted = (post.targets ?? [])
+    .map((target: any) => target.account?.zernioAccountId)
+    .filter((id: unknown): id is string => typeof id === 'string' && !!id)
+    .sort()
+    .join(',')
+  if (!wanted) return post
+
+  let listed: any
+  try {
+    listed = await getSocialClient().request<any>({
+      workspaceId,
+      method: 'GET',
+      path: '/posts',
+      query: { limit: 50, sortBy: 'created-desc', fromDate: createdAt.toISOString() },
+    })
+  } catch {
+    // The row stays `publishing` and the next read tries again: a provider we
+    // cannot reach is not evidence that nothing was published.
+    return post
+  }
+
+  const candidates: any[] = Array.isArray(listed?.posts)
+    ? listed.posts
+    : Array.isArray(listed)
+      ? listed
+      : []
+  const content = String(post.content ?? '').trim()
+  const match = candidates.find((candidate: any) => {
+    if (String(candidate?.content ?? '').trim() !== content) return false
+    const platforms: any[] = Array.isArray(candidate?.platforms) ? candidate.platforms : []
+    const accounts = platforms
+      .map(providerAccountId)
+      .filter((id): id is string => !!id)
+      .sort()
+      .join(',')
+    return accounts === wanted
+  })
+  if (!match) return post
+
+  const platforms: any[] = Array.isArray(match.platforms) ? match.platforms : []
+  const byAccount = new Map(
+    platforms.map((entry: any) => [providerAccountId(entry), entry] as const).filter(([id]) => !!id),
+  )
+  for (const target of post.targets ?? []) {
+    const remote = byAccount.get(target.account?.zernioAccountId)
+    if (!remote) continue
+    const status = targetStatusFrom(remote)
+    await db.socialPostTarget.update({
+      where: { id: target.id },
+      data: {
+        status,
+        platformPostId:
+          typeof remote.postId === 'string' ? remote.postId : zernioId(remote, 'platformPost'),
+        platformPostUrl: providerPostUrl(remote),
+        error: status === 'failed' ? String(remote.error ?? remote.platformError ?? 'Publish failed') : null,
+      },
+    })
+  }
+
+  const targets = await db.socialPostTarget.findMany({
+    where: { postId: post.id },
+    select: { status: true },
+  })
+  const published = targets.filter((row: any) => row.status === 'published').length
+  const failed = targets.filter((row: any) => row.status === 'failed').length
+  const status: PostStatus =
+    published === 0 && failed > 0
+      ? 'failed'
+      : failed > 0
+        ? 'partial'
+        : published > 0
+          ? 'published'
+          : 'publishing'
+
+  await db.socialPost.update({
+    where: { id: post.id },
+    data: {
+      status,
+      zernioPostId: zernioId(match, 'post'),
+      publishedAt: status === 'published' || status === 'partial' ? new Date() : null,
+    },
+  })
+  // Re-read rather than return the bare row: every caller of `getPost` reads
+  // `post.targets`, and a reconcile that dropped them would be a silent shape
+  // change mid-response.
+  const reconciled = await db.socialPost.findFirst({
+    where: { id: post.id, workspaceId },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
+  })
+  return reconciled ?? post
+}
+
 export async function listPosts(
   workspaceId: string,
   opts: { status?: string | null; from?: Date | null; to?: Date | null; limit?: number } = {},
@@ -495,21 +731,24 @@ export async function listPosts(
     if (opts.to) range.lte = opts.to
     where.OR = [{ scheduledFor: range }, { publishedAt: range }]
   }
-  return db.socialPost.findMany({
+  const posts = await db.socialPost.findMany({
     where,
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true } } } } },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
     orderBy: [{ scheduledFor: 'asc' }, { createdAt: 'desc' }],
     take: Math.min(Math.max(opts.limit ?? 50, 1), 200),
   })
+  return Promise.all(
+    posts.map((post: any) => reconcilePublishingPost(workspaceId, post).catch(() => post)),
+  )
 }
 
 export async function getPost(workspaceId: string, postId: string) {
   const post = await db.socialPost.findFirst({
     where: { id: postId, workspaceId },
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true } } } } },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
   })
   if (!post) throw new SocialError(404, 'post_not_found', 'Post not found')
-  return post
+  return reconcilePublishingPost(workspaceId, post).catch(() => post)
 }
 
 /** Reschedule or edit an unpublished post. Published targets are immutable. */
@@ -567,25 +806,138 @@ export async function updatePost(
   return getPost(workspaceId, post.id)
 }
 
-/** Delete a local draft/scheduled post. Published posts stay for the record. */
-export async function deletePost(workspaceId: string, postId: string): Promise<{ deleted: true }> {
-  const post = await getPost(workspaceId, postId)
-  if (post.status === 'published' || post.status === 'partial' || post.status === 'publishing') {
-    throw new SocialError(409, 'post_immutable', 'A published post cannot be deleted')
+/** One target the delete touched, as the UI and the agent both report it. */
+export interface DeletePostRemoval {
+  platform: string
+  account: string | null
+  url: string | null
+}
+
+export interface DeletePostResult {
+  /** True when the row is gone: nothing was live at the provider. */
+  deleted: boolean
+  /** True when the row is kept, because it holds the record of a live post. */
+  kept?: boolean
+  post?: unknown
+  removed: DeletePostRemoval[]
+  /** Targets the person has to take down themselves, and why. */
+  manual: Array<DeletePostRemoval & { reason: string }>
+}
+
+/**
+ * Delete a post, at the provider and here.
+ *
+ * A draft, a scheduled post, a failed one or a cancelled one is removed
+ * outright — Zernio is told first so a scheduled post cannot still ship. A post
+ * that went out is a different thing: it is unpublished per target, and only on
+ * the platforms Zernio can unpublish. Instagram, TikTok and Snapchat have no
+ * removal API, so those targets come back under `manual` with their links and
+ * the row is kept (`cancelled` once nothing is left live) so the history and the
+ * analytics stay honest.
+ */
+export async function deletePost(workspaceId: string, postId: string): Promise<DeletePostResult> {
+  // The full account row, not `getPost`'s trimmed one: unpublish needs the
+  // provider's account id.
+  const post = await db.socialPost.findFirst({
+    where: { id: postId, workspaceId },
+    include: { targets: { include: { account: true } } },
+  })
+  if (!post) throw new SocialError(404, 'post_not_found', 'Post not found')
+
+  // A publish that timed out is still in flight and carries no provider id, so
+  // there is nothing to cancel or unpublish. Deleting the row would hide a post
+  // that may be about to go live — the caller has to look again instead.
+  if (post.status === 'publishing' && !post.zernioPostId) {
+    throw new SocialError(
+      409,
+      'post_in_flight',
+      'This post is still publishing and has no provider id yet. Check "posts" again in a minute, then delete it.',
+    )
   }
 
-  // A scheduled post lives at Zernio too: dropping only our row leaves it
-  // queued and it still ships. Cancel there first; keep our row if that fails.
-  if (post.zernioPostId) {
-    await getSocialClient().request({
-      workspaceId,
-      method: 'DELETE',
-      path: `/posts/${encodeURIComponent(post.zernioPostId)}`,
-    })
+  const live = post.status === 'published' || post.status === 'partial' || post.status === 'publishing'
+  if (!live) {
+    // A scheduled post lives at Zernio too: dropping only our row leaves it
+    // queued and it still ships. Cancel there first; keep our row if that fails.
+    if (post.zernioPostId) {
+      await getSocialClient().request({
+        workspaceId,
+        method: 'DELETE',
+        path: `/posts/${encodeURIComponent(post.zernioPostId)}`,
+      })
+    }
+    await db.socialPost.delete({ where: { id: post.id } })
+    return { deleted: true, removed: [], manual: [] }
   }
 
-  await db.socialPost.delete({ where: { id: post.id } })
-  return { deleted: true }
+  const removed: DeletePostRemoval[] = []
+  const manual: Array<DeletePostRemoval & { reason: string }> = []
+  const removedIds = new Set<string>()
+
+  for (const target of post.targets) {
+    const entry: DeletePostRemoval = {
+      platform: target.platform,
+      account: target.account?.username ?? null,
+      url: target.platformPostUrl ?? null,
+    }
+    if (target.status === 'publishing') {
+      manual.push({ ...entry, reason: 'Still being published — check again in a minute, then delete again.' })
+      continue
+    }
+    if (target.status !== 'published') continue
+
+    const label = PLATFORM_LABELS[target.platform] ?? target.platform
+    if ((UNPUBLISH_UNSUPPORTED_PLATFORMS as readonly string[]).includes(target.platform)) {
+      manual.push({
+        ...entry,
+        reason: `${label} has no API to remove a published post — remove it in the ${label} app.`,
+      })
+      continue
+    }
+    // A row reconciled from a relayed publish can be live without the provider id
+    // we would unpublish against; `/posts/null/unpublish` is not a call worth
+    // making, so those targets go to the person too.
+    if (!post.zernioPostId) {
+      manual.push({
+        ...entry,
+        reason: `No provider post id was recorded for this one — remove it in the ${label} app.`,
+      })
+      continue
+    }
+
+    try {
+      await getSocialClient().request({
+        workspaceId,
+        method: 'POST',
+        path: `/posts/${encodeURIComponent(post.zernioPostId)}/unpublish`,
+        body: {
+          // Zernio calls X `twitter` in its own platform list.
+          platform: target.platform === 'x' ? 'twitter' : target.platform,
+          ...(target.account?.zernioAccountId ? { accountId: target.account.zernioAccountId } : {}),
+        },
+      })
+    } catch (err) {
+      manual.push({ ...entry, reason: `The provider could not remove it: ${detailOf(err).message}` })
+      continue
+    }
+    await db.socialPostTarget.update({ where: { id: target.id }, data: { status: 'cancelled' } })
+    removedIds.add(target.id)
+    removed.push(entry)
+  }
+
+  const stillLive = post.targets.filter(
+    (target: any) =>
+      !removedIds.has(target.id) && (target.status === 'published' || target.status === 'publishing'),
+  ).length
+  if (stillLive === 0) {
+    await db.socialPost.update({ where: { id: post.id }, data: { status: 'cancelled' } })
+  }
+
+  const updated = await db.socialPost.findFirst({
+    where: { id: post.id, workspaceId },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
+  })
+  return { deleted: false, kept: true, post: updated, removed, manual }
 }
 
 /** Calendar window: everything scheduled or published between `from` and `to`. */
@@ -602,7 +954,7 @@ export async function calendar(workspaceId: string, from: Date, to: Date) {
         { publishedAt: { gte: from, lte: to } },
       ],
     },
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true } } } } },
+    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
     orderBy: { scheduledFor: 'asc' },
   })
   return posts

@@ -25,6 +25,13 @@ import {
   type PastedTextEntry,
 } from "../components/chat/long-text-utils";
 import type { NativePickedAttachment } from "./native-attachment-picker";
+import {
+  decodeChatDragPayload,
+  hasChatDragPayload,
+  toAgentReferences,
+  type ChatDragItem,
+} from "./chat-drag";
+import type { ChatReferenceInput } from "./chat-references";
 
 export const MAX_FILES = 10;
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -153,18 +160,30 @@ export interface UseComposerAttachmentsOptions {
   /** Set false when a host owns the drop-zone event listeners. */
   enableDomEvents?: boolean;
   onError?: (message: string) => void;
+  /**
+   * IDE tree items dropped on the composer (see chat-drag.ts). `skipped`
+   * names items outside the agent workspace, which can't be referenced.
+   */
+  onReferenceDrop?: (references: ChatReferenceInput[], skipped: string[], items: ChatDragItem[]) => void;
 }
+
+/** What is being dragged over the drop zone. */
+export type ComposerDragKind = "files" | "references" | null;
 
 export function useComposerAttachments({
   maxFiles = MAX_FILES,
   maxFileSizeBytes = MAX_FILE_SIZE,
   enableDomEvents = true,
   onError,
+  onReferenceDrop,
 }: UseComposerAttachmentsOptions = {}) {
   const [pendingFiles, setPendingFiles] = useState<ComposerAttachedFile[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [dragKind, setDragKind] = useState<ComposerDragKind>(null);
+  const onReferenceDropRef = useRef(onReferenceDrop);
+  onReferenceDropRef.current = onReferenceDrop;
   const [pastedTexts, setPastedTexts] = useState<PastedTextEntry[]>([]);
   const [viewingPastedId, setViewingPastedId] = useState<string | null>(null);
 
@@ -428,27 +447,45 @@ export function useComposerAttachments({
     const node = dropZoneRef.current as unknown as HTMLElement | null;
     if (!node) return;
 
+    const isReferenceDrag = (event: DragEvent) =>
+      !!onReferenceDropRef.current && hasChatDragPayload(event.dataTransfer?.types);
     const handleDragOver = (event: DragEvent) => {
       event.preventDefault();
       event.stopPropagation();
+      if (isReferenceDrag(event) && event.dataTransfer) event.dataTransfer.dropEffect = "copy";
     };
     const handleDragEnter = (event: DragEvent) => {
       event.preventDefault();
       event.stopPropagation();
       dragCounterRef.current += 1;
-      if (dragCounterRef.current === 1) setIsDragOver(true);
+      if (dragCounterRef.current === 1) {
+        setIsDragOver(true);
+        setDragKind(isReferenceDrag(event) ? "references" : "files");
+      }
     };
     const handleDragLeave = (event: DragEvent) => {
       event.preventDefault();
       event.stopPropagation();
       dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
-      if (dragCounterRef.current === 0) setIsDragOver(false);
+      if (dragCounterRef.current === 0) {
+        setIsDragOver(false);
+        setDragKind(null);
+      }
     };
     const handleDrop = (event: DragEvent) => {
       event.preventDefault();
       event.stopPropagation();
       dragCounterRef.current = 0;
       setIsDragOver(false);
+      setDragKind(null);
+      // A tree drag can carry an OS-file fallback too; the reference wins.
+      const items = onReferenceDropRef.current ? decodeChatDragPayload(event.dataTransfer) : null;
+      if (items) {
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+        const { references, skipped } = toAgentReferences(items);
+        onReferenceDropRef.current?.(references, skipped, items);
+        return;
+      }
       if (event.dataTransfer?.files?.length)
         processFiles(event.dataTransfer.files);
     };
@@ -504,6 +541,7 @@ export function useComposerAttachments({
     setFileError,
     isProcessingFiles,
     isDragOver,
+    dragKind,
     pastedTexts,
     setPastedTexts,
     viewingPastedId,

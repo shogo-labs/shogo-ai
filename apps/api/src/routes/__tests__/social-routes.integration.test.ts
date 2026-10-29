@@ -84,6 +84,7 @@ beforeAll(async () => {
           ],
         }
       }
+      if (req.method === 'POST' && req.path.endsWith('/unpublish')) return { success: true }
       if (req.method === 'DELETE' && req.path.startsWith('/accounts/')) return {}
       throw new Error(`unexpected ${req.method} ${req.path}`)
     },
@@ -220,7 +221,7 @@ describe('social routes', () => {
     expect(body.error).toEqual({ code: 'no_targets', message: 'Pick at least one account to publish to' })
   })
 
-  test('a published post cannot be edited or deleted', async () => {
+  test('a published post cannot be edited, and taking it down says who must do it', async () => {
     const post = await db.socialPost.findFirst({ where: { workspaceId } })
     const patch = await request(`/api/workspaces/${workspaceId}/social/posts/${post.id}`, owner, {
       method: 'PATCH',
@@ -229,7 +230,16 @@ describe('social routes', () => {
     expect(patch.status).toBe(409)
 
     const del = await request(`/api/workspaces/${workspaceId}/social/posts/${post.id}`, owner, { method: 'DELETE' })
-    expect(del.status).toBe(409)
+    expect(del.status).toBe(200)
+    const body = await del.json()
+    // Instagram has no removal API, so its live leg comes back to the person; the
+    // TikTok leg failed and was never live, so there is nothing to take down.
+    expect(body.deleted).toBe(false)
+    expect(body.kept).toBe(true)
+    expect(body.removed).toEqual([])
+    expect(body.manual.map((entry: any) => entry.platform)).toEqual(['instagram'])
+    expect(body.manual[0].url).toBe('https://instagram.com/p/ig_1')
+    expect(calls.some((call) => call.path.endsWith('/unpublish'))).toBe(false)
   })
 
   test('disconnecting removes the account at the provider and retires the row', async () => {

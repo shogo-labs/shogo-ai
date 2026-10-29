@@ -44,7 +44,6 @@ import {
 import { composerColumnStyle } from "../../lib/chat-column";
 import {
   encodeChatMentionTokens,
-  sanitizeChatMentionLabel,
 } from "../../lib/chat-mention-text";
 import { useIsInsideChatColumn } from "./ChatColumn";
 import {
@@ -92,7 +91,19 @@ import {
   Play,
   Cloud,
   SlidersHorizontal,
+  TextSelect,
 } from "lucide-react-native";
+import {
+  clampSelectionText,
+  referenceKey,
+  slugifyMention,
+  uniqueMentionLabel,
+  type ChatReference,
+  type ChatReferenceInput,
+} from "../../lib/chat-references";
+import { skippedReferencesMessage } from "../../lib/chat-drag";
+import { buildMentionSegments, labelPresent } from "./composer/mention-labels";
+import { insertAtCaret } from "./composer/insert-tokens";
 import { useVoiceInput } from "./useVoiceInput";
 import { VoiceWaveform } from "./VoiceWaveform";
 import { kindLabel, buildPastedAttachments } from "./long-text-utils";
@@ -197,45 +208,14 @@ export interface FileAttachment {
   peaks?: string;
 }
 
-/**
- * A structured "@" reference attached to a chat message. Files point at a
- * path inside the current project's agent workspace (resolved to real
- * contents by the runtime); projects tag a sibling project by id — the API
- * durably attaches it to this chat's project so the merged-root runtime
- * mounts it and the agent can read its files. The `workspace` variant is
- * retained for back-compat but the menu no longer offers it.
- */
-export type ChatReference =
-  | { type: "file"; path: string; name: string; label?: string }
-  | { type: "folder"; path: string; name: string; label?: string }
-  | { type: "project"; id: string; name: string; label?: string }
-  | {
-      type: "chat";
-      id: string;
-      name: string;
-      projectId?: string;
-      label?: string;
-      transcript?: string;
-    }
-  | {
-      type: "plan";
-      planId: string;
-      filename: string;
-      name: string;
-      projectId?: string;
-      label?: string;
-      content?: string;
-    }
-  | {
-      type: "workspace";
-      id: string;
-      name: string;
-      slug: string;
-      summary?: string;
-      label?: string;
-    }
-  /** Picked from a host-supplied completion source (e.g. a teammate). */
-  | { type: "mention"; id: string; name: string; label?: string };
+export type { ChatReference, ChatReferenceInput } from "../../lib/chat-references";
+
+/** References/text an "Add to Chat" action inserts at the caret (see chat-insert-bus.ts). */
+export interface ChatInsertComposerRequest {
+  nonce: number;
+  references?: ChatReferenceInput[];
+  text?: string;
+}
 
 /** One row in a host-supplied completion menu. */
 export interface ComposerCompletionItem {
@@ -320,96 +300,9 @@ const MAX_MENTION_FILE_RESULTS = 8;
 const MAX_IDE_MENTION_FILE_RESULTS = 80;
 const MAX_MENTION_PROJECT_RESULTS = 8;
 
-function referenceKey(ref: ChatReference): string {
-  if (ref.type === "file") return `file:${ref.path}`;
-  if (ref.type === "folder") return `folder:${ref.path}`;
-  if (ref.type === "project") return `project:${ref.id}`;
-  if (ref.type === "chat") return `chat:${ref.id}`;
-  if (ref.type === "plan") return `plan:${ref.planId}`;
-  if (ref.type === "mention") return `mention:${ref.id}`;
-  return `workspace:${ref.id}`;
-}
-
-/**
- * Whitespace-free "@token" body for a project mention. Projects have no slug
- * and their names can contain spaces, which the inline-token model can't
- * represent, so we slugify the name (the structured reference still carries the
- * real id + name). Collisions are cosmetic — resolution keys off the id.
- */
-function slugifyMention(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || "project";
-}
-
 function basename(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] || path;
-}
-
-/**
- * True when `label` (an "@token") occurs in `text` at a mention boundary —
- * start-of-string or right after whitespace, mirroring `detectMentionToken`.
- * Used to prune references whose inline text the user edited/deleted and to
- * decide what the inline-highlight overlay should pill.
- */
-function labelPresent(text: string, label: string): boolean {
-  if (!label) return false;
-  let from = 0;
-  for (;;) {
-    const idx = text.indexOf(label, from);
-    if (idx === -1) return false;
-    if (idx === 0 || /\s/.test(text[idx - 1])) return true;
-    from = idx + 1;
-  }
-}
-
-/** A run of composer text: either plain or a tagged "@mention". */
-type MentionSegment = { text: string; mention: boolean };
-
-/**
- * Split `text` into plain / mention runs by matching known reference `labels`
- * at mention boundaries (longest-first so `@foo.tsx` wins over `@foo`). Backs
- * the transparent overlay that draws an inline pill behind each "@mention"
- * while the real (crisp) text stays in the TextInput on top.
- */
-function buildMentionSegments(
-  text: string,
-  labels: string[]
-): MentionSegment[] {
-  const unique = Array.from(new Set(labels.filter(Boolean))).sort(
-    (a, b) => b.length - a.length
-  );
-  if (unique.length === 0) return [{ text, mention: false }];
-  const segments: MentionSegment[] = [];
-  let i = 0;
-  let plainStart = 0;
-  while (i < text.length) {
-    let matched: string | null = null;
-    if (i === 0 || /\s/.test(text[i - 1])) {
-      for (const lab of unique) {
-        if (text.startsWith(lab, i)) {
-          matched = lab;
-          break;
-        }
-      }
-    }
-    if (matched) {
-      if (plainStart < i)
-        segments.push({ text: text.slice(plainStart, i), mention: false });
-      segments.push({ text: matched, mention: true });
-      i += matched.length;
-      plainStart = i;
-    } else {
-      i++;
-    }
-  }
-  if (plainStart < text.length)
-    segments.push({ text: text.slice(plainStart), mention: false });
-  return segments;
 }
 
 /**
@@ -531,6 +424,15 @@ export interface ChatInputProps {
    * (or fail to clear) the request at the wrong time.
    */
   onDraftRestored?: (nonce: number) => void;
+  /**
+   * "Add to Chat" (file tree, editor ⌘L, terminal, Shogo Code): inserts the
+   * references as inline pills and/or the text at the caret. Unlike
+   * `restoreDraftRequest` it never replaces the draft or pending attachments.
+   * Applied once per nonce.
+   */
+  insertRequest?: ChatInsertComposerRequest | null;
+  /** Called once `insertRequest` has been applied, with its nonce; clear it here. */
+  onInsertApplied?: (nonce: number) => void;
   /**
    * Current project id. Enables the "@" menu's Files section (file
    * references are scoped to this project's agent workspace).
@@ -660,6 +562,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onQuickActionClick,
   restoreDraftRequest,
   onDraftRestored,
+  insertRequest,
+  onInsertApplied,
   projectId,
   projects = [],
   chatSessionId,
@@ -732,6 +636,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
   const textInputRef = useRef<TextInput>(null);
   const inputValueRef = useRef("");
+  // Set below once `insertReferences` exists; the drop zone calls the latest one.
+  const referenceDropRef = useRef<(refs: ChatReferenceInput[], skipped: string[]) => void>(() => {});
   // Guards against the DOM paste listener AND onChangeText both firing for
   // the same clipboard event, which would create duplicate chips.
   const {
@@ -741,6 +647,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     setFileError,
     isProcessingFiles,
     isDragOver,
+    dragKind,
     pastedTexts,
     setPastedTexts,
     viewingPastedId,
@@ -758,7 +665,10 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     processFiles,
     addAttachment,
     resetAttachments,
-  } = useComposerAttachments({ maxFileSizeBytes });
+  } = useComposerAttachments({
+    maxFileSizeBytes,
+    onReferenceDrop: (refs, skipped) => referenceDropRef.current(refs, skipped),
+  });
   const fileSizeLimit = maxFileSizeBytes ?? MAX_FILE_SIZE;
   const uploadPercent = uploadStatus
     ? Math.max(0, Math.min(100, Math.round(uploadStatus.fraction * 100)))
@@ -1328,18 +1238,29 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       cancelPendingTextChangeFlush();
       const base = inputValueRef.current;
       const token = mentionTokenRef.current;
-      const label = `@${
-        item.kind === "project"
-          ? slugifyMention(item.name)
+      const reference: ChatReferenceInput =
+        item.kind === "file" || item.kind === "folder"
+          ? { type: item.kind, path: item.path, name: item.name }
+          : item.kind === "project"
+          ? { type: "project", id: item.id, name: item.name }
           : item.kind === "chat"
-          ? // A chat is addressed by its title (spaces included): the pill in the
-            // composer reads like the chat, and the wire token is swapped in at
-            // send time so no `@chat:<uuid>` ever reaches a reader.
-            sanitizeChatMentionLabel(item.name)
-          : item.kind === "plan"
-          ? `plan:${slugifyMention(item.name)}`
-          : item.name
-      }`;
+          ? {
+              type: "chat",
+              id: item.id,
+              name: item.name,
+              projectId: item.projectId,
+              ...(item.result.transcript
+                ? { transcript: item.result.transcript }
+                : {}),
+            }
+          : {
+              type: "plan",
+              planId: item.id,
+              filename: item.filename,
+              name: item.name,
+              projectId: item.projectId,
+            };
+      const label = uniqueMentionLabel(reference, referencesRef.current);
       let caret: number;
       if (token) {
         const start = Math.max(0, Math.min(token.start, base.length));
@@ -1350,46 +1271,13 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         setInputValue(next);
         caret = start + insert.length;
       } else {
-        const sep = base.length === 0 || base.endsWith(" ") ? "" : " ";
-        const insert = `${sep}${label} `;
-        const next = base + insert;
-        inputValueRef.current = next;
-        setInputValue(next);
-        caret = next.length;
+        const inserted = insertAtCaret(base, caretRef.current, label);
+        inputValueRef.current = inserted.next;
+        setInputValue(inserted.next);
+        caret = inserted.caret;
       }
 
-      if (item.kind === "file") {
-        addReference({ type: "file", path: item.path, name: item.name, label });
-      } else if (item.kind === "folder") {
-        addReference({
-          type: "folder",
-          path: item.path,
-          name: item.name,
-          label,
-        });
-      } else if (item.kind === "project") {
-        addReference({ type: "project", id: item.id, name: item.name, label });
-      } else if (item.kind === "chat") {
-        addReference({
-          type: "chat",
-          id: item.id,
-          name: item.name,
-          projectId: item.projectId,
-          label,
-          ...(item.result.transcript
-            ? { transcript: item.result.transcript }
-            : {}),
-        });
-      } else {
-        addReference({
-          type: "plan",
-          planId: item.id,
-          filename: item.filename,
-          name: item.name,
-          projectId: item.projectId,
-          label,
-        });
-      }
+      addReference({ ...reference, label } as ChatReference);
 
       closeMentionMenu();
       setSelectionOverride({ start: caret, end: caret });
@@ -1445,18 +1333,63 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const insertText = useCallback(
     (insert: string) => {
       cancelPendingTextChangeFlush();
-      const base = inputValueRef.current;
-      const at = Math.min(caretRef.current ?? base.length, base.length);
-      const before = base.slice(0, at);
-      const pad = before && !/\s$/.test(before) ? " " : "";
-      const next = `${before}${pad}${insert} ${base.slice(at)}`;
+      const { next, caret } = insertAtCaret(inputValueRef.current, caretRef.current, insert);
       inputValueRef.current = next;
       setInputValue(next);
-      placeCaret(at + pad.length + insert.length + 1);
+      placeCaret(caret);
       onTextChange?.(next, referencesRef.current);
     },
     [cancelPendingTextChangeFlush, onTextChange, placeCaret]
   );
+
+  /**
+   * Insert references as inline pills (plus optional verbatim text) at the
+   * caret. Never touches the rest of the draft or pending attachments.
+   */
+  const insertReferences = useCallback(
+    (refs: ChatReferenceInput[], text?: string) => {
+      cancelPendingTextChangeFlush();
+      let nextRefs = referencesRef.current;
+      const labels: string[] = [];
+      for (const raw of refs) {
+        let ref = raw;
+        if (raw.type === "selection") {
+          const clamped = clampSelectionText(raw.text);
+          ref = { ...raw, text: clamped.text, truncated: raw.truncated || clamped.truncated };
+        }
+        const label = uniqueMentionLabel(ref, nextRefs);
+        if (!nextRefs.some((r) => referenceKey(r) === referenceKey(ref))) {
+          nextRefs = [...nextRefs, { ...ref, label } as ChatReference];
+        }
+        if (!labels.includes(label)) labels.push(label);
+      }
+      const insert = [labels.join(" "), text?.trim() ?? ""].filter(Boolean).join(" ");
+      if (!insert) return;
+      const { next, caret } = insertAtCaret(inputValueRef.current, caretRef.current, insert);
+      inputValueRef.current = next;
+      setInputValue(next);
+      if (nextRefs !== referencesRef.current) {
+        referencesRef.current = nextRefs;
+        setReferences(nextRefs);
+      }
+      placeCaret(caret);
+      onTextChange?.(next, nextRefs);
+    },
+    [cancelPendingTextChangeFlush, onTextChange, placeCaret]
+  );
+
+  referenceDropRef.current = (refs, skipped) => {
+    if (skipped.length > 0) setFileError(skippedReferencesMessage(skipped));
+    if (refs.length > 0) insertReferences(refs);
+  };
+
+  const lastInsertNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!insertRequest || insertRequest.nonce === lastInsertNonceRef.current) return;
+    lastInsertNonceRef.current = insertRequest.nonce;
+    insertReferences(insertRequest.references ?? [], insertRequest.text);
+    onInsertApplied?.(insertRequest.nonce);
+  }, [insertRequest, insertReferences, onInsertApplied]);
 
   // Keep references in sync with what's actually visible: if the user edits or
   // deletes a mention's inline "@token", drop the matching reference so we
@@ -1974,6 +1907,11 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                         className="h-3 w-3 text-muted-foreground"
                         size={12}
                       />
+                    ) : ref.type === "selection" ? (
+                      <TextSelect
+                        className="h-3 w-3 text-muted-foreground"
+                        size={12}
+                      />
                     ) : (
                       <FolderGit2
                         className="h-3 w-3 text-muted-foreground"
@@ -1986,8 +1924,15 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     >
                       {ref.type === "file" || ref.type === "folder"
                         ? ref.path
+                        : ref.type === "selection"
+                        ? `${ref.name}:${ref.startLine}-${ref.endLine}`
                         : ref.name}
                     </Text>
+                    {ref.type === "selection" && ref.truncated && (
+                      <Text className="text-[10px] text-muted-foreground">
+                        truncated
+                      </Text>
+                    )}
                     <Pressable
                       onPress={() => removeReference(key)}
                       className="h-4 w-4 items-center justify-center rounded-full"
@@ -2382,6 +2327,17 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               : undefined
           }
         >
+          {isDragOver && Platform.OS === "web" && (
+            <View
+              pointerEvents="none"
+              testID="composer-drop-overlay"
+              className="absolute inset-0 z-10 items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/80"
+            >
+              <Text className="text-xs font-medium text-primary">
+                {dragKind === "references" ? "Drop to add as context" : "Drop files to attach"}
+              </Text>
+            </View>
+          )}
           {useProminentComposer ? (
             <LiquidGlassBackdrop
               style={{

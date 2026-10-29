@@ -283,6 +283,22 @@ describe('BYO mode — handlers.op()', () => {
     expect(res.headers.get('x-tts-model-used')).toBe('eleven_v4')
     expect(calls[0]!.url).toBe('https://el.test/v1/text-to-speech/voice_1')
   })
+
+  test('a BYO handler says it cannot run Lyria instead of quietly billing ElevenLabs', async () => {
+    const calls = stubElevenLabs(() => audio([3]))
+    const res = await byo().music(
+      new Request('http://pod/api/voice/music', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'lofi', provider: 'google' }),
+      }),
+    )
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string; detail: string }
+    expect(body.error).toBe('provider_unavailable')
+    expect(body.detail).toContain('Shogo API')
+    expect(calls).toHaveLength(0)
+  })
 })
 
 describe('proxy mode — handlers.op()', () => {

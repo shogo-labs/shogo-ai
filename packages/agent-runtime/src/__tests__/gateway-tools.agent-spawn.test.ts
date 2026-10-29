@@ -21,7 +21,13 @@ let subagentResult: any = {
   effectiveModelId: 'claude-sonnet-4-5',
 }
 
+const realSubagent = await import('../subagent')
 mock.module('../subagent', () => ({
+  // Spread the real exports: a module mock is process-global, and a partial one
+  // makes any other file in the same run that imports `../subagent` (or
+  // `../agent-manager`, which re-exports BUILTIN_SUBAGENT_TYPES) fail with a
+  // missing-export SyntaxError.
+  ...realSubagent,
   runSubagent: async () => subagentResult,
   getBuiltinSubagentConfig: (_type: string) => ({
     toolNames: ['read_file'],

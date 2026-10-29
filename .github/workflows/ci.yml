@@ -356,6 +356,13 @@ jobs:
         if: needs.prelude.outputs.verified != 'true'
         run: bun run lint
 
+      # Unit tests run with the other packages (apps/shogo-ide in TEST_PACKAGES).
+      - name: Shogo Code extension (typecheck, phase checks)
+        run: |
+          bun run --cwd apps/shogo-ide extension:typecheck
+          node apps/shogo-ide/scripts/phase1-check.mjs
+          node apps/shogo-ide/scripts/phase3-check.mjs
+
       - name: Check CI `bun install` steps authenticate ripgrep-prebuilt
         if: needs.prelude.outputs.verified != 'true'
         # Guards against the `@vscode/ripgrep` 403 flake — see
@@ -823,7 +830,7 @@ jobs:
             desktop_bundle: false
             include_e2e: false
           - name: remaining + e2e
-            packages: packages/shared-runtime,packages/model-catalog,packages/authz,packages/sdk,scripts,packages/shared-app,apps/metal-agent,packages/agent,packages/core,packages/email,packages/voice,apps/desktop
+            packages: packages/shared-runtime,packages/model-catalog,packages/authz,packages/sdk,scripts,packages/shared-app,apps/metal-agent,apps/shogo-ide,packages/agent,packages/core,packages/email,packages/voice,apps/desktop
             shard: ''
             build_templates: true
             desktop_bundle: true

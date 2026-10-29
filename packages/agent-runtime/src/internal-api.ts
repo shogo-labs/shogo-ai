@@ -697,7 +697,22 @@ async function publishFetch<T>(
     if (!res.ok) {
       const err = json?.error
       const message = typeof err === 'string' ? err : err?.message
-      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+      if (message) return { ok: false, status: res.status, error: message, code: err?.code }
+      // A 404 with no JSON body means the API in front of us has no publish
+      // route at all — an older desktop build, not a publish failure. Saying
+      // "HTTP 404" sent agents off retrying subdomains that were never the
+      // problem (SHO-245), so name the real cause.
+      if (res.status === 404) {
+        return {
+          ok: false,
+          status: 404,
+          code: 'publish_route_missing',
+          error:
+            'This API has no publish route (version mismatch): the desktop/API build is older than the publish tool. ' +
+            'Update Shogo, then publish again — retrying subdomains will not help.',
+        }
+      }
+      return { ok: false, status: res.status, error: `HTTP ${res.status}`, code: err?.code }
     }
     return { ok: true, status: res.status, data: init.parse ? init.parse(json) : (json as T) }
   } catch (err: any) {

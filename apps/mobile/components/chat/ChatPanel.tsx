@@ -218,6 +218,7 @@ import {
   type ChatMentionable,
   type RestoreDraftRequest,
 } from "./ChatInput"
+import { useChatInsertQueue } from "./useChatInsertQueue"
 import type { AgentHistoryResult } from "@shogo-ai/sdk/agent"
 import { useDualPlan } from "../../lib/dual-plan-preference"
 import {
@@ -7028,25 +7029,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     return unsub
   }, [currentSessionId, handleSendMessage])
 
-  // Terminal "Add to Chat" (⌘L) — inserts captured selection into the chat input.
-  useEffect(() => {
-    if (Platform.OS !== "web" || !isActive) return
-    const onAddToChat = (e: Event) => {
-      const text = (e as CustomEvent<{ text?: string }>).detail?.text?.trim()
-      if (!text) return
-      setRestoreDraftRequest({
-        nonce: Date.now(),
-        content: text,
-      })
-    }
-    window.addEventListener("shogo:add-to-chat", onAddToChat as EventListener)
-    return () =>
-      window.removeEventListener(
-        "shogo:add-to-chat",
-        onAddToChat as EventListener,
-      )
-  }, [isActive])
-
   // Collapse toggle — persist to AsyncStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {
     const newCollapsed = !isCollapsed
@@ -7055,6 +7037,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setStoredCollapsed(newCollapsed)
     }
   }, [isCollapsed, setIsCollapsed, onCollapsedChange])
+
+  // "Add to Chat" from the IDE tree/editor, the terminal (⌘L) and Shogo Code:
+  // inserted at the caret, never replacing the draft; a collapsed chat expands.
+  const { insertRequest, markApplied: handleInsertApplied } = useChatInsertQueue({
+    isActive,
+    expand: () => {
+      if (!isCollapsed) return
+      setIsCollapsed(false)
+      if (!onCollapsedChange) setStoredCollapsed(false)
+    },
+  })
 
   // Error retry handler.
   //
@@ -8939,6 +8932,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onQuickActionClick={handleQuickActionClick}
                     restoreDraftRequest={prefillRequest ?? restoreDraftRequest}
                     onDraftRestored={handleDraftRestored}
+                    insertRequest={insertRequest}
+                    onInsertApplied={handleInsertApplied}
                     composer={composer}
                     projectId={projectId}
                     projects={projectMentionOptions}

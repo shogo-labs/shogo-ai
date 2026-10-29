@@ -1909,15 +1909,6 @@ export async function proxyAnthropicNonStream(
 // OpenAI Proxy (pass-through)
 // =============================================================================
 
-/** Google's Gemini API host. `GOOGLE_BASE_URL` may point at the OpenAI
- *  compatibility root (`…/v1beta/openai`, what chat routing expects) or at the
- *  bare host; native endpoints such as Lyria's Interactions API need the host. */
-function googleApiBase(): string {
-  return (process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com')
-    .replace(/\/$/, '')
-    .replace(/\/v1beta(\/openai)?$/, '')
-}
-
 export function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
   if (modelConfig.provider === 'local' && process.env.LOCAL_LLM_BASE_URL) {
     return `${process.env.LOCAL_LLM_BASE_URL.replace(/\/$/, '')}/v1/chat/completions`
@@ -2771,6 +2762,7 @@ function normalizeThinkingForModel(parsed: any, apiModel: string): void {
 // Billing
 // =============================================================================
 
+import { generateLyriaMusic } from '../lib/lyria'
 import { calculateUsageCost, calculateMusicUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing-runtime'
 import { getProjectUser } from '../lib/project-user-context'
@@ -3421,61 +3413,6 @@ function recordImageUsage(
 
 /** The cheap 30-second clip; a full song is an explicit choice. */
 const DEFAULT_MUSIC_MODEL = 'lyria-3-clip'
-/** A full song renders in a minute or two; a 30-second clip in seconds. */
-const MUSIC_TIMEOUT_MS = 240_000
-
-interface LyriaAudioBlock {
-  mimeType: string
-  data: string
-}
-
-interface LyriaInteraction {
-  id?: string
-  output_text?: string
-  output_audio?: { data?: string; mime_type?: string } | Array<{ data?: string; mime_type?: string }>
-  steps?: Array<{
-    type?: string
-    content?: Array<{ type?: string; text?: string; data?: string; mime_type?: string }>
-  }>
-}
-
-/**
- * Pull the rendered audio (plus any lyrics / timed text) out of an Interactions
- * response. A song with interleaved lyrics returns several content blocks, so
- * this walks the steps instead of trusting the `output_audio` convenience field
- * — the docs warn that the convenience fields do not cover every part.
- */
-/**
- * Lyria has no separate lyrics or instrumental field: both are read from the
- * prompt, lyrics as tagged sections after the style instructions.
- */
-export function buildLyriaInput(prompt: string, opts: { lyrics?: string; instrumental?: boolean }): string {
-  if (opts.instrumental) return `${prompt}\n\nInstrumental only, no vocals.`
-  if (opts.lyrics) return `${prompt}\n\nUse exactly these lyrics:\n${opts.lyrics}`
-  return prompt
-}
-
-function readLyriaOutput(interaction: LyriaInteraction): { audio?: LyriaAudioBlock; text?: string } {
-  let audio: LyriaAudioBlock | undefined
-  const texts: string[] = []
-  for (const step of interaction.steps ?? []) {
-    for (const block of step.content ?? []) {
-      if (block.type === 'audio' && typeof block.data === 'string' && block.data.length > 0) {
-        audio ??= { mimeType: block.mime_type || 'audio/mpeg', data: block.data }
-      } else if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-        texts.push(block.text.trim())
-      }
-    }
-  }
-  if (!audio && interaction.output_audio) {
-    const first = Array.isArray(interaction.output_audio) ? interaction.output_audio[0] : interaction.output_audio
-    if (first && typeof first.data === 'string' && first.data.length > 0) {
-      audio = { mimeType: first.mime_type || 'audio/mpeg', data: first.data }
-    }
-  }
-  const text = texts.length > 0 ? texts.join('\n\n') : interaction.output_text?.trim() || undefined
-  return { audio, text }
-}
 
 const DEFAULT_VIDEO_MODEL = 'hf-hailuo-2.3'
 /** Video is Higgsfield-only; a server without its key answers 503 provider_not_configured. */
@@ -6466,39 +6403,17 @@ export function aiProxyRoutes() {
     if (lyrics && body.instrumental === true) {
       return invalid('lyrics and instrumental cannot both be set.', 'invalid_body')
     }
-    const input = buildLyriaInput(prompt, { lyrics, instrumental: body.instrumental === true })
-
     const chatSessionId = c.req.header('x-chat-session-id') || null
     const startedAt = Date.now()
     try {
-      const response = await fetch(`${googleApiBase()}/v1beta/interactions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify({
-          // Caller-supplied documented fields first, so model/input can't be
-          // redirected to a different model than the one we bill for.
-          ...(body.options ?? {}),
-          model: entry.apiModel,
-          input,
-        }),
-        signal: AbortSignal.timeout(MUSIC_TIMEOUT_MS),
+      const { interaction, audio, text } = await generateLyriaMusic({
+        apiKey,
+        apiModel: entry.apiModel,
+        prompt,
+        ...(lyrics ? { lyrics } : {}),
+        ...(body.instrumental === true ? { instrumental: true } : {}),
+        ...(body.options ? { options: body.options } : {}),
       })
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => '')
-        return c.json(
-          {
-            error: {
-              message: `Google music error (${response.status}): ${errorText.slice(0, 500)}`,
-              type: 'server_error',
-              code: 'music_generation_failed',
-            },
-          },
-          502
-        )
-      }
-
-      const interaction = (await response.json()) as LyriaInteraction
-      const { audio, text } = readLyriaOutput(interaction)
       if (!audio) {
         return c.json(
           {

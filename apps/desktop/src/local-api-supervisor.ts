@@ -20,6 +20,13 @@
  * child so the *existing* exit → respawn path recovers it. One restart loop,
  * two ways in.
  *
+ * An unanswered probe is not proof of a wedge, though. Under a burst of
+ * concurrent agent turns the API can miss probes while it is still logging
+ * work, and killing it then takes every live run with it (lacvapps/shogo-ai#5:
+ * 19 such kills on one machine, 7 runs lost in one). So a missed probe only
+ * counts when the child has also written nothing since the previous probe;
+ * a child that is still talking is busy, not dead, up to `maxBusyMs`.
+ *
  * Deliberately free of Electron/fs imports so it can be unit-tested with an
  * injected `start()` (see `__tests__/local-server-respawn.test.ts`).
  */
@@ -66,6 +73,12 @@ export interface HealthWatchdogPolicy {
   slowMs: number
   /** Consecutive failed probes before the child is treated as wedged. */
   failureThreshold: number
+  /**
+   * How long a child that misses probes but keeps writing output is left
+   * alone. Past this, nothing has answered for so long that the app is
+   * unusable anyway, and it is restarted even though it is still talking.
+   */
+  maxBusyMs: number
 }
 
 export const DEFAULT_HEALTH_WATCHDOG: HealthWatchdogPolicy = {
@@ -73,6 +86,7 @@ export const DEFAULT_HEALTH_WATCHDOG: HealthWatchdogPolicy = {
   timeoutMs: 30_000,
   slowMs: 3_000,
   failureThreshold: 3,
+  maxBusyMs: 10 * 60_000,
 }
 
 export interface HealthFailureInfo {
@@ -113,6 +127,15 @@ export interface LocalApiSupervisorOptions {
   onHealthFailure?: (info: HealthFailureInfo) => void
   /** A probe answered, but slower than `slowMs`. The API counts as alive. */
   onSlowHealth?: (info: { elapsedMs: number }) => void
+  /**
+   * Epoch ms of the child's most recent stdout/stderr write, or null when it
+   * has written nothing yet. A child that is still writing has a running
+   * event loop, so a missed probe is load, not a wedge. Omitted → every missed
+   * probe counts, which is the pre-#5 behaviour the SHO-60 tests rely on.
+   */
+  lastOutputAt?: () => number | null
+  /** A probe got no answer, but the child wrote output since the last one. */
+  onBusyHealth?: (info: { unansweredMs: number }) => void
   /** The child is wedged: about to be killed so the restart loop takes over. */
   onWatchdogTripped?: (info: { failures: number }) => void
   log?: (message: string) => void
@@ -140,6 +163,10 @@ export class LocalApiSupervisor {
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null
   private probing = false
   private healthFailures = 0
+  /** When a probe last got an answer (or the child last came up healthy). */
+  private lastAnsweredAt = 0
+  /** When the previous probe finished; output after this is fresh progress. */
+  private lastProbeEndedAt = 0
   /** Set while `restartNow()` owns the child, so its own kill cannot respawn. */
   private manualRestart = false
 
@@ -272,6 +299,8 @@ export class LocalApiSupervisor {
 
   private markHealthy(): void {
     this.healthFailures = 0
+    this.lastAnsweredAt = Date.now()
+    this.lastProbeEndedAt = this.lastAnsweredAt
     this.clearAttemptsReset()
     const timer = this.setTimer(() => {
       this.attempts = 0
@@ -340,10 +369,26 @@ export class LocalApiSupervisor {
     // The child may have exited (and a restart succeeded) while we waited.
     if (this.stopped || this.gaveUp || !this.opts.fetchHealth) return
 
+    const endedAt = Date.now()
+    const previousProbeEndedAt = this.lastProbeEndedAt
+    this.lastProbeEndedAt = endedAt
+
     if (healthy) {
-      const elapsedMs = Date.now() - startedAt
+      const elapsedMs = endedAt - startedAt
       if (elapsedMs > this.watchdogPolicy.slowMs) this.opts.onSlowHealth?.({ elapsedMs })
       this.healthFailures = 0
+      this.lastAnsweredAt = endedAt
+      this.scheduleWatchdogTick()
+      return
+    }
+
+    const unansweredMs = endedAt - this.lastAnsweredAt
+    const lastOutputAt = this.opts.lastOutputAt?.() ?? null
+    const stillTalking = lastOutputAt !== null && lastOutputAt > previousProbeEndedAt
+    if (stillTalking && unansweredMs < this.watchdogPolicy.maxBusyMs) {
+      // Busy, not wedged: this miss breaks the consecutive-failure streak.
+      this.healthFailures = 0
+      this.opts.onBusyHealth?.({ unansweredMs })
       this.scheduleWatchdogTick()
       return
     }

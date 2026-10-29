@@ -90,6 +90,27 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
     void this.postIdeContext()
   }
 
+  /** False when the IDE launched without a chat URL (empty-state view). */
+  isChatConnected(): boolean {
+    return getDesktopChatUrl() !== null
+  }
+
+  /**
+   * Send every batch the chat hasn't acknowledged yet. Called after a batch
+   * is enqueued, whenever the chat reports ready, and when the view becomes
+   * visible; the chat dedupes re-sent batches by id.
+   */
+  async postPendingReferences(): Promise<void> {
+    if (!this.view) return
+    for (const batch of this.services.contextOutbox.pending()) {
+      await this.view.webview.postMessage({
+        type: 'shogo.ide.addReferences',
+        batchId: batch.batchId,
+        references: batch.references,
+      })
+    }
+  }
+
   private installContextListeners(webviewView: vscode.WebviewView): void {
     this.contextDisposables.forEach((d) => d.dispose())
     const windowApi = vscode.window as any
@@ -103,7 +124,9 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
     addDisposable(windowApi.onDidChangeTextEditorSelection?.(() => void this.postIdeContext()))
     addDisposable(workspaceApi.onDidChangeWorkspaceFolders?.(() => void this.postIdeContext()))
     addDisposable(viewApi.onDidChangeVisibility?.(() => {
-      if (viewApi.visible) void this.postIdeContext()
+      if (!viewApi.visible) return
+      void this.postIdeContext()
+      void this.postPendingReferences()
     }))
     this.contextDisposables = disposables
   }
@@ -126,6 +149,12 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
     if (msg.type === 'webview.ready' || msg.type === 'shogo.ide.ready') {
       await this.postHostReady()
       await this.postIdeContext()
+      await this.postPendingReferences()
+      return
+    }
+
+    if (msg.type === 'shogo.ide.referencesAck') {
+      if (typeof msg.batchId === 'string') this.services.contextOutbox.ack(msg.batchId)
       return
     }
 
@@ -188,31 +217,20 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
       path: this.workspaceRelativePath(folder.uri),
     }))
     const workspaceItems = await this.listFiles('')
-    const storedContext = this.services.contextStore.list().map((item) => ({
-      id: item.id,
-      kind: item.kind === 'workspace' ? 'folder' : item.kind === 'active-file' ? 'active-file' : 'selection',
-      sourceCommand: item.kind === 'selection' ? 'addSelection' : undefined,
-      label: item.label,
-      path: item.uri,
-      languageId: item.languageId,
-      text: item.text,
-      startLine: item.range ? item.range.startLine + 1 : undefined,
-      endLine: item.range ? item.range.endLine + 1 : undefined,
-    }))
 
+    // Context added with "Add to Chat" is delivered as composer references
+    // (shogo.ide.addReferences), not as part of this live context.
     await this.view?.webview.postMessage({
       type: 'ide.context',
       activeFile,
       workspaceFolders,
       workspaceItems,
-      storedContext,
     })
     await this.view?.webview.postMessage({
       type: 'shogo.ide.context',
       activeFile,
       workspaceFolders,
       workspaceItems,
-      storedContext,
     })
   }
 
@@ -413,21 +431,27 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
       'shogo.ide.listFiles',
       'shogo.ide.readFiles',
       'shogo.ide.openFile',
+      'shogo.ide.referencesAck',
     ]);
     const ideToIframeMessages = new Set([
       'shogo.ide.hostReady',
       'shogo.ide.context',
       'shogo.ide.fileResults',
       'shogo.ide.readFilesResult',
+      'shogo.ide.addReferences',
     ]);
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
-      if (iframeToIdeMessages.has(message.type)) {
+      // Chat messages must come from the chat frame itself, and extension
+      // messages from the webview host, so a nested frame can't spoof either.
+      const fromChat = !!frame && event.source === frame.contentWindow;
+      const fromHost = !event.source || event.source === window.parent || event.source === window;
+      if (fromChat && iframeToIdeMessages.has(message.type)) {
         vscode.postMessage(message);
         return;
       }
-      if (ideToIframeMessages.has(message.type)) {
+      if (fromHost && ideToIframeMessages.has(message.type)) {
         postToChat(message);
       }
     });

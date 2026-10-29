@@ -243,11 +243,23 @@ export default function ConversationScreen() {
     const current = state?.routes?.[state.index]
     const previous = state && state.index > 0 ? state.routes[state.index - 1] : undefined
     const previousParams = previous?.params as Record<string, string | undefined> | undefined
-    if (current && previous && previous.name === current.name && previousParams?.conversationId === conversationId && !previousParams?.thread) {
+    // Only pop onto the plain channel. Popping onto a link that carries a `msg` would reopen
+    // this thread on the next frame: the seek fallback opens the thread a thread reply belongs to.
+    const popsToPlainChannel =
+      current &&
+      previous &&
+      previous.name === current.name &&
+      previousParams?.conversationId === conversationId &&
+      !previousParams?.thread &&
+      !previousParams?.msg
+    if (popsToPlainChannel) {
       router.back()
       return
     }
-    router.setParams({ thread: undefined } as any)
+    // `msg` belongs to the thread it came with (`?thread=<root>&msg=<reply>` — the link to a
+    // running agent's answer). Left behind, it points the channel at a reply it cannot show,
+    // and the seek fallback re-opened the pane on the next frame.
+    router.setParams({ thread: undefined, msg: undefined } as any)
   }, [navigation, router, conversationId])
   const openProjectPane = useCallback(
     (projectId: string) => router.setParams({ project: projectId, thread: undefined, files: undefined, doc: undefined } as any),

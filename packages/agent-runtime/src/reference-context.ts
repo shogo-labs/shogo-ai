@@ -43,6 +43,22 @@ export type ChatReference =
       lastActivityAt?: string }
   | { type: 'plan'; filename?: string; name?: string; planId?: string; projectId?: string; label?: string; content?: string }
   | { type: 'workspace'; id?: string; name?: string; slug?: string; summary?: string }
+  | {
+      type: 'selection'
+      path?: string
+      name?: string
+      startLine?: number
+      endLine?: number
+      text?: string
+      languageId?: string
+      truncated?: boolean
+    }
+
+/** Same cap as the composer (MAX_SELECTION_CHARS) and the live IDE selection. */
+export const MAX_SELECTION_CHARS = 24_000
+
+/** Saved files larger than this are not read to check a selection for unsaved edits. */
+const MAX_SELECTION_COMPARE_BYTES = 2 * 1024 * 1024
 
 /** Per-file inlined-content cap. Larger files are truncated. */
 const MAX_FILE_BYTES = 64 * 1024
@@ -73,6 +89,64 @@ function resolveInsideRoot(rootDir: string, subPath: string): string | null {
   const resolved = resolve(rootDir, subPath)
   if (resolved !== root && !resolved.startsWith(root + sep)) return null
   return resolved
+}
+
+const isLineNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value > 0
+
+const normalizeEol = (text: string) => text.replace(/\r\n?/g, '\n')
+
+/**
+ * Render a referenced line range. The text is the editor's snapshot, so it is
+ * compared with the saved file to tell the model when it includes unsaved
+ * edits, or when the file isn't in the agent workspace at all.
+ */
+function renderSelection(
+  ref: Extract<ChatReference, { type: 'selection' }>,
+  workspaceDir: string,
+  budget: { used: number },
+): string | null {
+  const text = typeof ref.text === 'string' ? ref.text : ''
+  if (!text.trim()) return null
+  const path = typeof ref.path === 'string' && ref.path ? ref.path : typeof ref.name === 'string' ? ref.name : 'selection'
+  const validLines = isLineNumber(ref.startLine) && isLineNumber(ref.endLine) && ref.endLine >= ref.startLine
+  const lines = validLines ? `lines ${ref.startLine}-${ref.endLine}` : 'lines ?'
+  if (budget.used >= MAX_TOTAL_BYTES) {
+    return `[Referenced Selection: ${path} ${lines}] Skipped — reference context size limit reached. Read it with your file tools if needed.`
+  }
+
+  let body = text.length > MAX_SELECTION_CHARS ? text.slice(0, MAX_SELECTION_CHARS) : text
+  let truncated = ref.truncated === true || body.length < text.length
+  if (budget.used + body.length > MAX_TOTAL_BYTES) {
+    body = body.slice(0, MAX_TOTAL_BYTES - budget.used)
+    truncated = true
+  }
+  budget.used += body.length
+
+  const flags: string[] = []
+  if (truncated) flags.push(' (truncated)')
+  const resolved = typeof ref.path === 'string' && ref.path ? resolveInsideRoot(workspaceDir, ref.path) : null
+  let inWorkspace = false
+  let onDisk: string | null = null
+  if (resolved && existsSync(resolved)) {
+    try {
+      const stat = statSync(resolved)
+      inWorkspace = stat.isFile()
+      if (inWorkspace && stat.size <= MAX_SELECTION_COMPARE_BYTES) onDisk = readFileSync(resolved, 'utf-8')
+    } catch {
+      onDisk = null
+    }
+  }
+  if (!inWorkspace) {
+    flags.push(' (not in agent workspace — editor snapshot)')
+  } else if (onDisk !== null && validLines && !truncated) {
+    // A selection may start or end mid-line, so it only has to occur within the saved lines.
+    const saved = normalizeEol(onDisk).split('\n').slice(ref.startLine! - 1, ref.endLine!).join('\n')
+    if (!saved.includes(normalizeEol(text).replace(/\n$/, ''))) flags.push(' (includes unsaved editor changes)')
+  }
+
+  const language = typeof ref.languageId === 'string' && ref.languageId.trim() ? ` (${ref.languageId})` : ''
+  return `[Referenced Selection: ${path} ${lines}${language}${flags.join('')}]\n${body}\n[End of Referenced Selection]`
 }
 
 function workspaceLabel(ref: Extract<ChatReference, { type: 'workspace' }>): string {
@@ -445,6 +519,11 @@ export function buildReferencedContext(
           `Structure (depth-limited${truncated ? ', truncated' : ''}):\n${tree}\n` +
           `[End of Referenced Project]`,
       )
+    } else if (ref.type === 'selection') {
+      const budget = { used: totalBytes }
+      const section = renderSelection(ref, workspaceDir, budget)
+      totalBytes = budget.used
+      if (section) sections.push(section)
     } else if (ref.type === 'workspace') {
       const label = workspaceLabel(ref)
       const summary = typeof ref.summary === 'string' ? ref.summary.trim() : ''

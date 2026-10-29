@@ -339,6 +339,7 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
         draft: body.draft === true,
         tags: body.tags,
         tiktok: body.tiktok,
+        allowDuplicate: body.allowDuplicate === true,
         createdByUserId: userId,
       })
       return c.json({ post }, 201)
@@ -719,8 +720,23 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
         draft: body.draft === true,
         tags: body.tags,
         tiktok: body.tiktok,
+        allowDuplicate: body.allowDuplicate === true,
       })
       return c.json({ post }, 201)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Delete a post — the mirror of the user route above, so `social_media` can
+   * take down a duplicate it published instead of telling the person to do it.
+   */
+  router.delete('/workspaces/:workspaceId/social/posts/:postId', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    try {
+      return c.json(await deletePost(auth.workspaceId, c.req.param('postId')))
     } catch (err) {
       return errorResponse(c, err)
     }

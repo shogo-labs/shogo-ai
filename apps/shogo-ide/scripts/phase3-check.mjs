@@ -2,8 +2,9 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = resolve(new URL('../../..', import.meta.url).pathname)
+const root = resolve(fileURLToPath(new URL('../../..', import.meta.url)))
 const errors = []
 
 function read(relativePath) {
@@ -36,7 +37,7 @@ const extension = read('apps/shogo-ide/extensions/shogo-core/src/extension.ts')
 const chatView = read('apps/shogo-ide/extensions/shogo-core/src/chatViewProvider.ts')
 const commands = read('apps/shogo-ide/extensions/shogo-core/src/commands.ts')
 const agentClient = read('apps/shogo-ide/extensions/shogo-core/src/agentClient.ts')
-const contextStore = read('apps/shogo-ide/extensions/shogo-core/src/contextStore.ts')
+const contextOutbox = read('apps/shogo-ide/extensions/shogo-core/src/contextOutbox.ts')
 const types = read('apps/shogo-ide/extensions/shogo-core/src/types.ts')
 const web = read('apps/shogo-ide/extensions/shogo-core/src/web.ts')
 
@@ -53,6 +54,8 @@ if (extensionPackage) {
     'shogo.health.check',
     'shogo.context.addSelection',
     'shogo.context.addActiveFile',
+    'shogo.context.addExplorerItems',
+    'shogo.context.addUris',
     'shogo.context.clear',
     'shogo.patch.preview',
     'shogo.checkpoint.create',
@@ -61,6 +64,25 @@ if (extensionPackage) {
   ]) {
     assert(commands.includes(command), `manifest must contribute ${command}`)
   }
+  assert(extensionPackage.scripts?.test === 'bun test', 'shogo-core must expose its unit tests')
+  const menus = extensionPackage.contributes?.menus ?? {}
+  assert(
+    menus['explorer/context']?.some((item) => item.command === 'shogo.context.addExplorerItems'),
+    'Explorer context menu must offer "Shogo: Add to Chat"',
+  )
+  assert(
+    menus['editor/context']?.some((item) => item.command === 'shogo.context.addSelection'),
+    'editor context menu must offer "Shogo: Add to Chat"',
+  )
+  const keybinding = extensionPackage.contributes?.keybindings?.find((item) => item.command === 'shogo.context.addSelection')
+  assert(
+    keybinding?.key === 'ctrl+l' && keybinding?.mac === 'cmd+l' && keybinding?.when === 'editorTextFocus',
+    'Add to Chat must be bound to Ctrl+L / Cmd+L in the editor',
+  )
+  assert(
+    menus.commandPalette?.some((item) => item.command === 'shogo.context.addUris' && item.when === 'false'),
+    'shogo.context.addUris (Explorer drop target) must be hidden from the command palette',
+  )
 }
 
 if (tsconfig) {
@@ -83,7 +105,11 @@ assert(commands.includes('shogo.context.addActiveFile'), 'commands must support 
 assert(agentClient.includes('/health'), 'agent client must support health endpoint')
 assert(agentClient.includes('/chat'), 'agent client must support chat endpoint')
 assert(agentClient.includes('local agent bridge is not connected'), 'agent client must have no-agent fallback')
-assert(contextStore.includes('MAX_CONTEXT_TEXT_LENGTH'), 'context store must truncate context')
+assert(contextOutbox.includes('MAX_CONTEXT_TEXT_LENGTH'), 'context store must truncate context')
+assert(contextOutbox.includes('class ShogoContextOutbox'), 'context must be delivered through the acknowledged outbox')
+assert(chatView.includes("'shogo.ide.addReferences'") && chatView.includes("'shogo.ide.referencesAck'"), 'chat relay must forward Add to Chat references and their acks')
+assert(!chatView.includes('storedContext'), 'IDE context must not carry storedContext (references go to the composer)')
+read('apps/shogo-ide/extensions/shogo-core/src/references.ts')
 assert(types.includes('ShogoContextItem'), 'types must define context item contract')
 assert(web.includes("export { activate, deactivate } from './extension'"), 'web entrypoint must re-export activation')
 assert(extension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'shogo-core must register the Shogo webview provider')

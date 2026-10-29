@@ -1,0 +1,297 @@
+Shogo: accept Explorer resource drops on the Shogo Chat webview view (shogo.agentChat)
+and forward the dropped URIs to shogo-core's shogo.context.addUris command (#1082).
+Generated against microsoft/vscode 0feedbf3d9bac4e27e50d5475fe45336a67fbd7b.
+
+diff --git a/src/vs/workbench/contrib/webviewView/browser/media/shogoChatDrop.css b/src/vs/workbench/contrib/webviewView/browser/media/shogoChatDrop.css
+new file mode 100644
+index 00000000..04bf89fc
+--- /dev/null
++++ b/src/vs/workbench/contrib/webviewView/browser/media/shogoChatDrop.css
+@@ -0,0 +1,9 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Shogo Technologies, Inc. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++.shogo-chat-drop-active {
++	outline: 2px dashed var(--vscode-focusBorder);
++	outline-offset: -4px;
++}
+diff --git a/src/vs/workbench/contrib/webviewView/browser/shogoChatDropData.ts b/src/vs/workbench/contrib/webviewView/browser/shogoChatDropData.ts
+new file mode 100644
+index 00000000..2535ffe1
+--- /dev/null
++++ b/src/vs/workbench/contrib/webviewView/browser/shogoChatDropData.ts
+@@ -0,0 +1,149 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Shogo Technologies, Inc. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++// Shogo: Explorer -> Shogo Chat drag and drop. Kept free of imports so it can be
++// unit-tested outside the workbench (apps/shogo-ide/scripts/__tests__).
++
++/** The Shogo Chat webview view contributed by the bundled shogo-core extension. */
++export const SHOGO_CHAT_VIEW_ID = 'shogo.agentChat';
++
++/** shogo-core command that adds dropped resources to the chat composer. */
++export const SHOGO_ADD_URIS_COMMAND = 'shogo.context.addUris';
++
++/** Class set on the webview container while a resource drag hovers it. */
++export const SHOGO_CHAT_DROP_ACTIVE_CLASS = 'shogo-chat-drop-active';
++
++/**
++ * Mirrors DataTransfers.RESOURCES / CodeDataTransfers.EDITORS / CodeDataTransfers.FILES. Plain OS file drags
++ * (`Files`) are left to the chat webview, which attaches them itself.
++ */
++const RESOURCE_URLS = 'ResourceURLs';
++const CODE_EDITORS = 'CodeEditors';
++const CODE_FILES = 'CodeFiles';
++const URI_LIST = 'text/uri-list';
++
++export const SHOGO_CHAT_RESOURCE_DRAG_TYPES: readonly string[] = [RESOURCE_URLS, CODE_EDITORS, CODE_FILES, URI_LIST];
++
++export interface ShogoDropDataTransfer {
++	readonly types: ArrayLike<string>;
++	getData(format: string): string;
++}
++
++/** True when the drag carries files, folders or editors (not, e.g., a view being moved). */
++export function isShogoChatResourceDrag(types: ArrayLike<string> | null | undefined): boolean {
++	if (!types) {
++		return false;
++	}
++	const list = Array.from(types).map(t => t.toLowerCase());
++	return SHOGO_CHAT_RESOURCE_DRAG_TYPES.some(t => list.includes(t.toLowerCase()));
++}
++
++function readJson(dataTransfer: ShogoDropDataTransfer, format: string): unknown {
++	let raw = '';
++	try {
++		raw = dataTransfer.getData(format);
++	} catch {
++		return undefined;
++	}
++	if (!raw) {
++		return undefined;
++	}
++	try {
++		return JSON.parse(raw);
++	} catch {
++		return undefined;
++	}
++}
++
++/** file:// URI for a filesystem path (POSIX or Windows). */
++export function fileUriFromPath(path: string): string {
++	let p = path.replace(/\\/g, '/');
++	if (!p.startsWith('/')) {
++		p = `/${p}`;
++	}
++	return `file://${encodeURI(p).replace(/#/g, '%23').replace(/\?/g, '%3F')}`;
++}
++
++function uriComponentsToString(value: unknown): string | undefined {
++	if (typeof value === 'string') {
++		return value;
++	}
++	if (!value || typeof value !== 'object') {
++		return undefined;
++	}
++	const c = value as { scheme?: unknown; authority?: unknown; path?: unknown; external?: unknown };
++	if (typeof c.external === 'string') {
++		return c.external;
++	}
++	if (typeof c.scheme !== 'string' || typeof c.path !== 'string') {
++		return undefined;
++	}
++	const authority = typeof c.authority === 'string' ? c.authority : '';
++	return `${c.scheme}://${authority}${encodeURI(c.path)}`;
++}
++
++/** Resource URIs carried by a workbench drag, in order, without duplicates. */
++export function parseShogoChatDropData(dataTransfer: ShogoDropDataTransfer): string[] {
++	const found: string[] = [];
++
++	const resources = readJson(dataTransfer, RESOURCE_URLS);
++	if (Array.isArray(resources)) {
++		for (const entry of resources) {
++			if (typeof entry === 'string' && entry) {
++				found.push(entry);
++			}
++		}
++	}
++
++	const editors = readJson(dataTransfer, CODE_EDITORS);
++	if (Array.isArray(editors)) {
++		for (const editor of editors) {
++			const uri = uriComponentsToString((editor as { resource?: unknown } | null)?.resource);
++			if (uri) {
++				found.push(uri);
++			}
++		}
++	}
++
++	const codeFiles = readJson(dataTransfer, CODE_FILES);
++	if (Array.isArray(codeFiles)) {
++		for (const path of codeFiles) {
++			if (typeof path === 'string' && path) {
++				found.push(fileUriFromPath(path));
++			}
++		}
++	}
++
++	let uriList = '';
++	try {
++		uriList = dataTransfer.getData(URI_LIST);
++	} catch {
++		uriList = '';
++	}
++	for (const line of uriList.split(/\r?\n/)) {
++		const value = line.trim();
++		if (value && !value.startsWith('#')) {
++			found.push(value);
++		}
++	}
++
++	return mergeShogoChatDropUris(found);
++}
++
++/** Concatenate URI lists, dropping empties and duplicates (first occurrence wins). */
++export function mergeShogoChatDropUris(...lists: ReadonlyArray<ReadonlyArray<string | undefined>>): string[] {
++	const seen = new Set<string>();
++	const out: string[] = [];
++	for (const list of lists) {
++		for (const uri of list) {
++			if (!uri || seen.has(uri)) {
++				continue;
++			}
++			seen.add(uri);
++			out.push(uri);
++		}
++	}
++	return out;
++}
+diff --git a/src/vs/workbench/contrib/webviewView/browser/webviewViewPane.ts b/src/vs/workbench/contrib/webviewView/browser/webviewViewPane.ts
+index e0e44567..ca3c27d7 100644
+--- a/src/vs/workbench/contrib/webviewView/browser/webviewViewPane.ts
++++ b/src/vs/workbench/contrib/webviewView/browser/webviewViewPane.ts
+@@ -29,6 +29,10 @@ import { IWebviewViewService, WebviewView } from './webviewViewService.js';
+ import { IActivityService, NumberBadge } from '../../../services/activity/common/activity.js';
+ import { IExtensionService } from '../../../services/extensions/common/extensions.js';
+ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
++import { ICommandService } from '../../../../platform/commands/common/commands.js';
++import { extractEditorsDropData } from '../../../../platform/dnd/browser/dnd.js';
++import { isShogoChatResourceDrag, mergeShogoChatDropUris, parseShogoChatDropData, SHOGO_ADD_URIS_COMMAND, SHOGO_CHAT_DROP_ACTIVE_CLASS, SHOGO_CHAT_VIEW_ID } from './shogoChatDropData.js';
++import './media/shogoChatDrop.css';
+ 
+ const storageKeys = {
+ 	webviewState: 'webviewState',
+@@ -192,6 +196,39 @@ export class WebviewViewPane extends ViewPane {
+ 			this.viewState[storageKeys.webviewState] = webview.state;
+ 		}));
+ 
++		// Shogo: accept Explorer / editor resource drops on the Shogo Chat view and hand
++		// them to shogo-core. Webview views block iframe drag events during workbench
++		// drags (WebviewWindowDragMonitor), so the drop has to be caught here. Registered
++		// before the re-dispatch loop below, which stops propagation of leave/end.
++		if (this.id === SHOGO_CHAT_VIEW_ID) {
++			const container = webview.container;
++			const clearDropTarget = () => container.classList.remove(SHOGO_CHAT_DROP_ACTIVE_CLASS);
++			this._webviewDisposables.add(addDisposableListener(container, EventType.DRAG_OVER, (e: DragEvent) => {
++				if (!e.dataTransfer || !isShogoChatResourceDrag(e.dataTransfer.types)) {
++					return;
++				}
++				e.preventDefault();
++				e.dataTransfer.dropEffect = 'copy';
++				container.classList.add(SHOGO_CHAT_DROP_ACTIVE_CLASS);
++			}));
++			this._webviewDisposables.add(addDisposableListener(container, EventType.DRAG_LEAVE, clearDropTarget));
++			this._webviewDisposables.add(addDisposableListener(container, EventType.DRAG_END, clearDropTarget));
++			this._webviewDisposables.add(addDisposableListener(container, EventType.DROP, (e: DragEvent) => {
++				clearDropTarget();
++				if (!e.dataTransfer || !isShogoChatResourceDrag(e.dataTransfer.types)) {
++					return;
++				}
++				e.preventDefault();
++				const uris = mergeShogoChatDropUris(
++					parseShogoChatDropData(e.dataTransfer),
++					extractEditorsDropData(e).map(input => input.resource?.toString()),
++				);
++				if (uris.length > 0) {
++					this.instantiationService.invokeFunction(accessor => accessor.get(ICommandService).executeCommand(SHOGO_ADD_URIS_COMMAND, uris));
++				}
++			}));
++		}
++
+ 		// Re-dispatch all drag events back to the drop target to support view drag drop
+ 		for (const event of [EventType.DRAG, EventType.DRAG_END, EventType.DRAG_ENTER, EventType.DRAG_LEAVE, EventType.DRAG_START]) {
+ 			this._webviewDisposables.add(addDisposableListener(this._webview.value.container, event, e => {
+diff --git a/src/vs/workbench/contrib/webviewView/test/browser/shogoChatDrop.test.ts b/src/vs/workbench/contrib/webviewView/test/browser/shogoChatDrop.test.ts
+new file mode 100644
+index 00000000..8d19464c
+--- /dev/null
++++ b/src/vs/workbench/contrib/webviewView/test/browser/shogoChatDrop.test.ts
+@@ -0,0 +1,62 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Shogo Technologies, Inc. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++import assert from 'assert';
++import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
++import { fileUriFromPath, isShogoChatResourceDrag, mergeShogoChatDropUris, parseShogoChatDropData, ShogoDropDataTransfer } from '../../browser/shogoChatDropData.js';
++
++function transfer(data: Record<string, string>): ShogoDropDataTransfer {
++	return { types: Object.keys(data), getData: format => data[format] ?? '' };
++}
++
++suite('Shogo chat explorer drop', () => {
++	ensureNoDisposablesAreLeakedInTestSuite();
++
++	test('recognises resource drags only', () => {
++		assert.strictEqual(isShogoChatResourceDrag(['ResourceURLs']), true);
++		assert.strictEqual(isShogoChatResourceDrag(['CodeFiles']), true);
++		assert.strictEqual(isShogoChatResourceDrag(['Files']), false);
++		assert.strictEqual(isShogoChatResourceDrag(['text/uri-list']), true);
++		assert.strictEqual(isShogoChatResourceDrag(['application/vnd.code.tree.views']), false);
++		assert.strictEqual(isShogoChatResourceDrag([]), false);
++		assert.strictEqual(isShogoChatResourceDrag(undefined), false);
++	});
++
++	test('reads ResourceURLs JSON', () => {
++		const uris = parseShogoChatDropData(transfer({ ResourceURLs: JSON.stringify(['file:///repo/a.ts', 'file:///repo/src']) }));
++		assert.deepStrictEqual(uris, ['file:///repo/a.ts', 'file:///repo/src']);
++	});
++
++	test('reads CodeFiles JSON paths as file URIs', () => {
++		const uris = parseShogoChatDropData(transfer({ CodeFiles: JSON.stringify(['/repo/a b.ts', 'C:\\repo\\b.ts']) }));
++		assert.deepStrictEqual(uris, ['file:///repo/a%20b.ts', 'file:///C:/repo/b.ts']);
++	});
++
++	test('reads CodeEditors resources and text/uri-list', () => {
++		const uris = parseShogoChatDropData(transfer({
++			CodeEditors: JSON.stringify([{ resource: { scheme: 'file', authority: '', path: '/repo/c.ts' } }]),
++			'text/uri-list': '# comment\r\nfile:///repo/d.ts\r\n',
++		}));
++		assert.deepStrictEqual(uris, ['file:///repo/c.ts', 'file:///repo/d.ts']);
++	});
++
++	test('no or malformed data yields nothing', () => {
++		assert.deepStrictEqual(parseShogoChatDropData(transfer({})), []);
++		assert.deepStrictEqual(parseShogoChatDropData(transfer({ ResourceURLs: '{not json', CodeFiles: '42' })), []);
++	});
++
++	test('duplicates are removed across formats', () => {
++		const uris = parseShogoChatDropData(transfer({
++			ResourceURLs: JSON.stringify(['file:///repo/a.ts', 'file:///repo/a.ts']),
++			'text/uri-list': 'file:///repo/a.ts',
++		}));
++		assert.deepStrictEqual(uris, ['file:///repo/a.ts']);
++		assert.deepStrictEqual(mergeShogoChatDropUris(['x', undefined], ['x', 'y']), ['x', 'y']);
++	});
++
++	test('file URIs escape reserved characters', () => {
++		assert.strictEqual(fileUriFromPath('/repo/a#1?.ts'), 'file:///repo/a%231%3F.ts');
++	});
++});

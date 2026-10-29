@@ -114,6 +114,22 @@ declare module 'vscode' {
   export interface TextEditor {
     document: TextDocument
     selection: Selection
+    selections: readonly Selection[]
+  }
+
+  export enum FileType {
+    Unknown = 0,
+    File = 1,
+    Directory = 2,
+    SymbolicLink = 64,
+  }
+
+  export interface FileStat {
+    type: FileType
+  }
+
+  export interface FileSystem {
+    stat(uri: Uri): Thenable<FileStat>
   }
 
   export interface Range {
@@ -147,8 +163,11 @@ declare module 'vscode' {
   export namespace workspace {
     const workspaceFolders: readonly WorkspaceFolder[] | undefined
     const isTrusted: boolean
+    const fs: FileSystem
     function getConfiguration(section?: string): WorkspaceConfiguration
     function onDidGrantWorkspaceTrust(listener: () => unknown): Disposable
+    function asRelativePath(pathOrUri: string | Uri, includeWorkspaceFolder?: boolean): string
+    function getWorkspaceFolder(uri: Uri): WorkspaceFolder | undefined
   }
 
   export namespace window {

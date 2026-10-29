@@ -2,8 +2,9 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = resolve(new URL('../../..', import.meta.url).pathname)
+const root = resolve(fileURLToPath(new URL('../../..', import.meta.url)))
 const errors = []
 
 function read(relativePath) {
@@ -53,7 +54,7 @@ assert(chatView.includes('SHOGO_DESKTOP_CHAT_URL'), 'webview must read the Deskt
 assert(chatView.includes('desktopChat.url') && manifest?.contributes?.configuration?.properties?.['shogo.desktopChat.url'], 'webview must support configured Desktop chat URL fallback')
 assert(chatView.includes('<iframe'), 'webview must embed the Desktop chat route')
 assert(chatView.includes('openExternal'), 'webview must offer an external-open fallback')
-assert(chatView.includes('addSelection'), 'webview must preserve selection-to-context action')
+assert(chatView.includes('shogo.ide.addReferences'), 'webview must preserve selection-to-chat handoff')
 assert(chatView.includes('https://*.vscode-cdn.net'), 'webview CSP must allow Code-OSS webview CDN frames')
 assert(chatView.includes('http://localhost:*') && chatView.includes('http://127.0.0.1:*'), 'webview CSP must allow local Desktop chat frames')
 
