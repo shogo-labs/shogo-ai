@@ -950,6 +950,8 @@ export const api = {
     const res = await http.get<{
       conversations: Array<{ id: string; name: string; kind: string }>
       projects: Array<{ id: string; name: string }>
+      /** The caller's own linked desktop (Settings → My Machines), if any. */
+      desktop: { linked: boolean; name: string | null; status: string }
     }>(`/api/workspace-moves/options?workspaceId=${encodeURIComponent(workspaceId)}`)
     return res.data
   },

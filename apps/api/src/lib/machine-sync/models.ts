@@ -228,6 +228,9 @@ const NEVER_MACHINE_LOCAL = [
   'MachineSyncState',
   'MachineMirrorRow',
   'MachineSyncChange',
+  // A move is a job on the machine that started it: its cursors and id map
+  // describe bytes in flight between two instances, and mean nothing elsewhere.
+  'WorkspaceMove',
 ] as const
 
 const NEVER_LIVE_CALL = [

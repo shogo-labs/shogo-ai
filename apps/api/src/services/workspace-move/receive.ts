@@ -150,7 +150,7 @@ export async function relinkTargetProject(
   const dir = targetProjectDir(input.projectId)
   const { mkdirSync } = await import('node:fs')
   mkdirSync(dir, { recursive: true })
-  const { spawnSync } = await import('node:child_process')
+  const { spawnSync } = await import('@shogo/shared-runtime/child-process')
   const clone = spawnSync('git', ['clone', '--branch', input.branch, input.remote, dir], {
     encoding: 'utf8',
     timeout: 600_000,

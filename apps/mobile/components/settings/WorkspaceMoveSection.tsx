@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Pressable, View } from 'react-native'
+import { Platform, Pressable, View } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainHttp } from '../../contexts/domain'
@@ -87,7 +87,11 @@ export const WorkspaceMoveSection = observer(function WorkspaceMoveSection() {
   const [mode, setMode] = useState<'all' | 'selected'>('all')
   const [conversationIds, setConversationIds] = useState<string[]>([])
   const [projectIds, setProjectIds] = useState<string[]>([])
-  const [options, setOptions] = useState<{ conversations: Plan['selection']['conversations']; projects: Plan['selection']['projects'] } | null>(null)
+  const [options, setOptions] = useState<{
+    conversations: Plan['selection']['conversations']
+    projects: Plan['selection']['projects']
+    desktop: { linked: boolean; name: string | null; status: string }
+  } | null>(null)
   const [plan, setPlan] = useState<Plan | null>(null)
   const [move, setMove] = useState<Move | null>(null)
   const [busy, setBusy] = useState<'plan' | 'start' | 'action' | null>(null)
@@ -204,6 +208,11 @@ export const WorkspaceMoveSection = observer(function WorkspaceMoveSection() {
 
   const shown = plan ?? move?.plan ?? null
   const running = move ? ['planning', 'records', 'files', 'handover'].includes(move.status) : false
+  // A cloud -> desktop move is driven by the desktop, so on the web it can only
+  // start once a machine is linked. Without this the section offers a move that
+  // can never run (plan §4).
+  const needsDesktop =
+    direction === 'cloud_to_desktop' && Platform.OS === 'web' && !(options?.desktop?.linked ?? false)
 
   return (
     <Card>
@@ -306,11 +315,21 @@ export const WorkspaceMoveSection = observer(function WorkspaceMoveSection() {
           </View>
         ) : null}
 
-        <Button variant="outline" onPress={review} disabled={busy !== null || running}>
+        <Button variant="outline" onPress={review} disabled={busy !== null || running || needsDesktop}>
           <Text className="text-sm font-medium">{busy === 'plan' ? 'Reviewing…' : 'Review what will move'}</Text>
         </Button>
 
         {error ? <Text className="text-xs text-red-400">{error}</Text> : null}
+
+        {needsDesktop ? (
+          <View className="gap-1 rounded-lg border border-border bg-muted/40 p-3">
+            <Text className="text-sm font-medium">Open in Shogo Desktop to start</Text>
+            <Text className="text-xs text-muted-foreground">
+              A cloud → desktop move is driven by the desktop: the cloud cannot reach your
+              machine. Link one in Settings → My Machines, then open this workspace there.
+            </Text>
+          </View>
+        ) : null}
 
         {shown ? (
           <View className="gap-1 rounded-lg border border-border p-3">
@@ -363,7 +382,7 @@ export const WorkspaceMoveSection = observer(function WorkspaceMoveSection() {
         ) : null}
 
         {!move ? (
-          <Button onPress={start} disabled={busy !== null || !shown || !shown.quota.ok}>
+          <Button onPress={start} disabled={busy !== null || !shown || !shown.quota.ok || needsDesktop}>
             <Text className="text-sm font-medium text-primary-foreground">
               {busy === 'start' ? 'Starting…' : 'Start move'}
             </Text>

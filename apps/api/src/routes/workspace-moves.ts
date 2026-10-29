@@ -21,7 +21,8 @@
 import { Hono } from 'hono'
 import { stream } from 'hono/streaming'
 import { decide, denialResponse, loadAccess, principalOf } from '../lib/authz'
-import { prisma } from '../lib/prisma'
+import { prisma, InstanceKind } from '../lib/prisma'
+import { getMachineGroupStatus } from './instances'
 import { workspacesDir } from '../services/workspace-export/files'
 import {
   createMove,
@@ -87,7 +88,7 @@ export function workspaceMoveRoutes(): Hono {
     const workspaceId = c.req.query('workspaceId') ?? ''
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
-    const [conversations, projects] = await Promise.all([
+    const [conversations, projects, desktops] = await Promise.all([
       prisma.conversation.findMany({
         where: { workspaceId },
         select: { id: true, name: true, kind: true },
@@ -98,8 +99,19 @@ export function workspaceMoveRoutes(): Hono {
         select: { id: true, name: true },
         orderBy: { createdAt: 'asc' },
       }),
+      // Cloud -> desktop needs a desktop to drive it: the cloud cannot reach a
+      // laptop. Same rows and same live-status helper as Settings -> My Machines
+      // (SHO-185), so the two screens can never disagree about what is linked.
+      prisma.instance.findMany({
+        where: { userId: String(auth.principal.userId ?? ''), kind: InstanceKind.desktop },
+        select: { id: true, name: true, lastSeenAt: true },
+        orderBy: { lastSeenAt: 'desc' },
+      }),
     ])
-    return c.json({ conversations, projects })
+    const desktop = desktops.length
+      ? { linked: true, name: desktops[0]!.name, status: await getMachineGroupStatus(desktops) }
+      : { linked: false, name: null, status: 'offline' as const }
+    return c.json({ conversations, projects, desktop })
   })
 
   app.post('/plan', async (c) => {

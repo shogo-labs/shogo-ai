@@ -13,7 +13,7 @@
  * A folder that is not a repo, or has no remote, is copied file by file.
  */
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '@shogo/shared-runtime/child-process'
 
 export interface GitInspection {
   isRepo: boolean
