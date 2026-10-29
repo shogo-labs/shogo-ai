@@ -19,6 +19,7 @@
 
 import { diffFileManifest } from './files'
 import type { HandoverKind } from './handover'
+import { deriveMoveId } from './ids'
 import type { MoveSource, MoveTarget } from './link'
 import { WORKSPACE_ROOT_ID } from './plan'
 import type {
@@ -153,12 +154,16 @@ export async function runMove(input: RunnerInput): Promise<RunnerResult> {
       git?: { remote: string; branch: string }
     }> = [
       { id: WORKSPACE_ROOT_ID, name: '(workspace root)', mode: 'copy' },
-      ...input.plan.projects.map((project) => ({
-        id: project.id,
-        name: project.name,
-        mode: project.mode,
-        git: project.git ? { remote: project.git.remote, branch: project.git.branch } : undefined,
-      })),
+      // The plan lists the workspace root too (its bytes count against the
+      // quota), so drop it here rather than walking and hashing it twice.
+      ...input.plan.projects
+        .filter((project) => project.id !== WORKSPACE_ROOT_ID)
+        .map((project) => ({
+          id: project.id,
+          name: project.name,
+          mode: project.mode,
+          git: project.git ? { remote: project.git.remote, branch: project.git.branch } : undefined,
+        })),
     ]
 
     const doneProjects = new Set<string>()
@@ -170,7 +175,14 @@ export async function runMove(input: RunnerInput): Promise<RunnerResult> {
     for (const project of projects) {
       if (doneProjects.has(project.id)) continue
       await checkControl()
-      const targetProjectId = project.id === WORKSPACE_ROOT_ID ? WORKSPACE_ROOT_ID : project.id
+      // The records phase gave the target's `Project` row a derived id, so the
+      // bytes have to land under *that* id: `workspaces/<derivedId>`. Using the
+      // source id here wrote every file into a directory no `Project` row points
+      // at, and in a same-instance move it silently overwrote the source's own
+      // files. The workspace root is the one exception — it keeps its sentinel,
+      // which `moveDirFor` maps to `.workspace-roots/<workspaceId>`.
+      const targetProjectId =
+        project.id === WORKSPACE_ROOT_ID ? WORKSPACE_ROOT_ID : deriveMoveId(input.moveId, project.id)
 
       if (project.mode === 'git-relink' && project.git) {
         await input.target.relink({

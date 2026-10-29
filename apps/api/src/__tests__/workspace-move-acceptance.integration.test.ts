@@ -37,6 +37,7 @@ const { buildMovePlan, collectMoveRows } = await import('../services/workspace-m
 const { LocalMoveSource, LocalMoveTarget } = await import('../services/workspace-move/link')
 const { runMove } = await import('../services/workspace-move/runner')
 const { moveJobContext } = await import('../services/workspace-move/index')
+const { deriveMoveId } = await import('../services/workspace-move/ids')
 const { WORKSPACE_ROOT_ID, moveDirFor } = await import('../services/workspace-move/types').then(
   async (types: any) => ({ ...types, moveDirFor: (await import('../services/workspace-move/files')).moveDirFor }),
 )
@@ -161,6 +162,7 @@ describe('a move against a real database', () => {
 
     const source = new LocalMoveSource(db, BASE)
     const target = new LocalMoveTarget(db, BASE)
+    const logs: string[] = []
     const result = await runMove({
       moveId: 'move-sho246-1',
       direction: 'desktop_to_cloud',
@@ -176,6 +178,7 @@ describe('a move against a real database', () => {
       plan,
       progress: {},
       handover: { schedules: [], triggers: [] },
+      log: (line: string) => logs.push(line),
     })
 
     // The whole point: it ran to the end instead of failing on `slug`.
@@ -192,6 +195,25 @@ describe('a move against a real database', () => {
     expect(targets[0].slug).toBeTruthy()
     // The target must not point at itself as "moved".
     expect(targets[0].movedToWorkspaceId).toBeNull()
+
+    // ── the target keeps the source's instance size ──
+    // `buildMovePlan` selected only `{id,name,kind}`, so the frozen size was
+    // always null and every move landed on the `micro` column default while the
+    // plan's own quota check still read the real size.
+    const targetRow = await db.workspace.findUnique({
+      where: { id: result.targetWorkspaceId },
+      select: { instanceSize: true },
+    })
+    expect(targetRow.instanceSize).toBe('small')
+    expect(plan.target.instanceSize).toBe('small')
+
+    // ── the workspace root is walked once, not twice ──
+    // It is in `plan.projects` (its bytes count against the quota) *and* added
+    // explicitly by the runner, so the second pass only re-hashed what it had
+    // just written.
+    const rootLines = logs.filter((line) => line.startsWith('(workspace root)'))
+    expect(rootLines.length).toBe(1)
+    expect(rootLines.some((line) => line.includes('already at the target'))).toBe(false)
 
     // The rows that were in the plan are there.
     expect(rows.size).toBeGreaterThan(0)
@@ -226,8 +248,20 @@ describe('a move against a real database', () => {
       join(BASE, '.workspace-roots', result.targetWorkspaceId),
     )
 
-    // ── the project file landed too ──
+    // ── the project's bytes land where its *target* row points ──
+    // The records phase gives the target `Project` a derived id, so the files
+    // must live at `workspaces/<derivedId>`. Asserting the source id here (as
+    // this test first did) passes whether or not the files phase remapped, which
+    // is how a move that wrote every file into an orphan directory stayed green.
+    const targetProjects = await db.project.findMany({
+      where: { workspaceId: result.targetWorkspaceId },
+      select: { id: true, name: true },
+    })
+    expect(targetProjects).toEqual([{ id: deriveMoveId('move-sho246-1', projectId), name: 'site' }])
+    expect(readFileSync(join(BASE, targetProjects[0]!.id, PROJECT_FILE), 'utf8')).toBe(PROJECT_BYTES)
+    // The source keeps its own copy, untouched.
     expect(readFileSync(join(BASE, projectId, PROJECT_FILE), 'utf8')).toBe(PROJECT_BYTES)
+    expect(targetProjects[0]!.id).not.toBe(projectId)
   }, 60_000)
 
   test('a folder-linked project is re-linked, and the plan says what stays behind', async () => {

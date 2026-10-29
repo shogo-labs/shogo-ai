@@ -171,7 +171,10 @@ export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlan
   const db: any = input.db ?? prisma
   const workspace = await db.workspace.findUnique({
     where: { id: input.workspaceId },
-    select: { id: true, name: true, kind: true },
+    // `instanceSize` is here because the plan freezes it for the target: without
+    // it every move created a `micro` workspace (the column default) no matter
+    // what the source was, while the quota check above still read the real size.
+    select: { id: true, name: true, kind: true, instanceSize: true },
   })
   if (!workspace) throw new WorkspaceMoveError('Workspace not found', 404, 'workspace_not_found')
 
