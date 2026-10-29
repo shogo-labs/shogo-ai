@@ -484,12 +484,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   )
 })
 
-/** Composer attachments are data URLs; the upload endpoint takes a file. */
+/** Convert a composer attachment into the multipart file the upload endpoint accepts. */
 async function uploadable(file: FileAttachment): Promise<File | UploadPart> {
   const type = file.type || 'application/octet-stream'
   // A voice note recorded on a phone is already a file on disk; streaming it
   // avoids base64ing a few megabytes through the JS thread.
   if (file.uri && Platform.OS !== 'web') return localFilePart(file.uri, file.name, type)
+  // Large web picks intentionally have no data URL; upload the retained File
+  // itself instead of decoding that empty placeholder into a zero-byte file.
+  if (Platform.OS === 'web' && file.file) return file.file
   const base64 = file.dataUrl.slice(file.dataUrl.indexOf(',') + 1)
   const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
   if (Platform.OS === 'web') return new File([bytes], file.name, { type })

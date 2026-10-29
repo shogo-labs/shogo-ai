@@ -12,6 +12,7 @@ const copied: string[] = []
 const pins: Array<{ id: string; pinned: boolean }> = []
 const reminders: Array<{ messageId: string; remindAt: string }> = []
 const uploaded: string[] = []
+const uploadedParts: Array<{ name: string; size?: number; type?: string }> = []
 const updates: Array<{ id: string; patch: unknown }> = []
 const decisions: Array<{ id: string; decision: string }> = []
 const sentWakes: string[] = []
@@ -171,8 +172,9 @@ mock.module('../../../lib/team-chat-api', () => ({
       return {}
     },
     workLog: (id: string) => { workLogs.push(id); return workLogResult() },
-    upload: async (_id: string, file: { name: string }) => {
+    upload: async (_id: string, file: { name: string; size?: number; type?: string }) => {
       uploaded.push(file.name)
+      uploadedParts.push(file)
       return { id: `att-${file.name}`, name: file.name, mimeType: 'text/plain', size: 1, width: null, height: null, url: '/f' }
     },
     update: async (id: string, patch: unknown) => {
@@ -1232,6 +1234,7 @@ describe('Composer emoji and files', () => {
 
   test('dropped files are staged in the composer and uploaded when the message is sent', async () => {
     uploaded.length = 0
+    uploadedParts.length = 0
     const onSend = mock(async () => {})
     const ref = createRef<ComposerHandle>()
     render(<Composer ref={ref} workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={onSend} />)
@@ -1248,6 +1251,31 @@ describe('Composer emoji and files', () => {
     })
     await waitFor(() => expect(onSend).toHaveBeenCalledWith({ text: 'see attached', attachmentIds: ['att-notes.txt'], alsoSentToChannel: undefined }))
     expect(uploaded).toEqual(['notes.txt'])
+  })
+
+  test('uploads the original File for a large web attachment with no data URL', async () => {
+    uploaded.length = 0
+    uploadedParts.length = 0
+    const onSend = mock(async () => {})
+    const ref = createRef<ComposerHandle>()
+    const original = new File([new Uint8Array(8 * 1024 * 1024 + 1)], 'clip.mov', { type: 'video/quicktime' })
+    render(<Composer ref={ref} workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={onSend} />)
+
+    await act(async () => {
+      ref.current!.addFiles([original])
+    })
+    await waitFor(() => expect(screen.getByText('clip.mov')).toBeTruthy())
+
+    const input = composerInput()
+    type(input, 'video attached')
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+    })
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith({ text: 'video attached', attachmentIds: ['att-clip.mov'], alsoSentToChannel: undefined }))
+    expect(uploadedParts[0]).toBe(original)
+    expect(uploadedParts[0]?.size).toBe(original.size)
+    expect(uploadedParts[0]?.type).toBe('video/quicktime')
   })
 })
 
