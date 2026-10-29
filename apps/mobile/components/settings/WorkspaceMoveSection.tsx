@@ -90,7 +90,7 @@ export const WorkspaceMoveSection = observer(function WorkspaceMoveSection() {
   const [options, setOptions] = useState<{
     conversations: Plan['selection']['conversations']
     projects: Plan['selection']['projects']
-    desktop: { linked: boolean; name: string | null; status: string }
+    desktop: { linked: boolean; name: string | null; lastSeenAt: string | null }
   } | null>(null)
   const [plan, setPlan] = useState<Plan | null>(null)
   const [move, setMove] = useState<Move | null>(null)

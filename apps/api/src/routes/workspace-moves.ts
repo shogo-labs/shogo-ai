@@ -22,7 +22,6 @@ import { Hono } from 'hono'
 import { stream } from 'hono/streaming'
 import { decide, denialResponse, loadAccess, principalOf } from '../lib/authz'
 import { prisma, InstanceKind } from '../lib/prisma'
-import { getMachineGroupStatus } from './instances'
 import { workspacesDir } from '../services/workspace-export/files'
 import {
   createMove,
@@ -100,8 +99,10 @@ export function workspaceMoveRoutes(): Hono {
         orderBy: { createdAt: 'asc' },
       }),
       // Cloud -> desktop needs a desktop to drive it: the cloud cannot reach a
-      // laptop. Same rows and same live-status helper as Settings -> My Machines
-      // (SHO-185), so the two screens can never disagree about what is linked.
+      // laptop. Same rows Settings -> My Machines lists (SHO-185), so the two
+      // screens cannot disagree about whether a machine is linked. Deliberately
+      // *not* the live status: that reads Redis (`tunnel-redis`), which the
+      // desktop bundle must not contain — this route is mounted there too.
       prisma.instance.findMany({
         where: { userId: String(auth.principal.userId ?? ''), kind: InstanceKind.desktop },
         select: { id: true, name: true, lastSeenAt: true },
@@ -109,8 +110,8 @@ export function workspaceMoveRoutes(): Hono {
       }),
     ])
     const desktop = desktops.length
-      ? { linked: true, name: desktops[0]!.name, status: await getMachineGroupStatus(desktops) }
-      : { linked: false, name: null, status: 'offline' as const }
+      ? { linked: true, name: desktops[0]!.name, lastSeenAt: desktops[0]!.lastSeenAt?.toISOString() ?? null }
+      : { linked: false, name: null, lastSeenAt: null }
     return c.json({ conversations, projects, desktop })
   })
 
