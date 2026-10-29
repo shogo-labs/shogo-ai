@@ -28,6 +28,7 @@ import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './l
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceExportRoutes } from './routes/workspace-export'
+import { workspaceMoveRoutes } from './routes/workspace-moves'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
@@ -1651,6 +1652,10 @@ app.route('/api', workspaceAgentRoutes({
 // files). Mounted before the rest of the `/api/workspaces` routes so
 // `POST /api/workspaces/import` is never shadowed by a `:workspaceId` route.
 app.route('/api/workspaces', workspaceExportRoutes())
+// Desktop <-> cloud workspace move: the driver's own endpoints plus the
+// `/serve` and `/receive` halves the other side of the link calls. Mounted on
+// both composers so a move can never work in one direction only.
+app.route('/api/workspace-moves', workspaceMoveRoutes())
 app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
 app.route('/api', sharedMeetingRoutes())
 // Workspace channels (team chat with @mentionable agents).

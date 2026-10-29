@@ -11,6 +11,7 @@
 import { ScrollView, View } from 'react-native'
 import { Text } from './account-sheet-chrome'
 import { WorkspaceExportSection } from './WorkspaceExportSection'
+import { WorkspaceMoveSection } from './WorkspaceMoveSection'
 
 export function WorkspaceExportView() {
   return (
@@ -23,10 +24,12 @@ export function WorkspaceExportView() {
         <View className="gap-1">
           <Text className="text-xl font-semibold">Backup &amp; export</Text>
           <Text className="text-sm text-muted-foreground">
-            Download everything that belongs to this workspace as one archive, or restore one.
+            Download everything that belongs to this workspace as one archive, restore one, or
+            move the workspace to the other side without an archive at all.
           </Text>
         </View>
         <WorkspaceExportSection />
+        <WorkspaceMoveSection />
       </View>
     </ScrollView>
   )

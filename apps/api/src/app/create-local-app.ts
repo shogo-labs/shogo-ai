@@ -22,6 +22,7 @@ import { projectChatRoutes } from '../routes/project-chat'
 import { workspaceChatRoutes } from '../routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from '../routes/workspace-agent'
 import { workspaceExportRoutes } from '../routes/workspace-export'
+import { workspaceMoveRoutes } from '../routes/workspace-moves'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace-meetings'
 import { conversationRoutes } from '../routes/conversations'
 import { workBoardRoutes } from '../routes/work-boards'
@@ -170,6 +171,9 @@ export function createLocalApp(): LocalAppBundle {
   // Workspace-level export/import — the desktop must answer this too, or the
   // "Backup & export" tab works in the cloud and 404s locally.
   app.route('/api/workspaces', workspaceExportRoutes())
+  // A move is driven from the desktop in both directions, so the desktop needs
+  // its own copy of the whole surface (`/plan`, `/serve/*`, `/receive/*`).
+  app.route('/api/workspace-moves', workspaceMoveRoutes())
   app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
   app.route('/api', sharedMeetingRoutes())
   const scriptedChannelAgents = scriptedAgentInvokeFromEnv()

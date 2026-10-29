@@ -125,6 +125,10 @@ const RESOURCE_LOOKUPS: Record<string, Lookup> = {
   // Work boards: /api/boards/:id/... and /api/work-items/:id/... (people and agents).
   boards: directWs('board'),
   'work-items': directWs('workItem'),
+  // /api/workspace-moves/:id/{plan,pause,resume,cancel,switch-over,switch-back}
+  // carry no workspaceId in the path, so the move row has to name its own
+  // workspace — otherwise a paused move could be resumed in the wrong region.
+  'workspace-moves': directWs('workspaceMove'),
   // Handwritten (non-generated) workspace-owned resources.
   'api-keys': directWs('apiKey'),
   instances: directWs('instance'),

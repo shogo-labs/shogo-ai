@@ -943,6 +943,68 @@ export const api = {
     return headers
   },
 
+  // ─── Desktop <-> cloud workspace move (SHO-246) ───────────────────
+
+  /** Channels and projects the move picker offers. No file walk, so it is cheap. */
+  async getWorkspaceMoveOptions(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{
+      conversations: Array<{ id: string; name: string; kind: string }>
+      projects: Array<{ id: string; name: string }>
+      /** The caller's own linked desktop (Settings → My Machines), if any. */
+      desktop: { linked: boolean; name: string | null; lastSeenAt: string | null }
+    }>(`/api/workspace-moves/options?workspaceId=${encodeURIComponent(workspaceId)}`)
+    return res.data
+  },
+
+  /** What a move would carry. Walks project files, so it is not polled. */
+  async planWorkspaceMove(
+    http: HttpClient,
+    input: {
+      workspaceId: string
+      direction: 'desktop_to_cloud' | 'cloud_to_desktop'
+      selection: { mode: 'all' } | { mode: 'selected'; conversationIds: string[]; projectIds: string[] }
+      targetKind?: 'cloud' | 'desktop'
+      targetName?: string
+    },
+  ) {
+    const res = await http.post<{ plan: any }>('/api/workspace-moves/plan', input)
+    return res.data.plan
+  },
+
+  async createWorkspaceMove(
+    http: HttpClient,
+    input: {
+      workspaceId: string
+      direction: 'desktop_to_cloud' | 'cloud_to_desktop'
+      selection: { mode: 'all' } | { mode: 'selected'; conversationIds: string[]; projectIds: string[] }
+      targetKind?: 'cloud' | 'desktop'
+      targetName?: string
+    },
+  ) {
+    const res = await http.post<{ move: any; plan: any }>('/api/workspace-moves', input)
+    return res.data
+  },
+
+  async getWorkspaceMove(http: HttpClient, moveId: string) {
+    const res = await http.get<{ move: any }>(`/api/workspace-moves/${encodeURIComponent(moveId)}`)
+    return res.data.move
+  },
+
+  async listWorkspaceMoves(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ moves: any[] }>(
+      `/api/workspace-moves?workspaceId=${encodeURIComponent(workspaceId)}`,
+    )
+    return res.data.moves
+  },
+
+  async controlWorkspaceMove(http: HttpClient, moveId: string, action: 'pause' | 'resume' | 'cancel' | 'switch-over' | 'switch-back') {
+    const res = await http.post<{ ok: boolean }>(
+      `/api/workspace-moves/${encodeURIComponent(moveId)}/${action}`,
+      {},
+    )
+    return res.data
+  },
+
   /** Counts + bytes for the settings screen; never builds the archive. */
   async getWorkspaceExportEstimate(http: HttpClient, workspaceId: string) {
     const res = await http.get<{

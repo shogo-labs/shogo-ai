@@ -268,7 +268,11 @@ export async function collectWorkspaceSnapshot(
     let found: Array<Record<string, any>> = []
     try {
       if (scope.kind === 'workspace-row') {
-        found = [workspace as any]
+        // `movedToWorkspaceId`/`movedAt` point at a workspace on the source
+        // instance. A restored copy must not claim it was moved somewhere that
+        // does not exist here, or it shows a "Moved to" banner for nothing.
+        const { movedToWorkspaceId: _movedTo, movedAt: _movedAt, ...row } = workspace as any
+        found = [row]
       } else if (scope.kind === 'workspace') {
         found = await client.findMany({ where: { workspaceId } })
       } else if (scope.kind === 'project') {

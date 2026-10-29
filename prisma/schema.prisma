@@ -218,6 +218,12 @@ model Workspace {
   // to them — see `lib/machine-workspace.ts`. Null means a normal cloud
   // workspace. Added to both schemas; the desktop leaves it null.
   machineInstanceId String?
+  // Set when this workspace was moved to another one (desktop <-> cloud). The
+  // source is kept, shows a "Moved to <target>" banner and has its schedules and
+  // triggers disabled; `movedToWorkspaceId` points at the copy that took over.
+  // See `services/workspace-move/`. Null for a workspace that was never moved.
+  movedToWorkspaceId String?
+  movedAt            DateTime?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -5744,4 +5750,60 @@ model MachineSyncChange {
 
   @@index([createdAt])
   @@map("machine_sync_changes")
+}
+
+/// One desktop <-> cloud workspace move (SHO-246). The row lives on the side
+/// driving the move (the desktop, in both directions) and is the resumable
+/// checkpoint: `progress` holds the per-phase cursor, `idMap` the source->target
+/// id translation, `handover` the source state of every schedule and trigger
+/// that was switched off. Written in both schemas, because a move that only
+/// works in one direction is the divergence the channel rules forbid.
+model WorkspaceMove {
+  id                String    @id @default(uuid())
+  /// The workspace whose runtime drives the move: the source for a
+  /// desktop->cloud move, the new target for cloud->desktop.
+  workspaceId       String
+  /// "desktop_to_cloud" | "cloud_to_desktop".
+  direction         String
+  /// planning | records | files | handover | paused | done | failed | cancelled
+  status            String    @default("planning")
+  sourceWorkspaceId String
+  sourceName        String
+  targetWorkspaceId String?
+  targetName        String?
+  /// Who asked for the move, and whether they could see every DM.
+  ///
+  /// Persisted rather than passed through the job: a resume (`POST /:id/resume`,
+  /// or the restart sweep) has no request context, and defaulting it to
+  /// `isOwner: true` built a *different* row set than the plan the user
+  /// approved — a DM the requester cannot see was excluded by the plan and
+  /// included by the resume. Read back in `runMoveJob`.
+  requesterId       String?
+  isOwner           Boolean?
+  /// Owner of the target workspace's `Member` row. Same reason: without it a
+  /// crash before the first `targetWorkspaceId` save left the target ownerless.
+  ownerUserId       String?
+  /// { mode: "all" } | { mode: "selected", conversationIds: string[], projectIds: string[] }
+  selection         Json
+  /// The frozen plan the user approved: row counts, bytes, ignores, quota.
+  plan              Json?
+  /// Phase cursors, so a restart resumes instead of starting over.
+  progress          Json?
+  /// Source id -> target id, persisted as each chunk lands.
+  idMap             Json?
+  /// Schedules/triggers written disabled at the target, with their source state.
+  handover          Json?
+  rowsCopied        Int       @default(0)
+  filesCopied       Int       @default(0)
+  /// Float, not BigInt: 19 GB fits exactly in a double and BigInt cannot be
+  /// JSON-serialised into the API response.
+  bytesCopied       Float     @default(0)
+  error             String?
+  switchedOverAt    DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([workspaceId, createdAt])
+  @@index([status])
+  @@map("workspace_moves")
 }
