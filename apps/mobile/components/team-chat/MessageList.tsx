@@ -177,7 +177,7 @@ export function MessageList({
   const renderItem = useCallback(({ item }: { item: Row }) => {
     const dayIso = item.dayIso
     const row = item.folded.length ? (
-      <StatusRunRow latest={item.message} folded={item.folded} onOpenThread={inThread ? undefined : rowProps.onReply} />
+      <StatusRunRow latest={item.message} folded={item.folded} names={names} onOpenThread={inThread ? undefined : rowProps.onReply} />
     ) : (
       <MessageRow
         message={item.message}

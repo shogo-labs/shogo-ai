@@ -16,6 +16,7 @@ import { answerApproval } from '../../lib/approval-decision'
 import { DrawnCheckmark } from '../ui/DrawnCheckmark'
 import { GlassCard } from '../ui/GlassCard'
 import { AgentAvatar } from './AgentAvatar'
+import { renderMentionLabels, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
 
 const STATUS_LABEL: Record<CardStatus, string> = { working: 'In progress', blocked: 'Blocked', done: 'Done', failed: 'Failed' }
 const STATUS_STYLE: Record<CardStatus, { bg: string; text: string }> = {
@@ -205,7 +206,7 @@ function formatTime(iso: string): string {
 }
 
 /** One row standing in for several routine status posts; tap to see each. */
-export function StatusRunRow({ latest, folded, onOpenThread }: { latest: ChatMessage; folded: ChatMessage[]; onOpenThread?: (m: ChatMessage) => void }) {
+export function StatusRunRow({ latest, folded, names, onOpenThread }: { latest: ChatMessage; folded: ChatMessage[]; names: MentionNames; onOpenThread?: (m: ChatMessage) => void }) {
   const [open, setOpen] = useState(false)
   const all = [...folded, latest]
   const name = latest.authorAgent?.name ?? 'Agent'
@@ -223,7 +224,7 @@ export function StatusRunRow({ latest, folded, onOpenThread }: { latest: ChatMes
         <Chevron size={12} className="text-muted-foreground" />
         <Text className="text-xs font-medium text-muted-foreground">{`${name} · ${all.length} updates`}</Text>
         {!open ? (
-          <InlineMarkdown text={latest.text} numberOfLines={1} className="min-w-0 flex-1 text-xs text-muted-foreground" />
+          <InlineMarkdown text={renderMentionLabels(latest.text, names)} numberOfLines={1} className="min-w-0 flex-1 text-xs text-muted-foreground" />
         ) : null}
         <Text className="text-[11px] text-muted-foreground">{formatTime(latest.createdAt)}</Text>
       </Pressable>
@@ -232,7 +233,7 @@ export function StatusRunRow({ latest, folded, onOpenThread }: { latest: ChatMes
           {all.map((m) => (
             <Pressable key={m.id} onPress={onOpenThread ? () => onOpenThread(m) : undefined} className="flex-row gap-2">
               <Text className="w-14 text-[11px] text-muted-foreground">{formatTime(m.createdAt)}</Text>
-              <View className="min-w-0 flex-1"><ChatMarkdown isStreaming={false}>{m.text}</ChatMarkdown></View>
+              <View className="min-w-0 flex-1"><ChatMarkdown isStreaming={false}>{renderMentionsMarkdown(m.text, names)}</ChatMarkdown></View>
             </Pressable>
           ))}
         </View>

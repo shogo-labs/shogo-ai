@@ -1426,6 +1426,28 @@ describe('agent message kinds', () => {
     expect(screen.getByText('Found the rounding bug')).toBeTruthy()
   })
 
+  test('resolves mentions in the grouped preview and expanded status updates', () => {
+    const { container } = render(
+      <MessageList
+        state={timeline([
+          agentMsg('s1', 1, 'First update for <@u:u-ana>', { messageKind: 'status' }),
+          agentMsg('s2', 2, 'Second update for <@u:u-ana>', { messageKind: 'status' }),
+        ])}
+        loading={false} me="u-me" names={names} canManage={false} {...handlers()}
+      />,
+    )
+
+    expect(screen.getByText('Builder · 2 updates')).toBeTruthy()
+    expect(container.textContent).toContain('Second update for @Ana Lopez')
+    expect(container.textContent).not.toContain('<@u:u-ana>')
+
+    fireEvent.click(screen.getByLabelText('Builder: 2 updates'))
+
+    const mentionLabels = Array.from(container.querySelectorAll('[data-testid="chat-mention"]')).map((el) => el.textContent)
+    expect(mentionLabels).toEqual(['@Ana Lopez', '@Ana Lopez'])
+    expect(container.textContent).not.toContain('<@u:u-ana>')
+  })
+
   test('the "New" line lands on a folded run when the first unread post is inside it', () => {
     render(
       <MessageList
