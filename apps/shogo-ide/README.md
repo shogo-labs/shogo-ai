@@ -38,6 +38,11 @@ Apply them after cloning or refreshing the upstream checkout:
 bun run --cwd apps/shogo-ide codeoss:patch
 ```
 
+| Patch | What it does |
+| --- | --- |
+| `remove-built-in-chat.patch` | Hides the built-in Chat view so Shogo Chat owns the secondary sidebar. |
+| `shogo-chat-explorer-drop.patch` | Lets Explorer files/folders (and editor tabs) be dropped on Shogo Chat; the URIs go to `shogo.context.addUris`. Generated against `microsoft/vscode` `0feedbf3d9bac4e27e50d5475fe45336a67fbd7b`. Its parser is unit-tested in-repo by `bun test apps/shogo-ide/scripts/__tests__`. |
+
 ## Validation
 
 ```bash

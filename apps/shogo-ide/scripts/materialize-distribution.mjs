@@ -2,8 +2,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const workspaceRoot = resolve(new URL('..', import.meta.url).pathname)
+const workspaceRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const generatedDir = join(workspaceRoot, 'distribution', 'generated')
 const productTemplatePath = join(workspaceRoot, 'product.shogo.template.json')
 const defaultsSettingsPath = join(workspaceRoot, 'distribution', 'defaults', 'settings.json')

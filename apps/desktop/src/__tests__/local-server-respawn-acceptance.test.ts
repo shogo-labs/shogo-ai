@@ -60,6 +60,14 @@ Bun.serve({
   },
 })
 console.log('fake api listening on ' + port)
+
+// lacvapps/shogo-ai#5: a muted child that is still *working* — /health is
+// starved, but its event loop runs and it keeps logging.
+if (process.argv[4] === 'chatty') {
+  setInterval(() => {
+    if (muted()) console.log('still working ' + Date.now())
+  }, 20)
+}
 `
 
 async function freePort(): Promise<number> {
@@ -129,6 +137,8 @@ function makeRig(
     restartHealthBudgetMs?: number
     restartPort?: number
     muteFile?: string
+    /** While muted, keep writing to stdout (a busy API, not a wedged one). */
+    chatty?: boolean
     /** Wire the child's own `exit` to the supervisor, like local-server.ts. */
     autoRestartOnExit?: boolean
   } = {},
@@ -143,6 +153,8 @@ function makeRig(
   const giveUps: Error[] = []
   const spawned: Rig['spawned'] = []
   let current: { pid: number; kill: () => void } | null = null
+  // Mirrors `apiLastOutputAt` in local-server.ts: the current child's last write.
+  let lastOutputAt: number | null = null
 
   const startImpl: LocalApiSupervisorOptions['start'] = async ({ attempt }) => {
     // A restart can be pointed at a port that is deliberately occupied, which
@@ -151,6 +163,7 @@ function makeRig(
     const targetPort = attempt === 0 ? port : (boot.restartPort ?? port)
     const args = [BUN, script, String(targetPort)]
     if (boot.muteFile) args.push(boot.muteFile)
+    if (boot.chatty) args.push('chatty')
     const child = Bun.spawn(args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       // Same reason as local-server.ts: its own process group, so cleanup can
@@ -160,7 +173,13 @@ function makeRig(
     const entry = { pid: child.pid, kill: () => child.kill('SIGKILL') }
     spawned.push(entry)
     current = entry
+    lastOutputAt = null
     writeFileSync(pidFile, String(child.pid))
+    void (async () => {
+      for await (const _chunk of child.stdout) {
+        if (current === entry) lastOutputAt = Date.now()
+      }
+    })().catch(() => {})
 
     void child.exited.then((code) => {
       // A stale child's exit must never clobber the pid of its replacement.
@@ -204,6 +223,7 @@ function makeRig(
         }
       }),
     fetchHealth: overrides.fetchHealth,
+    lastOutputAt: overrides.lastOutputAt ?? (() => lastOutputAt),
     onRestarted: (info) => restarts.push(info),
     onGiveUp: (error) => giveUps.push(error),
     log: () => {},
@@ -313,6 +333,53 @@ describe('desktop local API respawn (real processes)', () => {
     expect(rig.giveUps).toEqual([])
     expect(rig.spawned).toHaveLength(2)
   }, 40_000)
+
+  test('a child that misses probes but keeps logging is left alone (lacvapps/shogo-ai#5)', async () => {
+    const port = await freePort()
+    const muteDir = mkdtempSync(join(tmpdir(), 'shogo-desktop-busy-'))
+    cleanups.push(() => rmSync(muteDir, { recursive: true, force: true }))
+    const muteFile = join(muteDir, 'mute.pid')
+    const busy: number[] = []
+
+    const rig = makeRig(
+      port,
+      {
+        watchdog: { intervalMs: 50, timeoutMs: 150, failureThreshold: 3 },
+        onBusyHealth: ({ unansweredMs }) => busy.push(unansweredMs),
+        fetchHealth: async () => {
+          try {
+            const res = await fetch(`http://127.0.0.1:${port}/health`, {
+              signal: AbortSignal.timeout(100),
+            })
+            return res.ok
+          } catch {
+            return false
+          }
+        },
+      },
+      { muteFile, chatty: true, autoRestartOnExit: true },
+    )
+    rigs.push(rig)
+
+    await rig.supervisor.start()
+    const firstPid = Number(readFileSync(rig.pidFile, 'utf8'))
+
+    // The loaded API: /health is starved, but the process keeps doing work.
+    writeFileSync(muteFile, String(firstPid))
+    expect(await healthOk(port)).toBe(false)
+
+    // ~10 probe cycles — three silent misses would have tripped long before.
+    await waitUntil(() => busy.length >= 6, 10_000, 'busy probe misses')
+
+    expect(isAlive(firstPid)).toBe(true)
+    expect(rig.restarts).toEqual([])
+    expect(rig.spawned).toHaveLength(1)
+
+    // Once it answers again it is simply healthy; nothing was lost.
+    rmSync(muteFile)
+    await waitForHealth(port, 2_000)
+    expect(Number(readFileSync(rig.pidFile, 'utf8'))).toBe(firstPid)
+  }, 30_000)
 
   test('after stop() the API is not respawned — quitting stays quit', async () => {
     const port = await freePort()
@@ -449,6 +516,16 @@ describe('local-server wiring (source contract)', () => {
     expect(source).toContain('fetchHealth: () => probeApiHealth()')
     expect(source).toContain('await terminateApiChild(child)')
     expect(source).toContain("logApiEvent('health_watchdog_tripped'")
+    // lacvapps/shogo-ai#5: the watchdog asks the API to stop before it kills
+    // it, and a child that is still writing output counts as busy, not dead.
+    expect(source).toContain("if (child) await terminateApiChild(child, true, 'restart')")
+    expect(source).toContain('lastOutputAt: () => apiLastOutputAt')
+    expect(source).toContain('if (apiProcess === child) apiLastOutputAt = Date.now()')
+    // A restart is not given less time to boot than a cold start, and a child
+    // that died stops the wait at once.
+    expect(source).toContain('const RESTART_HEALTH_RETRIES = 60')
+    expect(source).toContain('const MAX_HEALTH_RETRIES = 60')
+    expect(source).toContain("if (!isAlive()) throw new Error('API server exited before it became healthy')")
     // The renderer needs the attempt under way, and the dismissal.
     expect(source).toContain("broadcastApiEvent('local-server:restarting'")
     expect(source).toContain("broadcastApiEvent('local-server:restarted'")

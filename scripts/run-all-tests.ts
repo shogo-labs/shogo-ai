@@ -81,6 +81,8 @@ const FRONTEND_PACKAGES = [
 // coverage aggregate, so adding them cannot move the badge or trip a floor.
 const UNMEASURED_PACKAGES = [
   'apps/metal-agent',
+  // Shogo Code: the shogo-core extension and the Code-OSS patch tooling.
+  'apps/shogo-ide',
   'packages/agent',
   'packages/core',
   'packages/email',

@@ -105,6 +105,7 @@ import {
   type AutoTierOverride,
 } from './model-router'
 import { buildCodeAgentGeneralGuide, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
+import { restrictToReadOnlyTools } from './read-only-command'
 import { isSearchEnabled } from './search-flag'
 import { smartTruncateJson } from './response-transforms'
 import { getShogoSdkGuide } from './shogo-sdk-prompt'
@@ -3518,7 +3519,7 @@ export class AgentGateway {
     if (this.config.coordinatorMode) {
       restrictedMode = 'coordinator'
       const { COORDINATOR_READONLY_TOOLS } = await import('./coordinator-prompt')
-      assembledTools = assembledTools.filter(t => COORDINATOR_READONLY_TOOLS.has(t.name))
+      assembledTools = restrictToReadOnlyTools(assembledTools, COORDINATOR_READONLY_TOOLS)
     }
 
     // WS7: guarantee the core tools are always callable.

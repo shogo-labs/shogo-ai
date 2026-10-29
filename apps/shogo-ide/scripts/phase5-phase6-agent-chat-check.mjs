@@ -2,8 +2,9 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = resolve(new URL('../../..', import.meta.url).pathname)
+const root = resolve(fileURLToPath(new URL('../../..', import.meta.url)))
 const errors = []
 
 function read(relativePath) {
@@ -29,7 +30,7 @@ assert(extension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'sho
 assert(chatView.includes('workbench.view.extension.shogo-agent-chat'), 'shogo-core must focus the Shogo Chat auxiliary container')
 assert(chatView.includes('SHOGO_DESKTOP_CHAT_URL'), 'chat webview must receive the Desktop chat URL')
 assert(chatView.includes('<iframe'), 'chat webview must embed Desktop chat instead of duplicating chat logic')
-assert(chatView.includes('addSelection'), 'chat webview must keep selection context handoff')
+assert(chatView.includes('shogo.ide.addReferences'), 'chat webview must hand selection context to the chat composer')
 assert(chatView.includes('openExternal'), 'chat webview must expose a Desktop fallback action')
 assert(chatView.includes('https://*.vscode-cdn.net'), 'chat webview must allow Code-OSS webview CDN frames')
 assert(manifest.includes('shogo.desktopChat.url'), 'extension manifest must expose the Desktop chat URL setting')
