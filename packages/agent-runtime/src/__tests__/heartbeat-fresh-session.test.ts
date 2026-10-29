@@ -11,7 +11,7 @@
  * input and a resolved, non-Auto model.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -22,24 +22,27 @@ import {
   isHeartbeatChatSessionId,
 } from '@shogo/shared-runtime/heartbeat-session'
 import { AgentGateway } from '../gateway'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 import { PLATFORM_DEFAULT_HEARTBEAT_MODEL, formatHeartbeatModelLog, resolveHeartbeatModel } from '../heartbeat-model'
 
 const TEST_DIR = '/tmp/test-heartbeat-fresh-session'
 
-// --- internal-api mock -------------------------------------------------------
-// A heartbeat tick asks the API for the project's `AgentConfig` to honour the
-// model a person chose. Tests drive that answer through `agentSnapshot`.
+/**
+ * What the tick's `AgentConfig` lookup answers. Stubbed on the gateway instance
+ * rather than with `mock.module('../internal-api')`: a module mock is global to
+ * the test process and breaks QA's acceptance file, which drives the real
+ * internal API through a stub server in the same run.
+ */
 let agentSnapshot: { modelName?: string | null; modelProvider?: string | null } | null = null
-const projectConfigCalls: Array<string | undefined> = []
+let projectConfigCalls: Array<string | undefined> = []
 
-const realInternalApi = await import('../internal-api')
-mock.module('../internal-api', () => ({
-  ...realInternalApi,
-  getProjectConfig: async (projectId: string) => {
+function stubAgentConfigLookup(gateway: AgentGateway) {
+  ;(gateway as any).heartbeatAgentModelSnapshot = async (projectId?: string) => {
     projectConfigCalls.push(projectId)
-    return { ok: true, status: 200, data: { agent: agentSnapshot } }
-  },
-}))
+    return agentSnapshot
+  }
+}
+
 
 interface ModelCall {
   modelId: string
@@ -168,6 +171,7 @@ describe('heartbeatTick: fresh session per tick', () => {
     if (config) setupWorkspace(config)
     gateway = new AgentGateway(TEST_DIR, 'test-project')
     gateway.setStreamFn(recordingStream(calls) as any)
+    stubAgentConfigLookup(gateway)
     return gateway
   }
 
@@ -309,6 +313,7 @@ describe('heartbeatTick: the model is picked on purpose', () => {
     if (config) setupWorkspace(config)
     gateway = new AgentGateway(TEST_DIR, 'test-project')
     gateway.setStreamFn(recordingStream(calls) as any)
+    stubAgentConfigLookup(gateway)
     return gateway
   }
 
@@ -365,5 +370,125 @@ describe('heartbeatTick: the model is picked on purpose', () => {
 
     const log = readFileSync(join(TEST_DIR, 'HEARTBEAT_LOG.md'), 'utf-8')
     expect(log).toContain('Routine check — all clear')
+  })
+})
+
+describe('heartbeatTick: what a tick leaves running', () => {
+  let gateway: AgentGateway
+
+  beforeEach(() => {
+    setupWorkspace()
+    agentSnapshot = null
+    projectConfigCalls.length = 0
+    trustWorkspaceForTests(TEST_DIR)
+  })
+
+  afterEach(async () => {
+    if (gateway) await gateway.stop()
+    clearTrustForTests()
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('finished background work is carried to the next tick, not an API wake nobody reads', async () => {
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(recordingStream([]) as any)
+    await gateway.start()
+
+    const gw = gateway as any
+    const sessionId = heartbeatSessionIdFor('proj-x', 'tick-1')
+    const note = {
+      taskId: 'task-1',
+      source: 'exec' as const,
+      title: 'scan the inbox',
+      status: 'completed' as const,
+      exitCode: 0,
+      tail: 'done',
+      finishedAt: Date.now(),
+    }
+    const reported: string[] = []
+    gw.commandRegistries.set(sessionId, {
+      peekNotifications: () => [note],
+      get: () => ({ reported: false }),
+      markReported: (ids: string[]) => reported.push(...ids),
+    })
+
+    await gw.flushTaskWake(sessionId)
+
+    // Reported once — the API would queue a wake for a chat session that never
+    // runs again and drop it.
+    expect(reported).toEqual(['task-1'])
+    const pending = gw.pendingEvents as Array<{ projectId: string | null; text: string }>
+    expect(pending).toHaveLength(1)
+    // Scoped to the project the tick ran for, so another project's tick never sees it.
+    expect(pending[0]!.projectId).toBe('proj-x')
+    expect(pending[0]!.text).toContain('scan the inbox')
+  })
+
+  test('a registry kept alive for running work is wiped once it drains', async () => {
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(recordingStream([]) as any)
+    await gateway.start()
+
+    const gw = gateway as any
+    const sessionId = heartbeatSessionIdFor('proj-x', 'tick-2')
+    let running = 1
+    const listeners: Array<() => void> = []
+    const kills: string[] = []
+    gw.commandRegistries.set(sessionId, {
+      listRunning: () => new Array(running).fill({ id: 'x' }),
+      peekNotifications: () => [],
+      get: () => undefined,
+      onChange: (cb: () => void) => {
+        listeners.push(cb)
+        return () => listeners.splice(listeners.indexOf(cb), 1)
+      },
+      killAll: (opts: { clear?: boolean }) => {
+        kills.push(opts.clear ? 'clear' : 'kill')
+        return []
+      },
+    })
+
+    gw.disposeSessionState(sessionId, { keepRunningWork: true })
+
+    // Work is still going: the registry and its log stay so the task can report.
+    expect(gw.commandRegistries.has(sessionId)).toBe(true)
+    expect(kills).toEqual([])
+
+    running = 0
+    for (const listener of listeners) listener()
+    await Bun.sleep(20)
+
+    expect(gw.commandRegistries.has(sessionId)).toBe(false)
+    expect(kills).toEqual(['clear'])
+  })
+
+  test('a tick that leaves nothing running is wiped immediately', async () => {
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(recordingStream([]) as any)
+    await gateway.start()
+
+    await gateway.triggerHeartbeat()
+
+    const registries = (gateway as any).commandRegistries as Map<string, any>
+    expect([...registries.keys()].filter((id) => id.startsWith('heartbeat:'))).toEqual([])
+    expect((gateway as any).pendingEvents).toEqual([])
+  })
+})
+
+describe('heartbeat session ids', () => {
+  test('a runtime that resolves no project gets a fresh tick id, not a fake project', () => {
+    // Analytics reads the project segment and falls back to the usage row's own
+    // projectId when it is absent (SHO-182). A placeholder like `runtime` would
+    // be read as a real project id and overwrite the row's — so the segment is
+    // empty and `heartbeatSessionProjectId` answers null.
+    const id = heartbeatSessionIdFor('', 'abc-1')
+    expect(id).toBe('heartbeat::abc-1')
+    expect(isHeartbeatChatSessionId(id)).toBe(true)
+    expect(heartbeatSessionProjectId(id)).toBeNull()
+  })
+
+  test('a resolved project is named in the id', () => {
+    const id = heartbeatSessionIdFor('3fb99014', 'abc-1')
+    expect(heartbeatSessionProjectId(id)).toBe('3fb99014')
   })
 })
