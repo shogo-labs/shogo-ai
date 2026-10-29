@@ -270,14 +270,9 @@ export function TimelinePane(props: TimelinePaneProps) {
     const id = highlight
     void (async () => {
       if (await seekOlder((messages) => messages.some((m) => m.id === id))) return
-      const message = await api.message(id).catch(() => null)
-      if (!message || !props.onOpenThread) return
-      // A thread reply only ever arrives as `?thread=<root>&msg=<reply>` (the link to a running
-      // agent's answer). This pane cannot show one, and re-opening the thread the reader just
-      // closed is not a seek — so a reply whose thread is not open is left alone.
-      if (message.threadRootId) return
       // Too far back to load into the timeline: show it on its own in the thread view.
-      props.onOpenThread(message)
+      const message = await api.message(id).catch(() => null)
+      if (message && props.onOpenThread) props.onOpenThread(message)
     })()
   }, [highlight, highlightLoaded, timeline.loading, threadRootId, seekOlder, props.onOpenThread])
 
