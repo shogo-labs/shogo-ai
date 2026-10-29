@@ -27,6 +27,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { spawnSync } from '@shogo/shared-runtime/child-process'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
 
 const { dir } = setupChannelsTestDb()
@@ -228,6 +229,74 @@ describe('a move against a real database', () => {
     // ── the project file landed too ──
     expect(readFileSync(join(BASE, projectId, PROJECT_FILE), 'utf8')).toBe(PROJECT_BYTES)
   }, 60_000)
+
+  test('a folder-linked project is re-linked, and the plan says what stays behind', async () => {
+    // AC7's second half: the decision (clone vs copy) and the warning that the
+    // user must push first, both made from a real checkout.
+    const repo = join(dir, 'folder-linked')
+    const bare = join(dir, 'folder-linked-remote.git')
+    mkdirSync(repo, { recursive: true })
+    const git = (cwd: string, args: string[]) => {
+      const res = spawnSync('git', ['-c', 'user.email=sho246@example.com', '-c', 'user.name=Sho246', ...args], {
+        cwd,
+        encoding: 'utf8',
+        timeout: 30_000,
+      })
+      if (res.status !== 0) throw new Error(`git ${args.join(' ')}: ${String(res.stderr ?? '')}`)
+    }
+    git(dir, ['init', '--bare', bare])
+    git(dir, ['init', '-b', 'main', repo])
+    writeFileSync(join(repo, 'README.md'), '# linked\n')
+    git(repo, ['add', '.'])
+    git(repo, ['commit', '-m', 'first'])
+    git(repo, ['remote', 'add', 'origin', bare])
+    git(repo, ['push', '-u', 'origin', 'main'])
+    // One commit the remote does not have, and one uncommitted file.
+    writeFileSync(join(repo, 'unpushed.txt'), 'x\n')
+    git(repo, ['add', '.'])
+    git(repo, ['commit', '-m', 'local only'])
+    writeFileSync(join(repo, 'scratch.txt'), 'y\n')
+
+    const linked = await db.project.create({ data: { workspaceId: sourceWorkspaceId, name: 'linked site' } })
+    await db.projectFolder.create({ data: { projectId: linked.id, path: repo, isPrimary: true } })
+    try {
+      const { plan } = await buildMovePlan({ ...planInput(), projectsDirOverride: BASE } as any)
+      const entry = plan.projects.find((p: any) => p.id === linked.id)
+      expect({ mode: entry?.mode, git: entry?.git }).toEqual({
+        mode: 'git-relink',
+        git: { remote: bare, branch: 'main', dirty: 1, unpushed: 1 },
+      })
+      // Re-linked, so no files are copied and no bytes are counted.
+      expect({ files: entry?.files, bytes: entry?.bytes }).toEqual({ files: 0, bytes: 0 })
+      expect(plan.warnings.some((w: string) => /1 uncommitted change\(s\)/.test(w))).toBe(true)
+      expect(plan.warnings.some((w: string) => /1 commit\(s\).*not pushed/.test(w))).toBe(true)
+    } finally {
+      await db.projectFolder.deleteMany({ where: { projectId: linked.id } })
+      await db.project.delete({ where: { id: linked.id } })
+    }
+  })
+
+  test('a folder-linked project with no remote is copied, and the plan says so', async () => {
+    const plain = join(dir, 'no-remote-folder')
+    mkdirSync(plain, { recursive: true })
+    writeFileSync(join(plain, 'a.txt'), 'copied\n')
+
+    const linked = await db.project.create({ data: { workspaceId: sourceWorkspaceId, name: 'plain site' } })
+    await db.projectFolder.create({ data: { projectId: linked.id, path: plain, isPrimary: true } })
+    try {
+      const { plan } = await buildMovePlan({ ...planInput(), projectsDirOverride: BASE } as any)
+      const entry = plan.projects.find((p: any) => p.id === linked.id)
+      expect({ mode: entry?.mode, git: entry?.git, files: entry?.files }).toEqual({
+        mode: 'copy',
+        git: undefined,
+        files: 1,
+      })
+      expect(plan.warnings.some((w: string) => /no git remote, so its files are copied/.test(w))).toBe(true)
+    } finally {
+      await db.projectFolder.deleteMany({ where: { projectId: linked.id } })
+      await db.project.delete({ where: { id: linked.id } })
+    }
+  })
 
   test('a resumed job carries exactly the rows its plan showed', async () => {
     // The plan an admin was shown.
