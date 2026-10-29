@@ -243,7 +243,16 @@ export default function ConversationScreen() {
     const current = state?.routes?.[state.index]
     const previous = state && state.index > 0 ? state.routes[state.index - 1] : undefined
     const previousParams = previous?.params as Record<string, string | undefined> | undefined
-    if (current && previous && previous.name === current.name && previousParams?.conversationId === conversationId && !previousParams?.thread) {
+    // Only pop onto the plain channel. Popping onto a link that carries a `msg` would reopen
+    // this thread on the next frame: the seek fallback opens the thread a thread reply belongs to.
+    const popsToPlainChannel =
+      current &&
+      previous &&
+      previous.name === current.name &&
+      previousParams?.conversationId === conversationId &&
+      !previousParams?.thread &&
+      !previousParams?.msg
+    if (popsToPlainChannel) {
       router.back()
       return
     }

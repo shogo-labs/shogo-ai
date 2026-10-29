@@ -176,14 +176,21 @@ test.describe("Team chat thread pane: closing a thread opened from a running age
     await expect(closeButton(page)).toHaveCount(0)
   })
 
-  test("a channel left pointing at a thread reply does not open the thread by itself", async ({ page }) => {
+  test("a card-history link opens the thread, and its X keeps it closed", async ({ page }) => {
     test.setTimeout(180_000)
 
-    // What `router.back()` lands on when the thread was pushed on top of a running-agent link.
+    // A card-history link points at a thread reply with no `thread` (`CardPane.tsx:517`).
+    // The channel cannot show a thread reply, so the seek fallback opens its thread.
     await page.goto(`/c/${seed.channelId}?msg=${settledReplyId}`)
-    await expect(page.getByText(`close-thread root ${seed.suffix}`, { exact: false }).first()).toBeVisible({ timeout: 60_000 })
-    await page.waitForTimeout(2_500)
+    await expect(closeButton(page)).toBeVisible({ timeout: 60_000 })
+    await expect(page).toHaveURL(/thread=/)
 
+    await watchForReopen(page)
+    await closeButton(page).click()
+
+    await page.waitForTimeout(2_600)
+    const reopens = await page.evaluate(() => (window as any).__reopens)
+    expect(reopens, `thread= came back at ${JSON.stringify(reopens)}`).toEqual([])
     await expect(page).not.toHaveURL(/thread=/)
     await expect(closeButton(page)).toHaveCount(0)
   })
