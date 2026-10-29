@@ -102,6 +102,14 @@ export interface VoiceOp {
   defaultVoiceId?: boolean
   /** Caller field → upstream field. Anything absent here is not forwarded. */
   forward?: Readonly<Record<string, string>>
+  /**
+   * Caller fields the row accepts but never forwards upstream — routing
+   * decisions and per-provider options (music's `provider` / `model` /
+   * `lyrics`). The parser keeps them so the executor can read them; the
+   * upstream body is built from {@link forward} only, so they cannot leak to
+   * an API that would reject them.
+   */
+  callerFields?: readonly string[]
   /** Caller fields that must be present (before mapping). */
   required?: readonly string[]
   /** Query params forwarded upstream. */
@@ -276,10 +284,47 @@ export const VOICE_OPS = [
     },
     accept: 'audio/mpeg',
     errorLabel: 'Music generation failed',
+    callerFields: ['provider', 'model', 'lyrics', 'instrumental'],
     validate: (fields) => {
       const hasPrompt = typeof fields.prompt === 'string' && fields.prompt.trim().length > 0
       const hasPlan = fields.compositionPlan != null && typeof fields.compositionPlan === 'object'
-      return hasPrompt === hasPlan ? 'Provide exactly one of `prompt` or `compositionPlan`' : null
+      if (hasPrompt === hasPlan) return 'Provide exactly one of `prompt` or `compositionPlan`'
+
+      const provider = fields.provider
+      if (provider !== undefined && provider !== 'elevenlabs' && provider !== 'google') {
+        return "`provider` must be 'elevenlabs' or 'google'"
+      }
+      if (provider !== 'google') {
+        const googleOnly = ['model', 'lyrics', 'instrumental'].find((name) => fields[name] !== undefined)
+        if (googleOnly) {
+          return `\`${googleOnly}\` is Google-only; send \`provider: 'google'\` to use Lyria, or drop it`
+        }
+        return null
+      }
+
+      const elevenLabsOnly: ReadonlyArray<[string, string]> = [
+        ['compositionPlan', 'Lyria reads style and structure from `prompt`'],
+        ['modelId', 'use `model` (`lyria-3-clip` or `lyria-3.5`)'],
+        ['musicLengthMs', 'Lyria takes the length from the model — use `model: lyria-3.5` for a full song'],
+        ['forceInstrumental', 'use `instrumental`'],
+        ['outputFormat', 'Lyria always returns mp3'],
+      ]
+      for (const [name, instead] of elevenLabsOnly) {
+        if (fields[name] !== undefined) return `\`${name}\` is ElevenLabs-only — ${instead}`
+      }
+      if (fields.lyrics !== undefined && fields.instrumental === true) {
+        return '`lyrics` and `instrumental` cannot both be set'
+      }
+      if (fields.model !== undefined && (typeof fields.model !== 'string' || !fields.model.trim())) {
+        return '`model` must be a non-empty string'
+      }
+      if (fields.lyrics !== undefined && typeof fields.lyrics !== 'string') {
+        return '`lyrics` must be a string'
+      }
+      if (fields.instrumental !== undefined && typeof fields.instrumental !== 'boolean') {
+        return '`instrumental` must be a boolean'
+      }
+      return null
     },
   },
   {
@@ -392,6 +437,9 @@ export function parseVoiceOpJsonBody(
   const fields: Record<string, unknown> = {}
   for (const [callerField, upstreamField] of Object.entries(op.forward ?? {})) {
     if (upstreamField && body[callerField] !== undefined) fields[callerField] = body[callerField]
+  }
+  for (const name of op.callerFields ?? []) {
+    if (body[name] !== undefined) fields[name] = body[name]
   }
   for (const name of op.required ?? []) {
     const value = fields[name]

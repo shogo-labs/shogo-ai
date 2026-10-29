@@ -57,6 +57,9 @@ import {
   type VoiceSettings,
 } from '@shogo-ai/sdk/voice'
 import { prisma } from '../lib/prisma'
+import { generateLyriaMusic, LyriaError } from '../lib/lyria'
+import { getMusicModelEntry, MUSIC_MODEL_CATALOG, type MusicModelEntry } from '@shogo/model-catalog'
+import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 import { forwardToShogoCloud } from '../lib/cloud-request-forward'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { apiKeyOrSession, authorizeProject } from '../middleware/auth'
@@ -155,6 +158,8 @@ export interface VoiceMediaDeps {
     workspaceId?: string
     op: VoiceOp
     units: number
+    /** Extra fields for the usage row (e.g. which provider rendered it). */
+    metadata?: Record<string, unknown>
   }) => Promise<void>
 }
 
@@ -188,8 +193,9 @@ async function defaultRecordUsage(params: {
   workspaceId?: string
   op: VoiceOp
   units: number
+  metadata?: Record<string, unknown>
 }): Promise<void> {
-  const { op, units, workspaceId, projectId } = params
+  const { op, units, workspaceId, projectId, metadata } = params
   if (!workspaceId) return
   try {
     await consumeUsage({
@@ -205,6 +211,7 @@ async function defaultRecordUsage(params: {
         opId: op.id,
         unit: op.cost?.unit ?? 'request',
         units,
+        ...(metadata ?? {}),
       },
     })
   } catch (e) {
@@ -310,6 +317,20 @@ async function executeVoiceOp(
 
   const callFields = { ...invocation.fields, ...(invocation.resolved ?? {}) }
 
+  // Music is the one op with a second provider. `provider: 'google'` asks for
+  // Lyria, which rides the Google key instead of the pooled ElevenLabs one.
+  const music = resolveMusicRequest(op, callFields)
+  if ('error' in music) {
+    return c.json(
+      {
+        error: music.error,
+        detail: music.detail,
+        ...(music.allowed ? { allowed: music.allowed } : {}),
+      },
+      400,
+    )
+  }
+
   if (isShogoCloudForwarding()) {
     // JSON bodies were already validated above, so re-serialize them; a
     // multipart body is streamed through untouched (it is single-use).
@@ -320,9 +341,28 @@ async function executeVoiceOp(
     )
   }
 
-  const resolved = resolveShogoElevenLabsClient()
-  if ('error' in resolved) {
-    return c.json({ error: 'voice_unavailable', detail: resolved.error }, 503)
+  // A requested-but-missing Google key is a fallback, not a failure: the
+  // caller still gets music, and the response says which provider rendered it.
+  let provider: 'elevenlabs' | 'google' = 'elevenlabs'
+  let googleModel: MusicModelEntry | undefined
+  let fallbackReason: string | undefined
+  if (music.google) {
+    if (getNativeProviderApiKeySync('google')) {
+      provider = 'google'
+      googleModel = music.entry
+    } else {
+      fallbackReason =
+        'no Google API key is configured on this server, so provider google fell back to ElevenLabs Music'
+    }
+  }
+
+  let elevenLabs: { client: ElevenLabsClient } | undefined
+  if (provider === 'elevenlabs') {
+    const resolved = resolveShogoElevenLabsClient()
+    if ('error' in resolved) {
+      return c.json({ error: 'voice_unavailable', detail: resolved.error }, 503)
+    }
+    elevenLabs = resolved
   }
 
   const pathParams = voiceOpPathParams(
@@ -342,12 +382,19 @@ async function executeVoiceOp(
 
   const errorLabel = op.errorLabel ?? `${op.id} failed`
   const recordUsage = deps.recordUsage ?? defaultRecordUsage
-  const units = op.cost ? measureUnits(op, callFields, invocation.form) : 0
+  const lyriaMeter = provider === 'google' && googleModel ? lyriaUnits(op, googleModel) : undefined
+  const units = lyriaMeter
+    ? lyriaMeter.units
+    : op.cost
+      ? measureUnits(op, callFields, invocation.form)
+      : 0
 
   try {
     let response: Response
 
-    if (op.call === 'textToSpeech') {
+    if (provider === 'google' && googleModel) {
+      response = await renderLyria(googleModel, callFields)
+    } else if (op.call === 'textToSpeech') {
       const modelId =
         typeof callFields.modelId === 'string'
           ? callFields.modelId
@@ -372,7 +419,7 @@ async function executeVoiceOp(
           similarity_boost: 0.8,
           style: 0,
         }
-      const result = await resolved.client.textToSpeech({
+      const result = await elevenLabs!.client.textToSpeech({
         voiceId: pathParams.voiceId ?? '',
         text,
         modelId,
@@ -392,7 +439,7 @@ async function executeVoiceOp(
       }
       response = new Response(result.audio, { status: 200, headers })
     } else if (op.call === 'composeMusic') {
-      const { audio, contentType } = await resolved.client.composeMusic({
+      const { audio, contentType } = await elevenLabs!.client.composeMusic({
         ...(typeof callFields.prompt === 'string' ? { prompt: callFields.prompt } : {}),
         ...(callFields.compositionPlan
           ? { compositionPlan: callFields.compositionPlan as Record<string, unknown> }
@@ -410,7 +457,12 @@ async function executeVoiceOp(
       })
       response = new Response(audio, {
         status: 200,
-        headers: { 'content-type': contentType, 'cache-control': 'private, max-age=3600' },
+        headers: {
+          'content-type': contentType,
+          'cache-control': 'private, max-age=3600',
+          'x-music-provider': 'elevenlabs',
+          ...(fallbackReason ? { warning: `199 - "${fallbackReason}"` } : {}),
+        },
       })
     } else {
       const query: Record<string, string> = {}
@@ -422,7 +474,7 @@ async function executeVoiceOp(
       if (op.defaultModel && upstreamBody.model_id === undefined) {
         upstreamBody.model_id = op.defaultModel
       }
-      const forwarded = await resolved.client.request({
+      const forwarded = await elevenLabs!.client.request({
         method: op.method,
         path: upstreamPath,
         ...(invocation.form
@@ -448,16 +500,26 @@ async function executeVoiceOp(
         ...(authz.workspaceId ? { workspaceId: authz.workspaceId } : {}),
         op,
         units,
+        ...(provider === 'google' && googleModel
+          ? {
+              metadata: {
+                provider: 'google',
+                model: googleModel.id,
+                ...(lyriaMeter?.estimated ? { unitsEstimated: true } : {}),
+              },
+            }
+          : {}),
       })
     }
     return response
   } catch (err: any) {
     console.error(`[Voice] ${errorLabel}:`, err?.message || err)
+    const lyria = err instanceof LyriaError
     return c.json(
       {
         error: errorLabel,
         detail: err?.message ?? errorJson(err),
-        elBody: err?.body ?? undefined,
+        ...(lyria ? { provider: 'google', googleStatus: err.status } : { elBody: err?.body ?? undefined }),
       },
       502,
     )
@@ -493,6 +555,82 @@ function measureUnits(
     return bytes > 0 ? Math.max(1, Math.round((bytes * 8) / 128_000)) : 0
   }
   return 1
+}
+
+/** The cheapest Lyria track; a full song is an explicit choice. */
+const DEFAULT_LYRIA_MODEL = 'lyria-3-clip'
+/** Metered seconds for a Lyria model whose track length the prompt controls. */
+const ASSUMED_LYRIA_SECONDS = 30
+const MUSIC_MODEL_IDS: readonly string[] = Object.keys(MUSIC_MODEL_CATALOG)
+
+/**
+ * Which provider renders this request. Music is the only op with a second one:
+ * `provider: 'google'` means Lyria, anything else (including absent) stays on
+ * ElevenLabs, so an existing caller's behaviour never changes by accident.
+ */
+function resolveMusicRequest(
+  op: VoiceOp,
+  fields: Record<string, unknown>,
+):
+  | { google: false }
+  | { google: true; entry: MusicModelEntry }
+  | { error: string; detail: string; allowed?: readonly string[] } {
+  if (op.id !== 'music' || fields.provider !== 'google') return { google: false }
+  const requested =
+    typeof fields.model === 'string' && fields.model.trim() ? fields.model.trim() : DEFAULT_LYRIA_MODEL
+  const entry = getMusicModelEntry(requested)
+  if (!entry) {
+    return {
+      error: 'unknown_model',
+      detail: `Unknown music model '${requested}'`,
+      allowed: MUSIC_MODEL_IDS,
+    }
+  }
+  return { google: true, entry }
+}
+
+/**
+ * Lyria bills per track, not per requested length, so the metered seconds come
+ * from the model itself — a clip is a fixed 30 s, a full song is whatever the
+ * prompt produced. That is why `musicLengthMs` is rejected for this provider:
+ * metering a length Lyria never received would be a usage row lying about what
+ * was rendered. A model with no fixed duration meters an assumed track and says
+ * so, rather than passing the assumption off as measured.
+ */
+function lyriaUnits(op: VoiceOp, entry: MusicModelEntry): { units: number; estimated: boolean } {
+  if (!op.cost) return { units: 0, estimated: false }
+  if (op.cost.unit !== 'second') return { units: 1, estimated: false }
+  return entry.durationSeconds
+    ? { units: Math.max(1, Math.round(entry.durationSeconds)), estimated: false }
+    : { units: ASSUMED_LYRIA_SECONDS, estimated: true }
+}
+
+/**
+ * Render one Lyria track and hand it back in the shape `/voice/music` has
+ * always returned — raw audio bytes — so the app's player needs no change.
+ */
+async function renderLyria(entry: MusicModelEntry, fields: Record<string, unknown>): Promise<Response> {
+  const apiKey = getNativeProviderApiKeySync('google')
+  if (!apiKey) throw new Error('Google API key is no longer configured')
+  const prompt = typeof fields.prompt === 'string' ? fields.prompt.trim() : ''
+  const lyrics = typeof fields.lyrics === 'string' ? fields.lyrics.trim() : ''
+  const { audio } = await generateLyriaMusic({
+    apiKey,
+    apiModel: entry.apiModel,
+    prompt,
+    ...(lyrics ? { lyrics } : {}),
+    ...(fields.instrumental === true ? { instrumental: true } : {}),
+  })
+  if (!audio) throw new Error('Google returned no audio for this prompt.')
+  return new Response(Buffer.from(audio.data, 'base64'), {
+    status: 200,
+    headers: {
+      'content-type': audio.mimeType,
+      'cache-control': 'private, max-age=3600',
+      'x-music-provider': 'google',
+      'x-music-model': entry.id,
+    },
+  })
 }
 
 /** Reject a body whose declared or actual size exceeds the row's limit. */
@@ -696,10 +834,19 @@ export interface VoiceMusicBody {
   modelId?: string
   forceInstrumental?: boolean
   outputFormat?: string
+  /** Music provider; ElevenLabs unless `google` (Lyria) is asked for. */
+  provider?: string
+  /** Lyria catalog id (`lyria-3-clip`, `lyria-3.5`); Google only. */
+  model?: string
+  /** Custom lyrics read by Lyria; Google only. */
+  lyrics?: string
+  /** Instrumental-only track; Google only. */
+  instrumental?: boolean
 }
 
 /**
- * `POST /api/voice/music` — ElevenLabs Music with the pooled key.
+ * `POST /api/voice/music` — music generation, ElevenLabs Music by default and
+ * Google's Lyria when the caller asks for `provider: 'google'`.
  *
  * `projectId` is optional for back-compat with session callers, but when it
  * is present the caller is authorized against it (runtime tokens must match).
@@ -729,6 +876,10 @@ export async function handleVoiceMusic(
       ? { forceInstrumental: body.forceInstrumental }
       : {}),
     ...(typeof body.outputFormat === 'string' ? { outputFormat: body.outputFormat } : {}),
+    ...(body.provider !== undefined ? { provider: body.provider } : {}),
+    ...(body.model !== undefined ? { model: body.model } : {}),
+    ...(body.lyrics !== undefined ? { lyrics: body.lyrics } : {}),
+    ...(body.instrumental !== undefined ? { instrumental: body.instrumental } : {}),
   })
   if (!parsed.ok) {
     return rejectVoiceOp(c, parsed)

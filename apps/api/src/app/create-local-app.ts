@@ -64,6 +64,7 @@ import { costAnalyticsRoutes } from '../routes/cost-analytics'
 import { localSystemRoutes } from '../routes/local-system'
 import { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } from '../routes/local-cloud-proxy'
 import { localPlatformRoutes } from '../routes/local-platform'
+import { localPublishRoutes } from '../routes/local-publish'
 import { localSharedFileRoutes } from '../routes/local-shared-files'
 import { resolveLocalSharedFileTarget } from '../lib/local-shared-file-target'
 import { marketplaceRoutes } from '../routes/marketplace'
@@ -122,6 +123,12 @@ export function createLocalApp(): LocalAppBundle {
   )
   app.route('/', localSharedFileRoutes({ workspacesDir }))
   app.route('/api/local/projects', localProjectsRoutes())
+  // Publishing from the desktop (SHO-245): build in the project's local
+  // runtime, upload to Shogo Cloud, host it on {subdomain}.shogo.one. Mounted
+  // before `/api/internal` so the agent's `publish` tool (which posts to
+  // /api/internal/projects/:id/publish) is answered here instead of 404ing —
+  // that 404 was the whole bug.
+  app.route('/api', localPublishRoutes())
   // Runtime → API callbacks (trust, checkpoints, plans, workspace agent and
   // members, ...). Without them "Trust folder" never reaches the agent and
   // folder-linked repos stay read-only.

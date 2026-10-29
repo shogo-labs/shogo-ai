@@ -130,8 +130,6 @@ const REQUIRED_LOCAL_ROUTES = [
 
 /** Runtime → API paths that intentionally only exist in the cloud API. */
 const CLOUD_ONLY_RUNTIME_PATHS = new Set([
-  // Publishing deploys to `*.shogo.one`; desktop has no publish pipeline.
-  '/api/internal/projects/:param/publish',
   // Cross-project previews (SHO-125): another project is served by its own pod
   // on metal, and desktop has no metal substrate — `isMetalRuntime()` is false
   // there, so `preview_project` takes the local `/p/<id>/preview/start` path

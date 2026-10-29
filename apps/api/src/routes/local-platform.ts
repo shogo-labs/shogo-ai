@@ -3,7 +3,7 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
-import { fetchCloudAgentModelDefaults, fetchCloudVisibleModels } from '../lib/federated-upstream'
+import { fetchCloudAgentModelDefaults, fetchCloudVisibleModels, getUpstreamCredential } from '../lib/federated-upstream'
 import { resolvePlatformVisibleModels } from '../services/visible-models.service'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 
@@ -19,16 +19,24 @@ export function localPlatformRoutes(): Hono {
 
   router.get('/config', async (c) => {
     const userCount = await prisma.user.count().catch(() => 0)
+    // `getUpstreamCredential()` also sees a key that is only in localConfig
+    // (the window right after a restart), so the panel and the publish route
+    // can't disagree about whether publishing is possible.
+    const cloudKey = await getUpstreamCredential()
+    const shogoKeyConnected = !!cloudKey
     return c.json({
       localMode: true,
       needsSetup: userCount === 0,
-      shogoKeyConnected: !!process.env.SHOGO_API_KEY,
+      shogoKeyConnected,
       features: {
         billing: false,
         admin: false,
         oauth: false,
         analytics: true,
-        publishing: false,
+        // Publishing works on desktop whenever a Shogo Cloud key is connected:
+        // the desktop builds, the cloud hosts (SHO-245). Without a key there is
+        // nowhere to host, so the panel stays disabled.
+        publishing: shogoKeyConnected,
         marketplace: true,
         ezMode: true,
         ezModeVoiceProvider:

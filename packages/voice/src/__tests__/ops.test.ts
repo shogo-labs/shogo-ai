@@ -205,6 +205,45 @@ describe('parseVoiceOpJsonBody', () => {
       fields: { prompt: 'a' },
     })
   })
+
+  test('caller fields are kept for the executor and never forwarded upstream', () => {
+    const op = getVoiceOp('music')!
+    const parsed = parseVoiceOpJsonBody(op, {
+      prompt: 'a',
+      provider: 'google',
+      model: 'lyria-3.5',
+      lyrics: '[Verse] hi',
+    })
+    expect(parsed).toEqual({
+      ok: true,
+      fields: { prompt: 'a', provider: 'google', model: 'lyria-3.5', lyrics: '[Verse] hi' },
+    })
+    // ElevenLabs would reject `provider`/`lyrics`; the upstream body is built
+    // from `forward` only, so they cannot leak.
+    expect(voiceOpUpstreamBody(op, (parsed as { fields: Record<string, unknown> }).fields)).toEqual({
+      prompt: 'a',
+    })
+  })
+
+  test('the two music providers cannot borrow each other`s fields', () => {
+    const op = getVoiceOp('music')!
+    expect(parseVoiceOpJsonBody(op, { prompt: 'a', provider: 'openai' })).toMatchObject({
+      ok: false,
+      status: 400,
+    })
+    expect(parseVoiceOpJsonBody(op, { prompt: 'a', model: 'lyria-3.5' })).toMatchObject({
+      ok: false,
+      status: 400,
+    })
+    expect(parseVoiceOpJsonBody(op, { prompt: 'a', provider: 'google', modelId: 'music_v1' })).toMatchObject({
+      ok: false,
+      status: 400,
+    })
+    // A length Lyria never receives must not be accepted (and then metered).
+    expect(
+      parseVoiceOpJsonBody(op, { prompt: 'a', provider: 'google', musicLengthMs: 120_000 }),
+    ).toMatchObject({ ok: false, status: 400 })
+  })
 })
 
 describe('parseVoiceOpForm', () => {

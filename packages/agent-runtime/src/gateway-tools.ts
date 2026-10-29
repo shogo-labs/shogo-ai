@@ -4708,6 +4708,26 @@ function createPublishTool(ctx: ToolContext): AgentTool {
             code: res.code,
           })
         }
+        if (res.code === 'cloud_signin_required') {
+          return textResult({
+            error:
+              'Publishing needs a Shogo Cloud account: the app is hosted there. The user is not signed in to Shogo Cloud (or the key expired) — tell them to connect Shogo Cloud in Settings, then publish again. Nothing was deployed and their work is safe.',
+            code: res.code,
+          })
+        }
+        if (res.code === 'server_backed_requires_cloud_project') {
+          return textResult({
+            error:
+              'This app has a server (server.tsx / custom-routes.ts), which cannot be hosted from the desktop. Sync the project to Shogo Cloud and publish it there. Do NOT retry publishing from here — the same call will fail again.',
+            code: res.code,
+          })
+        }
+        if (res.code === 'publish_route_missing') {
+          return textResult({
+            error: `${res.error} Do not retry with a different subdomain — the API itself has no publish route.`,
+            code: res.code,
+          })
+        }
         return textResult({
           error: res.error ?? 'Publish failed',
           code: res.code,
