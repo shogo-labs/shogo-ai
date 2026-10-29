@@ -125,6 +125,7 @@ import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWit
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
 import { isBinaryFilePath } from '@shogo/shared-runtime'
 import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
+import { missingCodePlanSections } from './plan-sections'
 
 /**
  * Tool-layer wrapper for `assertAllowedPath` that returns a uniform
@@ -12246,7 +12247,7 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
         description: '1-2 sentence summary of what the plan accomplishes',
       }),
       plan: Type.String({
-        description: 'Detailed plan in markdown format. Include specific file paths, code snippets, and implementation steps.',
+        description: 'Detailed plan in markdown format. Include specific file paths, code snippets, and implementation steps. For plans that change code, use the sections ## Problem, ## Root cause (each claim cites path:line), ## Options considered, ## Changes, ## Tests, ## Verification, ## Risks.',
       }),
       todos: Type.Array(
         Type.Object({
@@ -12331,7 +12332,11 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      return textResult(`Plan "${params.name}" created and saved to .shogo/plans/${filename}`)
+      const missing = missingCodePlanSections(params.plan)
+      const missingNote = missing.length > 0
+        ? `\nThis plan changes code but has no ${missing.map((s) => `"## ${s}"`).join(' or ')} section. Add ${missing.length > 1 ? 'them' : 'it'} with update_plan before handing the plan to the user.`
+        : ''
+      return textResult(`Plan "${params.name}" created and saved to .shogo/plans/${filename}${missingNote}`)
     },
   }
 }

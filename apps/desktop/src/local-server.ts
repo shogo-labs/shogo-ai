@@ -488,6 +488,8 @@ export async function startLocalServer(): Promise<void> {
       ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'server.ts')
       : path.join(bundleDir, 'agent-runtime.js')
   const serverArgs = IS_DEV ? ['--conditions=development', serverEntry] : [serverEntry]
+  // Packaged builds ship ripgrep for the agent's grep tool (see bundle-api.mjs).
+  const bundledRg = path.join(projectRoot, 'ripgrep', process.platform === 'win32' ? 'rg.exe' : 'rg')
 
   // Kill leftover processes from a previous session
   cleanupStaleProcesses()
@@ -524,6 +526,7 @@ export async function startLocalServer(): Promise<void> {
     PATH: desktopPath,
     HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
+    ...(!IS_DEV && existsSync(bundledRg) ? { SHOGO_RG_PATH: bundledRg } : {}),
     SHOGO_HOST_TIER: hostTier,
     APP_VERSION: app.getVersion(),
     // The desktop app database travels under a Shogo-specific name, NOT the

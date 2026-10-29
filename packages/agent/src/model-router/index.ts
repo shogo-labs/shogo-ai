@@ -264,6 +264,11 @@ function detectHighPrecisionTool(input: SpawnClassificationInput): string | unde
 export interface ModelRouterOptions {
   ceilingModel: string
   availableModels: ModelTierMap
+  /**
+   * Never pick a tier below this one (e.g. plan-mode turns). The ceiling
+   * still wins: with an economy ceiling the economy model is kept.
+   */
+  floorTier?: 'standard'
 }
 
 /**
@@ -271,6 +276,26 @@ export interface ModelRouterOptions {
  * effects, no network calls, <1ms execution.
  */
 export function selectModelForSpawn(
+  input: SpawnClassificationInput,
+  options: ModelRouterOptions,
+): RoutingDecision {
+  return applyFloor(selectUnfloored(input, options), options)
+}
+
+function applyFloor(decision: RoutingDecision, options: ModelRouterOptions): RoutingDecision {
+  const { economy, standard } = options.availableModels
+  if (
+    options.floorTier !== 'standard' ||
+    decision.selectedModel !== economy ||
+    options.ceilingModel === economy ||
+    standard === economy
+  ) {
+    return decision
+  }
+  return { ...decision, selectedModel: standard, reason: `${decision.reason}+floor:standard` }
+}
+
+function selectUnfloored(
   input: SpawnClassificationInput,
   options: ModelRouterOptions,
 ): RoutingDecision {

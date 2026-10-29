@@ -68,6 +68,7 @@ import {
   chatActivityEvents,
 } from "../../../../lib/chat-session-events";
 import { deliverPendingDesktopIslandNewChat } from "../../../../lib/desktop-island";
+import { onChatInsertRequested } from "../../../../lib/chat-insert-bus";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
@@ -2881,6 +2882,13 @@ export default observer(function ProjectLayout() {
     return () =>
       window.removeEventListener("shogo:chat:open-with-context", handler);
   }, [openChatWithContextInCurrentWindow]);
+
+  // "Add to Chat" reveals a chat panel the user collapsed. Narrow layouts keep
+  // their current tab; the bus queues the request until a composer mounts.
+  useEffect(() => {
+    if (Platform.OS !== "web" || !isWide) return;
+    return onChatInsertRequested(() => setChatCollapsed(false));
+  }, [isWide]);
 
   // Let the sidebar switch this project's chats IN PLACE (no navigation /
   // remount) while the project is already open. The sidebar emits a select

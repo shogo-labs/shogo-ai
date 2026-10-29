@@ -19,6 +19,7 @@ import {
 } from '../pty-host-client'
 import { getWorkspacesDir } from '../paths'
 import { brokerAttach } from './terminal-port-broker'
+import { resolveSpawnShell } from './spawn-shell'
 import type {
   ControlEvent,
   SessionInfo,
@@ -42,11 +43,6 @@ const CH = {
   event:  'shogo:terminal:event',
   publishContext: 'shogo:terminal:publish-context',
 } as const
-
-function defaultShell(): string {
-  if (process.platform === 'win32') return process.env.ComSpec || 'pwsh.exe'
-  return process.env.SHELL || '/bin/zsh'
-}
 
 /**
  * Reject IPC from anything that isn't a top-level frame of one of our own app
@@ -83,7 +79,7 @@ function resolveWorkspaceCwd(opts: RendererSpawnOptions): string {
 }
 
 function normalizeSpawnOptions(opts: RendererSpawnOptions): HostSpawnOptions {
-  const shell = opts.shell || defaultShell()
+  const shell = resolveSpawnShell(opts.shell)
   const fallbackPath = process.platform === 'win32'
     ? process.env.PATH || ''
     : process.env.PATH || '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'

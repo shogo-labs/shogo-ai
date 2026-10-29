@@ -321,6 +321,13 @@ export function execCommandContains(result: EvalResult, substring: string): bool
     })
 }
 
+/** True if the agent searched code exactly: `exec` with `rg`, `grep` or `git grep`. */
+export function searchedCode(result: EvalResult): boolean {
+  return result.toolCalls.some(t =>
+    t.name === 'exec' && /^(?:rg|grep|git\s+grep)\b/.test(String((t.input as Record<string, unknown>).command ?? '').trim()),
+  )
+}
+
 /** True if the agent ran the GitHub CLI via exec (`gh …`). */
 export function usedGhCli(result: EvalResult, subcommand?: string): boolean {
   return execCommandContains(result, subcommand ? `gh ${subcommand}` : 'gh ')

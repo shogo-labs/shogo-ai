@@ -18,7 +18,8 @@
  * the agent, while `Workbench` flashes a toast as visual confirmation.
  */
 
-import type { editor, IDisposable, IMarkdownString, languages, Uri } from "monaco-editor";
+import type { editor, IDisposable, IMarkdownString, languages } from "monaco-editor";
+import { pathFromUri } from "./model-path";
 
 type MonacoNs = typeof import("monaco-editor");
 
@@ -95,24 +96,6 @@ function severityLabel(sev: number, monaco: MonacoNs): FixSeverity {
   if (sev === s.Warning) return "warning";
   if (sev === s.Info) return "info";
   return "hint";
-}
-
-/**
- * @monaco-editor/react encodes the `path` prop into the model URI's path.
- * Our workbench uses `pathKey = "<rootId>::<relPath>"`, so strip any leading
- * slash and split on `::` to recover the pieces.
- */
-function pathFromUri(uri: Uri): { path: string; rootId: string | null } {
-  let raw = uri.path ?? "";
-  try {
-    raw = decodeURIComponent(raw);
-  } catch {
-    /* leave raw as-is */
-  }
-  raw = raw.replace(/^\/+/, "");
-  const idx = raw.indexOf("::");
-  if (idx === -1) return { path: raw, rootId: null };
-  return { rootId: raw.slice(0, idx), path: raw.slice(idx + 2) };
 }
 
 function truncate(s: string, n: number): string {

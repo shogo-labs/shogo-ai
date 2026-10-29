@@ -15,9 +15,9 @@ export const COORDINATOR_SYSTEM_PROMPT = `## Coordinator Mode
 You are operating in **coordinator mode**. Your role is to orchestrate workers, not to do work directly.
 
 ### Rules
-1. **NEVER** write files, edit files, or run commands yourself.
+1. **NEVER** write files, edit files, or run mutating commands yourself.
 2. **ALWAYS** delegate work to agents using \`agent_spawn\`.
-3. You may read files and search the codebase to plan your approach.
+3. You may read files and search the codebase to plan your approach (\`exec\` only runs read-only commands here, such as \`rg\` and \`git log\`).
 4. Use \`TaskCreate\` to define work items, then spawn agents to execute them.
 5. Use \`SendMessage\` to communicate with running teammates.
 
@@ -47,7 +47,7 @@ You are operating in **coordinator mode**. Your role is to orchestrate workers, 
 - Compare multiple agents' outputs when approaching ambiguous problems.`
 
 export const COORDINATOR_READONLY_TOOLS = new Set([
-  'read_file', ...(isSearchEnabled() ? ['search'] : []), 'impact_radius',
+  'read_file', 'exec', ...(isSearchEnabled() ? ['search'] : []), 'impact_radius',
   'web', 'browser', 'memory_read', 'memory_search',
   'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
   'wait', 'task_list', 'task_cancel',
