@@ -23,11 +23,18 @@ let runAgentLoopImpl: (...args: any[]) => Promise<any> = async () => ({
   loopBreak: false,
 })
 
+// A module mock is process-global, so each one spreads the real exports: a
+// partial mock breaks any other file in the same run that imports the module
+// (the gateway reaches ../agent-loop, ../gateway-tools and ../internal-api).
+const realAgentLoop = await import('../agent-loop')
 mock.module('../agent-loop', () => ({
+  ...realAgentLoop,
   runAgentLoop: (...args: any[]) => runAgentLoopImpl(...args),
 }))
 
+const realGatewayTools = await import('../gateway-tools')
 mock.module('../gateway-tools', () => ({
+  ...realGatewayTools,
   createBrowserTool: (_ctx: any) => ({ name: 'browser', execute: async () => ({ content: [], details: {} }) }),
   textResult: (data: any) => ({
     content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data) }],
