@@ -293,6 +293,65 @@ describe('SHO-246 acceptance', () => {
     expect((await prisma.workspace.findUnique({ where: { id: ids.workspace } }) as any)?.movedToWorkspaceId).toBe(null)
   }, 60_000)
 
+  test('AC5: a workspace with no automations still finishes the move and switches over', async () => {
+    // The common case, and the one this suite's own fixture hid: a workspace
+    // with no schedules and no triggers. The handover phase used to throw
+    // `.map is not a function` here, because the SQLite Json column returns an
+    // empty array as the string "[]" — so the move failed at its last phase
+    // with the target already fully populated.
+    const bare = { workspace: 'ws-246-bare', project: 'p-246-bare' }
+    await prisma.workspace.create({
+      data: { id: bare.workspace, name: 'No automations', slug: 'bare-246', kind: 'team' } as any,
+    })
+    await prisma.member.create({ data: { userId: ids.owner, workspaceId: bare.workspace, role: 'owner' } as any })
+    await prisma.project.create({ data: { id: bare.project, workspaceId: bare.workspace, name: 'Bare' } as any })
+    mkdirSync(join(filesDir, bare.project), { recursive: true })
+    writeFileSync(join(filesDir, bare.project, 'readme.md'), '# bare\n')
+
+    // The premise of the test: nothing runs on a timer in this workspace.
+    expect(await prisma.agentSchedule.count({ where: { workspaceId: bare.workspace } })).toBe(0)
+    expect(await prisma.eventSubscription.count({ where: { workspaceId: bare.workspace } })).toBe(0)
+
+    const started = await call('/', {
+      workspaceId: bare.workspace,
+      direction: 'cloud_to_desktop',
+      targetKind: 'desktop',
+      selection: { mode: 'all' },
+    })
+    if (started.status !== 201) console.error('BARE START BODY', JSON.stringify(started.json))
+    expect(started.status).toBe(201)
+    const moveId = started.json.move.id as string
+
+    const done = await waitFor(async () => {
+      const { json } = await call(`/${moveId}`, undefined, 'GET')
+      if (json.move?.status === 'failed') throw new Error(`move failed: ${json.move.error}`)
+      return json.move?.status === 'done' ? json.move : null
+    }, 30_000)
+    expect(done.targetWorkspaceId).toBeTruthy()
+
+    // The handover ran and recorded an empty row set instead of crashing.
+    const row = (await prisma.workspaceMove.findUnique({ where: { id: moveId } })) as any
+    expect(row?.handover).toBeTruthy()
+    expect(row?.status).toBe('done')
+
+    // AC5 on the empty set: switch over and back must work with nothing to flip.
+    const switched = await call(`/${moveId}/switch-over`)
+    if (switched.status !== 200) console.error('BARE SWITCH BODY', JSON.stringify(switched.json))
+    expect(switched.status).toBe(200)
+    expect((await prisma.workspace.findUnique({ where: { id: bare.workspace } }) as any)?.movedToWorkspaceId).toBe(
+      done.targetWorkspaceId,
+    )
+
+    const back = await call(`/${moveId}/switch-back`)
+    expect(back.status).toBe(200)
+    expect((await prisma.workspace.findUnique({ where: { id: bare.workspace } }) as any)?.movedToWorkspaceId).toBe(null)
+
+    // The move was a real one, not an empty run: the file crossed under the
+    // target project's derived id.
+    const { existsSync } = await import('node:fs')
+    expect(existsSync(join(filesDir, derived(bare.project, moveId), 'readme.md'))).toBe(true)
+  }, 60_000)
+
   test('AC1: re-running the files phase sends nothing that already landed', async () => {
     const { sourceFileManifest } = await import('../services/workspace-move/serve')
     const { targetFileManifest } = await import('../services/workspace-move/receive')
