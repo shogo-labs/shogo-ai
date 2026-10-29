@@ -501,6 +501,19 @@ export const WorkspaceAgentChatScreen = observer(
       }
     }, [workspace?.id])
 
+    // Another project's runtime, for a file this chat's agent wrote there.
+    // Above the early return: a hook below it changes the hook order between
+    // the loading render and the loaded one (SHO-247).
+    const projectAgentUrl = useCallback(
+      (projectId: string) =>
+        projectAgentProxyBase({
+          projectId,
+          relayBase: machineRoute?.relayBase ?? null,
+          apiUrl: API_URL,
+        }),
+      [machineRoute?.relayBase],
+    )
+
     if (!workspace?.id || !sessionId || !profile) {
       return (
         <View className="flex-1 items-center justify-center bg-background px-6">
@@ -671,16 +684,6 @@ export const WorkspaceAgentChatScreen = observer(
     const activePane = hasSidePane ? projectPane : null
     const workspaceAgentUrl =
       machineRoute?.agentBase ?? `${API_URL}/api/workspaces/${workspace.id}/agent-proxy`
-    // Another project's runtime, for a file this chat's agent wrote there.
-    const projectAgentUrl = useCallback(
-      (projectId: string) =>
-        projectAgentProxyBase({
-          projectId,
-          relayBase: machineRoute?.relayBase ?? null,
-          apiUrl: API_URL,
-        }),
-      [machineRoute?.relayBase],
-    )
     const plansPanel = planPane ? (
       <PlansPanel
         visible
