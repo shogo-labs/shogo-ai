@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { buildHandover, switchBack, switchOver, type HandoverSides } from '../handover'
+import { buildHandover, readHandover, switchBack, switchOver, type HandoverSides } from '../handover'
 
 const rows = new Map([
   [
@@ -93,5 +93,45 @@ describe('switchBack', () => {
     const restored = calls.find((call) => call.startsWith('source:schedule:on'))
     expect(restored).toContain('s1')
     expect(restored).not.toContain('s2')
+  })
+})
+
+describe('readHandover', () => {
+  test('a workspace with no automations reads as two empty row sets', () => {
+    // The shape SQLite actually hands back: an empty array does not survive the
+    // Json round trip and arrives as the string "[]". Trusting it crashed the
+    // handover phase on `.map`, after every byte had already copied.
+    const fromSqlite = { schedules: '[]', triggers: '[]' }
+    const state = readHandover(fromSqlite)
+    expect(state.schedules).toEqual([])
+    expect(state.triggers).toEqual([])
+    expect(() => state.schedules.map((row) => row.targetId)).not.toThrow()
+  })
+
+  test('a real array is passed through untouched', () => {
+    const state = buildHandover('move-1', rows)
+    expect(readHandover(state)).toEqual(state)
+  })
+
+  test('one empty side does not disturb the other', () => {
+    const state = readHandover({ schedules: '[]', triggers: [{ targetId: 't1', sourceId: 's1', name: 'x', enabled: true }] })
+    expect(state.schedules).toEqual([])
+    expect(state.triggers.map((row) => row.targetId)).toEqual(['t1'])
+  })
+
+  test('a missing row (a move created before the column was written) is empty, not a crash', () => {
+    expect(readHandover(null)).toEqual({ schedules: [], triggers: [] })
+    expect(readHandover(undefined)).toEqual({ schedules: [], triggers: [] })
+    expect(readHandover({})).toEqual({ schedules: [], triggers: [] })
+  })
+
+  test('junk in the column is ignored rather than thrown', () => {
+    expect(readHandover({ schedules: 'not json', triggers: 42 })).toEqual({ schedules: [], triggers: [] })
+  })
+
+  test('switchedOverAt survives the read', () => {
+    expect(readHandover({ schedules: '[]', triggers: '[]', switchedOverAt: '2026-10-29T00:00:00.000Z' }).switchedOverAt).toBe(
+      '2026-10-29T00:00:00.000Z',
+    )
   })
 })

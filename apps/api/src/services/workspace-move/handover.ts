@@ -23,6 +23,39 @@ import type { MoveHandoverState, MoveRow } from './types'
 
 export type HandoverKind = 'schedule' | 'trigger'
 
+/**
+ * Read the handover state off a `WorkspaceMove` row.
+ *
+ * The SQLite Json column does not round-trip an **empty** array: `[]` comes
+ * back as the string `"[]"`, while a non-empty array comes back as an array.
+ * A workspace with no schedules (or no triggers) is the common case, and it
+ * crashed the handover phase on `.map` — after every byte had already copied,
+ * so the move failed at the last step with the target half-populated. Normalise
+ * on read rather than trust the driver.
+ */
+export function readHandover(raw: unknown): MoveHandoverState {
+  const value = (raw ?? {}) as Record<string, unknown>
+  const state: MoveHandoverState = {
+    schedules: handoverRows(value.schedules),
+    triggers: handoverRows(value.triggers),
+  }
+  if (typeof value.switchedOverAt === 'string') state.switchedOverAt = value.switchedOverAt
+  return state
+}
+
+function handoverRows(value: unknown): MoveHandoverState['schedules'] {
+  if (Array.isArray(value)) return value as MoveHandoverState['schedules']
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      if (Array.isArray(parsed)) return parsed as MoveHandoverState['schedules']
+    } catch {
+      // A value that is neither an array nor JSON is not a row set.
+    }
+  }
+  return []
+}
+
 export function buildHandover(moveId: string, rows: Map<string, MoveRow[]>): MoveHandoverState {
   const schedules = (rows.get('AgentSchedule') ?? []).map((row) => ({
     sourceId: String(row.id),

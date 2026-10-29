@@ -15,13 +15,12 @@
  */
 
 import { prisma } from '../../lib/prisma'
-import { buildHandover, switchBack, switchOver } from './handover'
+import { buildHandover, readHandover, switchBack, switchOver } from './handover'
 import { HttpMoveSource, HttpMoveTarget, LocalMoveSource, LocalMoveTarget, type MoveSource, type MoveTarget } from './link'
 import { buildMovePlan, collectMoveRows, normaliseSelection } from './plan'
 import { runMove } from './runner'
 import type {
   MoveDirection,
-  MoveHandoverState,
   MovePlan,
   MoveProgress,
   MoveSelection,
@@ -226,7 +225,7 @@ async function runMoveJob(
   if (row.status === 'done' || row.status === 'cancelled' || row.status === 'failed') return
 
   const plan = (row.plan ?? {}) as MovePlan
-  const handover = (row.handover ?? { schedules: [], triggers: [] }) as MoveHandoverState
+  const handover = readHandover(row.handover)
   const selection = (ctx?.selection ?? (row.selection as MoveSelection)) as MoveSelection
   // Identity from the row, never the caller: a resume has no request context.
   const jobContext = moveJobContext(row, ctx)
@@ -297,7 +296,7 @@ export async function switchOverMove(moveId: string, db: any = prisma): Promise<
   if (!row.targetWorkspaceId) {
     throw new WorkspaceMoveError('This move has no target workspace.', 409, 'workspace_move_no_target')
   }
-  const handover = (row.handover ?? { schedules: [], triggers: [] }) as MoveHandoverState
+  const handover = readHandover(row.handover)
   const { source, target } = endpointsFor(row.direction as MoveDirection, moveId, db)
   await switchOver(
     {
@@ -321,7 +320,7 @@ export async function switchBackMove(moveId: string, db: any = prisma): Promise<
   if (!row.switchedOverAt) {
     throw new WorkspaceMoveError('This move was never switched over.', 409, 'workspace_move_not_switched_over')
   }
-  const handover = (row.handover ?? { schedules: [], triggers: [] }) as MoveHandoverState
+  const handover = readHandover(row.handover)
   const { source, target } = endpointsFor(row.direction as MoveDirection, moveId, db)
   await switchBack(
     {
