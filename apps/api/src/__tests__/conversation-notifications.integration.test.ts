@@ -209,6 +209,27 @@ describe('activity inbox and phone push timing', () => {
     await s.updateChatSettings(seed.workspaceId, seed.member, { dmInActivity: false })
   })
 
+  test('a reply in a DM thread reaches Activity even with dmInActivity off', async () => {
+    const inbox = await inboxSvc()
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    const send = (authorUserId: string, text: string, threadRootId?: string) =>
+      service.postMessage({ conversationId: dm.id, authorType: 'user', authorUserId, text, ...(threadRootId ? { threadRootId } : {}) } as any)
+    const items = async () => (await inbox.listInbox(seed.workspaceId, seed.owner)).items.filter((i) => i.conversationId === dm.id)
+
+    const root = await send(seed.owner, 'can you review this?')
+    await notifications.notifyForMessage(root)
+    const reply = await send(seed.member, 'looks good', root.row.id)
+    expect(await notified(reply)).toEqual([`${seed.owner}:thread`])
+
+    expect(await items()).toEqual([expect.objectContaining({ kind: 'thread', messageId: reply.row.id, preview: 'looks good' })])
+    expect((await inbox.listInbox(seed.workspaceId, seed.owner)).unreadThreads).toBeGreaterThan(0)
+
+    // A plain top-level DM still follows the setting.
+    const plain = await send(seed.member, 'unrelated')
+    expect(await notified(plain)).toEqual([`${seed.owner}:dm`])
+    expect(await items()).toHaveLength(1)
+  })
+
   test('mobilePushDelay "immediate" pushes even while the person is active', async () => {
     const s = await settingsSvc()
     await presence.recordPresence(seed.workspaceId, seed.member, 'active')
