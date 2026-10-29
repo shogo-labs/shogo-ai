@@ -69,9 +69,21 @@ export function rewriteRowForMove(model: string, row: MoveRow, ctx: RewriteConte
   return next
 }
 
-/** `ProjectFolder` is recreated at the target, so it never travels. */
+/**
+ * Rows that never travel, because the target writes its own authoritative copy.
+ *
+ * `ProjectFolder` is recreated at the target (it is a path on that machine).
+ * `Workspace` is created by `initTargetWorkspace` before the records phase runs:
+ * the source row is a partial projection (`collectWorkspaceSnapshot` selects
+ * only `{ id, name, kind }`) and inserting it would both fail on the required
+ * `slug` and duplicate the workspace the target already has. It was invisible
+ * until now because the zip import creates its own workspace and never inserts
+ * one either — so this path had no coverage at all.
+ */
+const NOT_MOVED: ReadonlySet<string> = new Set(['ProjectFolder', 'Workspace'])
+
 export function shouldMoveModel(model: string): boolean {
-  return model !== 'ProjectFolder'
+  return !NOT_MOVED.has(model)
 }
 
 export function chunkRows<T>(rows: readonly T[], size = MOVE_RECORD_CHUNK): T[][] {

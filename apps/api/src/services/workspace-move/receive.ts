@@ -14,7 +14,7 @@
 
 import { join } from 'node:path'
 import { workspacesDir } from '../workspace-export/files'
-import { walkMoveFiles, writeMoveFile } from './files'
+import { moveDirFor, walkMoveFiles, writeMoveFile } from './files'
 import { moveIgnoreRules } from './ignores'
 import type { HandoverKind } from './handover'
 import type { MoveFileEntry, MoveFileManifest, MoveRow } from './types'
@@ -63,6 +63,46 @@ function clientFor(db: any, model: string): any {
 }
 
 /**
+ * Models whose target row already exists before the records phase runs, keyed by
+ * the constraint that makes a second insert fail.
+ *
+ * `initTargetWorkspace` writes both of these up front: the owner's `Member` row
+ * and a placeholder `WorkspaceAgentProfile`. Inserting the moved copy of either
+ * collides on `members_workspace_scope_key` / the profile's `workspaceId @unique`
+ * — silently on Postgres, where `skipDuplicates` swallows it, and as a P2002 on
+ * SQLite. Merging on the natural key makes both drivers behave the same and
+ * states which copy wins.
+ */
+const MERGED_ON_NATURAL_KEY: Record<
+  string,
+  { where: (row: MoveRow) => any; update: (row: MoveRow) => any }
+> = {
+  // The target's own membership is authoritative: a move must not demote the
+  // owner who ran it, and the source row carries no billing-role knowledge the
+  // target lacks.
+  Member: {
+    where: (row) =>
+      row.workspaceId ? { userId_workspaceId: { userId: row.userId, workspaceId: row.workspaceId } } : null,
+    update: () => ({}),
+  },
+  // The placeholder exists only so the workspace is usable mid-move; the moved
+  // profile is the real one, so it wins on every column but its identity.
+  WorkspaceAgentProfile: {
+    where: (row) => (row.workspaceId ? { workspaceId: row.workspaceId } : null),
+    update: ({ id: _id, workspaceId: _ws, createdAt: _createdAt, ...rest }) => rest,
+  },
+}
+
+/**
+ * Whether this model's rows are merged onto a row the target already has, rather
+ * than inserted. Exported so the guard test can prove every model
+ * `initTargetWorkspace` writes is accounted for.
+ */
+export function mergesOnNaturalKey(model: string): boolean {
+  return model in MERGED_ON_NATURAL_KEY
+}
+
+/**
  * Insert one chunk. `createMany` first (fast, and `skipDuplicates` makes a
  * replayed chunk a no-op on Postgres); if the driver refuses — SQLite does not
  * support `skipDuplicates` — fall back to per-row upserts, which is what a
@@ -72,6 +112,17 @@ export async function writeRecordChunk(db: any, model: string, rows: MoveRow[]):
   if (!rows.length) return { inserted: 0 }
   const client = clientFor(db, model)
   if (!client) throw new WorkspaceMoveError(`Unknown model "${model}"`, 400, 'workspace_move_unknown_model')
+  const merge = MERGED_ON_NATURAL_KEY[model]
+  if (merge) {
+    let inserted = 0
+    for (const row of rows) {
+      const where = merge.where(row)
+      if (where) await client.upsert({ where, create: row, update: merge.update(row) })
+      else await client.upsert({ where: { id: row.id }, create: row, update: {} })
+      inserted++
+    }
+    return { inserted }
+  }
   try {
     if (client.createMany) {
       const res = await client.createMany({ data: rows, skipDuplicates: true })
@@ -107,8 +158,12 @@ export function targetWorkspaceRootDir(workspaceId: string, base = workspacesDir
  * What the target already holds for a project. The driver diffs against this, so
  * a resumed move only sends what is missing.
  */
-export async function targetFileManifest(projectId: string, base = workspacesDir()): Promise<MoveFileManifest> {
-  const dir = projectId.startsWith('.workspace-roots') ? join(base, projectId) : targetProjectDir(projectId, base)
+export async function targetFileManifest(
+  projectId: string,
+  workspaceId: string,
+  base = workspacesDir(),
+): Promise<MoveFileManifest> {
+  const dir = moveDirFor({ projectId, workspaceId, base })
   const walk = await walkMoveFiles(dir, { rules: moveIgnoreRules(dir), hash: true })
   const entries: MoveFileEntry[] = walk.entries
   return { projectId, entries, ignored: walk.ignored }
@@ -116,12 +171,12 @@ export async function targetFileManifest(projectId: string, base = workspacesDir
 
 export async function receiveFile(
   projectId: string,
+  workspaceId: string,
   relPath: string,
   bytes: Uint8Array,
   base = workspacesDir(),
 ): Promise<void> {
-  const dir = projectId.startsWith('.workspace-roots') ? join(base, projectId) : targetProjectDir(projectId, base)
-  writeMoveFile(dir, relPath, bytes)
+  writeMoveFile(moveDirFor({ projectId, workspaceId, base }), relPath, bytes)
 }
 
 /**

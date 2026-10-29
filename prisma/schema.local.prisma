@@ -4579,6 +4579,18 @@ model WorkspaceMove {
   sourceName        String
   targetWorkspaceId String?
   targetName        String?
+  /// Who asked for the move, and whether they could see every DM.
+  ///
+  /// Persisted rather than passed through the job: a resume (`POST /:id/resume`,
+  /// or the restart sweep) has no request context, and defaulting it to
+  /// `isOwner: true` built a *different* row set than the plan the user
+  /// approved — a DM the requester cannot see was excluded by the plan and
+  /// included by the resume. Read back in `runMoveJob`.
+  requesterId       String?
+  isOwner           Boolean?
+  /// Owner of the target workspace's `Member` row. Same reason: without it a
+  /// crash before the first `targetWorkspaceId` save left the target ownerless.
+  ownerUserId       String?
   /// { mode: "all" } | { mode: "selected", conversationIds: string[], projectIds: string[] }
   selection         Json
   /// The frozen plan the user approved: row counts, bytes, ignores, quota.

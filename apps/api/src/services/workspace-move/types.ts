@@ -10,6 +10,15 @@
 
 import type { RequiredCredential } from '../../lib/export-secrets'
 
+/**
+ * The workspace's own root travels as a pseudo-project with this id.
+ *
+ * Its directory is `<base>/.workspace-roots/<workspaceId>`, not `<base>/<id>`
+ * like a project, so anything that turns a `projectId` into a path must go
+ * through `moveDirFor` rather than joining the id onto the base itself.
+ */
+export const WORKSPACE_ROOT_ID = '__workspace_root__'
+
 export type MoveDirection = 'desktop_to_cloud' | 'cloud_to_desktop'
 
 /**
@@ -67,7 +76,12 @@ export interface MovePlanProject {
 export interface MovePlan {
   direction: MoveDirection
   source: { workspaceId: string; name: string; kind: string }
-  target: { workspaceId?: string; name: string }
+  /**
+   * `instanceSize` is frozen here because the target is created *by the job*,
+   * which outlives the request. A resume with no size created the target at the
+   * default size while the quota check had been made against this one.
+   */
+  target: { workspaceId?: string; name: string; instanceSize?: string | null }
   selection: {
     mode: MoveSelection['mode']
     conversations: Array<{ id: string; name: string; kind: string }>

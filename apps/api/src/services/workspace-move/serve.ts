@@ -18,11 +18,11 @@ import { join } from 'node:path'
 import { workspacesDir } from '../workspace-export/files'
 import { insertOrder } from '../workspace-export/manifest'
 import { moveIgnoreRules } from './ignores'
-import { walkMoveFiles } from './files'
+import { moveDirFor, walkMoveFiles } from './files'
 import { collectMoveRows } from './plan'
 import { rewriteRowForMove, shouldMoveModel } from './records'
 import type { HandoverKind } from './handover'
-import type { MoveFileEntry, MoveFileManifest, MoveRow, MoveSelection } from './types'
+import { WORKSPACE_ROOT_ID, type MoveFileEntry, type MoveFileManifest, type MoveRow, type MoveSelection } from './types'
 
 export const SERVE_CHUNK = 500
 
@@ -88,13 +88,22 @@ export async function* streamSourceRecords(
   else yield { model: '', rows: [], cursor: 0, done: true }
 }
 
-/** Where a project's files live on the source: its checkout, or the managed dir. */
+/**
+ * Where a project's files live on the source: its checkout, or the managed dir.
+ *
+ * The workspace root is a pseudo-project (`WORKSPACE_ROOT_ID`) that lives at
+ * `.workspace-roots/<id>` rather than under its own name, so it resolves through
+ * `moveDirFor` and never consults `ProjectFolder`.
+ */
 export async function sourceProjectDir(
   db: any,
   workspaceId: string,
   projectId: string,
   base = workspacesDir(),
 ): Promise<{ dir: string; folderLinked: boolean }> {
+  if (projectId === WORKSPACE_ROOT_ID || projectId.startsWith('.workspace-roots/')) {
+    return { dir: moveDirFor({ projectId, workspaceId, base }), folderLinked: false }
+  }
   const folder: { path: string } | null = await db.projectFolder
     .findFirst({ where: { projectId }, select: { path: true } })
     .catch(() => null)
@@ -106,12 +115,8 @@ export async function sourceFileManifest(
   db: any,
   input: { workspaceId: string; projectId: string; base?: string },
 ): Promise<MoveFileManifest> {
-  if (input.projectId.startsWith('.workspace-roots')) {
-    const dir = join(input.base ?? workspacesDir(), input.projectId)
-    const walk = await walkMoveFiles(dir, { rules: moveIgnoreRules(dir), hash: true })
-    return { projectId: input.projectId, entries: walk.entries, ignored: walk.ignored }
-  }
-  const { dir } = await sourceProjectDir(db, input.workspaceId, input.projectId, input.base)
+  const base = input.base ?? workspacesDir()
+  const { dir } = await sourceProjectDir(db, input.workspaceId, input.projectId, base)
   const walk = await walkMoveFiles(dir, { rules: moveIgnoreRules(dir), hash: true })
   const entries: MoveFileEntry[] = walk.entries
   return { projectId: input.projectId, entries, ignored: walk.ignored }

@@ -127,11 +127,11 @@ export class LocalMoveTarget implements MoveTarget {
   }
 
   fileManifest(input: { workspaceId: string; projectId: string }) {
-    return targetFileManifest(input.projectId, this.base)
+    return targetFileManifest(input.projectId, input.workspaceId, this.base)
   }
 
   async writeFile(input: { workspaceId: string; projectId: string; path: string; bytes: Uint8Array }) {
-    await receiveFile(input.projectId, input.path, input.bytes, this.base)
+    await receiveFile(input.projectId, input.workspaceId, input.path, input.bytes, this.base)
   }
 
   setEnabled(input: { workspaceId: string; kind: HandoverKind; ids: string[]; enabled: boolean }) {

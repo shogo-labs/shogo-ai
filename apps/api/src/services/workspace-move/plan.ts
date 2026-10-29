@@ -16,7 +16,7 @@ import { INSTANCE_SIZES, type InstanceSizeName } from '../../config/instance-siz
 import { collectWorkspaceSnapshot } from '../workspace-export/export'
 import { workspacesDir } from '../workspace-export/files'
 import { applySelectionClosure, closureRuleFor } from './closure'
-import { walkMoveFiles } from './files'
+import { walkMoveFiles, moveDirFor } from './files'
 import { inspectFolderLinkedProject } from './git'
 import { describeIgnoreRules, moveIgnoreRules } from './ignores'
 import type {
@@ -26,10 +26,14 @@ import type {
   MoveRow,
   MoveSelection,
 } from './types'
-import { WorkspaceMoveError } from './types'
+import { WORKSPACE_ROOT_ID, WorkspaceMoveError } from './types'
 
-/** The workspace root travels as a pseudo-project with this id. */
-export const WORKSPACE_ROOT_ID = '__workspace_root__'
+/**
+ * The workspace root travels as a pseudo-project with this id — re-exported so
+ * callers keep importing it from here, while `files.ts` (the directory mapping)
+ * takes the same constant from `types.ts` and no cycle forms.
+ */
+export { WORKSPACE_ROOT_ID }
 
 export interface BuildMovePlanInput {
   workspaceId: string
@@ -249,6 +253,34 @@ export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlan
         bytesIgnored: walk.ignored.bytes,
       })
     }
+
+    // The workspace's own root travels too (its `CLAUDE.md`, `.shogo/`, any file
+    // outside a project), as the `WORKSPACE_ROOT_ID` pseudo-project. It was left
+    // out of the plan entirely, so its bytes were missing from the totals and
+    // from the quota check — the one number the user approves before starting.
+    const rootDir = moveDirFor({ projectId: WORKSPACE_ROOT_ID, workspaceId: input.workspaceId, base: projectsBase })
+    const rootWalk = await walkMoveFiles(rootDir, { rules: moveIgnoreRules(rootDir), hash: false })
+    const rootBytes = rootWalk.entries.reduce((sum, entry) => sum + entry.bytes, 0)
+    totalFiles += rootWalk.entries.length
+    totalBytes += rootBytes
+    ignoredFiles += rootWalk.ignored.files
+    ignoredBytes += rootWalk.ignored.bytes
+    if (rootWalk.errors.length) {
+      warnings.push(`The workspace root: ${rootWalk.errors.length} path(s) could not be read and will be skipped.`)
+    }
+    // Only listed when it has something in it: an empty root is not a project,
+    // and a permanent "(workspace root) — 0 bytes" row is noise in the plan.
+    if (rootWalk.entries.length) {
+      planProjects.push({
+        id: WORKSPACE_ROOT_ID,
+        name: '(workspace root)',
+        mode: 'copy',
+        files: rootWalk.entries.length,
+        bytes: rootBytes,
+        filesIgnored: rootWalk.ignored.files,
+        bytesIgnored: rootWalk.ignored.bytes,
+      })
+    }
   }
 
   const handoverSchedules = (rows.get('AgentSchedule') ?? []).length
@@ -277,7 +309,12 @@ export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlan
   const plan: MovePlan = {
     direction: input.direction,
     source: { workspaceId: workspace.id, name: workspace.name, kind: String(workspace.kind ?? 'team') },
-    target: { name: input.targetName?.trim() || `${workspace.name} (moved)` },
+    target: {
+      name: input.targetName?.trim() || `${workspace.name} (moved)`,
+      // Frozen into the approved plan: the job creates the target later, and on
+      // a resume there is no request to carry the size.
+      instanceSize: workspace.instanceSize ?? null,
+    },
     selection: {
       mode: input.selection.mode,
       conversations: conversations.map((conversation) => ({

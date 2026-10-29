@@ -137,6 +137,11 @@ export async function createMove(input: {
       sourceWorkspaceId: input.workspaceId,
       sourceName: workspace.name,
       targetName: plan.target.name,
+      // Persisted so a resume is the same job the plan was built for — see the
+      // model comment. `runMoveJob` reads these, never the caller's context.
+      requesterId: input.requesterId,
+      isOwner: input.isOwner,
+      ownerUserId: input.requesterId,
       selection: selection as any,
       plan: plan as any,
       progress: {} as any,
@@ -171,6 +176,46 @@ export function kickMove(
   return job
 }
 
+/** What a job run needs that the request that started it happened to carry. */
+export interface MoveJobContext {
+  requesterId: string
+  isOwner: boolean
+  ownerUserId: string
+  instanceSize: string | null
+}
+
+/**
+ * The identity a job run uses.
+ *
+ * The job outlives its request: it is paused and resumed from the UI, and
+ * restarted by the crash sweep. Reading this from `ctx` alone meant a resume
+ * fell back to `isOwner: true` — so a plan built for an admin, resumed with no
+ * context, streamed a *different* row set than the one the user approved (a DM
+ * the requester cannot see was excluded by the plan and included by the
+ * resume) — and `ownerUserId: ''`, which could create an ownerless target.
+ *
+ * So the row wins. `ctx` is only a fallback for rows created before these
+ * columns existed, and the last resort matches the previous behaviour.
+ *
+ * `instanceSize` comes from the frozen plan for the same reason: the target is
+ * created by the job, and the quota the user approved was computed against that
+ * size.
+ */
+export function moveJobContext(row: any, ctx?: {
+  instanceSize?: string | null
+  requesterId?: string
+  isOwner?: boolean
+}): MoveJobContext {
+  const plan = (row?.plan ?? {}) as MovePlan
+  const requesterId = row?.requesterId ?? ctx?.requesterId ?? ''
+  return {
+    requesterId,
+    isOwner: row?.isOwner ?? ctx?.isOwner ?? true,
+    ownerUserId: row?.ownerUserId ?? requesterId,
+    instanceSize: plan?.target?.instanceSize ?? ctx?.instanceSize ?? null,
+  }
+}
+
 async function runMoveJob(
   moveId: string,
   ctx?: { db?: any; instanceSize?: string | null; requesterId?: string; isOwner?: boolean; selection?: MoveSelection },
@@ -183,6 +228,8 @@ async function runMoveJob(
   const plan = (row.plan ?? {}) as MovePlan
   const handover = (row.handover ?? { schedules: [], triggers: [] }) as MoveHandoverState
   const selection = (ctx?.selection ?? (row.selection as MoveSelection)) as MoveSelection
+  // Identity from the row, never the caller: a resume has no request context.
+  const jobContext = moveJobContext(row, ctx)
   const { source, target } = endpointsFor(row.direction as MoveDirection, moveId, db)
 
   const update = async (data: Record<string, any>) => {
@@ -198,10 +245,7 @@ async function runMoveJob(
       target,
       sourceWorkspaceId: row.sourceWorkspaceId,
       targetWorkspaceId: row.targetWorkspaceId ?? null,
-      requesterId: ctx?.requesterId ?? '',
-      isOwner: ctx?.isOwner ?? true,
-      ownerUserId: ctx?.requesterId ?? '',
-      instanceSize: ctx?.instanceSize ?? null,
+      ...jobContext,
       selection,
       plan,
       progress: (row.progress ?? {}) as MoveProgress,

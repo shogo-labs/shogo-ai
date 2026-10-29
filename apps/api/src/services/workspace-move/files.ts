@@ -23,7 +23,7 @@ import { createReadStream, existsSync, lstatSync, mkdirSync, readdirSync, realpa
 import { dirname, join, relative, resolve } from 'node:path'
 import { isExcludedRelPath } from '../workspace-export/files'
 import { isMoveIgnored, moveIgnoreRules, type IgnoreRule } from './ignores'
-import type { MoveFileEntry } from './types'
+import { WORKSPACE_ROOT_ID, type MoveFileEntry } from './types'
 
 /** Sizes only, for a subtree the ignore rules excluded. */
 function sumTree(dir: string): { files: number; bytes: number } {
@@ -239,6 +239,33 @@ export function writeMoveFile(rootDir: string, relPath: string, bytes: Uint8Arra
   mkdirSync(dirname(target), { recursive: true })
   writeFileSync(target, bytes)
   return target
+}
+
+/**
+ * The directory a move's `projectId` refers to.
+ *
+ * The runner sends one sentinel, `WORKSPACE_ROOT_ID`, for the workspace's own
+ * root (its `CLAUDE.md`, `.shogo/`, anything not inside a project). That root
+ * lives at `<base>/.workspace-roots/<workspaceId>` — *not* at `<base>/<id>` like
+ * a project directory — so the sentinel has to be translated, and translated in
+ * one place. Only the HTTP receive routes did it; the in-process
+ * `LocalMoveSource`/`LocalMoveTarget` a desktop uses passed the sentinel
+ * straight into `join(base, projectId)`, which made the source manifest for the
+ * root come back empty and wrote cloud -> desktop root files into a stray
+ * `<base>/__workspace_root__` directory.
+ *
+ * The two sides therefore differ only in `base` (and, on the source, in
+ * `ProjectFolder` redirection for folder-linked projects, which happens before
+ * this is called).
+ */
+export function moveDirFor(input: { projectId: string; workspaceId: string; base: string }): string {
+  if (input.projectId === WORKSPACE_ROOT_ID) {
+    return join(input.base, '.workspace-roots', input.workspaceId)
+  }
+  // A root addressed directly (`receive/files/*` accepts this form so a caller
+  // can target one workspace's root without knowing the sentinel).
+  if (input.projectId.startsWith('.workspace-roots/')) return join(input.base, input.projectId)
+  return join(input.base, input.projectId)
 }
 
 export function fileExists(path: string): boolean {

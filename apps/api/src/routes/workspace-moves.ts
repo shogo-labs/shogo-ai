@@ -22,7 +22,6 @@ import { Hono } from 'hono'
 import { stream } from 'hono/streaming'
 import { decide, denialResponse, loadAccess, principalOf } from '../lib/authz'
 import { prisma, InstanceKind } from '../lib/prisma'
-import { workspacesDir } from '../services/workspace-export/files'
 import {
   createMove,
   endpointsFor,
@@ -50,7 +49,6 @@ import {
   streamSourceRecords,
 } from '../services/workspace-move/serve'
 import { collectMoveRows, normaliseSelection } from '../services/workspace-move/plan'
-import { WORKSPACE_ROOT_ID } from '../services/workspace-move/plan'
 import { shouldMoveModel } from '../services/workspace-move/records'
 import { WorkspaceMoveError } from '../services/workspace-move/types'
 import type { HandoverKind } from '../services/workspace-move/handover'
@@ -316,9 +314,7 @@ export function workspaceMoveRoutes(): Hono {
     const projectId = c.req.query('projectId') ?? ''
     const relPath = c.req.query('path') ?? ''
     try {
-      const { dir } = projectId.startsWith('.workspace-roots')
-        ? { dir: `${workspacesDir()}/${projectId}` }
-        : await sourceProjectDir(prisma, workspaceId, projectId)
+      const { dir } = await sourceProjectDir(prisma, workspaceId, projectId)
       const bytes = readSourceFileBytes(dir, relPath)
       return new Response(bytes as any, {
         headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' },
@@ -395,11 +391,8 @@ export function workspaceMoveRoutes(): Hono {
     if (!auth.ok) return auth.response
     const projectId = String(body.projectId ?? '')
     try {
-      if (projectId === WORKSPACE_ROOT_ID) {
-        const manifest = await targetFileManifest(`.workspace-roots/${workspaceId}`)
-        return c.json({ ...manifest, projectId })
-      }
-      return c.json(await targetFileManifest(projectId))
+      const manifest = await targetFileManifest(projectId, workspaceId)
+      return c.json({ ...manifest, projectId })
     } catch (err) {
       return failure(c, err)
     }
@@ -413,11 +406,7 @@ export function workspaceMoveRoutes(): Hono {
     const relPath = c.req.query('path') ?? ''
     const bytes = new Uint8Array(await c.req.arrayBuffer())
     try {
-      if (projectId === WORKSPACE_ROOT_ID) {
-        await receiveFile(`.workspace-roots/${workspaceId}`, relPath, bytes)
-      } else {
-        await receiveFile(projectId, relPath, bytes)
-      }
+      await receiveFile(projectId, workspaceId, relPath, bytes)
       return c.json({ ok: true, bytes: bytes.byteLength })
     } catch (err) {
       return failure(c, err)
