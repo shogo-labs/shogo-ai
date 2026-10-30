@@ -11,6 +11,7 @@ import {
   type SignupRiskFeatures,
 } from '../signup-risk-scoring'
 import { BLOCKED_EMAIL_DOMAINS, SIGNUP_RISK_WEIGHTS } from '../../config/signup-risk-config'
+import { GENERATED_DISPOSABLE_DOMAINS } from '../../config/disposable-domains.generated'
 
 function features(over: Partial<SignupRiskFeatures> = {}): SignupRiskFeatures {
   return {
@@ -71,6 +72,31 @@ describe('disposable and blocked domains', () => {
     const r = scoreSignupRisk(features({ email }))
     expect(r.blockedDomain).toBe(true)
     expect(r.decision).toBe('no_credit')
+  })
+
+  test('the disposable providers from the production report are rejected', () => {
+    // The three domains the analytics report named as live signup farms.
+    for (const email of ['a@ofags.com', 'b@maildrop.cc', 'c@mailnull.com']) {
+      expect(isBlockedEmailDomain(email)).toBe(true)
+    }
+  })
+
+  test('a subdomain of a blocked provider is blocked too', () => {
+    // Parent-walk matching: no entry exists for mail.mailinator.com.
+    expect(isBlockedEmailDomain('ops@mail.mailinator.com')).toBe(true)
+    expect(isBlockedEmailDomain('x@0-mail.com')).toBe(true)
+  })
+
+  test('the vendored community blocklist is consulted, beyond our own lists', () => {
+    expect(GENERATED_DISPOSABLE_DOMAINS.size).toBeGreaterThan(1000)
+    const sample = [...GENERATED_DISPOSABLE_DOMAINS].find((d) => !d.includes('.')) ?? '0-mail.com'
+    expect(isBlockedEmailDomain(`someone@${sample}`)).toBe(true)
+  })
+
+  test('a real company domain is not blocked, even when a TLD looks similar', () => {
+    expect(isBlockedEmailDomain('alice@company.io')).toBe(false)
+    expect(isBlockedEmailDomain('bob@getodin.ai')).toBe(false)
+    expect(isBlockedEmailDomain('no-at-sign')).toBe(false)
   })
 
   test('verification does not rescue a disposable domain', () => {

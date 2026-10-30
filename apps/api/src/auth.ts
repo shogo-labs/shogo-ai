@@ -553,7 +553,8 @@ export const auth = betterAuth({
             if (!e2e) {
               throw new APIError('UNPROCESSABLE_ENTITY', {
                 code: 'SIGNUP_BLOCKED',
-                message: 'We could not create an account with this email address. Please try a different email.',
+                message:
+                  "Please use a permanent email address — temporary inboxes can't be used to sign up.",
               })
             }
           }
