@@ -213,6 +213,19 @@ app.route('/api/workspace-moves', workspaceMoveRoutes())
 
 app.get('/__qa/health', (c) => c.json({ ok: true }))
 
+// Accounts the target already knows. SEC-18 refuses a `User` row for an id the
+// receiving instance has no account for, so a fixture whose source workspace has
+// members must seed them here first — otherwise the stranger check answers 400
+// before the behaviour under test is reached.
+app.post('/__qa/ensure-users', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: string[] }
+  for (const id of body.ids ?? []) {
+    if (await prisma.user.findUnique({ where: { id } as any })) continue
+    await prisma.user.create({ data: { id, email: `${id}@example.com`, name: id } as any })
+  }
+  return c.json({ ok: true })
+})
+
 // The desktop knows the cloud workspace before it offers the move: a user row
 // and a membership grant, with none of the content.
 app.post('/__qa/seed-remote', async (c) => {
