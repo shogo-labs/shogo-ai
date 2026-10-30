@@ -17,6 +17,14 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { workspacesDir } from '../workspace-export/files'
 import { insertOrder } from '../workspace-export/manifest'
+import {
+  cloudProjectFileManifest,
+  cloudWorkspaceRootFileManifest,
+  isWorkspaceRootPath,
+  moveUsesCloudStorage,
+  readCloudProjectFile,
+  readCloudWorkspaceRootFile,
+} from './cloud'
 import { moveIgnoreRules } from './ignores'
 import { moveDirFor, walkMoveFiles } from './files'
 import { collectMoveRows } from './plan'
@@ -121,10 +129,34 @@ export async function sourceProjectDir(
   return { dir: join(base, projectId), folderLinked: false }
 }
 
+/** Every project id of a workspace, for the sources that need the whole set. */
+export async function workspaceProjectIds(db: any, workspaceId: string): Promise<string[]> {
+  const rows: Array<{ id: string }> = await db.project
+    .findMany({ where: { workspaceId }, select: { id: true } })
+    .catch(() => [])
+  return (rows ?? []).map((row) => row.id)
+}
+
+/**
+ * Everything the source holds for one project (or the workspace root), hashed.
+ *
+ * On Kubernetes there is no directory to walk: the project's files live in its
+ * runtime pod and the workspace's own files in the merged workspace runtime, so
+ * the manifest comes from the same sources export reads (`SHO-252`).
+ */
 export async function sourceFileManifest(
   db: any,
   input: { workspaceId: string; projectId: string; base?: string },
 ): Promise<MoveFileManifest> {
+  if (moveUsesCloudStorage()) {
+    if (isWorkspaceRootPath(input.projectId)) {
+      return cloudWorkspaceRootFileManifest(
+        input.workspaceId,
+        await workspaceProjectIds(db, input.workspaceId),
+      )
+    }
+    return cloudProjectFileManifest(input.projectId)
+  }
   const base = input.base ?? workspacesDir()
   const { dir } = await sourceProjectDir(db, input.workspaceId, input.projectId, base)
   const walk = await walkMoveFiles(dir, { rules: moveIgnoreRules(dir), hash: true })
@@ -139,6 +171,36 @@ export function readSourceFileBytes(
   const safe = relPath.replace(/\\/g, '/').replace(/^\/+/, '')
   if (!safe || safe.split('/').includes('..')) throw new Error(`unsafe path: ${relPath.slice(0, 120)}`)
   return new Uint8Array(readFileSync(join(dir, safe)))
+}
+
+/**
+ * One file's bytes from the side that holds the workspace.
+ *
+ * Local sources read the directory `sourceProjectDir` resolved (a checkout for a
+ * folder-linked project, `WORKSPACES_DIR/<id>` otherwise); a Kubernetes source
+ * reads them from the runtime pod, because the API pod has no files of its own.
+ */
+export async function readSourceFile(
+  db: any,
+  input: { workspaceId: string; projectId: string; path: string; base?: string },
+): Promise<Uint8Array> {
+  if (moveUsesCloudStorage()) {
+    if (isWorkspaceRootPath(input.projectId)) {
+      return readCloudWorkspaceRootFile(
+        input.workspaceId,
+        await workspaceProjectIds(db, input.workspaceId),
+        input.path,
+      )
+    }
+    return readCloudProjectFile(input.projectId, input.path)
+  }
+  const { dir } = await sourceProjectDir(
+    db,
+    input.workspaceId,
+    input.projectId,
+    input.base ?? workspacesDir(),
+  )
+  return readSourceFileBytes(dir, input.path)
 }
 
 export async function setEnabledAtSource(

@@ -14,6 +14,16 @@
 
 import { join } from 'node:path'
 import { workspacesDir } from '../workspace-export/files'
+import {
+  CLOUD_WORKSPACE_ROOT_NOTICE,
+  assertTargetStorageConfigured,
+  hydrateTargetProject,
+  isWorkspaceRootPath,
+  moveStagingDir,
+  moveUsesCloudStorage,
+  stagingManifest,
+  storeTargetProject,
+} from './cloud'
 import { moveDirFor, walkMoveFiles, writeMoveFile } from './files'
 import { moveIgnoreRules } from './ignores'
 import type { HandoverKind } from './handover'
@@ -166,12 +176,21 @@ export function targetWorkspaceRootDir(workspaceId: string, base = workspacesDir
 /**
  * What the target already holds for a project. The driver diffs against this, so
  * a resumed move only sends what is missing.
+ *
+ * On Kubernetes the target's files live in S3, not on the API pod, so the
+ * staging directory is first refreshed from the project's prefix — otherwise a
+ * resume on a different API pod would believe it holds nothing and resend the
+ * whole project, or (worse) believe it holds files the store never received.
  */
 export async function targetFileManifest(
   projectId: string,
   workspaceId: string,
   base = workspacesDir(),
 ): Promise<MoveFileManifest> {
+  if (moveUsesCloudStorage() && !isWorkspaceRootPath(projectId)) {
+    await hydrateTargetProject(projectId, moveStagingDir(projectId, workspaceId, base))
+    return stagingManifest(projectId, workspaceId, base)
+  }
   const dir = moveDirFor({ projectId, workspaceId, base })
   const walk = await walkMoveFiles(dir, { rules: moveIgnoreRules(dir), hash: true })
   const entries: MoveFileEntry[] = walk.entries
@@ -185,7 +204,31 @@ export async function receiveFile(
   bytes: Uint8Array,
   base = workspacesDir(),
 ): Promise<void> {
+  // Refuse before writing rather than after: a move that cannot store its files
+  // must not report `done` (SHO-252 AC 2). The workspace root has no cloud store
+  // yet, so it is not gated here — see `flushTargetProject`.
+  if (moveUsesCloudStorage() && !isWorkspaceRootPath(projectId)) {
+    assertTargetStorageConfigured()
+  }
   writeMoveFile(moveDirFor({ projectId, workspaceId, base }), relPath, bytes)
+}
+
+/**
+ * Hand a project's received files to the store the runtime reads.
+ *
+ * Called once per project, after its files have landed. A no-op off Kubernetes
+ * (the target's own directory *is* the store there) and for the workspace root,
+ * which has no cloud store yet — that gap is reported, never silent.
+ */
+export async function flushTargetProject(
+  projectId: string,
+  workspaceId: string,
+  base = workspacesDir(),
+): Promise<{ notices: string[] }> {
+  if (!moveUsesCloudStorage()) return { notices: [] }
+  if (isWorkspaceRootPath(projectId)) return { notices: [CLOUD_WORKSPACE_ROOT_NOTICE] }
+  await storeTargetProject(projectId, moveStagingDir(projectId, workspaceId, base))
+  return { notices: [] }
 }
 
 /**

@@ -33,6 +33,7 @@ import {
 } from '../services/workspace-move'
 import { buildHandover } from '../services/workspace-move/handover'
 import {
+  flushTargetProject,
   initTargetWorkspace,
   receiveFile,
   relinkTargetProject,
@@ -42,10 +43,9 @@ import {
 } from '../services/workspace-move/receive'
 import {
   markSourceMoved,
-  readSourceFileBytes,
+  readSourceFile,
   setEnabledAtSource,
   sourceFileManifest,
-  sourceProjectDir,
   streamSourceRecords,
 } from '../services/workspace-move/serve'
 import { collectMoveRows, normaliseSelection } from '../services/workspace-move/plan'
@@ -314,8 +314,7 @@ export function workspaceMoveRoutes(): Hono {
     const projectId = c.req.query('projectId') ?? ''
     const relPath = c.req.query('path') ?? ''
     try {
-      const { dir } = await sourceProjectDir(prisma, workspaceId, projectId)
-      const bytes = readSourceFileBytes(dir, relPath)
+      const bytes = await readSourceFile(prisma, { workspaceId, projectId, path: relPath })
       return new Response(bytes as any, {
         headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' },
       })
@@ -413,6 +412,23 @@ export function workspaceMoveRoutes(): Hono {
     try {
       await receiveFile(projectId, workspaceId, relPath, bytes)
       return c.json({ ok: true, bytes: bytes.byteLength })
+    } catch (err) {
+      return failure(c, err)
+    }
+  })
+
+  // Files landed on this instance's disk; this hands them to the store the
+  // runtime actually reads (S3). A failure is a failed move, never a `done`
+  // with files the pod cannot see.
+  app.post('/receive/files/flush', async (c) => {
+    const body = await c.req.json().catch(() => ({}))
+    const workspaceId = String(body.workspaceId ?? '')
+    const auth = await authorize(c, workspaceId)
+    if (!auth.ok) return auth.response
+    const projectId = String(body.projectId ?? '')
+    try {
+      const result = await flushTargetProject(projectId, workspaceId)
+      return c.json({ ok: true, notices: result.notices })
     } catch (err) {
       return failure(c, err)
     }

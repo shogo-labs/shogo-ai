@@ -18,6 +18,7 @@ import { prisma } from '../../lib/prisma'
 import { workspacesDir } from '../workspace-export/files'
 import type { HandoverKind } from './handover'
 import {
+  flushTargetProject,
   initTargetWorkspace,
   receiveFile,
   relinkTargetProject,
@@ -27,10 +28,9 @@ import {
 } from './receive'
 import {
   markSourceMoved,
-  readSourceFileBytes,
+  readSourceFile,
   setEnabledAtSource,
   sourceFileManifest,
-  sourceProjectDir,
   streamSourceRecords,
   type RecordsChunk,
   type SourceScope,
@@ -61,6 +61,14 @@ export interface MoveTarget {
   writeRecords(input: { workspaceId: string; model: string; rows: MoveRow[] }): Promise<{ inserted: number }>
   fileManifest(input: { workspaceId: string; projectId: string }): Promise<MoveFileManifest>
   writeFile(input: { workspaceId: string; projectId: string; path: string; bytes: Uint8Array }): Promise<void>
+  /**
+   * Hand a project's received files to whatever the target's runtime reads.
+   *
+   * A local target's directory *is* that store, so it does nothing there. A
+   * Kubernetes target has to push to S3 after the files land, or the runtime pod
+   * never sees them (SHO-252).
+   */
+  flushFiles(input: { workspaceId: string; projectId: string }): Promise<{ notices: string[] }>
   setEnabled(input: { workspaceId: string; kind: HandoverKind; ids: string[]; enabled: boolean }): Promise<void>
   relink(input: {
     workspaceId: string
@@ -99,8 +107,7 @@ export class LocalMoveSource implements MoveSource {
   }
 
   async readFile(input: { workspaceId: string; projectId: string; path: string }) {
-    const { dir } = await sourceProjectDir(this.db, input.workspaceId, input.projectId, this.base)
-    return readSourceFileBytes(dir, input.path)
+    return readSourceFile(this.db, { ...input, base: this.base })
   }
 
   setEnabled(input: { workspaceId: string; kind: HandoverKind; ids: string[]; enabled: boolean }) {
@@ -132,6 +139,10 @@ export class LocalMoveTarget implements MoveTarget {
 
   async writeFile(input: { workspaceId: string; projectId: string; path: string; bytes: Uint8Array }) {
     await receiveFile(input.projectId, input.workspaceId, input.path, input.bytes, this.base)
+  }
+
+  flushFiles(input: { workspaceId: string; projectId: string }) {
+    return flushTargetProject(input.projectId, input.workspaceId, this.base)
   }
 
   setEnabled(input: { workspaceId: string; kind: HandoverKind; ids: string[]; enabled: boolean }) {
@@ -291,6 +302,11 @@ export class HttpMoveTarget implements MoveTarget {
       { method: 'PUT', headers: this.headers(false), body: input.bytes as any },
     )
     if (!res.ok) throw new WorkspaceMoveError(await describe(res, input.path), res.status, 'workspace_move_remote_failed')
+  }
+
+  async flushFiles(input: { workspaceId: string; projectId: string }) {
+    return this.post<{ notices?: string[] }>('/api/workspace-moves/receive/files/flush', input)
+      .then((body) => ({ notices: body?.notices ?? [] }))
   }
 
   async setEnabled(input: { workspaceId: string; kind: HandoverKind; ids: string[]; enabled: boolean }) {

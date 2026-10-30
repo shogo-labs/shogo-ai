@@ -111,6 +111,8 @@ export interface MoveProgress {
   records?: { model: string; cursor: number }
   files?: { projectId: string; cursor: number }
   handover?: { done: boolean }
+  /** Things the target could not make durable, said once and kept for the UI. */
+  notices?: string[]
 }
 
 export interface MoveHandoverState {
