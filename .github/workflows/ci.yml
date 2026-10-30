@@ -1119,6 +1119,30 @@ jobs:
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/machine-vm-parity.acceptance.test.ts --timeout 300000
 
+      # …and the same, in the cloud studio UI: the web build served in front of
+      # the cloud process, driven by Playwright (e2e/machine-vm).
+      - name: Cloud web build (for the machine workspace UI suite)
+        working-directory: apps/mobile
+        env:
+          EXPO_NO_DOTENV: '1'
+        run: bun run build
+
+      - name: Install Playwright Chromium (machine workspace UI suite)
+        run: npx playwright install --with-deps chromium
+
+      - name: Machine workspace in the cloud UI (paired desktop)
+        run: npx playwright test --config e2e/machine-vm/playwright.config.ts
+
+      - name: Upload machine workspace UI report
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: machine-vm-ui-report
+          path: |
+            test-results/machine-vm-report
+            test-results/machine-vm-artifacts
+          retention-days: 7
+
   test-windows:
     name: Test (Windows path handling)
     needs: prelude

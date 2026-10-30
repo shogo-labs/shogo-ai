@@ -29,6 +29,7 @@ import {
   read,
   REPO_ROOT,
   sessionUserId,
+  signUp,
   startCloud,
   waitFor,
   type CloudProcess,
@@ -52,6 +53,21 @@ const clients = () => ({
   desktop: httpClient(machine.localApiBase, machine.localCookies),
   view: machineViewClient({ base: cloud.base, cookie: machine.cookies, userId: cloudUserId }, machine.machineId, machine.machineWorkspaceId),
 })
+
+/** Any request through a client, as `{ status, data }`, never throwing. */
+async function send(client: ReturnType<typeof httpClient>, method: string, path: string, body?: unknown) {
+  try {
+    const res: any = await client.request(path, { method, body: body as any })
+    return { status: (res.status ?? 200) as number, data: res.data }
+  } catch (err: any) {
+    return { status: (err?.status ?? 0) as number, data: err?.details ?? err?.message ?? null }
+  }
+}
+
+async function channelTexts(client: ReturnType<typeof httpClient>, channelId: string): Promise<string[]> {
+  const res = await read(client, `/api/conversations/${encodeURIComponent(channelId)}/messages?limit=100`)
+  return (res.data?.messages ?? []).map((m: any) => m.text)
+}
 
 function logs(): string {
   return `--- cloud ---\n${cloud?.log.join('').slice(-3000)}\n--- desktop ---\n${machine?.log.join('').slice(-3000)}`
@@ -179,4 +195,110 @@ describeIfInfra('machine workspace opened from the cloud (SHO-257)', () => {
     expect(requests[0].toolCalled).toBe('read_file')
     expect(requests.some((r: any) => String(r.toolResults ?? '').includes(canary))).toBe(true)
   }, 240_000)
+
+  test("writes go both ways: the cloud writes onto the machine, the machine's writes show in the cloud", async () => {
+    const { desktop, view } = clients()
+    const channelId = seeds.machine.channelId
+
+    // From the cloud: the interceptor sends the write through the relay, so it
+    // lands in the desktop's own database.
+    const fromCloud = `from the cloud ${Date.now()}`
+    const posted = await send(view, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: fromCloud })
+    expect(posted.status, JSON.stringify(posted.data)).toBeLessThan(300)
+    expect(await channelTexts(desktop, channelId)).toContain(fromCloud)
+    await waitFor('the cloud write to read back through the machine view', async () =>
+      (await channelTexts(view, channelId)).includes(fromCloud), 60_000, 1_000)
+
+    // From the machine: written on the desktop, it reaches the cloud's view.
+    const fromMachine = `from the machine ${Date.now()}`
+    const local = await send(desktop, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: fromMachine })
+    expect(local.status, JSON.stringify(local.data)).toBeLessThan(300)
+    const projectName = `Machy Late ${Date.now() % 10_000}`
+    const project = await send(desktop, 'POST', '/api/projects', { name: projectName, workspaceId: machine.machineWorkspaceId })
+    expect(project.status, JSON.stringify(project.data)).toBeLessThan(300)
+    await waitFor('the machine\'s message in the cloud view', async () =>
+      (await channelTexts(view, channelId)).includes(fromMachine), 60_000, 1_000)
+    await waitFor('the machine\'s new project in the cloud view', async () => {
+      const res = await read(view, `/api/projects?workspaceId=${encodeURIComponent(machine.machineWorkspaceId)}`)
+      return JSON.stringify(res.data).includes(projectName)
+    }, 60_000, 1_000)
+  }, 180_000)
+
+  test('someone who does not own the machine gets nothing from it', async () => {
+    const stranger = await signUp(cloud.base, 'stranger')
+    const strangerView = machineViewClient(stranger, machine.machineId, machine.machineWorkspaceId)
+    const strangerCloud = httpClient(cloud.base, stranger.cookie)
+
+    const machineRow = await read(strangerCloud, `/api/machines/${machine.machineId}`)
+    expect([403, 404]).toContain(machineRow.status)
+    const relayed = await fetch(`${cloud.base}/api/machines/${machine.machineId}/w/${machine.machineWorkspaceId}/api/projects`, {
+      headers: { cookie: stranger.cookie, origin: cloud.base },
+    })
+    expect([403, 404]).toContain(relayed.status)
+
+    for (const surface of SURFACES) {
+      const res = await read(strangerView, surface.path(seeds.machine))
+      const leaked = JSON.stringify(res.data ?? '').includes(seeds.machine.tag)
+      expect(leaked, `${surface.name} (${res.status}) leaked to a stranger: ${JSON.stringify(res.data).slice(0, 300)}`).toBe(false)
+    }
+
+    const text = `stranger ${Date.now()}`
+    const write = await send(strangerView, 'POST', `/api/conversations/${encodeURIComponent(seeds.machine.channelId)}/messages`, { text })
+    expect(write.status).toBeGreaterThanOrEqual(400)
+    expect(await channelTexts(clients().desktop, seeds.machine.channelId)).not.toContain(text)
+  }, 120_000)
+
+  test('negative control: the checks tell one workspace from another', async () => {
+    const { cloud: c, desktop } = clients()
+    let distinguished = 0
+    for (const surface of SURFACES) {
+      const local = await read(desktop, surface.path(seeds.machine))
+      const base = await read(c, surface.path(seeds.cloud))
+      const localView = surface.view(local.data, seeds.machine)
+      // The machine's answer must not pass for the cloud workspace's content…
+      let passedForCloud = true
+      try {
+        surface.shows(localView, seeds.cloud)
+      } catch {
+        passedForCloud = false
+      }
+      if (!passedForCloud) distinguished++
+      // …and two different workspaces never compare equal.
+      // (an empty list is the same in every workspace, so it proves nothing)
+      const empty = ['[]', '{}'].includes(JSON.stringify(localView))
+      if (!empty && surface.name !== 'workspace agent profile') {
+        expect(JSON.stringify(localView), surface.name).not.toBe(JSON.stringify(surface.view(base.data, seeds.cloud)))
+      }
+    }
+    // Every surface with seeded content (all but activity and the profile).
+    expect(distinguished).toBe(SURFACES.length - 2)
+  }, 60_000)
+
+  // Last: it switches the machine off.
+  test('machine off: the copy stays readable and writes are refused; back on: writes land again', async () => {
+    const { desktop, view } = clients()
+    const channelId = seeds.machine.channelId
+    await machine.kill()
+
+    const projects = await read(view, `/api/projects?workspaceId=${encodeURIComponent(machine.machineWorkspaceId)}`)
+    expect(projects.status).toBe(200)
+    seeds.machine.projectNames.forEach((n) => expect(JSON.stringify(projects.data)).toContain(n))
+    expect(await channelTexts(view, channelId)).toEqual(expect.arrayContaining(seeds.machine.messageTexts))
+
+    const offlineText = `while off ${Date.now()}`
+    const refused = await send(view, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: offlineText })
+    expect([409, 503], JSON.stringify(refused.data)).toContain(refused.status)
+    const code = (refused.data as any)?.error?.code
+    expect(['machine_offline_readonly', 'machine_waking', 'waking', 'offline']).toContain(code)
+
+    await machine.restart()
+    const backText = `back on ${Date.now()}`
+    await waitFor('a write through the machine view after the machine is back', async () => {
+      const res = await send(view, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: backText })
+      return res.status < 300
+    }, 180_000, 2_000)
+    const texts = await channelTexts(desktop, channelId)
+    expect(texts).toContain(backText)
+    expect(texts).not.toContain(offlineText)
+  }, 360_000)
 })
