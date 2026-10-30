@@ -1337,12 +1337,15 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
           signal: AbortSignal.timeout(60_000),
         })
       try {
-        let response = await startPreview()
-        let result = await response.json().catch(() => ({}))
-        if (response.status === 404 && result?.error === 'project_not_attached') {
-          await mountWorkspaceProject(ctx, projectId, 'readwrite')
-          response = await startPreview()
-          result = await response.json().catch(() => ({}))
+        const response = await startPreview()
+        const result = await response.json().catch(() => ({}))
+        // Mounting a project into this runtime was removed (#1352): the old
+        // retry answered 410 `mounting_removed`, so the tool failed with "no
+        // longer mounted" for a project the agent had just built. Ask the API
+        // instead — it resolves the project's own runtime and starts the build
+        // there, which is the only path that works on both substrates.
+        if (response.status === 410 || (response.status === 404 && result?.error === 'project_not_attached')) {
+          return previewProjectViaApi(ctx, projectId)
         }
         if (!response.ok || result?.error) {
           return textResult({
