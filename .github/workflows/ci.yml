@@ -590,8 +590,12 @@ jobs:
           # cannot quietly drop coverage.
           #
           # chat resume — the probe/resume scenarios, the expensive half of
-          # `chat-resume-on-send`.
-          - { name: 'E2E (chat resume)', timeout: 30, spec: 'chat-resume-on-send', grep: 'chat resumes a live turn it is not attached to' }
+          # `chat-resume-on-send`. Default 35 min cap on purpose: green it
+          # measures ~15 min (43%), and a run that reds on one scenario spends
+          # ~10 min on its retries and still has to CONCLUDE and report — at a
+          # 30 min cap it was cancelled at 30m39s, which is the failure mode
+          # this card exists to end (SHO-251).
+          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send', grep: 'chat resumes a live turn it is not attached to' }
           # chat resume windows — two windows on one chat, plus Stop-then-send
           # (stop a turn mid-stream, then send).
           - { name: 'E2E (chat resume windows)', timeout: 25, spec: 'chat-resume-on-send chat-stop-then-send', grep: 'two windows on one chat|Stop, then send' }
