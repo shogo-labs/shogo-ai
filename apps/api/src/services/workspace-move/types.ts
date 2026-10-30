@@ -77,11 +77,10 @@ export interface MovePlan {
   direction: MoveDirection
   source: { workspaceId: string; name: string; kind: string }
   /**
-   * `instanceSize` is frozen here because the target is created *by the job*,
-   * which outlives the request. A resume with no size created the target at the
-   * default size while the quota check had been made against this one.
+   * No `instanceSize`: the target workspace is created with its own default,
+   * exactly like a normal create, and a move never sets a runtime size (SHO-256).
    */
-  target: { workspaceId?: string; name: string; instanceSize?: string | null }
+  target: { workspaceId?: string; name: string }
   selection: {
     mode: MoveSelection['mode']
     conversations: Array<{ id: string; name: string; kind: string }>

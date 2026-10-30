@@ -124,7 +124,7 @@ export async function createMove(input: {
   const selection = normaliseSelection(input.selection)
   const workspace = await db.workspace.findUnique({
     where: { id: input.workspaceId },
-    select: { id: true, name: true, instanceSize: true },
+    select: { id: true, name: true },
   })
   if (!workspace) throw new WorkspaceMoveError('Workspace not found', 404, 'workspace_not_found')
 
@@ -175,14 +175,14 @@ export async function createMove(input: {
   const handover = buildHandover(move.id, rows)
   await db.workspaceMove.update({ where: { id: move.id }, data: { handover: handover as any } })
 
-  void kickMove(move.id, { db, instanceSize: workspace.instanceSize ?? null, requesterId: input.requesterId, isOwner: input.isOwner, selection })
+  void kickMove(move.id, { db, requesterId: input.requesterId, isOwner: input.isOwner, selection })
   return { move: { ...move, handover }, plan }
 }
 
 /** Start (or restart) the job for a row. No-op when it is already running here. */
 export function kickMove(
   moveId: string,
-  ctx?: { db?: any; instanceSize?: string | null; requesterId?: string; isOwner?: boolean; selection?: MoveSelection },
+  ctx?: { db?: any; requesterId?: string; isOwner?: boolean; selection?: MoveSelection },
 ): Promise<void> {
   const existing = running.get(moveId)
   if (existing) return existing
@@ -202,7 +202,6 @@ export interface MoveJobContext {
   requesterId: string
   isOwner: boolean
   ownerUserId: string
-  instanceSize: string | null
 }
 
 /**
@@ -217,29 +216,22 @@ export interface MoveJobContext {
  *
  * So the row wins. `ctx` is only a fallback for rows created before these
  * columns existed, and the last resort matches the previous behaviour.
- *
- * `instanceSize` comes from the frozen plan for the same reason: the target is
- * created by the job, and the quota the user approved was computed against that
- * size.
  */
 export function moveJobContext(row: any, ctx?: {
-  instanceSize?: string | null
   requesterId?: string
   isOwner?: boolean
 }): MoveJobContext {
-  const plan = (row?.plan ?? {}) as MovePlan
   const requesterId = row?.requesterId ?? ctx?.requesterId ?? ''
   return {
     requesterId,
     isOwner: row?.isOwner ?? ctx?.isOwner ?? true,
     ownerUserId: row?.ownerUserId ?? requesterId,
-    instanceSize: plan?.target?.instanceSize ?? ctx?.instanceSize ?? null,
   }
 }
 
 async function runMoveJob(
   moveId: string,
-  ctx?: { db?: any; instanceSize?: string | null; requesterId?: string; isOwner?: boolean; selection?: MoveSelection },
+  ctx?: { db?: any; requesterId?: string; isOwner?: boolean; selection?: MoveSelection },
 ): Promise<void> {
   const db: any = ctx?.db ?? prisma
   const row = await db.workspaceMove.findUnique({ where: { id: moveId } })
