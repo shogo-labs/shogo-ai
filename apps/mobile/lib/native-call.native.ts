@@ -61,8 +61,8 @@ const callKeepModule = loadCallKeep()
 const callKeep: CallKeep | null = callKeepModule?.default ?? null
 const voipPush = loadVoipPush()
 
-/** China explicitly disables CallKit; unknown storefronts keep it available. */
-let callKitAllowedForStorefront = true
+/** iOS enables CallKit only after StoreKit identifies a non-China storefront. */
+let callKitAllowedForStorefront = Platform.OS !== 'ios'
 export let nativeCallsSupported = callKeep !== null && callKitAllowedForStorefront
 let callKitSetup = false
 let voipStarted = false
@@ -403,13 +403,14 @@ async function refreshStorefrontPolicy(): Promise<void> {
     const iap = require('react-native-iap') as { getStorefront?: () => Promise<string | null> }
     countryCode = (await iap.getStorefront?.()) ?? null
   } catch (err) {
-    console.warn('[Huddles] Could not read App Store storefront; keeping CallKit enabled:', (err as Error).message)
+    console.warn('[Huddles] Could not read App Store storefront; keeping CallKit disabled:', (err as Error).message)
   }
   if (refreshId !== storefrontRefreshId) return
 
   // StoreKit uses ISO 3166-1 alpha-3 storefront codes (China is CHN).
-  // Only an explicit China storefront disables CallKit; unknown stays enabled.
-  const allowed = countryCode?.trim().toUpperCase() !== 'CHN'
+  // China and an unknown storefront use ordinary alerts instead of CallKit.
+  const storefront = countryCode?.trim().toUpperCase()
+  const allowed = !!storefront && storefront !== 'CHN'
   applyStorefrontPolicy(allowed)
 }
 

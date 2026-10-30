@@ -89,19 +89,23 @@ extension AppDelegate: PKPushRegistryDelegate {
     completion: @escaping () -> Void
   ) {
     // The storefront can change while the app is closed, so check live StoreKit
-    // state. Only an explicit China result disables CallKit; unknown stays enabled.
+    // state. China and an unknown storefront must not show CallKit.
     if #available(iOS 15.0, *) {
       Task {
-        if let storefront = await Storefront.current,
-           storefront.countryCode.uppercased() == "CHN" {
+        guard let storefront = await Storefront.current else {
+          completion()
+          return
+        }
+        let countryCode = storefront.countryCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if countryCode.isEmpty || countryCode == "CHN" {
           completion()
           return
         }
         reportHuddleCallFromPush(payload, type: type, completion: completion)
       }
     } else {
-      // Without StoreKit storefront data, keep CallKit available.
-      reportHuddleCallFromPush(payload, type: type, completion: completion)
+      // Without StoreKit storefront data, CallKit remains disabled.
+      completion()
     }
   }
 
