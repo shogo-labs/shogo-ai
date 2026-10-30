@@ -114,6 +114,23 @@ describe('foreign keys out of the copy', () => {
     }
     expect(wrong).toEqual([])
   })
+  test('MIRROR_MODELS is declared parents first, so a packaged desktop sends a valid order (PERF-14)', () => {
+    // The pusher sends a snapshot in declaration order: a packaged desktop has
+    // no schema.prisma to work one out from. Nullable foreign keys count too —
+    // a non-null value still has to find its parent.
+    const index = new Map(MIRROR_MODELS.map((model, position) => [model, position]))
+    const wrong: string[] = []
+    for (const name of MIRROR_MODELS) {
+      for (const fk of foreignKeys(cloudByName.get(name)!)) {
+        const [targetModel] = fk.to.split('.')
+        if (!isMirroredModel(targetModel) || targetModel === name) continue
+        if (index.get(targetModel)! > index.get(name)!) {
+          wrong.push(`${targetModel} must be declared before ${name} (${fk.from})`)
+        }
+      }
+    }
+    expect(wrong).toEqual([])
+  })
 })
 
 describe('unique fields', () => {
