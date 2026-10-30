@@ -11,6 +11,7 @@
 import { prisma } from '../lib/prisma'
 import { getAgentDefaultModel } from './workspace-agent.service'
 import { isModelVisibleForWorkspace } from './workspace-models.service'
+import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { getMergedModelEntrySync, resolveModelLabel } from './model-registry.service'
 
 const db = prisma as any
@@ -31,11 +32,17 @@ export async function resolveAgentRunModel(projectId: string | null, workspaceId
     if (!workspaceId) return AUTO_MODEL_ID
     const model = await getAgentDefaultModel(workspaceId).catch(() => null)
     if (!model || model === AUTO_MODEL_ID) return AUTO_MODEL_ID
-    return (await isModelVisibleForWorkspace(workspaceId, model)) ? model : AUTO_MODEL_ID
+    if (!(await isModelVisibleForWorkspace(workspaceId, model))) return AUTO_MODEL_ID
+    return (await isModelAccessibleForWorkspace(workspaceId, model)) ? model : AUTO_MODEL_ID
   }
   const row = await db.agentConfig.findUnique({ where: { projectId }, select: { modelName: true } }).catch(() => null)
   const name = row?.modelName?.trim()
-  return name && name !== DEFAULT_AGENT_MODEL && name !== AUTO_MODEL_ID ? name : AUTO_MODEL_ID
+  if (!name || name === DEFAULT_AGENT_MODEL || name === AUTO_MODEL_ID) return AUTO_MODEL_ID
+  // The chat routes cap an inaccessible model to `auto` themselves, so the run
+  // is fine without this — but the profile card reports what this returns, and
+  // it must not name a model the run will never use (SHO-145, SHO-264).
+  if (workspaceId && !(await isModelAccessibleForWorkspace(workspaceId, name))) return AUTO_MODEL_ID
+  return name
 }
 
 /**

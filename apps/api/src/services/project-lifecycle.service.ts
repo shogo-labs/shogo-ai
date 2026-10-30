@@ -19,6 +19,8 @@ import { prisma } from '../lib/prisma'
 import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
+import { AUTO_MODEL_ID, isAutoModel } from '@shogo/model-catalog'
+import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { canRunTechStackOnInstanceSize } from './billing-runtime'
 import { HeartbeatConfigError, buildAgentConfigCreateData, updateHeartbeatConfig } from './heartbeat-config.service'
 import { readProjectToolUsage } from './tool-usage.service'
@@ -396,12 +398,36 @@ async function flipToExternal(projectId: string): Promise<void> {
   })
 }
 
+/**
+ * Cap a project's stored model to what the workspace's plan can actually run.
+ *
+ * `AgentConfig.modelName` is a user choice made when a plan allowed it, and it
+ * survives a downgrade. The runtime caches this snapshot into `config.json` and
+ * resolves every turn without an explicit `agentMode` from it, so a stale
+ * premium pick on a free workspace reached the AI proxy and came back as
+ * `403 model_tier_restricted` — classified non-retryable `auth`, so the turn
+ * ended with zero tokens and the user saw "The model provider rejected the
+ * request" (113 runs / 26 workspaces on Sonnet 5, SHO-264). Downgrade to `auto`
+ * here instead; `auto`'s tiers are already entitlement-capped by
+ * `resolveEffectiveAgentModelDefaults`, so the turn runs on a model the plan
+ * covers. The stored choice is left untouched, so an upgrade restores it.
+ */
+export async function capAgentModelToPlan<
+  T extends { modelName: string; modelProvider: string } | null,
+>(workspaceId: string, agent: T): Promise<T> {
+  if (!agent) return agent
+  const name = typeof agent.modelName === 'string' ? agent.modelName.trim() : ''
+  if (!name || isAutoModel(name)) return agent
+  if (await isModelAccessibleForWorkspace(workspaceId, name)) return agent
+  return { ...agent, modelName: AUTO_MODEL_ID, modelProvider: 'auto' }
+}
+
 export async function readProjectConfig(projectId: string): Promise<ConfiguredProject> {
   const project = (await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, name: true, description: true, settings: true, slackEnabled: true, workingMode: true } as any,
+    select: { id: true, workspaceId: true, name: true, description: true, settings: true, slackEnabled: true, workingMode: true } as any,
   })) as
-    | { id: string; name: string; description: string | null; settings: unknown; slackEnabled: boolean; workingMode?: string }
+    | { id: string; workspaceId: string; name: string; description: string | null; settings: unknown; slackEnabled: boolean; workingMode?: string }
     | null
   if (!project) throw new ProjectLifecycleError('not_found', `Project ${projectId} not found`)
   const agent = (await prisma.agentConfig.findUnique({
@@ -427,7 +453,7 @@ export async function readProjectConfig(projectId: string): Promise<ConfiguredPr
     settings: normalizeProjectSettings(project.settings),
     slackEnabled: project.slackEnabled,
     toolUsage,
-    agent,
+    agent: await capAgentModelToPlan(project.workspaceId, agent),
   }
 }
 
