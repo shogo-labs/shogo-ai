@@ -383,6 +383,103 @@ test(
     const desktopUp = await stateOf(desktop)
     const upMove = desktopUp.moves.find((move: any) => move.id === upStarted.json.move.id)
     expect((upMove?.progress?.notices ?? []).join(' ')).toMatch(/workspace-level files/i)
+
+    // AC 2's "targetFileManifest reflects that store, so a resumed move sends
+    // only what's missing": ask the cloud what it holds for a pushed project
+    // after deleting the API pod's staging copy. A manifest read from the pod's
+    // own disk would come back empty and a resume would resend everything.
+    const pushedWithFiles = pushedProjects.find(
+      (project: any) => (expectedByProject.get(sourceIdByName.get(project.name)!) ?? []).length > 0,
+    )
+    expect(pushedWithFiles).toBeDefined()
+    rmSync(join(cloudDirs.files, pushedWithFiles.id), { recursive: true, force: true })
+    const stored = await call(cloud.port, '/api/workspace-moves/receive/files/manifest', {
+      method: 'POST',
+      body: JSON.stringify({ workspaceId: up.targetWorkspaceId, projectId: pushedWithFiles.id }),
+    })
+    expect(stored.status).toBe(200)
+    // `targetFileManifest` reports move entries (`sha256`); the seed uses `sha`.
+    // Paths are compared NFC-normalised: `downloadAll` extracts with the system
+    // tar on macOS, which rewrites non-ASCII names to NFD — the cloud's pod runs
+    // GNU tar and keeps them, so this is a local-extraction artefact only.
+    expectSameFiles(
+      'resume manifest from cloud storage',
+      (stored.json.entries ?? []).map((entry: any) => ({
+        path: String(entry.path).normalize('NFC'),
+        sha: entry.sha256,
+        bytes: entry.bytes,
+      })),
+      expectedByProject.get(sourceIdByName.get(pushedWithFiles.name)!) ?? [],
+    )
+  },
+  { timeout: 300_000 },
+)
+
+/**
+ * AC 2's second sentence: "If the bucket isn't configured, the move **fails
+ * loudly** instead of reporting `done`."
+ *
+ * This is the exact shape QA found on production — an instance that cannot store
+ * files still finished the move and said `done` — so it gets its own run rather
+ * than a comment. The cloud here is Kubernetes-mode with no
+ * `S3_WORKSPACES_BUCKET`; a desktop → cloud move must end `failed` with a reason
+ * a user can act on, and must never land files where no runtime will read them.
+ */
+test(
+  'a Kubernetes-mode cloud with no storage bucket fails the move instead of reporting done',
+  async () => {
+    const cloudRoot = mkdtempSync(join(tmpdir(), 'move-nobucket-cloud-'))
+    const desktopRoot = mkdtempSync(join(tmpdir(), 'move-nobucket-desktop-'))
+    const podRoot = mkdtempSync(join(tmpdir(), 'move-nobucket-pods-'))
+    roots.push(cloudRoot, desktopRoot, podRoot)
+    const cloudDirs = { data: join(cloudRoot, 'data'), files: join(cloudRoot, 'files') }
+    const desktopDirs = { data: join(desktopRoot, 'data'), files: join(desktopRoot, 'files') }
+    mkdirSync(cloudDirs.data, { recursive: true })
+    mkdirSync(desktopDirs.data, { recursive: true })
+
+    const cloud = await startServer({
+      QA_DATA_DIR: cloudDirs.data,
+      QA_FILES_DIR: cloudDirs.files,
+      QA_POD_DIR: podRoot,
+      QA_CLOUD_STORAGE: '1',
+      QA_NO_BUCKET: '1',
+    })
+    // The desktop is the source here, so it seeds its own workspace with files;
+    // the cloud only needs to know the account that will own the new workspace.
+    const desktopPort = await freePort()
+    const desktop = await startServer({
+      QA_DATA_DIR: desktopDirs.data,
+      QA_FILES_DIR: desktopDirs.files,
+      QA_PORT: String(desktopPort),
+      SHOGO_API_URL: `http://127.0.0.1:${desktopPort}`,
+      SHOGO_CLOUD_URL: `http://127.0.0.1:${cloud.port}`,
+      SHOGO_API_KEY: API_KEY,
+    })
+    const seeded = await call(desktop.port, '/__qa/seed', { method: 'POST', body: '{}' })
+    expect(seeded.status).toBe(200)
+    const { workspaceId } = seeded.json as { workspaceId: string }
+    expect(
+      (await call(cloud.port, '/__qa/seed-remote', { method: 'POST', body: JSON.stringify({ workspaceId }) })).status,
+    ).toBe(200)
+
+    const started = await call(desktop.port, '/api/workspace-moves', {
+      method: 'POST',
+      body: JSON.stringify({ workspaceId, direction: 'desktop_to_cloud', selection: { mode: 'all' } }),
+    })
+    // Refusing up front is also "fails loudly"; finishing is not.
+    if (started.status >= 400) {
+      expect(JSON.stringify(started.json)).toMatch(/storage bucket/i)
+      return
+    }
+    expect(started.status).toBe(201)
+    const move = await waitForMove(desktop.port, started.json.move.id)
+    expect(move.status).toBe('failed')
+    expect(String(move.error ?? '')).toMatch(/no workspace storage bucket/i)
+
+    // And nothing reached the store either: a failed move leaves no archive a
+    // runtime could later download.
+    const cloudAfter = await stateOf(cloud)
+    expect(cloudAfter.s3.archives).toEqual([])
   },
   { timeout: 300_000 },
 )

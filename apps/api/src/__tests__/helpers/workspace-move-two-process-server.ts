@@ -162,7 +162,9 @@ if (cloudStorage) {
   process.env.KUBERNETES_SERVICE_HOST = '127.0.0.1'
   startFakeS3()
   startFakeRuntimePods()
-  process.env.S3_WORKSPACES_BUCKET = 'qa-workspaces'
+  // `QA_NO_BUCKET=1` is the unconfigured-instance shape: a Kubernetes cloud with
+  // no workspace bucket. A move into it must fail, never report `done`.
+  if (process.env.QA_NO_BUCKET !== '1') process.env.S3_WORKSPACES_BUCKET = 'qa-workspaces'
   process.env.S3_ENDPOINT = `http://127.0.0.1:${s3Port}`
   process.env.S3_FORCE_PATH_STYLE = 'true'
   process.env.S3_REGION = 'us-east-1'
