@@ -5514,7 +5514,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // The device copy is being read for this session: let that paint (and its
     // delta) run before deciding anything here, or we would show the loader
     // and download the page we already have (SHO-260).
-    if (historyHydrationPendingRef.current.has(currentSessionId)) return
+    //
+    // The pending set is keyed by the store key (`userId:origin:session`), not
+    // by the bare session id — checking `currentSessionId` here never matched,
+    // so this never actually waited. And while `userId` is still resolving the
+    // key is null: without this guard the first run after a reload downloads
+    // the newest page before the device copy is even opened, which is the exact
+    // cost this feature exists to remove.
+    if (!historyStoreKey) return
+    if (historyHydrationPendingRef.current.has(historyStoreKey)) return
 
     const hasCached =
       cachedMessagesRef.current && cachedMessagesRef.current.length > 0
