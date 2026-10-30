@@ -52,6 +52,11 @@ const BOOTSTRAP_PROMPT = "Build a tiny app for the resume-replay E2E"
 const BOOTSTRAP_REPLY = "Bootstrap done."
 /** Written by another client between the two opens; only a delta can carry it. */
 const REMOTE_MARKER = "a message another window posted"
+/** A busy chat: 50 rows of padded parts, so a page download is ~50 KB. */
+const BUSY_HISTORY_SIZE = 50
+const HISTORY_ROW_MARKER = "older message"
+/** What a reopen may spend on the wire — a delta, not a 50-row page. */
+const REOPEN_BYTE_BUDGET = 15_000
 
 function sseFrame(event: Record<string, unknown>): string {
   return `data: ${JSON.stringify(event)}\n\n`
@@ -82,7 +87,7 @@ function savedRow(
     sessionId,
     role,
     content: text,
-    parts: JSON.stringify([{ type: "text", text }]),
+    parts: JSON.stringify([{ type: "text", text, padding: "x".repeat(1_000) }]),
     createdAt,
     updatedAt: createdAt,
   }
@@ -95,6 +100,8 @@ interface HistoryState {
   total: number
   pageReads: number
   deltaReads: number
+  /** Bytes of `/chat-messages` JSON served so far — the card is about wire cost. */
+  bytes: number
   lastDelta: { size: number; items: number; reset: boolean } | null
   /** Hold the delta response so a spec can prove the paint came from the device. */
   deltaDelayMs: number
@@ -115,19 +122,28 @@ async function installMocks(page: Page): Promise<HistoryState> {
     total: 0,
     pageReads: 0,
     deltaReads: 0,
+    bytes: 0,
     lastDelta: null,
     deltaDelayMs: 0,
     deltaPending: false,
     forceReset: false,
   }
 
-  // Installed before the first paint: the cold open's cursor seed reports the
-  // same total the page does, so the next delta is not mistaken for a mismatch.
-  const base = Date.now() - 60_000
-  state.rows = [
-    savedRow("m-user", "", "user", BOOTSTRAP_PROMPT, base),
-    savedRow("m-reply", "", "assistant", BOOTSTRAP_REPLY, base + 1_000),
-  ]
+  // A busy chat looking like the ones the card is about: 50 rows whose `parts`
+  // are big, so re-downloading the page is unmistakable in bytes on the wire.
+  // Installed before the first paint: the cold open's cursor seed must report
+  // the same total the page does, or the next delta looks like a mismatch.
+  const base = Date.now() - 3_600_000
+  state.rows = Array.from({ length: BUSY_HISTORY_SIZE }, (_, index) =>
+    savedRow(
+      `m-${index}`,
+      "",
+      index % 2 === 0 ? "user" : "assistant",
+      `${HISTORY_ROW_MARKER}-${index}`,
+      base + index * 60_000,
+    ),
+  )
+  state.rows.push(savedRow("m-reply", "", "assistant", BOOTSTRAP_REPLY, Date.now() - 60_000))
   state.total = state.rows.length
 
   await page.route(CHAT_POST_GLOB, async (route: Route) => {
@@ -187,6 +203,7 @@ async function installMocks(page: Page): Promise<HistoryState> {
         reset: state.forceReset,
       }
       const size = JSON.stringify(body).length
+      state.bytes += size
       state.lastDelta = { size, items: items.length, reset: state.forceReset }
       state.deltaPending = false
       await route.fulfill({
@@ -204,15 +221,13 @@ async function installMocks(page: Page): Promise<HistoryState> {
     const newestFirst = state.rows
       .map((row) => ({ ...row, sessionId }))
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt))
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        items: newestFirst.slice(offset, offset + limit),
-        total: state.total,
-      }),
+    const pageBody = JSON.stringify({
+      ok: true,
+      items: newestFirst.slice(offset, offset + limit),
+      total: state.total,
     })
+    state.bytes += pageBody.length
+    await route.fulfill({ status: 200, contentType: "application/json", body: pageBody })
   })
 
   return state
@@ -254,8 +269,10 @@ test.describe("project chat keeps its history on the device", () => {
     // The history must already agree with the page the cold open serves when it
     // seeds its cursor: a seed taken against an empty history reports total 0,
     // and the next delta then looks like a count mismatch and re-downloads.
-    expect(state.rows.length, "the fixture history is installed before the first paint").toBe(2)
-    expect(state.total).toBe(2)
+    expect(state.rows.length, "the fixture history is installed before the first paint").toBe(
+      BUSY_HISTORY_SIZE + 1,
+    )
+    expect(state.total).toBe(BUSY_HISTORY_SIZE + 1)
 
     // The cold open is the one time the page is downloaded; its first paint
     // seeds the delta cursor from a `/changes` call.
@@ -268,8 +285,13 @@ test.describe("project chat keeps its history on the device", () => {
       .toBeGreaterThanOrEqual(1)
     const deltaReadsAfterColdOpen = state.deltaReads
 
+    // The cold page alone is ~50 KB; that is the number a reopen must not repeat.
+    expect(state.bytes, "the cold open really did download a padded page").toBeGreaterThan(
+      REOPEN_BYTE_BUDGET,
+    )
+
     // AC1: the reload paints from the device — before the delta can answer.
-    const pageReadsBeforeReopen = state.pageReads
+    const bytesBeforeReopen = state.bytes
     state.deltaDelayMs = 2_000
     await page.reload()
     await expect
@@ -287,19 +309,22 @@ test.describe("project chat keeps its history on the device", () => {
       .poll(() => state.deltaPending, { timeout: 20_000, message: "the delta answered" })
       .toBe(false)
 
-    // AC2: no full page on the reopen.
-    expect(state.pageReads, "the reopen must not download the page again").toBe(
-      pageReadsBeforeReopen,
+    // AC1 + AC2: the reopen must not spend a page on the wire. Measured in bytes
+    // rather than request counts because more than one part of the page reads
+    // this chat, and only the volume tells a delta from a re-download.
+    const reopenBytes = state.bytes - bytesBeforeReopen
+    expect(reopenBytes, "the reopen must not re-download the page").toBeLessThan(
+      REOPEN_BYTE_BUDGET,
     )
     expect(state.deltaReads, "the reopen asks for the delta").toBeGreaterThanOrEqual(
       deltaReadsAfterColdOpen + 1,
     )
-    // AC1: the answer is small — a handful of rows, never 50 with their parts.
+    // AC1: the answer is a handful of rows, never 50 with their parts.
     expect(state.lastDelta?.items ?? -1).toBeLessThanOrEqual(2)
     expect(state.lastDelta?.size ?? Infinity).toBeLessThan(2_048)
 
     // AC3: a row written elsewhere rides in on the delta.
-    const pageReadsBeforeDeltaReopen = state.pageReads
+    const bytesBeforeDeltaReopen = state.bytes
     state.deltaDelayMs = 0
     state.rows.push(savedRow("m-remote", "", "user", REMOTE_MARKER, Date.now()))
     state.total = state.rows.length
@@ -308,9 +333,10 @@ test.describe("project chat keeps its history on the device", () => {
       page.getByText(REMOTE_MARKER, { exact: false }).first(),
       "a message written by another window arrives via the delta",
     ).toBeVisible({ timeout: 30_000 })
-    expect(state.pageReads, "the delta carried the new row, no page needed").toBe(
-      pageReadsBeforeDeltaReopen,
-    )
+    expect(
+      state.bytes - bytesBeforeDeltaReopen,
+      "the delta carried the new row, no page needed",
+    ).toBeLessThan(REOPEN_BYTE_BUDGET)
 
     // AC2: `reset` sends the client back to the full page.
     state.forceReset = true
