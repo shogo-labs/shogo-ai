@@ -23,6 +23,7 @@ import { createReadStream, existsSync, lstatSync, mkdirSync, readdirSync, realpa
 import { dirname, join, relative, resolve } from 'node:path'
 import { isExcludedRelPath } from '../workspace-export/files'
 import { isMoveIgnored, moveIgnoreRules, type IgnoreRule } from './ignores'
+import { assertInsideWorkspacesDir } from './scope'
 import { WORKSPACE_ROOT_ID, type MoveFileEntry } from './types'
 
 /** Sizes only, for a subtree the ignore rules excluded. */
@@ -260,12 +261,14 @@ export function writeMoveFile(rootDir: string, relPath: string, bytes: Uint8Arra
  */
 export function moveDirFor(input: { projectId: string; workspaceId: string; base: string }): string {
   if (input.projectId === WORKSPACE_ROOT_ID) {
-    return join(input.base, '.workspace-roots', input.workspaceId)
+    return assertInsideWorkspacesDir(join(input.base, '.workspace-roots', input.workspaceId), input.base)
   }
   // A root addressed directly (`receive/files/*` accepts this form so a caller
   // can target one workspace's root without knowing the sentinel).
-  if (input.projectId.startsWith('.workspace-roots/')) return join(input.base, input.projectId)
-  return join(input.base, input.projectId)
+  if (input.projectId.startsWith('.workspace-roots/')) {
+    return assertInsideWorkspacesDir(join(input.base, input.projectId), input.base)
+  }
+  return assertInsideWorkspacesDir(join(input.base, input.projectId), input.base)
 }
 
 export function fileExists(path: string): boolean {

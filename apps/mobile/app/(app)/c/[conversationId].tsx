@@ -438,14 +438,19 @@ export default function ConversationScreen() {
     />
   ) : null
   // A floating phone header draws over the content, so the tabs float with it.
+  // With tabs the header and tabs read as one band: a solid backing keeps
+  // scrolled messages from showing through the glass pills above a solid strip.
   const tabs = tabsBar && floating ? (
-    <View
-      className="absolute left-0 right-0 z-20 bg-background"
-      style={{ top: headerHeight }}
-      onLayout={(e) => setTabsHeight(Math.round(e.nativeEvent.layout.height))}
-    >
-      {tabsBar}
-    </View>
+    <>
+      <View pointerEvents="none" className="absolute left-0 right-0 top-0 z-20 bg-background" style={{ height: headerHeight }} />
+      <View
+        className="absolute left-0 right-0 z-20 bg-background pt-1.5"
+        style={{ top: headerHeight }}
+        onLayout={(e) => setTabsHeight(Math.round(e.nativeEvent.layout.height))}
+      >
+        {tabsBar}
+      </View>
+    </>
   ) : tabsBar
   const topInset = headerHeight + (tabsBar && floating ? tabsHeight : 0)
 
@@ -486,7 +491,7 @@ export default function ConversationScreen() {
               {huddleBanner}
               <ChatPermissionNudge />
               {boardId ? (
-                <View className="flex-1" style={floating ? { paddingTop: topInset } : undefined}>
+                <View className="flex-1" style={floating ? { paddingTop: topInset, paddingBottom: chrome.bottom } : undefined}>
                   <BoardKanban
                     key={boardId}
                     boardId={boardId}

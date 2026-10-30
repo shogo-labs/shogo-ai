@@ -25,6 +25,16 @@ const ROOT = mkdtempSync(join(tmpdir(), 'sho246-git-'))
 const BASE = join(ROOT, 'workspaces')
 const REMOTE = join(ROOT, 'remote.git')
 const REPO = join(ROOT, 'checkout')
+/**
+ * The URL the re-link path is asked to clone.
+ *
+ * SEC-18 allows only `https:` remotes (a caller-chosen scheme could be `file:`,
+ * `ssh:` or `ext::`), so the local bare repo is reached through git's
+ * `url.<base>.insteadOf` rewrite instead of by handing the service a path. The
+ * service still sees — and validates — a plain https URL, and the clone still
+ * runs offline.
+ */
+const REMOTE_URL = 'https://example.invalid/sho246/remote.git'
 
 /** Every git call in this file, with the identity set so commits never prompt. */
 function git(cwd: string, args: string[]) {
@@ -49,10 +59,18 @@ beforeAll(() => {
   git(REPO, ['commit', '-m', 'first'])
   git(REPO, ['remote', 'add', 'origin', REMOTE])
   git(REPO, ['push', '-u', 'origin', 'main'])
+
+  // `git clone https://…` resolves to the local bare repo above (see REMOTE_URL).
+  process.env.GIT_CONFIG_COUNT = '1'
+  process.env.GIT_CONFIG_KEY_0 = `url.${REMOTE}.insteadOf`
+  process.env.GIT_CONFIG_VALUE_0 = REMOTE_URL
 })
 
 afterAll(() => {
   delete process.env.WORKSPACES_DIR
+  delete process.env.GIT_CONFIG_COUNT
+  delete process.env.GIT_CONFIG_KEY_0
+  delete process.env.GIT_CONFIG_VALUE_0
   rmSync(ROOT, { recursive: true, force: true })
 })
 
@@ -139,7 +157,7 @@ describe('re-linking at the target', () => {
     const { path } = await relinkTargetProject(db, {
       projectId: 'proj-relinked',
       name: 'site',
-      remote: REMOTE,
+      remote: REMOTE_URL,
       branch: 'main',
       workspaceId: 'ws-target',
     })
@@ -156,7 +174,9 @@ describe('re-linking at the target', () => {
     const err = await relinkTargetProject(db, {
       projectId: 'proj-bad-remote',
       name: 'site',
-      remote: join(ROOT, 'does-not-exist.git'),
+      // A closed port, not a path: the scheme rule above allows only https, so
+      // the failure has to come from git rather than from validation.
+      remote: 'https://127.0.0.1:1/nope.git',
       branch: 'main',
       workspaceId: 'ws-target',
     }).catch((e) => e)

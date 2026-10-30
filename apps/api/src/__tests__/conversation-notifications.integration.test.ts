@@ -146,6 +146,27 @@ describe('recipients', () => {
     expect(pushes[0].title).toBe('owner')
   })
 
+  test('a group DM banner names the others in the group, so it does not read as a 1:1 DM', async () => {
+    const group = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member, seed.viewer])
+    expect(group.kind).toBe('group_dm')
+    const result = await service.postMessage({ conversationId: group.id, authorType: 'user', authorUserId: seed.owner, text: 'lunch?' })
+    expect(await notified(result)).toEqual([`${seed.member}:dm`, `${seed.viewer}:dm`].sort())
+    // Everyone but the sender and the person alerted, like the sidebar lists the chat.
+    const titleFor = (userId: string) => pushes.find((p) => p.userId === userId)!.title
+    expect(titleFor(seed.member)).toBe('owner in group with viewer')
+    expect(titleFor(seed.viewer)).toBe('owner in group with member')
+    expect(events.map((e) => e.event.title).sort()).toEqual(['owner in group with member', 'owner in group with viewer'])
+  })
+
+  test('a thread reply in a group DM says it replied', async () => {
+    const group = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member, seed.viewer])
+    const root = await service.postMessage({ conversationId: group.id, authorType: 'user', authorUserId: seed.owner, text: 'root' })
+    pushes = []
+    const reply = await service.postMessage({ conversationId: group.id, authorType: 'user', authorUserId: seed.owner, text: 'more', threadRootId: root.row.id })
+    await notified(reply)
+    expect(pushes.find((p) => p.userId === seed.member)!.title).toBe('owner replied in group with viewer')
+  })
+
   test('running agent placeholders and #activity posts notify nobody', async () => {
     const placeholder = await post({ authorType: 'agent', authorAgentRef: { projectId: null, name: 'Shogo' }, text: '', agentStatus: 'running' })
     expect(await notified(placeholder)).toEqual([])

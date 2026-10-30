@@ -111,7 +111,7 @@ export class LocalMoveSource implements MoveSource {
   }
 
   setEnabled(input: { workspaceId: string; kind: HandoverKind; ids: string[]; enabled: boolean }) {
-    return setEnabledAtSource(this.db, input.kind, input.ids, input.enabled)
+    return setEnabledAtSource(this.db, input)
   }
 
   markMoved(input: { workspaceId: string; targetWorkspaceId: string | null }) {
@@ -146,7 +146,7 @@ export class LocalMoveTarget implements MoveTarget {
   }
 
   setEnabled(input: { workspaceId: string; kind: HandoverKind; ids: string[]; enabled: boolean }) {
-    return setEnabledAtTarget(this.db, input.kind, input.ids, input.enabled)
+    return setEnabledAtTarget(this.db, input)
   }
 
   async relink(input: { workspaceId: string; projectId: string; name: string; remote: string; branch: string }) {
@@ -259,6 +259,18 @@ export class HttpMoveSource implements MoveSource {
   }
 }
 
+/**
+ * Models the wire never carries (SEC-18).
+ *
+ * `Member` is refused by `/receive/records` on purpose: membership of the
+ * workspace a move lands in is decided by the receiving instance — `/receive/init`
+ * makes the caller its owner — never by the side that sent the rows. Sending it
+ * anyway would turn every move into a 400 on its first membership chunk, so the
+ * HTTP target skips it. The in-process target (a desktop receiving a move) still
+ * writes the members: there is no wire, and no untrusted caller.
+ */
+const NEVER_OVER_HTTP: ReadonlySet<string> = new Set(['Member'])
+
 export class HttpMoveTarget implements MoveTarget {
   private readonly fetchImpl: typeof fetch
 
@@ -288,6 +300,7 @@ export class HttpMoveTarget implements MoveTarget {
   }
 
   writeRecords(input: { workspaceId: string; model: string; rows: MoveRow[] }) {
+    if (NEVER_OVER_HTTP.has(input.model)) return Promise.resolve({ inserted: 0 })
     return this.post<{ inserted: number }>('/api/workspace-moves/receive/records', input)
   }
 

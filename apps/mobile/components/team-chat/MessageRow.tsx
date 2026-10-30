@@ -16,7 +16,14 @@ import { ChatMarkdown } from '../chat/ChatMarkdown'
 import type { MentionTarget } from '../chat/file-links'
 import { SidebarContextMenu, type SidebarMenuEntry, type SidebarMenuItem } from '../layout/SidebarContextMenu'
 import { MessageActionSheet } from './MessageActionSheet'
-import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl, type ReactionSummary } from '../../lib/team-chat-api'
+import {
+  absoluteApiUrl,
+  teamChatApi,
+  type ChatMessage,
+  type LinkUnfurl,
+  type Mentionables,
+  type ReactionSummary,
+} from '../../lib/team-chat-api'
 import { messageLink, openMessageLinkInApp } from '../../lib/team-chat-links'
 import { extractMessageQuotes } from '../../lib/message-quotes'
 import { previewOptOutMatcher } from '../../lib/link-preview-consent'
@@ -37,7 +44,20 @@ import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { ImagePreviewModal } from '../chat/ImagePreviewModal'
 import { AgentWorkedFor } from './AgentWork'
-import { markdownToPlainText, renderMentions, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
+import {
+  activeMentionQuery,
+  editableMentionDraft,
+  filterCandidates,
+  insertMention,
+  markdownToPlainText,
+  mentionCandidates,
+  renderMentions,
+  renderMentionsMarkdown,
+  serializeEditableMentions,
+  updateEditableMentionRanges,
+  type MentionCandidate,
+  type MentionNames,
+} from '../../lib/team-chat-state'
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
 import { DownloadBadge, FileAttachmentCard } from './FileAttachmentCard'
@@ -83,6 +103,10 @@ export interface MessageRowProps {
   grouped: boolean
   me: string | null
   names: MentionNames
+  /** Workspace mention options shared with the message composer. */
+  mentionables?: Mentionables | null
+  /** Current channel membership, used to keep edit suggestions in sync with the composer. */
+  channelMemberIds?: Set<string> | null
   streaming?: {
     text: string
     tool: string | null
@@ -510,6 +534,273 @@ function useRowHover() {
   return { hovered, hoverIn, hoverOut }
 }
 
+interface MessageEditFormProps {
+  message: ChatMessage
+  names: MentionNames
+  mentionables?: Mentionables | null
+  channelMemberIds?: Set<string> | null
+  isWeb: boolean
+  onSave: (message: ChatMessage, text: string) => Promise<void>
+  onCancel: () => void
+}
+
+/** Edit-only state and effects are mounted only for the message being edited. */
+function MessageEditForm({ message, names, mentionables, channelMemberIds, isWeb, onSave, onCancel }: MessageEditFormProps) {
+  const initial = useMemo(() => editableMentionDraft(message.text, names), [message.text, names])
+  const [draft, setDraft] = useState(initial.text)
+  const draftRef = useRef(draft)
+  const mentionRangesRef = useRef(initial.mentions)
+  const editorInputRef = useRef<TextInput>(null)
+  const editorMenuRef = useRef<HTMLDivElement>(null)
+  const editorCaretTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [editorMenuPosition, setEditorMenuPosition] = useState<{ left: number; top: number; width: number } | null>(null)
+  const editorSelection = useRef({ start: draft.length, end: draft.length })
+  const [editorSelectionOverride, setEditorSelectionOverride] = useState<{ start: number; end: number } | undefined>()
+  const [mentionCompletion, setMentionCompletion] = useState<{ start: number; query: string } | null>(null)
+  const mentionCompletionRef = useRef<{ start: number; query: string } | null>(null)
+  const dismissedMentionStart = useRef<number | null>(null)
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const editMentionCandidates = useMemo(
+    () => mentionCandidates(mentionables ?? null, message.authorUserId, channelMemberIds),
+    [mentionables, message.authorUserId, channelMemberIds],
+  )
+  const mentionOptions = useMemo(
+    () => (mentionCompletion ? filterCandidates(editMentionCandidates, mentionCompletion.query) : []),
+    [editMentionCandidates, mentionCompletion],
+  )
+
+  useEffect(() => {
+    if (!isWeb || !mentionCompletion || !mentionOptions.length) {
+      setEditorMenuPosition(null)
+      return
+    }
+    let cancelled = false
+    const timer = setTimeout(() => {
+      const input = editorInputRef.current as (TextInput & { measureInWindow?: (callback: (x: number, y: number, width: number, height: number) => void) => void }) | null
+      if (!input?.measureInWindow) {
+        setEditorMenuPosition({ left: 8, top: 8, width: 360 })
+        return
+      }
+      input.measureInWindow((x, y, _width, height) => {
+        if (cancelled || typeof window === 'undefined') return
+        const width = Math.min(360, Math.max(0, window.innerWidth - 16))
+        const menuHeight = Math.min(280, mentionOptions.length * 34)
+        const above = y - menuHeight - 6
+        const top = above >= 8 ? above : Math.min(window.innerHeight - menuHeight - 8, y + height + 6)
+        setEditorMenuPosition({ left: Math.max(8, Math.min(x, window.innerWidth - width - 8)), top: Math.max(8, top), width })
+      })
+    }, 0)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [isWeb, mentionCompletion, mentionOptions.length])
+
+  useEffect(() => {
+    if (!isWeb || !mentionCompletion || !mentionOptions.length || typeof document === 'undefined') return
+    const onOutsidePress = (event: MouseEvent) => {
+      const target = event.target
+      const input = editorInputRef.current as (TextInput & { getNativeRef?: () => HTMLElement }) | null
+      const inputElement = input?.getNativeRef?.() ?? input as unknown as HTMLElement | null
+      if (target instanceof Node && (editorMenuRef.current?.contains(target) || inputElement?.contains?.(target))) return
+      mentionCompletionRef.current = null
+      setMentionCompletion(null)
+    }
+    document.addEventListener('mousedown', onOutsidePress, true)
+    return () => document.removeEventListener('mousedown', onOutsidePress, true)
+  }, [isWeb, mentionCompletion, mentionOptions.length])
+
+  useEffect(() => () => {
+    if (editorCaretTimer.current) clearTimeout(editorCaretTimer.current)
+  }, [])
+
+  const updateMentionCompletion = useCallback((text: string, cursor: number) => {
+    const detected = activeMentionQuery(text, cursor)
+    const next = detected && detected.start !== dismissedMentionStart.current
+      ? { start: detected.start, query: detected.query }
+      : null
+    const previous = mentionCompletionRef.current
+    if (previous?.start === next?.start && previous?.query === next?.query) return
+    mentionCompletionRef.current = next
+    setMentionCompletion(next)
+    setMentionIndex(0)
+    if (!detected) dismissedMentionStart.current = null
+  }, [])
+
+  const placeEditorCaret = useCallback((caret: number) => {
+    const next = { start: caret, end: caret }
+    editorSelection.current = next
+    setEditorSelectionOverride(next)
+    if (editorCaretTimer.current) clearTimeout(editorCaretTimer.current)
+    editorCaretTimer.current = setTimeout(() => {
+      editorCaretTimer.current = null
+      setEditorSelectionOverride(undefined)
+    }, 0)
+  }, [])
+
+  const selectEditMention = useCallback((candidate: MentionCandidate) => {
+    const activeMention = mentionCompletionRef.current
+    if (!activeMention) return
+    const previous = draftRef.current
+    const { text: next, cursor } = insertMention(previous, activeMention, candidate)
+    const ranges = updateEditableMentionRanges(previous, next, mentionRangesRef.current, {
+      start: activeMention.start,
+      end: activeMention.start + 1 + activeMention.query.length,
+    })
+    const label = `@${candidate.display}`
+    ranges.push({ start: activeMention.start, end: activeMention.start + label.length, label, token: candidate.token })
+    ranges.sort((a, b) => a.start - b.start)
+    mentionRangesRef.current = ranges
+    draftRef.current = next
+    setDraft(next)
+    mentionCompletionRef.current = null
+    dismissedMentionStart.current = null
+    setMentionCompletion(null)
+    placeEditorCaret(cursor)
+  }, [placeEditorCaret])
+
+  const saveEdit = async () => {
+    const text = serializeEditableMentions(draftRef.current, mentionRangesRef.current).trim()
+    if (!text || text === message.text) {
+      onCancel()
+      return
+    }
+    await onSave(message, text)
+    onCancel()
+  }
+
+  const mentionRows = mentionOptions.map((candidate, index) => (
+    <Pressable
+      key={candidate.token}
+      accessibilityRole="button"
+      accessibilityLabel={`@${candidate.display}`}
+      onPress={() => selectEditMention(candidate)}
+      className={cn(
+        'w-full flex-row items-center gap-2 px-3 py-1.5',
+        index === mentionIndex ? 'bg-accent' : 'active:bg-accent',
+      )}
+    >
+      <View className="h-5 w-5 items-center justify-center rounded-full bg-muted">
+        <Text className="text-[10px] font-medium text-muted-foreground">
+          {candidate.kind === 'agent' ? '✦' : candidate.kind === 'group' ? '◎' : '@'}
+        </Text>
+      </View>
+      <Text className="min-w-0 flex-1 text-xs text-foreground" numberOfLines={1}>{candidate.display}</Text>
+      {candidate.subtitle ? (
+        <Text className="max-w-[45%] text-[10px] text-muted-foreground" numberOfLines={1}>{candidate.subtitle}</Text>
+      ) : null}
+      {candidate.kind === 'user' && candidate.inChannel === false ? (
+        <Text className="text-[10px] text-muted-foreground">Not in channel</Text>
+      ) : null}
+    </Pressable>
+  ))
+  const mentionMenu = mentionCompletion && mentionOptions.length > 0
+    ? isWeb && editorMenuPosition && typeof document !== 'undefined'
+      ? createPortal(
+          createElement(
+            'div',
+            {
+              ref: editorMenuRef,
+              onMouseDown: (e: { stopPropagation: () => void }) => e.stopPropagation(),
+              onClick: (e: { stopPropagation: () => void }) => e.stopPropagation(),
+              style: {
+                position: 'fixed',
+                left: editorMenuPosition.left,
+                top: editorMenuPosition.top,
+                width: editorMenuPosition.width,
+                zIndex: 9999,
+              },
+            },
+            <View testID="message-edit-completions-mentions" className="max-h-[280px] rounded-md border border-border bg-popover shadow-md">
+              {mentionRows}
+            </View>,
+          ),
+          document.body,
+        )
+      : !isWeb
+        ? (
+            <View testID="message-edit-completions-mentions" className="absolute bottom-full left-0 right-0 z-50 mb-1 max-h-[280px] rounded-md border border-border bg-popover shadow-md">
+              {mentionRows}
+            </View>
+          )
+        : null
+    : null
+
+  return (
+    <View className="mt-1 rounded-lg border border-border bg-background p-2">
+      <View className="relative">
+        {mentionMenu}
+        <TextInput
+          ref={editorInputRef}
+          value={draft}
+          onChangeText={(next) => {
+            const previous = draftRef.current
+            const { start, end } = editorSelection.current
+            const insertedLength = Math.max(0, next.length - (previous.length - (end - start)))
+            const cursor = Math.min(next.length, start + insertedLength)
+            mentionRangesRef.current = updateEditableMentionRanges(previous, next, mentionRangesRef.current, { start, end })
+            editorSelection.current = { start: cursor, end: cursor }
+            draftRef.current = next
+            setDraft(next)
+            updateMentionCompletion(next, cursor)
+          }}
+          onSelectionChange={(e: any) => {
+            const selection = e.nativeEvent.selection
+            editorSelection.current = selection
+            updateMentionCompletion(draftRef.current, selection.start)
+          }}
+          multiline
+          autoFocus
+          className="min-h-[40px] text-sm text-foreground"
+          selection={editorSelectionOverride}
+          onKeyPress={(e: any) => {
+            const key = e.nativeEvent.key
+            if (mentionCompletion && mentionOptions.length > 0) {
+              if (key === 'ArrowDown') {
+                e.preventDefault?.()
+                setMentionIndex((index) => (index + 1) % mentionOptions.length)
+                return
+              }
+              if (key === 'ArrowUp') {
+                e.preventDefault?.()
+                setMentionIndex((index) => (index - 1 + mentionOptions.length) % mentionOptions.length)
+                return
+              }
+              if (key === 'Enter' || key === 'Tab') {
+                e.preventDefault?.()
+                const candidate = mentionOptions[Math.min(mentionIndex, mentionOptions.length - 1)]
+                if (candidate) selectEditMention(candidate)
+                return
+              }
+              if (key === 'Escape') {
+                e.preventDefault?.()
+                dismissedMentionStart.current = mentionCompletion.start
+                mentionCompletionRef.current = null
+                setMentionCompletion(null)
+                return
+              }
+            }
+            if (!isWeb) return
+            if (key === 'Escape') onCancel()
+            if (key === 'Enter' && !e.nativeEvent.shiftKey) {
+              e.preventDefault?.()
+              void saveEdit()
+            }
+          }}
+        />
+      </View>
+      <View className="mt-2 flex-row justify-end gap-2">
+        <Pressable onPress={onCancel} className="rounded-md px-3 py-1.5 active:bg-muted">
+          <Text className="text-xs text-muted-foreground">Cancel</Text>
+        </Pressable>
+        <Pressable onPress={() => void saveEdit()} className="rounded-md bg-primary px-3 py-1.5">
+          <Text className="text-xs font-medium text-primary-foreground">Save</Text>
+        </Pressable>
+      </View>
+    </View>
+  )
+}
+
 function MessageRowImpl(props: MessageRowProps) {
   const router = useRouter()
   const { message, grouped, me, names, streaming, canManage, inThread } = props
@@ -528,7 +819,6 @@ function MessageRowImpl(props: MessageRowProps) {
   const saved = useIsSaved(message.id)
   const customEmoji = useCustomEmoji()
   const jumboSize = Math.round(bodyTextSize(useMobileWorkspaceChrome()) * JUMBO_EMOJI_SCALE)
-  const [draft, setDraft] = useState(message.text)
   const mine = !!me && message.authorUserId === me
   const deleted = !!message.deletedAt
   /**
@@ -586,10 +876,10 @@ function MessageRowImpl(props: MessageRowProps) {
   // The row's own width, not the window's: a thread sidebar or side pane is
   // narrower, and an image must fit the space the message actually got.
   const attachmentRow = useMeasuredWidth()
+  const startEditing = useCallback(() => setEditing(true), [])
   useEditRequest(message.id, () => {
     if (!mine || deleted || message.authorType !== 'user') return
-    setDraft(message.text)
-    setEditing(true)
+    startEditing()
   })
 
   const [copied, setCopied] = useState(false)
@@ -648,7 +938,6 @@ function MessageRowImpl(props: MessageRowProps) {
     setActionsOpen(true)
   }
 
-  const startEditing = () => { setDraft(message.text); setEditing(true) }
   /**
    * The message menu, grouped the way Slack groups it. One model feeds both the
    * web context menu and the native sheet, so the two can't drift apart.
@@ -736,16 +1025,6 @@ function MessageRowImpl(props: MessageRowProps) {
   }
   // Web only: pointer enter/leave drive the row hover, and a right-click opens the actions menu.
   const rowWebProps = isWeb ? ({ onPointerEnter: hoverIn, onPointerLeave: hoverOut, onContextMenu } as object) : {}
-
-  const saveEdit = async () => {
-    const text = draft.trim()
-    if (!text || text === message.text) {
-      setEditing(false)
-      return
-    }
-    await props.onEdit(message, text)
-    setEditing(false)
-  }
 
   // "Hey Shogo" in a huddle: the request, with the transcript the agent was given behind a toggle.
   const wakeBlock = huddleWakeBlockOf(message.blocks)
@@ -895,6 +1174,7 @@ function MessageRowImpl(props: MessageRowProps) {
     <Pressable
       onLongPress={isWeb ? undefined : openActions}
       {...rowWebProps}
+      style={editing ? { zIndex: 50 } : undefined}
       className={cn(
         'relative flex-row gap-3 px-4',
         grouped ? 'py-0.5' : 'pt-2.5 pb-0.5',
@@ -977,31 +1257,15 @@ function MessageRowImpl(props: MessageRowProps) {
         {deleted ? (
           <Text className="text-sm italic text-muted-foreground">This message was deleted.</Text>
         ) : editing ? (
-          <View className="mt-1 rounded-lg border border-border bg-background p-2">
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              multiline
-              autoFocus
-              className="min-h-[40px] text-sm text-foreground"
-              onKeyPress={(e: any) => {
-                if (!isWeb) return
-                if (e.nativeEvent.key === 'Escape') setEditing(false)
-                if (e.nativeEvent.key === 'Enter' && !e.nativeEvent.shiftKey) {
-                  e.preventDefault?.()
-                  void saveEdit()
-                }
-              }}
-            />
-            <View className="mt-2 flex-row justify-end gap-2">
-              <Pressable onPress={() => setEditing(false)} className="rounded-md px-3 py-1.5 active:bg-muted">
-                <Text className="text-xs text-muted-foreground">Cancel</Text>
-              </Pressable>
-              <Pressable onPress={saveEdit} className="rounded-md bg-primary px-3 py-1.5">
-                <Text className="text-xs font-medium text-primary-foreground">Save</Text>
-              </Pressable>
-            </View>
-          </View>
+          <MessageEditForm
+            message={message}
+            names={names}
+            mentionables={props.mentionables}
+            channelMemberIds={props.channelMemberIds}
+            isWeb={isWeb}
+            onSave={props.onEdit}
+            onCancel={() => setEditing(false)}
+          />
         ) : (
           <>
             {workItem ? (
