@@ -994,7 +994,8 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
-    timeout-minutes: 15
+    # ~10 min since SHO-257 added the machine parity suite and its web build.
+    timeout-minutes: 25
     env:
       CHANNELS_TEST_PG_URL: postgresql://shogo:shogo@127.0.0.1:5432/shogo
       # SHO-185's two-pod relay and machine-copy suites need a real Redis next to
