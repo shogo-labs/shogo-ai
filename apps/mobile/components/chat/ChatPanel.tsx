@@ -173,6 +173,7 @@ import {
   type OutgoingFilePart,
 } from "../../lib/chat-attachment-upload"
 import { releasePreviewUrl } from "../../lib/composer-attachments"
+import { transcriptKeyboardDismissMode } from "../../lib/composer-keyboard-dismiss"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import {
@@ -8726,7 +8727,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   // finger drags the keyboard, so the composer would sit still
                   // and then jump. Bouncing even when the chat is short lets an
                   // empty or one-message chat be dragged too.
-                  keyboardDismissMode="on-drag"
+                  // Web opts out: react-native-web dismisses on every scroll
+                  // event, including the auto-follow scroll of a streaming
+                  // turn, which blurred the composer out from under the user
+                  // (SHO-255).
+                  keyboardDismissMode={transcriptKeyboardDismissMode()}
                   // The scroll view insets itself by however far the keyboard
                   // covers it, natively and in step with the keyboard, so the
                   // last message stays above the lifted composer.

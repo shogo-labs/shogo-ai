@@ -2298,6 +2298,42 @@ function attentionColumn(board: any): any {
     ?? board.columns.find((c: any) => c.category === 'waiting')
 }
 
+/**
+ * The session a card's retry actually ran in, written onto its `agent_retry`
+ * event. The re-hand is recorded before the wake runs, so the ids are filled in
+ * here — the one place that knows both (SHO-248).
+ */
+export async function noteRetrySession(run: {
+  threadRootId: string | null
+  agentRef: string
+  previousSessionId: string
+  sessionId: string
+}): Promise<void> {
+  if (!run.threadRootId) return
+  const item = await db.workItem.findFirst({
+    where: { threadRootMessageId: run.threadRootId, archivedAt: null },
+    select: { id: true },
+  })
+  if (!item) return
+  const retry = await db.workItemEvent.findFirst({
+    where: { workItemId: item.id, type: 'agent_retry' },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, eventData: true },
+  })
+  if (!retry) return
+  await db.workItemEvent.update({
+    where: { id: retry.id },
+    data: {
+      eventData: {
+        ...(eventData(retry.eventData) ?? {}),
+        previousSessionId: run.previousSessionId,
+        sessionId: run.sessionId,
+        fresh: true,
+      },
+    },
+  })
+}
+
 /** How many times this card was re-handed since it last moved; a real move resets the ledger. */
 async function retriesSinceLastMove(itemId: string): Promise<number> {
   const lastMove = await db.workItemEvent.findFirst({
