@@ -13,7 +13,7 @@ import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, ScrollVi
 import { useFocusEffect, useRouter } from 'expo-router'
 import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
 import { useInbox, useSentMessages } from '../../hooks/useChatPrefs'
 import { customEmojiFor, useCustomEmoji, useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
@@ -58,7 +58,7 @@ export interface ActivityFeedProps {
 
 export function ActivityFeed({ compact = false, withFloatingCreate = false }: ActivityFeedProps) {
   const router = useRouter()
-  const workspace = useActiveWorkspace()
+  const workspace = useWorkspaceInView()
   const workspaceId = workspace?.id ?? null
   // Reactions can use the workspace's custom emoji, so have them loaded.
   useCustomEmojiFeed(workspaceId)

@@ -8,8 +8,7 @@ import { observer } from 'mobx-react-lite'
 import { Check, CheckCircle2, CircleAlert, Clock3, Folder, KanbanSquare, List, ListTodo, LoaderCircle, Play, Plus, Search, Trash2, X, XCircle } from 'lucide-react-native'
 import { useDomainHttp, useProjectCollection, type IProject } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
-import { useIsRemoteSource } from '@shogo/shared-app/domain'
-import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceDataScope, useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { api, type AgentTask, type AgentTaskStatus } from '../../lib/api'
 import { agentTaskEvents } from '../../lib/agent-task-events'
 import { NativePhoneSheet } from '../../components/phone/NativePhoneSheet'
@@ -87,9 +86,9 @@ const TasksScreen = observer(function TasksScreen() {
   // The domain client, so `/api/agent-tasks` follows the workspace in view: a
   // paired computer's own workspace answers its own task board (SHO-108).
   const http = useDomainHttp()
-  const workspace = useActiveWorkspace()
+  const workspace = useWorkspaceInView()
   const projects = useProjectCollection()
-  const isRemoteSource = useIsRemoteSource()
+  const { everyWorkspace } = useWorkspaceDataScope()
   const isDark = useResolvedTheme() === 'dark'
   const primaryActionColor = isDark ? '#18181b' : '#ffffff'
   const params = useLocalSearchParams<{ projectId?: string; taskId?: string }>()
@@ -156,7 +155,7 @@ const TasksScreen = observer(function TasksScreen() {
         // threw away most of it — this workspace's tasks could fall off the end.
         const next = await api.listAgentTasksPage(http, {
           limit: TASK_PAGE_SIZE,
-          ...(!isRemoteSource && workspace.id ? { workspaceId: workspace.id } : {}),
+          ...(!everyWorkspace && workspace.id ? { workspaceId: workspace.id } : {}),
         })
         setTasks(appendTasksPage([], next.items, workspace.id))
         setHasMore(next.hasMore)
@@ -174,7 +173,7 @@ const TasksScreen = observer(function TasksScreen() {
     }
     void request.then(clearInFlight, clearInFlight)
     return request
-  }, [http, isRemoteSource, workspace?.id])
+  }, [http, everyWorkspace, workspace?.id])
 
   // Ordered by updatedAt desc, so the oldest row loaded is the resume point.
   // Appending dedupes by id: a task edited between pages comes back on the next
@@ -187,7 +186,7 @@ const TasksScreen = observer(function TasksScreen() {
       const next = await api.listAgentTasksPage(http, {
         limit: TASK_PAGE_SIZE,
         ...cursor,
-        ...(!isRemoteSource && workspace?.id ? { workspaceId: workspace.id } : {}),
+        ...(!everyWorkspace && workspace?.id ? { workspaceId: workspace.id } : {}),
       })
       setTasks((prev) => appendTasksPage(prev, next.items, workspace?.id))
       setHasMore(next.hasMore)
@@ -196,7 +195,7 @@ const TasksScreen = observer(function TasksScreen() {
     } finally {
       setLoadingMore(false)
     }
-  }, [http, isRemoteSource, loadingMore, tasks, workspace?.id])
+  }, [http, everyWorkspace, loadingMore, tasks, workspace?.id])
 
   useFocusEffect(useCallback(() => {
     void load()
@@ -441,7 +440,7 @@ const TasksScreen = observer(function TasksScreen() {
     const pinnedIds = new Set(getPinnedProjectIds())
     const query = projectQuery.trim().toLowerCase()
     const workspaceProjects = projects.all
-      .filter((project) => isRemoteSource || project.workspaceId === workspace?.id)
+      .filter((project) => everyWorkspace || project.workspaceId === workspace?.id)
       .filter((project) => !query || project.name.toLowerCase().includes(query))
       .sort((a, b) => projectTimestamp(b) - projectTimestamp(a))
 
@@ -449,7 +448,7 @@ const TasksScreen = observer(function TasksScreen() {
       pinned: workspaceProjects.filter((project) => pinnedIds.has(project.id)),
       recent: workspaceProjects.filter((project) => !pinnedIds.has(project.id)),
     }
-  }, [isRemoteSource, projectQuery, projects.all, workspace?.id])
+  }, [everyWorkspace, projectQuery, projects.all, workspace?.id])
 
   const renderProjectChip = (project: IProject) => {
     const selected = selectedProjectId === project.id

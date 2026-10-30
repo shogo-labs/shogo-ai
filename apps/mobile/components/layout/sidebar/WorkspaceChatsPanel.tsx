@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Platform, View } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import { Plus } from 'lucide-react-native'
-import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { useWorkspaceInView } from '../../../hooks/useWorkspaceInView'
 import { useWorkspaceChats } from '../../../hooks/useWorkspaceChats'
 import { isMainChatPath } from '../../../lib/sidebar-tab'
 import { usePhoneLayout } from '../../../lib/native-phone-layout'
@@ -25,7 +25,7 @@ export function WorkspaceChatsPanel({ onNavPress }: { onNavPress?: () => void })
   const router = useRouter()
   const pathname = usePathname()
   const params = useLocalSearchParams<{ chatSessionId?: string | string[] }>()
-  const workspace = useActiveWorkspace()
+  const workspace = useWorkspaceInView()
   const comfortable = usePhoneLayout()
   const workspacePane = Platform.OS === 'web' && !comfortable
   const chats = useWorkspaceChats(workspace?.id)

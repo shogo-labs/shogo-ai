@@ -994,7 +994,8 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
-    timeout-minutes: 15
+    # ~10 min since SHO-257 added the machine parity suite and its web build.
+    timeout-minutes: 25
     env:
       CHANNELS_TEST_PG_URL: postgresql://shogo:shogo@127.0.0.1:5432/shogo
       # SHO-185's two-pod relay and machine-copy suites need a real Redis next to
@@ -1111,6 +1112,37 @@ jobs:
             bun --no-env-file test "$f" || exit 1
             echo "::endgroup::"
           done
+
+      # SHO-257: a real desktop paired to a real cloud process. Every workspace
+      # surface read from the cloud must match the desktop's own answer, and an
+      # agent turn started from the cloud must run on the machine.
+      - name: Machine workspace parity with a cloud workspace (paired desktop)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/machine-vm-parity.acceptance.test.ts --timeout 300000
+
+      # …and the same, in the cloud studio UI: the web build served in front of
+      # the cloud process, driven by Playwright (e2e/machine-vm).
+      - name: Cloud web build (for the machine workspace UI suite)
+        working-directory: apps/mobile
+        env:
+          EXPO_NO_DOTENV: '1'
+        run: bun run build
+
+      - name: Install Playwright Chromium (machine workspace UI suite)
+        run: npx playwright install --with-deps chromium
+
+      - name: Machine workspace in the cloud UI (paired desktop)
+        run: npx playwright test --config e2e/machine-vm/playwright.config.ts
+
+      - name: Upload machine workspace UI report
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: machine-vm-ui-report
+          path: |
+            test-results/machine-vm-report
+            test-results/machine-vm-artifacts
+          retention-days: 7
 
   test-windows:
     name: Test (Windows path handling)

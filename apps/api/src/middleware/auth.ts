@@ -30,6 +30,7 @@
 import type { Context, Next } from "hono"
 import { auth } from "../auth"
 import { prisma } from "../lib/prisma"
+import { LOCAL_USER_HEADER } from "../lib/machine-identity"
 import { resolveApiKey } from "../routes/api-keys"
 import { verifyRuntimeToken } from "../lib/runtime-token"
 import { verifyWorkspaceRuntimeToken } from "../lib/workspace-runtime-token"
@@ -179,6 +180,48 @@ async function runtimeTokenAuth(
   }
 }
 
+let tunnelPrincipalCache: { cloudUserId: string; userId: string; at: number } | null = null
+const TUNNEL_PRINCIPAL_TTL_MS = 60_000
+
+/**
+ * On the desktop, who a tunnelled request acts as.
+ *
+ * The cloud stamps its own account id: the machine's owner, the only account
+ * either relay admits (`/machines/:id/w/*`, `/instances/:id/p/*`). The desktop
+ * knows that person as its single local user under a different id, so a
+ * membership check (team chat's channels, DMs, agent DMs) refused every write
+ * from the cloud with "No access to this workspace". An id the desktop has a
+ * user for is kept as is.
+ */
+async function tunnelPrincipalId(cloudUserId: string): Promise<string> {
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') return cloudUserId
+  const cached = tunnelPrincipalCache
+  if (cached?.cloudUserId === cloudUserId && Date.now() - cached.at < TUNNEL_PRINCIPAL_TTL_MS) return cached.userId
+  try {
+    const known = await prisma.user.findUnique({ where: { id: cloudUserId }, select: { id: true } })
+    const owner = known
+      ? null
+      : await prisma.user.findFirst({ orderBy: { createdAt: 'asc' }, select: { id: true } })
+    const userId = known?.id ?? owner?.id ?? cloudUserId
+    tunnelPrincipalCache = { cloudUserId, userId, at: Date.now() }
+    return userId
+  } catch {
+    return cloudUserId
+  }
+}
+
+function announceLocalUser(c: Context, userId: string): void {
+  const res = c.res
+  if (!res) return
+  try {
+    res.headers.set(LOCAL_USER_HEADER, userId)
+  } catch {
+    const headers = new Headers(res.headers)
+    headers.set(LOCAL_USER_HEADER, userId)
+    c.res = new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+  }
+}
+
 /**
  * Auth middleware that extracts session from Better Auth.
  * Sets c.get("auth") with user info for downstream handlers.
@@ -186,6 +229,14 @@ async function runtimeTokenAuth(
  * Does NOT block unauthenticated requests - that's the job of requireAuth.
  */
 export async function authMiddleware(c: Context, next: Next) {
+  // A request is authenticated once. Routers mounted at `/api` that declare
+  // `router.use('*', authMiddleware)` (scoped analytics, cost analytics) run it
+  // again for every later `/api` route, which repeated the session lookup and
+  // threw away what an earlier middleware decided — the machine copy's
+  // identity (`lib/machine-identity`), so every generated route read a
+  // machine's chats as a stranger (SHO-257).
+  if ((c.get('auth') as AuthContext | undefined)?.isAuthenticated) return next()
+
   // 1. Try shogo_sk_* API key auth (used by local instances forwarding to cloud)
   const authHeader = c.req.header("authorization")
   if (authHeader?.startsWith("Bearer shogo_sk_")) {
@@ -278,8 +329,9 @@ export async function authMiddleware(c: Context, next: Next) {
   //    - External requests can't reach this header without going through the tunnel
   const tunnelUserId = c.req.header("x-tunnel-auth-user-id")
   if (tunnelUserId) {
+    const userId = await tunnelPrincipalId(tunnelUserId)
     c.set("auth", {
-      userId: tunnelUserId,
+      userId,
       email: c.req.header("x-tunnel-auth-email") || undefined,
       name: c.req.header("x-tunnel-auth-name") || undefined,
       isAuthenticated: true,
@@ -287,6 +339,8 @@ export async function authMiddleware(c: Context, next: Next) {
       via: 'tunnel',
     })
     await next()
+    // The cloud swaps this id for the owner's cloud one in what it relays back.
+    if (userId !== tunnelUserId) announceLocalUser(c, userId)
     return
   }
 

@@ -10,6 +10,7 @@
 import { prisma } from '../lib/prisma'
 import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
+import { MACHINE_COPY_PENDING } from '../lib/machine-copy-pending'
 import { deleteConversationFile, previewForAttachments } from '../lib/conversation-files'
 import { flattenMarkdownBlocks, loadNamesForTexts, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { addedMembersNoticeText, membershipChannelLabel } from './conversation-membership-notice'
@@ -65,6 +66,33 @@ export async function getWorkspaceRole(workspaceId: string, userId: string): Pro
     select: { role: true },
   })
   return (member?.role as WorkspaceRole) ?? null
+}
+
+async function isMachineCopy(workspaceId: string): Promise<boolean> {
+  const workspace = await db.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { machineInstanceId: true },
+  })
+  return !!workspace?.machineInstanceId
+}
+
+/**
+ * On a machine copy, the cloud account the copy was opened to
+ * (`ensureOwnerMember` in machine-sync ingest). That membership is an access
+ * grant, not a person on the machine: its owner is already one of the
+ * machine's own members, and a copy is read as that member
+ * (`lib/machine-identity`). Listing both showed the owner twice (SHO-257).
+ */
+async function machineCopyGrantUserId(workspaceId: string): Promise<string | null> {
+  const workspace = await db.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { machineInstanceId: true },
+  })
+  if (!workspace?.machineInstanceId) return null
+  const instance = await db.instance
+    .findUnique({ where: { id: workspace.machineInstanceId }, select: { userId: true } })
+    .catch(() => null)
+  return instance?.userId ?? null
 }
 
 export interface ConversationAccess {
@@ -493,7 +521,20 @@ export async function listConversationsForUser(
     !conversations.some((c: any) => c.kind === 'activity') ||
     !conversations.some((c: any) => c.dmKey === `u:${userId}`) ||
     !memberships.some((m: any) => m.conversationId === general.id)
-  if (needsSetup) {
+  // A machine copy (SHO-185) mirrors a desktop's rows under the desktop's ids;
+  // its channels are whatever the desktop has. Seeding them here would mint
+  // cloud-only #general/#activity rows the desktop never wrote, and a copy's
+  // reader (the owner's cloud account) is not one of its members anyway.
+  const machineCopy = needsSetup && (await isMachineCopy(workspaceId))
+  // …but a copy with no #general is a desktop that has never listed its
+  // channels: they are seeded on first read, on the machine. Say so, and the
+  // client reads them through the relay, which seeds them there and lets the
+  // next sync bring them here (SHO-257). Answering `[]` showed a workspace with
+  // no channels at all.
+  if (machineCopy && !general) {
+    throw new ConversationError(409, MACHINE_COPY_PENDING, 'This machine has not set up its channels yet')
+  }
+  if (needsSetup && !machineCopy) {
     const [createdGeneral] = await ensureDefaultConversations(workspaceId)
     // Gives every existing member their note-to-self, so the workspace creator
     // and older accounts need no separate backfill.
@@ -1736,10 +1777,11 @@ export async function listMentionables(workspaceId: string, userId: string) {
     }),
     db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true, avatarUrl: true, buddyLook: true } }).catch(() => null),
   ])
+  const grantUserId = members.length > 1 ? await machineCopyGrantUserId(workspaceId) : null
   const seen = new Set<string>()
   const people = []
   for (const m of members) {
-    if (!m.user || seen.has(m.user.id)) continue
+    if (!m.user || seen.has(m.user.id) || m.user.id === grantUserId) continue
     seen.add(m.user.id)
     people.push({ id: m.user.id, name: m.user.name || m.user.email, email: m.user.email, image: m.user.image ?? null, role: m.role })
   }

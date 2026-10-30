@@ -95,6 +95,14 @@ export interface ProxyToPeerOptions {
    * forwarded unchanged.
    */
   stripPrefix?: string
+  /**
+   * Body to forward instead of `c.req.raw.body`.
+   *
+   * A route that has to read its JSON to learn *which* workspace to pin to has
+   * already consumed `c.req.raw`, and a consumed stream cannot be re-sent — the
+   * peer would get an empty body. Such a caller passes the body it parsed.
+   */
+  body?: BodyInit | null
 }
 
 /**
@@ -185,7 +193,7 @@ export async function proxyToPeer(
         // is cheap next to the SSE turn it precedes. Revisit once the runtime
         // carries the upstream fix.
         keepalive: false,
-        ...(hasBody ? { body: c.req.raw.body, duplex: 'half' } : {}),
+        ...(hasBody ? { body: opts.body ?? c.req.raw.body, duplex: 'half' } : {}),
         // Peers terminate TLS behind the same cert; tolerate self-signed in-mesh.
         ...(typeof Bun !== 'undefined' ? { tls: { rejectUnauthorized: false } } : {}),
       } as any)

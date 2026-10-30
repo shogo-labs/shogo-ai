@@ -116,6 +116,8 @@ const MACHINE_WORKSPACE_CLOUD_ONLY: RouteEntry[] = [
   // fall-through someone might "fix" later.
   { pattern: /^\/api\/billing(\/|$)/,       target: 'cloud' }, // no billing account on a machine
   { pattern: /^\/api\/subscriptions(\/|$)/, target: 'cloud' }, // same account, same reason
+  // The models a picker offers are the cloud plan's: the machine runs on it.
+  { pattern: /^\/api\/workspaces\/[^/]+\/visible-models(\/|$)/, target: 'cloud' },
   { pattern: /^\/api\/members(\/|$)/,       target: 'cloud' }, // cloud membership, not the machine's
   { pattern: /^\/api\/invitations(\/|$)/,   target: 'cloud' }, // you join cloud workspaces, not machines
   { pattern: /^\/api\/marketplace(\/|$)/,   target: 'cloud' }, // listings live in the cloud
@@ -196,6 +198,10 @@ const MACHINE_WORKSPACE_LIVE_READS: RouteEntry[] = [
   // Attachment and conversation-file *contents* are bytes on the machine; the
   // row that names them is mirrored, the file is not.
   { pattern: /^\/api\/(conversation-files|chat-attachments)\/[^/]+(\/|$)/, target: 'remote' },
+  // A machine's triggers are rows the copy never carries (`EventSubscription`
+  // is the cloud's event bus, so the cloud must not hold a desktop's), so the
+  // copy answers an empty list. The desktop runs them; ask it (SHO-257).
+  { pattern: /^\/api\/workspaces\/[^/]+\/triggers(\/|$)/, target: 'remote' },
 ]
 
 /**
@@ -315,6 +321,13 @@ export function rewriteMachineWorkspaceBody<T>(body: T, localWorkspaceId: string
   if (typeof record.workspaceId !== 'string' || record.workspaceId === localWorkspaceId) return body
   return { ...record, workspaceId: localWorkspaceId } as T
 }
+
+/**
+ * Sent with a read of a machine workspace's cloud copy: the machine workspace it
+ * is for. Kept in step with `MACHINE_WORKSPACE_HEADER` in the API's
+ * `lib/machine-identity`.
+ */
+export const MACHINE_WORKSPACE_HEADER = 'x-shogo-machine-workspace'
 
 /**
  * What a machine-workspace request may come back with, and what the UI should do
@@ -539,7 +552,42 @@ export function createRemoteAwareHttpClient(
         }
 
         if (!shouldRoute) {
-          const cloudResult = (original as Function).apply(target, args)
+          // A read of the machine's rows is answered by the cloud copy, which
+          // keeps the desktop's ids: it has to name the machine's workspace,
+          // exactly as the relay would. Under the cloud workspace's id the copy
+          // answers for the cloud workspace — its projects, chats and activity
+          // shown under the machine's name.
+          const readsMachineRows =
+            !!config.machineWorkspaceId &&
+            isRead &&
+            shouldRouteToRemote(originalPath, {
+              machineWorkspaceId: config.machineWorkspaceId,
+              isRead: false,
+            })
+          let cloudResult: any
+          if (readsMachineRows) {
+            const copyPath = rewriteMachineWorkspacePath(
+              rewriteMachineWorkspaceParam(originalPath, config.machineWorkspaceId!),
+              config.machineWorkspaceId!,
+            )
+            // Names the copy for the cloud, which then reads it as the machine's
+            // own account for you (the copy's rows carry the machine's user id,
+            // not your cloud one) and answers in your cloud id. A read by
+            // resource id (`/api/conversations/<id>/messages`) names no
+            // workspace otherwise.
+            const copyHeaders = { [MACHINE_WORKSPACE_HEADER]: config.machineWorkspaceId! }
+            if (prop === 'get') {
+              cloudResult = target.request(copyPath, { method: 'GET', searchParams: args[1], headers: copyHeaders })
+            } else {
+              const options = args[1] && typeof args[1] === 'object' ? args[1] : {}
+              cloudResult = (original as Function).call(target, copyPath, {
+                ...options,
+                headers: { ...(options.headers || {}), ...copyHeaders },
+              })
+            }
+          } else {
+            cloudResult = (original as Function).apply(target, args)
+          }
           // A read of a machine workspace the cloud has no copy of comes back
           // `409 machine_copy_pending`. Read it from the machine instead of
           // showing "No access to this workspace" (SHO-241). One retry, and only

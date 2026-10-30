@@ -7,7 +7,7 @@ import { useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Bot, Hash, Lock, MessageSquarePlus, Plus, Radio, Search } from 'lucide-react-native'
-import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { useWorkspaceInView } from '../../../hooks/useWorkspaceInView'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { teamChatApi, type ConversationSummary } from '../../../lib/team-chat-api'
 import { invalidateConversationList, useConversationList, useMentionables, useMyUserId } from '../../../hooks/useTeamChat'
@@ -20,7 +20,7 @@ const api = teamChatApi()
 
 export default function TeamChatHome() {
   const router = useRouter()
-  const workspace = useActiveWorkspace()
+  const workspace = useWorkspaceInView()
   const experience = useWorkspaceExperience()
   const workspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
   const me = useMyUserId()

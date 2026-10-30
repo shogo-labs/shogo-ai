@@ -249,6 +249,7 @@ const RESOLVER_FILES: Record<string, string> = {
   'services/local-publish.service.ts': 'local-only: desktop publish (SHO-245) builds in the project\'s LOCAL runtime; the service is imported only by routes/local-publish.ts, which createLocalApp mounts and the cloud API never does',
   'services/publish-git.service.ts': 'route-pin: called from routes/publish.ts (pinned under /api/projects/:projectId/); the project-delete hook and the published-site sweep always pass dropPublishPointer:false, so they never resolve a pod URL',
   'services/workspace-export/files.ts': 'route-pin: pinWorkspaceRoutesToHomeRegion on every workspace export route; only reads pod files',
+  'services/workspace-move/cloud.ts': 'route-pin: pinWorkspaceToHomeRegion on every workspace-move route that touches files (workspaceId comes from the body/query, so the explicit form); only reads pod files and stores to S3',
   'services/github-workspace.ts': 'guard: resolves via the resolver layer',
 }
 

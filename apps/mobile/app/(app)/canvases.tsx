@@ -6,9 +6,8 @@ import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, Text, Vi
 import { useFocusEffect, useRouter } from 'expo-router'
 import { ArrowUpRight, CalendarDays, LayoutGrid, MonitorPlay } from 'lucide-react-native'
 import { observer } from 'mobx-react-lite'
-import { useIsRemoteSource } from '@shogo/shared-app/domain'
 import { useProjectCollection } from '../../contexts/domain'
-import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceDataScope, useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 
 function publishedDate(value?: number) {
@@ -19,8 +18,8 @@ function publishedDate(value?: number) {
 export default observer(function CanvasesScreen() {
   const router = useRouter()
   const projects = useProjectCollection()
-  const workspace = useActiveWorkspace()
-  const isRemoteSource = useIsRemoteSource()
+  const workspace = useWorkspaceInView()
+  const { everyWorkspace } = useWorkspaceDataScope()
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -28,7 +27,7 @@ export default observer(function CanvasesScreen() {
   const load = useCallback(async () => {
     try {
       setError(null)
-      const filter = !isRemoteSource && workspace?.id ? { workspaceId: workspace.id } : undefined
+      const filter = !everyWorkspace && workspace?.id ? { workspaceId: workspace.id } : undefined
       await projects.loadAll(filter)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load canvases')
@@ -36,7 +35,7 @@ export default observer(function CanvasesScreen() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [isRemoteSource, projects, workspace?.id])
+  }, [everyWorkspace, projects, workspace?.id])
 
   useFocusEffect(useCallback(() => {
     void load()
@@ -45,11 +44,11 @@ export default observer(function CanvasesScreen() {
   const canvases = useMemo(
     () => projects.all
       .filter((project) => {
-        if (!isRemoteSource && workspace?.id && project.workspaceId !== workspace.id) return false
+        if (!everyWorkspace && workspace?.id && project.workspaceId !== workspace.id) return false
         return project.publishStatus === 'live' && Boolean(project.publishedSubdomain || project.publishedAt)
       })
       .sort((a, b) => (b.publishedAt || b.updatedAt) - (a.publishedAt || a.updatedAt)),
-    [isRemoteSource, projects.all, workspace?.id],
+    [everyWorkspace, projects.all, workspace?.id],
   )
   const openCanvas = (projectId: string) => {
     router.push({

@@ -32,6 +32,7 @@
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { Hono } from 'hono'
+import { join } from 'path'
 import { RuntimeManager, projectWorkspaceRuntimeKey } from '../lib/runtime/manager'
 
 process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP = '1'
@@ -141,6 +142,17 @@ function newManager(): PrivateRM {
   }
   let nextPort = 38000
   ;(rm as any).getProjectInfo = mock(async () => ({}))
+  // The reuse branch refreshes the merged root on every wake, which for a
+  // non-remote project shells out to `bun install` for its members. That is a
+  // filesystem/install side effect no assertion here reads, and on a cold runner
+  // it outlives bun's 5s per-test timeout — stub it so the test measures the
+  // pin, not an install.
+  ;(rm as any).buildWorkspaceMergedRoot = mock(async (_workspacesDir: string, rootName: string) => ({
+    dir: join(_workspacesDir, '.workspace-roots', rootName),
+    linkedFolders: [],
+    readonlyFolders: [],
+    mounts: [],
+  }))
   rm.doStartMergedRuntime = mock(async (spec: any) => {
     const port = nextPort++
     const runtime = {
