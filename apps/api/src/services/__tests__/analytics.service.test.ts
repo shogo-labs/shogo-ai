@@ -511,6 +511,18 @@ describe('Postgres-mode helper coverage', () => {
     )
   })
 
+  test('platform growth filters internal accounts out of the users bucket (SHO-258 §7)', async () => {
+    enqueueRaw([], [], [], [])
+    await analytics.getGrowthTimeSeries({}, '30d')
+    const usersSql = rawCalls.find((c) => c.sql.includes('FROM "users" u'))?.sql ?? ''
+    expect(usersSql).toContain('NOT ILIKE')
+    expect(usersSql).toContain(`u."role" != 'super_admin'`)
+    // Every other bucket keeps its plain query — no filter added where there are
+    // no user rows to filter.
+    const workspacesSql = rawCalls.find((c) => c.sql.includes('"workspaces"'))?.sql ?? ''
+    expect(workspacesSql).not.toContain('ILIKE')
+  })
+
   test('periodToWindow falls back to default 30d on unknown period', () => {
     const { from, to } = analytics.periodToWindow('unknown' as any)
     const span = to.getTime() - from.getTime()

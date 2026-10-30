@@ -59,12 +59,6 @@ export const INTERNAL_EMAIL_ENDS_WITH = INTERNAL_MATCH.endsWith as readonly stri
 /** `contains` fragments for patterns with an interior wildcard: `@getodin.`. */
 export const INTERNAL_EMAIL_CONTAINS = INTERNAL_MATCH.contains as readonly string[]
 
-/** Every internal address as a literal suffix (for logging/tests only). */
-export const INTERNAL_EMAIL_SUFFIXES = [
-  ...INTERNAL_EMAIL_ENDS_WITH,
-  ...INTERNAL_EMAIL_CONTAINS,
-] as readonly string[]
-
 /**
  * The OR clauses that select internal addresses, in the shape Prisma wants.
  * Pass `insensitive` on Postgres; SQLite has no `mode` option.

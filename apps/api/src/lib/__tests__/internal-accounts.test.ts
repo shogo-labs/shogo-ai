@@ -6,7 +6,6 @@ import {
   INTERNAL_EMAIL_CONTAINS,
   INTERNAL_EMAIL_ENDS_WITH,
   INTERNAL_EMAIL_PATTERNS,
-  INTERNAL_EMAIL_SUFFIXES,
   internalEmailClauses,
   isInternalEmail,
 } from '../internal-accounts'
@@ -87,7 +86,9 @@ describe('internal accounts', () => {
 
   test('split the patterns by what the filter can express', () => {
     // No LIKE wildcards survive in either list.
-    for (const suffix of INTERNAL_EMAIL_SUFFIXES) expect(suffix).not.toContain('%')
+    for (const suffix of [...INTERNAL_EMAIL_ENDS_WITH, ...INTERNAL_EMAIL_CONTAINS]) {
+      expect(suffix).not.toContain('%')
+    }
     // A pattern that only ends in `%` is a real `endsWith`.
     expect(INTERNAL_EMAIL_ENDS_WITH).toEqual(['@test.shogo.ai', '@shogo.ai'])
     // `%@getodin.%` has an interior wildcard: `endsWith('@getodin.')` is false

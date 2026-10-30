@@ -115,18 +115,6 @@ export interface PromoCreditSource {
 }
 
 /**
- * Resolve the wallet that funds promo-credit spend for a billing workspace.
- *
- * Normally that's the workspace's own wallet. But signup credit is granted on
- * the user's *team* workspace, and a new user's first messages are just as
- * likely to land in their *personal* one — without this fallback the free
- * window blocks them at 18 minutes while $10 of their own credit sits
- * untouched one workspace over. So a personal workspace may also draw on the
- * owner's signup-credit wallet.
- *
- * Returns `null` when no unexpired credit is available anywhere.
- */
-/**
  * Memoise the *resolution* (workspace kind + credit workspace), not the credit
  * itself: `consumeUsage` is the hottest write in billing and the two `member`
  * lookups almost never change, so a team workspace — the common case — costs
@@ -143,6 +131,18 @@ export function clearPromoSourceCache() {
   promoSourceCache.clear()
 }
 
+/**
+ * Resolve the wallet that funds promo-credit spend for a billing workspace.
+ *
+ * Normally that's the workspace's own wallet. But signup credit is granted on
+ * the user's *team* workspace, and a new user's first messages are just as
+ * likely to land in their *personal* one — without this fallback the free
+ * window blocks them at 18 minutes while $10 of their own credit sits
+ * untouched one workspace over. So a personal workspace may also draw on the
+ * owner's signup-credit wallet.
+ *
+ * Returns `null` when no unexpired credit is available anywhere.
+ */
 async function resolvePromoCreditSource(
   client: PromoCreditSourceClient,
   billingWorkspaceId: string,

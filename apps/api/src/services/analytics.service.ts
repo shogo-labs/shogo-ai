@@ -399,10 +399,13 @@ export async function getOverviewStats(scope: AnalyticsScope = {}) {
     return { members, projects, chatSessions, usageEvents }
   }
 
-  // Platform-wide overview
+  // Platform-wide overview. Every user number here goes through the shared
+  // internal-account filter (SHO-258 §7) — the Total Users tile is the headline
+  // number the card was opened about, and counting our own 47 Odin/Shogo
+  // accounts in it defeats the point.
   const [totalUsers, totalWorkspaces, totalProjects, totalChatSessions, activeSubscriptions] =
     await Promise.all([
-      prisma.user.count(),
+      prisma.user.count({ where: realUserWhere() }),
       prisma.workspace.count(),
       prisma.project.count(),
       prisma.chatSession.count(),
@@ -465,7 +468,9 @@ export async function getGrowthTimeSeries(
   // with strftime, so there's no win and real risk in raw-bucketing it there.
   if (isSqlite) {
     const [users, workspaces, projects, sessions] = await Promise.all([
-      prisma.user.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } }),
+      // Internal accounts must not appear in the platform growth curve either
+      // (SHO-258 §7): the same shared filter as the Total Users tile.
+      prisma.user.findMany({ where: { createdAt: { gte: since }, ...realUserWhere() }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } }),
       prisma.workspace.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } }),
       prisma.project.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } }),
       prisma.chatSession.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } }),
@@ -489,11 +494,23 @@ export async function getGrowthTimeSeries(
        ORDER BY 1`,
       since,
     )
+  // Same bucket, but the `users` table is aliased so the shared internal-account
+  // predicate applies (SHO-258 §7) — our own accounts must not add a spike to
+  // the platform growth curve.
+  const bucketUsersByDay = () =>
+    prisma.$queryRawUnsafe<{ date: string; count: number | bigint }[]>(
+      `SELECT to_char(date_trunc('day', u."createdAt"), 'YYYY-MM-DD') AS "date", COUNT(*) AS "count"
+       FROM "users" u
+       WHERE u."createdAt" >= $1 AND ${realUserEmailNotLike('u')}
+       GROUP BY 1
+       ORDER BY 1`,
+      since,
+    )
   const toPoints = (rows: { date: string; count: number | bigint }[]): TimeSeriesPoint[] =>
     rows.map((r) => ({ date: r.date, count: toNum(r.count) }))
 
   const [users, workspaces, projects, sessions] = await Promise.all([
-    bucketByDay('users'),
+    bucketUsersByDay(),
     bucketByDay('workspaces'),
     bucketByDay('projects'),
     bucketByDay('chat_sessions'),
@@ -3490,11 +3507,11 @@ export function realUserWhere(): Prisma.UserWhereInput {
   }
 }
 
-function realUserEmailNotLike(): string {
+function realUserEmailNotLike(alias = 'u'): string {
   const likeOp = isSqlite ? 'NOT LIKE' : 'NOT ILIKE'
   return INTERNAL_EMAIL_PATTERNS
-    .map(p => `u."email" ${likeOp} '${p}'`)
-    .concat([`u."role" != '${INTERNAL_ROLE}'`])
+    .map(p => `${alias}."email" ${likeOp} '${p}'`)
+    .concat([`${alias}."role" != '${INTERNAL_ROLE}'`])
     .join(' AND ')
 }
 
