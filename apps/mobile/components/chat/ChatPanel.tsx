@@ -1665,17 +1665,29 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [restoreDraftRequest, setRestoreDraftRequest] =
     useState<RestoreDraftRequest | null>(null)
 
+  // A restore belongs to one chat. Drop it the moment the chat changes, so the
+  // next chat's box can never be filled with the previous chat's text while its
+  // own record is still loading.
+  useEffect(() => {
+    setRestoreDraftRequest(null)
+  }, [composerChatKey])
+
   // Stable identity: an inline arrow here would be a new prop value on every
   // ChatPanel render, re-running ChatInput's restore effect (which depends on
   // `onDraftRestored`) every render rather than only when a request is
   // actually consumed.
+  //
+  // A restore from this chat's stored draft is deliberately NOT cleared here.
+  // The composer subtree remounts while the transcript finishes loading, and a
+  // request consumed by the instance that unmounted would leave the one on
+  // screen empty with no second chance. Each `ChatInput` instance applies a
+  // given nonce at most once, so leaving it set is how a later mount picks the
+  // draft up; a real edit, a submit or a chat switch clears it below.
   const handleDraftRestored = useCallback(
     (nonce: number) => {
       if (prefillRequest?.nonce === nonce) onPrefillConsumed?.(nonce)
-      else if (restoreDraftRequest?.nonce === nonce)
-        setRestoreDraftRequest(null)
     },
-    [prefillRequest?.nonce, restoreDraftRequest?.nonce, onPrefillConsumed],
+    [prefillRequest?.nonce, onPrefillConsumed],
   )
 
   // Store whatever a prefill (a queued-message edit, a handed-off prompt) put
@@ -1696,8 +1708,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // lands a render later, it is applied as long as nobody has typed.
   useEffect(() => {
     if (!composerChatKey || !composerReady) return
-    // An explicit prefill wins over the stored draft (and is stored above).
-    if (prefillRequest) return
+    // An explicit prefill wins over the stored draft (and is stored above), so
+    // a draft restore left set from an earlier render must not survive it: the
+    // composer must not fall back to the draft once the prefill is consumed.
+    if (prefillRequest) {
+      setRestoreDraftRequest((prev) => (prev ? null : prev))
+      return
+    }
     const draft = composerRecord?.draft
     const text = draft?.text ?? ""
     const applied = appliedComposerDraftRef.current
@@ -1727,8 +1744,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleComposerTextChange = useCallback(
     (text: string, references: ChatReference[]) => {
       if (!composerChatKey) return
-      if (appliedComposerDraftRef.current?.key !== composerChatKey) return
+      const applied = appliedComposerDraftRef.current
+      if (applied?.key !== composerChatKey) return
+      // A reload can hand the browser's restored input value straight back as a
+      // change event with the draft we just put there. That is an echo of the
+      // restore, not an edit: counting it would block the restore we still owe
+      // this chat and drop the request that would deliver it.
+      if (applied.text !== "" && applied.text === text) return
       composerEditedRef.current = true
+      setRestoreDraftRequest((prev) => (prev ? null : prev))
       composerMemory.saveDraft(text, references)
     },
     [composerChatKey, composerMemory],
@@ -7068,6 +7092,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         appliedComposerDraftRef.current = { key: composerChatKey, text: "" }
         composerEditedRef.current = false
       }
+      // The box is empty now and must stay empty: drop the restore that would
+      // otherwise come back on a remount of the composer.
+      setRestoreDraftRequest((prev) => (prev ? null : prev))
       handleSendMessage(content, files, perMsgModel, references)
     },
     [composerChatKey, composerMemory, handleSendMessage],

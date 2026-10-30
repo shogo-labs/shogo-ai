@@ -17,7 +17,10 @@
  *
  * The shell keeps a chat panel per open chat mounted side by side, so every
  * locator here is scoped to the panel that shows the chat's own marker line
- * (see `chatPanel`), never to "the first composer on the page".
+ * (see `markChatPanel`), never to "the first composer on the page" — and each
+ * chat is named and seeded with a marker unique to that `makeChat` call, since
+ * a name shared with another chat makes "the panel showing this chat"
+ * ambiguous and the failure then reads as a restore bug.
  *
  * Needs the local stack; `E2E_LOCAL_START_STACK=1` boots it:
  *   npx playwright test --config e2e/local/playwright.config.ts chat-composer-memory
@@ -312,7 +315,24 @@ function chatParam(page: Page): string | null {
  * seeded with one message so "the panel really is on this chat" is observable
  * on screen (see `markChatPanel`).
  */
-async function makeChat(page: Page, name: string): Promise<string> {
+let chatToken = 0
+
+/**
+ * A fresh chat on the project whose **name is unique to this call**.
+ *
+ * Two chats in one project can be created with the same base name (each test
+ * makes its own "Chat Alpha"), and both are seeded with the same marker line.
+ * Every locator here is scoped by that marker, so a shared name makes "the
+ * panel showing this chat" ambiguous — the sidebar row, `markChatPanel` and the
+ * composer would all be free to resolve to the *other* chat's panel, which is
+ * how AC3 looked like a restore race when the wrong box was being read.
+ */
+async function makeChat(
+  page: Page,
+  base: string,
+): Promise<{ id: string; name: string }> {
+  chatToken += 1
+  const name = `${base} ${Date.now().toString(36)}${chatToken}`
   const created = await apiJson(page, "POST", "/api/chat-sessions", {
     contextId: projectId,
     contextType: "project",
@@ -331,7 +351,7 @@ async function makeChat(page: Page, name: string): Promise<string> {
     parts: JSON.stringify([{ type: "text", text: marker }]),
   })
   expect(seeded.status, JSON.stringify(seeded.json)).toBeLessThan(300)
-  return id as string
+  return { id: id as string, name }
 }
 
 /**
@@ -490,12 +510,12 @@ test.describe("Per-chat composer memory (local)", () => {
     const bravo = `Chat Bravo draft ${stamp}`
     // The sidebar list is rendered per page load, so the chats exist before the
     // page that lists them opens.
-    const alphaId = await makeChat(page, "Chat Alpha")
-    const bravoId = await makeChat(page, "Chat Bravo")
+    const alphaChat = await makeChat(page, "Chat Alpha")
+    const bravoChat = await makeChat(page, "Chat Bravo")
     await openProject(page)
 
-    await openChat(page, "Chat Alpha", alphaId, "")
-    await typeDraft(page, "Chat Alpha", alpha)
+    await openChat(page, alphaChat.name, alphaChat.id, "")
+    await typeDraft(page, alphaChat.name, alpha)
     // No debounce wait: navigating away must flush the pending write.
     await page.getByLabel(`Project: ${otherProjectName}`, { exact: true }).first().click()
     await page.waitForURL(new RegExp(`/projects/${otherProjectId}`), { timeout: 60_000 })
@@ -505,14 +525,14 @@ test.describe("Per-chat composer memory (local)", () => {
     await page.getByLabel(`Project: ${projectName}`, { exact: true }).first().click()
     await page.waitForURL(new RegExp(`/projects/${projectId}`), { timeout: 60_000 })
     await anyComposer(page).waitFor({ state: "visible", timeout: 120_000 })
-    await openChat(page, "Chat Alpha", alphaId, alpha)
+    await openChat(page, alphaChat.name, alphaChat.id, alpha)
 
     // AC1: chat B is its own box — never A's text.
-    await openChat(page, "Chat Bravo", bravoId, "")
-    await typeDraft(page, "Chat Bravo", bravo)
+    await openChat(page, bravoChat.name, bravoChat.id, "")
+    await typeDraft(page, bravoChat.name, bravo)
 
-    await openChat(page, "Chat Alpha", alphaId, alpha)
-    await openChat(page, "Chat Bravo", bravoId, bravo)
+    await openChat(page, alphaChat.name, alphaChat.id, alpha)
+    await openChat(page, bravoChat.name, bravoChat.id, bravo)
   })
 
   test("AC 3-4: the draft survives a reload, and a sent message leaves nothing behind", async ({
@@ -522,30 +542,62 @@ test.describe("Per-chat composer memory (local)", () => {
     const sent = await mockChatTurns(page)
     await prepare(page)
     const alpha = `Chat Alpha reload ${Date.now().toString(36)}`
-    const alphaId = await makeChat(page, "Chat Alpha")
-    const bravoId = await makeChat(page, "Chat Bravo")
+    const alphaChat = await makeChat(page, "Chat Alpha")
+    const bravoChat = await makeChat(page, "Chat Bravo")
     await openProject(page)
 
-    await openChat(page, "Chat Alpha", alphaId, "")
-    await typeDraft(page, "Chat Alpha", alpha)
+    await openChat(page, alphaChat.name, alphaChat.id, "")
+    await typeDraft(page, alphaChat.name, alpha)
     // Give the debounced write its window, then reload: a reload is exactly the
     // restart AC3 is about, and it re-reads the device cache from scratch.
     await expectStoredDraft(page, alpha)
     await page.reload()
     await anyComposer(page).waitFor({ state: "visible", timeout: 120_000 })
-    await openChat(page, "Chat Alpha", alphaId)
-    await expectRestoredDraft(page, "Chat Alpha", alpha)
+    await openChat(page, alphaChat.name, alphaChat.id)
+    await expectRestoredDraft(page, alphaChat.name, alpha)
 
     // AC4: sending empties the box, and a reload does not resurrect the text.
-    await (await composer(page, "Chat Alpha")).press("Enter")
-    await expectDraft(page, "Chat Alpha", "")
+    await (await composer(page, alphaChat.name)).press("Enter")
+    await expectDraft(page, alphaChat.name, "")
     await expect.poll(() => sent.length, { timeout: 30_000 }).toBeGreaterThan(0)
     await page.reload()
     await anyComposer(page).waitFor({ state: "visible", timeout: 120_000 })
-    await openChat(page, "Chat Alpha", alphaId, "")
+    await openChat(page, alphaChat.name, alphaChat.id, "")
 
     // The other chat is untouched by any of it.
-    await openChat(page, "Chat Bravo", bravoId, "")
+    await openChat(page, bravoChat.name, bravoChat.id, "")
+  })
+
+  /**
+   * AC3 with the first paint starved of CPU. The restore races the panel's
+   * mount, so a run that passes on a fast machine can fail on a slow one; this
+   * makes that race deterministic instead of leaving it to luck (QA's round-2
+   * report: "the rate rises with any render slowdown").
+   */
+  test("AC 3 stress: a slow first paint still restores the draft", async ({ page }) => {
+    test.setTimeout(240_000)
+    await mockChatTurns(page)
+    await prepare(page)
+    const alpha = `Chat Alpha slow ${Date.now().toString(36)}`
+    const alphaChat = await makeChat(page, "Chat Alpha")
+    await openProject(page)
+
+    await openChat(page, alphaChat.name, alphaChat.id, "")
+    await typeDraft(page, alphaChat.name, alpha)
+    await expectStoredDraft(page, alpha)
+
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      for (const rate of [8, 20]) {
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate })
+        await page.reload()
+        await anyComposer(page).waitFor({ state: "visible", timeout: 120_000 })
+        await openChat(page, alphaChat.name, alphaChat.id)
+        await expectRestoredDraft(page, alphaChat.name, alpha)
+      }
+    } finally {
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 }).catch(() => {})
+    }
   })
 
   test("AC 5-8: a model pick belongs to its chat, and a newer stamped message wins", async ({
@@ -554,32 +606,32 @@ test.describe("Per-chat composer memory (local)", () => {
     test.setTimeout(240_000)
     const sent = await mockChatTurns(page)
     await prepare(page)
-    const alphaId = await makeChat(page, "Chat Alpha")
-    const bravoId = await makeChat(page, "Chat Bravo")
+    const alphaChat = await makeChat(page, "Chat Alpha")
+    const bravoChat = await makeChat(page, "Chat Bravo")
     await openProject(page)
     const stamp = Date.now().toString(36)
 
-    await openChat(page, "Chat Alpha", alphaId, "")
-    const initialLabel = await shownModel(page, "Chat Alpha")
-    const { model: modelX, label: labelX } = await pickModel(page, "Chat Alpha", [initialLabel])
+    await openChat(page, alphaChat.name, alphaChat.id, "")
+    const initialLabel = await shownModel(page, alphaChat.name)
+    const { model: modelX, label: labelX } = await pickModel(page, alphaChat.name, [initialLabel])
     expect(labelX).not.toBe(initialLabel)
 
     // AC5/AC6: chat B is "on model Y" — a chat with no pick of its own follows
     // the last pick anywhere (AC7), so give B its own before A can be blamed
     // for what B shows. Then A's pick must not have moved B.
-    await openChat(page, "Chat Bravo", bravoId, "")
-    const { model: modelY, label: labelY } = await pickModel(page, "Chat Bravo", [labelX])
+    await openChat(page, bravoChat.name, bravoChat.id, "")
+    const { model: modelY, label: labelY } = await pickModel(page, bravoChat.name, [labelX])
     expect(labelY).not.toBe(labelX)
-    await openChat(page, "Chat Alpha", alphaId)
-    expect(await shownModel(page, "Chat Alpha")).toBe(labelX)
-    await openChat(page, "Chat Bravo", bravoId)
-    expect(await shownModel(page, "Chat Bravo")).toBe(labelY)
+    await openChat(page, alphaChat.name, alphaChat.id)
+    expect(await shownModel(page, alphaChat.name)).toBe(labelX)
+    await openChat(page, bravoChat.name, bravoChat.id)
+    expect(await shownModel(page, bravoChat.name)).toBe(labelY)
 
     // Back in A the pick is still there, unsent — and it is what A sends.
-    await openChat(page, "Chat Alpha", alphaId)
-    expect(await shownModel(page, "Chat Alpha")).toBe(labelX)
-    await typeDraft(page, "Chat Alpha", `model pick message ${stamp}`)
-    await (await composer(page, "Chat Alpha")).press("Enter")
+    await openChat(page, alphaChat.name, alphaChat.id)
+    expect(await shownModel(page, alphaChat.name)).toBe(labelX)
+    await typeDraft(page, alphaChat.name, `model pick message ${stamp}`)
+    await (await composer(page, alphaChat.name)).press("Enter")
     await expect.poll(() => sent.length, { timeout: 30_000 }).toBeGreaterThan(0)
     expect(sent[0]?.agentMode).toBe(modelX)
 
@@ -589,7 +641,7 @@ test.describe("Per-chat composer memory (local)", () => {
     // ChatPanel's island preview (pre-existing on main, tracked separately).
     const stamped = `stamped from another device ${stamp}`
     const seeded = await apiJson(page, "POST", "/api/chat-messages", {
-      sessionId: alphaId,
+      sessionId: alphaChat.id,
       role: "assistant",
       content: stamped,
       parts: JSON.stringify([{ type: "text", text: stamped }]),
@@ -601,7 +653,7 @@ test.describe("Per-chat composer memory (local)", () => {
     await expectStoredDraft(page, modelX)
     await page.reload()
     await anyComposer(page).waitFor({ state: "visible", timeout: 120_000 })
-    await openChat(page, "Chat Alpha", alphaId)
-    await expect.poll(() => shownModel(page, "Chat Alpha"), { timeout: 30_000 }).toBe(labelY)
+    await openChat(page, alphaChat.name, alphaChat.id)
+    await expect.poll(() => shownModel(page, alphaChat.name), { timeout: 30_000 }).toBe(labelY)
   })
 })

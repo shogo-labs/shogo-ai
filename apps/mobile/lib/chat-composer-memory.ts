@@ -480,15 +480,23 @@ export function useChatComposerMemory(
   key: string | null,
 ): ChatComposerMemoryState {
   const memory = getComposerMemory()
+  /**
+   * The state a synchronous read justifies.
+   *
+   * A sync backend means the record *can* be read on the first render — not
+   * that it was. Claiming `loadedKey` when `peek()` found nothing tells the
+   * caller "this chat has no draft" while it may simply not have been read yet,
+   * and the one-shot restore then spends itself on an empty box. Only a hit
+   * counts; a miss leaves `ready` false until the async load settles.
+   */
+  const syncState = (forKey: string) => {
+    const record = memory.peek(forKey)
+    return { record, loadedKey: record ? forKey : null }
+  }
   const [state, setState] = useState<{
     record: ComposerRecord | null
     loadedKey: string | null
-  }>(() => ({
-    record: key ? memory.peek(key) : null,
-    // Web reads localStorage synchronously, so the first render already knows
-    // this chat's record — the composer can restore without a flash.
-    loadedKey: key && memory.hasSyncRead() ? key : null,
-  }))
+  }>(() => (key ? syncState(key) : { record: null, loadedKey: null }))
   const keyRef = useRef<string | null>(key)
   keyRef.current = key
 
@@ -498,11 +506,7 @@ export function useChatComposerMemory(
       return
     }
     let cancelled = false
-    const sync = memory.peek(key)
-    setState({
-      record: sync,
-      loadedKey: memory.hasSyncRead() ? key : null,
-    })
+    setState(syncState(key))
     void memory.load(key).then((loaded) => {
       if (cancelled) return
       setState({ record: loaded, loadedKey: key })
