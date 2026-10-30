@@ -578,18 +578,23 @@ jobs:
           - { name: 'E2E (local mode) (3/3)', shard: '3/3' }
           # These eight specs all need the API pointed at the fake model, which
           # would change every other spec, so they get stacks of their own.
-          # They are THREE jobs, not one (SHO-251): on one worker, all 27 tests
+          # They are FOUR jobs, not one (SHO-251): on one worker, all 27 tests
           # could not finish inside the cap, so every run was cancelled at 35
           # min — still inside the first file, `chat-resume-on-send`, which is
           # 14 of the 27 tests at a 240 s per-test timeout. Nothing hung; the
-          # shard was simply bigger than its timeout (measured, SHO-251).
-          # Split by how long each group takes, so every job finishes well
-          # under 60% of its own cap.
+          # shard was simply bigger than its timeout, and with `retries: 2` a
+          # single flaky scenario costs ~7 min (measured, SHO-251).
+          # `chat-resume-on-send` holds two describes that differ 3:1 in cost,
+          # so the jobs below select one each with `grep`. A grep that matches
+          # nothing fails the job ("no tests found"), so a renamed describe
+          # cannot quietly drop coverage.
           #
-          # chat resume — chat-resume-on-send: the probe/resume scenarios, and
-          # the only file big enough to dominate a job. chat-stop-then-send
-          # rides along: stop a turn mid-stream, then send.
-          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send' }
+          # chat resume — the probe/resume scenarios, the expensive half of
+          # `chat-resume-on-send`.
+          - { name: 'E2E (chat resume)', timeout: 30, spec: 'chat-resume-on-send', grep: 'chat resumes a live turn it is not attached to' }
+          # chat resume windows — two windows on one chat, plus Stop-then-send
+          # (stop a turn mid-stream, then send).
+          - { name: 'E2E (chat resume windows)', timeout: 25, spec: 'chat-resume-on-send chat-stop-then-send', grep: 'two windows on one chat|Stop, then send' }
           # chat task wake — the background-task wake path, end to end:
           # chat-task-resume (a finished background exec wakes the chat with no
           # user input), chat-task-wake-live-attach (the window that did NOT
@@ -640,9 +645,9 @@ jobs:
     # Per-entry cap, default 35: a wedged E2E job holds the whole merge queue
     # for the length of this cap (23:55–01:25Z on 2026-10-20, three entries,
     # ~75 min). Measured on a green PR run: local shards 11–13 min, so 35 keeps
-    # ~10 min of headroom and still halves the worst case. The two light chat
-    # jobs ask for 25 instead (they measure 7–12 min on CI, SHO-251) so a wedged
-    # one costs the queue 10 minutes less.
+    # ~10 min of headroom and still halves the worst case. The chat jobs ask for
+    # less — 30 for `chat resume`, 25 for the other three (they measure 5–14 min
+    # on CI, SHO-251) — so a wedged one costs the queue less than the default.
     timeout-minutes: ${{ matrix.timeout || 35 }}
 
     steps:
@@ -715,7 +720,13 @@ jobs:
           LOCAL_LLM_BASE_URL: http://127.0.0.1:18765
           LOCAL_LLM_BASIC_MODEL: fake-stream
           LOCAL_LLM_ADVANCED_MODEL: fake-stream
-        run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium ${{ matrix.spec }}
+          # One file can hold describes that cost 3:1, so an entry may take a
+          # `grep` to run one of them (SHO-251). Empty for most entries.
+          E2E_GREP: ${{ matrix.grep }}
+        run: |
+          grep_arg=()
+          if [ -n "$E2E_GREP" ]; then grep_arg=(--grep "$E2E_GREP"); fi
+          npx playwright test --config e2e/local/playwright.config.ts --project=chromium "${grep_arg[@]}" ${{ matrix.spec }}
 
       - name: Upload report
         # `cancelled()` too: a job killed at its cap never reaches Playwright's
@@ -724,7 +735,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: e2e-local-report-${{ matrix.spec || strategy.job-index }}
+          name: e2e-local-report-${{ strategy.job-index }}
           path: |
             test-results/e2e-local-report
             test-results/e2e-local-artifacts
