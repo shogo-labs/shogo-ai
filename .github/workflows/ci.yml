@@ -1112,6 +1112,13 @@ jobs:
             echo "::endgroup::"
           done
 
+      # SHO-257: a real desktop paired to a real cloud process. Every workspace
+      # surface read from the cloud must match the desktop's own answer, and an
+      # agent turn started from the cloud must run on the machine.
+      - name: Machine workspace parity with a cloud workspace (paired desktop)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/machine-vm-parity.acceptance.test.ts --timeout 300000
+
   test-windows:
     name: Test (Windows path handling)
     needs: prelude
