@@ -41,8 +41,16 @@ import {
 
 export interface InlineMessageEditorProps {
   messageId: string
+  /** The message as it was sent — the dirty-detection baseline. */
   originalText: string
   originalFiles?: FileAttachment[]
+  /**
+   * The draft to open with when it differs from the original (a failed send
+   * re-mounts this editor with what the user had typed, see
+   * `PendingEditDraft`). Defaults to the original message.
+   */
+  initialText?: string
+  initialFiles?: FileAttachment[]
   /** How many messages below this one will be replaced (drives the label). */
   discardCount: number
   /** Resolved when the editor opened, not on submit. */
@@ -64,6 +72,8 @@ export function InlineMessageEditor({
   messageId,
   originalText,
   originalFiles,
+  initialText,
+  initialFiles,
   discardCount,
   checkpoint,
   streaming,
@@ -75,15 +85,18 @@ export function InlineMessageEditor({
   const inputRef = useRef<ChatInputHandle>(null)
   const containerRef = useRef<View>(null)
 
+  const startingText = initialText ?? originalText
+  const startingFiles = initialFiles ?? originalFiles
+
   const [restoreDraftRequest, setRestoreDraftRequest] =
     useState<RestoreDraftRequest | null>({
       nonce: 1,
-      content: originalText,
-      files: originalFiles,
+      content: startingText,
+      files: startingFiles,
     })
   const [draft, setDraft] = useState<EditDraftSnapshot>({
-    text: originalText,
-    fileCount: originalFiles?.length ?? 0,
+    text: startingText,
+    fileCount: startingFiles?.length ?? 0,
   })
   const [revertFiles, setRevertFiles] = useState(() =>
     readRevertFilesPreference(),
@@ -186,6 +199,10 @@ export function InlineMessageEditor({
       const trimmed = content.trim()
       if (!trimmed && (!files || files.length === 0)) return
       setBusy(true)
+      // Record the draft before dispatching: the send collapses the
+      // transcript optimistically, which unmounts this editor, so the draft
+      // and any error must live somewhere that outlives it.
+      ctx.setPendingEdit({ messageId, content: trimmed, files, error: null })
       try {
         const revert = Boolean(checkpoint) && revertFiles
         writeRevertFilesPreference(revertFiles)
@@ -201,11 +218,17 @@ export function InlineMessageEditor({
                 }
               : undefined,
         })
+        ctx.setPendingEdit(null)
+      } catch (err) {
+        // EditableUserMessage records the API message in `pendingEdit`, which
+        // comes back as the `error` prop when the editor re-mounts. Swallow
+        // the rejection so it never surfaces as an unhandled promise.
+        void err
       } finally {
         setBusy(false)
       }
     },
-    [ctx, busy, checkpoint, revertFiles, onSubmit],
+    [ctx, busy, checkpoint, revertFiles, messageId, onSubmit],
   )
 
   const revertControl = checkpoint

@@ -292,6 +292,7 @@ import {
   MessageEditProvider,
   dispatchNativeInlineEditTap,
   type MessageEditOptions,
+  type PendingEditDraft,
 } from "./turns/MessageEditContext"
 import { TurnFooterProvider } from "./turns/TurnFooterContext"
 import { filesRevertedNote, formatRelativeTime } from "./turns/editResend"
@@ -1404,10 +1405,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // SHO-263: which past message is open in the in-place editor. Lives here so
   // only one editor can be open at a time and TurnList can dim what follows.
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
-  const [revertedNotice, setRevertedNotice] = useState<{
-    text: string
-    at: number
-  } | null>(null)
+  // Whether the open editor's draft differs from the original message — set by
+  // InlineMessageEditor so clicking Edit on another row can't discard it.
+  const [inlineEditDirty, setInlineEditDirty] = useState(false)
+  // SHO-263: the in-flight edit draft, hoisted out of the editor so a failed
+  // truncate/rollback can re-open it with what the user typed (the optimistic
+  // collapse unmounts the row that owned it).
+  const [pendingEdit, setPendingEdit] = useState<PendingEditDraft | null>(null)
+  // "Files reverted to the checkpoint from …" notes, keyed by message id so
+  // the note travels with the resent message instead of a floating banner.
+  const [revertedNotes, setRevertedNotes] = useState<Record<string, string>>({})
+  const pendingRevertNoteRef = useRef<{ text: string; note: string } | null>(null)
   const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
   // Phone chrome renders the bottom nav outside this chat surface and that
   // nav owns the home-indicator inset. Reserving it here too created an extra
@@ -4692,7 +4700,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
     await new Promise<void>((resolve) => {
       let waited = 0
       const tick = () => {
-        if (!isStreamingRef.current || waited >= 3000) {
+        // 20s covers a slow abort round-trip; the old 3s cap gave up while the
+        // stream was still writing and let the truncate race the live turn.
+        if (!isStreamingRef.current || waited >= 20_000) {
           resolve()
           return
         }
@@ -4703,12 +4713,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
     })
   }, [handleStop])
 
-  // The "Files reverted…" note is a confirmation, not a log entry.
+  // Attach the "Files reverted…" note to the message the resend created, once
+  // it shows up in the transcript (we don't know its id until then).
   useEffect(() => {
-    if (!revertedNotice) return
-    const timer = setTimeout(() => setRevertedNotice(null), 10_000)
-    return () => clearTimeout(timer)
-  }, [revertedNotice])
+    const pendingNote = pendingRevertNoteRef.current
+    if (!pendingNote) return
+    const target = [...messages]
+      .reverse()
+      .find(
+        (m) =>
+          m.role === "user" &&
+          extractTextContent(m).trim() === pendingNote.text.trim(),
+      )
+    if (!target) return
+    pendingRevertNoteRef.current = null
+    setRevertedNotes((prev) => ({ ...prev, [target.id]: pendingNote.note }))
+  }, [messages])
 
   // Keep the shared subagent-stop helper pointed at the current API/runtime
   // so SubagentCard (chat) and AgentEntry (agents panel) can cancel without
@@ -7458,12 +7478,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
             // DB rollback.
             includeDatabase: false,
           })
-          setRevertedNotice({
-            text: filesRevertedNote(
+          // The note lands on the resent message as soon as the transcript
+          // shows it (see the `messages` effect that drains this ref).
+          pendingRevertNoteRef.current = {
+            text: newContent,
+            note: filesRevertedNote(
               formatRelativeTime(options.checkpoint.createdAt),
             ),
-            at: Date.now(),
-          })
+          }
         } catch (err) {
           console.error("[ChatPanel] checkpoint rollback failed:", err)
           if (!truncated) setMessages(previous)
@@ -7524,10 +7546,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [truncateAndResend, extractMediaType],
   )
 
-  // Used by the EditConfirmDialog to decide whether to render the
-  // "Also revert project files" checkbox. We resolve through the
-  // SDK env's HttpClient (via shared-app helper) so the remote-aware
-  // interceptor proxies to the desktop instance when one is
+  // Feeds the inline editor's "Revert files to before this message" checkbox.
+  // We resolve through the SDK env's HttpClient (via shared-app helper) so the
+  // remote-aware interceptor proxies to the desktop instance when one is
   // connected — same code path as truncate-from.
   //
   // A null collection / null checkpoint short-circuits to "no
@@ -7582,6 +7603,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
     ],
   )
 
+  const revertedNote = useCallback(
+    (messageId: string) => revertedNotes[messageId] ?? null,
+    [revertedNotes],
+  )
+
   const messageEditValue = useMemo(
     () => ({
       editMessage: handleEditMessage,
@@ -7591,7 +7617,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       stopStreaming: stopStreamingAndWait,
       editingMessageId,
       setEditingMessageId,
+      inlineEditDirty,
+      setInlineEditDirty,
       canEditMessage,
+      pendingEdit,
+      setPendingEdit,
+      revertedNote,
       getPrecedingCheckpoint: handleGetPrecedingCheckpoint,
       composerProps: messageEditComposerProps,
     }),
@@ -7602,7 +7633,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
       isStreaming,
       stopStreamingAndWait,
       editingMessageId,
+      inlineEditDirty,
       canEditMessage,
+      pendingEdit,
+      revertedNote,
       handleGetPrecedingCheckpoint,
       messageEditComposerProps,
     ],
@@ -8892,19 +8926,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
                           : setNativeInlineEditing
                       }
                     >
-                      {revertedNotice ? (
-                        <Pressable
-                          onPress={() => setRevertedNotice(null)}
-                          accessibilityRole="button"
-                          accessibilityLabel="Dismiss file revert notice"
-                          className="mb-2 self-center rounded-md border border-border/50 bg-muted/40 px-2 py-1"
-                        >
-                          <Text className="text-[11px] text-muted-foreground">
-                            {revertedNotice.text} · roll forward from the
-                            Checkpoints panel
-                          </Text>
-                        </Pressable>
-                      ) : null}
                       <TurnFooterProvider {...turnFooterValue}>
                         <TurnList
                           messages={displayMessages}

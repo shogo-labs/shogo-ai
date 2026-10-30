@@ -24,7 +24,7 @@
  *     (see `stopStreaming`).
  */
 
-import { memo, useCallback, useEffect, useMemo, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   View,
   Pressable,
@@ -201,6 +201,15 @@ export const EditableUserMessage = memo(function EditableUserMessage({
 
   const isEditing = ctx ? ctx.editingMessageId === message.id : localEditing
 
+  // A failed truncate/rollback re-mounts this row (the optimistic collapse
+  // removed it), so the editor's draft and error live in the context and are
+  // handed back as its initial values.
+  const pendingEdit =
+    ctx?.pendingEdit && ctx.pendingEdit.messageId === message.id
+      ? ctx.pendingEdit
+      : null
+  const revertedNote = ctx?.revertedNote?.(message.id) ?? null
+
   const originalText = useMemo(
     () => stripBuildBriefMarker(stripAskUserAnswerMarker(extractTextContent(message))),
     [message],
@@ -233,21 +242,35 @@ export const EditableUserMessage = memo(function EditableUserMessage({
     setCheckpoint(null)
     if (ctx) ctx.setEditingMessageId(message.id)
     else setLocalEditing(true)
-    // Resolve the revert target when the editor opens (not on submit) so the
-    // footer can show the choice straight away.
-    const count = ctx ? ctx.countMessagesAfter(message.id) : 0
-    if (!ctx || count <= 0) return
+  }, [canEdit, busy, ctx, message.id])
+
+  // Resolve the revert target when the editor opens (not on submit) so the
+  // footer can show the choice straight away. Runs for a re-mounted editor
+  // too — after a failed send the row is fresh, so it has to re-resolve.
+  const checkpointRequestedRef = useRef(false)
+  useEffect(() => {
+    if (!isEditing || !ctx) {
+      checkpointRequestedRef.current = false
+      return
+    }
+    if (checkpointRequestedRef.current) return
+    if (ctx.countMessagesAfter(message.id) <= 0) return
+    checkpointRequestedRef.current = true
+    let cancelled = false
     void ctx
       .getPrecedingCheckpoint(message.id)
       .then((result) => {
-        if (!result.checkpoint || !result.projectId) return
-        setCheckpoint({
-          id: result.checkpoint.id,
-          projectId: result.projectId,
-          createdAt: result.checkpoint.createdAt,
-          filesChanged: result.checkpoint.filesChanged,
-          includesDb: result.checkpoint.includesDb,
-        })
+        const found = result.checkpoint
+        const projectId = result.projectId
+        if (cancelled || !found || !projectId) return
+        const next: EditCheckpointSummary = {
+          id: found.id,
+          projectId,
+          createdAt: found.createdAt,
+          filesChanged: found.filesChanged,
+          includesDb: found.includesDb,
+        }
+        setCheckpoint((prev) => (prev?.id === next.id ? prev : next))
       })
       .catch((err) => {
         // No rollback target: the editor simply offers chat-only resend.
@@ -256,10 +279,14 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           err,
         )
       })
-  }, [canEdit, busy, ctx, message.id])
+    return () => {
+      cancelled = true
+    }
+  }, [isEditing, ctx, message.id])
 
   const handleCancelEdit = useCallback(() => {
     clearEditState()
+    ctx?.setPendingEdit(null)
     if (ctx) ctx.setEditingMessageId(null)
     else setLocalEditing(false)
   }, [clearEditState, ctx])
@@ -280,14 +307,24 @@ export const EditableUserMessage = memo(function EditableUserMessage({
         await ctx.editMessage(message.id, content, files, options)
         // On success the message id disappears from the transcript and this
         // component unmounts; reset defensively for layouts that keep it.
+        ctx.setPendingEdit(null)
         clearEditState()
         ctx.setEditingMessageId(null)
       } catch (err) {
-        setError(
+        // This row is usually already unmounted by the optimistic collapse,
+        // so the error and the draft that must reopen with it are recorded in
+        // the context (EditableUserMessage remounts from `pendingEdit`).
+        const detail =
           err instanceof Error && err.message
             ? err.message
-            : "Could not resend this message.",
-        )
+            : "Could not resend this message."
+        ctx.setPendingEdit({
+          messageId: message.id,
+          content,
+          files,
+          error: detail,
+        })
+        setError(detail)
         setBusy(false)
         throw err
       }
@@ -469,10 +506,12 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           messageId={message.id}
           originalText={originalText}
           originalFiles={originalFiles}
+          initialText={pendingEdit?.content}
+          initialFiles={pendingEdit?.files}
           discardCount={discardCount}
           checkpoint={checkpoint}
           streaming={Boolean(ctx?.isStreaming)}
-          error={error}
+          error={pendingEdit?.error ?? error}
           onCancel={handleCancelEdit}
           onSubmit={handleEditorSubmit}
         />
@@ -526,6 +565,11 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           <View className="mt-1 pr-2">
             <ActivityIndicator size="small" />
           </View>
+        ) : null}
+        {revertedNote ? (
+          <Text className="mt-1 px-2 text-[11px] text-muted-foreground">
+            {revertedNote}
+          </Text>
         ) : null}
       </View>
     )
@@ -700,6 +744,11 @@ export const EditableUserMessage = memo(function EditableUserMessage({
 
       {error ? (
         <Text className="mt-1 px-3 text-xs text-destructive">{error}</Text>
+      ) : null}
+      {revertedNote ? (
+        <Text className="mt-1 px-3 text-[11px] text-muted-foreground">
+          {revertedNote}
+        </Text>
       ) : null}
     </View>
   )

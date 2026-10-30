@@ -53,6 +53,23 @@ export interface MessageEditOptions {
   }
 }
 
+/**
+ * The draft of an inline edit that is mid-flight.
+ *
+ * Sending an edit collapses the transcript optimistically, which unmounts
+ * the very row that owns the editor — and with it the editor's local draft
+ * and error state. ChatPanel therefore keeps them here, keyed by message
+ * id, so a failed truncate/rollback can re-mount the editor with exactly
+ * what the user typed plus the API's error message (SHO-263 AC 8).
+ */
+export interface PendingEditDraft {
+  messageId: string
+  content: string
+  files?: FileAttachment[]
+  /** API error from the last attempt, rendered under the editor. */
+  error?: string | null
+}
+
 export interface MessageEditContextValue {
   /**
    * Apply an edited content (and optionally a new set of file
@@ -143,6 +160,20 @@ export interface MessageEditContextValue {
   canEditMessage: (message: UIMessage) => boolean
 
   /**
+   * The in-flight edit draft (see `PendingEditDraft`). Owned by ChatPanel
+   * so it survives the optimistic collapse that unmounts the editor row.
+   */
+  pendingEdit: PendingEditDraft | null
+  setPendingEdit: (next: PendingEditDraft | null) => void
+
+  /**
+   * The "Files reverted to the checkpoint from …" note attached to the
+   * resent message, or null. Keyed by message id so the note travels with
+   * the message the user is looking at, like Cursor/Lovable.
+   */
+  revertedNote: (messageId: string) => string | null
+
+  /**
    * Resolve the checkpoint that would be offered as the rollback
    * target for "Edit & Discard"/"Retry from here" on this message,
    * or `null` if no rollback is available. The dialog uses this to
@@ -230,6 +261,9 @@ export function MessageEditProvider({
   inlineEditDirty,
   setInlineEditDirty,
   canEditMessage,
+  pendingEdit,
+  setPendingEdit,
+  revertedNote,
   getPrecedingCheckpoint,
   composerProps,
   onInlineEditingChange,
@@ -267,6 +301,9 @@ export function MessageEditProvider({
       inlineEditDirty,
       setInlineEditDirty,
       canEditMessage,
+      pendingEdit,
+      setPendingEdit,
+      revertedNote,
       getPrecedingCheckpoint,
       composerProps,
       registerInlineEditCancel,
@@ -282,6 +319,9 @@ export function MessageEditProvider({
       inlineEditDirty,
       setInlineEditDirty,
       canEditMessage,
+      pendingEdit,
+      setPendingEdit,
+      revertedNote,
       getPrecedingCheckpoint,
       composerProps,
       registerInlineEditCancel,
