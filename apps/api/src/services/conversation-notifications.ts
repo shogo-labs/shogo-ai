@@ -164,6 +164,10 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
     const followers = [
       ...authors.map((r: any) => r.authorUserId),
       ...mentioned.map((m: any) => m.targetUserId),
+      // A 1:1 DM has two people, and a thread in it is between both of them even
+      // if the other person hasn't replied yet (someone threading under their own
+      // message). Group DMs keep the follower rule above.
+      ...(conversation.kind === 'dm' ? [...byUser.keys()] : []),
     ].filter(Boolean) as string[]
     for (const id of followers) if (!quiet(id)) add(id, 'thread')
   }
