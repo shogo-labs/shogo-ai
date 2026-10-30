@@ -187,6 +187,7 @@ import {
 } from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
 import { machineWorkspaceWriteGuard } from './lib/machine-workspace'
+import { machineCopyIdentity } from './lib/machine-identity'
 import { machineCopyPendingGuard } from './lib/machine-copy-pending'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
@@ -862,6 +863,10 @@ app.use('/api/*', machineWorkspaceWriteGuard())
 // `409 machine_copy_pending` and the client retries through the relay (SHO-241).
 // Registered as a post-response hook, so a request that succeeds pays nothing.
 app.use('/api/*', machineCopyPendingGuard())
+
+// The copy's rows know the machine's owner by their id on the machine, not their
+// cloud account: read it as that account for them, and answer in their cloud id.
+app.use('/api/*', machineCopyIdentity())
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.

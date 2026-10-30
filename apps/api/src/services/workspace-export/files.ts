@@ -515,7 +515,7 @@ export async function collectWorkspacePodFiles(
   try {
     const [{ getWorkspacePodUrl }, { deriveWorkspaceRuntimeToken }] = await Promise.all([
       importCloudModule<typeof import('../../lib/knative-workspace-manager')>(
-        '../../lib/knative-workspace-manager',
+        './knative-workspace-manager',
       ),
       import('../../lib/workspace-runtime-token'),
     ])

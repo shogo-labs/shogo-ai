@@ -16,6 +16,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process"
 import { mkdirSync, rmSync } from "node:fs"
+import { createServer } from "node:net"
 import { resolve } from "node:path"
 
 export interface PairedMachine {
@@ -29,12 +30,33 @@ export interface PairedMachine {
   localApiBase: string
   email: string
   password: string
-  /** The staging session as a `Cookie` header, for injecting into a context. */
+  /** The cloud session as a `Cookie` header, for injecting into a context. */
   cookies: string
   /** The machine's own local session, for its file API. */
   localCookies: string
+  /** The device key `cli/login` minted for this machine. */
+  deviceKey: string
   dir: string
+  /** Every line the desktop process has printed, for a failure message. */
+  log: string[]
+  /** Kill the desktop process and drop its data. */
   stop: () => Promise<void>
+  /** Kill the desktop process, keeping its database and files (the machine is switched off). */
+  kill: () => Promise<void>
+  /** Start the desktop again on the database and files it left behind. */
+  restart: () => Promise<void>
+}
+
+export interface PairMachineOptions {
+  instanceName: string
+  /** Where the desktop keeps its database and files. Default: `test-results/staging-machine/<random>`. */
+  dir?: string
+  /** Extra env for the desktop process (a scripted model, a runtime port range). */
+  env?: Record<string, string | undefined>
+  /** Repository root, so the helper works from any cwd (Playwright runs from the root, `bun test` from apps/api). */
+  repoRoot?: string
+  /** How long to wait for the cloud to list the machine. */
+  listTimeoutMs?: number
 }
 
 async function call(
@@ -69,14 +91,27 @@ async function call(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+/** A port nothing on this host is listening on. */
+export function freePort(): Promise<number> {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer()
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as { port: number }).port
+      server.close(() => resolvePort(port))
+    })
+  })
+}
+
 /**
  * Pair an isolated local API to `cloudBase` and wait until the cloud lists it.
  * Returns the machine plus a `stop()` that kills the process and drops its data.
  */
-export async function pairMachine(cloudBase: string, opts: { instanceName: string }): Promise<PairedMachine> {
+export async function pairMachine(cloudBase: string, opts: PairMachineOptions): Promise<PairedMachine> {
   const { instanceName } = opts
+  const repoRoot = opts.repoRoot ?? resolve(__dirname, "../..")
   const suffix = Math.random().toString(36).slice(2, 8)
-  const dir = resolve(`test-results/staging-machine/${suffix}`)
+  const dir = opts.dir ?? resolve(repoRoot, `test-results/staging-machine/${suffix}`)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
 
@@ -124,53 +159,91 @@ export async function pairMachine(cloudBase: string, opts: { instanceName: strin
   const push = spawn(
     "bunx",
     ["prisma", "db", "push", "--schema=prisma/schema.local.prisma", "--url", `file:${dir}/machine.db`, "--accept-data-loss"],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    { stdio: ["ignore", "pipe", "pipe"], cwd: repoRoot },
   )
   await new Promise((r) => push.on("exit", r))
 
-  const port = 8200 + Math.floor(Math.random() * 90)
+  // The desktop, started the way the product starts it: its own API is
+  // `SHOGO_API_URL`, the cloud is `SHOGO_CLOUD_URL`, and the device key is the
+  // tunnel's credential. Handing it the cloud's address as its API is what hid
+  // the workspace-move loop (PR #1822).
+  const port = await freePort()
   const localApiBase = `http://127.0.0.1:${port}`
-  const api: ChildProcess = spawn("bun", ["--no-env-file", "apps/api/src/entry.ts"], {
-    env: {
+  const log: string[] = []
+  let api: ChildProcess | null = null
+  const launch = () => {
+    const env: Record<string, string> = {}
+    for (const [k, v] of Object.entries({
       ...process.env,
       SHOGO_LOCAL_MODE: "true",
       SHOGO_APP_DATABASE_URL: `file:${dir}/machine.db`,
       SHOGO_DATA_DIR: `${dir}/data`,
+      WORKSPACES_DIR: `${dir}/workspaces`,
+      SHOGO_API_URL: localApiBase,
       SHOGO_CLOUD_URL: cloudBase,
       SHOGO_API_KEY: deviceKey,
       SHOGO_INSTANCE_NAME: instanceName,
       API_PORT: String(port),
+      PORT: String(port),
       NODE_ENV: "development",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  })
-  const log: string[] = []
-  api.stdout?.on("data", (b) => log.push(b.toString()))
-  api.stderr?.on("data", (b) => log.push(b.toString()))
-
+      // Never reap another Shogo's runtimes on this host.
+      SHOGO_SKIP_STALE_RUNTIME_CLEANUP: "1",
+      // A cloud API's own database and Redis must not leak into the desktop.
+      DATABASE_URL: undefined,
+      REDIS_URL: undefined,
+      ...opts.env,
+    })) {
+      if (v !== undefined) env[k] = v
+    }
+    const proc = spawn("bun", ["--no-env-file", "apps/api/src/entry.ts"], {
+      env,
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    proc.stdout?.on("data", (b) => log.push(b.toString()))
+    proc.stderr?.on("data", (b) => log.push(b.toString()))
+    api = proc
+  }
+  const kill = async () => {
+    const proc = api
+    api = null
+    if (!proc || proc.exitCode !== null) return
+    const exited = new Promise((r) => proc.once("exit", r))
+    proc.kill("SIGTERM")
+    await Promise.race([exited, sleep(5000)])
+    if (proc.exitCode === null) {
+      proc.kill("SIGKILL")
+      await Promise.race([exited, sleep(2000)])
+    }
+  }
   const stop = async () => {
-    api.kill("SIGTERM")
-    await sleep(500)
-    api.kill("SIGKILL")
+    await kill()
     rmSync(dir, { recursive: true, force: true })
   }
-
-  let healthy = false
-  for (let i = 0; i < 60; i++) {
-    try {
-      const res = await fetch(`${localApiBase}/api/health`, { signal: AbortSignal.timeout(2000) })
-      if (res.ok) {
-        healthy = true
-        break
+  const waitHealthy = async () => {
+    for (let i = 0; i < 90; i++) {
+      try {
+        const res = await fetch(`${localApiBase}/api/health`, { signal: AbortSignal.timeout(2000) })
+        if (res.ok) return
+      } catch {
+        /* not up yet */
       }
-    } catch {
-      /* not up yet */
+      await sleep(1000)
     }
-    await sleep(2000)
-  }
-  if (!healthy) {
-    await stop()
     throw new Error(`the isolated local API never came up:\n${log.join("").slice(-2000)}`)
+  }
+  const restart = async () => {
+    await kill()
+    launch()
+    await waitHealthy()
+  }
+
+  launch()
+  try {
+    await waitHealthy()
+  } catch (err) {
+    await stop()
+    throw err
   }
 
   // The machine's own session, for its file API and for renaming the workspace
@@ -181,12 +254,13 @@ export async function pairMachine(cloudBase: string, opts: { instanceName: strin
 
   // The tunnel registers, then the cloud's machine row fills in its workspaces.
   let machine: any = null
-  for (let i = 0; i < 40; i++) {
+  const listDeadline = Date.now() + (opts.listTimeoutMs ?? 120_000)
+  while (Date.now() < listDeadline) {
     const res = await call(cloudBase, state, "GET", "/api/machines")
     const rows: any[] = res.json?.machines ?? []
     machine = rows.find((m) => m.name === instanceName || m.hostname === instanceName)
     if (machine && (machine.snapshot?.workspaces ?? []).length > 0) break
-    await sleep(3000)
+    await sleep(1000)
   }
   if (!machine) {
     await stop()
@@ -218,9 +292,11 @@ export async function pairMachine(cloudBase: string, opts: { instanceName: strin
 
   let machineWorkspace = { id: teamWorkspace.id, name: teamWorkspace.name }
   for (let i = 0; i < 20; i++) {
-    const res = await call(cloudBase, state, "GET", "/api/machines")
-    const row: any = (res.json?.machines ?? []).find((m: any) => m.id === machine.id)
-    const ws = (row?.snapshot?.workspaces ?? []).find((w: any) => w.id === teamWorkspace.id)
+    // The switcher's own read: one relay of the machine's live list. The cached
+    // heartbeat snapshot on `/api/machines` only refreshes once a minute, so
+    // waiting on it measured the heartbeat, not the rename.
+    const res = await call(cloudBase, state, "GET", `/api/machines/${encodeURIComponent(machine.id)}/workspaces`)
+    const ws = (res.json?.workspaces ?? []).find((w: any) => w.id === teamWorkspace.id)
     if (ws?.name === machineWorkspaceName) {
       machineWorkspace = { id: ws.id, name: ws.name }
       break
@@ -246,8 +322,12 @@ export async function pairMachine(cloudBase: string, opts: { instanceName: strin
     password,
     cookies: state.cookie,
     localCookies: local.cookie,
+    deviceKey,
     dir,
+    log,
     stop,
+    kill,
+    restart,
   }
 }
 

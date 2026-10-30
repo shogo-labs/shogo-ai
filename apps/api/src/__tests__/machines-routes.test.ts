@@ -102,6 +102,7 @@ mock.module('../lib/push-notifications', () => ({
 
 const { machineRoutes, _testing: machineTesting } = await import('../routes/machines')
 const { _testing: instanceTesting } = await import('../routes/instances')
+const machineIdentity = await import('../lib/machine-identity')
 
 const OWNER = { id: 'u-1', userId: 'u-1', email: 'owner@x', name: 'Owner', role: 'member' }
 const OTHER_MEMBER = { id: 'u-2', userId: 'u-2', email: 'other@x', name: 'Other', role: 'member' }
@@ -398,6 +399,41 @@ describe('machine workspace relay', () => {
     expect(seen.method).toBe('GET')
     expect(seen.headers['x-tunnel-auth-user-id']).toBe('u-1')
     expect(auditRows.at(-1)).toMatchObject({ instanceId: 'i-1', path: 'lw-1:/api/projects?includeHidden=true' })
+  })
+
+  test("the owner is one person: the machine's local id goes out, the cloud id comes back", async () => {
+    machineIdentity._resetMachineIdentityForTests()
+    seedInstance()
+    const seen: any[] = []
+    attachTunnel('i-1', (req, conn) => {
+      seen.push(req)
+      conn.pendingRequests.get(req.requestId)?.resolve({
+        type: 'response',
+        requestId: req.requestId,
+        status: 200,
+        headers: { 'content-type': 'application/json', 'x-shogo-local-user-id': 'local-1' },
+        body: JSON.stringify({ conversation: { id: 'dm-1', createdBy: 'local-1', members: [{ userId: 'local-1' }] } }),
+      })
+    })
+
+    // First contact: the desktop names its owner on the reply.
+    const first = await buildApp().request('/api/machines/i-1/w/lw-1/api/workspaces/lw-1/dms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent: { projectId: null } }),
+    })
+    expect(first.headers.get('x-shogo-local-user-id')).toBeNull()
+    expect(await first.json()).toEqual({ conversation: { id: 'dm-1', createdBy: 'u-1', members: [{ userId: 'u-1' }] } })
+
+    // From then on what the client sends in its cloud id reaches the machine in its local one.
+    await buildApp().request('/api/machines/i-1/w/lw-1/api/workspaces/lw-1/dms?as=u-1', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userIds: ['u-1'] }),
+    })
+    expect(seen[1].path).toBe('/api/workspaces/lw-1/dms?as=local-1')
+    expect(JSON.parse(seen[1].body)).toEqual({ userIds: ['local-1'] })
+    expect(seen[1].headers['x-tunnel-auth-user-id']).toBe('u-1')
   })
 
   test('POST body reaches the desktop', async () => {

@@ -21,6 +21,7 @@
 import { Hono } from 'hono'
 import { stream } from 'hono/streaming'
 import { decide, denialResponse, loadAccess, principalOf } from '../lib/authz'
+import { pinWorkspaceToHomeRegion } from '../lib/chat-region-pin'
 import { prisma, InstanceKind } from '../lib/prisma'
 import {
   createMove,
@@ -33,6 +34,7 @@ import {
 } from '../services/workspace-move'
 import { buildHandover } from '../services/workspace-move/handover'
 import {
+  flushTargetProject,
   initTargetWorkspace,
   receiveFile,
   relinkTargetProject,
@@ -42,10 +44,9 @@ import {
 } from '../services/workspace-move/receive'
 import {
   markSourceMoved,
-  readSourceFileBytes,
+  readSourceFile,
   setEnabledAtSource,
   sourceFileManifest,
-  sourceProjectDir,
   streamSourceRecords,
 } from '../services/workspace-move/serve'
 import { collectMoveRows, normaliseSelection } from '../services/workspace-move/plan'
@@ -64,6 +65,27 @@ function failure(c: any, err: unknown) {
   }
   const message = String((err as any)?.message ?? err)
   return errorResponse(c, 500, 'workspace_move_failed', message.slice(0, 500))
+}
+
+/**
+ * Answer a move request in the workspace's home region.
+ *
+ * A move reads a project's files from the runtime pod that holds them and hands
+ * them to the store that pod reads (S3), so it has to be answered where the
+ * workspace lives — the same pin export uses (`routes/workspace-export.ts`).
+ * These routes take `workspaceId` from the body or query rather than the path,
+ * so the middleware form does not apply.
+ *
+ * `body` is the JSON the route already parsed to find that id: a consumed
+ * request stream cannot be re-sent to the peer, so it is forwarded explicitly.
+ */
+async function pinMoveToHomeRegion(c: any, workspaceId: string, body?: unknown) {
+  if (!workspaceId) return null
+  return pinWorkspaceToHomeRegion(
+    c,
+    workspaceId,
+    body === undefined ? {} : { proxyBody: JSON.stringify(body) },
+  )
 }
 
 export function workspaceMoveRoutes(): Hono {
@@ -116,6 +138,8 @@ export function workspaceMoveRoutes(): Hono {
   app.post('/plan', async (c) => {
     const body = await c.req.json().catch(() => ({}))
     const workspaceId = String(body.workspaceId ?? '')
+    const pinned = await pinMoveToHomeRegion(c, workspaceId, body)
+    if (pinned) return pinned
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
     try {
@@ -137,6 +161,8 @@ export function workspaceMoveRoutes(): Hono {
   app.post('/', async (c) => {
     const body = await c.req.json().catch(() => ({}))
     const workspaceId = String(body.workspaceId ?? '')
+    const pinned = await pinMoveToHomeRegion(c, workspaceId, body)
+    if (pinned) return pinned
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
     try {
@@ -170,6 +196,10 @@ export function workspaceMoveRoutes(): Hono {
   app.get('/:moveId', async (c) => {
     const move = await prisma.workspaceMove.findUnique({ where: { id: c.req.param('moveId') } })
     if (!move) return errorResponse(c, 404, 'workspace_move_not_found', 'Move not found')
+    // A resume, a switch or a status read of a stalled move can start the
+    // runner, which reads and writes files: answer it where the workspace lives.
+    const pinned = await pinMoveToHomeRegion(c, move.workspaceId)
+    if (pinned) return pinned
     const auth = await authorize(c, move.workspaceId)
     if (!auth.ok) return auth.response
     // A row that says "records" with no job in this process is a move whose
@@ -200,6 +230,10 @@ export function workspaceMoveRoutes(): Hono {
   app.post('/:moveId/resume', async (c) => {
     const move = await prisma.workspaceMove.findUnique({ where: { id: c.req.param('moveId') } })
     if (!move) return errorResponse(c, 404, 'workspace_move_not_found', 'Move not found')
+    // A resume, a switch or a status read of a stalled move can start the
+    // runner, which reads and writes files: answer it where the workspace lives.
+    const pinned = await pinMoveToHomeRegion(c, move.workspaceId)
+    if (pinned) return pinned
     const auth = await authorize(c, move.workspaceId)
     if (!auth.ok) return auth.response
     if (move.status !== 'paused' && move.status !== 'failed') {
@@ -213,6 +247,10 @@ export function workspaceMoveRoutes(): Hono {
   app.post('/:moveId/switch-over', async (c) => {
     const move = await prisma.workspaceMove.findUnique({ where: { id: c.req.param('moveId') } })
     if (!move) return errorResponse(c, 404, 'workspace_move_not_found', 'Move not found')
+    // A resume, a switch or a status read of a stalled move can start the
+    // runner, which reads and writes files: answer it where the workspace lives.
+    const pinned = await pinMoveToHomeRegion(c, move.workspaceId)
+    if (pinned) return pinned
     const auth = await authorize(c, move.workspaceId)
     if (!auth.ok) return auth.response
     try {
@@ -226,6 +264,10 @@ export function workspaceMoveRoutes(): Hono {
   app.post('/:moveId/switch-back', async (c) => {
     const move = await prisma.workspaceMove.findUnique({ where: { id: c.req.param('moveId') } })
     if (!move) return errorResponse(c, 404, 'workspace_move_not_found', 'Move not found')
+    // A resume, a switch or a status read of a stalled move can start the
+    // runner, which reads and writes files: answer it where the workspace lives.
+    const pinned = await pinMoveToHomeRegion(c, move.workspaceId)
+    if (pinned) return pinned
     const auth = await authorize(c, move.workspaceId)
     if (!auth.ok) return auth.response
     try {
@@ -294,6 +336,8 @@ export function workspaceMoveRoutes(): Hono {
   app.post('/serve/files/manifest', async (c) => {
     const body = await c.req.json().catch(() => ({}))
     const workspaceId = String(body.workspaceId ?? '')
+    const pinned = await pinMoveToHomeRegion(c, workspaceId, body)
+    if (pinned) return pinned
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
     try {
@@ -309,13 +353,14 @@ export function workspaceMoveRoutes(): Hono {
 
   app.get('/serve/files/raw', async (c) => {
     const workspaceId = c.req.query('workspaceId') ?? ''
+    const pinned = await pinMoveToHomeRegion(c, workspaceId)
+    if (pinned) return pinned
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
     const projectId = c.req.query('projectId') ?? ''
     const relPath = c.req.query('path') ?? ''
     try {
-      const { dir } = await sourceProjectDir(prisma, workspaceId, projectId)
-      const bytes = readSourceFileBytes(dir, relPath)
+      const bytes = await readSourceFile(prisma, { workspaceId, projectId, path: relPath })
       return new Response(bytes as any, {
         headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' },
       })
@@ -392,6 +437,8 @@ export function workspaceMoveRoutes(): Hono {
   app.post('/receive/files/manifest', async (c) => {
     const body = await c.req.json().catch(() => ({}))
     const workspaceId = String(body.workspaceId ?? '')
+    const pinned = await pinMoveToHomeRegion(c, workspaceId, body)
+    if (pinned) return pinned
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
     const projectId = String(body.projectId ?? '')
@@ -405,6 +452,8 @@ export function workspaceMoveRoutes(): Hono {
 
   app.put('/receive/files/raw', async (c) => {
     const workspaceId = c.req.query('workspaceId') ?? ''
+    const pinned = await pinMoveToHomeRegion(c, workspaceId)
+    if (pinned) return pinned
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
     const projectId = c.req.query('projectId') ?? ''
@@ -413,6 +462,25 @@ export function workspaceMoveRoutes(): Hono {
     try {
       await receiveFile(projectId, workspaceId, relPath, bytes)
       return c.json({ ok: true, bytes: bytes.byteLength })
+    } catch (err) {
+      return failure(c, err)
+    }
+  })
+
+  // Files landed on this instance's disk; this hands them to the store the
+  // runtime actually reads (S3). A failure is a failed move, never a `done`
+  // with files the pod cannot see.
+  app.post('/receive/files/flush', async (c) => {
+    const body = await c.req.json().catch(() => ({}))
+    const workspaceId = String(body.workspaceId ?? '')
+    const pinned = await pinMoveToHomeRegion(c, workspaceId, body)
+    if (pinned) return pinned
+    const auth = await authorize(c, workspaceId)
+    if (!auth.ok) return auth.response
+    const projectId = String(body.projectId ?? '')
+    try {
+      const result = await flushTargetProject(projectId, workspaceId)
+      return c.json({ ok: true, notices: result.notices })
     } catch (err) {
       return failure(c, err)
     }

@@ -64,7 +64,10 @@ mock.module('../../auth', () => ({
 mock.module('../../lib/prisma', () => ({
   prisma: {
     project: { findUnique: (args: any) => projectFindUniqueImpl(args) },
-    user: { findUnique: (args: any) => userFindUniqueImpl(args) },
+    user: {
+      findUnique: (args: any) => userFindUniqueImpl(args),
+      findFirst: async () => ({ id: 'local-owner' }),
+    },
     member: { findMany: (args: any) => memberFindManyImpl(args) },
     platformSetting: { findUnique: async () => null },
   },
@@ -317,6 +320,15 @@ describe('authMiddleware — runtime-token path', () => {
 })
 
 describe('authMiddleware — tunnel path', () => {
+  const previous = process.env.SHOGO_LOCAL_MODE
+  beforeEach(() => {
+    delete process.env.SHOGO_LOCAL_MODE
+  })
+  afterAll(() => {
+    if (previous === undefined) delete process.env.SHOGO_LOCAL_MODE
+    else process.env.SHOGO_LOCAL_MODE = previous
+  })
+
   it('sets auth from x-tunnel-auth-user-id with optional headers', async () => {
     const c = makeContext({
       headers: {
@@ -342,6 +354,28 @@ describe('authMiddleware — tunnel path', () => {
     expect(c.get('auth').email).toBeUndefined()
     expect(c.get('auth').name).toBeUndefined()
     expect(c.get('auth').tunnelAuthenticated).toBe(true)
+  })
+
+  describe('on the desktop', () => {
+    beforeEach(() => {
+      process.env.SHOGO_LOCAL_MODE = 'true'
+    })
+
+    it("acts as the machine's local owner for a cloud account it has no user for, and says so", async () => {
+      const c = makeContext({ headers: { 'x-tunnel-auth-user-id': 'cloud-owner-a' } })
+      c.res = new Response('{}', { headers: { 'content-type': 'application/json' } })
+      await authMiddleware(c, next)
+      expect(c.get('auth').userId).toBe('local-owner')
+      expect(c.get('auth').via).toBe('tunnel')
+      expect(c.res.headers.get('x-shogo-local-user-id')).toBe('local-owner')
+    })
+
+    it('keeps an id the desktop has a user for', async () => {
+      userFindUniqueImpl = async (args: any) => (args.where.id === 'local-user-b' ? { id: 'local-user-b' } : null)
+      const c = makeContext({ headers: { 'x-tunnel-auth-user-id': 'local-user-b' } })
+      await authMiddleware(c, next)
+      expect(c.get('auth').userId).toBe('local-user-b')
+    })
   })
 })
 

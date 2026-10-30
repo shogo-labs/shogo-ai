@@ -8,8 +8,7 @@ import { observer } from 'mobx-react-lite'
 import { ChevronRight, Clock3, Folder, ListTodo, MessageSquare, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
-import { useIsRemoteSource } from '@shogo/shared-app/domain'
-import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceDataScope, useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import type { AgentTask } from '../../lib/api'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
@@ -166,9 +165,9 @@ function useScreenFocused(): boolean {
 
 const TeamActivityScreen = observer(function TeamActivityScreen() {
   const router = useRouter()
-  const workspace = useActiveWorkspace()
+  const workspace = useWorkspaceInView()
   const projects = useProjectCollection()
-  const isRemoteSource = useIsRemoteSource()
+  const { everyWorkspace } = useWorkspaceDataScope()
   const focused = useScreenFocused()
   const {
     tasks: agentTasks,
@@ -187,7 +186,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
     const groups = new Map<string, ProjectActivityGroup>()
 
     for (const project of projectList) {
-      if (!isRemoteSource && workspace?.id && project.workspaceId !== workspace.id) continue
+      if (!everyWorkspace && workspace?.id && project.workspaceId !== workspace.id) continue
       groups.set(project.id, {
         id: project.id,
         name: project.name || 'Untitled project',
@@ -229,7 +228,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
       groups.set(task.projectId, group)
     }
     return [...groups.values()].sort((a, b) => b.latestActivity - a.latestActivity)
-  }, [agentTasks, isRemoteSource, projectList, workspace?.id])
+  }, [agentTasks, everyWorkspace, projectList, workspace?.id])
   const failedProjectsCount = useMemo(
     () => projectActivity.filter((project) => projectOutcome(project).label === 'Failed').length,
     [projectActivity],

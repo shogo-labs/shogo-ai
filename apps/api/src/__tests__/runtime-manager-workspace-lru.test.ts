@@ -93,6 +93,17 @@ function newManager(): PrivateRM {
         inflightCalls: opts?.inflightCalls,
       }),
   }
+  // The warm-reuse branch refreshes the merged root on every wake, which for a
+  // non-remote project shells out to `bun install` for its members. That is a
+  // filesystem/install side effect no assertion here reads, and on a cold runner
+  // it outlives bun's 5s per-test timeout — stub it so a test measures the LRU,
+  // not an install.
+  ;(rm as any).buildWorkspaceMergedRoot = mock(async (_workspacesDir: string, rootName: string) => ({
+    dir: join(_workspacesDir, '.workspace-roots', rootName),
+    linkedFolders: [],
+    readonlyFolders: [],
+    mounts: [],
+  }))
   return rm
 }
 

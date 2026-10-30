@@ -37,6 +37,14 @@ import { classifyAction, logRemoteAction } from './remote-audit'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { applyBatch, deleteMachineCopy, ownershipFailure } from '../lib/machine-sync/ingest'
 import { invalidateMachineWorkspaceIds, machineCopyOwnerIds } from '../lib/machine-workspace'
+import {
+  LOCAL_USER_HEADER,
+  machineIdentityOf,
+  machineLocalUserId,
+  rememberMachineLocalUser,
+  translateJsonBody,
+} from '../lib/machine-identity'
+import { translateEventStream, translateJsonText, translatePathAndSearch } from '../lib/identity-translate'
 import { PRIMARY_REGION, RAW_REGION_ID } from '../lib/region'
 import { resolveApiKey } from './api-keys'
 
@@ -525,8 +533,19 @@ export function machineRoutes() {
     const chatSessionId = c.req.header('x-chat-session-id')
     if (chatSessionId) forwardHeaders['x-chat-session-id'] = chatSessionId
 
+    // The machine knows you by its own user id: what you send names that one,
+    // and what comes back names your cloud account (`lib/machine-identity`).
+    const knownIdentity = machineIdentityOf(await machineLocalUserId(instance.id), auth.userId)
+    const toMachine = knownIdentity?.toMachine ?? new Map<string, string>()
+    const queryAt = path.indexOf('?')
+    const translatedUrl = queryAt < 0
+      ? translatePathAndSearch(path, '', toMachine)
+      : translatePathAndSearch(path.slice(0, queryAt), path.slice(queryAt), toMachine)
+    const relayPath = `${translatedUrl.path}${translatedUrl.search}`
+
     const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH'
-    const body = hasBody ? await c.req.text() : undefined
+    const rawBody = hasBody ? await c.req.text() : undefined
+    const body = contentType?.includes('application/json') ? translateJsonBody(rawBody, toMachine) : rawBody
     const auditPath = `${localWorkspaceId}:${path}`
 
     const streaming = isStreamingRequest(method, normalizeTransparentProxyPath(path.split('?')[0] || path))
@@ -545,7 +564,7 @@ export function machineRoutes() {
         start(controller) {
           const { cancel } = sendTunnelStreamRequest(
             target.id,
-            { type: 'request', requestId, method, path, headers: forwardHeaders, body },
+            { type: 'request', requestId, method, path: relayPath, headers: forwardHeaders, body },
             (chunk) => {
               if (chunk.type === 'stream-chunk' && chunk.data) {
                 controller.enqueue(new TextEncoder().encode(chunk.data))
@@ -568,7 +587,7 @@ export function machineRoutes() {
         },
       })
 
-      return new Response(stream, {
+      return new Response(knownIdentity ? translateEventStream(stream, knownIdentity.toCloud) : stream, {
         headers: {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
@@ -582,7 +601,7 @@ export function machineRoutes() {
         type: 'request',
         requestId: generateRequestId(),
         method,
-        path,
+        path: relayPath,
         headers: forwardHeaders,
         body,
       })
@@ -617,7 +636,17 @@ export function machineRoutes() {
         return c.json({ error: { code: 'runtime_starting', message: 'Starting the machine runtime', retryAfterSeconds: 3 } }, 503)
       }
 
-      return new Response(resp.body || '', {
+      const announcedLocalUser = responseHeaders[LOCAL_USER_HEADER]
+      delete responseHeaders[LOCAL_USER_HEADER]
+      rememberMachineLocalUser(instance.id, announcedLocalUser)
+      const identity = machineIdentityOf(announcedLocalUser, auth.userId) ?? knownIdentity
+      let responseBody = resp.body || ''
+      if (identity && responseHeaders['content-type'].includes('application/json')) {
+        responseBody = translateJsonText(responseBody, identity.toCloud)
+        delete responseHeaders['content-length']
+      }
+
+      return new Response(responseBody, {
         status: resp.status,
         headers: responseHeaders,
       })
