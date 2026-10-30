@@ -144,13 +144,13 @@ function captureLogs(): { lines: string[]; restore: () => void } {
 }
 
 // ---------------------------------------------------------------------------
-describe('SHO-259 AC1: cap 235k, in-loop budget 211.5k, per-model window untouched', () => {
-  test('a real 1M-window gateway resolves to 235k / 211.5k / 94k', async () => {
+describe('SHO-259 AC1: cap 235k, in-loop budget 235k, per-model window untouched', () => {
+  test('a real 1M-window gateway resolves to 235k / 235k / 94k', async () => {
     delete process.env.AGENT_AUTOCOMPACT_TOKENS
     delete process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS
     expect(DEFAULT_AUTOCOMPACT_TOKENS).toBe(235_000)
     expect(resolveAutoCompactTokens({ contextWindowTokens: 1_000_000 })).toBe(235_000)
-    expect(resolveInLoopContextBudgetTokens(235_000)).toBe(211_500)
+    expect(resolveInLoopContextBudgetTokens(235_000)).toBe(235_000)
     // A 200k-window model keeps its own (smaller) threshold: window − reserve.
     expect(resolveAutoCompactTokens({ contextWindowTokens: 200_000 })).toBe(200_000 - RESERVE)
 

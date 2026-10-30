@@ -120,12 +120,12 @@ beforeAll(() => {
 afterAll(() => { rmSync(ROOT, { recursive: true, force: true }) })
 
 describe('SHO-259 AC1: the cap moves to 235k', () => {
-  test('a 1M window summarizes at 235k and checkpoints at 211.5k', () => {
+  test('a 1M window summarizes at 235k and checkpoints at 235k', () => {
     delete process.env.AGENT_AUTOCOMPACT_TOKENS
     delete process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS
     expect(DEFAULT_AUTOCOMPACT_TOKENS).toBe(235_000)
     expect(resolveAutoCompactTokens({ contextWindowTokens: 1_000_000 })).toBe(235_000)
-    expect(resolveInLoopContextBudgetTokens(235_000)).toBe(211_500)
+    expect(resolveInLoopContextBudgetTokens(235_000)).toBe(235_000)
     // A 200k-window model still summarizes at its own window minus the reserve.
     expect(resolveAutoCompactTokens({ contextWindowTokens: 200_000 })).toBe(200_000 - RESERVE)
   })
