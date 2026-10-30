@@ -63,7 +63,6 @@ const voipPush = loadVoipPush()
 
 /** iOS enables CallKit only after StoreKit identifies a non-China storefront. */
 let callKitAllowedForStorefront = Platform.OS !== 'ios'
-export let nativeCallsSupported = callKeep !== null && callKitAllowedForStorefront
 let callKitSetup = false
 let voipStarted = false
 
@@ -286,7 +285,7 @@ function setupCallKit(): void {
 let voipToken: string | null = null
 let expoPushToken: string | null = null
 let announce = true
-let voipTokenState: 'unknown' | 'registered' | 'invalidated' = Platform.OS === 'ios' ? 'invalidated' : 'unknown'
+let voipTokenState: 'unknown' | 'registered' | 'invalidated' = 'unknown'
 let voipTokenSync: Promise<void> = Promise.resolve()
 let voipTokenSyncRetryTimer: ReturnType<typeof setTimeout> | null = null
 let voipTokenSyncRetryCount = 0
@@ -379,8 +378,16 @@ let storefrontRefreshId = 0
 
 function applyStorefrontPolicy(allowed: boolean): void {
   if (Platform.OS !== 'ios') return
+  if (callKitAllowedForStorefront && !allowed) {
+    // Close any system call screen before disabling CallKit. An answered huddle
+    // can continue in the app, but its old system screen must not remain up.
+    for (const call of [...callsByHuddle.values()]) {
+      forget(call)
+      reportEnd(call, 'remote_ended')
+    }
+    callKeep?.endAllCalls()
+  }
   callKitAllowedForStorefront = allowed
-  nativeCallsSupported = callKeep !== null && allowed
 
   if (allowed) {
     setupCallKit()
