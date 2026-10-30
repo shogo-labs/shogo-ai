@@ -63,6 +63,27 @@ async function goHome(page: Page, attempts = 8): Promise<Locator> {
   throw new Error(`Account trigger never stayed visible after ${attempts} navigation attempts`)
 }
 
+/**
+ * The persisted active workspace, read out of the page.
+ *
+ * Creating or switching a workspace navigates the shell, and `page.evaluate`
+ * throws "Execution context was destroyed" when that navigation lands mid-call.
+ * `expect.poll` reports a thrown error instead of retrying it, so a healthy
+ * switcher fails the spec three times in a row (SHO-249). Swallow exactly that
+ * class and return `undefined`: the poll reads again, on the new document.
+ */
+async function activeWorkspaceId(page: Page): Promise<string | null | undefined> {
+  try {
+    return await page.evaluate(() => localStorage.getItem("shogo:active-workspace-id"))
+  } catch (error) {
+    const message = String(error)
+    if (/Execution context was destroyed|Cannot find context with specified id|navigat/i.test(message)) {
+      return undefined
+    }
+    throw error
+  }
+}
+
 async function openAccountPopover(page: Page, trigger: Locator) {
   const popoverOpen = () => page.getByLabel("Sign in to Shogo Cloud").isVisible().catch(() => false)
 
@@ -192,7 +213,7 @@ test.describe("More than one workspace (local mode)", () => {
     // new workspace's, and it starts empty (the seeded workspace's projects
     // must not follow the switch).
     await expect
-      .poll(() => page.evaluate(() => localStorage.getItem("shogo:active-workspace-id")), {
+      .poll(() => activeWorkspaceId(page), {
         timeout: 30_000,
       })
       .toBe(rows[0].id)
@@ -256,7 +277,7 @@ test.describe("More than one workspace (local mode)", () => {
     await openAccountPopover(page, trigger)
     await page.getByLabel(workspace.name, { exact: true }).click()
     await expect
-      .poll(() => page.evaluate(() => localStorage.getItem("shogo:active-workspace-id")), {
+      .poll(() => activeWorkspaceId(page), {
         timeout: 30_000,
       })
       .toBe(workspace.id)

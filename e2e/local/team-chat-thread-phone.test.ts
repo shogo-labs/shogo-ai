@@ -94,8 +94,15 @@ test.describe("Team chat thread on phone: back to conversation", () => {
   test("a running agent's dock floats above the phone composer", async ({ page }) => {
     test.setTimeout(180_000)
     const reply = `Read the build logs: three flakes, all from the same checkout timeout (${seed.suffix}).`
-    // 2500ms per streamed chunk keeps the run open for the length of the test.
-    writeScript(seed, 2500, { [seed.idleAgent]: [{ reply }] })
+    // The scripted runner emits two chunks with `delayMs` before each, so a run
+    // lasts about 2 × delayMs. At 2500 ms that is a five-second window: on a
+    // loaded phone shard the pane fetched the reply only once it was already
+    // `done`, `agentStatus` never read `running`, and the dock row never
+    // rendered — the spec failed 48 s in with the finished reply on screen
+    // (SHO-249). 8 s gives one run ~16 s, three times the window that failed,
+    // while still leaving the final "dock disappears" assertion room for the
+    // second turn the follow-up message queues (see below).
+    writeScript(seed, 8_000, { [seed.idleAgent]: [{ reply }] })
     try {
       await page.goto(`/c/${seed.channelId}?thread=${rootId}`)
       await expect(page.getByTestId("floating-thread-header")).toBeVisible({ timeout: 60_000 })
@@ -103,13 +110,38 @@ test.describe("Team chat thread on phone: back to conversation", () => {
       const mention = `<@a:p:${seed.idleAgentProjectId}> read the build logs`
       await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, { text: mention, threadRootId: rootId })
 
+      // Wait for the run itself before looking for its dock row, so a red here
+      // says the dock is broken rather than that the scripted run was over
+      // before the pane ever saw it.
+      await expect
+        .poll(
+          async () => {
+            const thread = await api(seeder, "GET", `/api/conversations/${seed.channelId}/messages?threadRootId=${rootId}`)
+            return (thread.json?.messages ?? []).find(
+              (m: any) => m.authorAgent?.name === seed.idleAgent && m.agentStatus === "running",
+            )?.id ?? null
+          },
+          { timeout: 60_000, intervals: [500, 1000, 2000] },
+        )
+        .not.toBeNull()
+
       const dockRow = page.getByLabel(`Jump to ${seed.idleAgent}'s reply`)
       await expect(dockRow).toBeVisible({ timeout: 30_000 })
 
       // Posted under the agent's marker, which is what pushes it up the thread.
+      // Posted mid-run, the API also queues it for the agent, so a second turn
+      // starts when this one ends — hence the longer budget on the dock's exit.
       await api(seeder, "POST", `/api/conversations/${seed.channelId}/messages`, { text: `any update${seed.suffix}?`, threadRootId: rootId })
       await expect(page.getByText(`any update${seed.suffix}?`)).toBeVisible({ timeout: 30_000 })
       await expect(dockRow).toBeVisible()
+
+      // The dock is a running-run view: if the script ended first, the layout
+      // checks below would be asserting on nothing.
+      const stillRunning = await api(seeder, "GET", `/api/conversations/${seed.channelId}/messages?threadRootId=${rootId}`)
+      expect(
+        (stillRunning.json?.messages ?? []).find((m: any) => m.authorAgent?.name === seed.idleAgent)?.agentStatus,
+        "the scripted run ended before the dock layout was measured",
+      ).toBe("running")
 
       // It floats inside the composer footer, above the input box.
       const footer = page.getByTestId("floating-composer")
@@ -124,7 +156,10 @@ test.describe("Team chat thread on phone: back to conversation", () => {
       await expect(page.getByText(`${seed.idleAgent} is typing…`)).toHaveCount(0)
 
       await expect(page.getByText(reply, { exact: false })).toBeVisible({ timeout: 60_000 })
-      await expect(page.getByTestId("running-agents-dock")).toHaveCount(0)
+      // Nothing is running → nothing is docked. The queued second turn also
+      // streams the same scripted reply, so wait it out rather than assuming
+      // the first run was the last one.
+      await expect(page.getByTestId("running-agents-dock")).toHaveCount(0, { timeout: 60_000 })
     } finally {
       writeScript(seed, 100, {})
     }
