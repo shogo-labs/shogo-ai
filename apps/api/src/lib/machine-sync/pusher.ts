@@ -14,10 +14,8 @@
  *     a crash replays instead of losing writes (the upserts are idempotent).
  */
 
-import { readFileSync } from 'node:fs'
 import type { PrismaClient } from '../../generated/prisma-pg/client'
 import { applyRewrites, delegateName, MIRROR_MODELS } from './models'
-import { parseSchema, writeOrder } from './schema-model'
 import { installSyncTriggers } from './triggers'
 
 /** Rows per page when a whole model is sent for the first time. */
@@ -101,31 +99,22 @@ function toJson(value: unknown): string {
 }
 
 /**
- * Write order for the mirror set, from the schema when it is readable and from
- * the declaration order otherwise. The desktop's copy of the repo has the
- * schema; a packaged app may not, and a wrong order only costs a retry.
+ * Write order for the mirror set: the declaration order of `MIRROR_MODELS`,
+ * which is kept parents-first by a test. Not read from `schema.prisma`: a
+ * packaged desktop does not ship it, so that path silently fell back to an order
+ * that sent `StarredProject` before `Project` (PERF-14).
  */
-let cachedOrder: Map<string, number> | null = null
+const MODEL_ORDER = new Map<string, number>(MIRROR_MODELS.map((model, index) => [model, index]))
 function modelOrder(): Map<string, number> {
-  if (cachedOrder) return cachedOrder
-  const fallback = new Map<string, number>(MIRROR_MODELS.map((model, index) => [model, index]))
-  try {
-    const url = new URL('../../../../../prisma/schema.prisma', import.meta.url)
-    const source = readFileSync(url, 'utf8')
-    const parsed = parseSchema(source)
-    const known = new Set(parsed.models.map((model) => model.name))
-    const fromSchema = writeOrder(parsed)
-    const order = new Map<string, number>()
-    MIRROR_MODELS.forEach((model, index) => {
-      order.set(model, known.has(model) ? (fromSchema.get(model) ?? index) : index)
-    })
-    cachedOrder = order
-    return order
-  } catch {
-    cachedOrder = fallback
-    return fallback
-  }
+  return MODEL_ORDER
 }
+
+/**
+ * Snapshots that failed in a row before the pusher backs off for
+ * `STALLED_RETRY_MS`. A snapshot that fails on the same row every time would
+ * otherwise resend everything before that row every 30 s, forever (PERF-12).
+ */
+const MAX_SNAPSHOT_ATTEMPTS = 3
 
 export class MachineSyncPusher {
   private readonly opts: MachineSyncPusherOptions
@@ -144,6 +133,8 @@ export class MachineSyncPusher {
   private lastError: string | null = null
   private failureCount = 0
   private snapshotNeeded = false
+  /** Snapshots that failed since the last one that completed. */
+  private snapshotFailures = 0
   private instanceId: string | null = null
   private triggersInstalled = false
   private pushes = 0
@@ -227,8 +218,11 @@ export class MachineSyncPusher {
     if (authWait > 0) return authWait
     const stallWait = this.stalledUntil - Date.now()
     if (stallWait > 0) return stallWait
-    if (this.failureCount > 0) {
-      return Math.min(POLL_INTERVAL_MS * 2 ** Math.min(this.failureCount, 5), 30_000)
+    // Each accepted snapshot page resets `failureCount`, so a snapshot that dies
+    // on a later page would otherwise restart within a second (PERF-14).
+    const failures = Math.max(this.failureCount, this.snapshotFailures)
+    if (failures > 0) {
+      return Math.min(POLL_INTERVAL_MS * 2 ** Math.min(failures, 5), 30_000)
     }
     return POLL_INTERVAL_MS
   }
@@ -263,7 +257,19 @@ export class MachineSyncPusher {
       if (state.fresh) this.snapshotNeeded = true
 
       if (this.snapshotNeeded) {
-        await this.runSnapshot(instanceId, apiKey)
+        const completed = await this.runSnapshot(instanceId, apiKey)
+        if (completed) {
+          this.snapshotFailures = 0
+        } else if (!this.stopped && Date.now() >= this.authBlockedUntil && Date.now() >= this.stalledUntil) {
+          this.snapshotFailures++
+          if (this.snapshotFailures >= MAX_SNAPSHOT_ATTEMPTS) {
+            this.snapshotFailures = 0
+            this.stalledUntil = Date.now() + STALLED_RETRY_MS
+            this.log(
+              `[MachineSync] Snapshot failed ${MAX_SNAPSHOT_ATTEMPTS} times in a row (${this.lastError ?? 'unknown error'}); retrying in ${STALLED_RETRY_MS / 60_000} min`,
+            )
+          }
+        }
         return
       }
 
@@ -522,7 +528,7 @@ export class MachineSyncPusher {
    * request of the snapshot (which may carry `complete: true`), so a desktop
    * that goes offline halfway through leaves a readable, if stale, copy.
    */
-  private async runSnapshot(instanceId: string, apiKey: string): Promise<void> {
+  private async runSnapshot(instanceId: string, apiKey: string): Promise<boolean> {
     const prisma = this.opts.prisma as any
     const epoch = crypto.randomUUID()
     // The change-log position this snapshot speaks for, taken *before* the
@@ -550,7 +556,7 @@ export class MachineSyncPusher {
           cursor: 0,
           models: [{ model, rows: page }],
         })
-        if (!ok) return
+        if (!ok) return false
         if (page.length < SNAPSHOT_PAGE_ROWS) break
       }
     }
@@ -565,7 +571,7 @@ export class MachineSyncPusher {
       models: [],
       snapshot: { complete: true, models },
     })
-    if (!done) return
+    if (!done) return false
 
     this.snapshotNeeded = false
     this.epoch = epoch
@@ -574,6 +580,7 @@ export class MachineSyncPusher {
     // delta goes out under a stale epoch and is answered with a full snapshot.
     await this.advance(instanceId, claimed, epoch)
     this.log(`[MachineSync] Snapshot complete under epoch ${epoch.slice(0, 8)}`)
+    return true
   }
 }
 

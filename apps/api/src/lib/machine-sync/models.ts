@@ -19,19 +19,26 @@
  *     model list, so the desktop and the cloud cannot drift apart in secret.
  */
 
-/** Models copied from the desktop to the cloud, and read by the cloud. */
+/**
+ * Models copied from the desktop to the cloud, and read by the cloud.
+ *
+ * Declared parents first: this list *is* the order a snapshot is sent in. A
+ * packaged desktop has no `schema.prisma` to work an order out from, and a child
+ * sent before its parent fails the cloud's foreign key and restarts the whole
+ * snapshot (PERF-14). `machine-sync-models.test.ts` fails when it is out of order.
+ */
 export const MIRROR_MODELS: readonly string[] = [
   // ── Identity and tenancy ──
   // The desktop's local `User` is copied so messages have an author; its email
   // is rewritten (`REWRITES`) so it can never sign in.
   'User',
   'Workspace',
-  'Member',
-  'StarredProject',
   'Folder',
 
   // ── Projects and their agent configuration ──
   'Project',
+  'Member',
+  'StarredProject',
   'ProjectFolder',
   'ProjectAttachment',
   'ProjectCheckpoint',
@@ -47,13 +54,13 @@ export const MIRROR_MODELS: readonly string[] = [
   'MessageFeedback',
   'ToolCallLog',
   'BackgroundTask',
-  'AgentTask',
   'Plan',
 
   // ── Goals and schedules (the desktop runs them; the cloud only shows them) ──
   'Goal',
   'GoalEvent',
   'AgentSchedule',
+  'AgentTask',
 
   // ── Team chat ──
   'Conversation',
