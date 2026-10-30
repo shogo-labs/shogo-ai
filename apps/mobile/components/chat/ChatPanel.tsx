@@ -73,6 +73,7 @@ import {
   stampSendTime,
   type OptimisticEchoInput as OptimisticUserInput,
 } from "./optimistic-echo"
+import { usePersistedMessageIds } from "./use-persisted-message-ids"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
 import { useMachineWorkspace } from "../instance/MachineWorkspaceBanner"
 import AsyncStorage from "@react-native-async-storage/async-storage"
@@ -3485,6 +3486,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
+  // SHO-263: adopt the persisted `ChatMessage.id` for every bubble sent in
+  // this page session (see `use-persisted-message-ids`). Without this the
+  // transcript keeps useChat's nanoids, which no server route can resolve —
+  // `truncate-from` 404s and the edit silently rolls back.
+  const handleIdAdopted = useCallback((from: string, to: string) => {
+    // The swap can land while an editor is already open on that bubble (the
+    // POST resolves a beat after the send). Move the edit state onto the row
+    // id instead of letting the editor vanish under the user.
+    setEditingMessageId((prev) => (prev === from ? to : prev))
+    setPendingEdit((prev) =>
+      prev && prev.messageId === from ? { ...prev, messageId: to } : prev,
+    )
+    setRevertedNotes((prev) => {
+      const note = prev[from]
+      if (!note) return prev
+      const next = { ...prev }
+      delete next[from]
+      next[to] = note
+      return next
+    })
+  }, [])
+
+  const { adopt: adoptPersistedUserId } = usePersistedMessageIds(
+    messages,
+    setMessages,
+    handleIdAdopted,
+  )
+
+
   if (isActive && messages.length > 0) {
     cachedMessagesRef.current = messages
     if (currentSessionId) {
@@ -6029,6 +6059,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
           content: trimmedContent,
           parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
         })
+        .then((row) => {
+          // The row is the thing every server route addresses; hand its id to
+          // the bubble so edit/retry/feedback don't have to guess (SHO-263).
+          const rowId = (row as { id?: string } | undefined)?.id
+          if (rowId) adoptPersistedUserId(rowId, trimmedContent)
+        })
         .catch((err) =>
           console.warn("[ChatPanel] Failed to persist user message:", err),
         )
@@ -6184,6 +6220,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       maybeAutoNameSession,
       releaseStopSnapshot,
       showOptimisticEcho,
+      adoptPersistedUserId,
     ],
   )
 
