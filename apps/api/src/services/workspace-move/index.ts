@@ -15,6 +15,7 @@
  */
 
 import { prisma } from '../../lib/prisma'
+import { getShogoCloudUrl } from '../../lib/cloud-urls'
 import { buildHandover, readHandover, switchBack, switchOver } from './handover'
 import { HttpMoveSource, HttpMoveTarget, LocalMoveSource, LocalMoveTarget, type MoveSource, type MoveTarget } from './link'
 import { buildMovePlan, collectMoveRows, normaliseSelection } from './plan'
@@ -41,16 +42,23 @@ export interface MoveEndpoints {
  * The remote source for planning, when the workspace lives on the other side.
  * A plan runs before the move row exists, so there is no id yet; the source
  * only needs the URL and the key.
+ *
+ * The URL is the **cloud**, never `SHOGO_API_URL`. A signed-in desktop sets
+ * `SHOGO_API_URL` to its own local API (the app addresses itself), so reading
+ * it here pointed every "remote" call back at the same process: a
+ * cloud→desktop move planned from the desktop's own — empty — database, moved
+ * nothing, and reported `done`. `getShogoCloudUrl()` is the one place that
+ * knows which cloud this instance talks to.
  */
 function planningRemote(): HttpMoveSource | undefined {
-  const apiUrl = process.env.SHOGO_API_URL
+  const apiUrl = getShogoCloudUrl()
   const apiKey = process.env.SHOGO_API_KEY
   if (!apiUrl || !apiKey) return undefined
   return new HttpMoveSource({ apiUrl, apiKey, moveId: '' })
 }
 
 function remoteOptions(moveId: string) {
-  const apiUrl = process.env.SHOGO_API_URL
+  const apiUrl = getShogoCloudUrl()
   const apiKey = process.env.SHOGO_API_KEY
   if (!apiUrl || !apiKey) {
     throw new WorkspaceMoveError(

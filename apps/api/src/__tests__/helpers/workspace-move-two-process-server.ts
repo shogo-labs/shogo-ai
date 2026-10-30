@@ -108,6 +108,12 @@ async function seedWorkspace(c: any) {
   await prisma.member.create({ data: { userId, workspaceId: w, role: 'owner' } as any })
   await prisma.member.create({ data: { userId: 'u-admin-246', workspaceId: w, role: 'admin' } as any })
   await prisma.member.create({ data: { userId: 'u-viewer-246', workspaceId: w, role: 'member' } as any })
+  // Someone who is in a channel but NOT in the workspace: an account that has
+  // since left, a guest invited to one conversation. Every real workspace has
+  // them, and their rows point at a `User` no `Member` row mentions.
+  await prisma.user.create({
+    data: { id: 'u-guest-246', email: 'guest246@example.com', name: 'Guest' } as any,
+  })
 
   const expected: { projectDir: string; path: string; sha: string; bytes: number }[] = []
 
@@ -161,6 +167,21 @@ async function seedWorkspace(c: any) {
       })
     }
   }
+  // The guest is in one channel only and wrote in it: a `ConversationMember`
+  // and a message that both point at a user no `Member` row mentions.
+  await prisma.conversationMember.create({
+    data: { id: 'cm-246-guest', conversationId: conversations[0], userId: 'u-guest-246', role: 'member' } as any,
+  })
+  await prisma.conversationMessage.create({
+    data: {
+      id: 'msg-246-guest',
+      conversationId: conversations[0],
+      workspaceId: w,
+      seq: 99,
+      authorUserId: 'u-guest-246',
+      text: 'a guest said this',
+    } as any,
+  })
   for (let b = 0; b < 2; b += 1) {
     const boardId = `b-246-${b}`
     const colId = `col-246-${b}`
@@ -217,14 +238,18 @@ app.get('/__qa/state', async (c) => {
     boards: await prisma.board.count(),
     conversations: await prisma.conversation.count(),
     members: await prisma.member.count(),
+    conversationMembers: await prisma.conversationMember.count(),
+    users: await prisma.user.count(),
     projects: await prisma.project.count(),
     schedules: await prisma.agentSchedule.count(),
     triggers: await prisma.eventSubscription.count(),
   }
+  const userIds = (await prisma.user.findMany({ select: { id: true } as any })).map((u: any) => u.id)
   const workspaces = await prisma.workspace.findMany({ select: { id: true, movedToWorkspaceId: true } as any })
   const moves = await prisma.workspaceMove.findMany({ orderBy: { createdAt: 'desc' } as any })
   return c.json({
     workspaces,
+    userIds,
     projects,
     counts,
     moves: moves.map((m: any) => ({ id: m.id, status: m.status, error: m.error, direction: m.direction, targetWorkspaceId: m.targetWorkspaceId })),
@@ -234,5 +259,7 @@ app.get('/__qa/state', async (c) => {
   })
 })
 
-const server = Bun.serve({ port: 0, fetch: (req) => app.fetch(req) })
+// A real desktop knows its own port before the API child starts (it is
+// `SHOGO_API_URL` in the child's env), so the port has to be fixed up front.
+const server = Bun.serve({ port: Number(process.env.QA_PORT ?? 0), fetch: (req) => app.fetch(req) })
 console.log(`QA_SERVER_READY ${server.port}`)
