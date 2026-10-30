@@ -357,7 +357,18 @@ test.describe("project chat keeps its history on the device", () => {
 
     // A truncate-from or an edit that re-sent the tail: the scope shrank and the
     // delta cannot express the deletion, so the count is the only signal.
-    state.rows = state.rows.slice(0, 1)
+    // The one row the server still has is the prompt itself, so the assertion
+    // below can only pass if the re-downloaded page is what reaches the screen —
+    // the prompt is never served by the cold page, only by this one.
+    const kept = state.rows[0]
+    state.rows = [
+      {
+        ...kept,
+        role: "user",
+        content: BOOTSTRAP_PROMPT,
+        parts: JSON.stringify([{ type: "text", text: BOOTSTRAP_PROMPT }]),
+      },
+    ]
     state.total = 1
     await page.reload()
     await expect
