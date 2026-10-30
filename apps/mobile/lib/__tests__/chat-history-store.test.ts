@@ -13,6 +13,7 @@ import {
   conversationHistoryKey,
   chatSessionHistoryKey,
   deltaSince,
+  newestUpdatedAt,
   peekChatHistory,
   readChatHistory,
   removeChatHistory,
@@ -133,5 +134,24 @@ describe('chat history store', () => {
     expect(deltaSince(null)).toBeNull()
     expect(deltaSince('nonsense')).toBeNull()
     expect(deltaSince('2026-10-30T10:00:10.000Z')).toBe('2026-10-30T10:00:05.000Z')
+  })
+
+  // QA round 1 (SHO-260): a page that arrives without a cursor still has to
+  // leave the device able to ask for a delta, or every reopen re-downloads.
+  test('a page with no server cursor seeds one from its own rows', () => {
+    expect(
+      newestUpdatedAt([
+        { updatedAt: '2026-10-30T10:00:00.000Z', createdAt: '2026-10-30T09:00:00.000Z' },
+        { updatedAt: '2026-10-30T10:04:00.000Z', createdAt: '2026-10-30T09:05:00.000Z' },
+      ]),
+    ).toBe('2026-10-30T10:04:00.000Z')
+  })
+
+  test('rows without updatedAt fall back to createdAt, and an empty page seeds nothing', () => {
+    expect(newestUpdatedAt([{ createdAt: '2026-10-30T11:00:00.000Z' }])).toBe(
+      '2026-10-30T11:00:00.000Z',
+    )
+    expect(newestUpdatedAt([])).toBeNull()
+    expect(newestUpdatedAt(undefined)).toBeNull()
   })
 })

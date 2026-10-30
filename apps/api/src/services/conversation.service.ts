@@ -258,6 +258,9 @@ export function serializeMessage(row: any) {
     editedAt: row.editedAt ?? null,
     deletedAt: row.deletedAt ?? null,
     createdAt: row.createdAt,
+    // Sent so a device that keeps this page can seed its own change cursor
+    // instead of asking for the newest page again on the next open (SHO-260).
+    updatedAt: row.updatedAt ?? row.createdAt,
   }
 }
 
@@ -1621,6 +1624,21 @@ function newestUpdatedAt(
   return new Date(newest).toISOString()
 }
 
+/**
+ * The cursor a *plain* page hands back (SHO-260). A device that just downloaded
+ * a page has no cursor of its own, and without one it can never ask for a
+ * delta — every reopen would run `loadInitial` again. The newest `updatedAt` on
+ * the page is that floor: anything that changes later is >= it.
+ */
+function pageCursor(rows: Array<{ updatedAt?: Date | null }>): string | undefined {
+  let newest = 0
+  for (const row of rows) {
+    const at = row?.updatedAt ? new Date(row.updatedAt).getTime() : NaN
+    if (!Number.isNaN(at) && at > newest) newest = at
+  }
+  return newest ? new Date(newest).toISOString() : undefined
+}
+
 export async function listMessages(conversationId: string, userId: string, opts: ListMessagesOptions = {}) {
   const { conversation } = await loadAccess(conversationId, userId)
   const result = await listMessagesUnchecked(conversationId, opts)
@@ -1648,7 +1666,9 @@ export async function listMessagesUnchecked(conversationId: string, opts: ListMe
       root: serializeMessage(root),
       messages: replies.map(serializeMessage),
       hasMore: false,
-      ...(opts.changedSince ? { cursor: newestUpdatedAt(replies, opts.changedSince) } : {}),
+      ...(opts.changedSince
+        ? { cursor: newestUpdatedAt(replies, opts.changedSince) }
+        : { cursor: pageCursor(replies.length ? replies : [root]) }),
     }
   }
 
@@ -1676,7 +1696,12 @@ export async function listMessagesUnchecked(conversationId: string, opts: ListMe
       orderBy: { seq: 'asc' },
       take: limit + 1,
     })
-    return { messages: rows.slice(0, limit).map(serializeMessage), hasMore: rows.length > limit }
+    const page = rows.slice(0, limit)
+    return {
+      messages: page.map(serializeMessage),
+      hasMore: rows.length > limit,
+      cursor: pageCursor(page),
+    }
   }
   if (opts.beforeSeq !== undefined) where.seq = { lt: opts.beforeSeq }
   const rows = await db.conversationMessage.findMany({
@@ -1686,7 +1711,11 @@ export async function listMessagesUnchecked(conversationId: string, opts: ListMe
     take: limit + 1,
   })
   const page = rows.slice(0, limit).reverse()
-  return { messages: page.map(serializeMessage), hasMore: rows.length > limit }
+  return {
+    messages: page.map(serializeMessage),
+    hasMore: rows.length > limit,
+    cursor: pageCursor(page),
+  }
 }
 
 export async function getMessage(messageId: string, userId: string) {

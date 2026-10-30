@@ -130,3 +130,58 @@ describe('listMessagesUnchecked — changedSince', () => {
     expect(result.cursor).toBe(since.toISOString())
   })
 })
+
+/**
+ * QA round 1 (SHO-260): a device that just downloaded a plain page had no
+ * cursor to ask a delta with, so every reopen re-downloaded the newest page.
+ * A plain page now carries the newest `updatedAt` it knows about.
+ */
+describe('listMessagesUnchecked — plain pages seed a cursor', () => {
+  test('the newest page is enough to start a delta', async () => {
+    rows.push(
+      message({ id: 'a', seq: 1, updatedAt: '2026-10-30T09:00:00.000Z' }),
+      message({ id: 'b', seq: 2, updatedAt: '2026-10-30T09:05:00.000Z' }),
+    )
+    const result = await listMessagesUnchecked(CHANNEL, { limit: 50 })
+    expect(result.messages.map((m: any) => m.id)).toEqual(['a', 'b'])
+    expect(result.cursor).toBe('2026-10-30T09:05:00.000Z')
+    // …and the cursor it hands back actually works as a delta floor. The floor
+    // is inclusive, so the newest row comes back once — harmless, the client
+    // merges by id — and the client sends `cursor − 5 s` anyway.
+    rows.push(message({ id: 'c', seq: 3, updatedAt: '2026-10-30T09:09:00.000Z' }))
+    const delta = await listMessagesUnchecked(CHANNEL, {
+      changedSince: new Date(result.cursor!),
+    })
+    expect(delta.messages.map((m: any) => m.id)).toEqual(['b', 'c'])
+  })
+
+  test('the cursor is the newest row even when `updatedAt` order differs from seq order', async () => {
+    rows.push(
+      message({ id: 'newer-seq', seq: 9, updatedAt: '2026-10-30T09:01:00.000Z' }),
+      message({ id: 'older-seq', seq: 8, updatedAt: '2026-10-30T09:07:00.000Z' }),
+    )
+    const result = await listMessagesUnchecked(CHANNEL, { limit: 50 })
+    expect(result.cursor).toBe('2026-10-30T09:07:00.000Z')
+  })
+
+  test('a thread pane seeds its cursor from its own replies', async () => {
+    rows.push(
+      message({ id: 'root', seq: 1, updatedAt: '2026-10-30T09:00:00.000Z' }),
+      message({ id: 'r1', seq: 2, threadRootId: 'root', updatedAt: '2026-10-30T09:04:00.000Z' }),
+    )
+    const result = await listMessagesUnchecked(CHANNEL, { threadRootId: 'root' })
+    expect(result.cursor).toBe('2026-10-30T09:04:00.000Z')
+  })
+
+  test('an empty conversation returns no cursor rather than a bogus one', async () => {
+    const result = await listMessagesUnchecked(CHANNEL, { limit: 50 })
+    expect(result.messages).toEqual([])
+    expect(result.cursor).toBeUndefined()
+  })
+
+  test('every row carries updatedAt so the client can seed from the rows too', async () => {
+    rows.push(message({ id: 'a', seq: 1, updatedAt: '2026-10-30T09:00:00.000Z' }))
+    const result = await listMessagesUnchecked(CHANNEL, { limit: 50 })
+    expect(result.messages[0].updatedAt).toBe('2026-10-30T09:00:00.000Z')
+  })
+})

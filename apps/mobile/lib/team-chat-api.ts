@@ -233,6 +233,11 @@ export interface ChatMessage {
   deletedAt: string | null
   createdAt: string
   /**
+   * When the row last changed. Sent (SHO-260) so a device that just downloaded
+   * a page can seed its delta cursor even if the page carried none.
+   */
+  updatedAt?: string | null
+  /**
    * Where the message lives. Only the single-message fetch returns this (a
    * quote labels itself from it); list responses leave it off.
    */

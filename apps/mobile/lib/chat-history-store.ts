@@ -96,6 +96,24 @@ export function deltaSince(cursor: string | null): string | null {
   return new Date(at - SKEW_MS).toISOString()
 }
 
+/**
+ * The newest `updatedAt` among a page of rows — the cursor a freshly downloaded
+ * page implies when the server did not hand one back (SHO-260). Without it a
+ * cold open stores `cursor: null` and the next open re-downloads the page.
+ */
+export function newestUpdatedAt(
+  messages: Array<{ updatedAt?: string | null; createdAt?: string | null }> | undefined,
+): string | null {
+  let newest = 0
+  for (const message of messages ?? []) {
+    const raw = message?.updatedAt ?? message?.createdAt
+    if (!raw) continue
+    const at = new Date(raw).getTime()
+    if (!Number.isNaN(at) && at > newest) newest = at
+  }
+  return newest ? new Date(newest).toISOString() : null
+}
+
 // ─── Backends ────────────────────────────────────────────────────────────────
 
 export interface ChatHistoryBackend {

@@ -5305,6 +5305,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         if (entry.cursor) {
           await applyChatDelta(sessionId, key, entry.cursor, loadGenerationRef.current)
         }
+        // History is in place: attach to a turn that is genuinely running, the
+        // same guarantee the cold path gives (SHO-260).
+        probeLiveTurnAfterHistory(sessionId, loadGenerationRef.current)
       })
       .catch(() => {})
       .finally(() => {
@@ -5313,6 +5316,58 @@ const ChatPanelContent = observer(function ChatPanelContent({
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, historyStoreKey, currentSessionId])
+
+  /**
+   * Ask the runtime, once the history is in place, whether there is a genuinely
+   * live turn to attach to (SHO-260). Every history path runs it — the cold
+   * page load, the warm delta and the hydration effect — because a chat whose
+   * turn started in another window (or from the queue's wake) used to attach
+   * only via the cold path's probe; without it the panel paints its stale
+   * slice and shows no streaming/Stop until a focus event or a send.
+   *
+   * The probe is robust (every failure mode → 'unknown' → no attach) so this is
+   * fire-and-forget. Critical: only run for the live generation — otherwise a
+   * tab switch mid-load would attach to a stale session's stream and corrupt
+   * the active panel's message list.
+   */
+  const probeLiveTurnAfterHistory = useCallback(
+    (loadSessionId: string, myGeneration: number) => {
+      if (myGeneration !== loadGenerationRef.current) return
+      if (liveTurnReloadNonceRef.current === historyOnlyNonceRef.current) return
+      const turnUrl = buildChatTurnUrl(
+        API_URL!,
+        projectId,
+        localAgentUrl,
+        loadSessionId,
+        chatWorkspaceId,
+      )
+      void probeChatTurn({
+        url: turnUrl,
+        fetch: expoFetch,
+        headers: nativeHeaders ? nativeHeaders() : undefined,
+        credentials: Platform.OS === "web" ? "include" : undefined,
+        retryDelaysMs: [1000, 3000],
+      }).then((turn) => {
+        if (myGeneration !== loadGenerationRef.current) return
+        lastLiveTurnCheckAtRef.current = Date.now()
+        const expectedLive = liveTurnExpectedRef.current
+        liveTurnExpectedRef.current = false
+        // A turn this window stopped is not a turn to attach to, even while
+        // the runtime still reports it (stop reaches it a beat later).
+        const stopped = turn.turnId !== null && turn.turnId === stoppedTurnIdRef.current
+        if (isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)) {
+          guardedAutoResumeStream("live-turn-probe")
+        } else if (expectedLive && !stopped) {
+          setTimeout(
+            () => reloadAndAttachLiveTurnRef.current({ settle: false }),
+            750,
+          )
+        }
+      })
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectId, localAgentUrl, chatWorkspaceId, guardedAutoResumeStream],
+  )
 
   /**
    * The cold path: download the newest page and paint it. Runs for a chat the
@@ -5435,46 +5490,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               setIsInitialLoadComplete(true)
             }
 
-            // Now that the history is in place, ask the runtime if there's a
-            // genuinely live, in-progress turn to attach to. The probe is
-            // robust (every failure mode → 'unknown' → no attach) so this
-            // block is fire-and-forget. Critical: only run for the live
-            // generation — otherwise a tab switch mid-load would attach to
-            // a stale session's stream and corrupt the active panel's
-            // message list (the original "I see the same message twice"
-            // shape, just from a different angle).
-            if (myGeneration !== loadGenerationRef.current) return
-            if (liveTurnReloadNonce === historyOnlyNonceRef.current) return
-            const turnUrl = buildChatTurnUrl(
-              API_URL!,
-              projectId,
-              localAgentUrl,
-              loadSessionId,
-              chatWorkspaceId,
-            )
-            void probeChatTurn({
-              url: turnUrl,
-              fetch: expoFetch,
-              headers: nativeHeaders ? nativeHeaders() : undefined,
-              credentials: Platform.OS === "web" ? "include" : undefined,
-              retryDelaysMs: [1000, 3000],
-            }).then((turn) => {
-              if (myGeneration !== loadGenerationRef.current) return
-              lastLiveTurnCheckAtRef.current = Date.now()
-              const expectedLive = liveTurnExpectedRef.current
-              liveTurnExpectedRef.current = false
-              // A turn this window stopped is not a turn to attach to, even while
-              // the runtime still reports it (stop reaches it a beat later).
-              const stopped = turn.turnId !== null && turn.turnId === stoppedTurnIdRef.current
-              if (isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)) {
-                guardedAutoResumeStream("live-turn-probe")
-              } else if (expectedLive && !stopped) {
-                setTimeout(
-                  () => reloadAndAttachLiveTurnRef.current({ settle: false }),
-                  750,
-                )
-              }
-            })
+            probeLiveTurnAfterHistory(loadSessionId, myGeneration)
           })
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -5581,8 +5597,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const loadSessionId = currentSessionId
       void applyChatDelta(loadSessionId, warmKey, warmMeta.cursor, myGeneration).then(
         (applied) => {
-          if (applied) return
           if (myGeneration !== loadGenerationRef.current) return
+          if (applied) {
+            // Carrying on from a saved slice still has to attach to a live
+            // turn, the same guarantee the cold path gives (SHO-260).
+            probeLiveTurnAfterHistory(loadSessionId, myGeneration)
+            return
+          }
           isLoadingMessagesRef.current = true
           setIsLoadingMessages(true)
           loadFirstPage(loadSessionId, ++loadGenerationRef.current)

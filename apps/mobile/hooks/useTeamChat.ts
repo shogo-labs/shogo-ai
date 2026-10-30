@@ -26,6 +26,7 @@ import {
   chatHistoryKey,
   conversationHistoryKey,
   deltaSince,
+  newestUpdatedAt,
   readChatHistory,
   writeChatHistory,
 } from '../lib/chat-history-store'
@@ -432,7 +433,10 @@ export function useConversationTimeline(
     try {
       const page = await api.messages(conversationId, { threadRootId: threadRootId ?? undefined, limit: PAGE_SIZE })
       setState((s) => mergePage(s, page, 'initial'))
-      cursorRef.current = page.cursor ?? null
+      // A plain page carries its own cursor (SHO-260); the row scan is the
+      // floor if an older server answers without one, so a cold open still
+      // leaves the device able to ask for a delta next time.
+      cursorRef.current = page.cursor ?? newestUpdatedAt(page.messages)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load messages')
@@ -493,7 +497,7 @@ export function useConversationTimeline(
               belongsToScope(m, { conversationId, threadRootId }),
             )
             setState((s) => mergePage(s, { ...page, messages }, 'newer'))
-            cursorRef.current = page.cursor ?? entry.cursor
+            cursorRef.current = page.cursor ?? newestUpdatedAt(messages) ?? entry.cursor
             // A full page came back: the delta could not represent it.
             if (page.hasMore) openLoadInitial()
           })
