@@ -1000,7 +1000,7 @@ async function runWake(wake: any): Promise<void> {
       userId: wake.userId,
       chain: readChain(wake.chain) ?? undefined,
     },
-    { drained: true },
+    { drained: true, wakeReason: wake.reason },
   )
 }
 
@@ -1148,7 +1148,14 @@ function isAgentDm(conversation: any): boolean {
   return conversation.kind === 'dm' && typeof conversation.dmKey === 'string' && conversation.dmKey.startsWith('a:')
 }
 
-async function existingSession(conversation: any, threadRootId: string | null, target: AgentTarget): Promise<string | null> {
+/** The thread's last run for this agent: the session it used, and how it ended. */
+interface PreviousRun {
+  sessionId: string
+  /** The run errored (a quiet timeout settles as one), so its session is not worth resuming. */
+  failed: boolean
+}
+
+async function existingSession(conversation: any, threadRootId: string | null, target: AgentTarget): Promise<PreviousRun | null> {
   const where: Record<string, unknown> = {
     conversationId: conversation.id,
     authorType: 'agent',
@@ -1160,12 +1167,49 @@ async function existingSession(conversation: any, threadRootId: string | null, t
     where,
     orderBy: { seq: 'desc' },
     take: 20,
-    select: { agentSessionId: true, authorAgentRef: true },
+    select: { agentSessionId: true, authorAgentRef: true, agentStatus: true },
   })
   const match = rows.find((r: any) => agentKey({ projectId: r.authorAgentRef?.projectId ?? null }) === agentKey(target))
   if (!match?.agentSessionId) return null
   const session = await db.chatSession.findUnique({ where: { id: match.agentSessionId }, select: { id: true } })
-  return session?.id ?? null
+  if (!session?.id) return null
+  return { sessionId: session.id, failed: match.agentStatus === 'error' }
+}
+
+/**
+ * Should this wake open a new session instead of resuming the thread's?
+ *
+ * Only when the run in front of it died. A retry is the card's one automatic
+ * recovery, and resuming the session that stalled is what makes every retry
+ * fail the same way — the turn re-sends that session's transcript, so a session
+ * already big enough to stall once stalls again (SHO-248). Any other automatic
+ * wake landing on a thread whose last run for this agent errored gets the same
+ * treatment; a person's own message never does, because they are in the loop
+ * and their message says what changed.
+ */
+function startsFreshSession(args: { wakeReason?: string; automatic: boolean; previousFailed: boolean }): boolean {
+  if (args.wakeReason === RUN_DIED_RETRY_REASON) return true
+  return args.automatic && args.previousFailed
+}
+
+/**
+ * A retry that opened a new session records both ids on the card, so the
+ * thread's "why did this run recover" is answerable from the event log.
+ */
+async function noteFreshRetrySession(args: {
+  threadRootId: string | null
+  target: AgentTarget
+  previous: PreviousRun
+  sessionId: string
+}): Promise<void> {
+  if (!args.threadRootId) return
+  const { noteRetrySession } = await import('./work-boards.service')
+  await noteRetrySession({
+    threadRootId: args.threadRootId,
+    agentRef: agentRefForTarget(args.target),
+    previousSessionId: args.previous.sessionId,
+    sessionId: args.sessionId,
+  }).catch((err: Error) => console.warn('[ChannelAgent] recording the retry session failed:', err.message))
 }
 
 async function createSession(conversation: any, target: AgentTarget, label: string): Promise<string> {
@@ -1419,6 +1463,11 @@ async function buildPrompt(args: {
     transcript,
   ]
   return lines.join('\n')
+}
+
+/** A prompt's size in tokens, at the ~4 characters per token the runtime estimates with. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4)
 }
 
 /** Characters of the channel doc included in an agent's prompt. */
@@ -1810,6 +1859,18 @@ export interface RunAgentReplyArgs {
   threadRootId?: string | null
 }
 
+/** How a run was started, where that changes how it begins. */
+export interface RunAgentReplyOptions {
+  /** A queued wake draining, rather than a dispatch from a new message. */
+  drained?: boolean
+  /**
+   * The `AgentWake.reason` behind a drained wake. A `run_died_retry` wake is the
+   * card's automatic recovery after a failed run, and must not resume the
+   * session that failed (SHO-248).
+   */
+  wakeReason?: string
+}
+
 /**
  * Read a workspace file from the runtime that answered the turn: the replying
  * project's runtime, or the workspace runtime for the workspace agent. A slow
@@ -1830,7 +1891,7 @@ async function workspaceFileFetcher(input: { workspaceId: string; projectId: str
   }
 }
 
-export async function runAgentReply(args: RunAgentReplyArgs, opts: { drained?: boolean } = {}): Promise<string | null> {
+export async function runAgentReply(args: RunAgentReplyArgs, opts: RunAgentReplyOptions = {}): Promise<string | null> {
   const { conversation, trigger, target, userId } = args
   // A caller that knows where the answer belongs (a huddle wake) wins over the
   // default rule; `null` means top level.
@@ -1881,7 +1942,7 @@ export async function runAgentReply(args: RunAgentReplyArgs, opts: { drained?: b
       .catch((err: Error) => console.warn('[ChannelAgent] thread-tag note failed:', err.message))
   }
   try {
-    return await runReservedReply(args, threadRootId, live, state)
+    return await runReservedReply(args, threadRootId, live, state, opts)
   } finally {
     liveRuns.delete(key)
     // A run that lost the cross-pod reservation leaves its wake to the sweep:
@@ -1898,6 +1959,7 @@ async function runReservedReply(
   threadRootId: string | null,
   live: LiveAgentRun,
   state: { lost: boolean },
+  opts: RunAgentReplyOptions = {},
 ): Promise<string | null> {
   const { conversation, trigger, target, userId } = args
   if (!(await inWorkspace(conversation.workspaceId, [target])).length) {
@@ -1914,9 +1976,18 @@ async function runReservedReply(
   })
   const contextMode: string = member?.agentContextMode ?? 'shared'
   // An isolated agent never resumes an earlier session, which would carry what it saw before.
-  const reused = contextMode === 'isolated' ? null : await existingSession(conversation, threadRootId, target)
+  const previous = contextMode === 'isolated' ? null : await existingSession(conversation, threadRootId, target)
+  // A retry after a run that died opens a new session (SHO-248): resuming the one
+  // that stalled is how every retry reproduced the same stall.
+  const fresh = !!previous && startsFreshSession({
+    wakeReason: opts.wakeReason,
+    automatic: trigger.authorType !== 'user',
+    previousFailed: previous.failed,
+  })
+  const reused = fresh ? null : previous?.sessionId ?? null
   const label = conversation.name ? `#${conversation.name}: ${trigger.text}` : `Chat: ${trigger.text}`
   const sessionId = reused ?? await createSession(conversation, target, renderMentionsAsText(label))
+  if (fresh && previous) await noteFreshRetrySession({ threadRootId, target, previous, sessionId })
 
   // The run's liveness, written where another pod can see it: a reply whose
   // turn has not heartbeated inside `DEFAULT_STALE_AFTER_MS` was written by a
@@ -2107,6 +2178,12 @@ async function runReservedReply(
       conversation, trigger, threadRootId, reusedSession: !!reused, name, workspaceName: workspace?.name ?? 'workspace', chain, contextMode,
       chatSessionId: sessionId,
     })
+    // Every wake says which session it runs in and how big its prompt is, so
+    // "the retry died because the session was 10 hours old" is visible in the
+    // log instead of inferred from a quiet timeout (SHO-248).
+    console.log(
+      `[ChannelAgent] wake session=${sessionId} ${reused ? 'reused' : 'fresh'} prompt≈${estimateTokens(prompt)} tokens (${prompt.length} chars)`,
+    )
     const dispatch = await channelDispatchFor({ conversation, trigger, threadRootId, name, contextMode })
     await db.chatMessage.create({
       data: {

@@ -77,6 +77,19 @@ describe('inbox entries', () => {
     expect(inboxEntry(inbox({ id: '4', kind: 'reminder', conversation: null })).context).toBe('Reminder')
   })
 
+  test('a reaction carries the emoji it used, not a generic one', () => {
+    const channel = { id: 'c2', kind: 'public' as const, name: 'random', slug: 'random' }
+    const title = (emoji: string) => `Eby Paul Daniel reacted ${emoji} to your message`
+    expect(inboxEntry(inbox({ id: 'r1', kind: 'reaction', conversation: channel, title: title('🎉') })).emoji).toBe('🎉')
+    expect(inboxEntry(inbox({ id: 'r2', kind: 'reaction', conversation: channel, title: title('❤️') })).emoji).toBe('❤️')
+    expect(inboxEntry(inbox({ id: 'r3', kind: 'reaction', conversation: channel, title: title(':party_parrot:') })).emoji).toBe(':party_parrot:')
+  })
+
+  test('only reactions get an emoji, and an unreadable title falls back to none', () => {
+    expect(inboxEntry(inbox({ id: 'm1', kind: 'mention', title: 'Ana reacted 🎉 to your message' })).emoji).toBeNull()
+    expect(inboxEntry(inbox({ id: 'r4', kind: 'reaction', title: 'Eby' })).emoji).toBeNull()
+  })
+
   test('a private channel is flagged so the row can show a lock', () => {
     const secret = { id: 'c3', kind: 'private' as const, name: 'team-cyberdyne', slug: null }
     const entry = inboxEntry(inbox({ id: '5', kind: 'thread', conversation: secret }))

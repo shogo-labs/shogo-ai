@@ -30,6 +30,7 @@ const restoreEnv = {
   WORKSPACES_DIR: process.env.WORKSPACES_DIR,
   SHOGO_API_KEY: process.env.SHOGO_API_KEY,
   SHOGO_API_URL: process.env.SHOGO_API_URL,
+  SHOGO_CLOUD_URL: process.env.SHOGO_CLOUD_URL,
 }
 process.env.WORKSPACES_DIR = filesDir
 process.env.SHOGO_API_KEY = 'shogo_sk_qa_test'
@@ -49,6 +50,10 @@ app.route('/api/workspace-moves', workspaceMoveRoutes())
 
 const server = Bun.serve({ port: 0, fetch: (req) => app.fetch(req) })
 process.env.SHOGO_API_URL = `http://127.0.0.1:${server.port}`
+// The move addresses the cloud through `getShogoCloudUrl()`, not
+// `SHOGO_API_URL` (a signed-in desktop points the latter at itself). This
+// harness plays both ends, so both variables name it.
+process.env.SHOGO_CLOUD_URL = `http://127.0.0.1:${server.port}`
 
 const ids = {
   owner: 'u-owner-246',

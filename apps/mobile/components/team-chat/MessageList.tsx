@@ -7,6 +7,7 @@ import type { ChatMessage } from '../../lib/team-chat-api'
 import { firstUnreadIndex, startsGroup, type MentionNames, type TimelineState } from '../../lib/team-chat-state'
 import { dayKey, formatDayDivider } from '../../lib/team-chat-time'
 import { attachNestedWheelPassthrough } from '../../lib/nested-wheel-passthrough'
+import { transcriptKeyboardDismissMode } from '../../lib/composer-keyboard-dismiss'
 import { foldStatusRuns, type TimelineItem } from '../../lib/team-chat-kinds'
 import { MessageRow, type MessageRowProps } from './MessageRow'
 import { StatusRunRow } from './AgentStatus'
@@ -261,7 +262,10 @@ export function MessageList({
           </View>
         }
         keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
+        // Web opts out: react-native-web dismisses on every scroll event,
+        // including the list's own scroll as messages arrive, which blurs the
+        // team-chat composer mid-message (SHO-255).
+        keyboardDismissMode={transcriptKeyboardDismissMode()}
         alwaysBounceVertical={Platform.OS === 'ios'}
       />
       {showUnreadPill ? (
