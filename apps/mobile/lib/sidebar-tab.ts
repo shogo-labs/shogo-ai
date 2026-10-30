@@ -47,7 +47,7 @@ export function tabForPathname(pathname: string, conversations: TabConversation[
   if (/^\/more(\/|$)/.test(path)) return 'more'
   if (/^\/meetings(\/|$)/.test(path)) return 'meetings'
   if (/^\/goals(\/|$)/.test(path)) return 'goals'
-  if (/^\/(tasks|canvases|marketplace|files)(\/|$)/.test(path)) return 'more'
+  if (/^\/(tasks|canvases|marketplace|files|analytics|work|social|creator|starred|shared)(\/|$)/.test(path)) return 'more'
   return null
 }
 

@@ -29,6 +29,7 @@ import {
   View,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
+import { PhoneBackButton } from '../../components/layout/PhoneBackButton'
 import { useFocusEffect } from 'expo-router'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import {
@@ -235,7 +236,10 @@ export default function SocialScreen() {
   return (
     <SafeAreaView className="flex-1 bg-background">
       <View className="px-4 pt-3 pb-2">
-        <Text className="text-foreground text-xl font-semibold">Social</Text>
+        <View className="flex-row items-center gap-2">
+          <PhoneBackButton />
+          <Text className="text-foreground text-xl font-semibold">Social</Text>
+        </View>
         <View className="flex-row flex-wrap gap-2 mt-3">
           {TABS.map((entry) => (
             <Pressable

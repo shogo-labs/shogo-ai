@@ -15,6 +15,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Keyboard, PanResponder, type GestureResponderHandlers } from 'react-native'
 import { hexToRgbChannels, isNativePlatform, nativePhoneCanvas } from './native-phone-layout'
 import { SURFACE_COLORS } from './surface-tokens'
+import { PROGRESS_REST, SPRING, rubberBand } from './motion'
+import { drawerReleaseVelocity } from './drawer-drag'
 
 const OPEN_RATIO = 0.32
 const OPEN_VELOCITY = 0.7
@@ -42,14 +44,14 @@ export const NATIVE_DRAWER_MIN_FOOTER_INSET = 12
 /** Rasterize the moving sheet once progress leaves rest, not on every tick. */
 export const NATIVE_DRAWER_COMPOSITING_EPSILON = 0.001
 
-const SETTLE_SPRING = {
-  stiffness: 340,
-  damping: 38,
-  mass: 0.72,
+// Release springs. Opening may overshoot a hair (SwiftUI sheet, damping 0.8);
+// closing is critically damped and clamped so the sheet never slides past the
+// left edge. Radius still interpolates on the inner clip, so both stay on JS.
+const OPEN_SETTLE_SPRING = { ...SPRING.sheet, ...PROGRESS_REST, useNativeDriver: false } as const
+const CLOSE_SETTLE_SPRING = {
+  ...SPRING.drawer,
+  ...PROGRESS_REST,
   overshootClamping: true,
-  restDisplacementThreshold: 0.002,
-  restSpeedThreshold: 0.02,
-  // Radius still interpolates on the inner clip, so the spring stays on JS.
   useNativeDriver: false,
 } as const
 
@@ -174,6 +176,7 @@ export function useNativeDrawerSheetStyle(
       drawerProgress.interpolate({
         inputRange: [0, 1],
         outputRange: [0, NATIVE_DRAWER_SHEET_RADIUS],
+        extrapolate: 'clamp',
       }),
     [drawerProgress],
   )
@@ -182,6 +185,7 @@ export function useNativeDrawerSheetStyle(
       drawerProgress.interpolate({
         inputRange: [0, 1],
         outputRange: [0, NATIVE_DRAWER_SHEET_SHADOW_OPACITY],
+        extrapolate: 'clamp',
       }),
     [drawerProgress],
   )
@@ -198,6 +202,7 @@ export function useNativeDrawerSheetStyle(
       drawerProgress.interpolate({
         inputRange: [0, 1],
         outputRange: [0, NATIVE_DRAWER_SHEET_ELEVATION],
+        extrapolate: 'clamp',
       }),
     [drawerProgress],
   )
@@ -211,6 +216,19 @@ export function useNativeDrawerSheetStyle(
 
 export function nativeDrawerProgressFromDelta(start: number, dx: number, width: number): number {
   return Math.min(1, Math.max(0, start + dx / Math.max(1, width)))
+}
+
+/**
+ * Progress while the finger is down: 1:1 with the finger up to fully open, then
+ * a rubber band past it (the sheet resists, like UIScrollView). Pulling left of
+ * closed stays pinned at 0 — there is nothing beneath the sheet to reveal.
+ */
+export function nativeDrawerDragProgress(start: number, dx: number, width: number): number {
+  const raw = start + dx / Math.max(1, width)
+  if (raw <= 0) return 0
+  if (raw <= 1) return raw
+  const span = Math.max(1, width)
+  return 1 + rubberBand((raw - 1) * span, span) / span
 }
 
 /**
@@ -247,10 +265,21 @@ export function nativeDrawerShouldSettleOpen(progress: number, vx: number, start
   return progress > OPEN_RATIO
 }
 
-export function snapNativeDrawer(drawerProgress: Animated.Value, open: boolean, onSettled?: (open: boolean) => void) {
+/**
+ * Spring the sheet to open or closed. `velocity` is the release speed in
+ * progress units per second so the spring continues the finger's motion rather
+ * than starting from rest.
+ */
+export function snapNativeDrawer(
+  drawerProgress: Animated.Value,
+  open: boolean,
+  onSettled?: (open: boolean) => void,
+  velocity = 0,
+) {
   Animated.spring(drawerProgress, {
     toValue: open ? 1 : 0,
-    ...SETTLE_SPRING,
+    velocity,
+    ...(open ? OPEN_SETTLE_SPRING : CLOSE_SETTLE_SPRING),
   }).start(({ finished }) => {
     if (finished) onSettled?.(open)
   })
@@ -407,7 +436,7 @@ export function useNativeDrawerSheetSwipe({
         },
         onPanResponderTerminationRequest: () => false,
         onPanResponderMove: (_evt, gesture) => {
-          drawerProgress.setValue(nativeDrawerProgressFromDelta(startProgressRef.current, gesture.dx, widthRef.current))
+          drawerProgress.setValue(nativeDrawerDragProgress(startProgressRef.current, gesture.dx, widthRef.current))
         },
         onPanResponderRelease: (_evt, gesture) => {
           settleSheet(
@@ -445,8 +474,8 @@ function settleSheet(
   width: number,
   onOpenChange: (open: boolean) => void,
 ) {
-  const progress = nativeDrawerProgressFromDelta(start, dx, width)
+  const progress = nativeDrawerDragProgress(start, dx, width)
   const open = nativeDrawerShouldSettleOpen(progress, vx, start)
   if (open) onOpenChange(true)
-  snapNativeDrawer(drawerProgress, open, onOpenChange)
+  snapNativeDrawer(drawerProgress, open, onOpenChange, drawerReleaseVelocity(vx, width))
 }

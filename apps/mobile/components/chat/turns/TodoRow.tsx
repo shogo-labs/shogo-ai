@@ -8,6 +8,7 @@ import type { ToolCallData } from "../tools/types"
 import { parseTodos } from "../../../lib/todo-state-store"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { useChatDockStore } from "../../../lib/chat-dock-store"
+import { Spin } from "@/components/ui/Spin";
 
 export interface TodoRowProps {
   tool: ToolCallData
@@ -37,7 +38,9 @@ export function TodoRow({ tool, className }: TodoRowProps) {
       className={`flex-row items-center gap-1.5 rounded py-0.5 ${className ?? ""}`}
     >
       {isPlanning ? (
-        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+        <Spin>
+          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+        </Spin>
       ) : (
         <ListTodo className="h-3 w-3 text-muted-foreground" />
       )}

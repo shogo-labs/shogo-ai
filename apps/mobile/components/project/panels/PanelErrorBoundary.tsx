@@ -6,6 +6,7 @@ import * as Sentry from '@sentry/react-native'
 import { Text } from '@/components/ui/text'
 import { Button, ButtonText } from '@/components/ui/button'
 import { AlertTriangle, RefreshCw } from 'lucide-react-native'
+import { Spin } from "@/components/ui/Spin";
 
 interface Props {
   children: ReactNode
@@ -119,7 +120,9 @@ export class PanelErrorBoundary extends Component<Props, State> {
     if (this.state.autoRetrying) {
       return (
         <View className="flex-1 flex-col items-center justify-center gap-3 px-8 py-12">
-          <RefreshCw size={20} className="text-muted-foreground animate-spin" />
+          <Spin>
+            <RefreshCw size={20} className="text-muted-foreground animate-spin" />
+          </Spin>
           <Text className="text-sm text-muted-foreground">
             Recovering {this.props.panelName}...
           </Text>

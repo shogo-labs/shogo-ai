@@ -144,6 +144,7 @@ import { CanvasWebView } from "../../../../components/canvas/CanvasWebView";
 import { ComposePortPreview } from "../../../../components/project/ComposePortPreview";
 import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
 import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
+import { ProjectSurfaceHeader } from "../../../../components/project/ProjectSurfaceHeader";
 import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
 import { useTeamChatNav } from "../../../../components/team-chat/TeamChatSidebarProvider";
 import { useOpenAgentDm } from "../../../../lib/use-open-agent-dm";
@@ -3862,6 +3863,13 @@ export default observer(function ProjectLayout() {
     return (
       <>
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
+        {/* A phone enters the project on this page, so keep the way back and
+            the name on screen while it loads instead of a bare spinner. */}
+        {Platform.OS !== "web" ? (
+          <View className="bg-background" style={{ paddingTop: insets.top }}>
+            <ProjectSurfaceHeader projectId={projectId} />
+          </View>
+        ) : null}
         <View className="flex-1 bg-background items-center justify-center px-6">
           {!showStalledRecovery && (
             <>

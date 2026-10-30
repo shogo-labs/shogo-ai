@@ -36,6 +36,7 @@ import {
 } from '../../lib/huddle-call'
 import { getHuddleHostBridge } from '../../lib/desktop-huddle'
 import { setHuddlePrefs, useHuddlePrefs, type MiniCorner } from '../../lib/huddle-prefs'
+import { SPRING, projectMomentum, DECELERATION } from '../../lib/motion'
 import { miniFeature, miniScreen, miniSelfView, summarizeNames, type RosterEntry } from '../../lib/huddle-roster'
 import { captionsNotice } from '../../lib/huddle-captions'
 import { HuddleCaptions } from './HuddleCaptions'
@@ -384,15 +385,27 @@ function useCornerDrag(corner: MiniCorner, anchor: (c: MiniCorner) => { left: nu
           pan.setValue({ x: 0, y: 0 })
         },
         onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], { useNativeDriver: false }),
-        onPanResponderRelease: () => {
+        onPanResponderRelease: (_, g) => {
           pan.flattenOffset()
           const { corner: from, anchor: at, size: s, win: w } = latest.current
           const origin = at(from)
           const x = (pan.x as any)._value as number
           const y = (pan.y as any)._value as number
-          const target = nearestCorner({ x: origin.left + x + s.width / 2, y: origin.top + y + s.height / 2 }, w)
+          // Land on the corner the window would coast to, not just the one it is
+          // nearest at release, and carry the throw's velocity into the spring.
+          const coastX = projectMomentum(g.vx * 1000, DECELERATION.fast)
+          const coastY = projectMomentum(g.vy * 1000, DECELERATION.fast)
+          const target = nearestCorner(
+            { x: origin.left + x + coastX + s.width / 2, y: origin.top + y + coastY + s.height / 2 },
+            w,
+          )
           const to = at(target)
-          Animated.spring(pan, { toValue: { x: to.left - origin.left, y: to.top - origin.top }, useNativeDriver: false, bounciness: 6 }).start(() => {
+          Animated.spring(pan, {
+            toValue: { x: to.left - origin.left, y: to.top - origin.top },
+            velocity: { x: g.vx * 1000, y: g.vy * 1000 },
+            ...SPRING.snappy,
+            useNativeDriver: false,
+          }).start(() => {
             setHuddlePrefs({ miniCorner: target })
             pan.setValue({ x: 0, y: 0 })
           })

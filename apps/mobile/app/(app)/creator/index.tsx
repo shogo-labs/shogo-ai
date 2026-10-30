@@ -27,6 +27,7 @@ import { Cloud, Sparkles } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
 import { usePlatformConfig } from '../../../lib/platform-config'
+import { PhoneBackButton } from '../../../components/layout/PhoneBackButton'
 import { CreatorPublishingPanel } from '../marketplace/creator/index'
 import { AffiliateReferralPanel } from '../affiliate/index'
 
@@ -79,6 +80,7 @@ export default function CreatorHub() {
         style={{ paddingTop: Math.max(insets.top, 12) }}
       >
         <View className="flex-row items-center gap-2 mb-2">
+          <PhoneBackButton />
           <View className="h-7 w-7 rounded-full bg-primary/10 items-center justify-center">
             <Sparkles size={14} className="text-primary" />
           </View>

@@ -26,6 +26,7 @@ import { InlineToolWidget } from "./InlineToolWidget"
 import { TransportBadge } from "../TransportBadge"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { NativeWorkTrigger } from "../NativeActivitySheet"
+import { Spin } from "@/components/ui/Spin";
 
 export interface ToolCallGroupProps {
   toolName: string
@@ -123,7 +124,9 @@ export function ToolCallGroup({
         <TransportBadge size="xs" className="mr-1" />
 
         {hasStreaming ? (
-          <Loader2 className="w-3 h-3 text-primary animate-spin" />
+          <Spin>
+            <Loader2 className="w-3 h-3 text-primary animate-spin" />
+          </Spin>
         ) : hasErrors ? (
           <XCircle className="w-3 h-3 text-red-500" />
         ) : allSuccess ? (

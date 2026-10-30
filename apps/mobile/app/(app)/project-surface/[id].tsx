@@ -6,6 +6,7 @@ import {
   ProjectSurfaceView,
   type ProjectSurface,
 } from "../../../components/project/ProjectSurfaceView";
+import { ProjectSurfaceHeader } from "../../../components/project/ProjectSurfaceHeader";
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -18,6 +19,8 @@ export default function ProjectSurfaceScreen() {
   }>();
   return (
     <ProjectSurfaceView
+      padTopInset
+      header={<ProjectSurfaceHeader projectId={firstParam(params.id)} />}
       projectId={firstParam(params.id)}
       surface={(firstParam(params.surface) ?? "canvas") as ProjectSurface}
     />

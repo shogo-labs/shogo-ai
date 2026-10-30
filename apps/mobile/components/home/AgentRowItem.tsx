@@ -150,10 +150,10 @@ export function AgentRowItem({ row, workspaceId, onOpen, onPeek, onDecide }: Age
     <View className="overflow-hidden rounded-[18px] border border-border bg-card">{body}</View>
   )
 
-  if (!swipeable) return <View className="px-4 pb-2">{card}</View>
+  if (!swipeable) return <View className="px-3 pb-2">{card}</View>
 
   return (
-    <View className="px-4 pb-2">
+    <View className="px-3 pb-2">
       <Swipeable
         ref={swipeRef}
         overshootLeft={false}

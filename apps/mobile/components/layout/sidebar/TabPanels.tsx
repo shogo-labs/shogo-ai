@@ -112,7 +112,9 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
             accessibilityRole="link"
             accessibilityLabel={item.title}
             onPress={() => {
-              router.push(item.href as any)
+              // On a phone `/settings` only redirects to `/account`; going
+              // there directly avoids sliding in a blank screen first.
+              router.push((screen && item.id === 'settings' ? '/(app)/account' : item.href) as any)
               onNavPress?.()
             }}
             className={cn(

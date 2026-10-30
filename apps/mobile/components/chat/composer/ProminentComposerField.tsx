@@ -20,6 +20,7 @@ import {
   PROMINENT_COMPOSER_LINE_HEIGHT,
   PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
   PROMINENT_COMPOSER_MIN_HEIGHT,
+  PROMINENT_COMPOSER_IOS_INPUT_TEXT_LIFT,
   PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP,
   PROMINENT_COMPOSER_WEB_COMPACT_TEXT_OFFSET,
   ProminentAnimatedTextInput,
@@ -215,6 +216,9 @@ export const ProminentComposerField = forwardRef<
             overflow: scrollEnabled ? "auto" : "hidden",
             overflowY: scrollEnabled ? "auto" : "hidden",
             margin: 0,
+            ...(Platform.OS === "ios"
+              ? { top: PROMINENT_COMPOSER_IOS_INPUT_TEXT_LIFT }
+              : null),
             backgroundColor: "transparent",
             textAlignVertical: stacked
               ? "top"

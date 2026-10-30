@@ -477,7 +477,7 @@ export default function ConversationScreen() {
 
   return (
     <ShareFileProvider open={openShareFile}>
-      <KeyboardAvoidingView className="flex-1 bg-background" behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView className="flex-1 bg-background" behavior={Platform.OS === 'web' ? undefined : 'padding'}>
         <View className="flex-1 flex-row" onLayout={(e) => setContainerWidth(Math.round(e.nativeEvent.layout.width))}>
           {showMain && (
             <View className="min-w-0 flex-1 overflow-hidden">

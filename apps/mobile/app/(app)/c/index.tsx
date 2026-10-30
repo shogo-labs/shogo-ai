@@ -13,6 +13,7 @@ import { teamChatApi, type ConversationSummary } from '../../../lib/team-chat-ap
 import { invalidateConversationList, useConversationList, useMentionables, useMyUserId } from '../../../hooks/useTeamChat'
 import { NewConversationModal, type NewConversationMode } from '../../../components/team-chat/NewConversationModal'
 import { conversationHref } from '../../../components/team-chat/ConversationRows'
+import { TabScreenHeader } from '../../../components/layout/TabScreenHeader'
 import { usePhoneLayout } from '../../../lib/native-phone-layout'
 
 const api = teamChatApi()
@@ -64,9 +65,9 @@ export default function TeamChatHome() {
     )
   }
 
-  return (
+  const body = (
     <ScrollView className="flex-1 bg-background" contentContainerStyle={{ padding: 24, maxWidth: 820, width: '100%', alignSelf: 'center' }}>
-      <Text className="text-2xl font-semibold text-foreground">Team chat</Text>
+      {phone ? null : <Text className="text-2xl font-semibold text-foreground">Team chat</Text>}
       <Text className="mt-1 text-sm text-muted-foreground">
         Talk with your team and your agents in one place. @mention an agent to hand it work, right in the conversation.
       </Text>
@@ -136,6 +137,14 @@ export default function TeamChatHome() {
         />
       )}
     </ScrollView>
+  )
+  // A phone draws its own header (the legacy hamburger one opened the old sidebar).
+  if (!phone) return body
+  return (
+    <View className="flex-1 bg-background">
+      <TabScreenHeader title="Team chat" back />
+      {body}
+    </View>
   )
 }
 

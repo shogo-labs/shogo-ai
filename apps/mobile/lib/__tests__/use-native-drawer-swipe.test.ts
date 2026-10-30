@@ -4,6 +4,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   nativeDrawerPanelWidth,
   nativeDrawerProgressFromDelta,
+  nativeDrawerDragProgress,
   nativeDrawerShouldCaptureSwipe,
   nativeDrawerShouldSettleOpen,
   nativeDrawerTopInset,
@@ -102,6 +103,33 @@ describe('native drawer progress', () => {
     expect(nativeDrawerShouldSettleOpen(0.4, 0, 1)).toBe(false)
     expect(nativeDrawerShouldSettleOpen(0.8, 0, 1)).toBe(true)
     expect(nativeDrawerShouldSettleOpen(0.9, -0.8, 1)).toBe(false)
+  })
+})
+
+describe('nativeDrawerDragProgress', () => {
+  const width = 300
+
+  test('tracks the finger 1:1 between closed and open', () => {
+    expect(nativeDrawerDragProgress(0, 150, width)).toBe(0.5)
+    expect(nativeDrawerDragProgress(1, -150, width)).toBe(0.5)
+    expect(nativeDrawerDragProgress(0, 300, width)).toBe(1)
+  })
+
+  test('stays pinned at closed when dragged left of it', () => {
+    expect(nativeDrawerDragProgress(0, -80, width)).toBe(0)
+    expect(nativeDrawerDragProgress(1, -900, width)).toBe(0)
+  })
+
+  test('rubber-bands past open: moves, but less than the finger and never past 2x', () => {
+    const p = nativeDrawerDragProgress(1, 100, width)
+    expect(p).toBeGreaterThan(1)
+    expect(p - 1).toBeLessThan(100 / width)
+    expect(nativeDrawerDragProgress(1, 100000, width)).toBeLessThan(2)
+  })
+
+  test('is continuous at the open edge and monotonic beyond it', () => {
+    expect(nativeDrawerDragProgress(1, 0.001, width)).toBeCloseTo(1, 3)
+    expect(nativeDrawerDragProgress(1, 60, width)).toBeLessThan(nativeDrawerDragProgress(1, 120, width))
   })
 })
 

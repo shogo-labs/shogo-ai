@@ -31,7 +31,7 @@ mock.module("lucide-react-native", () => {
   return { Bell: Icon, Home: Icon, Mail: Icon, MessagesSquare: Icon, MoreHorizontal: Icon, Search: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Mic: Icon, Plus: Icon, Shield: Icon, Target: Icon }
 })
 mock.module(resolve(import.meta.dir, "../../../contexts/theme"), () => ({ useResolvedTheme: () => "light" }))
-mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({ LiquidGlassBackdrop: () => null }))
+mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({ LiquidGlassBackdrop: () => null, nativeLiquidGlass: () => false }))
 mock.module(resolve(import.meta.dir, "../../branding/ShogoLogoMark"), () => ({ ShogoLogoMark: () => null }))
 mock.module(resolve(import.meta.dir, "../CreateMenu"), () => ({ CreateMenu: () => null }))
 mock.module(resolve(import.meta.dir, "../ProfileMenu"), () => ({ ProfileMenu: () => null }))
@@ -66,11 +66,17 @@ describe("TeamDock", () => {
     expect(screen.getByRole("tab", { name: "DMs" }).getAttribute("aria-selected")).not.toBe("true")
   })
 
-  test("tabs navigate to their screens", () => {
+  test("tabs navigate to their screens", async () => {
     render(<TeamDock maxWidth={640} />)
-    fireEvent.click(screen.getByRole("tab", { name: "DMs" }))
-    fireEvent.click(screen.getByRole("tab", { name: "Activity" }))
-    fireEvent.click(screen.getByRole("tab", { name: "More" }))
+    // The glass tab bar spaces navigations out so rapid taps can't stack
+    // overlapping screen transitions; wait out the gap between taps.
+    const tap = async (name: string) => {
+      fireEvent.click(screen.getByRole("tab", { name }))
+      await new Promise((resolve) => setTimeout(resolve, 380))
+    }
+    await tap("DMs")
+    await tap("Activity")
+    await tap("More")
     expect(replace.mock.calls.map((c) => c[0])).toEqual(["/(app)/c/dms", "/(app)/activity", "/(app)/more"])
   })
 

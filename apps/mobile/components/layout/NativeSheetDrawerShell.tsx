@@ -59,7 +59,6 @@ function NativeSheetDrawerShellFrame({
 }: NativeSheetDrawerShellProps) {
   const [navHeight, setNavHeight] = useState(0)
   const overlay = overlayBottomNav && !!bottomNav
-  const chrome = useMemo(() => ({ overlay, bottom: overlay ? navHeight : 0 }), [overlay, navHeight])
   const { drawerOpen, sheetSwipeHandlers, sheetStyle, sheetClipStyle, sheetFill, sheetCompositing, underlayStyle } =
     drawer
   const insets = useSafeAreaInsets()
@@ -70,6 +69,11 @@ function NativeSheetDrawerShellFrame({
   const frameOverflow = nativeSheetDrawer && Platform.OS !== 'web' ? 'visible' : 'hidden'
   const safeAreaAppliesTop = safeAreaEdges === undefined || safeAreaEdges.includes('top')
   const safeAreaAppliesBottom = safeAreaEdges === undefined || safeAreaEdges.includes('bottom')
+  const edgeToEdge = !safeAreaAppliesBottom
+  const chrome = useMemo(
+    () => ({ overlay, bottom: overlay ? navHeight : 0, edgeToEdge }),
+    [overlay, navHeight, edgeToEdge],
+  )
   const fullHeightUnderlayStyle = nativeSheetDrawer
     ? [
         underlayStyle,

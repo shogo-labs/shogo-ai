@@ -86,12 +86,155 @@ describe("the workspace avatar is Home's only sidebar button", () => {
     expect(withLeading).toEqual(['components/home/MobileHomeFeed.tsx'])
   })
 
-  test('that control is the avatar, and it asks for the drawer', () => {
+  test('that control is the avatar, and it opens the workspace switcher, not the drawer', () => {
     const feed = read('components/home/MobileHomeFeed.tsx')
     expect(feed).toMatch(/leading=\{<WorkspaceSidebarAvatar/)
     const avatar = read('components/layout/WorkspaceSidebarAvatar.tsx')
-    expect(avatar).toContain('sidebarOpenEvents.requestOpenSidebar()')
+    expect(avatar).toContain('MobileWorkspaceSwitcherSheet')
+    expect(avatar).not.toContain('requestOpenSidebar')
     expect(avatar).toContain('home-sidebar-avatar')
+  })
+})
+
+describe('screens with their own header skip the legacy hamburger header', () => {
+  const layout = read('app/(app)/_layout.tsx')
+
+  test('the phone own-chrome list covers the More destinations and Marketplace', () => {
+    const list = layout.match(/PHONE_OWN_CHROME_ROUTES = new Set\(\[([\s\S]*?)\]\)/)?.[1] ?? ''
+    for (const route of ['analytics', 'work', 'social', 'marketplace', 'creator']) {
+      expect(list).toContain(`"${route}"`)
+    }
+  })
+
+  test('those screens drop the shared header, and with it the legacy drawer swipe', () => {
+    expect(layout).toMatch(/isOwnChromePage \|\|/)
+    expect(layout).toMatch(/!suppressNarrowAppHeader/)
+  })
+})
+
+describe('every More destination has a way back', () => {
+  test('each one draws the shared phone back arrow', () => {
+    const screens: Record<string, string> = {
+      'app/(app)/analytics.tsx': /<TabScreen[^>]*\bback\b/.source,
+      'app/(app)/work.tsx': /<PhoneBackButton \/>/.source,
+      'app/(app)/social.tsx': /<PhoneBackButton \/>/.source,
+      'app/(app)/starred.tsx': /<PhoneBackButton \/>/.source,
+      'app/(app)/shared.tsx': /<PhoneBackButton \/>/.source,
+      'app/(app)/creator/index.tsx': /<PhoneBackButton \/>/.source,
+    }
+    for (const [file, pattern] of Object.entries(screens)) {
+      expect(read(file), file).toMatch(new RegExp(pattern))
+    }
+  })
+})
+
+describe('project screens stay below the status bar', () => {
+  test('the shell does not pad a project page, whose header pads itself', () => {
+    expect(read('app/(app)/_layout.tsx')).toMatch(/useMobileWorkspaceShell && !isProjectDetail/)
+  })
+
+  test('the full-screen surface route pads itself, the side pane does not', () => {
+    const view = read('components/project/ProjectSurfaceView.tsx')
+    expect(view).toMatch(/padTopInset \? \{ paddingTop: insets\.top \}/)
+    expect(read('app/(app)/project-surface/[id].tsx')).toMatch(/\bpadTopInset\b/)
+    expect(read('components/team-chat/ProjectSidePane.tsx')).not.toMatch(/padTopInset/)
+  })
+})
+
+describe('dock tab screens have no stack back-swipe', () => {
+  const layout = read('app/(app)/_layout.tsx')
+
+  test('the back-swipe is off for every tab route and the DMs tab', () => {
+    expect(layout).toMatch(
+      /gestureEnabled:\s*!PHONE_NO_BACK_SWIPE_SCREENS\.has\(route\.name\)\s*&&\s*!PHONE_TAB_ROUTES\.has\(route\.name\.split\("\/"\)\[0\]\)/,
+    )
+    expect(layout).toMatch(/PHONE_NO_BACK_SWIPE_SCREENS = new Set\(\["c\/dms"\]\)/)
+  })
+
+  test('the tab routes cover Home, More and the project tabs', () => {
+    const list = layout.match(/PHONE_TAB_ROUTES = new Set\(\[([\s\S]*?)\]\)/)?.[1] ?? ''
+    for (const route of [
+      'index', 'agent', 'home', 'more', 'goals', 'meetings', 'activity', 'tasks',
+      'canvases', 'project-chat', 'project-surface',
+    ]) {
+      expect(list).toContain(`"${route}"`)
+    }
+    // The More destinations ride along through the spread.
+    expect(list).toContain('...PHONE_MORE_DESTINATIONS_LIST')
+  })
+})
+
+describe('the project settings card fits a phone', () => {
+  test('the look editor takes the compact layout on a phone and lets the page scroll', () => {
+    const sheet = read('components/personal/BuddyLookSheet.tsx')
+    expect(sheet).toMatch(/layout \?\? \(isPhone \? "compact" : "full"\)/)
+    expect(sheet).toMatch(/<BuddyLookContent[^>]*\binline\b/)
+    // No nested scroller: it clipped the last rows inside a page that already scrolls.
+    expect(read('components/island/buddy/BuddyCustomizer.tsx')).toMatch(/if \(inline\) return <View>/)
+  })
+
+  test('colour swatches sit in fixed rows, not one wrapping list', () => {
+    const customizer = read('components/island/buddy/BuddyCustomizer.tsx')
+    expect(customizer).toMatch(/swatchesPerRow=\{SWATCHES_PER_ROW\}/)
+  })
+
+  test('the settings surface scrolls', () => {
+    expect(read('components/project/ProjectSurfaceView.tsx')).toMatch(/<ScrollView[\s\S]*?<ProjectSettingsContent/)
+  })
+})
+
+describe('the project header lines up on a phone', () => {
+  const header = read('components/project/topbar/native/NativePhoneHeader.tsx')
+
+  test('Back and the trailing controls share one edge inset', () => {
+    expect(header).toMatch(/NATIVE_HEADER_PAD_X = 16/)
+    expect(header).not.toMatch(/NATIVE_HEADER_PAD_LEFT/)
+  })
+
+  test('its round buttons and the chat/more pill are liquid glass, like the rest of the chrome', () => {
+    expect(read('components/project/topbar/native/NativeCircleButton.tsx')).toMatch(/<LiquidGlassBackdrop/)
+    expect(header).toMatch(/project-native-chat-more-cluster[\s\S]*?<LiquidGlassBackdrop/)
+    // Buttons inside a sheet stay flat rather than stacking glass on glass.
+    expect(header).toMatch(/<NativeCircleButton\s+flat/)
+  })
+
+  test('the title takes the space between the controls instead of a symmetric inset', () => {
+    expect(header).toMatch(/paddingLeft: titleInsetLeft/)
+    expect(header).toMatch(/paddingRight: titleInsetRight/)
+  })
+
+  test('chat history is one tap from the chat tab, in the same pill as messaging the agent', () => {
+    expect(header).toMatch(/testID="project-native-history"/)
+    expect(header).toMatch(/onPress=\{\(\) => onOpenChatSessions\?\.\(\)\}/)
+    // Messaging the agent lives in the pill, not as a third round button squeezing the title.
+    expect(header).toMatch(/project-native-chat-more-cluster[\s\S]*?project-message-agent/)
+    expect(header).toMatch(/clusterSlots/)
+  })
+})
+
+describe('the Home feed rows share one page gutter', () => {
+  const feed = read('components/home/MobileHomeFeed.tsx')
+
+  test('the list pads once and every row takes its inset from that', () => {
+    expect(feed).toMatch(/contentContainerClassName="px-1 pb-36"/)
+    // The search card, project rows and failed rows sit at the same gutter as channel rows.
+    expect(feed).toMatch(/mx-3 mb-3 mt-1/)
+    expect(feed).toMatch(/gap-3 rounded-md px-3 py-2/)
+    expect(feed).not.toMatch(/rounded-md px-2 py-2/)
+  })
+
+  test('a collapsed section hands the list no rows', () => {
+    expect(feed).toMatch(/collapsed\[section\.key\] \?\? section\.defaultCollapsed/)
+    expect(feed).toMatch(/\{ \.\.\.section, data: \[\] \}/)
+    expect(feed).toMatch(/sections=\{visibleSections\}/)
+  })
+
+  test('the agent cards and the agents panel follow the same gutter on a phone', () => {
+    expect(read('components/home/AgentsSection.tsx')).toMatch(/gap-2 px-3 pb-2 pt-2/)
+    expect(read('components/home/AgentRowItem.tsx')).not.toMatch(/"px-4 pb-2"/)
+    const panel = read('components/team-chat/panels/AgentsPanel.tsx')
+    expect(panel).toMatch(/phone \? 'px-1' : 'px-2'/)
+    expect(panel).toMatch(/phone \? '-mx-2' : undefined/)
   })
 })
 
@@ -188,5 +331,167 @@ describe('the conversation list updates in place', () => {
     )
     // A conversation this client cannot see asks for a refetch and changes nothing.
     expect(next).toBe(list)
+  })
+})
+
+describe('the composer rides the keyboard without relaying out the chat every frame', () => {
+  const hook = read('lib/use-native-composer-keyboard.ts')
+
+  test('iOS lifts the dock in one layout commit on the keyboard curve', () => {
+    expect(hook).toMatch(/LayoutAnimation\.configureNext/)
+    expect(hook).toMatch(/type: LayoutAnimation\.Types\.keyboard/)
+    expect(hook).toMatch(/pad\.setValue\(toValue\)/)
+  })
+
+  test('a repeated keyboard frame does not arm a second animation', () => {
+    expect(hook).toMatch(/const moved = keyboardOpen !== openRef\.current \|\| toValue !== targetRef\.current/)
+    expect(hook).toMatch(/if \(moved\) \{\s*LayoutAnimation\.configureNext/)
+  })
+})
+
+describe('the phone chat composer lifts on a native transform', () => {
+  const hook = read('lib/use-native-composer-keyboard.ts')
+  const constants = read('lib/native-composer-keyboard.ts')
+  const panel = read('components/chat/ChatPanel.tsx')
+  const dock = read('components/chat/composer/ProjectComposerDock.tsx')
+  const nav = read('components/layout/MobileBottomNav.tsx')
+
+  test('the lift runs on the native driver with the measured keyboard curve', () => {
+    expect(hook).toMatch(/export function useNativeComposerDockLift/)
+    expect(hook).toMatch(/useNativeDriver: true/)
+    expect(hook).toMatch(/easing: nativeComposerKeyboardLiftEasingFn/)
+    expect(constants).toMatch(/NATIVE_COMPOSER_KEYBOARD_LIFT_EASING = \[0\.3, 0\.9, 0\.35, 1\]/)
+    expect(constants).toMatch(/NATIVE_COMPOSER_KEYBOARD_LIFT_DURATION = 360/)
+  })
+
+  test('the lift is the keyboard overlap minus the chrome under the chat and the rest pad', () => {
+    expect(hook).toMatch(/-Math\.max\(0, overlap - \(offsetRef\.current \?\? 0\) - rest\)/)
+  })
+
+  test('the dock slides on translateY instead of padding when lifting', () => {
+    expect(dock).toMatch(/transform: \[\{ translateY: keyboardLift \}\]/)
+    expect(dock).toMatch(/keyboardOpen && !keyboardLift\s*\? keyboardPad/)
+  })
+
+  test('the transcript follows through the scroll view keyboard inset', () => {
+    expect(panel).toMatch(/automaticallyAdjustKeyboardInsets=\{liftComposerWithKeyboard\}/)
+    expect(panel).toMatch(/!liftComposerWithKeyboard &&/)
+  })
+
+  test('the bottom nav stays mounted on iOS, where the keyboard covers it', () => {
+    expect(nav).toMatch(/keepsNavUnderKeyboard =\s*Platform\.OS === "ios" && !chrome\.overlay && isChatPanelPath\(pathname\)/)
+  })
+})
+
+describe('no navigator paints its default light background', () => {
+  const root = read('app/_layout.tsx')
+
+  test('web and desktop keep the navigation library theme', () => {
+    expect(root).toMatch(/Platform\.OS === "web" \? \(\s*tree\s*\) : \(/)
+    expect(root).toMatch(/contentStyle: Platform\.OS === "web" \? undefined : \{ backgroundColor: canvas \}/)
+  })
+
+  test('the root navigator theme and screens use the phone canvas', () => {
+    expect(root).toMatch(/<NavigationThemeProvider value=\{navigationTheme\}>/)
+    expect(root).toMatch(/colors: \{ \.\.\.base\.colors, background: canvas, card: canvas \}/)
+    expect(root).toMatch(/backgroundColor: canvas/)
+  })
+})
+
+describe('a project that is still loading keeps its header on a phone', () => {
+  const layout = read('app/(app)/projects/[id]/_layout.tsx')
+
+  test('the loading page shows Back and the project name above the spinner', () => {
+    expect(layout).toMatch(
+      /Platform\.OS !== "web" \? \(\s*<View className="bg-background" style=\{\{ paddingTop: insets\.top \}\}>\s*<ProjectSurfaceHeader projectId=\{projectId\} \/>/,
+    )
+  })
+})
+
+describe('the phone workspace sheet lines its rows up', () => {
+  const menu = read('components/layout/sidebar/WorkspaceMenuSection.tsx')
+  const row = read('components/layout/sidebar/WorkspaceRow.tsx')
+  const switcher = read('components/layout/MobileWorkspaceSwitcher.tsx')
+
+  test('the sheet lists workspaces only, under its own title', () => {
+    expect(switcher).toMatch(/presentation="sheet"/)
+    expect(menu).toMatch(/presentation === "sheet"/)
+  })
+
+  test('workspace tiles and action tiles share one size and gutter', () => {
+    expect(row).toMatch(/isNative \? 'px-4 py-3'/)
+    expect(row).toMatch(/h-10 w-10 items-center justify-center rounded-xl/)
+    expect(menu).toMatch(/h-10 w-10 items-center justify-center rounded-xl bg-muted/)
+    expect(menu).toMatch(/flex-row items-center gap-3 px-4 py-3 active:bg-muted/)
+  })
+})
+
+describe("Home's Search messages and Browse channels draw a phone header", () => {
+  const layout = read('app/(app)/_layout.tsx')
+  const search = read('app/(app)/c/search.tsx')
+  const browse = read('app/(app)/c/index.tsx')
+
+  test('the legacy hamburger header is off for both on a phone', () => {
+    expect(layout).toMatch(/isTeamChatSubpage =\s*!isWide && !isIdeEmbed && isPhone && \/\\\/c\(\\\/search\)\?\\\/\?\$\/\.test\(pathname\)/)
+    expect(layout).toMatch(/isNewConversationPage \|\|\s*isTeamChatSubpage \|\|\s*isFloatingConversation/)
+  })
+
+  test('each draws its own header with a back arrow', () => {
+    expect(search).toMatch(/<TabScreenHeader title="Search messages" back \/>/)
+    expect(browse).toMatch(/<TabScreenHeader title="Team chat" back \/>/)
+  })
+})
+
+describe('a project reached from its own tab bar can always be left', () => {
+  const shell = read('components/layout/MobileWorkspaceShell.tsx')
+  const surfaceRoute = read('app/(app)/project-surface/[id].tsx')
+  const surfaceHeader = read('components/project/ProjectSurfaceHeader.tsx')
+
+  test('the project chat route carries Back and the project name next to the menu', () => {
+    expect(shell).toMatch(/isProjectChatRoute = showChatChrome && \/\\\/project-chat\\\/\/\.test\(pathname\)/)
+    expect(shell).toMatch(/testID="project-chat-back"/)
+    expect(shell).toMatch(/testID="project-chat-title"/)
+  })
+
+  test('canvas, files and plans get a header with Back and the project name', () => {
+    expect(surfaceRoute).toMatch(/header=\{<ProjectSurfaceHeader/)
+    expect(surfaceHeader).toMatch(/testID="project-surface-back"/)
+    // Back pops to where the project was opened from, and falls back to Home.
+    expect(surfaceHeader).toMatch(/router\.canGoBack\(\)\) router\.back\(\)/)
+    expect(surfaceHeader).toMatch(/router\.replace\("\/\(app\)\/home"/)
+  })
+})
+
+describe('phone-only changes leave web and desktop as they were', () => {
+  const pressable = readFileSync(join(MOBILE, '../../packages/shared-ui/src/primitives/PressableScale.tsx'), 'utf8')
+  const meetings = read('app/(app)/meetings/index.tsx')
+  const settings = read('components/settings/ProjectSettingsContent.tsx')
+
+  test('the press dip is plain Pressable on web', () => {
+    expect(pressable).toMatch(/if \(Platform\.OS === 'web'\) \{\s*return <Pressable ref=\{ref\}/)
+  })
+
+  test('Meetings keeps its original header off a phone', () => {
+    expect(meetings).toMatch(/const Root = phone \? View : SafeAreaView/)
+    expect(meetings).toMatch(/phone \? <TabScreenHeader title="Meetings"/)
+    expect(meetings).toMatch(/Capture/)
+  })
+
+  test('project settings keep flex-1 off a phone', () => {
+    expect(settings).toMatch(/className=\{phone \? undefined : "flex-1"\}/)
+  })
+})
+
+describe('Android team conversations', () => {
+  const conversation = read('app/(app)/c/[conversationId].tsx')
+  const messageList = read('components/team-chat/MessageList.tsx')
+
+  test('the composer avoids the keyboard on every native platform, not only iOS', () => {
+    // Android draws edge to edge, so the window no longer resizes for the keyboard.
+    expect(conversation).toMatch(/behavior=\{Platform\.OS === 'web' \? undefined : 'padding'\}/)
+  })
+
+  test('the empty-state text is not flipped a second time on Android', () => {
+    expect(messageList).toMatch(/style=\{Platform\.OS === 'android' \? undefined : \{ transform: \[\{ scaleY: -1 \}\] \}\}/)
   })
 })

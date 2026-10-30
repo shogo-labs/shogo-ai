@@ -37,10 +37,12 @@ function BuddyLookContent({
   target,
   onClose,
   layout = "full",
+  inline,
 }: {
   target: BuddyLookTarget
   onClose?: () => void
   layout?: "full" | "compact"
+  inline?: boolean
 }) {
   const color = useIslandAccent()
 
@@ -52,6 +54,7 @@ function BuddyLookContent({
         color={color}
         previewSize={layout === "compact" ? 130 : 150}
         layout={layout}
+        inline={inline}
       />
       {target.error ? <Text className="text-xs text-destructive">{target.error}</Text> : null}
       {target.onReset ? (
@@ -78,9 +81,14 @@ function BuddyLookContent({
   )
 }
 
-/** The customizer on its own, to sit on a page instead of in a sheet. */
-export function BuddyLookEditor({ target, layout = "full" }: { target: BuddyLookTarget; layout?: "full" | "compact" }) {
-  return <BuddyLookContent target={target} layout={layout} />
+/**
+ * The customizer on its own, to sit on a page instead of in a sheet. On a phone
+ * it takes the compact layout: the full one lays every option out side by side
+ * and is far wider and taller than the screen.
+ */
+export function BuddyLookEditor({ target, layout }: { target: BuddyLookTarget; layout?: "full" | "compact" }) {
+  const isPhone = usePhoneLayout()
+  return <BuddyLookContent target={target} layout={layout ?? (isPhone ? "compact" : "full")} inline />
 }
 
 export function BuddyLookSheet({ visible, onClose, target: customTarget }: BuddyLookSheetProps) {

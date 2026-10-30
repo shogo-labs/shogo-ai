@@ -277,6 +277,7 @@ export const HomeScreen = observer(function HomeScreen({
     enabled: isNativePhone,
     restPad: restComposerPad,
     iosKeyboardAvoiding: iosComposerAvoiding,
+    avoidingClearance: isNativePhone ? 0 : undefined,
   })
 
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL)

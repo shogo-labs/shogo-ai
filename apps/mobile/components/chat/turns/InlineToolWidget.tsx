@@ -21,6 +21,7 @@ import { getToolSummary, sepLabel } from "../tools/summary"
 import { useChatContextSafe } from "../ChatContext"
 import { CredentialChip } from "./CredentialChip"
 import { CodeText } from "../CodeText"
+import { Spin } from "@/components/ui/Spin";
 
 const MD_IMAGE_RE = /\[([^\]]*)\]\(([^)]+\.(png|jpg|jpeg|gif|webp))\)/gi
 
@@ -219,14 +220,16 @@ function InlineToolWidgetImpl({
         ) : (
           <>
             <View className="group-hover:hidden">
-              <StateIcon
-                className={cn(
-                  "w-3 h-3",
-                  tool.state === "streaming" && "text-muted-foreground/60 animate-spin",
-                  tool.state === "success" && "text-muted-foreground/60",
-                  tool.state === "error" && (isAuthErr ? "text-orange-500" : "text-red-500"),
-                )}
-              />
+              <Spin active={tool.state === "streaming"}>
+                <StateIcon
+                  className={cn(
+                    "w-3 h-3",
+                    tool.state === "streaming" && "text-muted-foreground/60 animate-spin",
+                    tool.state === "success" && "text-muted-foreground/60",
+                    tool.state === "error" && (isAuthErr ? "text-orange-500" : "text-red-500"),
+                  )}
+                />
+              </Spin>
             </View>
             <View className="hidden group-hover:flex">
               <ChevronRight className="w-3 h-3 text-muted-foreground" />

@@ -1,27 +1,37 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The workspace avatar at the top left of Home. It is the phone sidebar's only
- * button (Slack mobile): switching workspace, preferences and account all live
- * behind it, and no other screen grows a menu button of its own.
+ * The workspace avatar at the top left of Home. Tapping it opens the workspace
+ * switcher sheet, not the full sidebar: Home already lists projects, channels
+ * and agents, and preferences and account live behind the profile avatar on the
+ * right, so pushing a second copy of the same lists over the screen added
+ * nothing.
  */
-import { Pressable, Text } from 'react-native'
+import { useState } from 'react'
+import { Text } from 'react-native'
+import { PressableScale } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { sidebarOpenEvents } from '../../lib/sidebar-open-events'
+import { haptics } from '../../lib/haptics'
+import { MobileWorkspaceSwitcherSheet } from './MobileWorkspaceSwitcher'
 
 export function WorkspaceSidebarAvatar({ workspaceName }: { workspaceName?: string }) {
   const workspace = useActiveWorkspace()
+  const [open, setOpen] = useState(false)
   const name = workspaceName ?? workspace?.name ?? 'Workspace'
   const initial = name.trim().charAt(0).toUpperCase() || 'S'
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${name}, open workspace sidebar`}
-      testID="home-sidebar-avatar"
-      onPress={() => sidebarOpenEvents.requestOpenSidebar()}
-      className="h-9 w-9 items-center justify-center rounded-full bg-primary/15 active:opacity-80"
-    >
-      <Text className="text-sm font-semibold text-primary">{initial}</Text>
-    </Pressable>
+    <>
+      <PressableScale
+        accessibilityRole="button"
+        accessibilityLabel={`${name}, switch workspace`}
+        testID="home-sidebar-avatar"
+        feedback={haptics.selection}
+        onPress={() => setOpen(true)}
+        className="h-9 w-9 items-center justify-center rounded-full bg-primary/15"
+      >
+        <Text className="text-sm font-semibold text-primary">{initial}</Text>
+      </PressableScale>
+      <MobileWorkspaceSwitcherSheet visible={open} onClose={() => setOpen(false)} onSwitched={() => setOpen(false)} />
+    </>
   )
 }

@@ -51,9 +51,11 @@ function useFocused(): boolean {
 export interface ActivityFeedProps {
   /** Tighter rows for the desktop side panel. */
   compact?: boolean
+  /** Phone tab: the "Unreads" chip shares a baseline with the floating "+" on the right. */
+  withFloatingCreate?: boolean
 }
 
-export function ActivityFeed({ compact = false }: ActivityFeedProps) {
+export function ActivityFeed({ compact = false, withFloatingCreate = false }: ActivityFeedProps) {
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id ?? null
@@ -242,10 +244,21 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
           onPress={() => setUnreadOnly((v) => !v)}
           className={cn(
             // Phones keep the right corner for the floating "+".
-            compact ? 'absolute bottom-4 right-4' : 'absolute bottom-7 left-4',
+            compact
+              ? 'absolute bottom-4 right-4'
+              // Sized and centred on the floating "+" (see style below).
+              : withFloatingCreate
+                ? 'absolute left-4'
+                : 'absolute bottom-7 left-4',
             'rounded-full border px-4 py-2 shadow-sm',
             unreadOnly ? 'border-primary bg-primary' : 'border-border bg-card active:bg-accent/50',
           )}
+          style={
+            withFloatingCreate && !compact
+              // 40pt tall, centred on the 56pt "+" (measured: this container ends ~4pt above its).
+              ? { bottom: 32, height: 40, justifyContent: 'center', paddingVertical: 0, paddingHorizontal: 18 }
+              : undefined
+          }
         >
           <Text className={cn('text-xs font-medium', unreadOnly ? 'text-primary-foreground' : 'text-foreground')}>Unreads</Text>
         </Pressable>

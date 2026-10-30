@@ -31,17 +31,24 @@ import {
   useNativePhoneSheetChrome,
 } from '../../lib/native-phone-layout'
 import { acquireNativePhoneSheetLock } from '../../lib/native-phone-sheet-lock'
+import { PROGRESS_REST, SPRING } from '../../lib/motion'
 
-const NATIVE_PHONE_SHEET_SLIDE_IN_MS = 240
-const NATIVE_PHONE_SHEET_SLIDE_OUT_MS = 180
+// The panel is anchored to the bottom edge, so sliding in/out is critically
+// damped and clamped: an overshoot would lift it off the edge and show a gap.
+const NATIVE_PHONE_SHEET_SLIDE_SPRING = {
+  ...SPRING.drawer,
+  ...PROGRESS_REST,
+  overshootClamping: true,
+  useNativeDriver: true,
+} as const
 const SHEET_CLOSE_HIT_SLOP = 8
 const NATIVE_PHONE_SHEET_DRAG_MIN_DISTANCE = 4
 const NATIVE_PHONE_SHEET_DRAG_PROJECTION_MS = 120
 const NATIVE_PHONE_SHEET_DRAG_CLOSE_THRESHOLD = 72
+// Released after a drag the sheet is free to move up or settle back, so it gets
+// the SwiftUI sheet spring (0.3s, 0.8) and the finger's release velocity.
 const NATIVE_PHONE_SHEET_DRAG_SPRING = {
-  stiffness: 300,
-  damping: 32,
-  mass: 0.8,
+  ...SPRING.sheet,
   useNativeDriver: true,
 } as const
 
@@ -63,10 +70,9 @@ function useNativePhoneSheetSlide(visible: boolean, enabled: boolean) {
       transition.stopAnimation()
       transition.setValue(0)
       const frame = requestAnimationFrame(() => {
-        Animated.timing(transition, {
+        Animated.spring(transition, {
           toValue: 1,
-          duration: NATIVE_PHONE_SHEET_SLIDE_IN_MS,
-          useNativeDriver: true,
+          ...NATIVE_PHONE_SHEET_SLIDE_SPRING,
         }).start()
       })
       return () => cancelAnimationFrame(frame)
@@ -74,10 +80,9 @@ function useNativePhoneSheetSlide(visible: boolean, enabled: boolean) {
 
     if (!mountedRef.current) return
     transition.stopAnimation()
-    Animated.timing(transition, {
+    Animated.spring(transition, {
       toValue: 0,
-      duration: NATIVE_PHONE_SHEET_SLIDE_OUT_MS,
-      useNativeDriver: true,
+      ...NATIVE_PHONE_SHEET_SLIDE_SPRING,
     }).start(({ finished }) => {
       if (finished) {
         mountedRef.current = false
@@ -273,6 +278,7 @@ export function NativePhoneSheet({
       const target = projected < dragBounds.top / 2 ? dragBounds.top : 0
       Animated.spring(dragOffset, {
         toValue: target,
+        velocity: gesture.vy * 1000,
         ...NATIVE_PHONE_SHEET_DRAG_SPRING,
       }).start()
     },

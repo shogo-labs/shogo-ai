@@ -67,7 +67,8 @@ describe("MorePanel", () => {
     const rows = screen.getAllByRole("link")
     expect(rows[rows.length - 1]).toBe(settings)
     fireEvent.click(settings)
-    expect(push).toHaveBeenCalledWith("/(app)/settings")
+    // Straight to the phone Account screen; `/settings` would only redirect there.
+    expect(push).toHaveBeenCalledWith("/(app)/account")
   })
 
   test("a personal workspace also lists Settings as its last row", () => {
@@ -77,7 +78,7 @@ describe("MorePanel", () => {
     const rows = screen.getAllByRole("link")
     expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["Analytics", "Settings"])
     fireEvent.click(screen.getByRole("link", { name: "Settings" }))
-    expect(push).toHaveBeenCalledWith("/(app)/settings")
+    expect(push).toHaveBeenCalledWith("/(app)/account")
   })
 
   test("the desktop sidebar More panel lists Settings too", () => {

@@ -78,9 +78,11 @@ export interface WorkspaceMenuSectionProps {
   /**
    * `full` is the account page and the legacy popover. `switcher` is the
    * rail tile's lean list. `workspace-menu` is the panel-header menu
-   * (identity, settings, usage) without the workspace list.
+   * (identity, settings, usage) without the workspace list. `sheet` is the
+   * phone switcher sheet: only the list, since the sheet's own title says
+   * what it is.
    */
-  presentation?: "full" | "switcher" | "workspace-menu";
+  presentation?: "full" | "switcher" | "workspace-menu" | "sheet";
 }
 
 /**
@@ -520,18 +522,30 @@ export function WorkspaceMenuSection({
     <>
       {entryRows}
       {!localMode && hasPersonalWorkspace === false && onCreatePersonalWorkspace && (
+        isNative ? (
+          <NativeActionRow
+            icon={<Sparkles size={20} className="text-primary" />}
+            label="Create personal space"
+            accessibilityLabel="Create personal space"
+            trailing={
+              <View className="rounded bg-primary/10 px-1.5 py-0.5">
+                <Text className={cn(density.text.caption, "text-primary font-medium")}>Free</Text>
+              </View>
+            }
+            onPress={() => {
+              onClose();
+              onCreatePersonalWorkspace();
+            }}
+          />
+        ) : (
         <Pressable
           onPress={() => {
             onClose();
             onCreatePersonalWorkspace();
           }}
-          className={cn(
-            "flex-row items-center gap-2 px-4 active:bg-muted",
-            isNative ? "py-3.5" : "py-2",
-            !isNative && "rounded-md",
-          )}
+          className="flex-row items-center gap-2 rounded-md px-4 py-2 active:bg-muted"
         >
-          <Sparkles size={isNative ? 18 : 16} className="text-primary" />
+          <Sparkles size={16} className="text-primary" />
           <Text className={cn("text-foreground flex-1", density.text.body)}>
             Create personal space
           </Text>
@@ -543,30 +557,39 @@ export function WorkspaceMenuSection({
             </Text>
           </View>
         </Pressable>
+        )
       )}
       {localMode && (
         <CloudSessionRow isNative={isNative} />
       )}
-      <Pressable
-        onPress={() => {
-          onClose();
-          onCreateWorkspace();
-        }}
-        accessibilityLabel="Create new workspace"
-        className={cn(
-          "flex-row items-center gap-2 px-4 active:bg-muted",
-          isNative ? "py-3.5" : "py-2",
-          !isNative && "rounded-md",
-        )}
-      >
-        <Plus size={isNative ? 18 : 16} className="text-muted-foreground" />
-        <Text className={cn("text-foreground", density.text.body)}>
-          Create new workspace
-        </Text>
-      </Pressable>
+      {isNative ? (
+        <NativeActionRow
+          icon={<Plus size={20} className="text-foreground" />}
+          label="Create new workspace"
+          accessibilityLabel="Create new workspace"
+          onPress={() => {
+            onClose();
+            onCreateWorkspace();
+          }}
+        />
+      ) : (
+        <Pressable
+          onPress={() => {
+            onClose();
+            onCreateWorkspace();
+          }}
+          accessibilityLabel="Create new workspace"
+          className="flex-row items-center gap-2 rounded-md px-4 py-2 active:bg-muted"
+        >
+          <Plus size={16} className="text-muted-foreground" />
+          <Text className={cn("text-foreground", density.text.body)}>
+            Create new workspace
+          </Text>
+        </Pressable>
+      )}
       {busyElsewhere > 0 && (
         <Text
-          className={cn(density.text.caption, "px-4 pb-1 text-muted-foreground")}
+          className={cn(density.text.caption, "px-4 text-muted-foreground", isNative ? "pb-3" : "pb-1")}
           accessibilityLabel={`Working in ${busyElsewhere} other ${busyElsewhere === 1 ? "workspace" : "workspaces"}`}
         >
           Working in {busyElsewhere} other {busyElsewhere === 1 ? "workspace" : "workspaces"}
@@ -661,6 +684,15 @@ export function WorkspaceMenuSection({
     );
   }
 
+  if (presentation === "sheet") {
+    return (
+      <AccountSettingsGroup className="mt-1 px-0 pb-2">
+        {pendingInvitations}
+        {workspaceRows}
+      </AccountSettingsGroup>
+    );
+  }
+
   if (isNative) {
     return (
       <>
@@ -705,19 +737,69 @@ export function WorkspaceMenuSection({
 }
 
 /** Desktop: sign in to Shogo Cloud, or show the account with Sign out. */
+/**
+ * An action under the workspace list on a phone. It shares the workspace rows'
+ * gutter, tile size and gap, so icons line up with the avatars above and
+ * labels with the workspace names.
+ */
+function NativeActionRow({
+  icon,
+  label,
+  onPress,
+  accessibilityLabel,
+  trailing,
+  disabled,
+}: {
+  icon: ReactNode;
+  label: string;
+  onPress: () => void;
+  accessibilityLabel: string;
+  trailing?: ReactNode;
+  disabled?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      className={cn("flex-row items-center gap-3 px-4 py-3 active:bg-muted", disabled && "opacity-60")}
+    >
+      <View className="h-10 w-10 items-center justify-center rounded-xl bg-muted">{icon}</View>
+      <Text className="min-w-0 flex-1 text-base text-foreground" numberOfLines={1}>
+        {label}
+      </Text>
+      {trailing}
+    </Pressable>
+  );
+}
+
 function CloudSessionRow({ isNative }: { isNative: boolean }) {
   const density = densityFor(isNative);
   const { cloud, pending, error, signIn, signOut } = useCloudSession();
-  const rowClass = cn(
-    "flex-row items-center gap-2 px-4",
-    isNative ? "py-3.5" : "py-2",
-    !isNative && "rounded-md",
-  );
-  const iconSize = isNative ? 18 : 16;
+  const rowClass = isNative
+    ? "flex-row items-center gap-3 px-4 py-3"
+    : "flex-row items-center gap-2 rounded-md px-4 py-2";
+  const iconSize = isNative ? 20 : 16;
 
   const errorText = error ? (
     <Text className={cn("px-4 pb-2 text-destructive", density.text.caption)}>{error}</Text>
   ) : null;
+
+  if (isNative && !cloud.signedIn) {
+    return (
+      <>
+        <NativeActionRow
+          icon={<LogIn size={20} className="text-foreground" />}
+          label={pending === "signin" ? "Waiting for browser\u2026" : "Sign in to Shogo Cloud"}
+          accessibilityLabel="Sign in to Shogo Cloud"
+          disabled={pending !== null}
+          onPress={() => void signIn()}
+        />
+        {errorText}
+      </>
+    );
+  }
 
   if (!cloud.signedIn) {
     return (
@@ -741,11 +823,13 @@ function CloudSessionRow({ isNative }: { isNative: boolean }) {
   return (
     <>
       <View className={rowClass}>
-        {cloud.reachable ? (
-          <Cloud size={iconSize} className="text-muted-foreground" />
-        ) : (
-          <CloudOff size={iconSize} className="text-destructive" />
-        )}
+        <View className={isNative ? "h-10 w-10 items-center justify-center rounded-xl bg-muted" : undefined}>
+          {cloud.reachable ? (
+            <Cloud size={iconSize} className="text-muted-foreground" />
+          ) : (
+            <CloudOff size={iconSize} className="text-destructive" />
+          )}
+        </View>
         <Text
           className={cn("flex-1", cloud.reachable ? "text-muted-foreground" : "text-destructive", density.text.label)}
           numberOfLines={1}

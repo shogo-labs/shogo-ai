@@ -15,6 +15,7 @@ import { getBasename, getLanguageLabel } from "./file-lang-map"
 import { isDeliverable } from "../../../lib/deliverable"
 import { useChatContextSafe } from "../ChatContext"
 import { DownloadChip } from "./DownloadChip"
+import { Spin } from "@/components/ui/Spin";
 
 const MAX_PREVIEW_LINES = 40
 const MAX_PREVIEW_CHARS = 4000
@@ -181,14 +182,16 @@ export const WriteFileWidget = memo(function WriteFileWidget({
         </Text>
 
         {tool.state !== "success" && (
-          <StateIcon
-            className={cn(
-              "w-3 h-3",
-              tool.state === "streaming" && "text-primary animate-spin",
-              tool.state === "error" && "text-red-500",
-            )}
-            size={12}
-          />
+          <Spin active={tool.state === "streaming"}>
+            <StateIcon
+              className={cn(
+                "w-3 h-3",
+                tool.state === "streaming" && "text-primary animate-spin",
+                tool.state === "error" && "text-red-500",
+              )}
+              size={12}
+            />
+          </Spin>
         )}
       </Pressable>
 
@@ -197,7 +200,9 @@ export const WriteFileWidget = memo(function WriteFileWidget({
         <View className="border-l border-border/40 ml-2 pl-2 py-1.5">
           {isStreamingNoContent && (
             <View className="flex-row items-center gap-1.5 py-1">
-              <Loader2 className="w-3 h-3 text-primary animate-spin" size={12} />
+              <Spin>
+                <Loader2 className="w-3 h-3 text-primary animate-spin" size={12} />
+              </Spin>
               <Text className="text-[10px] text-muted-foreground">Writing…</Text>
             </View>
           )}

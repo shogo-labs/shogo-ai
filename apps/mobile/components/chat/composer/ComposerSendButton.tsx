@@ -4,6 +4,7 @@
 import { ArrowUp, Loader2 } from "lucide-react-native";
 import { Pressable, View } from "react-native";
 import { cn } from "@shogo/shared-ui/primitives";
+import { Spin } from "@/components/ui/Spin";
 
 export function ComposerSendButton({
   canSend,
@@ -51,11 +52,13 @@ export function ComposerSendButton({
             : { opacity: 0.5 }
         }
       >
-        <Loader2
-          className={cn("animate-spin", iconClassName)}
-          color={iconColor}
-          size={glyph}
-        />
+        <Spin>
+          <Loader2
+            className={cn("animate-spin", iconClassName)}
+            color={iconColor}
+            size={glyph}
+          />
+        </Spin>
       </View>
     );
   }

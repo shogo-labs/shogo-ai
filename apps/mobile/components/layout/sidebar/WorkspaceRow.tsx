@@ -92,27 +92,43 @@ export function WorkspaceRow({
       aria-selected={isCurrent}
       testID={`workspace-row:${entry.key}`}
       className={cn(
-        'flex-row items-center gap-3 rounded-lg px-2 active:bg-muted',
-        isNative ? 'py-3.5' : 'py-1.5',
+        'flex-row items-center gap-3 active:bg-muted',
+        isNative ? 'px-4 py-3' : 'rounded-lg px-2 py-1.5',
       )}
     >
-      <View
-        className={cn(
-          'rounded-[14px] border-2 p-0.5',
-          isCurrent ? 'border-foreground' : 'border-transparent',
-        )}
-      >
+      {isNative ? (
+        // The check on the right marks the current workspace, so the tile stays
+        // a plain 40pt square: it lines up with the action rows' tiles below.
         <View
-          className="h-9 w-9 items-center justify-center rounded-lg"
+          className="h-10 w-10 items-center justify-center rounded-xl"
           style={{ backgroundColor: workspaceColor(entry.id) }}
         >
-          <Text className="text-sm font-bold text-white">
+          <Text className="text-base font-bold text-white">
             {workspaceInitial(entry.name)}
           </Text>
         </View>
-      </View>
+      ) : (
+        <View
+          className={cn(
+            'rounded-[14px] border-2 p-0.5',
+            isCurrent ? 'border-foreground' : 'border-transparent',
+          )}
+        >
+          <View
+            className="h-9 w-9 items-center justify-center rounded-lg"
+            style={{ backgroundColor: workspaceColor(entry.id) }}
+          >
+            <Text className="text-sm font-bold text-white">
+              {workspaceInitial(entry.name)}
+            </Text>
+          </View>
+        </View>
+      )}
       <View className="min-w-0 flex-1">
-        <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+        <Text
+          className={cn('font-semibold text-foreground', isNative ? 'text-base' : 'text-sm')}
+          numberOfLines={1}
+        >
           {entry.name}
         </Text>
         <View className="mt-0.5 flex-row items-center gap-1">

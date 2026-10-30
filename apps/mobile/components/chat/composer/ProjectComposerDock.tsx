@@ -33,6 +33,7 @@ export function ProjectComposerDock({
   presentation,
   columnWidth,
   keyboardPad,
+  keyboardLift,
   keyboardOpen,
   restPad,
   applyKeyboardPad,
@@ -43,6 +44,12 @@ export function ProjectComposerDock({
   presentation?: ChatColumnPresentation;
   columnWidth?: number;
   keyboardPad: Animated.Value;
+  /**
+   * When set, the dock rests on `restPad` and slides on this native-driven
+   * translateY instead of animating its padding (which re-lays out the chat on
+   * every frame).
+   */
+  keyboardLift?: Animated.Value;
   keyboardOpen: boolean;
   restPad: number;
   applyKeyboardPad: boolean;
@@ -55,28 +62,31 @@ export function ProjectComposerDock({
   const showPhoneFade = native || phoneViewport;
   // Separate the focused composer from the system keyboard by one compact
   // line while keeping the dock anchored to the same keyboard frame.
-  const keyboardGap = keyboardOpen ? NATIVE_COMPOSER_KEYBOARD_GAP : 0;
+  const keyboardGap = keyboardOpen && !keyboardLift ? NATIVE_COMPOSER_KEYBOARD_GAP : 0;
 
   return (
     <View className="w-full items-center">
       <Animated.View
         testID="project-composer-dock"
-        style={chatComposerDockStyle({
-          column: chatColumnStyle({
-            presentation,
-            phone: !!phoneViewport,
-            measuredWidth: columnWidth,
+        style={[
+          ...chatComposerDockStyle({
+            column: chatColumnStyle({
+              presentation,
+              phone: !!phoneViewport,
+              measuredWidth: columnWidth,
+            }),
+            // Only use the measured keyboard overlap while the keyboard is
+            // actually visible. A stale keyboard frame must never leave the
+            // composer floating in the middle of the chat after dismissal.
+            keyboardPad: applyKeyboardPad
+              ? keyboardOpen && !keyboardLift
+                ? keyboardPad
+                : restPad
+              : undefined,
+            webOverflowVisible: applyKeyboardPad && !native,
           }),
-          // Only use the measured keyboard overlap while the keyboard is
-          // actually visible. A stale keyboard frame must never leave the
-          // composer floating in the middle of the chat after dismissal.
-          keyboardPad: applyKeyboardPad
-            ? keyboardOpen
-              ? keyboardPad
-              : restPad
-            : undefined,
-          webOverflowVisible: applyKeyboardPad && !native,
-        })}
+          keyboardLift ? { transform: [{ translateY: keyboardLift }] } : undefined,
+        ]}
       >
         {showPhoneFade ? (
           <NativePhoneBottomFade

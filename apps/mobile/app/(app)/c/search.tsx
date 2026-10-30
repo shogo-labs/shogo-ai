@@ -18,6 +18,8 @@ import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useMentionables } from '../../../hooks/useTeamChat'
 import { ChatMarkdown } from '../../../components/chat/ChatMarkdown'
 import { InlineMarkdown } from '../../../components/team-chat/InlineMarkdown'
+import { usePhoneLayout } from '../../../lib/native-phone-layout'
+import { TabScreenHeader } from '../../../components/layout/TabScreenHeader'
 import { teamChatApi, type AskResult, type SearchResponse } from '../../../lib/team-chat-api'
 import { mentionNames, renderMentions, searchSnippet } from '../../../lib/team-chat-state'
 
@@ -56,6 +58,7 @@ export default function TeamChatSearch() {
   const params = useLocalSearchParams<{ q?: string; mode?: string }>()
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
+  const phone = usePhoneLayout()
   const workspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
   const mentionables = useMentionables(workspaceId)
   const names = useMemo(() => mentionNames(mentionables), [mentionables])
@@ -144,9 +147,11 @@ export default function TeamChatSearch() {
 
   return (
     <View className="flex-1 bg-background">
-      <View className="w-full self-center px-6 pt-6" style={{ maxWidth: 820 }}>
-        <Text className="text-2xl font-semibold text-foreground">Search messages</Text>
-        <View className="mt-4 flex-row items-center rounded-md border border-border px-3">
+      {/* A phone draws its own header (the legacy hamburger one opened the old sidebar). */}
+      {phone ? <TabScreenHeader title="Search messages" back /> : null}
+      <View className={cn('w-full self-center px-6', phone ? 'pt-2' : 'pt-6')} style={{ maxWidth: 820 }}>
+        {phone ? null : <Text className="text-2xl font-semibold text-foreground">Search messages</Text>}
+        <View className={cn('flex-row items-center rounded-md border border-border px-3', phone ? 'mt-1' : 'mt-4')}>
           <SearchIcon size={14} className="text-muted-foreground" />
           <TextInput
             autoFocus
