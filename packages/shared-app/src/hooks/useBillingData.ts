@@ -117,6 +117,8 @@ export interface BillingDataState {
   trialEligible: boolean
   /** When the current trial ends (ISO), only while `status === 'trialing'`. */
   trialEndsAt: string | null
+  /** An invoiced-but-unpaid overage block; overage stays paused until paid. */
+  overagePayment: OveragePaymentPending | null
 }
 
 /** Usage events are fetched one page at a time via the collection's offset/limit. */
