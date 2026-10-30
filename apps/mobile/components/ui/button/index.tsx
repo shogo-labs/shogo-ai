@@ -10,12 +10,14 @@ import {
   type VariantProps,
 } from '@gluestack-ui/utils/nativewind-utils';
 import { cssInterop } from 'nativewind';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
+import { PressableScale } from '@shogo/shared-ui/primitives';
 import { PrimitiveIcon, UIIcon } from '@gluestack-ui/core/icon/creator';
 
 const SCOPE = 'BUTTON';
 
-const Root = withStyleContext(Pressable, SCOPE);
+// Dips on press-down and springs back, like the rest of the app's buttons.
+const Root = withStyleContext(PressableScale, SCOPE);
 
 const UIButton = createButton({
   Root: Root,

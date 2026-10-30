@@ -16,6 +16,7 @@ import type { ToolCallData } from "../tools/types"
 import { getBasename, getLanguageLabel } from "./file-lang-map"
 import { computeLineDiff } from "./diff-utils"
 import { useChatContextSafe } from "../ChatContext"
+import { Spin } from "@/components/ui/Spin";
 
 export interface EditFileWidgetProps {
   tool: ToolCallData
@@ -151,14 +152,16 @@ export const EditFileWidget = memo(function EditFileWidget({
         )}
 
         {tool.state !== "success" && (
-          <StateIcon
-            className={cn(
-              "w-3 h-3",
-              tool.state === "streaming" && "text-primary animate-spin",
-              tool.state === "error" && "text-red-500",
-            )}
-            size={12}
-          />
+          <Spin active={tool.state === "streaming"}>
+            <StateIcon
+              className={cn(
+                "w-3 h-3",
+                tool.state === "streaming" && "text-primary animate-spin",
+                tool.state === "error" && "text-red-500",
+              )}
+              size={12}
+            />
+          </Spin>
         )}
       </Pressable>
 
@@ -167,7 +170,9 @@ export const EditFileWidget = memo(function EditFileWidget({
         <View className="border-l border-border/40 ml-2 pl-2 py-1.5">
           {isStreamingNoContent && (
             <View className="flex-row items-center gap-1.5 py-1">
-              <Loader2 className="w-3 h-3 text-primary animate-spin" size={12} />
+              <Spin>
+                <Loader2 className="w-3 h-3 text-primary animate-spin" size={12} />
+              </Spin>
               <Text className="text-[10px] text-muted-foreground">Editing…</Text>
             </View>
           )}

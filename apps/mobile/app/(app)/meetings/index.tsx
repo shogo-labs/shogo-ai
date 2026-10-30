@@ -13,6 +13,8 @@ import {
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
+import { usePhoneLayout } from '../../../lib/native-phone-layout'
+import { TabScreenHeader } from '../../../components/layout/TabScreenHeader'
 import { Mic, Square, Clock, AlertCircle, CheckCircle, Loader2, Search, Sparkles, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useRecording, formatDuration } from '../../../lib/use-recording'
@@ -77,6 +79,8 @@ function formatDate(dateStr: string) {
 
 export default function MeetingsScreen() {
   const router = useRouter()
+  const phone = usePhoneLayout()
+  const Root = phone ? View : SafeAreaView
   const {
     isRecording,
     duration,
@@ -227,20 +231,34 @@ export default function MeetingsScreen() {
   )
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={['top', 'left', 'right']}>
-      <View className="border-b border-border/70 bg-card/70 px-4 pb-4 pt-3">
-        <View className="flex-row items-center justify-between">
-          <View className="min-w-0 flex-1 pr-3">
-            <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-orange-600 dark:text-orange-300">
-              Capture
-            </Text>
-            <Text className="mt-1 text-[28px] font-semibold tracking-[-0.6px] text-foreground">Meetings</Text>
-            <Text className="mt-1 text-sm leading-5 text-muted-foreground">
-              Jot a few notes while you talk. Shogo writes up the rest.
-            </Text>
+    <Root className="flex-1 bg-background" {...(phone ? {} : { edges: ['top', 'left', 'right'] })}>
+      {/* A phone gets the same large title and avatar as every other tab screen. */}
+      {phone ? <TabScreenHeader title="Meetings" actions={recordButton || undefined} /> : null}
+      <View
+        className={
+          phone
+            ? 'border-b border-border/70 px-4 pb-4 pt-1'
+            : 'border-b border-border/70 bg-card/70 px-4 pb-4 pt-3'
+        }
+      >
+        {phone ? (
+          <Text className="text-sm leading-5 text-muted-foreground">
+            Jot a few notes while you talk. Shogo writes up the rest.
+          </Text>
+        ) : (
+          <View className="flex-row items-center justify-between">
+            <View className="min-w-0 flex-1 pr-3">
+              <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-orange-600 dark:text-orange-300">
+                Capture
+              </Text>
+              <Text className="mt-1 text-[28px] font-semibold tracking-[-0.6px] text-foreground">Meetings</Text>
+              <Text className="mt-1 text-sm leading-5 text-muted-foreground">
+                Jot a few notes while you talk. Shogo writes up the rest.
+              </Text>
+            </View>
+            {recordButton}
           </View>
-          {recordButton}
-        </View>
+        )}
 
         {isRecording && (
           <View className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/5 p-3">
@@ -272,6 +290,8 @@ export default function MeetingsScreen() {
           </View>
         )}
 
+        {/* On a phone there is nothing to search until there is a meeting (or a query to clear). */}
+        {(!phone || meetings.length > 0 || !!query) && (
         <View className="mt-4 flex-row items-center gap-2 rounded-xl border border-border/70 bg-background px-3">
           <Search size={14} className="text-muted-foreground" />
           <TextInput
@@ -289,6 +309,7 @@ export default function MeetingsScreen() {
             </Pressable>
           )}
         </View>
+        )}
       </View>
 
       {results ? (
@@ -335,6 +356,6 @@ export default function MeetingsScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         />
       )}
-    </SafeAreaView>
+    </Root>
   )
 }

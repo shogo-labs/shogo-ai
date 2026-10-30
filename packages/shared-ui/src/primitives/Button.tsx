@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import React from 'react'
-import { Pressable, Text, type PressableProps } from 'react-native'
+import { Text } from 'react-native'
 import { cn } from './cn'
+import { PressableScale } from './PressableScale'
 
 const variantStyles = {
   default: 'bg-primary',
@@ -55,7 +56,7 @@ export function Button({
   accessibilityLabel,
 }: ButtonProps) {
   return (
-    <Pressable
+    <PressableScale
       testID={testID}
       accessibilityLabel={accessibilityLabel}
       className={cn(
@@ -75,6 +76,6 @@ export function Button({
       ) : (
         children
       )}
-    </Pressable>
+    </PressableScale>
   )
 }

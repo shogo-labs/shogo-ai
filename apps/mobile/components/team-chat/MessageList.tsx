@@ -7,6 +7,7 @@ import type { ChatMessage } from '../../lib/team-chat-api'
 import { firstUnreadIndex, startsGroup, type MentionNames, type TimelineState } from '../../lib/team-chat-state'
 import { dayKey, formatDayDivider } from '../../lib/team-chat-time'
 import { attachNestedWheelPassthrough } from '../../lib/nested-wheel-passthrough'
+import { transcriptKeyboardDismissMode } from '../../lib/composer-keyboard-dismiss'
 import { foldStatusRuns, type TimelineItem } from '../../lib/team-chat-kinds'
 import { MessageRow, type MessageRowProps } from './MessageRow'
 import { StatusRunRow } from './AgentStatus'
@@ -177,7 +178,7 @@ export function MessageList({
   const renderItem = useCallback(({ item }: { item: Row }) => {
     const dayIso = item.dayIso
     const row = item.folded.length ? (
-      <StatusRunRow latest={item.message} folded={item.folded} onOpenThread={inThread ? undefined : rowProps.onReply} />
+      <StatusRunRow latest={item.message} folded={item.folded} names={names} onOpenThread={inThread ? undefined : rowProps.onReply} />
     ) : (
       <MessageRow
         message={item.message}
@@ -252,11 +253,20 @@ export function MessageList({
           </View>
         }
         ListEmptyComponent={
-          <View className="flex-1 items-center justify-center px-8 py-16" style={{ transform: [{ scaleY: -1 }] }}>
+          // Android's inverted list already flips this slot back upright.
+          <View
+            className="flex-1 items-center justify-center px-8 py-16"
+            style={Platform.OS === 'android' ? undefined : { transform: [{ scaleY: -1 }] }}
+          >
             <Text className="text-center text-sm text-muted-foreground">{emptyText ?? 'No messages yet.'}</Text>
           </View>
         }
         keyboardShouldPersistTaps="handled"
+        // Web opts out: react-native-web dismisses on every scroll event,
+        // including the list's own scroll as messages arrive, which blurs the
+        // team-chat composer mid-message (SHO-255).
+        keyboardDismissMode={transcriptKeyboardDismissMode()}
+        alwaysBounceVertical={Platform.OS === 'ios'}
       />
       {showUnreadPill ? (
         <View

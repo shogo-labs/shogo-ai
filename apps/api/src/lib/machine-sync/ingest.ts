@@ -55,6 +55,8 @@ export interface IngestSuccess {
   cursor: number
   applied: number
   deleted: number
+  /** Snapshot rows left out because their parent row is not in the copy yet. */
+  skipped?: number
   syncedAt: string
   /** Sync is switched off for this machine: the desktop should stop pushing. */
   disabled?: boolean
@@ -168,9 +170,22 @@ export function normaliseRow(
   const listFields = new Set(
     meta.model.fields.filter((field) => field.isList).map((field) => field.name),
   )
+  const stringFields = new Set(
+    meta.model.fields
+      .filter((field) => !field.isList && !field.isRelation && field.typeName === 'String')
+      .map((field) => field.name),
+  )
   for (const [key, value] of Object.entries(row)) {
     if (!meta.columns.has(key)) continue
     if (value === undefined) continue
+    // The desktop's SQLite client JSON-parses some columns by name alone
+    // (`create-prisma-client.ts`), so a column that is a plain String here can
+    // arrive as an object or array — `Meeting.transcript` did, and every
+    // snapshot from that machine died on it (PERF-12). Store the text form.
+    if (stringFields.has(key) && value !== null && typeof value === 'object' && !(value instanceof Date)) {
+      out[key] = JSON.stringify(value)
+      continue
+    }
     // A list column is an array on Postgres but a JSON string on the desktop;
     // anything that is not an array yet is decoded, or dropped.
     if (listFields.has(key) && !Array.isArray(value)) {
@@ -190,6 +205,46 @@ export function normaliseRow(
     }
   }
   return out
+}
+
+/**
+ * Snapshot rows that point at a mirrored parent row the cloud does not have.
+ *
+ * Packaged desktops up to 2.4.5 send snapshot pages in the wrong order
+ * (`StarredProject` before `Project`), one model per request, so a parent can
+ * only ever arrive in a later request. Writing the child fails the foreign key,
+ * the whole page 500s, and the desktop restarts the snapshot every couple of
+ * seconds, forever (PERF-14). Skipping the child lets the snapshot finish; the
+ * row comes across the next time it changes.
+ */
+async function findOrphans(
+  tx: any,
+  model: string,
+  rows: Array<Record<string, unknown>>,
+  meta: ModelMeta,
+): Promise<Set<string>> {
+  const orphans = new Set<string>()
+  for (const fk of foreignKeys(meta.model)) {
+    const column = fk.from.split('.')[1]
+    const [targetModel, targetColumn] = fk.to.split('.')
+    if (targetModel === model || !isMirroredModel(targetModel) || targetColumn !== 'id') continue
+    const wanted = new Set<string>()
+    for (const row of rows) {
+      const value = row[column]
+      if (typeof value === 'string' && value) wanted.add(value)
+    }
+    if (!wanted.size) continue
+    const found: Array<{ id: string }> = await tx[delegateName(targetModel)].findMany({
+      where: { id: { in: [...wanted] } },
+      select: { id: true },
+    })
+    const present = new Set(found.map((row) => row.id))
+    for (const row of rows) {
+      const value = row[column]
+      if (typeof value === 'string' && value && !present.has(value)) orphans.add(String(row.id))
+    }
+  }
+  return orphans
 }
 
 // ─── Apply ──────────────────────────────────────────────────────────────────
@@ -282,6 +337,7 @@ export async function applyBatch(
 
   let applied = 0
   let deleted = 0
+  let skipped = 0
   const taggedWorkspaces = new Set<string>()
 
   try {
@@ -292,7 +348,18 @@ export async function applyBatch(
       const delegate = (tx as any)[delegateName(entry.model)]
       if (!delegate) throw new Error(`machine sync: no Prisma delegate for ${entry.model}`)
 
+      const orphans = mode === 'snapshot'
+        ? await findOrphans(tx, entry.model, entry.rows, modelMeta)
+        : new Set<string>()
+      if (orphans.size) {
+        skipped += orphans.size
+        console.warn(
+          `[MachineSync] ${instanceId}: skipped ${orphans.size} ${entry.model} snapshot row(s) whose parent row is not in the copy yet`,
+        )
+      }
+
       for (const raw of entry.rows) {
+        if (orphans.has(String(raw.id))) continue
         const row = normaliseRow(entry.model, raw, modelMeta)
         if (!row) continue
         const recordId = String(row.id)
@@ -411,6 +478,7 @@ export async function applyBatch(
     cursor: typeof body.cursor === 'number' ? body.cursor : 0,
     applied,
     deleted,
+    ...(skipped ? { skipped } : {}),
     syncedAt,
   }
 }

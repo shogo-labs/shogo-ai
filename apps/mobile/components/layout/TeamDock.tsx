@@ -6,25 +6,24 @@
  * the tab screens themselves (`TabScreen`): a button outside the dock's own
  * bounds would not receive touches on native.
  */
-import { Pressable, Text, View } from 'react-native'
+import { Pressable, View } from 'react-native'
 import { usePathname, useRouter } from 'expo-router'
 import { Bell, Home, MessagesSquare, MoreHorizontal, Search } from 'lucide-react-native'
-import { cn } from '@shogo/shared-ui/primitives'
 import { useResolvedTheme } from '../../contexts/theme'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
 import { activityBadge } from '../../lib/activity-feed'
-import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT, NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
+import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT, NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET } from '../../lib/native-phone-layout'
 import { dockTabForPathname } from '../../lib/sidebar-tab'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
-import { badgeText } from './sidebar/IconRail'
+import { GlassTabRow } from './GlassTabRow'
 import { useTeamChatNav } from '../team-chat/TeamChatSidebarProvider'
 
 const ITEMS = [
   // `/` lands on the workspace agent; Home in the dock keeps the feed.
-  { id: 'home', label: 'Home', icon: Home, href: '/(app)/home' },
-  { id: 'dms', label: 'DMs', icon: MessagesSquare, href: '/(app)/c/dms' },
-  { id: 'activity', label: 'Activity', icon: Bell, href: '/(app)/activity' },
-  { id: 'more', label: 'More', icon: MoreHorizontal, href: '/(app)/more' },
+  { id: 'home', label: 'Home', Icon: Home, href: '/(app)/home' },
+  { id: 'dms', label: 'DMs', Icon: MessagesSquare, href: '/(app)/c/dms' },
+  { id: 'activity', label: 'Activity', Icon: Bell, href: '/(app)/activity' },
+  { id: 'more', label: 'More', Icon: MoreHorizontal, href: '/(app)/more' },
 ] as const
 
 const SIZE = NATIVE_PHONE_COMPOSER_PILL_HEIGHT
@@ -42,52 +41,43 @@ export function TeamDock({ maxWidth }: { maxWidth: number }) {
   }
   // Thread replies the user chose to keep out of the number show as a dot.
   const dots: Record<string, boolean> = { activity: chat.counts.activityDot }
-  const surface = 'shadow-sm overflow-hidden bg-transparent'
-  const tint = isDark ? 'rgba(28,28,30,0.42)' : 'rgba(255,255,255,0.42)'
+  const tint = isDark ? 'rgba(28,28,30,0.2)' : 'rgba(255,255,255,0.1)'
+
+  // The same glass pill as the personal tab bar (one drag-able selection
+  // capsule, serialised navigation), plus a round search button beside it.
+  const items = ITEMS.map(({ id, label, Icon, href }) => ({
+    id,
+    label,
+    Icon,
+    badge: badges[id] ?? 0,
+    dot: !!dots[id],
+    onPress: () => router.replace(href as any),
+  }))
 
   return (
     <View className="w-full flex-row items-center gap-2" style={{ maxWidth, alignSelf: 'center' }} testID="team-dock">
-      <View role="tablist" accessibilityLabel="Workspace tabs" className={cn('flex-1 flex-row items-center gap-1 px-1.5', surface)} style={{ height: SIZE, borderRadius: SIZE / 2 }}>
-        <LiquidGlassBackdrop tintColor={tint} style={{ borderRadius: SIZE / 2 }} />
-        {ITEMS.map(({ id, label, icon: Icon, href }) => {
-          const selected = active === id
-          const count = badges[id] ?? 0
-          const dot = count === 0 && !!dots[id]
-          return (
-            <Pressable
-              key={id}
-              onPress={() => router.replace(href as any)}
-              accessibilityRole="tab"
-              aria-selected={selected}
-              accessibilityLabel={count ? `${label}, ${count} unread` : dot ? `${label}, unread` : label}
-              className={cn('flex-1 items-center justify-center rounded-full', selected && 'bg-primary/10')}
-              style={{ height: SIZE - NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2 }}
-            >
-              <Icon size={23} color={selected ? (isDark ? '#F09050' : '#E27927') : isDark ? '#a1a1aa' : '#6b7280'} strokeWidth={selected ? 2.2 : 1.9} />
-              {count > 0 && (
-                <View testID="dock-badge" className="absolute right-3 top-0.5 min-w-[16px] items-center rounded-full bg-destructive px-1">
-                  <Text className="text-[10px] font-semibold leading-4 text-white">{badgeText(count)}</Text>
-                </View>
-              )}
-              {dot && <View testID="dock-dot" className="absolute right-4 top-1 h-2 w-2 rounded-full bg-destructive" />}
-            </Pressable>
-          )
-        })}
+      <View style={{ flex: 1 }} role="tablist" accessibilityLabel="Workspace tabs">
+        <GlassTabRow
+          items={items}
+          active={active}
+          height={SIZE}
+          itemInset={NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET}
+          isDark={isDark}
+        />
       </View>
 
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Search"
         onPress={() => router.push('/(app)/search' as any)}
-        className={cn('items-center justify-center', surface)}
+        className="items-center justify-center bg-transparent shadow-sm"
         style={{ width: SIZE, height: SIZE, borderRadius: SIZE / 2 }}
       >
-        <LiquidGlassBackdrop tintColor={tint} style={{ borderRadius: SIZE / 2 }} />
+        <LiquidGlassBackdrop glassStyle="regular" tintColor={tint} style={{ borderRadius: SIZE / 2 }} />
         <View>
           <Search size={20} color={isDark ? '#a1a1aa' : '#6b7280'} />
         </View>
       </Pressable>
-
     </View>
   )
 }

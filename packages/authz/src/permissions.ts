@@ -24,6 +24,12 @@ export const WORKSPACE_PERMISSIONS = [
   'workspace.analytics:read',
   /** Download one archive of the whole workspace (every model + every project's files). */
   'workspace:export',
+  /**
+   * Move a workspace — or part of it — to another instance, and switch this
+   * copy over to the target. Reads every record and file the workspace has,
+   * so it sits with `workspace:export` rather than `workspace:update`.
+   */
+  'workspace:move',
   'project:create',
 ] as const
 

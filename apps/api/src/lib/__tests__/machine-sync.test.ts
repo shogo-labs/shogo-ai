@@ -643,6 +643,76 @@ describe('the pusher', () => {
     expect(posted).toHaveLength(1)
   })
 
+  test('snapshot pages go parents first, whatever the schema file says (PERF-14)', async () => {
+    // A packaged desktop has no schema.prisma; the order must come from the
+    // declaration alone. StarredProject before Project failed the cloud's FK.
+    const { db } = fakeDesktopDb({
+      rows: {
+        workspace: [{ id: 'w1', name: 'W', slug: 'w' }],
+        project: [{ id: 'p1', workspaceId: 'w1' }],
+        starredProject: [{ id: 's1', projectId: 'p1', workspaceId: 'w1', userId: 'u1' }],
+        member: [{ id: 'mem1', workspaceId: 'w1', projectId: 'p1', userId: 'u1' }],
+        goal: [{ id: 'g1', workspaceId: 'w1' }],
+        agentTask: [{ id: 't1', goalId: 'g1' }],
+      },
+      seedState: false,
+    })
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: fakeFetch(),
+    })
+    await pusher.tick()
+
+    const sent = posted.flatMap((request) => request.models.map((model) => model.model))
+    const at = (model: string) => sent.indexOf(model)
+    expect(at('Project')).toBeLessThan(at('StarredProject'))
+    expect(at('Project')).toBeLessThan(at('Member'))
+    expect(at('Goal')).toBeLessThan(at('AgentTask'))
+    expect(posted[posted.length - 1].snapshot?.complete).toBe(true)
+  })
+
+  test('a snapshot that keeps failing backs off and then stalls, instead of restarting every second', async () => {
+    const { db } = fakeDesktopDb({
+      rows: {
+        workspace: [{ id: 'w1', name: 'W', slug: 'w' }],
+        meeting: [{ id: 'mt1', workspaceId: 'w1', transcript: [{ text: 'hi' }] }],
+      },
+      seedState: false,
+    })
+    // Every Meeting page is refused; every other page is accepted.
+    const fetchImpl = (async (_url: string, init: any) => {
+      const body = JSON.parse(init.body) as SyncBatchRequest
+      posted.push(body)
+      const refused = body.models.some((model) => model.model === 'Meeting')
+      return new Response(JSON.stringify(refused ? { error: 'boom' } : { ok: true, cursor: 0 }), {
+        status: refused ? 500 : 200,
+      })
+    }) as unknown as typeof fetch
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'key-1',
+      getInstanceId: () => 'inst-1',
+      fetchImpl,
+    })
+
+    await pusher.tick()
+    // The Workspace page was accepted after the failure count was set, but the
+    // failed snapshot still counts: no restart within a second.
+    expect((pusher as any).nextDelay()).toBeGreaterThanOrEqual(1_000)
+    await pusher.tick()
+    expect((pusher as any).nextDelay()).toBeGreaterThanOrEqual(2_000)
+    await pusher.tick()
+    // Three failed snapshots in a row: wait ten minutes.
+    expect((pusher as any).nextDelay()).toBeGreaterThanOrEqual(9 * 60_000)
+    const sentBefore = posted.length
+    await pusher.syncNow()
+    expect(posted).toHaveLength(sentBefore)
+  })
+
   test('nothing is pushed without a device key or an instance id', async () => {
     const { db, changes } = fakeDesktopDb({ rows: { chatMessage: [] } })
     rowSeq(changes, 'ChatMessage', 'm1')
@@ -1037,6 +1107,63 @@ describe('the ingest', () => {
     expect('ok' in result && result.deleted).toBe(1)
     expect(workspaceTable.has('mine')).toBe(false)
     expect(workspaceTable.has('theirs')).toBe(true)
+  })
+
+  test('an object in a String column is stored as text, not refused (PERF-12)', () => {
+    // The desktop's SQLite client JSON-parses `transcript` by name, but
+    // Meeting.transcript is a String in the cloud.
+    const meta = {
+      model: {
+        name: 'Meeting',
+        fields: [
+          { name: 'id', typeName: 'String', isList: false, isRelation: false },
+          { name: 'transcript', typeName: 'String', isList: false, isRelation: false },
+          { name: 'startedAt', typeName: 'DateTime', isList: false, isRelation: false },
+          { name: 'data', typeName: 'Json', isList: false, isRelation: false },
+        ],
+      },
+      columns: new Set(['id', 'transcript', 'startedAt', 'data']),
+      required: [],
+    } as any
+    const startedAt = new Date('2026-10-28T00:00:00.000Z')
+    const row = normaliseRow('Meeting', {
+      id: 'mt1',
+      transcript: [{ speaker: 'A', text: 'hi' }],
+      startedAt,
+      data: { keep: 'object' },
+    }, meta)
+    expect(row).toEqual({
+      id: 'mt1',
+      transcript: '[{"speaker":"A","text":"hi"}]',
+      startedAt,
+      data: { keep: 'object' },
+    })
+  })
+
+  test('a snapshot row whose parent is not in the copy yet is skipped, not a 500 (PERF-14)', async () => {
+    // Desktops up to 2.4.5 send StarredProject before Project, one model per
+    // request: the parent cannot be there yet.
+    const { db, tables } = fakeCloudDb()
+    tables.set('workspace', new Map([['w1', { id: 'w1', machineInstanceId: 'inst-1' }]]))
+    tables.set('user', new Map([['u1', { id: 'u1' }]]))
+    tables.set('project', new Map([['p-here', { id: 'p-here' }]]))
+
+    const result = await applyBatch(ingestCtx(db), {
+      epoch: 'epoch-2',
+      mode: 'snapshot',
+      cursor: 0,
+      models: [{
+        model: 'StarredProject',
+        rows: [
+          { id: 's-orphan', userId: 'u1', projectId: 'p-later', workspaceId: 'w1' },
+          { id: 's-ok', userId: 'u1', projectId: 'p-here', workspaceId: 'w1' },
+        ],
+      }],
+    })
+
+    expect(result).toMatchObject({ ok: true, applied: 1, skipped: 1 })
+    expect(tables.get('starredProject')?.has('s-ok')).toBe(true)
+    expect(tables.get('starredProject')?.has('s-orphan')).toBe(false)
   })
 
   test('a completed snapshot drops rows from the previous epoch', async () => {

@@ -40,6 +40,7 @@ import * as Sentry from "@sentry/react-native"
 import {
   Alert,
   AppState,
+  Dimensions,
   View,
   Text,
   Pressable,
@@ -172,6 +173,7 @@ import {
   type OutgoingFilePart,
 } from "../../lib/chat-attachment-upload"
 import { releasePreviewUrl } from "../../lib/composer-attachments"
+import { transcriptKeyboardDismissMode } from "../../lib/composer-keyboard-dismiss"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import {
@@ -202,7 +204,10 @@ import {
 import { chatColumnStyle } from "../../lib/chat-column"
 import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
 import { ProjectComposerDock } from "./composer/ProjectComposerDock"
-import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
+import {
+  useNativeComposerDockLift,
+  useNativeComposerDockPad,
+} from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
 import { chatSessionEvents } from "../../lib/chat-session-events"
 import { useActiveInstance } from "../../contexts/active-instance"
@@ -555,6 +560,12 @@ export interface ChatPanelProps {
    * the host can show its own file viewer. Takes precedence over `onOpenFile`.
    */
   onOpenFilePath?: (path: string) => void
+  /**
+   * Agent base URL for another project of this workspace, so a file the agent
+   * wrote there with `project: "<name>"` can be shown as a chip (SHO-247).
+   * Omit when this chat cannot reach other projects' runtimes.
+   */
+  projectAgentUrl?: (projectId: string) => string | null
   /**
    * Shows another project (or one of its chats) beside this chat. Only set by
    * hosts with room for a side pane; otherwise cards navigate to the project.
@@ -1017,6 +1028,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onOpenPlan,
   onOpenFile,
   onOpenFilePath,
+  projectAgentUrl,
   onOpenProjectPane,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
@@ -1079,6 +1091,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
       .loadAll(workspaceProjectFilter(workspaceId))
       .catch(() => {})
   }, [projectCollection, workspaceId])
+  // A turn recorded before a remote file result named its project only carries
+  // the project's *name*, so the chat resolves it against this list (SHO-247).
+  const resolveProjectRef = useCallback(
+    (ref: string) => {
+      const trimmed = ref.trim()
+      if (!trimmed) return null
+      const all = projectCollection.all as Array<{ id?: string; name?: string }>
+      const byId = all.find((project) => project.id === trimmed)
+      if (byId?.id) return byId.id
+      const lowered = trimmed.toLowerCase()
+      const byName = all.find(
+        (project) => (project.name ?? "").trim().toLowerCase() === lowered,
+      )
+      return byName?.id ?? null
+    },
+    [projectCollection],
+  )
   // The current project's workspace: prefer the workspace-scope prop, else
   // recover it from the loaded collection so we only offer true siblings.
   const currentWorkspaceId =
@@ -1383,11 +1412,36 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // KAV lift enabled here makes the composer depend on two independent layout
   // adjustments, which can leave it behind the keyboard in project chat.
   const iosComposerAvoiding = Platform.OS === "ios" && !isNativePhoneLayout
+  // Whatever chrome sits under a chat (a safe-area inset, the bottom nav, a
+  // full-screen shell) decides how far the keyboard overlaps it, so assuming
+  // the inset left some chats flush on the keyboard and others far above it.
+  // Every phone chat measures where its container really ends instead.
+  const measureSurfaceBottom = isNativePhoneLayout && Platform.OS !== "web"
+  const surfaceRef = useRef<View>(null)
+  const [surfaceBottomOffset, setSurfaceBottomOffset] = useState<number | null>(null)
+  const measureSurface = useCallback(() => {
+    surfaceRef.current?.measureInWindow((_x, y, _width, height) => {
+      const next = Math.round(Dimensions.get("window").height - (y + height))
+      setSurfaceBottomOffset((prev) => (prev === next ? prev : next))
+    })
+  }, [])
+  // iOS phones slide the dock on a native transform and let the transcript's
+  // scroll view inset itself; nothing is laid out while the keyboard moves.
+  const liftComposerWithKeyboard = Platform.OS === "ios" && isNativePhoneLayout
+  const composerKeyboardLift = useNativeComposerDockLift({
+    enabled: liftComposerWithKeyboard,
+    restPad: restComposerPad,
+    bottomOffset: surfaceBottomOffset,
+    onOpenChange: setNativeKeyboardOpen,
+  })
   const composerKeyboardPad = useNativeComposerDockPad({
+    measuredBottomOffset: measureSurfaceBottom ? surfaceBottomOffset : null,
     // Native phone uses the RN `Keyboard` bridge; mobile web has no such
     // bridge but tracks the same overlap via `visualViewport` (see
     // `use-native-composer-keyboard.ts`), so enable this for narrow web too.
-    enabled: isNativePhoneLayout || (Platform.OS === "web" && isPhoneViewport),
+    enabled:
+      !liftComposerWithKeyboard &&
+      (isNativePhoneLayout || (Platform.OS === "web" && isPhoneViewport)),
     restPad: restComposerPad,
     safeAreaBottom: insets.bottom,
     iosKeyboardAvoiding: iosComposerAvoiding,
@@ -8010,6 +8064,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     resolvedAgentUrl,
     projectId ?? focusedProjectId ?? null,
     isStreaming,
+    { projectAgentUrl },
   )
 
   const contextValue = useMemo<ChatContextValue>(
@@ -8031,6 +8086,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       openPlan: onOpenPlan,
       openFile,
       fileExists,
+      resolveProjectRef,
       workspaceId: workspaceId ?? null,
       openProjectPane: onOpenProjectPane,
       openTaskThread,
@@ -8054,6 +8110,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       onOpenPlan,
       openFile,
       fileExists,
+      resolveProjectRef,
       workspaceId,
       onOpenProjectPane,
       openTaskThread,
@@ -8606,6 +8663,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
           />
           <ChangesDockPanel />
           <View
+            ref={surfaceRef}
+            onLayout={measureSurfaceBottom ? measureSurface : undefined}
             className={cn(
               isNativePhoneLayout ? "flex-col flex-1" : "flex-row flex-1",
               presentation === "agent" && "agent-chat-surface",
@@ -8662,6 +8721,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   keyboardShouldPersistTaps={
                     isNative && nativeInlineEditing ? "always" : "handled"
                   }
+                  // Dragging the transcript closes the keyboard. `on-drag`, not
+                  // `interactive`: the composer rides the keyboard's own show
+                  // and hide animation, and iOS reports no frames while a
+                  // finger drags the keyboard, so the composer would sit still
+                  // and then jump. Bouncing even when the chat is short lets an
+                  // empty or one-message chat be dragged too.
+                  // Web opts out: react-native-web dismisses on every scroll
+                  // event, including the auto-follow scroll of a streaming
+                  // turn, which blurred the composer out from under the user
+                  // (SHO-255).
+                  keyboardDismissMode={transcriptKeyboardDismissMode()}
+                  // The scroll view insets itself by however far the keyboard
+                  // covers it, natively and in step with the keyboard, so the
+                  // last message stays above the lifted composer.
+                  automaticallyAdjustKeyboardInsets={liftComposerWithKeyboard}
+                  alwaysBounceVertical={Platform.OS === "ios"}
                   onTouchStart={(e) => {
                     if (Platform.OS === "web") return
                     const { pageX, pageY } = e.nativeEvent
@@ -8880,6 +8955,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   presentation={presentation}
                   columnWidth={nativePhoneColumnWidth}
                   keyboardPad={composerKeyboardPad}
+                  keyboardLift={
+                    liftComposerWithKeyboard ? composerKeyboardLift : undefined
+                  }
                   keyboardOpen={nativeKeyboardOpen}
                   restPad={restComposerPad}
                   applyKeyboardPad={isPhoneViewport || isNativePhoneLayout}

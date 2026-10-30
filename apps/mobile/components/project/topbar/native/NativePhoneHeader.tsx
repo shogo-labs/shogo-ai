@@ -13,10 +13,7 @@ import {
   X,
 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
-import {
-  NATIVE_HEADER_PAD_BOTTOM,
-  nativePhoneTitleInset,
-} from "../../../../lib/project-topbar-layout";
+import { NATIVE_HEADER_PAD_BOTTOM } from "../../../../lib/project-topbar-layout";
 import {
   NATIVE_PHONE_CONTROL_SIZE,
   NATIVE_PHONE_SHEET_BODY_RATIO,
@@ -27,12 +24,14 @@ import type { TopBarOverlayState } from "../types";
 import { NativeCircleButton } from "./NativeCircleButton";
 import { NativeClusterIcon, NATIVE_CLUSTER_SLOT } from "./NativeClusterIcon";
 import { TrustBadge } from "../TrustBadge";
+import { LiquidGlassBackdrop } from "../../../ui/LiquidGlassBackdrop";
 
-const NATIVE_HEADER_PAD_X = 12;
-const NATIVE_HEADER_PAD_LEFT = 28;
+/** Same inset on both sides, so Back and the trailing controls mirror each other. */
+const NATIVE_HEADER_PAD_X = 16;
+/** Breathing room between the title and the controls either side of it. */
+const NATIVE_TITLE_GAP = 12;
 const NATIVE_HEADER_PAD_TOP = 4;
 const NATIVE_CLUSTER_PAD_X = 6;
-const NATIVE_CLUSTER_WIDTH = NATIVE_CLUSTER_PAD_X * 2 + NATIVE_CLUSTER_SLOT * 2;
 const NATIVE_REMOTE_INDICATOR_WIDTH = 138;
 
 export function NativePhoneHeader({
@@ -72,15 +71,25 @@ export function NativePhoneHeader({
   overlayState: TopBarOverlayState;
 }) {
   const onChat = narrowActiveTab === "chat";
-  const showChatMoreCluster = !onChat;
-  const leftChrome = NATIVE_HEADER_PAD_LEFT + NATIVE_PHONE_CONTROL_SIZE;
+  // Off the chat tab the cluster leads with a way back to chat; on it, with the
+  // chat history, so past conversations are one tap away instead of buried in
+  // the tabs sheet.
+  const showContextIcon = !onChat || !!onOpenChatSessions;
+  // Messaging the agent rides in the same pill, so a third control does not
+  // squeeze the title.
+  const clusterSlots = 1 + (showContextIcon ? 1 : 0) + (onMessageAgent ? 1 : 0);
+  const showCluster = clusterSlots > 1;
+  const clusterWidth = NATIVE_CLUSTER_PAD_X * 2 + NATIVE_CLUSTER_SLOT * clusterSlots;
+  const leftChrome = NATIVE_HEADER_PAD_X + NATIVE_PHONE_CONTROL_SIZE;
   const rightChrome =
     NATIVE_HEADER_PAD_X +
-    (showChatMoreCluster ? NATIVE_CLUSTER_WIDTH : NATIVE_PHONE_CONTROL_SIZE) +
+    (showCluster ? clusterWidth : NATIVE_PHONE_CONTROL_SIZE) +
     (showTrustBadge ? NATIVE_PHONE_CONTROL_SIZE + 8 : 0) +
-    (onMessageAgent ? NATIVE_PHONE_CONTROL_SIZE + 8 : 0) +
     (remoteHostIndicator ? NATIVE_REMOTE_INDICATOR_WIDTH : 0);
-  const titleInset = nativePhoneTitleInset(leftChrome, rightChrome);
+  // The title sits in the space between the two control groups, so it gets
+  // every point they leave free before it truncates.
+  const titleInsetLeft = leftChrome + NATIVE_TITLE_GAP;
+  const titleInsetRight = rightChrome + NATIVE_TITLE_GAP;
 
   return (
     <>
@@ -103,7 +112,8 @@ export function NativePhoneHeader({
             height: NATIVE_PHONE_CONTROL_SIZE,
             left: 0,
             right: 0,
-            paddingHorizontal: titleInset,
+            paddingLeft: titleInsetLeft,
+            paddingRight: titleInsetRight,
           }}
           accessibilityLabel={`${projectName}. Project options`}
           accessibilityRole="button"
@@ -123,7 +133,6 @@ export function NativePhoneHeader({
           style={{
             height: NATIVE_PHONE_CONTROL_SIZE,
             paddingHorizontal: NATIVE_HEADER_PAD_X,
-            paddingLeft: NATIVE_HEADER_PAD_LEFT,
             zIndex: 2,
           }}
         >
@@ -143,29 +152,43 @@ export function NativePhoneHeader({
                 compact
               />
             )}
-            {onMessageAgent ? (
-              <NativeCircleButton
-                icon={MessagesSquare}
-                onPress={onMessageAgent}
-                accessibilityLabel="Message agent"
-                testID="project-message-agent"
-              />
-            ) : null}
-            {showChatMoreCluster ? (
+            {showCluster ? (
               <View
-                className="flex-row items-center rounded-full bg-muted"
+                className="flex-row items-center overflow-hidden rounded-full bg-transparent shadow-sm"
                 testID="project-native-chat-more-cluster"
                 style={{
                   height: NATIVE_PHONE_CONTROL_SIZE,
                   paddingHorizontal: NATIVE_CLUSTER_PAD_X,
                 }}
               >
-                <NativeClusterIcon
-                  icon={MessageSquare}
-                  onPress={() => handleTabPress("chat-fullscreen")}
-                  accessibilityLabel="Chat"
-                  testID="project-native-chat"
-                />
+                <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
+                {onMessageAgent ? (
+                  <NativeClusterIcon
+                    icon={MessagesSquare}
+                    onPress={onMessageAgent}
+                    accessibilityLabel="Message agent"
+                    testID="project-message-agent"
+                  />
+                ) : null}
+                {showContextIcon ? (
+                  onChat ? (
+                    <NativeClusterIcon
+                      icon={History}
+                      onPress={() => onOpenChatSessions?.()}
+                      accessibilityLabel={
+                        chatSessionsOpen ? "Hide chat history" : "Chat history"
+                      }
+                      testID="project-native-history"
+                    />
+                  ) : (
+                    <NativeClusterIcon
+                      icon={MessageSquare}
+                      onPress={() => handleTabPress("chat-fullscreen")}
+                      accessibilityLabel="Chat"
+                      testID="project-native-chat"
+                    />
+                  )
+                ) : null}
                 <NativeClusterIcon
                   icon={MoreHorizontal}
                   onPress={() => overlayState.setShowTabsSheet(true)}
@@ -192,6 +215,7 @@ export function NativePhoneHeader({
       >
         <View className="flex-row items-center px-4 pb-2">
           <NativeCircleButton
+            flat
             icon={X}
             onPress={() => overlayState.setShowTabsSheet(false)}
             accessibilityLabel="Close"

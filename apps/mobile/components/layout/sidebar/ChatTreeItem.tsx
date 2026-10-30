@@ -32,6 +32,7 @@ import { densityFor } from "../../../lib/phone-density";
 import { usePhoneLayout } from "../../../lib/native-phone-layout";
 import { projectChatLabel } from "../../../lib/project-chat-sessions";
 import { formatRelativeTime } from "../../chat/turns/turnShaping";
+import { Spin } from "@/components/ui/Spin";
 
 function sessionActivityLabel(session: any): string | null {
   const value =
@@ -291,11 +292,13 @@ export function ChatTreeItem({
         {workspacePane ? (
           <View className="h-4 w-4 shrink-0 items-center justify-center">
             {isStreaming ? (
-              <Loader2
-                size={13}
-                className="text-primary animate-spin"
-                accessibilityLabel="Chat running"
-              />
+              <Spin>
+                <Loader2
+                  size={13}
+                  className="text-primary animate-spin"
+                  accessibilityLabel="Chat running"
+                />
+              </Spin>
             ) : isCompleted ? (
               <View
                 className="h-1.5 w-1.5 rounded-full bg-primary"
@@ -312,11 +315,13 @@ export function ChatTreeItem({
             )}
           </View>
         ) : isStreaming ? (
-          <Loader2
-            size={comfortable ? density.icon.sm + 1 : 11}
-            className="text-primary animate-spin shrink-0"
-            accessibilityLabel="Chat running"
-          />
+          <Spin>
+            <Loader2
+              size={comfortable ? density.icon.sm + 1 : 11}
+              className="text-primary animate-spin shrink-0"
+              accessibilityLabel="Chat running"
+            />
+          </Spin>
         ) : isCompleted ? (
           <View
             className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"

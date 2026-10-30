@@ -360,7 +360,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
 function TeamActivityTab() {
   return (
     <TabScreen title="Activity" testID="activity-tab">
-      <ActivityFeed />
+      <ActivityFeed withFloatingCreate />
     </TabScreen>
   )
 }

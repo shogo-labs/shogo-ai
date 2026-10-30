@@ -15,9 +15,6 @@ import {
   useProjectChatUrlMirror,
   type ChatUrlParams,
 } from "../../lib/project-chat-url";
-import { useAgentLook } from "../../hooks/useTeamChat";
-import { buddyAvatarColor } from "../team-chat/BuddyAvatar";
-import { AgentBackdrop } from "../ui/AgentBackdrop";
 
 export interface ProjectChatViewProps {
   projectId: string | undefined;
@@ -62,7 +59,6 @@ export const ProjectChatView = observer(function ProjectChatView({
   const workspace = useActiveWorkspace();
   const experience = useWorkspaceExperience();
   const actions = useDomainActions();
-  const agentColor = buddyAvatarColor(useAgentLook(workspace?.id, projectId ?? null));
   // Initial creation arrives here directly on native. Capture one-shot values
   // so a route re-render cannot resend the prompt or lose pending attachments.
   const [capturedInitialMessage] = useState(() => initialMessage);
@@ -125,8 +121,6 @@ export const ProjectChatView = observer(function ProjectChatView({
 
   return (
     <View className="min-h-0 flex-1 bg-background">
-      {/* The agent's colour, glowing softly from the top; the chat is transparent over it. */}
-      <AgentBackdrop color={agentColor} />
       {header}
       <ChatPanel
         featureId={projectId}

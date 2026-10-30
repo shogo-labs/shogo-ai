@@ -209,6 +209,58 @@ describe('activity inbox and phone push timing', () => {
     await s.updateChatSettings(seed.workspaceId, seed.member, { dmInActivity: false })
   })
 
+  test('a reply in a DM thread reaches Activity even with dmInActivity off', async () => {
+    const inbox = await inboxSvc()
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    const send = (authorUserId: string, text: string, threadRootId?: string) =>
+      service.postMessage({ conversationId: dm.id, authorType: 'user', authorUserId, text, ...(threadRootId ? { threadRootId } : {}) } as any)
+    const items = async () => (await inbox.listInbox(seed.workspaceId, seed.owner)).items.filter((i) => i.conversationId === dm.id)
+
+    const root = await send(seed.owner, 'can you review this?')
+    await notifications.notifyForMessage(root)
+    const reply = await send(seed.member, 'looks good', root.row.id)
+    expect(await notified(reply)).toEqual([`${seed.owner}:thread`])
+
+    expect(await items()).toEqual([expect.objectContaining({ kind: 'thread', messageId: reply.row.id, preview: 'looks good' })])
+    expect((await inbox.listInbox(seed.workspaceId, seed.owner)).unreadThreads).toBeGreaterThan(0)
+
+    // A plain top-level DM still follows the setting.
+    const plain = await send(seed.member, 'unrelated')
+    expect(await notified(plain)).toEqual([`${seed.owner}:dm`])
+    expect(await items()).toHaveLength(1)
+  })
+
+  test('threading under your own message in a 1:1 DM reaches the other person\'s Activity', async () => {
+    const inbox = await inboxSvc()
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    const send = (text: string, threadRootId?: string) =>
+      service.postMessage({ conversationId: dm.id, authorType: 'user', authorUserId: seed.owner, text, ...(threadRootId ? { threadRootId } : {}) } as any)
+    const memberItems = async () => (await inbox.listInbox(seed.workspaceId, seed.member)).items.filter((i) => i.conversationId === dm.id && i.kind === 'thread')
+
+    const root = await send('hello')
+    await notifications.notifyForMessage(root)
+    expect(await memberItems()).toHaveLength(0)
+
+    // The member has not replied, so they are not a follower by authorship.
+    const reply = await send('how are you doing', root.row.id)
+    expect(await notified(reply)).toEqual([`${seed.member}:thread`])
+    expect(await memberItems()).toEqual([expect.objectContaining({ kind: 'thread', messageId: reply.row.id })])
+  })
+
+  test('a group DM thread only reaches Activity for people following it', async () => {
+    const inbox = await inboxSvc()
+    const group = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member, seed.viewer])
+    const send = (authorUserId: string, text: string, threadRootId?: string) =>
+      service.postMessage({ conversationId: group.id, authorType: 'user', authorUserId, text, ...(threadRootId ? { threadRootId } : {}) } as any)
+    const root = await send(seed.owner, 'plan?')
+    await notifications.notifyForMessage(root)
+    await send(seed.member, 'sure', root.row.id)
+    const reply = await send(seed.owner, 'great', root.row.id)
+    expect(await notified(reply)).toEqual([`${seed.member}:thread`, `${seed.viewer}:dm`])
+    const viewerItems = (await inbox.listInbox(seed.workspaceId, seed.viewer)).items.filter((i) => i.conversationId === group.id)
+    expect(viewerItems).toHaveLength(0)
+  })
+
   test('mobilePushDelay "immediate" pushes even while the person is active', async () => {
     const s = await settingsSvc()
     await presence.recordPresence(seed.workspaceId, seed.member, 'active')

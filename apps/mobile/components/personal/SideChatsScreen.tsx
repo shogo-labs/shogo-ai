@@ -16,6 +16,7 @@ import { ArrowLeft, ChevronRight, Loader2, MessageSquare, MessagesSquare, Pin, P
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceChats } from '../../hooks/useWorkspaceChats'
 import { sideChatLabel, type SideChatItem } from '../../lib/side-chats'
+import { Spin } from "@/components/ui/Spin";
 
 export const SideChatsScreen = observer(function SideChatsScreen() {
   const router = useRouter()
@@ -102,11 +103,13 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
               {/* Same leading slot as the sidebar row: running › unread › pinned. */}
               <View className="w-4 items-center justify-center">
                 {chats.streamingIds.has(item.id) ? (
-                  <Loader2
-                    size={14}
-                    className="text-primary animate-spin"
-                    accessibilityLabel="Chat running"
-                  />
+                  <Spin>
+                    <Loader2
+                      size={14}
+                      className="text-primary animate-spin"
+                      accessibilityLabel="Chat running"
+                    />
+                  </Spin>
                 ) : chats.completedIds.has(item.id) ? (
                   <View
                     className="h-1.5 w-1.5 rounded-full bg-primary"

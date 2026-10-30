@@ -73,6 +73,10 @@ import { parseInAppFileHref } from "../../../lib/share-file-links"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
+import {
+  remoteProjectPathMap,
+  resolveTurnFilePath,
+} from "../remote-project-paths"
 
 /**
  * Throttle a streaming value so heavy downstream work (markdown parsing, part
@@ -619,6 +623,24 @@ export const AssistantContent = memo(
       [collapsibleWorkParts],
     )
 
+    // A file this turn wrote in another project comes back as that project's
+    // own relative path; its reply says the same path, which resolves nowhere
+    // here. Place it in the project the turn wrote it in (SHO-247).
+    const projectPaths = useMemo(
+      () => remoteProjectPathMap(orderedParts, chatContext?.resolveProjectRef),
+      [orderedParts, chatContext?.resolveProjectRef],
+    )
+    const openFileForTurn = useMemo(() => {
+      const open = chatContext?.openFile
+      if (!open) return undefined
+      return (path: string) => open(resolveTurnFilePath(path, projectPaths))
+    }, [chatContext?.openFile, projectPaths])
+    const fileExistsForTurn = useMemo(() => {
+      const exists = chatContext?.fileExists
+      if (!exists) return undefined
+      return (path: string) => exists(resolveTurnFilePath(path, projectPaths))
+    }, [chatContext?.fileExists, projectPaths])
+
     if (groupedParts.length === 0) {
       return null
     }
@@ -645,8 +667,8 @@ export const AssistantContent = memo(
           <View key={part.id}>
             <ChatMarkdown
               isStreaming={part.id === streamingTextPartId}
-              onFilePress={chatContext?.openFile}
-              fileExists={chatContext?.fileExists}
+              onFilePress={openFileForTurn}
+              fileExists={fileExistsForTurn}
             >
               {part.text}
             </ChatMarkdown>

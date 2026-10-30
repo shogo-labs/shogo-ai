@@ -37,6 +37,12 @@ import {
   shouldContinuePlan,
 } from './plan-continuation'
 import { interruptedTurnResumePrompt, resumeMaxAgeMinutes } from '@shogo/shared-runtime/interrupted-turn'
+import {
+  heartbeatSessionIdFor,
+  heartbeatSessionProjectId,
+  isHeartbeatChatSessionId,
+} from '@shogo/shared-runtime/heartbeat-session'
+import { formatHeartbeatModelLog, resolveHeartbeatModel } from './heartbeat-model'
 import { sweepExecCwdMarkers } from './exec-cwd'
 import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
@@ -808,7 +814,7 @@ export class AgentGateway {
   private running = false
   private lastHeartbeatTick: Date | null = null
   private hookEmitter: HookEmitter = new HookEmitter()
-  private pendingEvents: string[] = []
+  private pendingEvents: Array<{ projectId: string | null; text: string }> = []
   private sessionManager: SessionManager
   private sessionPersistence: SqliteSessionPersistence | null = null
   private mcpClientManager: MCPClientManager = new MCPClientManager()
@@ -2177,6 +2183,9 @@ export class AgentGateway {
     quietHours: { start: '', end: '', timezone: 'UTC' },
   }
 
+  /** Makes each tick's session id distinct within this process (SHO-178). */
+  private heartbeatTickSeq = 0
+
   /** Reload the cached schedule from the project config API (best effort). */
   async refreshHeartbeatSnapshot(): Promise<void> {
     const projectId = projectScopedId(this.projectId) ?? projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
@@ -2225,11 +2234,21 @@ export class AgentGateway {
     console.log('[AgentGateway] Running heartbeat...')
     this.emitLog('Running heartbeat...')
 
-    let pendingSection = ''
-    if (this.pendingEvents.length > 0) {
-      pendingSection = `\n\n[Pending Events]\n${this.pendingEvents.join('\n')}`
-      this.pendingEvents = []
-    }
+    // A tick starts from an empty transcript (SHO-178). Every tick used to run
+    // in one shared `heartbeat` session, so in production a single turn key
+    // stayed open for ten days, re-sent its whole history every firing, and
+    // billed ~$467 in 24h. The per-tick id is namespaced by project so two
+    // attached projects can never read each other's history and analytics can
+    // attribute the spend to the project the tick was for (SHO-182).
+    const tickProjectId = this.heartbeatTickProjectId(opts.projectId)
+    const sessionId = heartbeatSessionIdFor(tickProjectId ?? '', this.nextHeartbeatTickId())
+
+    // What the tick used to get for free from the shared transcript. Only this
+    // project's notes plus the unscoped ones — a workspace runtime's other
+    // projects' background work is not this tick's business.
+    const mine = this.pendingEvents.filter((e) => e.projectId === null || e.projectId === tickProjectId)
+    this.pendingEvents = this.pendingEvents.filter((e) => !(e.projectId === null || e.projectId === tickProjectId))
+    const pendingSection = mine.map((e) => e.text).join('\n')
 
     // In a workspace runtime the checklist belongs to one attached project,
     // whose files live in a subfolder of the merged root.
@@ -2238,11 +2257,14 @@ export class AgentGateway {
         ? ` for project ${opts.projectId} (its files are under \`${opts.projectId}/\`)`
         : ''
 
-    const response = await this.agentTurn(
-      `[HEARTBEAT]\nYou are performing a scheduled heartbeat check${projectLine}. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}${pendingSection}`,
-      'heartbeat',
-      true
-    )
+    const response = await this.runHeartbeatTurn({
+      sessionId,
+      projectId: opts.projectId,
+      projectDir,
+      prompt:
+        `[HEARTBEAT]\nYou are performing a scheduled heartbeat check${projectLine}. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}` +
+        this.heartbeatStateBlock(projectDir, pendingSection),
+    })
 
     await this.hookEmitter.emit(
       HookEmitter.createEvent('heartbeat', 'tick', 'heartbeat', {
@@ -2279,8 +2301,149 @@ export class AgentGateway {
     return this.heartbeatTick(opts)
   }
 
-  queuePendingEvent(text: string): void {
-    this.pendingEvents.push(text)
+  /**
+   * Run the tick's turn on a session that exists only for this tick, then
+   * forget it. The model is pinned before the turn starts so the Auto router
+   * never sees the tick (SHO-178 Part 2), and the cleanup in `finally` keeps a
+   * per-tick id from turning every session-keyed map in this class into an
+   * unbounded one.
+   */
+  private async runHeartbeatTurn(input: {
+    sessionId: string
+    projectId?: string
+    projectDir: string
+    prompt: string
+  }): Promise<string> {
+    const agent = await this.heartbeatAgentModelSnapshot(input.projectId)
+    const choice = resolveHeartbeatModel({
+      agentModelName: agent?.modelName,
+      agentModelProvider: agent?.modelProvider,
+      runtimeModel: this.config.model,
+      economyTier: this.autoTierOverride?.economy,
+    })
+    const modelLog = formatHeartbeatModelLog(choice)
+    console.log(`${this.logPrefix} ${modelLog}`)
+    this.emitLog(modelLog)
+
+    const session = this.sessionManager.getOrCreate(input.sessionId)
+    session.modelOverride = choice.id
+    session.modelProvider = choice.provider
+    session.modelDisplayName = undefined
+    // Subagents and tool-driven turns this tick spawns infer the same provider.
+    rememberProviderHint(choice.id, choice.provider)
+
+    try {
+      return await this.agentTurn(input.prompt, input.sessionId, true)
+    } finally {
+      await this.disposeHeartbeatSession(input.sessionId)
+    }
+  }
+
+  /**
+   * The project a tick's session id names, or null when nothing resolves.
+   *
+   * Analytics attributes heartbeat spend by this segment (SHO-182) and falls
+   * back to the usage row's own `projectId` when it is absent, so an
+   * unresolvable project must yield `null` — a placeholder like `runtime` would
+   * be read as a real project id and overwrite the row's.
+   */
+  private heartbeatTickProjectId(projectId?: string): string | null {
+    return (
+      projectScopedId(projectId) ??
+      projectScopedId(this.projectId) ??
+      projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID) ??
+      null
+    )
+  }
+
+  /** Monotonic within this process; sortable, and free of `:` so the id splits cleanly. */
+  private nextHeartbeatTickId(): string {
+    this.heartbeatTickSeq += 1
+    return `${Date.now().toString(36)}-${this.heartbeatTickSeq.toString(36)}`
+  }
+
+  /**
+   * The state a tick needs, spelled out instead of inherited from a transcript:
+   * what the last checks concluded, and anything that arrived since.
+   */
+  private heartbeatStateBlock(projectDir: string, pendingEvents: string): string {
+    let block = ''
+    const logTail = this.readHeartbeatLogTail(projectDir)
+    if (logTail) {
+      block += `\n\n## Recent heartbeat results\nYour own last checks, oldest first. Do not repeat work they already finished.\n${logTail}`
+    }
+    if (pendingEvents) {
+      block += `\n\n## Pending Events\n${pendingEvents}`
+    }
+    return block
+  }
+
+  /** A project's heartbeat log entries. `appendHeartbeatLog` already caps it at 20. */
+  private readHeartbeatLogTail(dir: string): string {
+    const logPath = join(dir, 'HEARTBEAT_LOG.md')
+    if (!existsSync(logPath)) return ''
+    try {
+      return readFileSync(logPath, 'utf-8')
+        .split('\n')
+        .filter((line) => line.startsWith('- ['))
+        .join('\n')
+    } catch {
+      return ''
+    }
+  }
+
+  /** `AgentConfig.modelName` for the project this tick is for, best effort. */
+  private async heartbeatAgentModelSnapshot(projectId?: string): Promise<AgentModelSnapshot | null> {
+    const id =
+      projectScopedId(projectId) ??
+      projectScopedId(this.projectId) ??
+      projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
+    if (!id) return null
+    try {
+      const res = await getProjectConfig(id, 3_000)
+      return res.ok ? (res.data?.agent as AgentModelSnapshot | null | undefined) ?? null : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Forget a finished tick's session and everything this class keys by it. A
+   * per-tick id is the point (SHO-178), so nothing may outlive the tick or the
+   * maps that used to hold one `heartbeat` entry grow by one entry per firing.
+   * SHO-137's keep-history behaviour is untouched — it governs real chat
+   * sessions, and a tick's transcript is never one.
+   *
+   * Background work the tick deliberately started is the one thing that does
+   * outlive it: `keepRunningWork` leaves the command registry (and its output
+   * dir) alive until it drains, so a `background: true` scan or build reports
+   * its result instead of being SIGKILLed by the tick's own cleanup.
+   */
+  private async disposeHeartbeatSession(sessionId: string): Promise<void> {
+    await this.sessionManager.deleteSession(sessionId)
+    this.sessionChatContexts.delete(sessionId)
+    this.contentReplacementStates.delete(sessionId)
+    this.sessionImageMaxDimensions.delete(sessionId)
+    this.turnCounters.delete(sessionId)
+    this.turnPrefixes.delete(sessionId)
+    this.turnReachable.delete(sessionId)
+    this.turnPause.delete(sessionId)
+    this.wakeStates.delete(sessionId)
+    this.shellCwd.delete(sessionId)
+    this.queueState.delete(sessionId)
+    this.disposeSessionState(sessionId, { keepRunningWork: true })
+  }
+
+  /**
+   * Carry a note into the next heartbeat instead of waking a turn now.
+   *
+   * `projectId` scopes it to that project's ticks. A workspace runtime serves
+   * several attached projects, and a note from one project's background work
+   * must not turn up in another's heartbeat — the same rule as the transcripts.
+   * Omitted means "whichever tick runs next".
+   */
+  queuePendingEvent(text: string, projectId?: string | null): void {
+    this.pendingEvents.push({ projectId: projectId ?? null, text })
   }
 
   // ---------------------------------------------------------------------------
@@ -2790,6 +2953,11 @@ export class AgentGateway {
   private taskWakeTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private taskWakeRetries = new Map<string, { attempts: number; timer: ReturnType<typeof setTimeout> }>()
   private remoteTaskPollers = new Map<string, ReturnType<typeof setInterval>>()
+  /**
+   * Heartbeat sessions whose command registry is waiting to be wiped once the
+   * work they started finishes, with the listener that will do it (SHO-178).
+   */
+  private deferredRegistryWipes = new Map<string, () => void>()
 
   /**
    * Coalesce finished-task notes for an idle session and hand them to the API,
@@ -2820,6 +2988,17 @@ export class AgentGateway {
       return !(n.apiTracked ?? entry?.apiTracked) && !(n.reported ?? entry?.reported)
     })
     if (notes.length === 0) {
+      this.clearTaskWakeRetry(sessionId)
+      return
+    }
+    // A heartbeat's session never runs again, so the API's wake for it would be
+    // dropped (there is no chat session row to queue into) and the work the tick
+    // started would finish unread. Hand it to the project's next tick instead,
+    // which is where the tick would have reported it anyway (SHO-178).
+    if (isHeartbeatChatSessionId(sessionId)) {
+      const projectId = heartbeatSessionProjectId(sessionId)
+      for (const note of notes) this.queuePendingEvent(formatTaskNotification(note), projectId)
+      reg.markReported(notes.map((n) => n.taskId))
       this.clearTaskWakeRetry(sessionId)
       return
     }
@@ -3107,26 +3286,61 @@ export class AgentGateway {
   }
 
   /** Tear down per-session bookkeeping. Kills any backgrounded shell runs and releases browsers. */
-  private disposeSessionState(sessionId: string): void {
+  private disposeSessionState(sessionId: string, opts: { keepRunningWork?: boolean } = {}): void {
     const reg = this.commandRegistries.get(sessionId)
+    const keepingWork = !!(opts.keepRunningWork && reg && reg.listRunning().length > 0)
     if (reg) {
       // `clear`: the session is being wiped, so its rows go with it. Hydration
       // falls back to the per-task logs when no snapshot survives, so those have
       // to go too — a footer-less log now restores as `interrupted` (SHO-141),
       // which would otherwise bring a cleared session's tasks back to life.
-      // Not awaited (SHO-144): the wipe itself is synchronous, and clearing a
-      // session must not wait on a tree.
-      void reg.killAll({ clear: true })
-      try { rmSync(taskOutputDir(this.workspaceDir, sessionId), { recursive: true, force: true }) } catch { /* best effort */ }
-      this.commandRegistries.delete(sessionId)
+      if (keepingWork) this.deferCommandRegistryWipe(sessionId, reg!)
+      else this.wipeCommandRegistry(sessionId)
     }
-    const wake = this.taskWakeTimers.get(sessionId)
-    if (wake) clearTimeout(wake)
-    this.taskWakeTimers.delete(sessionId)
-    const poller = this.remoteTaskPollers.get(sessionId)
-    if (poller) clearInterval(poller)
-    this.remoteTaskPollers.delete(sessionId)
+    // Work still running keeps its wake machinery: the completion has to reach
+    // someone, and a cleared timer or poller would drop it silently.
+    if (!keepingWork) {
+      const wake = this.taskWakeTimers.get(sessionId)
+      if (wake) clearTimeout(wake)
+      this.taskWakeTimers.delete(sessionId)
+      const poller = this.remoteTaskPollers.get(sessionId)
+      if (poller) clearInterval(poller)
+      this.remoteTaskPollers.delete(sessionId)
+    }
     void releaseSessionBrowsers(sessionId)
+  }
+
+  /** Kill a session's commands, drop their logs and forget the registry. */
+  private wipeCommandRegistry(sessionId: string): void {
+    const reg = this.commandRegistries.get(sessionId)
+    if (!reg) return
+    // Not awaited (SHO-144): the wipe itself is synchronous, and clearing a
+    // session must not wait on a tree.
+    void reg.killAll({ clear: true })
+    try { rmSync(taskOutputDir(this.workspaceDir, sessionId), { recursive: true, force: true }) } catch { /* best effort */ }
+    this.commandRegistries.delete(sessionId)
+  }
+
+  /**
+   * Wipe a heartbeat's command registry once the work it started has finished.
+   *
+   * The registry is kept keyed by the tick's session id so the completion still
+   * has somewhere to land: `flushTaskWake` hands a heartbeat's result to the
+   * project's next tick (there is no chat session to wake), and that needs the
+   * task's log to still exist. One listener, armed only while work is running,
+   * so a tick that leaves nothing behind is still wiped immediately.
+   */
+  private deferCommandRegistryWipe(sessionId: string, reg: TaskRegistry): void {
+    if (this.deferredRegistryWipes.has(sessionId)) return
+    let draining = false
+    const off = reg.onChange(() => {
+      if (draining || reg.listRunning().length > 0) return
+      draining = true
+      off()
+      this.deferredRegistryWipes.delete(sessionId)
+      void this.flushTaskWake(sessionId).finally(() => this.wipeCommandRegistry(sessionId))
+    })
+    this.deferredRegistryWipes.set(sessionId, off)
   }
 
   // ---------------------------------------------------------------------------

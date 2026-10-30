@@ -8,6 +8,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { formatDuration } from "../../lib/format-duration"
 import type { IslandMeetingDecision, IslandMeetingState } from "./types"
 import type { IslandMeetingNotes } from "./useIslandMeetingNotes"
+import { Pulse } from "@/components/ui/Spin";
 
 export function useElapsedSeconds(startedAt: number | undefined): number {
   const [now, setNow] = useState(() => Date.now())
@@ -22,10 +23,12 @@ export function useElapsedSeconds(startedAt: number | undefined): number {
 
 export function RecordingDot({ size = 8 }: { size?: number }) {
   return (
-    <View
-      className="rounded-full bg-red-500 animate-pulse motion-reduce:animate-none"
-      style={{ width: size, height: size }}
-    />
+    <Pulse>
+      <View
+        className="rounded-full bg-red-500 animate-pulse motion-reduce:animate-none"
+        style={{ width: size, height: size }}
+      />
+    </Pulse>
   )
 }
 

@@ -27,11 +27,19 @@ let runAgentLoopImpl: (...args: any[]) => Promise<any> = async () => ({
   loopBreak: false,
 })
 
+// A module mock is process-global, so each one spreads the real exports: a
+// partial mock breaks any other file in the same run that imports the module
+// (the gateway reaches ../agent-loop, ../gateway-tools, ../internal-api and
+// ../model-router).
+const realAgentLoop = await import('../agent-loop')
 mock.module('../agent-loop', () => ({
+  ...realAgentLoop,
   runAgentLoop: (...args: any[]) => runAgentLoopImpl(...args),
 }))
 
+const realGatewayTools = await import('../gateway-tools')
 mock.module('../gateway-tools', () => ({
+  ...realGatewayTools,
   createBrowserTool: (_ctx: any) => ({
     name: 'browser',
     execute: async () => ({ content: [], details: {} }),
@@ -45,7 +53,9 @@ mock.module('../gateway-tools', () => ({
 // Allow per-test override of deriveApiUrl so we can drive the
 // `!apiUrl → cache null` branch in fetchSubagentOverrideFromApi.
 let deriveApiUrlImpl: () => string | null = () => 'https://api.test'
+const realInternalApi = await import('../internal-api')
 mock.module('../internal-api', () => ({
+  ...realInternalApi,
   deriveApiUrl: () => deriveApiUrlImpl(),
   getInternalHeaders: () => ({ 'Content-Type': 'application/json' }),
 }))

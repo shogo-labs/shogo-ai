@@ -16,7 +16,9 @@ import { Platform } from 'react-native'
 import { useHuddleRoster } from '../../hooks/useHuddleRoster'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { notesPillLabel, notesPillTone } from '../../lib/huddle-notes'
-import { leaveHuddleCall, sendHuddleReaction, setHuddleCamera, setHuddleHand, setHuddleMuted, setHuddleNotesEnabled, setHuddleView } from '../../lib/huddle-call'
+import { huddleVideoSupported, leaveHuddleCall, sendHuddleReaction, setHuddleCamera, setHuddleHand, setHuddleMuted, setHuddleNotesEnabled, setHuddleView, type HuddleCallState } from '../../lib/huddle-call'
+import { cameraControl, handControl, leaveControl, micControl, quickReactionControl, type HuddleControlGlyph, type HuddleControlModel, type HuddleControlTone } from '../../lib/huddle-control-model'
+import { PIP_ICONS, type PipIconName } from '../../lib/huddle-pip-icons'
 import { miniFeature, miniScreen, miniSelfView, type RosterEntry } from '../../lib/huddle-roster'
 import { HuddleVideo } from './HuddleVideo'
 
@@ -135,6 +137,76 @@ const btn = (bg: string): React.CSSProperties => ({
   justifyContent: 'center',
 })
 
+/**
+ * The app's dark-theme tokens, spelled out because this document has no
+ * stylesheets to inherit them from. `muted` and `danger` are `--color-muted`
+ * and `--color-destructive`; `accent` is the emerald the in-huddle bar uses for
+ * every active control.
+ */
+const TONE_FILL: Record<HuddleControlTone, string> = {
+  muted: 'rgb(42, 42, 42)',
+  accent: 'rgb(5, 150, 105)',
+  danger: 'rgb(220, 38, 38)',
+}
+
+const GLYPH_STROKE: Record<HuddleControlGlyph, string> = {
+  foreground: 'rgb(222, 222, 222)',
+  white: '#ffffff',
+  destructive: 'rgb(220, 38, 38)',
+}
+
+/** Same circle and glyph size the in-huddle bar uses in its compact form. */
+const CONTROL_SIZE = 32
+const GLYPH_SIZE = 15
+
+function PipIcon({ name, color }: { name: PipIconName; color: string }) {
+  return createElement(
+    'svg',
+    {
+      width: GLYPH_SIZE,
+      height: GLYPH_SIZE,
+      viewBox: '0 0 24 24',
+      fill: 'none',
+      stroke: color,
+      strokeWidth: 2,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': true,
+      focusable: false,
+    },
+    PIP_ICONS[name].map(([tag, attrs], i) => createElement(tag, { key: i, ...attrs })),
+  )
+}
+
+/** The floating bar's twin of `ControlButton`, driven by the shared model. */
+function PipControlButton({ control, onPress, testId }: { control: HuddleControlModel; onPress: () => void; testId?: string }) {
+  return createElement(
+    'button',
+    {
+      type: 'button',
+      'aria-label': control.label,
+      title: control.label,
+      ...(control.active === undefined ? {} : { 'aria-pressed': control.active }),
+      'data-testid': testId,
+      onClick: onPress,
+      style: {
+        width: CONTROL_SIZE,
+        height: CONTROL_SIZE,
+        borderRadius: CONTROL_SIZE / 2,
+        border: 'none',
+        padding: 0,
+        background: TONE_FILL[control.tone],
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+      },
+    },
+    <PipIcon name={control.icon} color={GLYPH_STROKE[control.glyph]} />,
+  )
+}
+
 function Avatar({ entry, size }: { entry: RosterEntry; size: number }) {
   const src = resolveAvatarUrl(entry.image)
   const base: React.CSSProperties = { width: size, height: size, borderRadius: size / 2, objectFit: 'cover', flexShrink: 0 }
@@ -222,26 +294,31 @@ function PipView() {
           ))}
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'center', padding: 8, background: '#0a0a0a' }}>
-        <button type="button" aria-label={call.muted ? 'Unmute' : 'Mute'} style={btn(call.muted ? '#dc2626' : '#3f3f46')} onClick={() => void setHuddleMuted(!call.muted)}>
-          {call.muted ? '🔇' : '🎤'}
-        </button>
-        <button type="button" aria-label={call.camera ? 'Turn off camera' : 'Turn on camera'} style={btn(call.camera ? '#059669' : '#3f3f46')} onClick={() => void setHuddleCamera(!call.camera)}>
-          📷
-        </button>
-        <button type="button" aria-label="React 👍" style={btn('#3f3f46')} onClick={() => void sendHuddleReaction('👍')}>
-          👍
-        </button>
-        <button type="button" aria-label={call.handRaised ? 'Lower hand' : 'Raise hand'} style={btn(call.handRaised ? '#f59e0b' : '#3f3f46')} onClick={() => void setHuddleHand(!call.handRaised)}>
-          ✋
-        </button>
-        <button type="button" aria-label="Return to the tab" style={btn('#3f3f46')} onClick={returnToTab}>
-          ⤢
-        </button>
-        <button type="button" aria-label="Leave huddle" style={btn('#dc2626')} onClick={() => void leaveHuddleCall()}>
-          ✕
-        </button>
-      </div>
+      <PipControlBar call={call} onReturn={returnToTab} />
+    </div>
+  )
+}
+
+/**
+ * The floating bar. Exported so it can be rendered and asserted without a
+ * picture-in-picture window — the window is the only part that needs a browser
+ * API, and the bar is where the two surfaces have to agree.
+ */
+export function PipControlBar({ call, onReturn }: { call: HuddleCallState; onReturn: () => void }) {
+  return (
+    <div style={{ display: 'flex', gap: 8, justifyContent: 'center', alignItems: 'center', padding: 8, background: '#0a0a0a' }} data-testid="huddle-pip-controls">
+      <PipControlButton control={micControl(call.muted)} onPress={() => void setHuddleMuted(!call.muted)} testId="pip-mic" />
+      {huddleVideoSupported ? (
+        <PipControlButton control={cameraControl(call.camera)} onPress={() => void setHuddleCamera(!call.camera)} testId="pip-camera" />
+      ) : null}
+      <PipControlButton control={quickReactionControl()} onPress={() => void sendHuddleReaction('👍')} testId="pip-react" />
+      <PipControlButton control={handControl(call.handRaised)} onPress={() => void setHuddleHand(!call.handRaised)} testId="pip-hand" />
+      <PipControlButton
+        control={{ label: 'Return to the tab', tone: 'muted', icon: 'maximize2', glyph: 'foreground' }}
+        onPress={onReturn}
+        testId="pip-return"
+      />
+      <PipControlButton control={leaveControl()} onPress={() => void leaveHuddleCall()} testId="pip-leave" />
     </div>
   )
 }

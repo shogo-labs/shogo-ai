@@ -11,6 +11,8 @@ import * as Clipboard from "expo-clipboard"
 import { AgentClient } from "@shogo-ai/sdk/agent"
 import { Copy, Check, X } from "lucide-react-native"
 import { agentFetch } from "../../lib/agent-fetch"
+import { API_URL } from "../../lib/api-url"
+import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
 import { useResolvedTheme } from "../../contexts/theme"
 import { FileTypeIcon } from "../chat/FileTypeIcon"
 import { MarkdownMediaNative } from "../chat/MarkdownMediaNative"
@@ -28,6 +30,16 @@ export interface WorkspaceFileViewerProps {
   agentUrl: string | null
   /** Raw path as the assistant wrote it, already normalized. */
   path: string
+  /**
+   * The project that owns this file, when the path names one. Its runtime is
+   * the one that has the file, so reads go there instead of the workspace's
+   * (SHO-247).
+   */
+  projectId?: string | null
+  /** That project's name, for the not-found message. */
+  projectName?: string | null
+  /** A paired desktop's relay prefix, when the workspace lives on that machine. */
+  relayBase?: string | null
   /** Changes when the same path is opened again, so the file reloads. */
   nonce: number
   onClose: () => void
@@ -56,26 +68,81 @@ function isNotFound(error: unknown): boolean {
   return error instanceof Error && /\b404\b/.test(error.message)
 }
 
-export function WorkspaceFileViewer({ agentUrl, path, nonce, onClose }: WorkspaceFileViewerProps) {
-  const client = useMemo(
-    () =>
-      agentUrl
-        ? new AgentClient({ baseUrl: agentUrl, fetch: agentFetch as typeof fetch })
-        : null,
-    [agentUrl],
-  )
+/** One runtime that may hold the file, and the path it knows it by. */
+interface FileSource {
+  baseUrl: string
+  path: string
+}
+
+/**
+ * Read from the first source that has the file. A 404 means "not in this
+ * runtime" and moves on to the next; any other failure is the real answer.
+ */
+async function readFirst<T>(
+  sources: readonly FileSource[],
+  read: (client: AgentClient, path: string) => Promise<T>,
+): Promise<{ value: T; source: FileSource }> {
+  let lastError: unknown
+  for (const source of sources) {
+    const client = new AgentClient({
+      baseUrl: source.baseUrl,
+      fetch: agentFetch as typeof fetch,
+    })
+    try {
+      return { value: await read(client, source.path), source }
+    } catch (error) {
+      if (!isNotFound(error)) throw error
+      lastError = error
+    }
+  }
+  throw lastError ?? new Error("Agent readFile 404: not found")
+}
+
+export function WorkspaceFileViewer({
+  agentUrl,
+  path,
+  projectId,
+  projectName,
+  relayBase,
+  nonce,
+  onClose,
+}: WorkspaceFileViewerProps) {
+  // Where the file can be. A mounted project is a folder under the workspace
+  // runtime's merged root, so `<projectId>/<path>` is served there and is tried
+  // first — unchanged behaviour. A project that is not mounted (always, on
+  // metal) lives only in its own runtime, which is tried when the workspace
+  // answers 404 (SHO-247).
+  const sources = useMemo<FileSource[]>(() => {
+    const list: FileSource[] = []
+    if (agentUrl) {
+      list.push({ baseUrl: agentUrl, path: projectId ? `${projectId}/${path}` : path })
+    }
+    const projectBase = projectId
+      ? projectAgentProxyBase({ projectId, relayBase, apiUrl: API_URL })
+      : null
+    if (projectBase && projectBase !== agentUrl) {
+      list.push({ baseUrl: projectBase, path })
+    }
+    return list
+  }, [agentUrl, path, projectId, relayBase])
+  // The source the file was actually read from; until a read answers, the last
+  // one is assumed — an owning project's runtime always has the file, the
+  // workspace's may not.
+  const [readSource, setReadSource] = useState<FileSource | null>(null)
+  const source = readSource ?? sources[sources.length - 1] ?? null
   const isDark = useResolvedTheme() === "dark"
   const name = basename(path)
   const [state, setState] = useState<ViewState>({ status: "loading" })
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
-    if (!client) {
+    if (sources.length === 0) {
       setState({ status: "error", message: "The workspace agent is not reachable." })
       return
     }
     let cancelled = false
     let objectUrl: string | null = null
+    setReadSource(null)
     setState({ status: "loading" })
 
     const fail = (error: unknown) => {
@@ -89,10 +156,10 @@ export function WorkspaceFileViewer({ agentUrl, path, nonce, onClose }: Workspac
 
     const kind = fileViewKind(path)
     if (Platform.OS === "web" && isPreviewLanguage(kind)) {
-      client
-        .readFileBlob(path)
-        .then((blob) => {
+      readFirst(sources, (client, readPath) => client.readFileBlob(readPath))
+        .then(({ value: blob, source: hit }) => {
           if (cancelled) return
+          setReadSource(hit)
           objectUrl = URL.createObjectURL(blob)
           setState({ status: "preview", kind, url: objectUrl })
         })
@@ -100,10 +167,11 @@ export function WorkspaceFileViewer({ agentUrl, path, nonce, onClose }: Workspac
     } else if (Platform.OS !== "web" && kind === "image") {
       setState({ status: "native-image" })
     } else if (kind === "markdown" || kind === "text") {
-      client
-        .readFile(path)
-        .then((text) => {
-          if (!cancelled) setState({ status: "text", kind, ...capText(text) })
+      readFirst(sources, (client, readPath) => client.readFile(readPath))
+        .then(({ value: text, source: hit }) => {
+          if (cancelled) return
+          setReadSource(hit)
+          setState({ status: "text", kind, ...capText(text) })
         })
         .catch(fail)
     } else {
@@ -114,7 +182,7 @@ export function WorkspaceFileViewer({ agentUrl, path, nonce, onClose }: Workspac
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [client, path, nonce])
+  }, [sources, path, nonce])
 
   const copyPath = async () => {
     try {
@@ -133,7 +201,7 @@ export function WorkspaceFileViewer({ agentUrl, path, nonce, onClose }: Workspac
         <Text className="min-w-0 flex-1 text-sm font-medium text-foreground" numberOfLines={1}>
           {path}
         </Text>
-        <DownloadChip path={path} agentUrl={agentUrl} />
+        <DownloadChip path={source?.path ?? path} agentUrl={source?.baseUrl ?? null} />
         <Pressable
           onPress={copyPath}
           accessibilityRole="button"
@@ -156,7 +224,14 @@ export function WorkspaceFileViewer({ agentUrl, path, nonce, onClose }: Workspac
         </Pressable>
       </View>
 
-      <Body state={state} path={path} name={name} agentUrl={agentUrl} isDark={isDark} />
+      <Body
+        state={state}
+        path={path}
+        name={name}
+        source={source}
+        projectName={projectName ?? null}
+        isDark={isDark}
+      />
     </View>
   )
 }
@@ -165,13 +240,17 @@ function Body({
   state,
   path,
   name,
-  agentUrl,
+  source,
+  projectName,
   isDark,
 }: {
   state: ViewState
   path: string
   name: string
-  agentUrl: string | null
+  /** The runtime that has the file, for downloads and native images. */
+  source: FileSource | null
+  /** The project the file was expected in, when the path named one. */
+  projectName: string | null
   isDark: boolean
 }) {
   switch (state.status) {
@@ -187,6 +266,11 @@ function Body({
         <Centered testID="workspace-file-missing">
           <Text className="text-sm font-medium text-foreground">File not found</Text>
           <Text className="text-xs text-muted-foreground">{path}</Text>
+          <Text className="text-center text-xs text-muted-foreground">
+            {projectName
+              ? `Looked in ${projectName}`
+              : "Looked in the workspace folder"}
+          </Text>
         </Centered>
       )
     case "error":
@@ -199,13 +283,17 @@ function Body({
       return (
         <Centered testID="workspace-file-unavailable">
           <Text className="text-xs text-muted-foreground">Preview not available for this file type.</Text>
-          <DownloadChip path={path} agentUrl={agentUrl} />
+          <DownloadChip path={source?.path ?? path} agentUrl={source?.baseUrl ?? null} />
         </Centered>
       )
     case "native-image":
       return (
         <ScrollView className="flex-1 px-3 py-3" contentContainerStyle={{ alignItems: "flex-start" }}>
-          <MarkdownMediaNative src={imageSrcHref(path)} alt={name} agentUrl={agentUrl} />
+          <MarkdownMediaNative
+            src={imageSrcHref(source?.path ?? path)}
+            alt={name}
+            agentUrl={source?.baseUrl ?? null}
+          />
         </ScrollView>
       )
     case "preview":
@@ -236,7 +324,11 @@ function Body({
           />
           {state.truncated ? (
             <View className="px-4 pb-3">
-              <Truncated visible path={path} agentUrl={agentUrl} />
+              <Truncated
+                visible
+                path={source?.path ?? path}
+                agentUrl={source?.baseUrl ?? null}
+              />
             </View>
           ) : null}
         </View>

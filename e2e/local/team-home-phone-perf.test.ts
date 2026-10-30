@@ -198,13 +198,14 @@ test.describe("Team Home on a phone with 150 channels, 150 projects and 150 mess
     await expect(feed(page).getByRole("link", { name: projectName, exact: true })).toBeVisible()
   })
 
-  test("the workspace avatar is Home's only sidebar button", async ({ page }) => {
+  test("the workspace avatar opens the workspace switcher, not a second sidebar", async ({ page }) => {
     await page.goto("/home")
     await expect(feed(page)).toBeVisible({ timeout: FEED_BUDGET_MS })
 
-    const avatar = feed(page).getByRole("button", { name: /open workspace sidebar$/ })
+    const avatar = feed(page).getByRole("button", { name: /switch workspace$/ })
     await expect(avatar).toBeVisible()
     await avatar.click()
-    await expect(page.getByLabel("App sidebar")).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText("Workspaces", { exact: true })).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByLabel("App sidebar")).toHaveCount(0)
   })
 })

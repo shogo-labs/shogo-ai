@@ -2,13 +2,15 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useRef } from 'react'
-import { Animated, Dimensions, Easing, Keyboard, Platform } from 'react-native'
+import { Animated, Dimensions, Easing, Keyboard, LayoutAnimation, Platform } from 'react-native'
 import {
   nativeComposerDockBottomPad,
   nativeComposerKeyboardDuration,
   nativeComposerKeyboardOpenFromSource,
   nativeComposerKeyboardOverlap,
   NATIVE_COMPOSER_KEYBOARD_EASING,
+  NATIVE_COMPOSER_KEYBOARD_LIFT_DURATION,
+  NATIVE_COMPOSER_KEYBOARD_LIFT_EASING,
   webViewportKeyboardOverlap,
   type NativeComposerKeyboardEvent,
   type NativeComposerKeyboardSource,
@@ -19,6 +21,13 @@ const nativeComposerKeyboardEasingFn = Easing.bezier(
   NATIVE_COMPOSER_KEYBOARD_EASING[1],
   NATIVE_COMPOSER_KEYBOARD_EASING[2],
   NATIVE_COMPOSER_KEYBOARD_EASING[3],
+)
+
+const nativeComposerKeyboardLiftEasingFn = Easing.bezier(
+  NATIVE_COMPOSER_KEYBOARD_LIFT_EASING[0],
+  NATIVE_COMPOSER_KEYBOARD_LIFT_EASING[1],
+  NATIVE_COMPOSER_KEYBOARD_LIFT_EASING[2],
+  NATIVE_COMPOSER_KEYBOARD_LIFT_EASING[3],
 )
 
 export function nativeComposerKeyboardEasing() {
@@ -134,21 +143,33 @@ export function useNativeComposerDockPad({
   enabled,
   restPad,
   safeAreaBottom = 0,
+  measuredBottomOffset = null,
+  avoidingClearance,
   iosKeyboardAvoiding,
   onOpenChange,
 }: {
   enabled: boolean
   restPad: number
   safeAreaBottom?: number
+  /** See `nativeComposerDockBottomPad`; null until the screen has measured. */
+  measuredBottomOffset?: number | null
+  /** See `nativeComposerDockBottomPad`. */
+  avoidingClearance?: number
   iosKeyboardAvoiding: boolean
   onOpenChange?: (open: boolean) => void
 }): Animated.Value {
   const pad = useRef(new Animated.Value(restPad)).current
   const restPadRef = useRef(restPad)
+  const offsetRef = useRef(measuredBottomOffset)
+  const clearanceRef = useRef(avoidingClearance)
+  const overlapRef = useRef(0)
   const avoidingRef = useRef(iosKeyboardAvoiding)
   const openRef = useRef(false)
+  const targetRef = useRef(restPad)
   const onOpenChangeRef = useRef(onOpenChange)
   restPadRef.current = restPad
+  offsetRef.current = measuredBottomOffset
+  clearanceRef.current = avoidingClearance
   avoidingRef.current = iosKeyboardAvoiding
   onOpenChangeRef.current = onOpenChange
 
@@ -157,17 +178,40 @@ export function useNativeComposerDockPad({
     const overlap = nativeComposerKeyboardOverlapFromEvent(event)
     const keyboardOpen = nativeComposerKeyboardOpenFromSource(source, overlap, rest)
     if (keyboardOpen == null) return
+    const toValue = nativeComposerDockBottomPad({
+      keyboardOpen,
+      overlap,
+      restPad: rest,
+      safeAreaBottom,
+      measuredBottomOffset: offsetRef.current,
+      avoidingClearance: clearanceRef.current,
+      iosKeyboardAvoiding: avoidingRef.current,
+    })
+    const duration = nativeComposerKeyboardDuration(event.duration)
+    const moved = keyboardOpen !== openRef.current || toValue !== targetRef.current
     openRef.current = keyboardOpen
+    overlapRef.current = overlap
+    targetRef.current = toValue
+    if (Platform.OS === 'ios' && !avoidingRef.current) {
+      // One layout commit, animated by UIKit on the keyboard's own curve. A
+      // JS-driven padding tween relays out the whole chat on every frame and
+      // trails the keyboard. `show` and `change` report the same frame, so
+      // only the first arms the animation; a spare one would leak onto the
+      // next unrelated layout.
+      if (moved) {
+        LayoutAnimation.configureNext({
+          duration,
+          update: { duration, type: LayoutAnimation.Types.keyboard },
+        })
+      }
+      onOpenChangeRef.current?.(keyboardOpen)
+      pad.setValue(toValue)
+      return
+    }
     onOpenChangeRef.current?.(keyboardOpen)
     Animated.timing(pad, {
-      toValue: nativeComposerDockBottomPad({
-        keyboardOpen,
-        overlap,
-        restPad: rest,
-        safeAreaBottom,
-        iosKeyboardAvoiding: avoidingRef.current,
-      }),
-      duration: nativeComposerKeyboardDuration(event.duration),
+      toValue,
+      duration,
       easing: nativeComposerKeyboardEasing(),
       useNativeDriver: false,
     }).start()
@@ -179,5 +223,80 @@ export function useNativeComposerDockPad({
     }
   }, [pad, restPad])
 
+  // Chrome below the composer (the bottom nav) collapses as the keyboard opens,
+  // which moves the container's bottom edge after the keyboard event. Follow it.
+  useEffect(() => {
+    if (!openRef.current || measuredBottomOffset == null) return
+    Animated.timing(pad, {
+      toValue: nativeComposerDockBottomPad({
+        keyboardOpen: true,
+        overlap: overlapRef.current,
+        restPad: restPadRef.current,
+        measuredBottomOffset,
+        iosKeyboardAvoiding: avoidingRef.current,
+      }),
+      duration: 120,
+      easing: nativeComposerKeyboardEasing(),
+      useNativeDriver: false,
+    }).start()
+  }, [pad, measuredBottomOffset])
+
   return pad
+}
+
+/**
+ * Lifts the phone chat composer with the keyboard without touching layout.
+ *
+ * The dock keeps its rest padding and slides on a native-driven transform, so
+ * the keyboard event costs one animation start on the JS thread and no React
+ * render or layout pass (the old padding tween re-laid out the whole chat on
+ * every frame and trailed the keyboard). The transcript follows through the
+ * scroll view's own keyboard inset.
+ *
+ * The lift is how far the keyboard rises above where the composer rests:
+ * `overlap - bottomOffset - restPad`, with `bottomOffset` the chrome under the
+ * chat surface (the bottom nav stays mounted while the keyboard covers it, so
+ * it does not move).
+ */
+export function useNativeComposerDockLift({
+  enabled,
+  restPad,
+  bottomOffset,
+  onOpenChange,
+}: {
+  enabled: boolean
+  restPad: number
+  /** Distance from the chat surface's bottom edge to the window's; null until measured. */
+  bottomOffset: number | null
+  /** Called when the keyboard has finished opening or closing. */
+  onOpenChange?: (open: boolean) => void
+}): Animated.Value {
+  const lift = useRef(new Animated.Value(0)).current
+  const restPadRef = useRef(restPad)
+  const offsetRef = useRef(bottomOffset)
+  const targetRef = useRef(0)
+  const onOpenChangeRef = useRef(onOpenChange)
+  restPadRef.current = restPad
+  offsetRef.current = bottomOffset
+  onOpenChangeRef.current = onOpenChange
+
+  useNativeComposerKeyboard(enabled, (event, source) => {
+    const rest = restPadRef.current
+    const overlap = nativeComposerKeyboardOverlapFromEvent(event)
+    const open = nativeComposerKeyboardOpenFromSource(source, overlap, rest)
+    if (open == null) return
+    const toValue = open ? -Math.max(0, overlap - (offsetRef.current ?? 0) - rest) : 0
+    if (toValue === targetRef.current) return
+    targetRef.current = toValue
+    Animated.timing(lift, {
+      toValue,
+      duration: NATIVE_COMPOSER_KEYBOARD_LIFT_DURATION,
+      easing: nativeComposerKeyboardLiftEasingFn,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) onOpenChangeRef.current?.(open)
+    })
+  })
+
+  return lift
 }

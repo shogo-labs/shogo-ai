@@ -29,6 +29,7 @@ import { useLocalSearchParams } from "expo-router"
 import { API_URL, api } from "../../../lib/api"
 import { useChatContextSafe } from "../ChatContext"
 import { useDomainHttp } from "../../../contexts/domain"
+import { Spin } from "@/components/ui/Spin";
 
 const LOG_PREFIX = "[ConnectToolWidget]"
 
@@ -341,7 +342,9 @@ export function ConnectToolWidget({
         )}
       >
         {status === "connecting" ? (
-          <Loader2 size={14} className="text-primary-foreground animate-spin" />
+          <Spin>
+            <Loader2 size={14} className="text-primary-foreground animate-spin" />
+          </Spin>
         ) : (
           <ExternalLink size={14} className="text-primary-foreground" />
         )}

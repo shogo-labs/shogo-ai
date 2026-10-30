@@ -112,7 +112,11 @@ export function AddToChannelConfirmHost() {
   if (!request) return null
 
   return (
-    <AlertDialog isOpen onClose={handleCancel} size="sm">
+    // `useRNModal`: this is asked from inside other react-native `Modal`s (the
+    // Members dialog). On web those portal to document.body, above anything in
+    // the app tree, so the default in-tree overlay renders *behind* them and the
+    // Add/Cancel buttons are unreachable. A Modal opened later stacks on top.
+    <AlertDialog isOpen onClose={handleCancel} size="sm" useRNModal>
       <AlertDialogBackdrop />
       <AlertDialogContent testID="add-to-channel-confirm">
         <AlertDialogHeader>

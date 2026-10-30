@@ -19,7 +19,8 @@ mock.module('react-native', () =>
 // copy and to resolving the caller's promise, so stand the chrome down.
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }))
 mock.module('@/components/ui/alert-dialog', () => ({
-  AlertDialog: ({ children }: any) => createElement('div', null, children),
+  AlertDialog: ({ children, useRNModal }: any) =>
+    createElement('div', { 'data-rn-modal': useRNModal ? 'true' : 'false', 'data-testid': 'alert-dialog' }, children),
   AlertDialogBackdrop: () => null,
   AlertDialogContent: ({ children }: any) => createElement('div', null, children),
   AlertDialogHeader: ({ children }: any) => createElement('div', null, children),
@@ -80,6 +81,15 @@ describe('add to channel confirmation', () => {
     await screen.findByText(ADD_TO_CHANNEL_TITLE)
     fireEvent.click(screen.getByLabelText('Cancel'))
     expect(await answer!).toBe(false)
+  })
+
+  test('renders in a react-native Modal so it stacks above the Members dialog', async () => {
+    render(<AddToChannelConfirmHost />)
+    await act(async () => {
+      void requestAddToChannelConfirm()
+    })
+    await screen.findByText(ADD_TO_CHANNEL_TITLE)
+    expect(screen.getByTestId('alert-dialog').getAttribute('data-rn-modal')).toBe('true')
   })
 
   test('renders nothing until something asks', () => {

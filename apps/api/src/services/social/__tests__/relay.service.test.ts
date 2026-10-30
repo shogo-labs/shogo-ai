@@ -109,7 +109,7 @@ const dbMock = {
 mock.module('../../../lib/prisma', () => ({ prisma: dbMock }))
 
 const { relayOperation } = await import('../relay.service')
-const { SocialError, setSocialClient } = await import('../client')
+const { SocialError, setSocialClient, CREATE_POST_TIMEOUT_MS } = await import('../client')
 
 const workspaceId = '11111111-1111-4111-8111-111111111111'
 const localWorkspaceId = '22222222-2222-4222-8222-222222222222'
@@ -290,5 +290,52 @@ describe('a relayed account call', () => {
 
     expect(outcome.status).toBe(403)
     expect(outcome.body).toMatchObject({ error: { code: 'account_out_of_scope' } })
+  })
+})
+
+/**
+ * The publish budget has to survive the relay hop, or the desktop's 120 s only
+ * covers its own wait for Shogo Cloud while the call that actually waits for
+ * Zernio still aborts at the 15 s read default — which is how a 34 MB reel
+ * "failed" after Instagram had accepted it.
+ */
+describe('a relayed publish', () => {
+  const profileRow = {
+    id: 'profile_row_1',
+    workspaceId,
+    localWorkspaceId: '',
+    zernioProfileId: '64f0c2a1b9e4d30012ab34cd',
+    externalId: `ws_${workspaceId}`,
+    name: 'Odin AI',
+  }
+
+  test('the create carries the publish budget, not the read default', async () => {
+    store.profiles.push({ ...profileRow })
+    responder = (req) => (req.method === 'POST' && req.path === '/posts' ? { post: { _id: 'zpost_1' } } : {})
+
+    const outcome = await relay({
+      method: 'POST',
+      path: '/posts',
+      body: {
+        content: 'a 34 MB reel',
+        publishNow: true,
+        platforms: [{ platform: 'instagram', accountId: '66aa11bb22cc33dd44ee55ff' }],
+        mediaItems: [{ url: 'https://cdn.example/reel.mp4', type: 'video' }],
+      },
+    })
+
+    expect(outcome.status).toBe(200)
+    const create = calls.find((call) => call.method === 'POST' && call.path === '/posts')
+    expect(CREATE_POST_TIMEOUT_MS).toBe(120_000)
+    expect(create.timeoutMs).toBe(CREATE_POST_TIMEOUT_MS)
+  })
+
+  test('a read keeps the default budget', async () => {
+    store.profiles.push({ ...profileRow })
+
+    await relay({ path: '/posts' })
+
+    expect(calls.at(-1).path).toBe('/posts')
+    expect(calls.at(-1).timeoutMs).toBeUndefined()
   })
 })

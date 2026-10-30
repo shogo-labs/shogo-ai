@@ -7,6 +7,7 @@ import {
   useDomainActions,
   useProjectCollection,
 } from "@shogo/shared-app/domain";
+import { usePhoneLayout } from "../../lib/native-phone-layout";
 import { usePermissions } from "../../hooks/usePermissions";
 import { ProjectAccessPanel } from "../project/ProjectAccessPanel";
 import { Text } from "./account-sheet-chrome";
@@ -14,6 +15,7 @@ import { ProjectAgentLookSection } from "./ProjectAgentLookSection";
 import { ProjectGitHubSection } from "./ProjectGitHubSection";
 
 export function ProjectSettingsContent({ projectId }: { projectId: string }) {
+  const phone = usePhoneLayout();
   const projects = useProjectCollection();
   const actions = useDomainActions();
   const project = projects.all.find((item: any) => item.id === projectId);
@@ -39,7 +41,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
   };
 
   return (
-    <View className="flex-1">
+    <View className={phone ? undefined : "flex-1"}>
       <Text className="text-sm text-muted-foreground">
         {canRename
           ? "Settings for this project only."

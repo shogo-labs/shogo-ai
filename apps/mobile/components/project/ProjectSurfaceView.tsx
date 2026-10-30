@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ActivityIndicator, ScrollView, Text, View } from "react-native";
 import { observer } from "mobx-react-lite";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAgentUrl } from "@shogo/shared-app/hooks";
 import { CanvasWebView } from "../canvas/CanvasWebView";
 import { FilesBrowserPanel } from "./panels/FilesBrowserPanel";
@@ -105,15 +106,23 @@ function ProjectCanvasSurface({
 export const ProjectSurfaceView = observer(function ProjectSurfaceView({
   projectId,
   surface = "canvas",
+  padTopInset = false,
+  header,
 }: {
   projectId: string | undefined;
   surface?: ProjectSurface;
+  /** Keep the surface below the status bar. Only for the full-screen route:
+   * the side pane already sits under its own header. */
+  padTopInset?: boolean;
+  /** Rendered above the surface, below the status bar inset. */
+  header?: ReactNode;
 }) {
   const { agentUrl, canvasBaseUrl, previewUrl, budgetNotice, dismissBudgetNotice } = useAgentUrl(
     API_URL ?? "",
     projectId ?? ""
   );
   useWorkspaceBudgetToast(budgetNotice, dismissBudgetNotice);
+  const insets = useSafeAreaInsets();
 
   const panel = useMemo(() => {
     if (!projectId) return null;
@@ -130,9 +139,13 @@ export const ProjectSurfaceView = observer(function ProjectSurfaceView({
         return <PlansPanel visible projectId={projectId} agentUrl={agentUrl} />;
       case "settings":
         return (
-          <View className="flex-1 px-5 pt-20">
+          <ScrollView
+            className="flex-1"
+            contentContainerClassName="px-5 pb-32 pt-3"
+            keyboardShouldPersistTaps="handled"
+          >
             <ProjectSettingsContent projectId={projectId} />
-          </View>
+          </ScrollView>
         );
       case "canvas":
       default:
@@ -154,5 +167,15 @@ export const ProjectSurfaceView = observer(function ProjectSurfaceView({
     );
   }
 
-  return <View className="flex-1 bg-background">{panel}</View>;
+  return (
+    <View
+      className="flex-1 bg-background"
+      style={padTopInset ? { paddingTop: insets.top } : undefined}
+    >
+      {header}
+      {/* The files panel is absolutely filled, so it needs a parent of its own
+          for the padding above to apply. */}
+      <View className="flex-1">{panel}</View>
+    </View>
+  );
 });

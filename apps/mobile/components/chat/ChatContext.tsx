@@ -127,6 +127,12 @@ export interface ChatContextValue {
   /** True when a path the assistant mentioned is a file in the workspace. */
   fileExists?: (path: string) => boolean
 
+  /**
+   * Resolve a project id or name the agent passed as `project` to a project id.
+   * Used to place a bare path a turn wrote in another project (SHO-247).
+   */
+  resolveProjectRef?: (ref: string) => string | null
+
   /** The workspace this chat belongs to, when known (agent avatars use it). */
   workspaceId?: string | null
 

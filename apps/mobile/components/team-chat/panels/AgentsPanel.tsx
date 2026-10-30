@@ -20,11 +20,13 @@ import { AgentProfileCard } from '../AgentProfileCard'
 import { PanelLink, PanelSection } from '../ConversationRows'
 import { useTeamChatNav } from '../TeamChatSidebarProvider'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
+import { usePhoneLayout } from '../../../lib/native-phone-layout'
 
 type Agent = Mentionables['agents'][number]
 
 export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
   const router = useRouter()
+  const phone = usePhoneLayout()
   const { width } = useWindowDimensions()
   const chat = useTeamChatNav()
   const experience = useWorkspaceExperience()
@@ -69,7 +71,7 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
                 accessibilityLabel={`Message ${agent.name}${doing ? `, ${doing.label}` : ''}`}
                 disabled={opening && openingKey === agent.key}
                 onPress={() => void message(agent)}
-                className={cn('min-w-0 flex-1 flex-row items-center gap-2.5 rounded-md px-2 py-1.5 active:bg-accent/50', opening && openingKey === agent.key && 'opacity-60')}
+                className={cn('min-w-0 flex-1 flex-row items-center gap-2.5 rounded-md py-1.5 active:bg-accent/50', phone ? 'px-1' : 'px-2', opening && openingKey === agent.key && 'opacity-60')}
               >
                 <View>
                   <AgentAvatar name={agent.name} projectId={agent.projectId} workspaceId={workspaceId} iconUrl={agent.image} size={28} />
@@ -95,7 +97,7 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
                   )}
                 </View>
               </Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel={`${agent.name} profile`} onPress={() => setProfile(agent)} className="rounded-md p-2 active:bg-accent/50">
+              <Pressable accessibilityRole="button" accessibilityLabel={`${agent.name} profile`} onPress={() => setProfile(agent)} className={cn('rounded-md p-2 active:bg-accent/50', phone && '-mr-1')}>
                 <Info size={14} className="text-muted-foreground" />
               </Pressable>
             </View>
@@ -103,14 +105,18 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
         })}
         {agents.length === 0 && <Text className="px-2 py-3 text-xs text-muted-foreground">No agents in this workspace yet.</Text>}
         {experience.showMarketplace && (
-          <PanelLink
-            icon={Store}
-            label="Add agents"
-            onPress={() => {
-              router.push('/(app)/marketplace' as any)
-              onNavPress?.()
-            }}
-          />
+          // The panel's own inset already sits the agent rows on the page gutter,
+          // so the link, whose rows carry their own, backs out of it on a phone.
+          <View className={phone ? '-mx-2' : undefined}>
+            <PanelLink
+              icon={Store}
+              label="Add agents"
+              onPress={() => {
+                router.push('/(app)/marketplace' as any)
+                onNavPress?.()
+              }}
+            />
+          </View>
         )}
       </PanelSection>
       {profile && (

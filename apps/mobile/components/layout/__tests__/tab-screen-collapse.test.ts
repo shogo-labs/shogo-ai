@@ -8,6 +8,7 @@ import { describe, expect, test } from 'bun:test'
 import { mock } from 'bun:test'
 mock.module('../CreateMenu', () => ({ CreateMenu: () => null }))
 mock.module('../ProfileMenu', () => ({ ProfileMenu: () => null }))
+mock.module('../PhoneBackButton', () => ({ PhoneBackButton: () => null }))
 mock.module('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }))
 mock.module('lucide-react-native', () => ({ Plus: () => null }))
 

@@ -16,6 +16,7 @@ import type { ToolCallData } from "../tools/types"
 import { parseShellCommand, sepLabel } from "../tools/summary"
 import { CredentialChip } from "./CredentialChip"
 import { CodeText } from "../CodeText"
+import { Spin } from "@/components/ui/Spin";
 
 const MAX_OUTPUT_LINES = 30
 const MAX_OUTPUT_CHARS = 3000
@@ -178,14 +179,16 @@ function ExecWidgetImpl({
           </Text>
         )}
         {tool.state !== "success" && (
-          <StateIcon
-            className={cn(
-              "w-3 h-3",
-              tool.state === "streaming" && "text-primary animate-spin",
-              tool.state === "error" && "text-red-500",
-            )}
-            size={12}
-          />
+          <Spin active={tool.state === "streaming"}>
+            <StateIcon
+              className={cn(
+                "w-3 h-3",
+                tool.state === "streaming" && "text-primary animate-spin",
+                tool.state === "error" && "text-red-500",
+              )}
+              size={12}
+            />
+          </Spin>
         )}
       </Pressable>
 
@@ -240,7 +243,9 @@ function ExecWidgetImpl({
           {/* Streaming indicator */}
           {tool.state === "streaming" && (
             <View className="flex-row items-center gap-1.5 py-1">
-              <Loader2 className="w-3 h-3 text-primary animate-spin" size={12} />
+              <Spin>
+                <Loader2 className="w-3 h-3 text-primary animate-spin" size={12} />
+              </Spin>
               <Text className="text-[10px] text-muted-foreground">Running…</Text>
             </View>
           )}

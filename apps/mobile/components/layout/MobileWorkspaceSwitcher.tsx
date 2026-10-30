@@ -254,6 +254,7 @@ export function MobileWorkspaceSwitcherSheet({
       >
         <WorkspaceMenuSection
           isNative
+          presentation="sheet"
           includePlan={false}
           showBilling={false}
           localMode={localMode}

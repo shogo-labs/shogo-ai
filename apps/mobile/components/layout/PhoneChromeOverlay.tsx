@@ -12,9 +12,15 @@ export interface PhoneChromeOverlay {
   overlay: boolean
   /** Height of the floating dock, including the bottom safe area. */
   bottom: number
+  /**
+   * True when the shell does not reserve the bottom safe area, so the dock has
+   * to add the home-indicator inset itself or it sits flush with the screen
+   * edge (lower than on screens where the shell reserves it).
+   */
+  edgeToEdge: boolean
 }
 
-export const PhoneChromeOverlayContext = createContext<PhoneChromeOverlay>({ overlay: false, bottom: 0 })
+export const PhoneChromeOverlayContext = createContext<PhoneChromeOverlay>({ overlay: false, bottom: 0, edgeToEdge: false })
 
 export function usePhoneChromeOverlay(): PhoneChromeOverlay {
   return useContext(PhoneChromeOverlayContext)

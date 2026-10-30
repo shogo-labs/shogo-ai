@@ -51,6 +51,8 @@ import { PlansPanel } from "../project/panels/PlansPanel"
 import { ShareFileProvider, type ShareFileTarget } from "../chat/share-file-context"
 import { ShareFileView } from "../chat/ShareFileViewer"
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
+import { filePaneTarget } from "../chat/remote-project-paths"
+import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
 import { TaskThreadPaneHost } from "../chat/task/TaskThreadPaneHost"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
@@ -86,6 +88,11 @@ type FilePaneState =
       kind: "path"
       /** Workspace-relative path the assistant mentioned. */
       path: string
+      /**
+       * The project that owns it, when the path names one (`<projectId>/…`).
+       * Its files live in that project's own runtime, not in this one.
+       */
+      projectId: string | null
       /** Changes on every open so re-opening the same file reloads it. */
       nonce: number
     }
@@ -319,7 +326,15 @@ export const WorkspaceAgentChatScreen = observer(
     const openFilePane = useCallback((path: string) => {
       setProjectPane(null)
       setPlanPane(null)
-      setFilePane({ kind: "path", path, nonce: Date.now() })
+      // `<projectId>/<path>` names a file in that project's own runtime; a bare
+      // path is this workspace root's. Either way it opens in the same pane.
+      const target = filePaneTarget(path)
+      setFilePane({
+        kind: "path",
+        path: target.path,
+        projectId: target.projectId,
+        nonce: Date.now(),
+      })
     }, [])
     const openShareFile = useCallback((target: ShareFileTarget) => {
       setProjectPane(null)
@@ -485,6 +500,19 @@ export const WorkspaceAgentChatScreen = observer(
         })
       }
     }, [workspace?.id])
+
+    // Another project's runtime, for a file this chat's agent wrote there.
+    // Above the early return: a hook below it changes the hook order between
+    // the loading render and the loaded one (SHO-247).
+    const projectAgentUrl = useCallback(
+      (projectId: string) =>
+        projectAgentProxyBase({
+          projectId,
+          relayBase: machineRoute?.relayBase ?? null,
+          apiUrl: API_URL,
+        }),
+      [machineRoute?.relayBase],
+    )
 
     if (!workspace?.id || !sessionId || !profile) {
       return (
@@ -677,6 +705,11 @@ export const WorkspaceAgentChatScreen = observer(
         <WorkspaceFileViewer
           agentUrl={workspaceAgentUrl}
           path={filePane.path}
+          projectId={filePane.projectId}
+          projectName={
+            filePane.projectId ? projectName(filePane.projectId) : null
+          }
+          relayBase={machineRoute?.relayBase ?? null}
           nonce={filePane.nonce}
           onClose={closeFilePane}
         />
@@ -808,6 +841,7 @@ export const WorkspaceAgentChatScreen = observer(
             onOpenProjectPane={hasSidePane ? openProjectPane : undefined}
             onOpenPlan={isPersonalWorkspace ? undefined : openPlanPane}
             onOpenFilePath={openFilePane}
+            projectAgentUrl={projectAgentUrl}
             buildPlanRequest={buildPlanRequest}
             onBuildPlanConsumed={handleBuildPlanConsumed}
             prefillRequest={prefillRequest}

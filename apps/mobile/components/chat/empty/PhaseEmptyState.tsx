@@ -7,8 +7,9 @@
  * Shows phase-specific icon, title, and clickable suggestion chips.
  */
 
-import { View, Text, Pressable } from "react-native"
-import { cn } from "@shogo/shared-ui/primitives"
+import { View, Text } from "react-native"
+import { cn, PressableScale } from "@shogo/shared-ui/primitives"
+import { haptics } from "@/lib/haptics"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 import { QuickActionChips } from "./QuickActionChips"
 import {
@@ -182,8 +183,9 @@ export function PhaseEmptyState({
       {/* Suggestion chips */}
       <View className="flex-row flex-wrap justify-center gap-2 max-w-xs">
         {suggestions.map((suggestion) => (
-          <Pressable
+          <PressableScale
             key={suggestion}
+            feedback={haptics.selection}
             onPress={() => onSuggestionClick?.(suggestion)}
             className={cn(
               "px-3 py-1.5 rounded-full",
@@ -191,7 +193,7 @@ export function PhaseEmptyState({
             )}
           >
             <Text className="text-xs text-foreground">{suggestion}</Text>
-          </Pressable>
+          </PressableScale>
         ))}
       </View>
     </View>
