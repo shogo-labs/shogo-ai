@@ -9,9 +9,12 @@ import {
 } from "../buildBrief"
 
 describe("buildBrief", () => {
-  test("round-trips the idea and sends the research-and-plan instructions", () => {
+  test("round-trips the idea and sends the build-first instructions", () => {
     const message = buildBuildBriefMessage("  A CRM for my bakery  ")
-    expect(message).toContain("research this and put a plan together")
+    expect(message).toContain("Build a first working version of this in this turn")
+    expect(message).toContain("Share the preview link")
+    expect(message).not.toContain("put a plan together")
+    expect(message).not.toContain("ask me to confirm before you start building")
     expect(parseBuildBriefMessage(message)).toBe("A CRM for my bakery")
   })
 
