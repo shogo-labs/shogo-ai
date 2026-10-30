@@ -89,8 +89,8 @@ function useChatCommands(query: string, visible: boolean): CommandItem[] {
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
   const workspaceId = visible && experience.kind === 'team' ? workspace?.id ?? null : null
+  const { list } = useConversationList(workspaceId)
   const mentionables = useMentionables(workspaceId)
-  const { list } = useConversationList(workspaceId, mentionables)
   const me = useMyUserId()
 
   return useMemo(() => {

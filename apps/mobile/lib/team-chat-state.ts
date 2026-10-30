@@ -217,9 +217,9 @@ export function applyListEvent(
       const visibleInChannel = !message.threadRootId || message.alsoSentToChannel
       const hasDmPreview = visibleInChannel && (c.kind === 'dm' || c.kind === 'group_dm')
       // Realtime messages carry mention IDs, while the initial list response
-      // already has names. If the mention directory is not ready yet, refresh
-      // the canonical preview after applying this event.
-      const unresolvedUserMention = hasDmPreview && !names && /<@u:[^>]+>/.test(message.text)
+      // already has names. If a preview consumer opted into name resolution
+      // but its directory is still loading, refresh the canonical preview.
+      const unresolvedNamedMention = hasDmPreview && names === null && /<@[uag]:[^>]+>/.test(message.text)
       const caughtUp = mine || viewing
       const next: ConversationSummary = {
         ...c,
@@ -244,7 +244,7 @@ export function applyListEvent(
       copy[idx] = next
       // A reply moved to the end was already counted when it started; the server knows the real count.
       if (event.moved && !caughtUp) copy[idx] = { ...next, unreadCount: c.unreadCount }
-      return { list: copy, refetch: (event.moved === true && !caughtUp) || unresolvedUserMention }
+      return { list: copy, refetch: (event.moved === true && !caughtUp) || unresolvedNamedMention }
     }
     case 'doc.updated': {
       const idx = list.findIndex((c) => c.id === event.conversationId)
@@ -579,20 +579,70 @@ export function renderMentionLabels(text: string, names: MentionNames): string {
  * edited message. This lets a plain TextInput show readable names without
  * turning an unchanged mention into ordinary `@name` text when it is saved.
  */
-export function serializeEditedMentions(editedText: string, originalText: string, names: MentionNames): string {
-  const mentions = Array.from(
-    originalText.matchAll(/<@u:[^>]+>|<@a:(?:ws|p:[^>]+)>|<!(?:here|channel)>|<#c:[^>]+>|<@g:[^>]+>/g),
-    ([token]) => ({ token, label: renderMentionLabels(token, names) }),
-  )
+export interface EditableMentionRange {
+  start: number
+  end: number
+  label: string
+  token: string
+}
+
+/** Render a message for a plain editor while retaining the exact range of each mention. */
+export function editableMentionDraft(text: string, names: MentionNames): { text: string; mentions: EditableMentionRange[] } {
+  const mentions: EditableMentionRange[] = []
+  let rendered = ''
+  let sourceCursor = 0
+  const tokenPattern = /<@u:[^>]+>|<@a:(?:ws|p:[^>]+)>|<!(?:here|channel)>|<#c:[^>]+>|<@g:[^>]+>/g
+
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0]
+    const sourceStart = match.index!
+    rendered += text.slice(sourceCursor, sourceStart)
+    const label = renderMentionLabels(token, names)
+    const start = rendered.length
+    rendered += label
+    mentions.push({ start, end: rendered.length, label, token })
+    sourceCursor = sourceStart + token.length
+  }
+
+  return { text: rendered + text.slice(sourceCursor), mentions }
+}
+
+/** Keep mention ranges through edits, dropping touched ranges or an ambiguous edit. */
+export function updateEditableMentionRanges(
+  previousText: string,
+  nextText: string,
+  mentions: EditableMentionRange[],
+  selection: { start: number; end: number },
+): EditableMentionRange[] {
+  const start = Math.max(0, Math.min(previousText.length, selection.start))
+  const end = Math.max(start, Math.min(previousText.length, selection.end))
+  const insertedLength = nextText.length - (previousText.length - (end - start))
+  if (insertedLength < 0 || nextText !== previousText.slice(0, start) + nextText.slice(start, start + insertedLength) + previousText.slice(end)) {
+    // If the editor's selection cannot account for the change, do not guess
+    // which identical or prefix-sharing label survived the edit.
+    return []
+  }
+
+  const shift = insertedLength - (end - start)
+  return mentions.flatMap((mention) => {
+    if (mention.end <= start) return [mention]
+    if (mention.start >= end) {
+      return [{ ...mention, start: mention.start + shift, end: mention.end + shift }]
+    }
+    return []
+  })
+}
+
+/** Serialize only mentions whose tracked editor ranges remain intact. */
+export function serializeEditableMentions(text: string, mentions: EditableMentionRange[]): string {
   let cursor = 0
   let serialized = ''
-  for (const { token, label } of mentions) {
-    const index = editedText.indexOf(label, cursor)
-    if (index < 0) continue
-    serialized += editedText.slice(cursor, index) + token
-    cursor = index + label.length
+  for (const mention of [...mentions].sort((a, b) => a.start - b.start)) {
+    if (mention.start < cursor || text.slice(mention.start, mention.end) !== mention.label) continue
+    serialized += text.slice(cursor, mention.start) + mention.token
+    cursor = mention.end
   }
-  return serialized + editedText.slice(cursor)
+  return serialized + text.slice(cursor)
 }
 
 export interface InlineSegment {

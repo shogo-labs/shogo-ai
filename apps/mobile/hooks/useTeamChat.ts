@@ -93,10 +93,18 @@ export function invalidateConversationList(workspaceId: string): void {
   listChangedListeners.forEach((l) => l(workspaceId))
 }
 
+/**
+ * Pass `mentionables` only when this consumer displays DM previews. An explicit
+ * null opts into a server refresh if a mention arrives before names load; an
+ * omitted value keeps lightweight list consumers from triggering that refresh.
+ */
 export function useConversationList(workspaceId: string | null | undefined, mentionables?: Mentionables | null) {
   const me = useMyUserId()
   const active = useActiveConversationId()
-  const names = useMemo(() => mentionables ? mentionNames(mentionables) : null, [mentionables])
+  const names = useMemo(
+    () => mentionables === undefined ? undefined : mentionables === null ? null : mentionNames(mentionables),
+    [mentionables],
+  )
   const [list, setList] = useState<ConversationSummary[]>(() => (workspaceId ? listCache.get(workspaceId) ?? [] : []))
   const [loading, setLoading] = useState(!workspaceId || !listCache.has(workspaceId))
   const [error, setError] = useState<string | null>(null)
