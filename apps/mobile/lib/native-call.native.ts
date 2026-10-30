@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Incoming huddle calls on the system call screen: CallKit on iPhone, rung by
- * a PushKit VoIP push (Apple requires the call to be reported at once, so the
- * handler here does nothing slow), and the Android phone-account screen, rung
- * by a data push (see `native-call-background.native.ts`).
+ * Incoming huddle calls on the system call screen: CallKit on iPhone where the
+ * App Store storefront allows it, rung by a PushKit VoIP push (Apple requires
+ * immediate reporting). China uses ordinary alert pushes. Android uses the
+ * phone-account screen, rung by a data push (see `native-call-background.native.ts`).
  *
  * This module owns the system screen for each ring. Answer and decline on the
  * system screen reach `huddle-ring` through the handlers; closing a ring in the
  * app ends its system screen. An answered call stays up until the huddle ends.
  */
-import { NativeModules, Platform } from 'react-native'
+import { AppState, NativeModules, Platform } from 'react-native'
 import { randomUUID } from 'expo-crypto'
 import { api, createHttpClient } from './api'
 import { getHuddleCall, subscribeHuddleCall } from './huddle-call'
@@ -61,7 +61,11 @@ const callKeepModule = loadCallKeep()
 const callKeep: CallKeep | null = callKeepModule?.default ?? null
 const voipPush = loadVoipPush()
 
-export const nativeCallsSupported = callKeep !== null
+/** China explicitly disables CallKit; unknown storefronts keep it available. */
+let callKitAllowedForStorefront = true
+export let nativeCallsSupported = callKeep !== null && callKitAllowedForStorefront
+let callKitSetup = false
+let voipStarted = false
 
 /** How long an unanswered call stays on the system screen. Clients and the server use the same window. */
 const NATIVE_RING_MS = 45_000
@@ -116,6 +120,7 @@ function endReasonCode(reason: NativeCallEndReason): number {
 }
 
 function reportEnd(call: ActiveCall, reason: NativeCallEndReason): void {
+  if (!callKitAllowedForStorefront) return
   callKeep?.reportEndCallWithUUID(call.uuid, endReasonCode(reason))
 }
 
@@ -132,7 +137,7 @@ export function showNativeIncomingCall(
   ring: NativeCallRing,
   options: { callUUID?: string; alreadyReportedByPushKit?: boolean } = {},
 ): boolean {
-  if (!callKeep) return false
+  if (!callKeep || !callKitAllowedForStorefront) return false
   if (callsByHuddle.has(ring.huddleId)) return true
   const stableUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(ring.huddleId)
     ? ring.huddleId.toLowerCase()
@@ -153,6 +158,7 @@ export function showNativeIncomingCall(
 
 /** The ring was answered in the app: the system screen becomes an active call, and stays until the huddle ends. */
 export function markNativeCallAnswered(huddleId: string): void {
+  if (!callKitAllowedForStorefront) return
   const call = callsByHuddle.get(huddleId)
   if (!call || call.answered) return
   call.answered = true
@@ -207,6 +213,7 @@ function replayEarlySystemActions(uuid: string): void {
 }
 
 function onSystemAnswer(uuid: string): void {
+  if (!callKitAllowedForStorefront) return
   const huddleId = huddleByUuid.get(uuid)
   const call = huddleId ? callsByHuddle.get(huddleId) : undefined
   if (!call) {
@@ -219,6 +226,7 @@ function onSystemAnswer(uuid: string): void {
 
 /** Ended on the system screen. The screen we close ourselves is forgotten first, so it doesn't come back here. */
 function onSystemEnd(uuid: string): void {
+  if (!callKitAllowedForStorefront) return
   const huddleId = huddleByUuid.get(uuid)
   const call = huddleId ? callsByHuddle.get(huddleId) : undefined
   if (!call) {
@@ -237,7 +245,8 @@ function activateAudio(): void {
 }
 
 function setupCallKit(): void {
-  if (!callKeep) return
+  if (!callKeep || !callKitAllowedForStorefront || callKitSetup) return
+  callKitSetup = true
   void callKeep
     .setup({
       ios: { appName: 'Shogo', supportsVideo: false, maximumCallGroups: '1' },
@@ -277,16 +286,46 @@ function setupCallKit(): void {
 let voipToken: string | null = null
 let expoPushToken: string | null = null
 let announce = true
-let voipTokenState: 'unknown' | 'registered' | 'invalidated' = 'unknown'
+let voipTokenState: 'unknown' | 'registered' | 'invalidated' = Platform.OS === 'ios' ? 'invalidated' : 'unknown'
+let voipTokenSync: Promise<void> = Promise.resolve()
+let voipTokenSyncRetryTimer: ReturnType<typeof setTimeout> | null = null
+let voipTokenSyncRetryCount = 0
+const VOIP_TOKEN_SYNC_RETRY_BASE_MS = 2_000
+const VOIP_TOKEN_SYNC_RETRY_MAX_MS = 60_000
+
+function scheduleVoipTokenSyncRetry(): void {
+  if (voipTokenSyncRetryTimer) return
+  const delay = Math.min(VOIP_TOKEN_SYNC_RETRY_BASE_MS * 2 ** voipTokenSyncRetryCount, VOIP_TOKEN_SYNC_RETRY_MAX_MS)
+  voipTokenSyncRetryCount += 1
+  voipTokenSyncRetryTimer = setTimeout(() => {
+    voipTokenSyncRetryTimer = null
+    void syncVoipToken()
+  }, delay)
+}
 
 async function syncVoipToken(): Promise<void> {
   if (!expoPushToken || voipTokenState === 'unknown') return
-  await api
-    .putVoipToken(createHttpClient(), {
-      pushToken: expoPushToken,
-      voipToken: voipTokenState === 'registered' && announce ? voipToken : null,
-    })
+  const request = voipTokenSync
     .catch(() => {})
+    .then(async () => {
+      // Read the desired value when this serialized request runs so a queued
+      // registration can't overwrite a newer request to clear the token.
+      const body = {
+        pushToken: expoPushToken as string,
+        voipToken: callKitAllowedForStorefront && voipTokenState === 'registered' && announce ? voipToken : null,
+      }
+      try {
+        await api.putVoipToken(createHttpClient(), body)
+        voipTokenSyncRetryCount = 0
+        if (voipTokenSyncRetryTimer) clearTimeout(voipTokenSyncRetryTimer)
+        voipTokenSyncRetryTimer = null
+      } catch (err) {
+        console.warn('[Huddles] Could not sync VoIP token; will retry:', (err as Error).message)
+        scheduleVoipTokenSyncRetry()
+      }
+    })
+  voipTokenSync = request
+  await request
 }
 
 /** "Announce huddle calls" off: the server stops sending this iPhone VoIP calls. */
@@ -296,6 +335,7 @@ export function setAnnounceHuddleCalls(enabled: boolean): void {
 }
 
 function onVoipPush(payload: Record<string, unknown>): void {
+  if (!callKitAllowedForStorefront) return
   const ring = ringFromPushData(payload)
   if (!ring) return
 
@@ -306,29 +346,85 @@ function onVoipPush(payload: Record<string, unknown>): void {
 }
 
 function onVoipRegistration(token: string): void {
+  if (!callKitAllowedForStorefront) {
+    voipToken = null
+    voipTokenState = 'invalidated'
+    void syncVoipToken()
+    return
+  }
   voipToken = token.trim() || null
   voipTokenState = voipToken ? 'registered' : 'invalidated'
   void syncVoipToken()
 }
 
 function startVoip(): void {
-  if (!voipPush) return
-  voipPush.addEventListener('didLoadWithEvents', (events) => {
-    for (const event of events) {
-      if (event.name === voipPush.RNVoipPushRemoteNotificationsRegisteredEvent) onVoipRegistration(event.data)
-      else if (event.name === voipPush.RNVoipPushRemoteNotificationReceivedEvent) {
-        onVoipPush(event.data as Record<string, unknown>)
+  if (!voipPush || !callKeep || !callKitAllowedForStorefront) return
+  if (!voipStarted) {
+    voipStarted = true
+    voipPush.addEventListener('didLoadWithEvents', (events) => {
+      for (const event of events) {
+        if (event.name === voipPush.RNVoipPushRemoteNotificationsRegisteredEvent) onVoipRegistration(event.data)
+        else if (event.name === voipPush.RNVoipPushRemoteNotificationReceivedEvent) {
+          onVoipPush(event.data as Record<string, unknown>)
+        }
       }
-    }
-  })
-  voipPush.addEventListener('register', onVoipRegistration)
-  voipPush.addEventListener('notification', (payload: object) => onVoipPush(payload as Record<string, unknown>))
+    })
+    voipPush.addEventListener('register', onVoipRegistration)
+    voipPush.addEventListener('notification', (payload: object) => onVoipPush(payload as Record<string, unknown>))
+  }
   voipPush.registerVoipToken()
 }
 
-// Start once, when the module loads, so a call that opens the app is not missed.
-setupCallKit()
-startVoip()
+let storefrontRefreshId = 0
+
+function applyStorefrontPolicy(allowed: boolean): void {
+  if (Platform.OS !== 'ios') return
+  callKitAllowedForStorefront = allowed
+  nativeCallsSupported = callKeep !== null && allowed
+
+  if (allowed) {
+    setupCallKit()
+    startVoip()
+    return
+  }
+
+  // Clearing this server-side routes incoming calls through ordinary alerts
+  // instead of PushKit, which must be reported to CallKit.
+  voipToken = null
+  voipTokenState = 'invalidated'
+  void syncVoipToken()
+}
+
+async function refreshStorefrontPolicy(): Promise<void> {
+  if (Platform.OS !== 'ios') return
+  const refreshId = ++storefrontRefreshId
+  let countryCode: string | null = null
+  try {
+    const iap = require('react-native-iap') as { getStorefront?: () => Promise<string | null> }
+    countryCode = (await iap.getStorefront?.()) ?? null
+  } catch (err) {
+    console.warn('[Huddles] Could not read App Store storefront; keeping CallKit enabled:', (err as Error).message)
+  }
+  if (refreshId !== storefrontRefreshId) return
+
+  // StoreKit uses ISO 3166-1 alpha-3 storefront codes (China is CHN).
+  // Only an explicit China storefront disables CallKit; unknown stays enabled.
+  const allowed = countryCode?.trim().toUpperCase() !== 'CHN'
+  applyStorefrontPolicy(allowed)
+}
+
+// Resolve the storefront at launch and again when the app returns to the foreground.
+if (Platform.OS === 'ios') {
+  void refreshStorefrontPolicy()
+  AppState.addEventListener('change', (state) => {
+    if (state === 'active') {
+      void refreshStorefrontPolicy()
+    }
+  })
+} else {
+  setupCallKit()
+}
+
 subscribePushToken((token) => {
   expoPushToken = token
   void syncVoipToken()
