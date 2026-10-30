@@ -633,6 +633,78 @@ describe('MessageRow', () => {
     expect(h.onOpenSession).toHaveBeenCalled()
   })
 
+  test('editing a message shows mention names and keeps their wire tokens on save', async () => {
+    const h = handlers()
+    const tagged = message({ text: 'hey <@u:u-preeti>', authorUserId: 'u-me' })
+    const taggedNames = {
+      users: new Map([['u-preeti', 'Preeti Poddar']]),
+      agents: new Map<string, string>(),
+    }
+    const { container } = render(
+      <MessageRow message={tagged} grouped={false} me="u-me" names={taggedNames} canManage={false} {...h} />,
+    )
+
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit message' }))
+
+    const editor = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(editor.value).toBe('hey @Preeti Poddar')
+    fireEvent.change(editor, { target: { value: 'hey @Preeti Poddar, please review' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    })
+
+    expect(h.onEdit).toHaveBeenCalledWith(tagged, 'hey <@u:u-preeti>, please review')
+  })
+
+  test('editing a message offers the @ picker and saves a newly selected mention as a wire token', async () => {
+    const h = handlers()
+    const taggedNames = {
+      users: new Map([['u-ana', 'Ana Lopez']]),
+      agents: new Map<string, string>(),
+    }
+    const draftMessage = message({ text: 'Please notify', authorUserId: 'u-me' })
+    const { container } = render(
+      <MessageRow
+        message={draftMessage}
+        grouped={false}
+        me="u-me"
+        names={taggedNames}
+        mentionables={mentionables}
+        canManage={false}
+        {...h}
+      />,
+    )
+
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit message' }))
+
+    const editor = screen.getByRole('textbox') as HTMLTextAreaElement
+    await act(async () => {
+      fireEvent.change(editor, { target: { value: 'Please notify @Ana' } })
+    })
+    await waitFor(() => expect(shim('message-edit-completions-mentions')).toBeTruthy())
+    await act(async () => {
+      fireEvent.mouseDown(document.body)
+    })
+    await waitFor(() => expect(shim('message-edit-completions-mentions')).toBeNull())
+    await act(async () => {
+      fireEvent.change(editor, { target: { value: 'Please notify @An' } })
+    })
+    await waitFor(() => expect(shim('message-edit-completions-mentions')).toBeTruthy())
+    await act(async () => {
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+    expect(editor.value).toBe('Please notify @Ana Lopez ')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    })
+    expect(h.onEdit).toHaveBeenCalledWith(draftMessage, 'Please notify <@u:u-ana>')
+  })
+
   test('a grouped running reply is just the marker, with no controls line of its own', () => {
     const h = handlers()
     const running = message({
@@ -2748,5 +2820,76 @@ describe('MessageList wheel passthrough', () => {
     const seen = countListWheel()
     wheel(screen.getByText('before'), { deltaX: 120, deltaY: 0 })
     expect(seen).toHaveLength(1)
+  })
+})
+
+/**
+ * Slack puts the caret in the message box when you open a conversation on the
+ * desktop. The trigger is the conversation opening, not the composer mounting —
+ * a re-render of the same conversation must never take focus back from
+ * wherever the reader has since moved it.
+ */
+describe('opening a conversation', () => {
+  const channel = {
+    id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
+    topic: null, lastSeq: 1, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+    joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 1,
+    canPost: true, canReply: true, canManage: false, members: [],
+  }
+  const pane = (overrides: Record<string, unknown> = {}) =>
+    createElement(TimelinePane as any, {
+      workspaceId: 'ws',
+      conversation: { ...channel, ...overrides } as any,
+      me: 'u-me',
+      mentionables: { ...mentionables, agents: [] },
+      visible: true,
+    })
+  /** The composer's own input, which is what the focus lands on. */
+  const composerInput = () => screen.getByLabelText('Message') as HTMLInputElement
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  test('puts the caret in the message box so you can start typing', async () => {
+    render(pane())
+    const input = composerInput()
+    await act(async () => {})
+    expect(document.activeElement).toBe(input)
+  })
+
+  test('leaves the caret alone in a channel you cannot post to', async () => {
+    render(pane({ canPost: false }))
+    await act(async () => {})
+    // Read-only: the composer is replaced by its reason, so there is nothing
+    // to focus and nothing grabs the caret.
+    expect(screen.queryByLabelText('Message')).toBeNull()
+    expect(screen.getByText('You do not have permission to post here.')).toBeTruthy()
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  test('does not take the caret later if the conversation opened read-only', async () => {
+    // Permissions can resolve a beat after the conversation opens. Focusing
+    // then would steal the caret from wherever the reader has since moved it.
+    const view = render(pane({ canPost: false }))
+    await act(async () => {})
+    view.rerender(pane({ canPost: true }))
+    await act(async () => {})
+    expect(document.activeElement).not.toBe(composerInput())
+  })
+
+  test('does not grab the caret back when the same conversation re-renders', async () => {
+    const view = render(pane())
+    const input = composerInput()
+    await act(async () => {})
+    expect(document.activeElement).toBe(input)
+
+    input.blur()
+    expect(document.activeElement).not.toBe(input)
+
+    // A mute or presence update re-renders the pane with the same conversation.
+    view.rerender(pane({ muted: true }))
+    await act(async () => {})
+    expect(document.activeElement).not.toBe(input)
   })
 })

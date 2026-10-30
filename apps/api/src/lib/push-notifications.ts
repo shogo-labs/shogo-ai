@@ -33,6 +33,8 @@ interface ExpoPushMessage {
   categoryId?: string
   /** `default` plays the system sound; `null` (or omitted) keeps the push silent. */
   sound?: 'default' | null
+  /** Seconds that the push may be retained for redelivery. */
+  ttl?: number
 }
 
 type InvalidTokenCleanup = (tokens: string[]) => Promise<unknown>
@@ -135,6 +137,8 @@ export async function sendPushToUser(
     categoryId?: string
     /** `default` plays the system sound. Omitted or `null` keeps the push silent. */
     sound?: 'default' | null
+    /** Seconds that the push may be retained for redelivery. */
+    ttl?: number
     /** Only these devices (Expo push tokens). Omitted means every device of the user. */
     pushTokens?: string[]
     /**
@@ -171,6 +175,7 @@ export async function sendPushToUser(
         channelId,
         ...(payload.categoryId ? { categoryId: payload.categoryId } : {}),
         ...(payload.sound && !payload.dataOnly ? { sound: payload.sound } : {}),
+        ...(payload.ttl !== undefined ? { ttl: payload.ttl } : {}),
       })),
       subs.map((sub) => sub.pushToken),
     )

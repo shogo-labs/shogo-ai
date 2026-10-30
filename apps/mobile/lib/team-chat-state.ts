@@ -194,7 +194,7 @@ export function firstUnreadIndex(messages: ChatMessage[], afterSeq: number, me: 
 
 export interface ListUpdate {
   list: ConversationSummary[]
-  /** The event changed membership or metadata; refetch to get the full picture. */
+  /** The event changed data that needs the canonical server list to resolve. */
   refetch: boolean
 }
 
@@ -203,6 +203,7 @@ export function applyListEvent(
   event: TeamChatEvent,
   me: string,
   activeConversationId: string | null,
+  names?: MentionNames | null,
 ): ListUpdate {
   switch (event.type) {
     case 'message.created': {
@@ -213,17 +214,22 @@ export function applyListEvent(
       const mine = message.authorUserId === me
       const viewing = activeConversationId === c.id
       const mentioned = !mine && message.text.includes(`<@u:${me}>`)
-      const caughtUp = mine || viewing
       const visibleInChannel = !message.threadRootId || message.alsoSentToChannel
+      const hasDmPreview = visibleInChannel && (c.kind === 'dm' || c.kind === 'group_dm')
+      // Realtime messages carry mention IDs, while the initial list response
+      // already has names. If a preview consumer opted into name resolution
+      // but its directory is still loading, refresh the canonical preview.
+      const unresolvedNamedMention = hasDmPreview && names === null && /<@[uag]:[^>]+>/.test(message.text)
+      const caughtUp = mine || viewing
       const next: ConversationSummary = {
         ...c,
         lastSeq: Math.max(c.lastSeq, message.seq),
         lastMessageAt: visibleInChannel ? message.createdAt : c.lastMessageAt,
-        lastMessage: visibleInChannel && (c.kind === 'dm' || c.kind === 'group_dm')
+        lastMessage: hasDmPreview
           ? {
               // A voice note carries no text, so fall back to what it is.
               preview:
-                inlinePreview(message.text, { users: new Map(), agents: new Map() }, 140) ||
+                inlinePreview(message.text, names ?? { users: new Map(), agents: new Map() }, 140) ||
                 voiceNotePreview(message.attachments),
               authorId: message.authorUserId,
               authorType: message.authorType,
@@ -238,7 +244,7 @@ export function applyListEvent(
       copy[idx] = next
       // A reply moved to the end was already counted when it started; the server knows the real count.
       if (event.moved && !caughtUp) copy[idx] = { ...next, unreadCount: c.unreadCount }
-      return { list: copy, refetch: event.moved === true && !caughtUp }
+      return { list: copy, refetch: (event.moved === true && !caughtUp) || unresolvedNamedMention }
     }
     case 'doc.updated': {
       const idx = list.findIndex((c) => c.id === event.conversationId)
@@ -566,6 +572,77 @@ export function renderMentionLabels(text: string, names: MentionNames): string {
       return name ? `#${name}` : UNRESOLVED_CHANNEL_LABEL
     })
     .replace(/<@g:([^>]+)>/g, (_m, id) => `@${names.groups?.get(id) ?? 'group'}`)
+}
+
+/**
+ * Restore the original wire token for each mention label that remains in an
+ * edited message. This lets a plain TextInput show readable names without
+ * turning an unchanged mention into ordinary `@name` text when it is saved.
+ */
+export interface EditableMentionRange {
+  start: number
+  end: number
+  label: string
+  token: string
+}
+
+/** Render a message for a plain editor while retaining the exact range of each mention. */
+export function editableMentionDraft(text: string, names: MentionNames): { text: string; mentions: EditableMentionRange[] } {
+  const mentions: EditableMentionRange[] = []
+  let rendered = ''
+  let sourceCursor = 0
+  const tokenPattern = /<@u:[^>]+>|<@a:(?:ws|p:[^>]+)>|<!(?:here|channel)>|<#c:[^>]+>|<@g:[^>]+>/g
+
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0]
+    const sourceStart = match.index!
+    rendered += text.slice(sourceCursor, sourceStart)
+    const label = renderMentionLabels(token, names)
+    const start = rendered.length
+    rendered += label
+    mentions.push({ start, end: rendered.length, label, token })
+    sourceCursor = sourceStart + token.length
+  }
+
+  return { text: rendered + text.slice(sourceCursor), mentions }
+}
+
+/** Keep mention ranges through edits, dropping touched ranges or an ambiguous edit. */
+export function updateEditableMentionRanges(
+  previousText: string,
+  nextText: string,
+  mentions: EditableMentionRange[],
+  selection: { start: number; end: number },
+): EditableMentionRange[] {
+  const start = Math.max(0, Math.min(previousText.length, selection.start))
+  const end = Math.max(start, Math.min(previousText.length, selection.end))
+  const insertedLength = nextText.length - (previousText.length - (end - start))
+  if (insertedLength < 0 || nextText !== previousText.slice(0, start) + nextText.slice(start, start + insertedLength) + previousText.slice(end)) {
+    // If the editor's selection cannot account for the change, do not guess
+    // which identical or prefix-sharing label survived the edit.
+    return []
+  }
+
+  const shift = insertedLength - (end - start)
+  return mentions.flatMap((mention) => {
+    if (mention.end <= start) return [mention]
+    if (mention.start >= end) {
+      return [{ ...mention, start: mention.start + shift, end: mention.end + shift }]
+    }
+    return []
+  })
+}
+
+/** Serialize only mentions whose tracked editor ranges remain intact. */
+export function serializeEditableMentions(text: string, mentions: EditableMentionRange[]): string {
+  let cursor = 0
+  let serialized = ''
+  for (const mention of [...mentions].sort((a, b) => a.start - b.start)) {
+    if (mention.start < cursor || text.slice(mention.start, mention.end) !== mention.label) continue
+    serialized += text.slice(cursor, mention.start) + mention.token
+    cursor = mention.end
+  }
+  return serialized + text.slice(cursor)
 }
 
 export interface InlineSegment {
