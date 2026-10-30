@@ -10330,6 +10330,14 @@ setTimeout(async () => {
     } catch (err: any) {
       console.error('[SignupCredit] failed to schedule expiry cron (non-fatal):', err?.message ?? err)
     }
+    // "Your agent is back": the cap notice promises a reset time, this is what
+    // tells the person when it arrives (SHO-258 §4).
+    try {
+      const { startCreditsResetNotifyCron } = await import('./jobs/credits-reset-notify')
+      startCreditsResetNotifyCron()
+    } catch (err: any) {
+      console.error('[CreditsReset] failed to schedule reset-notify cron (non-fatal):', err?.message ?? err)
+    }
   })()
 }
 
