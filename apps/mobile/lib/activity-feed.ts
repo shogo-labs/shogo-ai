@@ -33,6 +33,8 @@ export interface ActivityEntry {
   source: 'inbox' | 'agent' | 'sent'
   /** The inbox kind, `message` for a sent message, or `task` / `chat` for agent work. */
   kind: InboxItem['kind'] | 'task' | 'chat' | 'message'
+  /** For a reaction: the emoji used, shown in place of the generic icon. */
+  emoji?: string | null
   title: string
   /** "Direct Message", "Thread in #eng", "Agent task in Billing". */
   context: string
@@ -67,12 +69,25 @@ function inboxContext(item: InboxItem): { context: string; private: boolean } {
   return { context: where, private: isPrivate }
 }
 
+const REACTION_TITLE_RE = /\sreacted\s+(\S+)\s+to your message\s*$/
+
+/**
+ * The emoji someone reacted with. The server writes it into the title ("Ana
+ * reacted 🎉 to your message") and keeps no separate field, so read it back
+ * from there. Custom emoji arrive as `:name:`. Null when the title has none.
+ */
+export function reactionEmoji(item: Pick<InboxItem, 'kind' | 'title'>): string | null {
+  if (item.kind !== 'reaction') return null
+  return REACTION_TITLE_RE.exec(item.title)?.[1] ?? null
+}
+
 export function inboxEntry(item: InboxItem): ActivityEntry {
   const { context, private: isPrivate } = inboxContext(item)
   return {
     id: `inbox:${item.id}`,
     source: 'inbox',
     kind: item.kind,
+    emoji: reactionEmoji(item),
     title: item.title,
     context,
     preview: item.preview,
