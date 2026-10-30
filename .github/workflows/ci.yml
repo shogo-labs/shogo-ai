@@ -598,14 +598,14 @@ jobs:
           - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send', grep: 'chat resumes a live turn it is not attached to' }
           # chat resume windows — two windows on one chat, plus Stop-then-send
           # (stop a turn mid-stream, then send).
-          - { name: 'E2E (chat resume windows)', timeout: 25, spec: 'chat-resume-on-send chat-stop-then-send', grep: 'two windows on one chat|Stop, then send' }
+          - { name: 'E2E (chat resume windows)', spec: 'chat-resume-on-send chat-stop-then-send', grep: 'two windows on one chat|Stop, then send' }
           # chat task wake — the background-task wake path, end to end:
           # chat-task-resume (a finished background exec wakes the chat with no
           # user input), chat-task-wake-live-attach (the window that did NOT
           # post the turn renders it with no reload) and chat-task-wake-refocus
           # (the window that was in the background while the wake ran: one
           # catch-up on refocus, then quiet again).
-          - { name: 'E2E (chat task wake)', timeout: 25, spec: 'chat-task-resume chat-task-wake-live-attach chat-task-wake-refocus' }
+          - { name: 'E2E (chat task wake)', spec: 'chat-task-resume chat-task-wake-live-attach chat-task-wake-refocus' }
           # chat task dock — what a background task leaves on screen:
           # chat-background-tasks (the dock survives navigating away, a reload
           # and a restart of the panel), chat-task-thread-pane (a dock row opens
@@ -614,7 +614,7 @@ jobs:
           # the SECOND turn's request body off the fake server. Without
           # E2E_FAKE_LLM_STACK these skip, which is how a spec that never runs
           # hides in the shard jobs (SHO-122).
-          - { name: 'E2E (chat task dock)', timeout: 25, spec: 'chat-background-tasks chat-task-thread-pane turn-boundary-context' }
+          - { name: 'E2E (chat task dock)', spec: 'chat-background-tasks chat-task-thread-pane turn-boundary-context' }
           # machine-workspace-agent-turn-live is not a chat spec, but it needs
           # the same fake-model stack and nothing else: its SHO-130 AC 5
           # assertion reads the continuation request's tool-result text, and its
@@ -646,13 +646,15 @@ jobs:
           - { name: 'E2E (agent model truth)', spec: 'agent-model-truth' }
     permissions:
       contents: read
-    # Per-entry cap, default 35: a wedged E2E job holds the whole merge queue
-    # for the length of this cap (23:55–01:25Z on 2026-10-20, three entries,
-    # ~75 min). Measured on a green PR run: local shards 11–13 min, so 35 keeps
-    # ~10 min of headroom and still halves the worst case. The chat jobs ask for
-    # less — 30 for `chat resume`, 25 for the other three (they measure 5–14 min
-    # on CI, SHO-251) — so a wedged one costs the queue less than the default.
-    timeout-minutes: ${{ matrix.timeout || 35 }}
+    # 35, not 60: a wedged E2E job holds the whole merge queue for the length
+    # of this cap (23:55–01:25Z on 2026-10-20, three entries, ~75 min). Measured
+    # on a green PR run: local shards 11–13 min, so 35 keeps ~10 min of headroom
+    # and still halves the worst case. One number for the whole matrix on
+    # purpose: the chat jobs measure 15, 7, 9 and 5 min on CI (SHO-251), all
+    # well under 60% of it, and a per-entry cap via `${{ matrix.timeout }}`
+    # turned out to mean NO cap at all for entries without the key — a job ran
+    # 39 min until its run was superseded. Keep this a literal.
+    timeout-minutes: 35
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
