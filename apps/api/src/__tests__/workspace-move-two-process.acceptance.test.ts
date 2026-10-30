@@ -42,6 +42,14 @@ interface FileEntry {
 const roots: string[] = []
 const procs: Proc[] = []
 
+/** A port the desktop can name in its own env before it starts. */
+const freePort = async (): Promise<number> => {
+  const probe = Bun.serve({ port: 0, fetch: () => new Response('') })
+  const port = probe.port
+  await probe.stop(true)
+  return port
+}
+
 const startServer = async (env: Record<string, string>): Promise<Proc> => {
   const child = Bun.spawn([process.execPath, SERVER], {
     cwd: API_DIR,
@@ -134,10 +142,20 @@ test(
     }
     expect(expected.length).toBe(127)
 
+    // The desktop is a *signed-in app*, which means its env looks like this:
+    // its own local API addresses itself (`SHOGO_API_URL`), and the cloud is a
+    // different address on a different variable. Pointing `SHOGO_API_URL` at
+    // the other process — as this test used to — is not a shape the product
+    // ever has, and it hid a real defect: every "remote" call went back to the
+    // driver itself, so a cloud→desktop move planned from the desktop's own
+    // empty database, moved nothing, and reported `done`.
+    const desktopPort = await freePort()
     const desktop = await startServer({
       QA_DATA_DIR: desktopDirs.data,
       QA_FILES_DIR: desktopDirs.files,
-      SHOGO_API_URL: `http://127.0.0.1:${cloud.port}`,
+      QA_PORT: String(desktopPort),
+      SHOGO_API_URL: `http://127.0.0.1:${desktopPort}`,
+      SHOGO_CLOUD_URL: `http://127.0.0.1:${cloud.port}`,
       SHOGO_API_KEY: API_KEY,
     })
     // The desktop knows the cloud workspace before it offers to move it: an
@@ -188,6 +206,11 @@ test(
     expect(desktopAfter.counts.schedules).toBe(cloudBefore.counts.schedules)
     expect(desktopAfter.counts.triggers).toBe(cloudBefore.counts.triggers)
     expect(desktopAfter.counts.members).toBeGreaterThanOrEqual(cloudBefore.counts.members)
+    // Someone in a channel but not in the workspace. Their `User` row is not in
+    // the export manifest and no `Member` mentions them, so a move that only
+    // carries member accounts dies here with a foreign-key violation.
+    expect(desktopAfter.userIds).toContain('u-guest-246')
+    expect(desktopAfter.counts.conversationMembers).toBe(cloudBefore.counts.conversationMembers)
 
     // The source is untouched until someone switches over.
     expect((await stateOf(cloud)).dirs).toEqual(cloudBefore.dirs)

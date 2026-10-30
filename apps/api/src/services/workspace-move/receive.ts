@@ -139,7 +139,16 @@ export async function writeRecordChunk(db: any, model: string, rows: MoveRow[]):
     } catch (err: any) {
       // A column the target schema does not have (an older desktop) must not
       // abort the move: count it and keep going.
-      if (!/Unknown argument|does not exist|no such column/i.test(String(err?.message))) throw err
+      if (!/Unknown argument|does not exist|no such column/i.test(String(err?.message))) {
+        // Name the model and the row: "Foreign key constraint violated" on its
+        // own says nothing about which of the sixty models broke, which is how
+        // a real move's first failure took an afternoon to place.
+        throw new WorkspaceMoveError(
+          `${model} row ${String(row?.id ?? '?')} could not be written: ${String(err?.message ?? err)}`,
+          500,
+          'workspace_move_write_failed',
+        )
+      }
     }
   }
   return { inserted }
