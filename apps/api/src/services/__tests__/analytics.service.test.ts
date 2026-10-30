@@ -301,6 +301,19 @@ describe('getUserFunnel (Postgres branch)', () => {
     expect(rawCalls[0].sql).not.toContain('NOT LIKE ')
   })
 
+  test('counts workspace-chat messages too, and only after sign-up', async () => {
+    enqueueRaw([])
+    await analytics.getUserFunnel('30d', true)
+    const sql = rawCalls[0].sql
+    // Workspace chats carry no project: the author comes off the message row,
+    // falling back to the session owner.
+    expect(sql).toContain('COALESCE(cm."authorUserId", p."createdBy", cs."createdByUserId")')
+    expect(sql).toContain('LEFT JOIN "projects" p')
+    // A message written before the author signed up must not count: without
+    // this bound a copied or imported project makes the average negative.
+    expect(sql).toContain('um."createdAt" >= ru."createdAt"')
+  })
+
   test('returns zeros when raw query yields no rows', async () => {
     enqueueRaw([])
     const out = await analytics.getUserFunnel('30d', true)
@@ -474,8 +487,21 @@ describe('getSourceBreakdown (Postgres branch)', () => {
 describe('Postgres-mode helper coverage', () => {
   test('realUserWhere on Postgres emits insensitive-mode email filters', () => {
     const w = analytics.realUserWhere() as any
-    const inner = w.AND.find((c: any) => c.NOT?.email?.contains)
+    const inner = w.AND.find((c: any) => c.NOT?.email?.endsWith)
     expect(inner.NOT.email.mode).toBe('insensitive')
+  })
+
+  test('internal accounts cover every Odin domain, not just getodin.ai', () => {
+    const w = analytics.realUserWhere() as any
+    const suffixes = w.AND
+      .filter((c: any) => c.NOT?.email?.endsWith)
+      .map((c: any) => c.NOT.email.endsWith)
+    expect(suffixes).toContain('@shogo.ai')
+    expect(suffixes).toContain('@test.shogo.ai')
+    // `@getodin.%` is a LIKE wildcard, so the prisma side must match the
+    // literal prefix rather than the pattern with its `%` still in it.
+    expect(suffixes).toContain('@getodin.')
+    expect(suffixes.some((s: string) => s.includes('%'))).toBe(false)
   })
 
   test('periodToWindow falls back to default 30d on unknown period', () => {

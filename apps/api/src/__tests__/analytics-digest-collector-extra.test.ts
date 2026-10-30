@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:
 
 const fixtures = {
   funnel: { signups: 0, onboarded: 0, createdProject: 0, sentMessage: 0, engaged: 0, avgMinToFirstProject: 0, avgMinToFirstMessage: 0 },
-  activity: { total: 0, users: [] as any[] },
+  totals: { activeUsers: 0, totalMessages: 0, totalSessions: 0, totalToolCalls: 0, totalSpendUsd: 0 },
   templates: { templates: [] },
   sources: { sources: [] },
   conversations: { conversations: [] as any[] },
@@ -32,7 +32,7 @@ const fixtures = {
 
 mock.module('../services/analytics.service', () => ({
   getUserFunnel: async () => fixtures.funnel,
-  getUserActivityTable: async () => fixtures.activity,
+  getDigestTotals: async () => fixtures.totals,
   getTemplateEngagement: async () => fixtures.templates,
   getSourceBreakdown: async () => fixtures.sources,
   getChatConversations: async () => fixtures.conversations,
@@ -71,7 +71,7 @@ const {
 
 beforeEach(() => {
   fixtures.conversations = { conversations: [] }
-  fixtures.activity = { total: 0, users: [] }
+  fixtures.totals = { activeUsers: 0, totalMessages: 0, totalSessions: 0, totalToolCalls: 0, totalSpendUsd: 0 }
   aiState.text = undefined
   aiState.throws = false
   aiState.throwMsg = undefined

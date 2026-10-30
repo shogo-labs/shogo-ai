@@ -15,6 +15,11 @@ import {
   isHeartbeatChatSessionId,
 } from '@shogo/shared-runtime/heartbeat-session'
 import { prisma, Prisma } from '../lib/prisma'
+import {
+  INTERNAL_EMAIL_PATTERNS,
+  INTERNAL_EMAIL_SUFFIXES,
+  INTERNAL_ROLE,
+} from '../lib/internal-accounts'
 import { resolveModelLabels } from './model-registry.service'
 import { countLineChanges } from '../lib/tool-line-stats'
 import {
@@ -3444,7 +3449,8 @@ export async function getBillingAnalytics(scope: AnalyticsScope = {}) {
 // Internal User Exclusion
 // ============================================================================
 
-const EXCLUDED_EMAIL_PATTERNS = ['%@test.shogo.ai', '%@shogo.ai', '%@getodin.ai']
+// Defined once, in `lib/internal-accounts.ts` — see that file for why Odin is
+// matched as `@getodin.%` rather than one domain at a time.
 const isSqlite = process.env.SHOGO_LOCAL_MODE === 'true'
 
 /**
@@ -3475,11 +3481,11 @@ function toNumOrNull(v: unknown): number | null {
 export function realUserWhere(): Prisma.UserWhereInput {
   return {
     AND: [
-      { role: { not: 'super_admin' } },
-      ...EXCLUDED_EMAIL_PATTERNS.map(pattern => ({
+      { role: { not: INTERNAL_ROLE } },
+      ...INTERNAL_EMAIL_SUFFIXES.map(suffix => ({
         NOT: {
           email: {
-            contains: pattern.replace('%', ''),
+            endsWith: suffix,
             ...(isSqlite ? {} : { mode: 'insensitive' as const }),
           },
         },
@@ -3490,9 +3496,9 @@ export function realUserWhere(): Prisma.UserWhereInput {
 
 function realUserEmailNotLike(): string {
   const likeOp = isSqlite ? 'NOT LIKE' : 'NOT ILIKE'
-  return EXCLUDED_EMAIL_PATTERNS
+  return INTERNAL_EMAIL_PATTERNS
     .map(p => `u."email" ${likeOp} '${p}'`)
-    .concat([`u."role" != 'super_admin'`])
+    .concat([`u."role" != '${INTERNAL_ROLE}'`])
     .join(' AND ')
 }
 
@@ -3505,10 +3511,10 @@ export async function getInternalUserIds(): Promise<Set<string>> {
   const rows = await prisma.user.findMany({
     where: {
       OR: [
-        { role: 'super_admin' },
-        ...EXCLUDED_EMAIL_PATTERNS.map(pattern => ({
+        { role: INTERNAL_ROLE },
+        ...INTERNAL_EMAIL_SUFFIXES.map(suffix => ({
           email: {
-            contains: pattern.replace('%', ''),
+            endsWith: suffix,
             ...(isSqlite ? {} : { mode: 'insensitive' as const }),
           },
         })),
@@ -3558,20 +3564,33 @@ export async function getUserFunnel(
       GROUP BY p."createdBy"
     ),
     user_messages AS (
-      SELECT cs."contextId" AS "projectId", p."createdBy" AS "userId",
-             COUNT(*) AS "msgCount", MIN(cm."createdAt") AS "firstMessageAt"
-      FROM "chat_messages" cm
-      JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
-      JOIN "projects" p ON p."id" = cs."contextId"
-      -- 'technical' excludes project_call prompts (role 'user', written by another agent).
-      WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
-      GROUP BY cs."contextId", p."createdBy"
+      -- Both surfaces count: workspace-agent chats and project chats. The
+      -- author is cm.authorUserId (stamped server-side since #1724); older
+      -- rows fall back to the project creator (project chats) or the
+      -- session's owner (workspace chats). Crediting only p.createdBy missed
+      -- every workspace-chat message — the surface most people actually use.
+      SELECT um."userId",
+             COUNT(*) AS "msgCount",
+             MIN(um."createdAt") AS "firstMessageAt"
+      FROM (
+        SELECT COALESCE(cm."authorUserId", p."createdBy", cs."createdByUserId") AS "userId",
+               cm."createdAt" AS "createdAt"
+        FROM "chat_messages" cm
+        JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+        LEFT JOIN "projects" p ON p."id" = cs."contextId"
+        -- 'technical' excludes project_call prompts (role 'user', written by another agent).
+        WHERE cm."role" = 'user' AND cm."agent" = 'technical'
+      ) um
+      -- Only messages sent after this person signed up. Without the bound, a
+      -- project they inherited (copied, imported, from a template) credits
+      -- pre-signup history and makes the average negative.
+      JOIN real_users ru ON ru."id" = um."userId" AND um."createdAt" >= ru."createdAt"
+      GROUP BY um."userId"
     ),
     user_msg_totals AS (
-      SELECT "userId", CAST(SUM("msgCount") AS INTEGER) AS "totalMessages",
-             MIN("firstMessageAt") AS "firstMessageAt"
+      SELECT "userId", CAST("msgCount" AS INTEGER) AS "totalMessages",
+             "firstMessageAt"
       FROM user_messages
-      GROUP BY "userId"
     )
     SELECT
       CAST(COUNT(ru."id") AS INTEGER) AS "signups",
@@ -3598,20 +3617,33 @@ export async function getUserFunnel(
       GROUP BY p."createdBy"
     ),
     user_messages AS (
-      SELECT cs."contextId" AS "projectId", p."createdBy" AS "userId",
-             COUNT(*) AS "msgCount", MIN(cm."createdAt") AS "firstMessageAt"
-      FROM "chat_messages" cm
-      JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
-      JOIN "projects" p ON p."id" = cs."contextId"
-      -- 'technical' excludes project_call prompts (role 'user', written by another agent).
-      WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
-      GROUP BY cs."contextId", p."createdBy"
+      -- Both surfaces count: workspace-agent chats and project chats. The
+      -- author is cm.authorUserId (stamped server-side since #1724); older
+      -- rows fall back to the project creator (project chats) or the
+      -- session's owner (workspace chats). Crediting only p.createdBy missed
+      -- every workspace-chat message — the surface most people actually use.
+      SELECT um."userId",
+             COUNT(*) AS "msgCount",
+             MIN(um."createdAt") AS "firstMessageAt"
+      FROM (
+        SELECT COALESCE(cm."authorUserId", p."createdBy", cs."createdByUserId") AS "userId",
+               cm."createdAt" AS "createdAt"
+        FROM "chat_messages" cm
+        JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+        LEFT JOIN "projects" p ON p."id" = cs."contextId"
+        -- 'technical' excludes project_call prompts (role 'user', written by another agent).
+        WHERE cm."role" = 'user' AND cm."agent" = 'technical'
+      ) um
+      -- Only messages sent after this person signed up. Without the bound, a
+      -- project they inherited (copied, imported, from a template) credits
+      -- pre-signup history and makes the average negative.
+      JOIN real_users ru ON ru."id" = um."userId" AND um."createdAt" >= ru."createdAt"
+      GROUP BY um."userId"
     ),
     user_msg_totals AS (
-      SELECT "userId", SUM("msgCount")::int AS "totalMessages",
-             MIN("firstMessageAt") AS "firstMessageAt"
+      SELECT "userId", "msgCount"::int AS "totalMessages",
+             "firstMessageAt"
       FROM user_messages
-      GROUP BY "userId"
     )
     SELECT
       COUNT(ru."id")::int AS "signups",
@@ -3792,6 +3824,143 @@ export async function getUserActivityTable(
   }))
 
   return { users: result, total, page, limit }
+}
+
+// ============================================================================
+// Digest totals
+// ============================================================================
+
+export interface DigestTotals {
+  /** Distinct real users who sent at least one message in the period. */
+  activeUsers: number
+  totalMessages: number
+  totalSessions: number
+  totalToolCalls: number
+  totalSpendUsd: number
+}
+
+/**
+ * Platform totals for the daily digest, computed with aggregate queries over
+ * the whole period.
+ *
+ * The digest used to derive these from `getUserActivityTable(..., { limit: 100 })`
+ * and read `activeUsers` off that table's `total` — which is the number of
+ * *sign-ups* in the window, not users who did anything, and the sums stopped at
+ * the first 100 rows. Both made the digest understate a busy day and describe a
+ * quiet one as busy. Internal accounts are excluded here as everywhere else, by
+ * joining `users` and reusing {@link realUserEmailNotLike}.
+ */
+export async function getDigestTotals(options: {
+  period?: AnalyticsPeriod
+  asOf?: Date
+} = {}): Promise<DigestTotals> {
+  const period = options.period ?? '30d'
+  const since = periodStartAsOf(period, options.asOf)
+  const until = options.asOf ?? new Date()
+  const userFilter = realUserEmailNotLike()
+
+  const [messageRows, sessionRows, toolCallRows, spendRows] = await Promise.all([
+    isSqlite
+      ? prisma.$queryRawUnsafe<{ activeUsers: number; messages: number }[]>(
+          `
+          SELECT CAST(COUNT(DISTINCT p."createdBy") AS INTEGER) AS "activeUsers",
+                 CAST(COUNT(cm."id") AS INTEGER) AS "messages"
+          FROM "chat_messages" cm
+          JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+          JOIN "projects" p ON p."id" = cs."contextId"
+          JOIN "users" u ON u."id" = p."createdBy"
+          WHERE cm."role" = 'user' AND cm."agent" = 'technical'
+            AND cm."createdAt" >= ? AND ${userFilter}
+        `,
+          since,
+        )
+      : prisma.$queryRawUnsafe<{ activeUsers: number; messages: number }[]>(
+          `
+          SELECT COUNT(DISTINCT p."createdBy")::int AS "activeUsers",
+                 COUNT(cm."id")::int AS "messages"
+          FROM "chat_messages" cm
+          JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+          JOIN "projects" p ON p."id" = cs."contextId"
+          JOIN "users" u ON u."id" = p."createdBy"
+          WHERE cm."role" = 'user' AND cm."agent" = 'technical'
+            AND cm."createdAt" >= $1 AND cm."createdAt" < $2 AND ${userFilter}
+        `,
+          since,
+          until,
+        ),
+    isSqlite
+      ? prisma.$queryRawUnsafe<{ count: number }[]>(
+          `
+          SELECT CAST(COUNT(DISTINCT cs."id") AS INTEGER) AS "count"
+          FROM "chat_sessions" cs
+          JOIN "projects" p ON p."id" = cs."contextId"
+          JOIN "users" u ON u."id" = p."createdBy"
+          WHERE cs."createdAt" >= ? AND ${userFilter}
+        `,
+          since,
+        )
+      : prisma.$queryRawUnsafe<{ count: number }[]>(
+          `
+          SELECT COUNT(DISTINCT cs."id")::int AS "count"
+          FROM "chat_sessions" cs
+          JOIN "projects" p ON p."id" = cs."contextId"
+          JOIN "users" u ON u."id" = p."createdBy"
+          WHERE cs."createdAt" >= $1 AND ${userFilter}
+        `,
+          since,
+        ),
+    isSqlite
+      ? prisma.$queryRawUnsafe<{ count: number }[]>(
+          `
+          SELECT CAST(COUNT(tcl."id") AS INTEGER) AS "count"
+          FROM "tool_call_logs" tcl
+          JOIN "chat_sessions" cs ON cs."id" = tcl."chatSessionId"
+          JOIN "projects" p ON p."id" = cs."contextId"
+          JOIN "users" u ON u."id" = p."createdBy"
+          WHERE tcl."createdAt" >= ? AND ${userFilter}
+        `,
+          since,
+        )
+      : prisma.$queryRawUnsafe<{ count: number }[]>(
+          `
+          SELECT COUNT(tcl."id")::int AS "count"
+          FROM "tool_call_logs" tcl
+          JOIN "chat_sessions" cs ON cs."id" = tcl."chatSessionId"
+          JOIN "projects" p ON p."id" = cs."contextId"
+          JOIN "users" u ON u."id" = p."createdBy"
+          WHERE tcl."createdAt" >= $1 AND ${userFilter}
+        `,
+          since,
+        ),
+    // Spend is attributed to a member, not a project, so join on that instead.
+    isSqlite
+      ? prisma.$queryRawUnsafe<{ usd: number }[]>(
+          `
+          SELECT COALESCE(SUM(ue."billedUsd"), 0) AS "usd"
+          FROM "usage_events" ue
+          JOIN "users" u ON u."id" = ue."memberId"
+          WHERE ue."createdAt" >= ? AND ${userFilter}
+        `,
+          since,
+        )
+      : prisma.$queryRawUnsafe<{ usd: number }[]>(
+          `
+          SELECT COALESCE(SUM(ue."billedUsd"), 0)::float8 AS "usd"
+          FROM "usage_events" ue
+          JOIN "users" u ON u."id" = ue."memberId"
+          WHERE ue."createdAt" >= $1 AND ${userFilter}
+        `,
+          since,
+        ),
+  ])
+
+  return {
+    activeUsers: toNum(messageRows[0]?.activeUsers),
+    totalMessages: toNum(messageRows[0]?.messages),
+    totalSessions: toNum(sessionRows[0]?.count),
+    totalToolCalls: toNum(toolCallRows[0]?.count),
+    totalSpendUsd: Number(spendRows[0]?.usd ?? 0),
+  }
 }
 
 // ============================================================================
