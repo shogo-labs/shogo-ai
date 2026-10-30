@@ -214,23 +214,19 @@ test(
       boards: sourceState.counts.boards,
       conversations: sourceState.counts.conversations,
     })
-    // SEC-18 decides membership at the receiving instance: `/receive/init` makes
-    // the caller the owner of the workspace the move lands in, and the caller's
-    // own carried `Member` row merges onto that one instead of duplicating it.
-    // The rest of the source's membership — its admin, its member — still travels
-    // with the content, so the new workspace ends up with exactly the membership
-    // the source had: one owner, and nobody holding a role they did not have.
+    // SEC-18: the receiving instance decides membership. `Member` is in
+    // `NEVER_FROM_THE_WIRE` (receive.ts) because it was the model that let a
+    // move write `Member{userId: me, workspaceId: victim, role: 'owner'}` into
+    // someone else's tenant, so a push carries no membership at all: the
+    // source's admin and member do not land, and `/receive/init` writes exactly
+    // one row — the caller, as owner of the new workspace.
     const membershipOf = (state: any, workspaceId: string) =>
       state.members
         .filter((m: any) => m.workspaceId === workspaceId)
         .map((m: any) => `${m.userId}:${m.role}`)
         .sort()
     const landed = membershipOf(after, done.targetWorkspaceId)
-    // The source workspace has an owner, an admin and a member; all three must
-    // show up, so a payload that carried no membership at all cannot pass.
-    expect(landed.length).toBe(3)
-    expect(landed).toEqual(membershipOf(sourceState, 'ws-246'))
-    expect(landed.filter((m: string) => m.endsWith(':owner'))).toEqual([`${OWNER}:owner`])
+    expect(landed).toEqual([`${OWNER}:owner`])
   },
   { timeout: 300_000 },
 )
