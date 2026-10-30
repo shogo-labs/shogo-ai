@@ -1652,6 +1652,8 @@ describe('raw-SQL paths via $queryRawUnsafe stub', () => {
         createdProject: 5,
         sentMessage: 4,
         engaged: 2,
+        sawPreview: 2,
+        hitCap: 3,
         avgMinToFirstProject: 12.3,
         avgMinToFirstMessage: 33.7,
       },
@@ -1659,6 +1661,9 @@ describe('raw-SQL paths via $queryRawUnsafe stub', () => {
     const out = await analytics.getUserFunnel()
     expect(out.signups).toBe(10)
     expect(out.engaged).toBe(2)
+    // The two activation steps behind the numbers (SHO-258 §7).
+    expect(out.sawPreview).toBe(2)
+    expect(out.hitCap).toBe(3)
     expect(out.avgMinToFirstProject).toBe(12.3)
   })
 

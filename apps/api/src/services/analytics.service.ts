@@ -3535,6 +3535,10 @@ export interface FunnelResult {
   createdProject: number
   sentMessage: number
   engaged: number
+  /** Users who opened one of their own previews (users.firstPreviewSeenAt). */
+  sawPreview: number
+  /** Users a usage gate blocked at least once (users.firstCapHitAt). */
+  hitCap: number
   avgMinToFirstProject: number | null
   avgMinToFirstMessage: number | null
 }
@@ -3553,7 +3557,8 @@ export async function getUserFunnel(
     isSqlite
       ? `
     WITH real_users AS (
-      SELECT u."id", u."email", u."onboardingCompleted", u."createdAt"
+      SELECT u."id", u."email", u."onboardingCompleted", u."createdAt",
+             u."firstPreviewSeenAt", u."firstCapHitAt"
       FROM "users" u
       WHERE u."createdAt" >= ? ${filter}
     ),
@@ -3598,6 +3603,8 @@ export async function getUserFunnel(
       CAST(COUNT(up."userId") AS INTEGER) AS "createdProject",
       CAST(COUNT(CASE WHEN umt."totalMessages" > 0 THEN 1 END) AS INTEGER) AS "sentMessage",
       CAST(COUNT(CASE WHEN umt."totalMessages" >= 5 THEN 1 END) AS INTEGER) AS "engaged",
+      CAST(COUNT(CASE WHEN ru."firstPreviewSeenAt" IS NOT NULL THEN 1 END) AS INTEGER) AS "sawPreview",
+      CAST(COUNT(CASE WHEN ru."firstCapHitAt" IS NOT NULL THEN 1 END) AS INTEGER) AS "hitCap",
       ROUND(AVG((julianday(up."firstProjectAt") - julianday(ru."createdAt")) * 1440.0), 1) AS "avgMinToFirstProject",
       ROUND(AVG((julianday(umt."firstMessageAt") - julianday(ru."createdAt")) * 1440.0), 1) AS "avgMinToFirstMessage"
     FROM real_users ru
@@ -3606,7 +3613,8 @@ export async function getUserFunnel(
   `
       : `
     WITH real_users AS (
-      SELECT u."id", u."email", u."onboardingCompleted", u."createdAt"
+      SELECT u."id", u."email", u."onboardingCompleted", u."createdAt",
+             u."firstPreviewSeenAt", u."firstCapHitAt"
       FROM "users" u
       WHERE u."createdAt" >= $1 ${filter}
     ),
@@ -3651,6 +3659,8 @@ export async function getUserFunnel(
       COUNT(up."userId")::int AS "createdProject",
       COUNT(CASE WHEN umt."totalMessages" > 0 THEN 1 END)::int AS "sentMessage",
       COUNT(CASE WHEN umt."totalMessages" >= 5 THEN 1 END)::int AS "engaged",
+      COUNT(CASE WHEN ru."firstPreviewSeenAt" IS NOT NULL THEN 1 END)::int AS "sawPreview",
+      COUNT(CASE WHEN ru."firstCapHitAt" IS NOT NULL THEN 1 END)::int AS "hitCap",
       ROUND(AVG(EXTRACT(EPOCH FROM (up."firstProjectAt" - ru."createdAt")) / 60.0)::numeric, 1)::float AS "avgMinToFirstProject",
       ROUND(AVG(EXTRACT(EPOCH FROM (umt."firstMessageAt" - ru."createdAt")) / 60.0)::numeric, 1)::float AS "avgMinToFirstMessage"
     FROM real_users ru
@@ -3665,6 +3675,7 @@ export async function getUserFunnel(
   if (!row) {
     return {
       signups: 0, onboarded: 0, createdProject: 0, sentMessage: 0, engaged: 0,
+      sawPreview: 0, hitCap: 0,
       avgMinToFirstProject: null, avgMinToFirstMessage: null,
     }
   }
@@ -3674,6 +3685,8 @@ export async function getUserFunnel(
     createdProject: toNum(row.createdProject),
     sentMessage: toNum(row.sentMessage),
     engaged: toNum(row.engaged),
+    sawPreview: toNum(row.sawPreview),
+    hitCap: toNum(row.hitCap),
     avgMinToFirstProject: toNumOrNull(row.avgMinToFirstProject),
     avgMinToFirstMessage: toNumOrNull(row.avgMinToFirstMessage),
   }

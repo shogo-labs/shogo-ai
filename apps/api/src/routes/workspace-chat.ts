@@ -677,7 +677,12 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const balanceCheck = await billingService.checkUsageBalance(workspaceId)
     if (!balanceCheck.ok) {
       const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-      const { resetsAt, window } = await buildUsageLimitInfo(workspaceId)
+      // Records firstCapHitAt + the hit_cap event: this route blocked the most
+      // people and used to record nothing (SHO-258 §2).
+      const { resetsAt, window } = await buildUsageLimitInfo(workspaceId, {
+        userId: auth.userId,
+        source: 'workspace-chat',
+      })
       return c.json(
         { error: { code, message, resetsAt, window } },
         402,
