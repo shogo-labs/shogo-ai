@@ -14,6 +14,7 @@
 
 import { join } from 'node:path'
 import { workspacesDir } from '../workspace-export/files'
+import { isIncludedModel } from '../workspace-export/manifest'
 import {
   CLOUD_WORKSPACE_ROOT_NOTICE,
   assertTargetStorageConfigured,
@@ -27,8 +28,10 @@ import {
 import { moveDirFor, walkMoveFiles, writeMoveFile } from './files'
 import { moveIgnoreRules } from './ignores'
 import type { HandoverKind } from './handover'
+import { shouldMoveModel } from './records'
+import { assertRowsInWorkspace } from './scope'
 import type { MoveFileEntry, MoveFileManifest, MoveRow } from './types'
-import { WorkspaceMoveError } from './types'
+import { WORKSPACE_ROOT_ID, WorkspaceMoveError } from './types'
 
 export interface InitTargetInput {
   name: string
@@ -152,11 +155,14 @@ export async function writeRecordChunk(db: any, model: string, rows: MoveRow[]):
       if (!/Unknown argument|does not exist|no such column/i.test(String(err?.message))) {
         // Name the model and the row: "Foreign key constraint violated" on its
         // own says nothing about which of the sixty models broke, which is how
-        // a real move's first failure took an afternoon to place.
+        // a real move's first failure took an afternoon to place. The driver
+        // text and the file path stay in the log — returning them handed the
+        // caller SQL, an absolute path and the column names (SEC-18).
+        console.error(`[workspace-move] ${model} row ${String(row?.id ?? '?')} could not be written:`, err)
         throw new WorkspaceMoveError(
-          `${model} row ${String(row?.id ?? '?')} could not be written: ${String(err?.message ?? err)}`,
+          `${model} row ${String(row?.id ?? '?')} could not be written.`,
           500,
-          'workspace_move_write_failed',
+          'workspace_move_failed',
         )
       }
     }
@@ -164,13 +170,19 @@ export async function writeRecordChunk(db: any, model: string, rows: MoveRow[]):
   return { inserted }
 }
 
-/** Where a received project's files go. */
-export function targetProjectDir(projectId: string, base = workspacesDir()): string {
-  return join(base, projectId)
+/**
+ * Where a received project's files go.
+ *
+ * Resolved through `moveDirFor` so the sentinel and the containment check are
+ * the same ones the source side uses — `join(base, projectId)` here was the
+ * write half of SEC-18.
+ */
+export function targetProjectDir(projectId: string, workspaceId: string, base = workspacesDir()): string {
+  return moveDirFor({ projectId, workspaceId, base })
 }
 
 export function targetWorkspaceRootDir(workspaceId: string, base = workspacesDir()): string {
-  return join(base, '.workspace-roots', workspaceId)
+  return moveDirFor({ projectId: WORKSPACE_ROOT_ID, workspaceId, base })
 }
 
 /**
@@ -234,16 +246,171 @@ export async function flushTargetProject(
 /**
  * Turn a moved schedule or trigger on/off at the target. `ids` are derived ids,
  * so this is safe to replay.
+ *
+ * Scoped to the workspace: `updateMany({ where: { id: { in: ids } } })` let a
+ * caller flip a schedule or trigger belonging to any workspace in the instance
+ * by guessing an id (SEC-18).
  */
 export async function setEnabledAtTarget(
   db: any,
-  kind: HandoverKind,
-  ids: string[],
-  enabled: boolean,
+  input: { workspaceId: string; kind: HandoverKind; ids: string[]; enabled: boolean },
 ): Promise<void> {
-  if (!ids.length) return
-  const model = kind === 'schedule' ? 'agentSchedule' : 'eventSubscription'
-  await db[model].updateMany({ where: { id: { in: ids } }, data: { enabled } })
+  if (!input.ids.length) return
+  const model = input.kind === 'schedule' ? 'agentSchedule' : 'eventSubscription'
+  await db[model].updateMany({
+    where: { id: { in: input.ids }, workspaceId: input.workspaceId },
+    data: { enabled: input.enabled },
+  })
+}
+
+// ─── What may arrive over the wire (SEC-18) ───────────────────────────
+
+/**
+ * Models that are never workspace content, so a move must never write them from
+ * the other side of a link.
+ *
+ * `writeRecordChunk` will happily write any model name it is handed — that is
+ * what made `/receive/records` a way to write `Member{userId: me, workspaceId:
+ * victim, role: 'owner'}` into someone else's tenant. This list is the explicit
+ * deny, and `isIncludedModel` below is the general one: only a model the
+ * workspace export manifest carries is workspace content at all.
+ */
+const NEVER_FROM_THE_WIRE: ReadonlySet<string> = new Set([
+  'Account',
+  'ApiKey',
+  'BillingAccount',
+  'Instance',
+  'InstanceSubscription',
+  'Invitation',
+  'InviteLink',
+  'LicenseKey',
+  'Member',
+  'ProjectAuthConfig',
+  'ProjectAuthSignIn',
+  'Session',
+  'Subscription',
+  'UsageEvent',
+  'UsageWallet',
+  'Verification',
+  'WorkspaceGrant',
+])
+
+/**
+ * A model name is a Prisma model name: the wire never names a table.
+ *
+ * Whether a row is inside the workspace is checked by
+ * `assertRowsInWorkspace` in `scope.ts`, which walks each row's parent chain
+ * through the export manifest.
+ */
+const MODEL_NAME = /^[A-Z][A-Za-z0-9]*$/
+
+function denied(model: string): WorkspaceMoveError {
+  return new WorkspaceMoveError(
+    `"${model.slice(0, 60)}" is not workspace content and cannot be written by a move.`,
+    400,
+    'workspace_move_model_denied',
+  )
+}
+
+/** Refuse a model a move may not write, before any row is touched. */
+export function assertReceivableModel(model: string): void {
+  if (!MODEL_NAME.test(model)) {
+    throw new WorkspaceMoveError(`Unknown model "${model.slice(0, 60)}"`, 400, 'workspace_move_unknown_model')
+  }
+  if (NEVER_FROM_THE_WIRE.has(model) || !shouldMoveModel(model) || !isIncludedModel(model)) {
+    throw denied(model)
+  }
+}
+
+/**
+ * Write one received chunk, confined to the authorised workspace.
+ *
+ * Three rules, and a chunk is refused rather than repaired when it breaks one:
+ *   1. the model must be workspace content (`assertReceivableModel`);
+ *   2. a row that names a `workspaceId` must name **this** workspace — a row
+ *      that names another one is a request to write into another tenant, and
+ *      rewriting it silently would hide that;
+ *   3. every row must be reachable from this workspace by walking its parent
+ *      chain (`ChatMessage` → `ChatSession` → workspace, `MessageFeedback` →
+ *      `ChatMessage` → …, a project-scoped model → `Project` → workspace). The
+ *      chain is read from the export manifest, not listed here: a fixed list of
+ *      foreign keys was how a `ChatMessage` naming a victim's `sessionId` got
+ *      written into their transcript (SEC-18).
+ */
+export async function writeMoveRecordChunk(
+  db: any,
+  input: { workspaceId: string; model: string; rows: MoveRow[] },
+): Promise<{ inserted: number }> {
+  if (!input.workspaceId) {
+    throw new WorkspaceMoveError('A workspace id is required.', 400, 'workspace_required')
+  }
+  const rows = input.rows.filter((row) => row && typeof row === 'object')
+  // `User` travels with a move only because `Member` has a foreign key to it
+  // (`attachMemberUsers` sends the four columns a member row needs). It is
+  // account data, not workspace content: the receiving instance is the only
+  // thing allowed to create or change an account, so a `User` row here may only
+  // confirm one it already knows. Anything else — which is how you would squat
+  // someone's email and block their sign-up — is refused.
+  if (input.model === 'User') return assertKnownUsers(db, rows)
+  assertReceivableModel(input.model)
+  for (const row of rows) {
+    if (row.workspaceId && String(row.workspaceId) !== input.workspaceId) {
+      throw new WorkspaceMoveError(
+        'A row in that chunk belongs to another workspace.',
+        400,
+        'workspace_move_foreign_row',
+      )
+    }
+  }
+  await assertRowsInWorkspace(db, input.workspaceId, input.model, rows)
+  return writeRecordChunk(db, input.model, rows)
+}
+
+async function assertKnownUsers(db: any, rows: MoveRow[]): Promise<{ inserted: number }> {
+  const ids = [...new Set(rows.map((row) => String(row.id ?? '')).filter(Boolean))]
+  if (!ids.length) return { inserted: 0 }
+  const known: Array<{ id: string }> = await db.user.findMany({ where: { id: { in: ids } }, select: { id: true } })
+  const found = new Set(known.map((row) => row.id))
+  const unknown = ids.find((id) => !found.has(id))
+  if (unknown) {
+    throw new WorkspaceMoveError(
+      `A user in that chunk (${unknown.slice(0, 60)}) is not an account on this instance.`,
+      400,
+      'workspace_move_unknown_user',
+    )
+  }
+  return { inserted: 0 }
+}
+
+/** A git branch a clone may be asked for: a ref, never an option. */
+const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/
+
+/**
+ * Refuse a clone target that is not a plain https remote and branch.
+ *
+ * `git clone --branch <b> <remote> <dir>` passed both straight through, so a
+ * caller chose the scheme (`file:`, `ssh:`, `ext::`) and could lead the argument
+ * list with `--upload-pack=…`. Only `https:` is a remote a move can mean, and
+ * `--` in front of the positional arguments stops anything being read as an
+ * option (SEC-18).
+ */
+export function assertCloneSource(remote: string, branch: string): void {
+  let url: URL
+  try {
+    url = new URL(remote)
+  } catch {
+    throw new WorkspaceMoveError('That project remote is not a URL.', 400, 'workspace_move_bad_remote')
+  }
+  if (url.protocol !== 'https:') {
+    throw new WorkspaceMoveError(
+      `A move can only clone an https remote, not "${url.protocol}".`,
+      400,
+      'workspace_move_bad_remote',
+    )
+  }
+  if (remote.startsWith('-') || !SAFE_BRANCH.test(branch) || branch.includes('..')) {
+    throw new WorkspaceMoveError('That branch name is not allowed.', 400, 'workspace_move_bad_branch')
+  }
 }
 
 /**
@@ -254,11 +421,12 @@ export async function relinkTargetProject(
   db: any,
   input: { projectId: string; name: string; remote: string; branch: string; workspaceId: string },
 ): Promise<{ path: string }> {
-  const dir = targetProjectDir(input.projectId)
+  assertCloneSource(input.remote, input.branch)
+  const dir = targetProjectDir(input.projectId, input.workspaceId)
   const { mkdirSync } = await import('node:fs')
   mkdirSync(dir, { recursive: true })
   const { spawnSync } = await import('@shogo/shared-runtime/child-process')
-  const clone = spawnSync('git', ['clone', '--branch', input.branch, input.remote, dir], {
+  const clone = spawnSync('git', ['clone', '--branch', input.branch, '--', input.remote, dir], {
     encoding: 'utf8',
     timeout: 600_000,
   })

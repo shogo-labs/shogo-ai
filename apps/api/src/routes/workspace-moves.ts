@@ -40,7 +40,7 @@ import {
   relinkTargetProject,
   setEnabledAtTarget,
   targetFileManifest,
-  writeRecordChunk,
+  writeMoveRecordChunk,
 } from '../services/workspace-move/receive'
 import {
   markSourceMoved,
@@ -51,6 +51,7 @@ import {
 } from '../services/workspace-move/serve'
 import { collectMoveRows, normaliseSelection } from '../services/workspace-move/plan'
 import { shouldMoveModel } from '../services/workspace-move/records'
+import { requireMoveProject } from '../services/workspace-move/scope'
 import { WorkspaceMoveError } from '../services/workspace-move/types'
 import type { HandoverKind } from '../services/workspace-move/handover'
 import type { MoveDirection } from '../services/workspace-move/types'
@@ -63,8 +64,11 @@ function failure(c: any, err: unknown) {
   if (err instanceof WorkspaceMoveError) {
     return errorResponse(c, err.status, err.code, err.message)
   }
-  const message = String((err as any)?.message ?? err)
-  return errorResponse(c, 500, 'workspace_move_failed', message.slice(0, 500))
+  // Anything else is a bug on this side: log it where an operator can see it and
+  // tell the caller only that it failed. Echoing `err.message` leaked absolute
+  // paths, SQL and driver text to whoever could reach the route (SEC-18).
+  console.error('[workspace-move] unhandled failure:', err)
+  return errorResponse(c, 500, 'workspace_move_failed', 'The move failed on this side. Check the server logs.')
 }
 
 /**
@@ -341,10 +345,9 @@ export function workspaceMoveRoutes(): Hono {
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
     try {
-      const manifest = await sourceFileManifest(prisma, {
-        workspaceId,
-        projectId: String(body.projectId ?? ''),
-      })
+      const projectId = String(body.projectId ?? '')
+      await requireMoveProject(prisma, workspaceId, projectId)
+      const manifest = await sourceFileManifest(prisma, { workspaceId, projectId })
       return c.json(manifest)
     } catch (err) {
       return failure(c, err)
@@ -360,6 +363,7 @@ export function workspaceMoveRoutes(): Hono {
     const projectId = c.req.query('projectId') ?? ''
     const relPath = c.req.query('path') ?? ''
     try {
+      await requireMoveProject(prisma, workspaceId, projectId)
       const bytes = await readSourceFile(prisma, { workspaceId, projectId, path: relPath })
       return new Response(bytes as any, {
         headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' },
@@ -374,12 +378,12 @@ export function workspaceMoveRoutes(): Hono {
     const workspaceId = String(body.workspaceId ?? '')
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
-    await setEnabledAtSource(
-      prisma,
-      String(body.kind) as HandoverKind,
-      Array.isArray(body.ids) ? body.ids.map(String) : [],
-      body.enabled === true,
-    )
+    await setEnabledAtSource(prisma, {
+      workspaceId,
+      kind: String(body.kind) as HandoverKind,
+      ids: Array.isArray(body.ids) ? body.ids.map(String) : [],
+      enabled: body.enabled === true,
+    })
     return c.json({ ok: true })
   })
 
@@ -427,7 +431,7 @@ export function workspaceMoveRoutes(): Hono {
     const model = String(body.model ?? '')
     const rows = Array.isArray(body.rows) ? body.rows : []
     try {
-      const result = await writeRecordChunk(prisma, model, rows)
+      const result = await writeMoveRecordChunk(prisma, { workspaceId, model, rows })
       return c.json(result)
     } catch (err) {
       return failure(c, err)
@@ -443,6 +447,7 @@ export function workspaceMoveRoutes(): Hono {
     if (!auth.ok) return auth.response
     const projectId = String(body.projectId ?? '')
     try {
+      await requireMoveProject(prisma, workspaceId, projectId)
       const manifest = await targetFileManifest(projectId, workspaceId)
       return c.json({ ...manifest, projectId })
     } catch (err) {
@@ -460,6 +465,7 @@ export function workspaceMoveRoutes(): Hono {
     const relPath = c.req.query('path') ?? ''
     const bytes = new Uint8Array(await c.req.arrayBuffer())
     try {
+      await requireMoveProject(prisma, workspaceId, projectId)
       await receiveFile(projectId, workspaceId, relPath, bytes)
       return c.json({ ok: true, bytes: bytes.byteLength })
     } catch (err) {
@@ -491,12 +497,12 @@ export function workspaceMoveRoutes(): Hono {
     const workspaceId = String(body.workspaceId ?? '')
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
-    await setEnabledAtTarget(
-      prisma,
-      String(body.kind) as HandoverKind,
-      Array.isArray(body.ids) ? body.ids.map(String) : [],
-      body.enabled === true,
-    )
+    await setEnabledAtTarget(prisma, {
+      workspaceId,
+      kind: String(body.kind) as HandoverKind,
+      ids: Array.isArray(body.ids) ? body.ids.map(String) : [],
+      enabled: body.enabled === true,
+    })
     return c.json({ ok: true })
   })
 
@@ -506,9 +512,11 @@ export function workspaceMoveRoutes(): Hono {
     const auth = await authorize(c, workspaceId)
     if (!auth.ok) return auth.response
     try {
+      const projectId = String(body.projectId ?? '')
+      await requireMoveProject(prisma, workspaceId, projectId)
       const result = await relinkTargetProject(prisma, {
         workspaceId,
-        projectId: String(body.projectId ?? ''),
+        projectId,
         name: String(body.name ?? 'Project'),
         remote: String(body.remote ?? ''),
         branch: String(body.branch ?? 'main'),

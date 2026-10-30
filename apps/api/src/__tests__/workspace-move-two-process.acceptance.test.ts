@@ -461,6 +461,12 @@ test(
     expect(
       (await call(cloud.port, '/__qa/seed-remote', { method: 'POST', body: JSON.stringify({ workspaceId }) })).status,
     ).toBe(200)
+    // The source's members travel as `User` rows; SEC-18 refuses one the cloud
+    // has no account for, which would answer 400 before the bucket is reached.
+    await call(cloud.port, '/__qa/ensure-users', {
+      method: 'POST',
+      body: JSON.stringify({ ids: ['u-admin-246', 'u-viewer-246', 'u-guest-246'] }),
+    })
 
     const started = await call(desktop.port, '/api/workspace-moves', {
       method: 'POST',
