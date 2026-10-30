@@ -1159,9 +1159,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
       : true
   const refetchUsageWallet =
     billingData?.refetchUsageWallet ?? ownBillingData.refetchUsageWallet
+  // A user who has never taken a trial should be offered it right where they
+  // hit the limit, not sent to a pricing page to work it out.
+  const trialEligible = Boolean(
+    (billingData ? (billingData as any).trialEligible : (ownBillingData as any).trialEligible),
+  )
 
   const handleUpgradeClick = useCallback(() => {
     router.push("/(app)/billing" as any)
+  }, [router])
+
+  const handleStartTrialClick = useCallback(() => {
+    router.push("/(app)/billing?trial=business" as any)
   }, [router])
 
   // Panel state
@@ -3784,8 +3793,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         errorDismissed,
         stoppedTurn: usageLimitNotice,
         currentSessionId,
+        trialEligible,
       }),
-    [error?.message, errorDismissed, usageLimitNotice, currentSessionId],
+    [error?.message, errorDismissed, usageLimitNotice, currentSessionId, trialEligible],
   )
   const usageLimitBlocked = usageLimitView?.variant === "blocked"
   useEffect(() => {
@@ -8306,12 +8316,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
       headerActions: (
         <View className="flex-row gap-1.5">
           <Pressable
-            onPress={handleUpgradeClick}
+            onPress={
+              usageLimitView.primaryLabel === "Start free trial"
+                ? handleStartTrialClick
+                : handleUpgradeClick
+            }
             accessibilityRole="button"
             accessibilityLabel={
-              usageLimitView.primaryLabel === "Upgrade"
-                ? "Upgrade plan"
-                : "Open billing settings"
+              usageLimitView.primaryLabel === "Start free trial"
+                ? "Start the 7-day free Business trial"
+                : usageLimitView.primaryLabel === "Upgrade"
+                  ? "Upgrade plan"
+                  : "Open billing settings"
             }
             className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
           >
@@ -8346,7 +8362,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         </Text>
       ),
     }
-  }, [usageLimitView, handleUpgradeClick, handleSendMessage, handleRetry])
+  }, [usageLimitView, handleUpgradeClick, handleStartTrialClick, handleSendMessage, handleRetry])
   useDockPanel(usageLimitDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
