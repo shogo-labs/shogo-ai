@@ -37,6 +37,18 @@ export interface MoveEndpoints {
   remote: 'cloud' | 'desktop'
 }
 
+/**
+ * The remote source for planning, when the workspace lives on the other side.
+ * A plan runs before the move row exists, so there is no id yet; the source
+ * only needs the URL and the key.
+ */
+function planningRemote(): HttpMoveSource | undefined {
+  const apiUrl = process.env.SHOGO_API_URL
+  const apiKey = process.env.SHOGO_API_KEY
+  if (!apiUrl || !apiKey) return undefined
+  return new HttpMoveSource({ apiUrl, apiKey, moveId: '' })
+}
+
 function remoteOptions(moveId: string) {
   const apiUrl = process.env.SHOGO_API_URL
   const apiKey = process.env.SHOGO_API_KEY
@@ -77,6 +89,7 @@ export async function planMove(input: {
 }): Promise<MovePlan> {
   const selection = normaliseSelection(input.selection)
   const { plan } = await buildMovePlan({
+    remote: input.direction === 'cloud_to_desktop' ? planningRemote() : undefined,
     workspaceId: input.workspaceId,
     requesterId: input.requesterId,
     isOwner: input.isOwner,
@@ -108,6 +121,7 @@ export async function createMove(input: {
   if (!workspace) throw new WorkspaceMoveError('Workspace not found', 404, 'workspace_not_found')
 
   const { plan, rows } = await buildMovePlan({
+    remote: input.direction === 'cloud_to_desktop' ? planningRemote() : undefined,
     workspaceId: input.workspaceId,
     requesterId: input.requesterId,
     isOwner: input.isOwner,
