@@ -31,6 +31,7 @@ import {
   groupForSidebar,
   lastConfirmedSeq,
   mergePage,
+  mentionNames,
   removeOptimistic,
   trimToNewest,
   type TimelineScope,
@@ -92,9 +93,10 @@ export function invalidateConversationList(workspaceId: string): void {
   listChangedListeners.forEach((l) => l(workspaceId))
 }
 
-export function useConversationList(workspaceId: string | null | undefined) {
+export function useConversationList(workspaceId: string | null | undefined, mentionables?: Mentionables | null) {
   const me = useMyUserId()
   const active = useActiveConversationId()
+  const names = useMemo(() => mentionables ? mentionNames(mentionables) : null, [mentionables])
   const [list, setList] = useState<ConversationSummary[]>(() => (workspaceId ? listCache.get(workspaceId) ?? [] : []))
   const [loading, setLoading] = useState(!workspaceId || !listCache.has(workspaceId))
   const [error, setError] = useState<string | null>(null)
@@ -203,7 +205,7 @@ export function useConversationList(workspaceId: string | null | undefined) {
       return
     }
     setList((current) => {
-      const update = applyListEvent(current, event, me, activeRef.current)
+      const update = applyListEvent(current, event, me, activeRef.current, names)
       if (update.refetch) queueMicrotask(() => void refresh())
       return update.list
     })

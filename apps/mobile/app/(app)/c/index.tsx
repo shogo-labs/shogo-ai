@@ -25,7 +25,7 @@ export default function TeamChatHome() {
   const workspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
   const me = useMyUserId()
   const mentionables = useMentionables(workspaceId)
-  const { list, loading, error } = useConversationList(workspaceId)
+  const { list, loading, error } = useConversationList(workspaceId, mentionables)
   const [filter, setFilter] = useState('')
   const [creating, setCreating] = useState<NewConversationMode | null>(null)
   const [joining, setJoining] = useState<string | null>(null)

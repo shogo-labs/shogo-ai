@@ -114,7 +114,7 @@ function Feeds({
   const pathname = usePathname()
   const me = useMyUserId()
   const mentionables = useMentionables(workspaceId)
-  const { groups, list } = useConversationList(workspaceId)
+  const { groups, list } = useConversationList(workspaceId, mentionables)
   const [creating, setCreating] = useState<NewConversationMode | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   useStatusFeed(workspaceId)

@@ -202,14 +202,28 @@ describe('conversation list', () => {
     expect(applyListEvent(update.list, event, 'me', null).list).toBe(update.list)
   })
 
-  test('a new message becomes a direct message\'s preview; channels and thread-only replies do not get one', () => {
+  test('a new message becomes a direct message\'s preview with resolved mention names', () => {
     const list = [conv({ id: 'dm', kind: 'dm' }), conv({ id: 'ch', kind: 'public' })]
-    let update = applyListEvent(list, { type: 'message.created', conversationId: 'dm', message: msg({ id: 'a', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: 'ship it\n <@u:me>' }) }, 'me', null)
-    expect(update.list[0]!.lastMessage).toMatchObject({ preview: 'ship it @someone', authorId: 'u2' })
+    const names = mentionNames({
+      people: [{ id: 'me', name: 'Ashutosh', email: 'ashutosh@example.com', image: null, role: 'member' }],
+      agents: [],
+    })
+    const event = { type: 'message.created' as const, conversationId: 'dm', message: msg({ id: 'a', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: 'ship it\n <@u:me>' }) }
+    let update = applyListEvent(list, event, 'me', null, names)
+    expect(update.list[0]!.lastMessage).toMatchObject({ preview: 'ship it @Ashutosh', authorId: 'u2' })
+    expect(update.refetch).toBe(false)
     update = applyListEvent(update.list, { type: 'message.created', conversationId: 'ch', message: msg({ id: 'b', seq: 6, conversationId: 'ch', authorUserId: 'u2', text: 'hi' }) }, 'me', null)
     expect(update.list[1]!.lastMessage).toBeUndefined()
     update = applyListEvent(update.list, { type: 'message.created', conversationId: 'dm', message: msg({ id: 'c', seq: 7, conversationId: 'dm', authorUserId: 'u2', text: 'in thread', threadRootId: 'a' }) }, 'me', null)
-    expect(update.list[0]!.lastMessage?.preview).toBe('ship it @someone')
+    expect(update.list[0]!.lastMessage?.preview).toBe('ship it @Ashutosh')
+  })
+
+  test('a DM mention received before names load asks for the server-resolved preview', () => {
+    const list = [conv({ id: 'dm', kind: 'group_dm' })]
+    const event = { type: 'message.created' as const, conversationId: 'dm', message: msg({ id: 'a', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: 'hey <@u:someone>' }) }
+    const update = applyListEvent(list, event, 'me', null)
+    expect(update.list[0]!.lastMessage?.preview).toBe('hey @someone')
+    expect(update.refetch).toBe(true)
   })
 
   test('a voice note with no text previews as a voice note, not as blank', () => {

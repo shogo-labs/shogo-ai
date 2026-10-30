@@ -194,7 +194,7 @@ export function firstUnreadIndex(messages: ChatMessage[], afterSeq: number, me: 
 
 export interface ListUpdate {
   list: ConversationSummary[]
-  /** The event changed membership or metadata; refetch to get the full picture. */
+  /** The event changed data that needs the canonical server list to resolve. */
   refetch: boolean
 }
 
@@ -203,6 +203,7 @@ export function applyListEvent(
   event: TeamChatEvent,
   me: string,
   activeConversationId: string | null,
+  names?: MentionNames | null,
 ): ListUpdate {
   switch (event.type) {
     case 'message.created': {
@@ -213,17 +214,22 @@ export function applyListEvent(
       const mine = message.authorUserId === me
       const viewing = activeConversationId === c.id
       const mentioned = !mine && message.text.includes(`<@u:${me}>`)
-      const caughtUp = mine || viewing
       const visibleInChannel = !message.threadRootId || message.alsoSentToChannel
+      const hasDmPreview = visibleInChannel && (c.kind === 'dm' || c.kind === 'group_dm')
+      // Realtime messages carry mention IDs, while the initial list response
+      // already has names. If the mention directory is not ready yet, refresh
+      // the canonical preview after applying this event.
+      const unresolvedUserMention = hasDmPreview && !names && /<@u:[^>]+>/.test(message.text)
+      const caughtUp = mine || viewing
       const next: ConversationSummary = {
         ...c,
         lastSeq: Math.max(c.lastSeq, message.seq),
         lastMessageAt: visibleInChannel ? message.createdAt : c.lastMessageAt,
-        lastMessage: visibleInChannel && (c.kind === 'dm' || c.kind === 'group_dm')
+        lastMessage: hasDmPreview
           ? {
               // A voice note carries no text, so fall back to what it is.
               preview:
-                inlinePreview(message.text, { users: new Map(), agents: new Map() }, 140) ||
+                inlinePreview(message.text, names ?? { users: new Map(), agents: new Map() }, 140) ||
                 voiceNotePreview(message.attachments),
               authorId: message.authorUserId,
               authorType: message.authorType,
@@ -238,7 +244,7 @@ export function applyListEvent(
       copy[idx] = next
       // A reply moved to the end was already counted when it started; the server knows the real count.
       if (event.moved && !caughtUp) copy[idx] = { ...next, unreadCount: c.unreadCount }
-      return { list: copy, refetch: event.moved === true && !caughtUp }
+      return { list: copy, refetch: (event.moved === true && !caughtUp) || unresolvedUserMention }
     }
     case 'doc.updated': {
       const idx = list.findIndex((c) => c.id === event.conversationId)
