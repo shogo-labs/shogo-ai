@@ -568,6 +568,27 @@ export function renderMentionLabels(text: string, names: MentionNames): string {
     .replace(/<@g:([^>]+)>/g, (_m, id) => `@${names.groups?.get(id) ?? 'group'}`)
 }
 
+/**
+ * Restore the original wire token for each mention label that remains in an
+ * edited message. This lets a plain TextInput show readable names without
+ * turning an unchanged mention into ordinary `@name` text when it is saved.
+ */
+export function serializeEditedMentions(editedText: string, originalText: string, names: MentionNames): string {
+  const mentions = Array.from(
+    originalText.matchAll(/<@u:[^>]+>|<@a:(?:ws|p:[^>]+)>|<!(?:here|channel)>|<#c:[^>]+>|<@g:[^>]+>/g),
+    ([token]) => ({ token, label: renderMentionLabels(token, names) }),
+  )
+  let cursor = 0
+  let serialized = ''
+  for (const { token, label } of mentions) {
+    const index = editedText.indexOf(label, cursor)
+    if (index < 0) continue
+    serialized += editedText.slice(cursor, index) + token
+    cursor = index + label.length
+  }
+  return serialized + editedText.slice(cursor)
+}
+
 export interface InlineSegment {
   text: string
   bold?: boolean

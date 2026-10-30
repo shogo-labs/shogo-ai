@@ -392,6 +392,8 @@ export function TimelinePane(props: TimelinePaneProps) {
       loading={timeline.loading}
       me={me}
       names={names}
+      mentionables={mentionables}
+      channelMemberIds={channelMemberIds}
       canManage={conversation.canManage}
       canPin={conversation.canReply}
       workspaceId={workspaceId}

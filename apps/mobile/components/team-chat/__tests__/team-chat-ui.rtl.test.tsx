@@ -633,6 +633,78 @@ describe('MessageRow', () => {
     expect(h.onOpenSession).toHaveBeenCalled()
   })
 
+  test('editing a message shows mention names and keeps their wire tokens on save', async () => {
+    const h = handlers()
+    const tagged = message({ text: 'hey <@u:u-preeti>', authorUserId: 'u-me' })
+    const taggedNames = {
+      users: new Map([['u-preeti', 'Preeti Poddar']]),
+      agents: new Map<string, string>(),
+    }
+    const { container } = render(
+      <MessageRow message={tagged} grouped={false} me="u-me" names={taggedNames} canManage={false} {...h} />,
+    )
+
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit message' }))
+
+    const editor = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(editor.value).toBe('hey @Preeti Poddar')
+    fireEvent.change(editor, { target: { value: 'hey @Preeti Poddar, please review' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    })
+
+    expect(h.onEdit).toHaveBeenCalledWith(tagged, 'hey <@u:u-preeti>, please review')
+  })
+
+  test('editing a message offers the @ picker and saves a newly selected mention as a wire token', async () => {
+    const h = handlers()
+    const taggedNames = {
+      users: new Map([['u-ana', 'Ana Lopez']]),
+      agents: new Map<string, string>(),
+    }
+    const draftMessage = message({ text: 'Please notify', authorUserId: 'u-me' })
+    const { container } = render(
+      <MessageRow
+        message={draftMessage}
+        grouped={false}
+        me="u-me"
+        names={taggedNames}
+        mentionables={mentionables}
+        canManage={false}
+        {...h}
+      />,
+    )
+
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit message' }))
+
+    const editor = screen.getByRole('textbox') as HTMLTextAreaElement
+    await act(async () => {
+      fireEvent.change(editor, { target: { value: 'Please notify @Ana' } })
+    })
+    await waitFor(() => expect(shim('message-edit-completions-mentions')).toBeTruthy())
+    await act(async () => {
+      fireEvent.mouseDown(document.body)
+    })
+    await waitFor(() => expect(shim('message-edit-completions-mentions')).toBeNull())
+    await act(async () => {
+      fireEvent.change(editor, { target: { value: 'Please notify @An' } })
+    })
+    await waitFor(() => expect(shim('message-edit-completions-mentions')).toBeTruthy())
+    await act(async () => {
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+    expect(editor.value).toBe('Please notify @Ana Lopez ')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    })
+    expect(h.onEdit).toHaveBeenCalledWith(draftMessage, 'Please notify <@u:u-ana>')
+  })
+
   test('a grouped running reply is just the marker, with no controls line of its own', () => {
     const h = handlers()
     const running = message({
