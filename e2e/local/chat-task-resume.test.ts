@@ -30,7 +30,7 @@ const WAKE_MS = Number(process.env.E2E_WAKE_MS || 120_000)
 const soft = expect.configure({ soft: true })
 
 // Needs the API pointed at the fake model, which would change every other
-// local spec; CI runs it in its own job (ci.yml "E2E (chat resume)").
+// local spec; CI runs it in its own job (ci.yml "E2E (chat task wake)").
 test.skip(
   process.env.E2E_FAKE_LLM_STACK !== "1",
   "needs an API started with LOCAL_LLM_BASE_URL pointing at the fake model (see the header); set E2E_FAKE_LLM_STACK=1",
