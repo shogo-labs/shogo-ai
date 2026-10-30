@@ -294,7 +294,7 @@ import {
   type MessageEditOptions,
 } from "./turns/MessageEditContext"
 import { TurnFooterProvider } from "./turns/TurnFooterContext"
-import { EditConfirmDialogHost } from "./turns/EditConfirmDialog"
+import { filesRevertedNote, formatRelativeTime } from "./turns/editResend"
 import { PhaseEmptyState } from "./empty"
 import {
   type SubagentProgress as SubagentProgressType,
@@ -1401,6 +1401,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [isFollowing, setIsFollowing] = useState(true)
   const [hasScrollableTranscript, setHasScrollableTranscript] = useState(false)
   const [nativeInlineEditing, setNativeInlineEditing] = useState(false)
+  // SHO-263: which past message is open in the in-place editor. Lives here so
+  // only one editor can be open at a time and TurnList can dim what follows.
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [revertedNotice, setRevertedNotice] = useState<{
+    text: string
+    at: number
+  } | null>(null)
   const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
   // Phone chrome renders the bottom nav outside this chat surface and that
   // nav owns the home-indicator inset. Reserving it here too created an extra
@@ -4674,6 +4681,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
     setMessages,
   ])
 
+  /**
+   * SHO-263: an edit/retry made while the agent is running must stop the run
+   * first, then wait for the stream to settle before truncating — otherwise
+   * the truncate races the in-flight turn and can leave an orphan reply.
+   */
+  const stopStreamingAndWait = useCallback(async () => {
+    if (!isStreamingRef.current) return
+    handleStop()
+    await new Promise<void>((resolve) => {
+      let waited = 0
+      const tick = () => {
+        if (!isStreamingRef.current || waited >= 3000) {
+          resolve()
+          return
+        }
+        waited += 50
+        setTimeout(tick, 50)
+      }
+      setTimeout(tick, 50)
+    })
+  }, [handleStop])
+
+  // The "Files reverted…" note is a confirmation, not a log entry.
+  useEffect(() => {
+    if (!revertedNotice) return
+    const timer = setTimeout(() => setRevertedNotice(null), 10_000)
+    return () => clearTimeout(timer)
+  }, [revertedNotice])
+
   // Keep the shared subagent-stop helper pointed at the current API/runtime
   // so SubagentCard (chat) and AgentEntry (agents panel) can cancel without
   // having handlers threaded through the tree.
@@ -7370,27 +7406,34 @@ const ChatPanelContent = observer(function ChatPanelContent({
       options: MessageEditOptions | undefined,
     ) => {
       if (!sessionMessages) {
-        console.warn("[ChatPanel] truncateAndResend without sessionMessages")
-        return
+        throw new Error("This chat is still loading — try again in a moment.")
       }
       const current = messagesRef.current
       const idx = current.findIndex((m) => m.id === messageId)
       if (idx === -1) {
-        console.warn(
-          "[ChatPanel] truncateAndResend: message not found locally",
-          messageId,
-        )
-        return
+        throw new Error("That message is no longer in this chat.")
       }
+
+      // Optimistic collapse: the turns that will be replaced disappear the
+      // moment the user hits Send, and the normal working row takes over.
+      // If the truncate itself fails nothing was deleted server-side, so the
+      // whole transcript comes back and the editor reopens with the draft.
+      const previous = current
+      setMessages(current.slice(0, idx))
+      let truncated = false
 
       // Step 1: chat truncation. This is the source of truth — if it
       // fails we abort the whole rewind. The local MST cache is
       // mirrored inside truncateMessagesFrom.
       try {
         await truncateMessagesFrom(sessionMessages, messageId)
+        truncated = true
       } catch (err) {
         console.error("[ChatPanel] truncate-from failed:", err)
-        throw err
+        setMessages(previous)
+        throw err instanceof Error
+          ? err
+          : new Error("Could not remove the messages after this one.")
       }
 
       // Step 2: optional file rollback. Runs BETWEEN the chat
@@ -7399,8 +7442,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       //     before the (potentially slow) git checkout runs.
       //   - A rollback failure leaves us in a coherent state — chat
       //     is at the new edit point, files are unchanged, no new
-      //     send is fired. The error bubbles up to EditableUserMessage
-      //     where it's logged + the bubble's busy state clears.
+      //     send is fired. The error bubbles up to the editor where
+      //     it is shown inline under the draft.
       //   - The server's pre-rollback auto-save still protects any
       //     uncommitted user changes in the workspace.
       if (options?.revertFiles && options.checkpoint) {
@@ -7409,20 +7452,27 @@ const ChatPanelContent = observer(function ChatPanelContent({
             projectId: options.checkpoint.projectId,
             checkpointId: options.checkpoint.id,
             checkpointCreatedAt: options.checkpoint.createdAt,
-            // We don't surface the includeDatabase toggle in the chat
-            // bubble dialog yet — power users still have the
-            // CheckpointsPanel for that finer-grained call. Default
-            // to false so we don't surprise users with DB rollbacks
-            // triggered from a chat edit.
+            // The database toggle is not offered from a chat edit — power
+            // users still have the Checkpoints panel for that finer-grained
+            // call. Default false so an edit never surprises anyone with a
+            // DB rollback.
             includeDatabase: false,
+          })
+          setRevertedNotice({
+            text: filesRevertedNote(
+              formatRelativeTime(options.checkpoint.createdAt),
+            ),
+            at: Date.now(),
           })
         } catch (err) {
           console.error("[ChatPanel] checkpoint rollback failed:", err)
-          throw err
+          if (!truncated) setMessages(previous)
+          throw err instanceof Error
+            ? err
+            : new Error("Could not revert project files to the checkpoint.")
         }
       }
 
-      setMessages(current.slice(0, idx))
       await sendMessageInternal(newContent, newFiles)
     },
     [sessionMessages, setMessages, sendMessageInternal],
@@ -7538,6 +7588,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       retryFromMessage: handleRetryFromMessage,
       countMessagesAfter,
       isStreaming,
+      stopStreaming: stopStreamingAndWait,
+      editingMessageId,
+      setEditingMessageId,
       canEditMessage,
       getPrecedingCheckpoint: handleGetPrecedingCheckpoint,
       composerProps: messageEditComposerProps,
@@ -7547,6 +7600,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       handleRetryFromMessage,
       countMessagesAfter,
       isStreaming,
+      stopStreamingAndWait,
+      editingMessageId,
       canEditMessage,
       handleGetPrecedingCheckpoint,
       messageEditComposerProps,
@@ -8617,11 +8672,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     <TodoStateStoreContext.Provider value={todoStateStore}>
       <FileChangeStoreContext.Provider value={fileChangeStore}>
         <ChatContextProvider value={contextValue}>
-          {/* Hosts the destructive-confirmation modal for in-place message
-          edit and "retry from here". Rendered once per ChatPanel and
-          accepts requests pushed from any nested EditableUserMessage
-          via the module-level subscriber in EditConfirmDialog.tsx. */}
-          <EditConfirmDialogHost />
+          {/* In-place message edit (SHO-263) has no modal host any more: the
+          revert/keep choice lives inline in the editor footer. */}
           {/* Dock panels that don't need a fixed spot in the JSX tree — each
           is a no-render component that registers itself with
           `chatDockStore` (see chat-dock-store.ts) and unregisters when its
@@ -8840,6 +8892,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
                           : setNativeInlineEditing
                       }
                     >
+                      {revertedNotice ? (
+                        <Pressable
+                          onPress={() => setRevertedNotice(null)}
+                          accessibilityRole="button"
+                          accessibilityLabel="Dismiss file revert notice"
+                          className="mb-2 self-center rounded-md border border-border/50 bg-muted/40 px-2 py-1"
+                        >
+                          <Text className="text-[11px] text-muted-foreground">
+                            {revertedNotice.text} · roll forward from the
+                            Checkpoints panel
+                          </Text>
+                        </Pressable>
+                      ) : null}
                       <TurnFooterProvider {...turnFooterValue}>
                         <TurnList
                           messages={displayMessages}

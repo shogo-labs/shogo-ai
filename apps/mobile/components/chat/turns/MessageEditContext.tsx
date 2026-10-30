@@ -107,12 +107,33 @@ export interface MessageEditContextValue {
   countMessagesAfter: (messageId: string) => number
 
   /**
-   * Block all edit affordances while the agent is streaming. Editing
-   * mid-stream would race with the in-flight `useChat` request and
-   * the auto-resume fetch, so we hide both Edit and Retry until the
-   * turn settles.
+   * True while the agent is streaming. Editing is still allowed — the
+   * panel stops the run before it truncates (`stopStreaming`) — but the
+   * editor says so in its footer.
    */
   isStreaming: boolean
+
+  /**
+   * Stop the in-flight run and resolve once the stream has settled.
+   * No-op when nothing is streaming. `editMessage` / `retryFromMessage`
+   * call this first so an edit made mid-run can't race the live turn.
+   */
+  stopStreaming: () => Promise<void>
+
+  /**
+   * The message currently open in an in-place editor, if any. Used by
+   * `TurnList` to dim every turn below it ("N messages below will be
+   * replaced") and by the bubbles to keep only one editor open.
+   */
+  editingMessageId: string | null
+  setEditingMessageId: (messageId: string | null) => void
+  /**
+   * Whether the open editor's draft differs from the original message.
+   * Clicking Edit on another message closes an untouched editor but must
+   * not throw away a changed draft.
+   */
+  inlineEditDirty: boolean
+  setInlineEditDirty: (dirty: boolean) => void
 
   /**
    * Whether a message id is editable. Optimistic local-only ids
@@ -203,6 +224,11 @@ export function MessageEditProvider({
   retryFromMessage,
   countMessagesAfter,
   isStreaming,
+  stopStreaming,
+  editingMessageId,
+  setEditingMessageId,
+  inlineEditDirty,
+  setInlineEditDirty,
   canEditMessage,
   getPrecedingCheckpoint,
   composerProps,
@@ -235,6 +261,11 @@ export function MessageEditProvider({
       retryFromMessage,
       countMessagesAfter,
       isStreaming,
+      stopStreaming,
+      editingMessageId,
+      setEditingMessageId,
+      inlineEditDirty,
+      setInlineEditDirty,
       canEditMessage,
       getPrecedingCheckpoint,
       composerProps,
@@ -245,6 +276,11 @@ export function MessageEditProvider({
       retryFromMessage,
       countMessagesAfter,
       isStreaming,
+      stopStreaming,
+      editingMessageId,
+      setEditingMessageId,
+      inlineEditDirty,
+      setInlineEditDirty,
       canEditMessage,
       getPrecedingCheckpoint,
       composerProps,
