@@ -42,8 +42,11 @@ mock.module("react-native", () =>
         {
           ...a11y(rest),
           style: undefined,
-          onMouseEnter: onHoverIn,
-          onMouseLeave: onHoverOut,
+          // react-native-web's View only whitelists the DOM mouse handlers
+          // (`onMouseEnter`/`onMouseLeave`); `onHoverIn` is a Pressable prop.
+          // Forward whichever the component passed, DOM handlers winning.
+          onMouseEnter: rest.onMouseEnter ?? onHoverIn,
+          onMouseLeave: rest.onMouseLeave ?? onHoverOut,
         },
         children,
       ),

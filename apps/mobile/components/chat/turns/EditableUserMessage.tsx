@@ -599,10 +599,19 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   )
 
   return (
+    // Hover has to be a DOM handler on the View: react-native-web's View
+    // whitelists `onMouseEnter`/`onMouseLeave` (mouseProps) but drops
+    // `onHoverIn` — that one only exists on Pressable. With `onHoverIn` here
+    // `hovered` never flipped in a browser and the Copy/Edit/Retry row never
+    // rendered at all (caught by e2e/local/chat-edit-resend).
     <View
       className={cn("w-full", className)}
-      onHoverIn={isWeb ? () => setHovered(true) : undefined}
-      onHoverOut={isWeb ? () => setHovered(false) : undefined}
+      {...(isWeb
+        ? ({
+            onMouseEnter: () => setHovered(true),
+            onMouseLeave: () => setHovered(false),
+          } as any)
+        : {})}
     >
       <Pressable
         onPress={answeredQuestion ? undefined : handleRowPress}
