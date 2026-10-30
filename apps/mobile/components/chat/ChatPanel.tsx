@@ -263,6 +263,11 @@ import {
   loadModelPreference,
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
+import {
+  composerMemoryKey,
+  resolveChatModel,
+  useChatComposerMemory,
+} from "../../lib/chat-composer-memory"
 import { useReconcileStaleModelSelection } from "../../lib/visible-models"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
@@ -1564,6 +1569,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Chat session state — each ChatPanel instance receives a stable chatSessionId
   const currentSessionId = chatSessionId ?? null
 
+  // Per-chat composer memory (SHO-261): this chat's own model pick and its
+  // unsent draft, kept in the device cache so both survive switching chats,
+  // navigating away and an app restart.
+  const composerChatKey = currentSessionId
+    ? composerMemoryKey(currentSessionId)
+    : null
+  const composerMemory = useChatComposerMemory(composerChatKey)
+  const composerRecordRef = useRef(composerMemory.record)
+  composerRecordRef.current = composerMemory.record
+  // The chat key whose stored draft has already been pushed into the composer,
+  // so our own saves (which update `record`) never re-apply over live typing.
+  const appliedComposerDraftRef = useRef<string | null>(null)
+
   useEffect(() => {
     setHasScrollableTranscript(false)
   }, [currentSessionId])
@@ -1605,6 +1623,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const handleModelChange = useCallback(
     (modelId: string) => {
+      // Remember the pick against THIS chat before anything else, so switching
+      // away and back restores it even if no message was ever sent.
+      composerMemory.saveModel(modelId)
       if (controlledOnModelChange) {
         controlledOnModelChange(modelId)
       } else {
@@ -1612,7 +1633,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         saveModelPreference(modelId, projectId)
       }
     },
-    [controlledOnModelChange, projectId],
+    [composerMemory, controlledOnModelChange, projectId],
   )
 
   // Reset a pre-UUID stored selection (an old slug that's now only a server
@@ -1649,6 +1670,51 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setRestoreDraftRequest(null)
     },
     [prefillRequest?.nonce, restoreDraftRequest?.nonce, onPrefillConsumed],
+  )
+
+  // Store whatever a prefill (a queued-message edit, a handed-off prompt) put
+  // in the composer, so it is still there after navigating away.
+  useEffect(() => {
+    if (!prefillRequest) return
+    composerMemory.saveDraft(
+      prefillRequest.content ?? "",
+      prefillRequest.references ?? [],
+    )
+  }, [prefillRequest?.nonce, composerMemory, prefillRequest])
+
+  // Restore this chat's own unsent draft when we enter it, and once the stored
+  // record has loaded. Always set the composer — including empty — so chat A's
+  // text can never show up in chat B.
+  useEffect(() => {
+    if (!composerChatKey || !composerMemory.ready) return
+    if (appliedComposerDraftRef.current === composerChatKey) return
+    appliedComposerDraftRef.current = composerChatKey
+    // An explicit prefill wins over the stored draft (and is stored above).
+    if (prefillRequest) return
+    const draft = composerRecordRef.current?.draft
+    setRestoreDraftRequest({
+      nonce: Date.now(),
+      content: draft?.text ?? "",
+      references: draft?.references ?? [],
+      focus: false,
+    })
+  }, [
+    composerChatKey,
+    composerMemory,
+    composerMemory.ready,
+    prefillRequest,
+    composerMemory.saveDraft,
+  ])
+
+  // Persist the composer's text for this chat as the person types. ChatInput
+  // only calls this for real edits — never for a restore or a submit.
+  const handleComposerTextChange = useCallback(
+    (text: string, references: ChatReference[]) => {
+      if (!composerChatKey) return
+      if (appliedComposerDraftRef.current !== composerChatKey) return
+      composerMemory.saveDraft(text, references)
+    },
+    [composerChatKey, composerMemory],
   )
 
   // Bridge for EZ Mode overlay (voice + text translator). The overlay
@@ -5240,7 +5306,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // This chat's last-used model: the most recent loaded message carrying a
   // `model` value (assistant rows are stamped server-side). MST `.all` is
   // observed here, so this recomputes when the session's messages settle.
-  const lastSessionModel: string | null = (() => {
+  const lastSessionModelStamp = (() => {
     const all = sessionMessages?.all as any[] | undefined
     if (!all || all.length === 0) return null
     let latest: { createdAt: number; model: string } | null = null
@@ -5251,23 +5317,65 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!latest || createdAt >= latest.createdAt)
         latest = { createdAt, model: mdl }
     }
-    return latest ? latest.model : null
+    return latest
   })()
+  const lastSessionModel = lastSessionModelStamp?.model ?? null
 
-  // Report the active chat's last-used model up to the parent so it can default
-  // the shared picker when switching chats. Fires `null` for empty chats so the
-  // parent can fall back to the global preference. The effect re-runs (and thus
-  // re-emits) when this panel becomes active, so switching back to a chat
-  // restores its model even if the value itself is unchanged.
+  // The model this chat should show: an explicit pick made here wins unless a
+  // model-stamped message is newer (it may have come from another device).
+  // `null` means "nothing chat-specific" — fall back to the global preference.
+  const resolvedChatModel = resolveChatModel({
+    record: composerMemory.record,
+    lastStampedModel: lastSessionModel,
+    lastStampedAt: lastSessionModelStamp?.createdAt ?? 0,
+  })
+
+  // Report the active chat's model up to the parent so it can default the
+  // shared picker when switching chats. Fires `null` for chats with nothing
+  // remembered so the parent can fall back to the global preference. The effect
+  // re-runs (and thus re-emits) when this panel becomes active, so switching
+  // back to a chat restores its model even if the value itself is unchanged.
   useEffect(() => {
     if (!isActive || !isInitialLoadComplete || !onResolveSessionModel) return
-    onResolveSessionModel(lastSessionModel)
+    if (!composerMemory.ready) return
+    onResolveSessionModel(resolvedChatModel)
   }, [
     isActive,
     isInitialLoadComplete,
     currentSessionId,
-    lastSessionModel,
+    resolvedChatModel,
+    composerMemory.ready,
     onResolveSessionModel,
+  ])
+
+  // Uncontrolled surfaces (workspace agent chats, side chats) own the picker
+  // themselves: on entering a chat, show that chat's remembered model, falling
+  // back to the last model picked anywhere. A pick in chat A must not change
+  // chat B, so this only runs on an actual session change.
+  const composerSessionAppliedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (isModelControlled) return
+    if (!isActive || !currentSessionId) return
+    if (!composerMemory.ready) return
+    if (composerSessionAppliedRef.current === currentSessionId) return
+    composerSessionAppliedRef.current = currentSessionId
+    if (resolvedChatModel) {
+      setInternalSelectedModel(resolvedChatModel)
+      return
+    }
+    const forSession = currentSessionId
+    loadModelPreference(projectId).then((stored) => {
+      if (!stored) return
+      if (composerSessionAppliedRef.current !== forSession) return
+      setInternalSelectedModel(stored)
+    })
+  }, [
+    isModelControlled,
+    isActive,
+    currentSessionId,
+    resolvedChatModel,
+    composerMemory.ready,
+    projectId,
   ])
 
   // Surface a system notification when a turn finishes streaming while the
@@ -6587,6 +6695,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
           content: serverTarget.content,
           files: serverTarget.files,
         })
+        // The pulled-back text becomes this chat's draft (SHO-261).
+        composerMemory.saveDraft(serverTarget.content, [])
         return
       }
       let target: QueuedMessage | undefined
@@ -6602,8 +6712,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         content: target.content,
         files: target.files,
       })
+      composerMemory.saveDraft(target.content, [])
     },
-    [clearOptimisticEcho, serverQueue],
+    [clearOptimisticEcho, composerMemory, serverQueue],
   )
 
   /**
@@ -6932,9 +7043,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
       perMsgModel?: string,
       references?: ChatReference[],
     ) => {
+      // The message was accepted (sent or queued) — forget the stored draft
+      // immediately so a reload doesn't resurrect it. If the send later fails
+      // and the text is put back, the next edit stores it again.
+      composerMemory.clearDraft()
       handleSendMessage(content, files, perMsgModel, references)
     },
-    [handleSendMessage],
+    [composerMemory, handleSendMessage],
   )
 
   // Plan confirmation: execute the plan in this same chat.
@@ -9010,6 +9125,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onQuickActionClick={handleQuickActionClick}
                     restoreDraftRequest={prefillRequest ?? restoreDraftRequest}
                     onDraftRestored={handleDraftRestored}
+                    onTextChange={handleComposerTextChange}
                     insertRequest={insertRequest}
                     onInsertApplied={handleInsertApplied}
                     composer={composer}

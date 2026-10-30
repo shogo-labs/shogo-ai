@@ -43,10 +43,16 @@ import {
   ChatInput,
   DEFAULT_MODEL,
   type FileAttachment,
+  type RestoreDraftRequest,
 } from '../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
+import {
+  homeComposerMemoryKey,
+  useChatComposerMemory,
+} from '../../lib/chat-composer-memory'
 import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
+import type { ChatReference } from '../../lib/chat-references'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
@@ -342,6 +348,42 @@ export const HomeScreen = observer(function HomeScreen({
   // The cloud workspace: identity, billing and membership are the cloud
   // account's even while a paired computer's workspace is open.
   const currentWorkspace = useActiveWorkspace()
+  // The home "describe the project" composer remembers its unsent text per
+  // workspace (SHO-261), so it survives navigating away and a reload.
+  const homeComposerKey = currentWorkspace?.id
+    ? homeComposerMemoryKey(currentWorkspace.id)
+    : null
+  const homeComposerMemory = useChatComposerMemory(homeComposerKey)
+  const [homeDraftRequest, setHomeDraftRequest] =
+    useState<RestoreDraftRequest | null>(null)
+  const homeDraftAppliedRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!homeComposerKey || !homeComposerMemory.ready) return
+    if (homeDraftAppliedRef.current === homeComposerKey) return
+    homeDraftAppliedRef.current = homeComposerKey
+    setHomeDraftRequest({
+      nonce: Date.now(),
+      content: homeComposerMemory.record?.draft?.text ?? '',
+      references: homeComposerMemory.record?.draft?.references ?? [],
+      focus: false,
+    })
+  }, [homeComposerKey, homeComposerMemory.ready, homeComposerMemory])
+
+  const handleHomeDraftRestored = useCallback((nonce: number) => {
+    setHomeDraftRequest((current) =>
+      current?.nonce === nonce ? null : current,
+    )
+  }, [])
+
+  const handleHomeTextChange = useCallback(
+    (text: string, references: ChatReference[]) => {
+      if (!homeComposerKey) return
+      if (homeDraftAppliedRef.current !== homeComposerKey) return
+      homeComposerMemory.saveDraft(text, references)
+    },
+    [homeComposerKey, homeComposerMemory],
+  )
   // The workspace on screen — the machine's own while one is open, which is
   // what the agent screen, its projects and its composer belong to (SHO-130).
   const workspaceInView = useWorkspaceInView()
@@ -789,9 +831,11 @@ export const HomeScreen = observer(function HomeScreen({
 
   const handlePromptSubmit = useCallback(
     (text: string, files?: FileAttachment[]): void | false => {
+      // Accepted — drop the remembered draft so a reload shows an empty box.
+      homeComposerMemory.clearDraft()
       void createProjectFromPrompt(text, files)
     },
-    [createProjectFromPrompt],
+    [createProjectFromPrompt, homeComposerMemory],
   )
 
   const handleTemplatePress = useCallback(async (listing: HomeListing) => {
@@ -1004,6 +1048,9 @@ export const HomeScreen = observer(function HomeScreen({
       composer={currentExperience.composer}
       presentation="agent"
       inputTestID="home-composer-input"
+      restoreDraftRequest={homeDraftRequest}
+      onDraftRestored={handleHomeDraftRestored}
+      onTextChange={handleHomeTextChange}
     />
   ) : (
     <View className="w-full" style={CONTENT_MAX_WIDTH}>
@@ -1023,6 +1070,9 @@ export const HomeScreen = observer(function HomeScreen({
             : undefined
         }
         inputTestID="home-composer-input"
+        restoreDraftRequest={homeDraftRequest}
+        onDraftRestored={handleHomeDraftRestored}
+        onTextChange={handleHomeTextChange}
         leadingControls={
           <View className="flex-row items-center gap-1">
             <ProjectSourceMenu
