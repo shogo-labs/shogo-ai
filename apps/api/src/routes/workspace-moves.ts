@@ -58,6 +58,22 @@ function errorResponse(c: any, status: number, code: string, message: string, ex
   return c.json({ error: { code, message, ...extra } }, status as any)
 }
 
+/**
+ * Whether the cloud composer mounts this surface at all (SEC-18 hotfix).
+ *
+ * The `/serve/*` and `/receive/*` halves trust a `projectId`, model name and row
+ * ids that arrive with a caller-supplied `workspaceId`, so on the public API
+ * they were a way to read the pod's files and write any row. Until that scoping
+ * lands they are mounted only when asked for, explicitly. The desktop composer
+ * does not consult this: it is the driver in both directions and needs its own
+ * copy.
+ *
+ * Exported so the test can assert the gate without booting `server.ts`.
+ */
+export function workspaceMovesMountable(env: Record<string, string | undefined> = process.env): boolean {
+  return env.WORKSPACE_MOVES_ENABLED === 'true'
+}
+
 function failure(c: any, err: unknown) {
   if (err instanceof WorkspaceMoveError) {
     return errorResponse(c, err.status, err.code, err.message)

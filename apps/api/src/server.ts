@@ -28,7 +28,7 @@ import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './l
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceExportRoutes } from './routes/workspace-export'
-import { workspaceMoveRoutes } from './routes/workspace-moves'
+import { workspaceMoveRoutes, workspaceMovesMountable } from './routes/workspace-moves'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
@@ -1655,7 +1655,13 @@ app.route('/api/workspaces', workspaceExportRoutes())
 // Desktop <-> cloud workspace move: the driver's own endpoints plus the
 // `/serve` and `/receive` halves the other side of the link calls. Mounted on
 // both composers so a move can never work in one direction only.
-app.route('/api/workspace-moves', workspaceMoveRoutes())
+//
+// Hotfix (SEC-18): the remote halves take a caller-supplied `workspaceId` and
+// then trust the `projectId`, model name and row ids that come with it, so a
+// free account could read the API pod's files and write any row. Until the
+// scoping lands, the cloud surface is off unless it is asked for explicitly;
+// the desktop keeps its mount (it is the driver in both directions).
+if (workspaceMovesMountable()) app.route('/api/workspace-moves', workspaceMoveRoutes())
 app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
 app.route('/api', sharedMeetingRoutes())
 // Workspace channels (team chat with @mentionable agents).
