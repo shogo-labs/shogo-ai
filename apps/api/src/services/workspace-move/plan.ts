@@ -124,7 +124,7 @@ export async function collectMoveRows(input: {
     db: input.db,
   } as any)
   const closure = applySelectionClosure(snapshot.rows, input.selection)
-  await attachMemberUsers(input.db ?? prisma, closure.rows)
+  await attachReferencedUsers(input.db ?? prisma, closure.rows)
   return {
     rows: closure.rows,
     credentials: snapshot.credentials,
@@ -134,25 +134,60 @@ export async function collectMoveRows(input: {
 }
 
 /**
+ * Columns that hold a `User` id.
+ *
  * `User` is excluded from the export manifest on purpose — it is global account
- * data, not workspace content — but `Member` references it by foreign key. A
- * move therefore has to carry a minimal user row for every member it carries.
- * Without them the target fails with `Foreign key constraint violated` the
- * moment the workspace has more than one member, which every real team
- * workspace does, and the member is silently lost. Only the columns a member
- * row needs travel: the profile stays the account's own business.
+ * data, not workspace content — but rows all over a workspace point at it by
+ * foreign key: a member, the author of a message, the uploader of an
+ * attachment, the person who archived a doc. A move therefore carries a
+ * minimal user row for every id these columns mention.
+ *
+ * Without them the target fails with `Foreign key constraint violated` on the
+ * first row whose user is not a member. On a seeded test workspace that is
+ * nobody; on a real one it is the first message written by anyone who has since
+ * left, and the whole move dies there — a real cloud workspace's first attempt
+ * failed on `ConversationMember` for exactly this. Only the columns an identity
+ * needs travel; the profile stays the account's own business.
  */
-async function attachMemberUsers(db: any, rows: Map<string, MoveRow[]>): Promise<void> {
-  const members = rows.get('Member') ?? []
-  const ids = [...new Set(members.map((member) => String(member.userId ?? '')).filter(Boolean))]
-  if (!ids.length) return
+const USER_ID_COLUMNS = [
+  'userId',
+  'authorUserId',
+  'uploaderUserId',
+  'targetUserId',
+  'actorUserId',
+  'assigneeUserId',
+  'addedByUserId',
+  'invitedById',
+  'referredUserId',
+  'ownerUserId',
+  'createdById',
+  'createdByUserId',
+  'updatedById',
+  'updatedByUserId',
+  'archivedByUserId',
+] as const
+
+async function attachReferencedUsers(db: any, rows: Map<string, MoveRow[]>): Promise<void> {
+  const ids = new Set<string>()
+  for (const list of rows.values()) {
+    for (const row of list) {
+      for (const column of USER_ID_COLUMNS) {
+        const value = (row as any)?.[column]
+        if (typeof value === 'string' && value) ids.add(value)
+      }
+    }
+  }
+  if (!ids.size) return
+  const carried = new Set((rows.get('User') ?? []).map((user) => String(user.id)))
+  const missing = [...ids].filter((id) => !carried.has(id))
+  if (!missing.length) return
   const users: MoveRow[] = await db.user
     .findMany({
-      where: { id: { in: ids } },
+      where: { id: { in: missing } },
       select: { id: true, email: true, name: true, image: true },
     })
     .catch(() => [])
-  if (users.length) rows.set('User', users)
+  if (users.length) rows.set('User', [...(rows.get('User') ?? []), ...users])
 }
 
 interface ProjectRow {

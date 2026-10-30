@@ -34,6 +34,14 @@ interface Proc {
 const roots: string[] = []
 const procs: Proc[] = []
 
+/** A port the desktop can name in its own env before it starts. */
+const freePort = async (): Promise<number> => {
+  const probe = Bun.serve({ port: 0, fetch: () => new Response('') })
+  const port = probe.port
+  await probe.stop(true)
+  return port
+}
+
 const startServer = async (env: Record<string, string>): Promise<Proc> => {
   const child = Bun.spawn([process.execPath, SERVER], {
     cwd: API_DIR,
@@ -104,10 +112,17 @@ const pair = async (targetSetup: { kind?: 'team' | 'personal'; instanceSize?: st
     expect(owned.status).toBe(200)
   }
 
+  // The desktop is a signed-in app: it addresses *itself* on `SHOGO_API_URL`
+  // and the cloud on `SHOGO_CLOUD_URL` (that is the pair #1822 fixed the move to
+  // read). Pointing `SHOGO_API_URL` at the target instead is not a shape the
+  // product has.
+  const desktopPort = await freePort()
   const desktop = await startServer({
     QA_DATA_DIR: desktopDirs.data,
     QA_FILES_DIR: desktopDirs.files,
-    SHOGO_API_URL: `http://127.0.0.1:${cloud.port}`,
+    QA_PORT: String(desktopPort),
+    SHOGO_API_URL: `http://127.0.0.1:${desktopPort}`,
+    SHOGO_CLOUD_URL: `http://127.0.0.1:${cloud.port}`,
     SHOGO_API_KEY: API_KEY,
   })
   const seeded = await call(desktop.port, '/__qa/seed', {
@@ -183,13 +198,24 @@ test(
     // The row a normal create produces — not the source's `small`.
     expect(created.instanceSize).toBe('micro')
 
-    // The content really arrived, and the account owns the new workspace.
+    // The content really arrived: every row the source had, no more and no less.
     expect(after.projects.filter((p: any) => p.workspaceId === done.targetWorkspaceId).length).toBe(4)
-    expect(after.counts.messages).toBe(60)
-    expect(after.counts.workItems).toBe(24)
-    // The `personal` workspace's owner, plus the three members the source had:
-    // membership travels with a move, so the new workspace is usable by them.
-    expect(after.counts.members).toBe(4)
+    expect({
+      messages: after.counts.messages,
+      workItems: after.counts.workItems,
+      conversationMembers: after.counts.conversationMembers,
+      boards: after.counts.boards,
+      conversations: after.counts.conversations,
+    }).toEqual({
+      messages: sourceState.counts.messages,
+      workItems: sourceState.counts.workItems,
+      conversationMembers: sourceState.counts.conversationMembers,
+      boards: sourceState.counts.boards,
+      conversations: sourceState.counts.conversations,
+    })
+    // Membership travels with a move; the extra one is the `personal`
+    // workspace's own owner, which was already there.
+    expect(after.counts.members).toBe(sourceState.counts.members + 1)
   },
   { timeout: 300_000 },
 )
