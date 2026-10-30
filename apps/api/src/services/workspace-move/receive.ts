@@ -19,6 +19,7 @@ import { moveDirFor, walkMoveFiles, writeMoveFile } from './files'
 import { moveIgnoreRules } from './ignores'
 import type { HandoverKind } from './handover'
 import { shouldMoveModel } from './records'
+import { assertRowsInWorkspace } from './scope'
 import type { MoveFileEntry, MoveFileManifest, MoveRow } from './types'
 import { WORKSPACE_ROOT_ID, WorkspaceMoveError } from './types'
 
@@ -240,19 +241,12 @@ const NEVER_FROM_THE_WIRE: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Parent references a received row may carry, and the table that proves the
- * parent is in the authorised workspace.
+ * A model name is a Prisma model name: the wire never names a table.
  *
- * A row is refused — not rewritten — when the parent is somewhere else: a
- * `WorkItem` whose `boardId` belongs to another workspace would otherwise be
- * written into this one and read back through the other workspace's board.
+ * Whether a row is inside the workspace is checked by
+ * `assertRowsInWorkspace` in `scope.ts`, which walks each row's parent chain
+ * through the export manifest.
  */
-const PARENT_SCOPES: ReadonlyArray<{ field: string; model: string }> = [
-  { field: 'projectId', model: 'project' },
-  { field: 'conversationId', model: 'conversation' },
-  { field: 'boardId', model: 'board' },
-]
-
 const MODEL_NAME = /^[A-Z][A-Za-z0-9]*$/
 
 function denied(model: string): WorkspaceMoveError {
@@ -281,8 +275,12 @@ export function assertReceivableModel(model: string): void {
  *   2. a row that names a `workspaceId` must name **this** workspace — a row
  *      that names another one is a request to write into another tenant, and
  *      rewriting it silently would hide that;
- *   3. every parent the row points at (`projectId`, `conversationId`,
- *      `boardId`) must already be in this workspace.
+ *   3. every row must be reachable from this workspace by walking its parent
+ *      chain (`ChatMessage` → `ChatSession` → workspace, `MessageFeedback` →
+ *      `ChatMessage` → …, a project-scoped model → `Project` → workspace). The
+ *      chain is read from the export manifest, not listed here: a fixed list of
+ *      foreign keys was how a `ChatMessage` naming a victim's `sessionId` got
+ *      written into their transcript (SEC-18).
  */
 export async function writeMoveRecordChunk(
   db: any,
@@ -309,7 +307,7 @@ export async function writeMoveRecordChunk(
       )
     }
   }
-  await assertParentsInWorkspace(db, input.workspaceId, rows)
+  await assertRowsInWorkspace(db, input.workspaceId, input.model, rows)
   return writeRecordChunk(db, input.model, rows)
 }
 
@@ -327,26 +325,6 @@ async function assertKnownUsers(db: any, rows: MoveRow[]): Promise<{ inserted: n
     )
   }
   return { inserted: 0 }
-}
-
-async function assertParentsInWorkspace(db: any, workspaceId: string, rows: MoveRow[]): Promise<void> {
-  for (const { field, model } of PARENT_SCOPES) {
-    const ids = [...new Set(rows.map((row) => row[field]).filter((id) => typeof id === 'string' && id))]
-    if (!ids.length) continue
-    const found: Array<{ id: string }> = await db[model].findMany({
-      where: { id: { in: ids }, workspaceId },
-      select: { id: true },
-    })
-    const known = new Set(found.map((row) => row.id))
-    const missing = (ids as string[]).find((id) => !known.has(id))
-    if (missing) {
-      throw new WorkspaceMoveError(
-        `A row refers to ${field} ${String(missing).slice(0, 60)}, which is not in this workspace.`,
-        400,
-        'workspace_move_foreign_parent',
-      )
-    }
-  }
 }
 
 /** A git branch a clone may be asked for: a ref, never an option. */
