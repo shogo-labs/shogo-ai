@@ -151,6 +151,13 @@ function numberParam(value: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined
 }
 
+/** A delta-read cursor (`?changedSince=<ISO>`, SHO-260); ignored when unparseable. */
+function isoDateParam(value: string | undefined): Date | undefined {
+  if (!value) return undefined
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? undefined : date
+}
+
 export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   const router = new Hono()
   registerConversationNotifications()
@@ -691,6 +698,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         afterSeq: numberParam(c.req.query('afterSeq')),
         limit: numberParam(c.req.query('limit')),
         threadRootId: c.req.query('threadRootId') || undefined,
+        changedSince: isoDateParam(c.req.query('changedSince')),
       }))
     } catch (err) {
       return errorResponse(c, err)

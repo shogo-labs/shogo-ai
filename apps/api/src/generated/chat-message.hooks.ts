@@ -58,6 +58,77 @@ export interface ChatMessageHooks {
 }
 
 /**
+ * The auth + scoping half of a chat-message read, shared by the generated list
+ * and the delta route (`GET /api/chat-messages/session/:id/changes`, SHO-260).
+ * One implementation so a delta read can never be authorized or filtered
+ * differently from the full page it replaces.
+ */
+export async function scopeChatMessages(
+  ctx: HookContext,
+  sessionId: string | undefined,
+  agent: string | undefined,
+): Promise<HookResult<{ where: Record<string, unknown> }>> {
+  if (!sessionId) {
+    return {
+      ok: false,
+      error: { code: "bad_request", message: "sessionId query param required" },
+    }
+  }
+
+  if (agent !== undefined && agent !== "technical" && agent !== "voice") {
+    return {
+      ok: false,
+      error: {
+        code: "bad_request",
+        message: "agent must be 'technical' or 'voice' when present",
+      },
+    }
+  }
+
+  if (!ctx.userId) {
+    return {
+      ok: false,
+      error: { code: "unauthorized", message: "Authentication required" },
+    }
+  }
+
+  const session = await ctx.prisma.chatSession.findUnique({
+    where: { id: sessionId },
+    select: CHAT_SESSION_SCOPE_SELECT,
+  })
+
+  if (!session) {
+    return {
+      ok: false,
+      error: { code: "not_found", message: "Chat session not found" },
+    }
+  }
+
+  // Tunnel-authenticated requests skip local membership checks
+  if (!ctx.tunnelAuthenticated) {
+    const access = await authorizeChatSession(
+      ctx,
+      session,
+      "Access denied to this chat session",
+    )
+    if (!access.ok) return { ok: false, error: access.error }
+  }
+
+  const where: Record<string, unknown> = { sessionId }
+  if (agent === "technical") {
+    where.agent = { in: ["technical", PROJECT_CALL_MESSAGE_AGENT] }
+    // A call's reply can be missed by its follower (empty turn, buffer gone,
+    // API restart). Repair it from the call record the first time the chat is
+    // opened, so an orphaned prompt never stays unanswered.
+    await reconcileCallReplyOnRead(ctx.prisma, sessionId)
+  } else if (agent) {
+    where.agent = agent
+  }
+
+  return { ok: true, data: { where } }
+}
+
+/**
  * Default ChatMessage hooks (customize as needed)
  */
 export const chatMessageHooks: ChatMessageHooks = {
@@ -80,70 +151,17 @@ export const chatMessageHooks: ChatMessageHooks = {
    * not a full object.
    */
   beforeList: async (ctx) => {
-    const sessionId = ctx.query.sessionId
-    const userId = ctx.userId
-    const agent = ctx.query.agent
-
-    if (!sessionId) {
-      return {
-        ok: false,
-        error: {
-          code: "bad_request",
-          message: "sessionId query param required",
-        },
-      }
-    }
-
-    if (agent !== undefined && agent !== "technical" && agent !== "voice") {
-      return {
-        ok: false,
-        error: {
-          code: "bad_request",
-          message: "agent must be 'technical' or 'voice' when present",
-        },
-      }
-    }
-
-    if (!userId) {
-      return {
-        ok: false,
-        error: { code: "unauthorized", message: "Authentication required" },
-      }
-    }
-
-    const session = await ctx.prisma.chatSession.findUnique({
-      where: { id: sessionId },
-      select: CHAT_SESSION_SCOPE_SELECT,
-    })
-
-    if (!session) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Chat session not found" },
-      }
-    }
-
-    // Tunnel-authenticated requests skip local membership checks
-    if (!ctx.tunnelAuthenticated) {
-      const access = await authorizeChatSession(ctx, session, "Access denied to this chat session")
-      if (!access.ok) return access
-    }
-
-    const where: Record<string, unknown> = { sessionId }
-    if (agent === "technical") {
-      where.agent = { in: ["technical", PROJECT_CALL_MESSAGE_AGENT] }
-      // A call's reply can be missed by its follower (empty turn, buffer gone,
-      // API restart). Repair it from the call record the first time the chat is
-      // opened, so an orphaned prompt never stays unanswered.
-      await reconcileCallReplyOnRead(ctx.prisma, sessionId)
-    } else if (agent) {
-      where.agent = agent
-    }
+    const result = await scopeChatMessages(
+      ctx,
+      ctx.query.sessionId,
+      ctx.query.agent,
+    )
+    if (!result.ok) return result
 
     return {
       ok: true,
       data: {
-        where,
+        where: result.data!.where,
         // Explicitly no include - MST expects session as ID reference, not nested object
         include: undefined,
         orderBy: { createdAt: 'desc' },

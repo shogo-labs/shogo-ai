@@ -497,6 +497,8 @@ export interface MessagePage {
   messages: ChatMessage[]
   hasMore: boolean
   root?: ChatMessage
+  /** Newest `updatedAt` this page knows about — the delta cursor (SHO-260). */
+  cursor?: string
 }
 
 export interface CatchUpResult {
@@ -1191,13 +1193,21 @@ export function teamChatApi() {
     },
     async messages(
       id: string,
-      opts: { beforeSeq?: number; afterSeq?: number; threadRootId?: string; limit?: number } = {},
+      opts: {
+        beforeSeq?: number
+        afterSeq?: number
+        threadRootId?: string
+        limit?: number
+        /** Delta read: only rows whose `updatedAt` moved since this instant (SHO-260). */
+        changedSince?: string
+      } = {},
     ): Promise<MessagePage> {
       const q = new URLSearchParams()
       if (opts.beforeSeq) q.set('beforeSeq', String(opts.beforeSeq))
       if (opts.afterSeq !== undefined) q.set('afterSeq', String(opts.afterSeq))
       if (opts.threadRootId) q.set('threadRootId', opts.threadRootId)
       if (opts.limit) q.set('limit', String(opts.limit))
+      if (opts.changedSince) q.set('changedSince', opts.changedSince)
       return (await http.get<MessagePage>(`${conv(id)}/messages?${q}`)).data
     },
     async post(

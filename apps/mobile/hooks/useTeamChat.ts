@@ -19,7 +19,16 @@ import {
 } from '../lib/team-chat-api'
 import { useTeamChatEvents } from '../lib/team-chat-connection'
 import { setActiveChannelNotificationContext } from '../lib/notifications/chat-notifier'
-import { cacheList, cacheTimeline, readCachedList, readCachedTimeline } from '../lib/team-chat-cache'
+import { cacheList, readCachedList } from '../lib/team-chat-cache'
+import { API_URL } from '../lib/api-url'
+import { useActiveInstance } from '../contexts/active-instance'
+import {
+  chatHistoryKey,
+  conversationHistoryKey,
+  deltaSince,
+  readChatHistory,
+  writeChatHistory,
+} from '../lib/chat-history-store'
 import { linkPreviewOptOuts } from '../lib/link-preview-consent'
 import {
   addOptimistic,
@@ -401,12 +410,29 @@ export function useConversationTimeline(
     [conversationId, threadRootId],
   )
 
+  // The device copy of this channel/thread (SHO-260). `origin` keeps a machine
+  // workspace's chat apart from the same user's cloud chats.
+  const { instance: machineInstance } = useActiveInstance()
+  const origin = String(machineInstance?.instanceId ?? API_URL ?? 'local')
+  const historyKey = useMemo(
+    () =>
+      conversationId && me
+        ? chatHistoryKey(me, origin, conversationHistoryKey(conversationId, threadRootId))
+        : null,
+    [conversationId, threadRootId, me, origin],
+  )
+  const historyKeyRef = useRef<string | null>(historyKey)
+  historyKeyRef.current = historyKey
+  /** The stored delta cursor for the open timeline. */
+  const cursorRef = useRef<string | null>(null)
+
   const loadInitial = useCallback(async () => {
     if (!conversationId) return
     setLoading(true)
     try {
       const page = await api.messages(conversationId, { threadRootId: threadRootId ?? undefined, limit: PAGE_SIZE })
       setState((s) => mergePage(s, page, 'initial'))
+      cursorRef.current = page.cursor ?? null
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load messages')
@@ -415,31 +441,106 @@ export function useConversationTimeline(
     }
   }, [conversationId, threadRootId])
 
+  /**
+   * Paint from the device, then ask only for what changed since the saved
+   * cursor. The newest page is downloaded only when there is no saved slice,
+   * or the delta says the timeline moved beyond what it can patch.
+   */
   useEffect(() => {
     setState(emptyTimeline)
+    cursorRef.current = null
     let fresh = false
-    if (conversationId && !threadRootId && me) {
-      void readCachedTimeline(me, conversationId).then((cached) => {
-        if (!cached?.messages.length || fresh) return
-        setState((s) => (s.messages.length ? s : { ...emptyTimeline, messages: cached.messages, hasMoreOlder: cached.hasMoreOlder }))
-        setLoading(false)
+    const key = historyKey
+    const openLoadInitial = () => {
+      if (fresh) return
+      void loadInitial().finally(() => {
+        fresh = true
       })
     }
-    void loadInitial().finally(() => {
-      fresh = true
-    })
+    if (!key) {
+      openLoadInitial()
+      return () => {
+        fresh = true
+      }
+    }
+    void readChatHistory('team', key)
+      .then((entry) => {
+        if (fresh) return
+        if (!entry?.messages.length) {
+          openLoadInitial()
+          return
+        }
+        setState((s) =>
+          s.messages.length
+            ? s
+            : { ...emptyTimeline, messages: entry.messages, hasMoreOlder: entry.hasMoreOlder },
+        )
+        setLoading(false)
+        const since = deltaSince(entry.cursor)
+        if (!since || !conversationId) {
+          openLoadInitial()
+          return
+        }
+        return api
+          .messages(conversationId, {
+            changedSince: since,
+            threadRootId: threadRootId ?? undefined,
+            limit: PAGE_SIZE,
+          })
+          .then((page) => {
+            if (fresh) return
+            const messages = page.messages.filter((m) =>
+              belongsToScope(m, { conversationId, threadRootId }),
+            )
+            setState((s) => mergePage(s, { ...page, messages }, 'newer'))
+            cursorRef.current = page.cursor ?? entry.cursor
+            // A full page came back: the delta could not represent it.
+            if (page.hasMore) openLoadInitial()
+          })
+          .catch(() => {
+            // Offline: the saved slice is still on screen; the reconnect
+            // backfill catches up.
+          })
+      })
+      .catch(() => openLoadInitial())
     return () => {
       fresh = true
     }
-  }, [loadInitial, conversationId, threadRootId, me])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadInitial, conversationId, threadRootId, historyKey])
 
+  // Write through on every settled change so the next open paints instantly.
   useEffect(() => {
-    if (!conversationId || threadRootId || !me || loading) return
-    cacheTimeline(me, conversationId, state.messages, state.hasMoreOlder)
-  }, [state.messages, state.hasMoreOlder, conversationId, threadRootId, me, loading])
+    if (!historyKey || loading || !state.messages.length) return
+    void writeChatHistory('team', historyKey, {
+      messages: state.messages.filter((m) => !m.pending),
+      cursor: cursorRef.current,
+      total: null,
+      hasMoreOlder: state.hasMoreOlder,
+      savedAt: Date.now(),
+    })
+  }, [state.messages, state.hasMoreOlder, historyKey, loading])
 
   const backfill = useCallback(async () => {
     if (!scope) return
+    // A delta catches edits, soft deletes and reactions missed while offline;
+    // `afterSeq` alone would only see new messages.
+    const since = deltaSince(cursorRef.current)
+    if (since) {
+      try {
+        const page = await api.messages(scope.conversationId, {
+          changedSince: since,
+          threadRootId: threadRootId ?? undefined,
+          limit: 200,
+        })
+        const messages = page.messages.filter((m) => belongsToScope(m, scope))
+        setState((s) => mergePage(s, { ...page, messages }, 'newer'))
+        if (page.cursor) cursorRef.current = page.cursor
+        return
+      } catch {
+        // Fall through to the seq backfill below.
+      }
+    }
     if (threadRootId) return loadInitial()
     const after = lastConfirmedSeq(stateRef.current)
     if (!after) return loadInitial()

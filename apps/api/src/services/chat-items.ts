@@ -63,6 +63,9 @@ export async function setPinned(messageId: string, userId: string, on: boolean) 
   } else {
     await db.conversationPin.deleteMany({ where: { messageId } })
   }
+  // A pin is stored beside the message, so bump the row itself or a device
+  // asking "what changed since my cursor?" would never learn about it (SHO-260).
+  await db.conversationMessage.update({ where: { id: messageId }, data: { updatedAt: new Date() } })
   const full = await db.conversationMessage.findUnique({ where: { id: messageId }, include: MESSAGE_INCLUDE })
   const message = serializeMessage(full)
   publishConversationEvent(

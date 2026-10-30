@@ -40,6 +40,13 @@ describe('shouldRouteToRemote', () => {
     expect(shouldRouteToRemote('/api/chat-messages')).toBe(true)
   })
 
+  it('routes the chat-history delta read to the same place as the transcript', () => {
+    // SHO-260: a machine workspace's `/changes` must come from that machine.
+    expect(
+      shouldRouteToRemote('/api/chat-messages/session/s1/changes?agent=technical&since=2026-10-30T00:00:00.000Z'),
+    ).toBe(true)
+  })
+
   it('routes /api/folders to remote', () => {
     expect(shouldRouteToRemote('/api/folders')).toBe(true)
   })

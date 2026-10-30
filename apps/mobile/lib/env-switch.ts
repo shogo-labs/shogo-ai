@@ -5,6 +5,7 @@ import { DevSettings } from 'react-native'
 import * as Updates from 'expo-updates'
 import { setEnvOverride, type EnvOverride } from './env-override'
 import { clearTeamChatCache } from './team-chat-cache'
+import { clearChatHistory } from './chat-history-store'
 
 /**
  * Persisted native state that points at server-side records of one backend.
@@ -16,6 +17,7 @@ async function clearServerScopedState(): Promise<void> {
   await Promise.all([
     AsyncStorage.multiRemove(SERVER_SCOPED_ASYNC_KEYS).catch(() => {}),
     clearTeamChatCache(),
+    clearChatHistory(),
   ])
 }
 

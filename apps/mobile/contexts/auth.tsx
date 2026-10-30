@@ -12,6 +12,8 @@ import { AuthProvider as SharedAuthProvider, useAuth } from '@shogo/shared-app/a
 import { authClient } from '../lib/auth-client'
 import { clearActiveWorkspaceId } from '../lib/workspace-store'
 import { clearTeamChatCache } from '../lib/team-chat-cache'
+import { clearChatHistory } from '../lib/chat-history-store'
+import { clearChatPanelMessageCache } from '../lib/chat-panel-message-cache'
 
 export { useAuth, useAuthOptional, getAuthUserSnapshot } from '@shogo/shared-app/auth'
 export type { AuthUser, AuthContextValue } from '@shogo/shared-app/auth'
@@ -19,6 +21,11 @@ export type { AuthUser, AuthContextValue } from '@shogo/shared-app/auth'
 function onSignOut(): void {
   clearActiveWorkspaceId()
   void clearTeamChatCache()
+  // Chat history on the device and the in-memory transcript cache outlive a
+  // session unless they are dropped here (SHO-260). `clearChatPanelMessageCache`
+  // was exported for exactly this and had no caller.
+  void clearChatHistory()
+  clearChatPanelMessageCache()
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

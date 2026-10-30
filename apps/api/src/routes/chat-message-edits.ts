@@ -50,9 +50,113 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
+import { scopeChatMessages } from '../generated/chat-message.hooks'
+
+/** Rows one delta read may return before the client is told to reload. */
+export const CHAT_CHANGES_CAP = 200
+/** A cursor older than this is treated as "no useful cursor". */
+export const CHAT_CHANGES_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+
+function bearerScopedHookContext(c: any) {
+  const auth = c.get('auth') as
+    | { userId?: string; tunnelAuthenticated?: boolean; isAuthenticated?: boolean }
+    | undefined
+  return {
+    auth,
+    ctx: {
+      body: {},
+      params: {},
+      query: {},
+      userId: auth?.userId,
+      tunnelAuthenticated: auth?.tunnelAuthenticated,
+      prisma,
+    },
+  }
+}
 
 export function createChatMessageEditRoutes(): Hono {
   const router = new Hono()
+
+  /**
+   * Delta read for a chat history held on the device (SHO-260).
+   *
+   * `GET /api/chat-messages/session/:sessionId/changes?agent=technical&since=<ISO>`
+   * returns only the rows whose `updatedAt` is at or after `since` — which
+   * includes a reply that grew in place while streaming — plus the scope's
+   * total so the client can notice a delete. Two path segments on purpose: the
+   * generated router owns `GET /:id`, and this must never collide with it.
+   *
+   * The client always sends `cursor − 5 s` and merges by id, so a row it
+   * already has is harmless and pod-clock skew cannot hide a change.
+   */
+  router.get('/session/:sessionId/changes', async (c) => {
+    const { auth, ctx } = bearerScopedHookContext(c)
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return c.json(
+        { error: { code: 'unauthorized', message: 'Authentication required' } },
+        401,
+      )
+    }
+
+    const sessionId = c.req.param('sessionId')
+    const agent = c.req.query('agent')
+    const since = c.req.query('since')
+
+    const scope = await scopeChatMessages(ctx, sessionId, agent)
+    if (!scope.ok) {
+      const code = scope.error?.code
+      const status =
+        code === 'unauthorized'
+          ? 401
+          : code === 'not_found'
+            ? 404
+            : code === 'forbidden'
+              ? 403
+              : 400
+      return c.json({ error: scope.error }, status as 400)
+    }
+    const where = scope.data!.where
+
+    const total = await prisma.chatMessage.count({ where: where as any })
+
+    const parsed = since ? new Date(since) : null
+    const sinceDate =
+      parsed && !Number.isNaN(parsed.getTime()) ? parsed : null
+
+    if (!sinceDate || Date.now() - sinceDate.getTime() > CHAT_CHANGES_MAX_AGE_MS) {
+      return c.json({
+        ok: true,
+        items: [],
+        total,
+        cursor: null,
+        reset: true,
+      })
+    }
+
+    const rows = await prisma.chatMessage.findMany({
+      where: { ...where, updatedAt: { gte: sinceDate } } as any,
+      orderBy: { createdAt: 'asc' },
+      take: CHAT_CHANGES_CAP + 1,
+    })
+
+    const capped = rows.length > CHAT_CHANGES_CAP
+    const items = capped ? rows.slice(-CHAT_CHANGES_CAP) : rows
+
+    let cursorMs = sinceDate.getTime()
+    for (const row of items) {
+      const at = (row as { updatedAt?: Date | null }).updatedAt
+      const ms = at ? new Date(at).getTime() : NaN
+      if (!Number.isNaN(ms) && ms > cursorMs) cursorMs = ms
+    }
+
+    return c.json({
+      ok: true,
+      items,
+      total,
+      cursor: new Date(cursorMs).toISOString(),
+      reset: capped,
+    })
+  })
 
   router.post('/:id/truncate-from', async (c) => {
     const auth = c.get('auth') as
