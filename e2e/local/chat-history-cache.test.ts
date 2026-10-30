@@ -121,6 +121,15 @@ async function installMocks(page: Page): Promise<HistoryState> {
     forceReset: false,
   }
 
+  // Installed before the first paint: the cold open's cursor seed reports the
+  // same total the page does, so the next delta is not mistaken for a mismatch.
+  const base = Date.now() - 60_000
+  state.rows = [
+    savedRow("m-user", "", "user", BOOTSTRAP_PROMPT, base),
+    savedRow("m-reply", "", "assistant", BOOTSTRAP_REPLY, base + 1_000),
+  ]
+  state.total = state.rows.length
+
   await page.route(CHAT_POST_GLOB, async (route: Route) => {
     if (route.request().method() !== "POST") return route.continue()
     state.sessionId =
@@ -150,6 +159,7 @@ async function installMocks(page: Page): Promise<HistoryState> {
     const request = route.request()
     if (request.method() !== "GET") return route.continue()
     const url = new URL(request.url())
+    const sessionId = state.sessionId ?? url.searchParams.get("sessionId") ?? "session-under-test"
 
     if (url.pathname.endsWith("/changes")) {
       state.deltaReads += 1
@@ -161,7 +171,9 @@ async function installMocks(page: Page): Promise<HistoryState> {
       const since = sinceRaw ? new Date(sinceRaw).getTime() : 0
       const items = state.forceReset
         ? []
-        : state.rows.filter((row) => new Date(String(row.updatedAt)).getTime() >= since)
+        : state.rows
+            .filter((row) => new Date(String(row.updatedAt)).getTime() >= since)
+            .map((row) => ({ ...row, sessionId }))
       let cursor = since
       for (const row of items) {
         const at = new Date(String(row.updatedAt)).getTime()
@@ -189,9 +201,9 @@ async function installMocks(page: Page): Promise<HistoryState> {
     const limit = Number(url.searchParams.get("limit") || 50)
     const offset = Number(url.searchParams.get("offset") || 0)
     // The API answers newest first; the panel sorts ascending itself.
-    const newestFirst = [...state.rows].sort(
-      (a, b) => Number(b.createdAt) - Number(a.createdAt),
-    )
+    const newestFirst = state.rows
+      .map((row) => ({ ...row, sessionId }))
+      .sort((a, b) => Number(b.createdAt) - Number(a.createdAt))
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -239,14 +251,11 @@ test.describe("project chat keeps its history on the device", () => {
     const state = await installMocks(page)
     await startProjectWithBootstrapTurn(page)
 
-    // What the chat's history holds, as the API would serve it.
-    const base = Date.now() - 60_000
-    const sessionId = () => state.sessionId ?? "session-under-test"
-    state.rows = [
-      savedRow("m-user", sessionId(), "user", BOOTSTRAP_PROMPT, base),
-      savedRow("m-reply", sessionId(), "assistant", BOOTSTRAP_REPLY, base + 1_000),
-    ]
-    state.total = state.rows.length
+    // The history must already agree with the page the cold open serves when it
+    // seeds its cursor: a seed taken against an empty history reports total 0,
+    // and the next delta then looks like a count mismatch and re-downloads.
+    expect(state.rows.length, "the fixture history is installed before the first paint").toBe(2)
+    expect(state.total).toBe(2)
 
     // The cold open is the one time the page is downloaded; its first paint
     // seeds the delta cursor from a `/changes` call.
@@ -257,10 +266,10 @@ test.describe("project chat keeps its history on the device", () => {
     await expect
       .poll(() => state.deltaReads, { timeout: 20_000, message: "the cold open seeded a cursor" })
       .toBeGreaterThanOrEqual(1)
-    const pageReadsAfterColdOpen = state.pageReads
     const deltaReadsAfterColdOpen = state.deltaReads
 
     // AC1: the reload paints from the device — before the delta can answer.
+    const pageReadsBeforeReopen = state.pageReads
     state.deltaDelayMs = 2_000
     await page.reload()
     await expect
@@ -280,7 +289,7 @@ test.describe("project chat keeps its history on the device", () => {
 
     // AC2: no full page on the reopen.
     expect(state.pageReads, "the reopen must not download the page again").toBe(
-      pageReadsAfterColdOpen,
+      pageReadsBeforeReopen,
     )
     expect(state.deltaReads, "the reopen asks for the delta").toBeGreaterThanOrEqual(
       deltaReadsAfterColdOpen + 1,
@@ -290,8 +299,9 @@ test.describe("project chat keeps its history on the device", () => {
     expect(state.lastDelta?.size ?? Infinity).toBeLessThan(2_048)
 
     // AC3: a row written elsewhere rides in on the delta.
+    const pageReadsBeforeDeltaReopen = state.pageReads
     state.deltaDelayMs = 0
-    state.rows.push(savedRow("m-remote", sessionId(), "user", REMOTE_MARKER, Date.now()))
+    state.rows.push(savedRow("m-remote", "", "user", REMOTE_MARKER, Date.now()))
     state.total = state.rows.length
     await page.reload()
     await expect(
@@ -299,27 +309,21 @@ test.describe("project chat keeps its history on the device", () => {
       "a message written by another window arrives via the delta",
     ).toBeVisible({ timeout: 30_000 })
     expect(state.pageReads, "the delta carried the new row, no page needed").toBe(
-      pageReadsAfterColdOpen,
+      pageReadsBeforeDeltaReopen,
     )
 
     // AC2: `reset` sends the client back to the full page.
     state.forceReset = true
+    const pageReadsBeforeReset = state.pageReads
     await page.reload()
     await expect
       .poll(() => state.pageReads, { timeout: 30_000, message: "reset forces a full page" })
-      .toBeGreaterThan(pageReadsAfterColdOpen)
+      .toBeGreaterThan(pageReadsBeforeReset)
   })
 
   test("a row count that does not add up falls back to the full page", async ({ page }) => {
     const state = await installMocks(page)
     await startProjectWithBootstrapTurn(page)
-    const base = Date.now() - 60_000
-    const sessionId = () => state.sessionId ?? "session-under-test"
-    state.rows = [
-      savedRow("m-user", sessionId(), "user", BOOTSTRAP_PROMPT, base),
-      savedRow("m-reply", sessionId(), "assistant", BOOTSTRAP_REPLY, base + 1_000),
-    ]
-    state.total = state.rows.length
     await expect.poll(() => state.pageReads, { timeout: 60_000 }).toBeGreaterThanOrEqual(1)
     await waitForStoredHistory(page)
     await expect.poll(() => state.deltaReads, { timeout: 20_000 }).toBeGreaterThanOrEqual(1)
