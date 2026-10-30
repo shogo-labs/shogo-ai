@@ -131,15 +131,29 @@ export async function pinChatToHomeRegion(
  * `pinChatToHomeRegion` for workspace-scoped routes that resolve the
  * workspace runtime (`/api/workspaces/:workspaceId/chat`, sessions, runtime,
  * agent-proxy).
+ *
+ * `proxyBody` is for a route that read its JSON to find `workspaceId`: pass
+ * what it parsed, because the peer cannot be handed a body stream this request
+ * already consumed.
  */
-export async function pinWorkspaceToHomeRegion(c: Context, workspaceId: string): Promise<Response | null> {
-  return pinToHomeRegion(c, () => resolveWorkspaceHomeRegion(workspaceId), {})
+export async function pinWorkspaceToHomeRegion(
+  c: Context,
+  workspaceId: string,
+  opts: { proxyBody?: BodyInit | null } = {},
+): Promise<Response | null> {
+  return pinToHomeRegion(c, () => resolveWorkspaceHomeRegion(workspaceId), {
+    proxyBody: opts.proxyBody,
+  })
 }
 
 async function pinToHomeRegion(
   c: Context,
   lookupHomeRegion: () => Promise<string | null>,
-  opts: { onForeignHome?: (homeRegion: string) => void; onLocalHome?: () => void },
+  opts: {
+    onForeignHome?: (homeRegion: string) => void
+    onLocalHome?: () => void
+    proxyBody?: BodyInit | null
+  },
 ): Promise<Response | null> {
   // Single-region / local / desktop: nothing to pin.
   if (!RAW_REGION_ID) return null
@@ -174,7 +188,7 @@ async function pinToHomeRegion(
   console.log(
     `[ChatRegionPin] ${c.req.method} ${new URL(c.req.url).pathname} → proxying to home region ${homeRegion} (from ${RAW_REGION_ID})`
   )
-  const resp = await proxyToPeer(c, homeRegion)
+  const resp = await proxyToPeer(c, homeRegion, { body: opts.proxyBody })
   // proxyToPeer returns 502 when the peer is unconfigured or the cross-region
   // fetch failed. For chat, surface that as a retryable 503 so the client's
   // hardened resume handler shows Retry rather than treating it as terminal

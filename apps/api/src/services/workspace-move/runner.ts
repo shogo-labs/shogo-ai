@@ -231,6 +231,20 @@ export async function runMove(input: RunnerInput): Promise<RunnerResult> {
       }
       log(`${project.name}: ${sent} file(s) sent, ${diff.skipped} skipped`)
       await save({ progress: { ...progress, files: { projectId: project.id, cursor: sent } } })
+
+      // The files are on the target's disk; hand them to the store its runtime
+      // actually reads (S3 on cloud, a no-op on a desktop) before moving on, so
+      // a failure here fails the move instead of leaving files nobody can open.
+      const flushed = await input.target.flushFiles({
+        workspaceId: targetWorkspaceId,
+        projectId: targetProjectId,
+      })
+      for (const notice of flushed?.notices ?? []) {
+        if (!(progress.notices ?? []).includes(notice)) {
+          await save({ progress: { ...progress, notices: [...(progress.notices ?? []), notice] } })
+          log(`note: ${notice}`)
+        }
+      }
     }
 
     // ── 4. handover ───────────────────────────────────────────────

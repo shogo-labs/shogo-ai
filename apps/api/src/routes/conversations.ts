@@ -310,10 +310,14 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const sinceRaw = c.req.query('since')
     const parsed = sinceRaw ? new Date(sinceRaw) : null
     const since = parsed && !Number.isNaN(parsed.getTime()) ? parsed : undefined
-    return c.json({
-      conversations: await listConversationsForUser(auth.workspaceId, auth.userId, { since }),
-      syncedAt: new Date().toISOString(),
-    })
+    try {
+      return c.json({
+        conversations: await listConversationsForUser(auth.workspaceId, auth.userId, { since }),
+        syncedAt: new Date().toISOString(),
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
   })
 
   /** Approvals agents are waiting on that this person can answer (viewers see none). */

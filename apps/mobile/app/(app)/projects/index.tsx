@@ -81,6 +81,7 @@ import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu
 import {
   useNativePhoneWindow, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { useWorkspaceDataScope } from '../../../hooks/useWorkspaceInView'
 import { usePermissions, projectPermissionsFor } from '../../../hooks/usePermissions'
 import type { Permission } from '@shogo/authz'
 import { useDomainHttp } from '../../../contexts/domain'
@@ -311,6 +312,9 @@ export default observer(function AllProjectsPage() {
   // projects to leak into "All projects" when the user belonged to
   // multiple workspaces.
   const currentWorkspace = useActiveWorkspace()
+  // The projects listed are the workspace on screen's — a paired machine's own
+  // workspace while one is open. Permissions stay with the cloud workspace.
+  const { workspaceId: projectScopeId, everyWorkspace: listsEveryWorkspace } = useWorkspaceDataScope()
   const workspaces = store?.workspaceCollection?.all ?? []
   const {
     can: canWorkspace,
@@ -341,7 +345,7 @@ export default observer(function AllProjectsPage() {
     // with a different workspaceId than the cloud workspace. Skip the filter so
     // the remote returns all its projects; the sidebar "Recent" already works
     // this way (no workspaceId filter).
-    if (isRemoteSource) {
+    if (listsEveryWorkspace) {
       store.projectCollection
         .loadAll()
         .catch((err: any) =>
@@ -351,26 +355,26 @@ export default observer(function AllProjectsPage() {
         console.warn('[AllProjectsPage] Failed to load folders:', err),
       )
     } else {
-      if (!currentWorkspace?.id) return
+      if (!projectScopeId) return
       store.projectCollection
-        .loadAll({ workspaceId: currentWorkspace.id })
+        .loadAll({ workspaceId: projectScopeId })
         .catch((err: any) =>
           console.warn('[AllProjectsPage] Failed to load projects:', err),
         )
-      store.folderCollection?.loadAll({ workspaceId: currentWorkspace.id }).catch((err: any) =>
+      store.folderCollection?.loadAll({ workspaceId: projectScopeId }).catch((err: any) =>
         console.warn('[AllProjectsPage] Failed to load folders:', err),
       )
     }
-  }, [currentWorkspace?.id, store, isRemoteSource])
+  }, [projectScopeId, store, listsEveryWorkspace])
 
   // Load starred projects
   useEffect(() => {
     if (!user?.id || !store?.starredProjectCollection) return
-    if (!isRemoteSource && !currentWorkspace?.id) return
+    if (!listsEveryWorkspace && !projectScopeId) return
 
     const filter: Record<string, string> = { userId: user.id }
-    if (!isRemoteSource && currentWorkspace?.id) {
-      filter.workspaceId = currentWorkspace.id
+    if (!listsEveryWorkspace && projectScopeId) {
+      filter.workspaceId = projectScopeId
     }
 
     store.starredProjectCollection
@@ -381,7 +385,7 @@ export default observer(function AllProjectsPage() {
           starredAll
             .filter((s: any) => {
               if (s.userId !== user.id) return false
-              if (!isRemoteSource && currentWorkspace?.id) return s.workspaceId === currentWorkspace.id
+              if (!listsEveryWorkspace && projectScopeId) return s.workspaceId === projectScopeId
               return true
             })
             .map((s: any) => s.projectId),
@@ -389,7 +393,7 @@ export default observer(function AllProjectsPage() {
         setStarredIds(ids)
       })
       .catch((e) => console.error('[Projects] Failed to load starred projects:', e))
-  }, [currentWorkspace?.id, user?.id, store, isRemoteSource])
+  }, [projectScopeId, user?.id, store, listsEveryWorkspace])
 
   const rawProjects = store?.projectCollection?.all
   const allProjects = (Array.isArray(rawProjects) ? rawProjects : []) as Project[]
@@ -419,8 +423,8 @@ export default observer(function AllProjectsPage() {
       currentFolderId ? p.folderId === currentFolderId : !p.folderId,
     )
 
-    if (currentWorkspace?.id && !isRemoteSource) {
-      result = result.filter((p: any) => p.workspaceId === currentWorkspace.id)
+    if (projectScopeId && !listsEveryWorkspace) {
+      result = result.filter((p: any) => p.workspaceId === projectScopeId)
     }
 
     if (searchQuery) {
@@ -453,7 +457,7 @@ export default observer(function AllProjectsPage() {
     })
 
     return result
-  }, [allProjects, currentFolderId, currentWorkspace?.id, isRemoteSource, searchQuery, sortBy, visibilityFilter, statusFilter])
+  }, [allProjects, currentFolderId, projectScopeId, listsEveryWorkspace, searchQuery, sortBy, visibilityFilter, statusFilter])
 
   // Handlers
   const handleProjectPress = useCallback(
@@ -479,9 +483,9 @@ export default observer(function AllProjectsPage() {
       // Resolve the workspaceId: when remote, use the project's own workspaceId
       // (which belongs to the remote DB) instead of the cloud workspace.
       const project = allProjects.find((p) => p.id === projectId) as any
-      const wsId = isRemoteSource
+      const wsId = listsEveryWorkspace
         ? project?.workspaceId
-        : currentWorkspace?.id
+        : projectScopeId
       if (!wsId) return
       try {
         const isStarred = starredIds.has(projectId)
@@ -509,7 +513,7 @@ export default observer(function AllProjectsPage() {
         console.error('[AllProjectsPage] Failed to toggle star:', err)
       }
     },
-    [currentWorkspace?.id, user?.id, starredIds, store, allProjects, isRemoteSource],
+    [projectScopeId, user?.id, starredIds, store, allProjects, listsEveryWorkspace],
   )
 
   const [renameProject, setRenameProject] = useState<Project | null>(null)
@@ -531,12 +535,12 @@ export default observer(function AllProjectsPage() {
     try {
       await actions.updateProject(projectId, { name: newName })
       store?.projectCollection
-        ?.loadAll({ workspaceId: currentWorkspace?.id })
+        ?.loadAll({ workspaceId: projectScopeId })
         .catch((e) => console.error('[Projects] Failed to refresh after rename:', e))
     } catch (err) {
       console.error('[AllProjectsPage] Rename failed:', err)
     }
-  }, [renameProject, renameValue, actions, store, currentWorkspace?.id])
+  }, [renameProject, renameValue, actions, store, projectScopeId])
 
   const [singleDeleteProject, setSingleDeleteProject] = useState<Project | null>(null)
 
@@ -553,11 +557,11 @@ export default observer(function AllProjectsPage() {
     setSingleDeleteProject(null)
     try {
       await actions.deleteProject(projectId)
-      await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+      await store?.projectCollection?.loadAll({ workspaceId: projectScopeId })
     } catch (err) {
       console.error('[AllProjectsPage] Delete failed:', err)
     }
-  }, [singleDeleteProject, actions, store, currentWorkspace?.id])
+  }, [singleDeleteProject, actions, store, projectScopeId])
 
   const handleProjectActions = useCallback(
     (project: Project) => {
@@ -574,12 +578,12 @@ export default observer(function AllProjectsPage() {
     async (projectId: string, folderId: string) => {
       try {
         await actions.moveProjectToFolder(projectId, folderId)
-        await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+        await store?.projectCollection?.loadAll({ workspaceId: projectScopeId })
       } catch (err) {
         console.error('[AllProjectsPage] Drag to folder failed:', err)
       }
     },
-    [actions, store, currentWorkspace?.id],
+    [actions, store, projectScopeId],
   )
 
   const handleBackToRoot = useCallback(() => {
@@ -587,17 +591,17 @@ export default observer(function AllProjectsPage() {
   }, [])
 
   const handleRefresh = useCallback(async () => {
-    if (!currentWorkspace?.id || !store) return
+    if (!projectScopeId || !store) return
     setIsRefreshing(true)
     try {
-      await store.projectCollection.loadAll({ workspaceId: currentWorkspace.id })
-      await store.folderCollection?.loadAll({ workspaceId: currentWorkspace.id })
+      await store.projectCollection.loadAll({ workspaceId: projectScopeId })
+      await store.folderCollection?.loadAll({ workspaceId: projectScopeId })
     } catch (err) {
       console.warn('[AllProjectsPage] Refresh failed:', err)
     } finally {
       setIsRefreshing(false)
     }
-  }, [currentWorkspace?.id, store])
+  }, [projectScopeId, store])
 
   const sortLabel =
     sortBy === 'lastEdited'
@@ -617,16 +621,16 @@ export default observer(function AllProjectsPage() {
 
   const handleCreateFolder = useCallback(async () => {
     const name = newFolderName.trim()
-    if (!name || !currentWorkspace?.id) return
+    if (!name || !projectScopeId) return
     try {
-      await actions.createFolder(name, currentWorkspace.id, currentFolderId)
-      store?.folderCollection?.loadAll({ workspaceId: currentWorkspace.id }).catch((e) => console.error('[Projects] Failed to refresh folders:', e))
+      await actions.createFolder(name, projectScopeId, currentFolderId)
+      store?.folderCollection?.loadAll({ workspaceId: projectScopeId }).catch((e) => console.error('[Projects] Failed to refresh folders:', e))
     } catch (err) {
       console.error('[AllProjectsPage] Failed to create folder:', err)
     }
     setNewFolderName('')
     setNewFolderModalVisible(false)
-  }, [newFolderName, currentWorkspace?.id, currentFolderId, actions, store])
+  }, [newFolderName, projectScopeId, currentFolderId, actions, store])
 
   const handleRenameFolder = useCallback((folder: Folder) => {
     setRenameFolderValue(folder.name)
@@ -640,11 +644,11 @@ export default observer(function AllProjectsPage() {
     setRenameFolder(null)
     try {
       await actions.updateFolder(folderId, { name: newName })
-      await store?.folderCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+      await store?.folderCollection?.loadAll({ workspaceId: projectScopeId })
     } catch (err) {
       console.error('[AllProjectsPage] Rename folder failed:', err)
     }
-  }, [renameFolder, renameFolderValue, actions, store, currentWorkspace?.id])
+  }, [renameFolder, renameFolderValue, actions, store, projectScopeId])
 
   const handleDeleteFolder = useCallback(
     (folder: Folder) => {
@@ -676,12 +680,12 @@ export default observer(function AllProjectsPage() {
     setSingleDeleteFolder(null)
     try {
       await actions.deleteFolder(folderId)
-      await store?.folderCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+      await store?.folderCollection?.loadAll({ workspaceId: projectScopeId })
     } catch (err: any) {
       console.error('[AllProjectsPage] Delete folder failed:', err)
       Alert.alert('Delete failed', err?.message ?? 'Could not delete folder.')
     }
-  }, [singleDeleteFolder, actions, store, currentWorkspace?.id])
+  }, [singleDeleteFolder, actions, store, projectScopeId])
 
   const handleToggleSelect = useCallback(() => {
     setSelectMode((s) => !s)
@@ -734,12 +738,12 @@ export default observer(function AllProjectsPage() {
       console.error('[AllProjectsPage] Bulk delete failed:', err)
     }
     try {
-      await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+      await store?.projectCollection?.loadAll({ workspaceId: projectScopeId })
     } catch (_) {}
     setIsDeleting(false)
     setSelectedIds(new Set())
     setSelectMode(false)
-  }, [selectedIds, actions, store, currentWorkspace?.id])
+  }, [selectedIds, actions, store, projectScopeId])
 
   const handleBulkMoveToFolder = useCallback(
     async (folderId: string | null) => {
@@ -753,13 +757,13 @@ export default observer(function AllProjectsPage() {
         console.error('[AllProjectsPage] Bulk move failed:', err)
       }
       try {
-        await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+        await store?.projectCollection?.loadAll({ workspaceId: projectScopeId })
       } catch (_) {}
       setMoveToFolderModalVisible(false)
       setSelectedIds(new Set())
       setSelectMode(false)
     },
-    [selectedIds, actions, store, currentWorkspace?.id],
+    [selectedIds, actions, store, projectScopeId],
   )
 
   const [transferModalVisible, setTransferModalVisible] = useState(false)
@@ -780,17 +784,17 @@ export default observer(function AllProjectsPage() {
       console.error('[AllProjectsPage] Transfer failed:', err)
     }
     try {
-      await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+      await store?.projectCollection?.loadAll({ workspaceId: projectScopeId })
     } catch (_) {}
     setTransferModalVisible(false)
     setSelectedIds(new Set())
     setSelectMode(false)
-  }, [selectedIds, store, currentWorkspace?.id])
+  }, [selectedIds, store, projectScopeId])
 
   const handleImportCompleted = useCallback(
     (project: { id: string; name: string }) => {
-      if (!currentWorkspace?.id) return
-      store?.projectCollection?.loadAll({ workspaceId: currentWorkspace.id })
+      if (!projectScopeId) return
+      store?.projectCollection?.loadAll({ workspaceId: projectScopeId })
       toast.show({
         placement: 'top',
         duration: 3000,
@@ -803,7 +807,7 @@ export default observer(function AllProjectsPage() {
       })
       router.push({ pathname: '/(app)/projects/[id]', params: { id: project.id } } as any)
     },
-    [currentWorkspace?.id, store, router, toast],
+    [projectScopeId, store, router, toast],
   )
 
 

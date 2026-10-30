@@ -15,6 +15,7 @@ import {
   rewriteMachineWorkspaceBody,
   rewriteMachineWorkspacePath,
   createRemoteAwareHttpClient,
+  MACHINE_WORKSPACE_HEADER,
 } from '../remote-http-interceptor'
 
 describe('shouldRouteToRemote', () => {
@@ -404,7 +405,7 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
     const http = {
       get: async (path: string) => {
         calls.push(path)
-        if (path === '/api/workspaces/ws-cloud/conversations') {
+        if (path === '/api/workspaces/lw-1/conversations') {
           throw Object.assign(new Error('Conflict'), {
             status: 409,
             details: { error: { code: 'machine_copy_pending', message: 'no copy yet' } },
@@ -418,7 +419,7 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
       },
       patch: async () => ({ data: {} }),
       delete: async () => ({ data: {} }),
-      request: async () => ({ data: {} }),
+      request: async function (this: any, path: string) { return this.get(path) },
     } as any
 
     const proxy = createRemoteAwareHttpClient(http, () => ({
@@ -430,7 +431,7 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
 
     expect(answer).toEqual({ data: {} })
     expect(calls).toEqual([
-      '/api/workspaces/ws-cloud/conversations',
+      '/api/workspaces/lw-1/conversations',
       'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/workspaces/lw-1/conversations',
     ])
   })
@@ -449,7 +450,7 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
       post: async () => ({ data: {} }),
       patch: async () => ({ data: {} }),
       delete: async () => ({ data: {} }),
-      request: async () => ({ data: {} }),
+      request: async function (this: any, path: string) { return this.get(path) },
     } as any
 
     const proxy = createRemoteAwareHttpClient(http, () => ({
@@ -474,7 +475,7 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
       },
       patch: async () => ({ data: {} }),
       delete: async () => ({ data: {} }),
-      request: async () => ({ data: {} }),
+      request: async function (this: any, path: string) { return this.get(path) },
     } as any
 
     const proxy = createRemoteAwareHttpClient(http, () => ({
@@ -492,10 +493,78 @@ describe('createRemoteAwareHttpClient in a machine workspace', () => {
 
     expect(calls).toEqual([
       'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/workspaces/lw-1/agent-proxy/agent/chat',
-      '/api/workspaces/ws-cloud/conversations',
+      '/api/workspaces/lw-1/conversations',
       '/api/conversations/conv-1',
       'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/workspaces/lw-1/preview',
       'https://studio.shogo.ai/api/machines/inst-1/w/lw-1/api/conversation-files/file-1',
+    ])
+  })
+})
+
+describe('createRemoteAwareHttpClient: a cloud-copy read names the machine workspace', () => {
+  // The copy keeps the desktop's ids, so a read of it under the cloud
+  // workspace's id answers for the cloud workspace: its projects, its chats,
+  // its activity — on screen under the machine's name.
+  function proxied() {
+    const calls: string[] = []
+    const named: Array<string | undefined> = []
+    const http = {
+      get: async (path: string) => {
+        calls.push(path)
+        named.push(undefined)
+        return { data: {} }
+      },
+      post: async () => ({ data: {} }),
+      patch: async () => ({ data: {} }),
+      delete: async () => ({ data: {} }),
+      request: async (path: string, init?: { headers?: Record<string, string> }) => {
+        calls.push(path)
+        named.push(init?.headers?.[MACHINE_WORKSPACE_HEADER])
+        return { data: {} }
+      },
+    } as any
+    const proxy = createRemoteAwareHttpClient(http, () => ({
+      remoteProxyBaseUrl: 'https://studio.shogo.ai/api/machines/inst-1/w/lw-1',
+      machineWorkspaceId: 'lw-1',
+    }))
+    return { proxy, calls, named }
+  }
+
+  it('names the machine workspace on a copy read, so the cloud can read it as the machine owner', async () => {
+    const { proxy, named } = proxied()
+    await proxy.get('/api/workspaces/ws-cloud/conversations')
+    await proxy.get('/api/conversations/conv-1/messages')
+    await proxy.get('/api/billing/summary?workspaceId=ws-cloud')
+    expect(named).toEqual(['lw-1', 'lw-1', undefined])
+  })
+
+  it('swaps the cloud id in the path and the query, and stays on the cloud', async () => {
+    const { proxy, calls } = proxied()
+    await proxy.get('/api/workspaces/ws-cloud/chat-sessions')
+    await proxy.get('/api/workspaces/ws-cloud/active-chats')
+    await proxy.get('/api/projects?workspaceId=ws-cloud')
+    await proxy.get('/api/agent-tasks?workspaceId=ws-cloud&status=running')
+    expect(calls).toEqual([
+      '/api/workspaces/lw-1/chat-sessions',
+      '/api/workspaces/lw-1/active-chats',
+      '/api/projects?workspaceId=lw-1',
+      '/api/agent-tasks?workspaceId=lw-1&status=running',
+    ])
+  })
+
+  it("leaves the cloud workspace's own families and the workspace list alone", async () => {
+    const { proxy, calls } = proxied()
+    await proxy.get('/api/workspaces/ws-cloud/permissions')
+    await proxy.get('/api/workspaces/ws-cloud/instance')
+    await proxy.get('/api/billing/summary?workspaceId=ws-cloud')
+    await proxy.get('/api/workspaces/ws-cloud/visible-models')
+    await proxy.get('/api/workspaces')
+    expect(calls).toEqual([
+      '/api/workspaces/ws-cloud/permissions',
+      '/api/workspaces/ws-cloud/instance',
+      '/api/billing/summary?workspaceId=ws-cloud',
+      '/api/workspaces/ws-cloud/visible-models',
+      '/api/workspaces',
     ])
   })
 })
