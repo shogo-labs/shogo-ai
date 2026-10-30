@@ -37,7 +37,7 @@ export function ChannelTabs({
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      className="max-h-10 shrink-0 grow-0 border-b border-border"
+      className="max-h-11 shrink-0 grow-0 border-b border-border"
       contentContainerClassName="items-center gap-1 px-3"
       accessibilityRole="tablist"
       testID="channel-tabs"
@@ -68,9 +68,9 @@ export function ChannelTabs({
           accessibilityRole="button"
           accessibilityLabel="Add board"
           testID="channel-add-board"
-          className="flex-row items-center gap-1 rounded px-2 py-1.5 hover:bg-muted"
+          className="flex-row items-center gap-1 rounded px-2.5 py-2 hover:bg-muted active:bg-muted"
         >
-          <Plus size={13} className="text-muted-foreground" />
+          <Plus size={16} className="text-muted-foreground" />
           {!boards.length ? <Text className="text-xs font-medium text-muted-foreground">Add board</Text> : null}
         </Pressable>
       ) : null}
@@ -86,10 +86,10 @@ function Tab({ label, active, onPress, icon, testID }: { label: string; active: 
       aria-selected={active}
       accessibilityLabel={label}
       testID={testID}
-      className={cn('flex-row items-center gap-1.5 border-b-2 px-2 py-1.5', active ? 'border-primary' : 'border-transparent hover:bg-muted')}
+      className={cn('flex-row items-center gap-1.5 border-b-2 px-2.5 py-2', active ? 'border-primary' : 'border-transparent hover:bg-muted')}
     >
       {icon}
-      <Text className={cn('max-w-40 text-xs font-medium', active ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>{label}</Text>
+      <Text className={cn('max-w-40 text-[13px] font-medium', active ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>{label}</Text>
     </Pressable>
   )
 }

@@ -75,6 +75,16 @@ function isTokenGatedChatAttachmentPath(path: string): boolean {
   return path.startsWith('/api/chat-attachments/')
 }
 
+// A file shared into team chat (photo, video, voice note), served to an <img> /
+// <video> / RN <Image> that can present no ambient credentials: a native Image
+// sends no cookie and a link handed to the system browser has none either. The
+// `?t=` capability token is the credential and is verified in-route, which also
+// falls back to the session. Only the bare file route: `/meta` and `/text`
+// answer to a signed-in user and stay behind the gate.
+export function isTokenGatedConversationFilePath(path: string): boolean {
+  return /^\/api\/conversation-files\/[^/]+\/?$/.test(path)
+}
+
 // Profile picture bytes, served to an <img> / RN <Image> that can present no
 // ambient credentials. The token in `?t=` is the credential and is verified
 // in-route (routes/local-user.ts), so session gating must not run.
@@ -89,6 +99,7 @@ export function isGatePublicPath(path: string): boolean {
   if (isAllowedUnauthWebchatProxyPath(path)) return true
   if (isTokenGatedThumbnailPath(path)) return true
   if (isTokenGatedChatAttachmentPath(path)) return true
+  if (isTokenGatedConversationFilePath(path)) return true
   if (isTokenGatedUserAvatarPath(path)) return true
   // Heartbeat sync is called by the runtime with x-runtime-token auth
   if (path.endsWith('/heartbeat/sync')) return true

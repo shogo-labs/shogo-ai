@@ -133,9 +133,9 @@ export function mobilePushRoutes() {
 
   /**
    * Record this iPhone's PushKit VoIP token, so a huddle ring can show the
-   * native incoming-call screen while the app is closed. `null` clears it (the
-   * "Announce huddle calls" setting is off), and the device then gets the
-   * ordinary alert push instead.
+   * native incoming-call screen while the app is closed. `null` clears it when
+   * huddle announcements are off or CallKit isn't allowed for this storefront;
+   * the device then gets the ordinary alert push instead.
    */
   router.put('/mobile-push-subscriptions/voip', async (c) => {
     const userId = authUserId(c)

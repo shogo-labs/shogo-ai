@@ -6,7 +6,7 @@
  * board reloads when the server (or another teammate or agent) changes it.
  */
 import { useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import { AlertTriangle, ArrowUpDown, Bot, Clock, GitPullRequest, KanbanSquare, List, Plus, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { Mentionables } from '../../lib/team-chat-api'
@@ -37,6 +37,11 @@ import { WorkingIndicator } from './WorkingIndicator'
 
 const api = workBoardsApi()
 
+const PHONE_BOARD_MAX_WIDTH = 640
+const BOARD_GUTTER = 12
+/** How much of the next column shows at the edge, so it reads as swipeable. */
+const COLUMN_PEEK = 32
+
 export interface BoardKanbanProps {
   boardId: string
   workspaceId: string
@@ -55,6 +60,14 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
   const [mode, setMode] = useState<'board' | 'list'>('board')
   const [sort, chooseSort] = useBoardSort(boardId)
   const [sortOpen, setSortOpen] = useState(false)
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null)
+  const [page, setPage] = useState(0)
+  const window = useWindowDimensions()
+  // Phones get one column per swipe; the web board and wider panes keep the free-scrolling layout.
+  const width = size?.width ?? window.width
+  const compact = Platform.OS !== 'web' && width < PHONE_BOARD_MAX_WIDTH
+  const columnWidth = Math.max(220, width - COLUMN_PEEK - 2 * BOARD_GUTTER)
+  const columnSnap = columnWidth + BOARD_GUTTER
 
   const grouped = useMemo(() => (view ? itemsByColumn(view, sort) : new Map<string, WorkItem[]>()), [view, sort])
   const listed = useMemo(() => (view ? orderedItems(view, sort) : []), [view, sort])
@@ -115,9 +128,12 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
 
   const issues = view.health.issues
   return (
-    <View className="flex-1" testID="board-kanban">
-      <View className="flex-row items-center gap-2 border-b border-border/60 px-3 py-2">
-        <View className="flex-1 flex-row items-center gap-2 rounded-md border border-border px-2">
+    <View className="flex-1" testID="board-kanban" onLayout={(e) => {
+      const { width: w, height: h } = e.nativeEvent.layout
+      setSize((prev) => (prev && prev.width === w && prev.height === h ? prev : { width: w, height: h }))
+    }}>
+      <View className={cn('flex-row items-center gap-2 px-3', compact ? 'pb-1 pt-2.5' : 'border-b border-border/60 py-2')}>
+        <View className={cn('flex-1 flex-row items-center gap-2 rounded-md px-2', compact ? 'bg-muted/60' : 'border border-border')}>
           <Search size={14} className="text-muted-foreground" />
           <TextInput
             value={query}
@@ -125,7 +141,7 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
             placeholder={`Search ${view.board.name}`}
             placeholderTextColor="#8a8a8a"
             accessibilityLabel="Search cards"
-            className="flex-1 py-1.5 text-sm text-foreground"
+            className={cn('flex-1 text-sm text-foreground', compact ? 'py-2' : 'py-1.5')}
           />
         </View>
         <Pressable
@@ -133,12 +149,15 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
           accessibilityLabel="Sort cards"
           onPress={() => setSortOpen(true)}
           testID="board-sort"
-          className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1.5 hover:bg-muted"
+          className={cn(
+            'flex-row items-center gap-1 rounded-md',
+            compact ? 'h-9 w-9 justify-center bg-muted/60 active:bg-muted' : 'border border-border px-2 py-1.5 hover:bg-muted',
+          )}
         >
-          <ArrowUpDown size={13} className="text-muted-foreground" />
-          <Text className="text-xs text-foreground">{BOARD_SORT_LABELS[sort]}</Text>
+          <ArrowUpDown size={compact ? 15 : 13} className={compact ? 'text-foreground' : 'text-muted-foreground'} />
+          {compact ? null : <Text className="text-xs text-foreground">{BOARD_SORT_LABELS[sort]}</Text>}
         </Pressable>
-        <View className="flex-row rounded-md border border-border" accessibilityRole="tablist">
+        <View className={cn('flex-row rounded-md', compact ? 'overflow-hidden bg-muted/60' : 'border border-border')} accessibilityRole="tablist">
           {(['board', 'list'] as const).map((m) => {
             const Icon = m === 'board' ? KanbanSquare : List
             return (
@@ -148,9 +167,12 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
                 accessibilityRole="tab"
                 aria-selected={mode === m}
                 accessibilityLabel={m === 'board' ? 'Board view' : 'List view'}
-                className={cn('px-2 py-1.5', mode === m ? 'bg-muted' : 'hover:bg-muted/50')}
+                className={cn(
+                  compact ? 'h-9 w-9 items-center justify-center rounded-md' : 'px-2 py-1.5',
+                  mode === m ? (compact ? 'bg-primary/15' : 'bg-muted') : 'hover:bg-muted/50',
+                )}
               >
-                <Icon size={14} className={mode === m ? 'text-foreground' : 'text-muted-foreground'} />
+                <Icon size={14} className={mode === m ? (compact ? 'text-primary' : 'text-foreground') : 'text-muted-foreground'} />
               </Pressable>
             )
           })}
@@ -192,10 +214,26 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
           ))}
         </ScrollView>
       ) : (
-        <ScrollView horizontal className="flex-1" contentContainerClassName="gap-3 p-3" showsHorizontalScrollIndicator>
+        <ScrollView
+          horizontal
+          className="flex-1"
+          contentContainerClassName={compact ? 'items-start gap-3 px-3 pb-2 pt-2' : 'gap-3 p-3'}
+          showsHorizontalScrollIndicator={!compact}
+          snapToInterval={compact ? columnSnap : undefined}
+          snapToAlignment="start"
+          decelerationRate={compact ? 'fast' : 'normal'}
+          disableIntervalMomentum={compact}
+          scrollEventThrottle={16}
+          onScroll={compact ? (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+            const next = Math.round(e.nativeEvent.contentOffset.x / columnSnap)
+            setPage((cur) => (cur === next ? cur : Math.max(0, Math.min(view.board.columns.length - 1, next))))
+          } : undefined}
+        >
           {view.board.columns.map((column) => (
             <Column
               key={column.id}
+              fixedWidth={compact ? columnWidth : undefined}
+              maxHeight={compact && size ? Math.max(240, size.height - PHONE_BOARD_CHROME) : undefined}
               column={column}
               items={grouped.get(column.id) ?? []}
               sort={sort}
@@ -218,6 +256,13 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
           ))}
         </ScrollView>
       )}
+      {compact && mode === 'board' && view.board.columns.length > 1 ? (
+        <View className="flex-row items-center justify-center gap-1.5 pb-2" accessibilityLabel={`Column ${page + 1} of ${view.board.columns.length}`} testID="board-pager">
+          {view.board.columns.map((column, i) => (
+            <View key={column.id} className={cn('h-1.5 rounded-full', i === page ? 'w-4 bg-primary' : 'w-1.5 bg-muted-foreground/30')} />
+          ))}
+        </View>
+      ) : null}
       {sortOpen ? (
         <OptionSheet
           title="Sort cards"
@@ -244,7 +289,12 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
   )
 }
 
+/** Room the phone board keeps free of columns: toolbar, gutters and the page dots. */
+const PHONE_BOARD_CHROME = 78
+
 interface ColumnProps {
+  fixedWidth?: number
+  maxHeight?: number
   column: BoardColumn
   items: WorkItem[]
   sort: BoardSort
@@ -274,6 +324,8 @@ function Column(props: ColumnProps) {
     <Lane
       title={column.name}
       testID={`board-column-${column.name}`}
+      fixedWidth={props.fixedWidth}
+      maxHeight={props.maxHeight}
       count={column.wipLimit ? `${badges.count}/${column.wipLimit}` : badges.count}
       countLabel={column.wipLimit ? `${badges.count} of ${column.wipLimit} cards` : `${badges.count} cards`}
       countClassName={badges.wip === 'over' ? 'font-semibold text-destructive' : badges.wip === 'at' ? 'text-amber-600' : undefined}
@@ -326,6 +378,7 @@ function Column(props: ColumnProps) {
               mentionables={props.mentionables}
               selected={props.selectedItemId === item.id}
               faded={props.dragging === item.id}
+              compact={!!props.fixedWidth}
               onPress={() => props.onOpen(item)}
               onLongPress={() => props.onMenu(item)}
             />
@@ -336,12 +389,14 @@ function Column(props: ColumnProps) {
   )
 }
 
-export function CardTile({ item, issues, mentionables, selected, faded, onPress, onLongPress }: {
+export function CardTile({ item, issues, mentionables, selected, faded, compact = false, onPress, onLongPress }: {
   item: WorkItem
   issues: HealthIssue[]
   mentionables: Mentionables | null
   selected: boolean
   faded: boolean
+  /** Phone board: age rides the key line and an empty chip row is dropped. */
+  compact?: boolean
   onPress: () => void
   onLongPress: () => void
 }) {
@@ -359,6 +414,7 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
       testID={`board-card-${item.key}`}
       className={cn(
         'gap-1.5 rounded-md border bg-card p-2.5 hover:border-primary/40',
+        compact && 'active:bg-muted/60',
         selected ? 'border-primary' : working?.length ? 'border-primary/40' : 'border-border',
         faded && 'opacity-40',
       )}
@@ -369,9 +425,10 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
         <View className="flex-1" />
         <WorkingIndicator working={working} testID={`board-card-working-${item.key}`} className="shrink" />
         {occurrences ? <Text className="text-[11px] text-muted-foreground">×{occurrences}</Text> : null}
+        {compact && item.columnEnteredAt ? <Text className="text-[11px] text-muted-foreground">{age(item.columnEnteredAt)}</Text> : null}
       </View>
       <Text className="text-sm text-foreground" numberOfLines={3}>{item.title}</Text>
-      <View className="flex-row flex-wrap items-center gap-1.5">
+      <View className={cn('flex-row flex-wrap items-center gap-1.5', compact && !item.pr && !who && !issues.length && 'hidden')}>
         {item.pr ? <PullRequestChip pr={item.pr} /> : null}
         {who ? (
           <View className="flex-row items-center gap-1 rounded bg-muted px-1.5 py-0.5">
@@ -379,7 +436,7 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
             <Text className="max-w-32 text-[11px] text-muted-foreground" numberOfLines={1}>{who}</Text>
           </View>
         ) : null}
-        {item.columnEnteredAt ? <Text className="text-[11px] text-muted-foreground">{age(item.columnEnteredAt)}</Text> : null}
+        {!compact && item.columnEnteredAt ? <Text className="text-[11px] text-muted-foreground">{age(item.columnEnteredAt)}</Text> : null}
         {issues.map((issue) => (
           <View key={issue.type} className="rounded bg-destructive/10 px-1.5 py-0.5" accessibilityLabel={issue.detail}>
             <Text className="text-[10px] font-medium text-destructive">{ISSUE_LABEL[issue.type]}</Text>

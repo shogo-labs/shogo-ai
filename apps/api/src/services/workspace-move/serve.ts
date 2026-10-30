@@ -26,11 +26,11 @@ import {
   readCloudWorkspaceRootFile,
 } from './cloud'
 import { moveIgnoreRules } from './ignores'
-import { moveDirFor, walkMoveFiles } from './files'
+import { moveDirFor, walkMoveFiles, assertSafeRelPath } from './files'
 import { collectMoveRows } from './plan'
 import { rewriteRowForMove, shouldMoveModel } from './records'
 import type { HandoverKind } from './handover'
-import { WORKSPACE_ROOT_ID, type MoveFileEntry, type MoveFileManifest, type MoveRow, type MoveSelection } from './types'
+import { WORKSPACE_ROOT_ID, WorkspaceMoveError, type MoveFileEntry, type MoveFileManifest, type MoveRow, type MoveSelection } from './types'
 
 export const SERVE_CHUNK = 500
 
@@ -112,6 +112,12 @@ export async function* streamSourceRecords(
  * The workspace root is a pseudo-project (`WORKSPACE_ROOT_ID`) that lives at
  * `.workspace-roots/<id>` rather than under its own name, so it resolves through
  * `moveDirFor` and never consults `ProjectFolder`.
+ *
+ * The `ProjectFolder` lookup is scoped to the workspace as well as the project:
+ * a folder-linked checkout is a path on *this* machine, and a `projectId` that
+ * belongs somewhere else must not redirect a read to it (SEC-18). The route has
+ * already refused that id via `requireMoveProject`; this is the same check at the
+ * point the path is built.
  */
 export async function sourceProjectDir(
   db: any,
@@ -123,10 +129,13 @@ export async function sourceProjectDir(
     return { dir: moveDirFor({ projectId, workspaceId, base }), folderLinked: false }
   }
   const folder: { path: string } | null = await db.projectFolder
-    .findFirst({ where: { projectId }, select: { path: true } })
+    .findFirst({
+      where: { projectId, project: { workspaceId } },
+      select: { path: true },
+    })
     .catch(() => null)
   if (folder?.path) return { dir: folder.path, folderLinked: true }
-  return { dir: join(base, projectId), folderLinked: false }
+  return { dir: moveDirFor({ projectId, workspaceId, base }), folderLinked: false }
 }
 
 /** Every project id of a workspace, for the sources that need the whole set. */
@@ -168,9 +177,17 @@ export function readSourceFileBytes(
   dir: string,
   relPath: string,
 ): Uint8Array {
-  const safe = relPath.replace(/\\/g, '/').replace(/^\/+/, '')
-  if (!safe || safe.split('/').includes('..')) throw new Error(`unsafe path: ${relPath.slice(0, 120)}`)
-  return new Uint8Array(readFileSync(join(dir, safe)))
+  let safe: string
+  try {
+    safe = assertSafeRelPath(relPath)
+  } catch {
+    throw new WorkspaceMoveError('That file path is not allowed.', 400, 'workspace_move_unsafe_path')
+  }
+  try {
+    return new Uint8Array(readFileSync(join(dir, safe)))
+  } catch {
+    throw new WorkspaceMoveError(`No such file in this project: ${safe.slice(0, 120)}`, 404, 'workspace_move_file_not_found')
+  }
 }
 
 /**
@@ -205,13 +222,16 @@ export async function readSourceFile(
 
 export async function setEnabledAtSource(
   db: any,
-  kind: HandoverKind,
-  ids: string[],
-  enabled: boolean,
+  input: { workspaceId: string; kind: HandoverKind; ids: string[]; enabled: boolean },
 ): Promise<void> {
-  if (!ids.length) return
-  const model = kind === 'schedule' ? 'agentSchedule' : 'eventSubscription'
-  await db[model].updateMany({ where: { id: { in: ids } }, data: { enabled } })
+  if (!input.ids.length) return
+  const model = input.kind === 'schedule' ? 'agentSchedule' : 'eventSubscription'
+  // Scoped to the workspace: an id from anywhere in the instance used to flip a
+  // schedule or trigger the caller has no business touching (SEC-18).
+  await db[model].updateMany({
+    where: { id: { in: input.ids }, workspaceId: input.workspaceId },
+    data: { enabled: input.enabled },
+  })
 }
 
 /**

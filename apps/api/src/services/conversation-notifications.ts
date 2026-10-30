@@ -213,6 +213,25 @@ async function notificationText(text: string, workspaceId: string): Promise<stri
   return markdownToPlainText(renderMentionsAsText(text, await loadMentionNames(workspaceId, [text])))
 }
 
+/** First name, or the email when a person has none. */
+function firstNameOf(user: { name?: string | null; email?: string | null } | null | undefined): string {
+  return (user?.name?.trim() || user?.email || '').split(' ')[0]
+}
+
+const GROUP_NAMES_SHOWN = 2
+
+/**
+ * A group DM has no name, so its banner names the other people in it, the way the
+ * sidebar lists them: everyone but the sender and the person being alerted.
+ * Kept short because iOS cuts a push title off at about 30 characters.
+ */
+function groupDmLabel(members: Array<{ userId: string; first: string }>, authorUserId: string | null, recipientId: string): string | null {
+  const others = members.filter((m) => m.userId !== authorUserId && m.userId !== recipientId && m.first).map((m) => m.first)
+  if (!others.length) return null
+  const rest = others.length - GROUP_NAMES_SHOWN
+  return `group with ${others.slice(0, GROUP_NAMES_SHOWN).join(', ')}${rest > 0 ? ` +${rest}` : ''}`
+}
+
 async function describe(result: PostMessageResult) {
   const { row, conversation } = result
   const author = row.authorType === 'agent'
@@ -221,9 +240,24 @@ async function describe(result: PostMessageResult) {
   const text = await notificationText(row.text ?? '', conversation.workspaceId)
   const attachments = row.attachments?.length ? `📎 ${row.attachments.length} file${row.attachments.length > 1 ? 's' : ''}` : ''
   const body = (text || attachments || 'New message').slice(0, BODY_CHARS)
+  const verb = row.threadRootId ? 'replied in' : 'in'
+  if (conversation.kind === 'group_dm') {
+    const members: Array<{ userId: string; first: string }> = (await db.conversationMember.findMany({
+      where: { conversationId: conversation.id, memberType: 'user', userId: { not: null } },
+      select: { userId: true, user: { select: { name: true, email: true } } },
+      orderBy: { createdAt: 'asc' },
+    })).map((m: any) => ({ userId: m.userId, first: firstNameOf(m.user) }))
+    const who = members.find((m) => m.userId === row.authorUserId)?.first || author
+    // Each person sees the group as the others in it, so the title depends on who is alerted.
+    const titleFor = (userId: string) => {
+      const where = groupDmLabel(members, row.authorUserId ?? null, userId)
+      return where ? `${who} ${verb} ${where}` : author
+    }
+    return { titleFor, body }
+  }
   const where = isDirect(conversation.kind) ? null : `#${conversation.slug ?? conversation.name ?? 'channel'}`
-  const title = !where ? author : row.threadRootId ? `${author} replied in ${where}` : `${author} in ${where}`
-  return { title, body }
+  const title = !where ? author : `${author} ${verb} ${where}`
+  return { titleFor: () => title, body }
 }
 
 export async function notifyForMessage(result: PostMessageResult): Promise<NotificationRecipient[]> {
@@ -231,7 +265,7 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
   const recipients = await resolveRecipients(result)
   if (!recipients.length) return []
   const { row, conversation } = result
-  const { title, body } = await describe(result)
+  const { titleFor, body } = await describe(result)
   const presence = await getPresence(conversation.workspaceId, recipients.map((r) => r.userId))
   const approval = approvalPushFor(row)
   const data = {
@@ -250,12 +284,13 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
       conversationId: conversation.id,
       messageId: row.id,
       actorUserId: row.authorUserId ?? null,
-      title,
+      title: titleFor(r.userId),
       preview: body,
     })))
 
   for (const { userId, reason, silenced, messageSound, mobilePushDelay = 'inactive' } of recipients) {
     if (silenced) continue
+    const title = titleFor(userId)
     // The phone plays the system sound only when the person wants message sounds.
     const sound: 'default' | null = messageSound === 'off' ? null : 'default'
     // Every open client gets the alert and decides locally whether to show it

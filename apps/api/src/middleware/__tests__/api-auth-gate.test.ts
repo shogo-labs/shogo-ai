@@ -47,6 +47,19 @@ describe('apiAuthGate', () => {
     expect(isGatePublicPath('/api/projects/p1/agent-proxy/agent/channels/webchat/widget.js')).toBe(true)
   })
 
+  test('a team chat file link works without a session, but its sub-routes do not', async () => {
+    expect(isGatePublicPath('/api/conversation-files/0ef9420d-8535-48f7-9d02-0a9323b120ba')).toBe(true)
+    expect(isGatePublicPath('/api/conversation-files/0ef9420d-8535-48f7-9d02-0a9323b120ba/meta')).toBe(false)
+    expect(isGatePublicPath('/api/conversation-files/0ef9420d-8535-48f7-9d02-0a9323b120ba/text')).toBe(false)
+    expect(isGatePublicPath('/api/conversation-files')).toBe(false)
+    expect(isGatePublicPath('/api/conversations/c1/files')).toBe(false)
+
+    const res = await buildApp().fetch(new Request('http://x/api/conversation-files/f1?t=abc'))
+    expect(res.status).toBe(200)
+    const meta = await buildApp().fetch(new Request('http://x/api/conversation-files/f1/meta'))
+    expect(meta.status).toBe(401)
+  })
+
   test('does not duplicate requireAuth public prefixes in the gate-only list', () => {
     const shared = GATE_PUBLIC_PREFIXES.filter((p) => PUBLIC_PREFIXES.includes(p))
     expect(shared).toEqual([])

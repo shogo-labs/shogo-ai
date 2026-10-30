@@ -31,7 +31,8 @@ const TRAIL_TOKENS = 80
 const soft = expect.configure({ soft: true })
 
 // Needs the API pointed at the fake model, which would change every other
-// local spec; CI runs it in its own job (ci.yml "E2E (chat resume)").
+// local spec; CI runs it in two jobs (ci.yml "E2E (chat resume)" and
+// "E2E (chat resume windows)"), split by grep so each fits its cap.
 test.skip(
   process.env.E2E_FAKE_LLM_STACK !== "1",
   "needs an API started with LOCAL_LLM_BASE_URL pointing at the fake model (see the header); set E2E_FAKE_LLM_STACK=1",
@@ -206,6 +207,34 @@ async function newWindow(sessionId: string): Promise<Page> {
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: throttle })
   }
   await openChat(page, sessionId)
+  return page
+}
+
+/** True while the model is still streaming turn `tag` (not finished, not hung up on). */
+function turnLive(tag: string): boolean {
+  const turn = llm.turn(tag)
+  return Boolean(turn) && !turn!.finishedAt && !turn!.clientClosedAt
+}
+
+/**
+ * Opens a window while a turn streams, and records how long that took and
+ * whether the turn was still running when the window got there.
+ *
+ * A CI window open was measured at ~24 s and is occasionally slower. A lead
+ * turn that finishes first leaves nothing to attach to, so the scenario under
+ * test never happens and the test reds on a soft assertion — three times over
+ * on a loaded runner, while passing in 30 s locally (SHO-251). The console
+ * line lands in the raw job log, so even a job that is cancelled at its cap
+ * says why.
+ */
+async function newWindowDuring(sessionId: string, lead: string, label: string): Promise<Page> {
+  const started = Date.now()
+  const page = await newWindow(sessionId)
+  const openMs = Date.now() - started
+  const live = turnLive(lead)
+  const streamed = llm.turn(lead)?.sentAt.length ?? 0
+  console.log(`[SHO-251] "${label}": window up in ${openMs}ms; turn "${lead}" still running: ${live} (${streamed} tokens out)`)
+  soft(live, `${label}: the turn "${lead}" was still running when the window finished opening (window took ${openMs}ms, the model had sent ${streamed} tokens)`).toBe(true)
   return page
 }
 
@@ -487,9 +516,11 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     const sid = await createChat("opened mid-turn")
     const lead = "ma"
     const leadN = 900
-    await startTurnElsewhere(sid, `${marker("long", lead, leadN, { ms: 25 })} elsewhere`)
+    // 900 × 100 ms = 90 s, ~4× the ~24 s a CI window open takes, so the lead is
+    // still streaming when the window arrives (SHO-251).
+    await startTurnElsewhere(sid, `${marker("long", lead, leadN, { ms: 100 })} elsewhere`)
     await llm.waitForTokens(lead, 60, 30_000)
-    const page = await newWindow(sid)
+    const page = await newWindowDuring(sid, lead, "opened mid-turn")
     await expectFollows(page, lead, "opened mid-turn")
     await send(page, `${marker("long", "mb", 60)} follow-up`)
     await expectQueuedBehindLiveTurn(page, sid, lead, leadN, "mb", 60, "opened mid-turn, then sends")
@@ -528,11 +559,12 @@ test.describe("chat resumes a live turn it is not attached to", () => {
   test("the turn-status probe fails when the window opens, then the user sends a message", async () => {
     const sid = await createChat("probe fails")
     const lead = "fa"
-    // A CI window open takes ~24 s (cold Expo bundle + runtime warm), so a
-    // 900-token (22.5 s) lead is often already over when the probe runs — and
-    // then there is nothing live to resume. 1800 × 25 ms = 45 s ≈ 2× that open.
+    // A CI window open takes ~24 s (cold Expo bundle + runtime warm) and is
+    // occasionally slower, so a 900-token (22.5 s) lead is often already over
+    // when the probe runs — and then there is nothing live to resume.
+    // 1800 × 50 ms = 90 s ≈ 4× that open (SHO-251).
     const leadN = 1800
-    await startTurnElsewhere(sid, `${marker("long", lead, leadN, { ms: 25 })} elsewhere`)
+    await startTurnElsewhere(sid, `${marker("long", lead, leadN, { ms: 50 })} elsewhere`)
     await llm.waitForTokens(lead, 60, 30_000)
     const page = await context.newPage()
     let failed = 0
@@ -540,7 +572,10 @@ test.describe("chat resumes a live turn it is not attached to", () => {
       if (failed++ < 1) return route.fulfill({ status: 503, body: "unavailable" })
       return route.continue()
     })
+    const openedAt = Date.now()
     await openChat(page, sid)
+    console.log(`[SHO-251] "probe failed": window up in ${Date.now() - openedAt}ms; turn "${lead}" still running: ${turnLive(lead)}`)
+    soft(turnLive(lead), `"probe failed": the turn "${lead}" was still running when the window finished opening`).toBe(true)
     await expectFollows(page, lead, "opened while the probe failed once")
     await send(page, `${marker("long", "fb", 60)} follow-up`)
     await expectQueuedBehindLiveTurn(page, sid, lead, leadN, "fb", 60, "probe failed, then sends")
@@ -580,7 +615,9 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     const page = await newWindow(sid)
     const lead = "wa"
     const leadN = 900
-    await send(page, `${marker("long", lead, leadN, { ms: 25 })} go`)
+    // 900 × 100 ms = 90 s: the switch, the goBack and the re-render have to fit
+    // inside the turn or there is nothing live to come back to (SHO-251).
+    await send(page, `${marker("long", lead, leadN, { ms: 100 })} go`)
     await llm.waitForTokens(lead, 60, 30_000)
     await expectFollows(page, lead, "before switching")
 
@@ -589,8 +626,11 @@ test.describe("chat resumes a live turn it is not attached to", () => {
       window.dispatchEvent(new PopStateEvent("popstate"))
     }, `/projects/${projectOf.get(other)}`)
     await page.waitForTimeout(1500)
+    const switchedAt = Date.now()
     await page.goBack()
     await expect(composer(page)).toBeVisible()
+    console.log(`[SHO-251] "switched back": back after ${Date.now() - switchedAt}ms; turn "${lead}" still running: ${turnLive(lead)}`)
+    soft(turnLive(lead), `"switched back": the turn "${lead}" was still running when the window came back`).toBe(true)
     await expectFollows(page, lead, "after switching back")
     await send(page, `${marker("long", "wb", 60)} follow-up`)
     await expectQueuedBehindLiveTurn(page, sid, lead, leadN, "wb", 60, "switched back, then sends")
@@ -602,7 +642,9 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     const page = await newWindow(sid)
     const lead = "la"
     const leadN = 900
-    await send(page, `${marker("long", lead, leadN, { ms: 25 })} go`)
+    // 900 × 100 ms = 90 s: leaving the project, the goBack and a re-render have
+    // to fit inside the turn or there is nothing live to come back to (SHO-251).
+    await send(page, `${marker("long", lead, leadN, { ms: 100 })} go`)
     await llm.waitForTokens(lead, 60, 30_000)
     await page.evaluate(() => {
       window.history.pushState({}, "", "/")
@@ -610,8 +652,11 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     })
     await expect(composer(page)).toHaveCount(0, { timeout: 15_000 })
     await page.waitForTimeout(1500)
+    const leftAt = Date.now()
     await page.goBack()
     await expect(composer(page)).toBeVisible({ timeout: 60_000 })
+    console.log(`[SHO-251] "came back": back after ${Date.now() - leftAt}ms; turn "${lead}" still running: ${turnLive(lead)}`)
+    soft(turnLive(lead), `"came back": the turn "${lead}" was still running when the window came back`).toBe(true)
     await expectFollows(page, lead, "after coming back")
     await send(page, `${marker("long", "lb", 60)} follow-up`)
     await expectQueuedBehindLiveTurn(page, sid, lead, leadN, "lb", 60, "came back, then sends")

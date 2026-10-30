@@ -206,8 +206,11 @@ function useFullscreen(ref: React.RefObject<View | null>) {
   const toggle = useCallback(() => {
     if (!supported) return
     const el = ref.current as unknown as HTMLElement | null
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
-    else void el?.requestFullscreen?.().catch(() => {})
+    // A refusal used to vanish silently; say so instead, so a denied
+    // `fullscreen` permission shows up in the console log (SHO-262).
+    const refused = (err: unknown) => console.warn('[fullscreen] request refused', err)
+    if (document.fullscreenElement) void document.exitFullscreen().catch(refused)
+    else void el?.requestFullscreen?.().catch(refused)
   }, [supported, ref])
   return { supported, active, toggle }
 }

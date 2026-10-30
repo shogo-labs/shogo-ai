@@ -2716,13 +2716,15 @@ export function Workbench({
       zenPanelRestoreRef.current = ideBottomPanelStore.getState().open;
       if (zenPanelRestoreRef.current) ideBottomPanelStore.setOpen(false);
       try {
-        void document.documentElement.requestFullscreen?.().catch(() => {});
+        // A refused `fullscreen` permission rejects this promise; log it rather
+        // than swallowing it so zen mode's failure is visible (SHO-262).
+        void document.documentElement.requestFullscreen?.().catch((err) => console.warn('[fullscreen] request refused', err));
       } catch { /* not allowed without a user gesture */ }
     } else if (zenPanelRestoreRef.current !== null) {
       if (zenPanelRestoreRef.current) ideBottomPanelStore.setOpen(true);
       zenPanelRestoreRef.current = null;
       try {
-        if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {});
+        if (document.fullscreenElement) void document.exitFullscreen?.().catch((err) => console.warn('[fullscreen] request refused', err));
       } catch { /* ignore */ }
     }
   }, [zen.active]);

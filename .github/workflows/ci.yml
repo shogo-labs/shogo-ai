@@ -576,25 +576,45 @@ jobs:
           - { name: 'E2E (local mode) (1/3)', shard: '1/3' }
           - { name: 'E2E (local mode) (2/3)', shard: '2/3' }
           - { name: 'E2E (local mode) (3/3)', shard: '3/3' }
-          # chat-resume-on-send needs the API pointed at its fake model, which
-          # would change every other spec, so it gets a stack of its own.
-          # chat-stop-then-send needs the same stack (stop a turn mid-stream,
-          # then send) and runs in the same job, one worker at a time.
-          # chat-task-resume needs it too: a background exec that finishes has
-          # to wake the chat with no user input.
-          # chat-background-tasks reads the dock a background task left behind
-          # after navigating away, a reload and a restart of the panel.
-          # chat-task-thread-pane presses a dock row and reads the side window
-          # it opens (its log, never blank) without leaving the chat.
-          # chat-task-wake-live-attach asserts the other half of the wake: the
-          # window that did NOT post the turn renders it with no reload.
-          # chat-task-wake-refocus covers the window that was in the background
-          # while the wake ran: one catch-up on refocus, then quiet again.
-          # turn-boundary-context needs the fake model to drive six tool rounds
-          # and then read the SECOND turn's request body off the fake server, so
-          # it belongs to this stack; without E2E_FAKE_LLM_STACK it skips, which
-          # is how a spec that never runs hides in the shard jobs (SHO-122).
-          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send chat-stop-then-send chat-task-resume chat-background-tasks chat-task-thread-pane chat-task-wake-live-attach chat-task-wake-refocus turn-boundary-context' }
+          # These eight specs all need the API pointed at the fake model, which
+          # would change every other spec, so they get stacks of their own.
+          # They are FOUR jobs, not one (SHO-251): on one worker, all 27 tests
+          # could not finish inside the cap, so every run was cancelled at 35
+          # min — still inside the first file, `chat-resume-on-send`, which is
+          # 14 of the 27 tests at a 240 s per-test timeout. Nothing hung; the
+          # shard was simply bigger than its timeout, and with `retries: 2` a
+          # single flaky scenario costs ~7 min (measured, SHO-251).
+          # `chat-resume-on-send` holds two describes that differ 3:1 in cost,
+          # so the jobs below select one each with `grep`. A grep that matches
+          # nothing fails the job ("no tests found"), so a renamed describe
+          # cannot quietly drop coverage.
+          #
+          # chat resume — the probe/resume scenarios, the expensive half of
+          # `chat-resume-on-send`. Default 35 min cap on purpose: green it
+          # measures ~15 min (43%), and a run that reds on one scenario spends
+          # ~10 min on its retries and still has to CONCLUDE and report — at a
+          # 30 min cap it was cancelled at 30m39s, which is the failure mode
+          # this card exists to end (SHO-251).
+          - { name: 'E2E (chat resume)', spec: 'chat-resume-on-send', grep: 'chat resumes a live turn it is not attached to' }
+          # chat resume windows — two windows on one chat, plus Stop-then-send
+          # (stop a turn mid-stream, then send).
+          - { name: 'E2E (chat resume windows)', spec: 'chat-resume-on-send chat-stop-then-send', grep: 'two windows on one chat|Stop, then send' }
+          # chat task wake — the background-task wake path, end to end:
+          # chat-task-resume (a finished background exec wakes the chat with no
+          # user input), chat-task-wake-live-attach (the window that did NOT
+          # post the turn renders it with no reload) and chat-task-wake-refocus
+          # (the window that was in the background while the wake ran: one
+          # catch-up on refocus, then quiet again).
+          - { name: 'E2E (chat task wake)', spec: 'chat-task-resume chat-task-wake-live-attach chat-task-wake-refocus' }
+          # chat task dock — what a background task leaves on screen:
+          # chat-background-tasks (the dock survives navigating away, a reload
+          # and a restart of the panel), chat-task-thread-pane (a dock row opens
+          # its side window, its log never blank) and turn-boundary-context,
+          # which needs the fake model to drive six tool rounds and then read
+          # the SECOND turn's request body off the fake server. Without
+          # E2E_FAKE_LLM_STACK these skip, which is how a spec that never runs
+          # hides in the shard jobs (SHO-122).
+          - { name: 'E2E (chat task dock)', spec: 'chat-background-tasks chat-task-thread-pane turn-boundary-context' }
           # machine-workspace-agent-turn-live is not a chat spec, but it needs
           # the same fake-model stack and nothing else: its SHO-130 AC 5
           # assertion reads the continuation request's tool-result text, and its
@@ -604,31 +624,36 @@ jobs:
           # another job's spec list either: with `workers: 1` Playwright runs
           # files in filesystem order, so whatever sits in that list runs after
           # the flaky ones — and their retries starve the tail of the job
-          # (`E2E (chat resume)` finished at 34m37s of its 35m cap, and #1621
-          # was cancelled at the cap, SHO-133). Its own entry gets its own
-          # stack and its own timeout.
+          # (#1621 was cancelled at the cap, SHO-133; the chat-resume job was
+          # cancelled on every run until it was split, SHO-251). Its own entry
+          # gets its own stack and its own timeout.
           - { name: 'E2E (machine agent turn)', spec: 'machine-workspace-agent-turn-live' }
           # chat-context-survives-idle (SHO-137) drives a wake turn into a
           # runtime that has never seen the chat. It gets its own entry rather
-          # than joining the job above: that one runs 1 worker at a time and
-          # already finishes at 34m37s of a 35m cap.
+          # than joining a chat job: those run 1 worker at a time, and a spec
+          # that has to restart a runtime would put the whole job past its cap.
           - { name: 'E2E (chat context)', spec: 'chat-context-survives-idle' }
           # chat-task-interrupted-restart (SHO-141) runs a background task, then
           # restarts the host runtime under it via /api/local/system/restart-runtime,
-          # so it needs the fake-model stack. Own entry, not a place in the list
-          # above: that job is already at 34m37s of its 35m cap (SHO-133).
+          # so it needs the fake-model stack. Own entry: restarting a runtime
+          # under a shared job costs every spec after it.
           - { name: 'E2E (task restart)', spec: 'chat-task-interrupted-restart' }
           # agent-model-truth (SHO-145) seeds two `local` models into the stack's
           # SQLite file and checks /ai/v1/models against the runtime's model
-          # cache entry by entry, so it needs the fake-model stack. Own entry:
-          # the chat-resume job already runs to its cap.
+          # cache entry by entry, so it needs the fake-model stack. Own entry,
+          # not a place in a chat job: it rewrites the models the other specs'
+          # stack would be reading.
           - { name: 'E2E (agent model truth)', spec: 'agent-model-truth' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
     # of this cap (23:55–01:25Z on 2026-10-20, three entries, ~75 min). Measured
-    # on a green PR run: local shards 11–13 min, chat resume 24 min, so 35 keeps
-    # ~10 min of headroom and still halves the worst case.
+    # on a green PR run: local shards 11–13 min, so 35 keeps ~10 min of headroom
+    # and still halves the worst case. One number for the whole matrix on
+    # purpose: the chat jobs measure 15, 7, 9 and 5 min on CI (SHO-251), all
+    # well under 60% of it, and a per-entry cap via `${{ matrix.timeout }}`
+    # turned out to mean NO cap at all for entries without the key — a job ran
+    # 39 min until its run was superseded. Keep this a literal.
     timeout-minutes: 35
 
     steps:
@@ -701,13 +726,22 @@ jobs:
           LOCAL_LLM_BASE_URL: http://127.0.0.1:18765
           LOCAL_LLM_BASIC_MODEL: fake-stream
           LOCAL_LLM_ADVANCED_MODEL: fake-stream
-        run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium ${{ matrix.spec }}
+          # One file can hold describes that cost 3:1, so an entry may take a
+          # `grep` to run one of them (SHO-251). Empty for most entries.
+          E2E_GREP: ${{ matrix.grep }}
+        run: |
+          grep_arg=()
+          if [ -n "$E2E_GREP" ]; then grep_arg=(--grep "$E2E_GREP"); fi
+          npx playwright test --config e2e/local/playwright.config.ts --project=chromium "${grep_arg[@]}" ${{ matrix.spec }}
 
       - name: Upload report
-        if: failure()
+        # `cancelled()` too: a job killed at its cap never reaches Playwright's
+        # end-of-run summary, so the report is the only place its failure
+        # messages exist (SHO-251).
+        if: failure() || cancelled()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: e2e-local-report-${{ matrix.spec || strategy.job-index }}
+          name: e2e-local-report-${{ strategy.job-index }}
           path: |
             test-results/e2e-local-report
             test-results/e2e-local-artifacts

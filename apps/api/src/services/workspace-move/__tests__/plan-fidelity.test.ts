@@ -136,7 +136,7 @@ describe('records phase streams only rows the target can insert', () => {
 // ── 2. A resume is the same job the plan was built for ─────────────────────
 
 describe('a resumed job keeps the identity its plan was built with', () => {
-  const plan = { target: { name: 'Moved', instanceSize: 'small' } }
+  const plan = { target: { name: 'Moved' } }
 
   test('the row wins over the caller, which is what a resume does not have', () => {
     const row = { requesterId: 'admin-1', isOwner: false, ownerUserId: 'owner-1', plan }
@@ -144,7 +144,6 @@ describe('a resumed job keeps the identity its plan was built with', () => {
       requesterId: 'admin-1',
       isOwner: false,
       ownerUserId: 'owner-1',
-      instanceSize: 'small',
     })
   })
 
@@ -155,17 +154,17 @@ describe('a resumed job keeps the identity its plan was built with', () => {
     expect(resumed.isOwner).toBe(false)
   })
 
-  test('the target size comes from the frozen plan, not the caller', () => {
-    expect(moveJobContext({ plan }, { instanceSize: 'large' }).instanceSize).toBe('small')
+  test('the job carries no instance size: the target create picks its own (SHO-256)', () => {
+    const ctx = moveJobContext({ plan: { target: { name: 'Moved' } } })
+    expect('instanceSize' in ctx).toBe(false)
   })
 
   test('the caller is a fallback only for rows written before the columns existed', () => {
     const legacy = { plan: { target: { name: 'Moved' } } }
-    expect(moveJobContext(legacy, { requesterId: 'u-1', isOwner: false, instanceSize: 'large' })).toEqual({
+    expect(moveJobContext(legacy, { requesterId: 'u-1', isOwner: false })).toEqual({
       requesterId: 'u-1',
       isOwner: false,
       ownerUserId: 'u-1',
-      instanceSize: 'large',
     })
   })
 
