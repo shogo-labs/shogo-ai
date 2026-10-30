@@ -177,10 +177,11 @@ test(
   async () => {
     // Owns a `personal` workspace: the `team` allowance is still there.
     const { cloud, desktop } = await pair({ kind: 'personal' }, 'small')
-    // The target is a cloud instance where the source's other members are real
-    // accounts — otherwise SEC-18's stranger check refuses their `Member` rows
+    // The target is a cloud instance where the source's other users are real
+    // accounts — otherwise SEC-18's stranger check refuses their `User` rows
     // long before this card's rule is reached.
-    await call(cloud.port, '/__qa/ensure-users', { method: 'POST', body: JSON.stringify({ ids: ['u-admin-246', 'u-viewer-246'] }) })
+    await call(cloud.port, '/__qa/ensure-users', { method: 'POST', body: JSON.stringify({ ids: ['u-admin-246', 'u-viewer-246', 'u-guest-246'] }) })
+    const before = await stateOf(cloud)
     const sourceState = await stateOf(desktop)
     const source = sourceState.workspaces.find((w: any) => w.id === 'ws-246')
     expect(source.instanceSize).toBe('small')
@@ -213,9 +214,12 @@ test(
       boards: sourceState.counts.boards,
       conversations: sourceState.counts.conversations,
     })
-    // Membership travels with a move; the extra one is the `personal`
-    // workspace's own owner, which was already there.
-    expect(after.counts.members).toBe(sourceState.counts.members + 1)
+    // SEC-18 decides membership at the receiving instance: `/receive/init` makes
+    // the caller the owner of the workspace a move lands in, and the sender's
+    // `Member` rows never cross the wire — a move can no longer post
+    // `Member{userId: me, workspaceId: victim, role: 'owner'}`. So exactly one
+    // membership row is added: the caller's, on the new workspace.
+    expect(after.counts.members).toBe(before.counts.members + 1)
   },
   { timeout: 300_000 },
 )
