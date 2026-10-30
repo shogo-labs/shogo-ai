@@ -1576,11 +1576,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
     ? composerMemoryKey(currentSessionId)
     : null
   const composerMemory = useChatComposerMemory(composerChatKey)
-  const composerRecordRef = useRef(composerMemory.record)
-  composerRecordRef.current = composerMemory.record
-  // The chat key whose stored draft has already been pushed into the composer,
-  // so our own saves (which update `record`) never re-apply over live typing.
-  const appliedComposerDraftRef = useRef<string | null>(null)
+  const composerRecord = composerMemory.record
+  const composerReady = composerMemory.ready
+  // The draft this panel last pushed into the composer (for which chat, and
+  // which text), and whether the person has typed since. A stored record can
+  // arrive a render after `ready`, so a restore is re-applied only while the
+  // composer is still pristine.
+  const appliedComposerDraftRef = useRef<{
+    key: string
+    text: string
+  } | null>(null)
+  const composerEditedRef = useRef(false)
 
   useEffect(() => {
     setHasScrollableTranscript(false)
@@ -1683,25 +1689,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [prefillRequest?.nonce, composerMemory, prefillRequest])
 
   // Restore this chat's own unsent draft when we enter it, and once the stored
-  // record has loaded. Always set the composer — including empty — so chat A's
-  // text can never show up in chat B.
+  // record for THIS chat is known. Always set the composer — including empty —
+  // so chat A's text can never show up in chat B. `ready` is only true for the
+  // chat the record actually belongs to, so a session switch can never spend
+  // the restore on the previous chat's (empty) record; and if the record still
+  // lands a render later, it is applied as long as nobody has typed.
   useEffect(() => {
-    if (!composerChatKey || !composerMemory.ready) return
-    if (appliedComposerDraftRef.current === composerChatKey) return
-    appliedComposerDraftRef.current = composerChatKey
+    if (!composerChatKey || !composerReady) return
     // An explicit prefill wins over the stored draft (and is stored above).
     if (prefillRequest) return
-    const draft = composerRecordRef.current?.draft
+    const draft = composerRecord?.draft
+    const text = draft?.text ?? ""
+    const applied = appliedComposerDraftRef.current
+    if (applied?.key === composerChatKey) {
+      if (applied.text === text || composerEditedRef.current) return
+      // A record that lost its draft (a send) has already emptied the box.
+      if (!text) return
+    }
+    appliedComposerDraftRef.current = { key: composerChatKey, text }
+    composerEditedRef.current = false
     setRestoreDraftRequest({
       nonce: Date.now(),
-      content: draft?.text ?? "",
+      content: text,
       references: draft?.references ?? [],
       focus: false,
     })
   }, [
     composerChatKey,
-    composerMemory,
-    composerMemory.ready,
+    composerReady,
+    composerRecord,
     prefillRequest,
     composerMemory.saveDraft,
   ])
@@ -1711,7 +1727,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleComposerTextChange = useCallback(
     (text: string, references: ChatReference[]) => {
       if (!composerChatKey) return
-      if (appliedComposerDraftRef.current !== composerChatKey) return
+      if (appliedComposerDraftRef.current?.key !== composerChatKey) return
+      composerEditedRef.current = true
       composerMemory.saveDraft(text, references)
     },
     [composerChatKey, composerMemory],
@@ -5325,7 +5342,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // model-stamped message is newer (it may have come from another device).
   // `null` means "nothing chat-specific" — fall back to the global preference.
   const resolvedChatModel = resolveChatModel({
-    record: composerMemory.record,
+    record: composerRecord,
     lastStampedModel: lastSessionModel,
     lastStampedAt: lastSessionModelStamp?.createdAt ?? 0,
   })
@@ -5337,14 +5354,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // back to a chat restores its model even if the value itself is unchanged.
   useEffect(() => {
     if (!isActive || !isInitialLoadComplete || !onResolveSessionModel) return
-    if (!composerMemory.ready) return
+    if (!composerReady) return
     onResolveSessionModel(resolvedChatModel)
   }, [
     isActive,
     isInitialLoadComplete,
     currentSessionId,
     resolvedChatModel,
-    composerMemory.ready,
+    composerReady,
     onResolveSessionModel,
   ])
 
@@ -5356,7 +5373,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useEffect(() => {
     if (isModelControlled) return
     if (!isActive || !currentSessionId) return
-    if (!composerMemory.ready) return
+    if (!composerReady) return
     if (composerSessionAppliedRef.current === currentSessionId) return
     composerSessionAppliedRef.current = currentSessionId
     if (resolvedChatModel) {
@@ -5374,7 +5391,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     isActive,
     currentSessionId,
     resolvedChatModel,
-    composerMemory.ready,
+    composerReady,
     projectId,
   ])
 
@@ -7047,9 +7064,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // immediately so a reload doesn't resurrect it. If the send later fails
       // and the text is put back, the next edit stores it again.
       composerMemory.clearDraft()
+      if (composerChatKey) {
+        appliedComposerDraftRef.current = { key: composerChatKey, text: "" }
+        composerEditedRef.current = false
+      }
       handleSendMessage(content, files, perMsgModel, references)
     },
-    [composerMemory, handleSendMessage],
+    [composerChatKey, composerMemory, handleSendMessage],
   )
 
   // Plan confirmation: execute the plan in this same chat.

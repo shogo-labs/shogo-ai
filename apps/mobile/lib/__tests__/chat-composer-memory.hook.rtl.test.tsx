@@ -31,6 +31,51 @@ beforeAll(async () => {
 afterEach(cleanup)
 
 describe("useChatComposerMemory", () => {
+  test("no chat yet is never 'ready' with an empty record", async () => {
+    const { result, rerender } = renderHook(
+      ({ key }: { key: string | null }) => mod.useChatComposerMemory(key),
+      { initialProps: { key: null as string | null } },
+    )
+    expect(result.current.ready).toBe(false)
+    expect(result.current.record).toBeNull()
+
+    // The chat id arriving later must be what makes it ready.
+    rerender({ key: mod.composerMemoryKey("rtl-late-chat") })
+    await waitFor(() => expect(result.current.ready).toBe(true))
+  })
+
+  test("a chat entered after its id arrives still restores its draft", async () => {
+    const key = mod.composerMemoryKey("rtl-late-draft")
+    // Seed the device cache the way a previous run would have left it.
+    const seed = new mod.ComposerMemory(
+      {
+        getItem: async (k: string) => store.get(k) ?? null,
+        setItem: async (k: string, v: string) => {
+          store.set(k, v)
+        },
+        removeItem: async (k: string) => {
+          store.delete(k)
+        },
+      },
+      { debounceMs: 0 },
+    )
+    seed.setDraft(key, "restored after reload", [])
+    await Bun.sleep(5)
+
+    // A fresh page: no chat id on the first render (the route/store hydrates
+    // it a tick later), which used to consume the one-shot restore with "".
+    const { result, rerender } = renderHook(
+      ({ k }: { k: string | null }) => mod.useChatComposerMemory(k),
+      { initialProps: { k: null as string | null } },
+    )
+    expect(result.current.ready).toBe(false)
+
+    rerender({ k: key })
+    await waitFor(() => expect(result.current.ready).toBe(true))
+    expect(result.current.record?.draft?.text).toBe("restored after reload")
+    expect(result.current.loadedKey).toBe(key)
+  })
+
   test("each chat keeps its own draft across a switch", async () => {
     const { result, rerender } = renderHook(
       ({ key }: { key: string }) => mod.useChatComposerMemory(key),

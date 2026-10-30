@@ -187,17 +187,29 @@ export class ComposerMemory {
     return record
   }
 
-  /** Loads a chat's record, pruning stale records / evicting overflow. */
+  /**
+   * Loads a chat's record, pruning stale records / evicting overflow.
+   *
+   * Always reads storage: the cache can legitimately hold `null` from an
+   * earlier synchronous `peek()` on a key that had not been written yet, and
+   * short-circuiting on that would strand a draft that is on disk.
+   */
   load(key: string): Promise<ComposerRecord | null> {
     return this.enqueue(async () => {
       await this.ensureIndex()
-      if (this.cache.has(key)) return this.cache.get(key) ?? null
-      let record: ComposerRecord | null = null
+      let stored: ComposerRecord | null = null
       try {
-        record = deserializeRecord(await this.storage.getItem(key))
+        stored = deserializeRecord(await this.storage.getItem(key))
       } catch {
-        record = null
+        stored = null
       }
+      // Never go backwards: a write may still be debounced, so the cache can be
+      // newer than what storage holds.
+      const cached = this.cache.get(key) ?? null
+      const record =
+        cached && (!stored || cached.updatedAt > stored.updatedAt)
+          ? cached
+          : stored
       this.cache.set(key, record)
       return record
     })
@@ -444,7 +456,9 @@ function installFlushListeners(memory: ComposerMemory): void {
 export interface ChatComposerMemoryState {
   /** The chat's stored record, once loaded. */
   record: ComposerRecord | null
-  /** False until the async load for this chat settled. */
+  /** The chat key `record` belongs to — null until a load for that key settled. */
+  loadedKey: string | null
+  /** True only once THIS chat's record is known (never for "no chat yet"). */
   ready: boolean
   saveDraft: (text: string, references: ChatReference[]) => void
   clearDraft: () => void
@@ -455,34 +469,43 @@ export interface ChatComposerMemoryState {
 /**
  * React wrapper around `ComposerMemory` for one chat key. `key` is null when
  * there is no chat yet (nothing is remembered).
+ *
+ * `record` and `loadedKey` are set together, so a caller can require
+ * `loadedKey === key` before acting on `record`. That matters on a session
+ * switch: an effect runs with the previous render's values, and acting on
+ * "ready but still the last chat's record" is exactly how a one-shot draft
+ * restore gets spent on an empty box.
  */
 export function useChatComposerMemory(
   key: string | null,
 ): ChatComposerMemoryState {
   const memory = getComposerMemory()
-  const [record, setRecord] = useState<ComposerRecord | null>(() =>
-    key ? memory.peek(key) : null,
-  )
-  const [ready, setReady] = useState(false)
+  const [state, setState] = useState<{
+    record: ComposerRecord | null
+    loadedKey: string | null
+  }>(() => ({
+    record: key ? memory.peek(key) : null,
+    // Web reads localStorage synchronously, so the first render already knows
+    // this chat's record — the composer can restore without a flash.
+    loadedKey: key && memory.hasSyncRead() ? key : null,
+  }))
   const keyRef = useRef<string | null>(key)
   keyRef.current = key
 
   useEffect(() => {
     if (!key) {
-      setRecord(null)
-      setReady(true)
+      setState({ record: null, loadedKey: null })
       return
     }
     let cancelled = false
     const sync = memory.peek(key)
-    setRecord(sync)
-    // On web the sync read already has the answer, so the composer can be
-    // restored without waiting for the async load (no flash on reload).
-    setReady(memory.hasSyncRead())
+    setState({
+      record: sync,
+      loadedKey: memory.hasSyncRead() ? key : null,
+    })
     void memory.load(key).then((loaded) => {
       if (cancelled) return
-      setRecord(loaded)
-      setReady(true)
+      setState({ record: loaded, loadedKey: key })
     })
     return () => {
       cancelled = true
@@ -490,12 +513,20 @@ export function useChatComposerMemory(
     }
   }, [key, memory])
 
+  const recordForCurrentKey =
+    key && state.loadedKey === key ? state.record : null
+
   const saveDraft = useCallback(
     (text: string, references: ChatReference[]) => {
       const current = keyRef.current
       if (!current) return
       memory.setDraft(current, text, references)
-      setRecord(memory.peek(current))
+      setState((prev) => ({
+        record: memory.peek(current),
+        // Writing a draft means we know everything this chat has: mark it
+        // loaded so a still-pending read can never undo the edit.
+        loadedKey: current,
+      }))
     },
     [memory],
   )
@@ -504,7 +535,10 @@ export function useChatComposerMemory(
     const current = keyRef.current
     if (!current) return
     memory.clearDraft(current)
-    setRecord(memory.peek(current))
+    setState((prev) => ({
+      record: memory.peek(current),
+      loadedKey: current,
+    }))
   }, [memory])
 
   const saveModel = useCallback(
@@ -512,7 +546,10 @@ export function useChatComposerMemory(
       const current = keyRef.current
       if (!current) return
       memory.setModel(current, modelId)
-      setRecord(memory.peek(current))
+      setState((prev) => ({
+        record: memory.peek(current),
+        loadedKey: current,
+      }))
     },
     [memory],
   )
@@ -522,7 +559,15 @@ export function useChatComposerMemory(
     if (current) memory.flush(current)
   }, [memory])
 
-  return { record, ready, saveDraft, clearDraft, saveModel, flush }
+  return {
+    record: recordForCurrentKey,
+    loadedKey: state.loadedKey,
+    ready: !!key && state.loadedKey === key,
+    saveDraft,
+    clearDraft,
+    saveModel,
+    flush,
+  }
 }
 
 /**

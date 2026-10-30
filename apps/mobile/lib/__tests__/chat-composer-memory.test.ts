@@ -210,6 +210,38 @@ describe("hygiene", () => {
     expect(store.has(composerMemoryKey("chat-5"))).toBe(true)
   })
 
+  test("load() re-reads storage even when a sync peek cached nothing", async () => {
+    const key = composerMemoryKey("peeked-null")
+    const { storage } = memoryStorage({
+      [key]: JSON.stringify({
+        draft: { text: "on disk", references: [] },
+        updatedAt: 500,
+      }),
+    })
+    // No readSync: peek cannot see the value and caches null.
+    const memory = new ComposerMemory(storage, {})
+    expect(memory.peek(key)).toBeNull()
+    expect((await memory.load(key))?.draft?.text).toBe("on disk")
+  })
+
+  test("load() never goes backwards over a newer cached write", async () => {
+    const key = composerMemoryKey("newer-cache")
+    const { storage } = memoryStorage({
+      [key]: JSON.stringify({
+        draft: { text: "old on disk", references: [] },
+        updatedAt: 100,
+      }),
+    })
+    let clock = 900
+    const memory = new ComposerMemory(storage, {
+      now: () => clock++,
+      schedule: () => 0,
+      cancel: () => {},
+    })
+    memory.setDraft(key, "typed now", [])
+    expect((await memory.load(key))?.draft?.text).toBe("typed now")
+  })
+
   test("sanitizeRecord tolerates garbage", () => {
     expect(sanitizeRecord(null)).toBeNull()
     expect(sanitizeRecord("nope")).toBeNull()
