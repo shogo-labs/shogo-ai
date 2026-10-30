@@ -25,15 +25,57 @@ export const INTERNAL_EMAIL_PATTERNS = [
 ] as const
 
 /**
- * The same patterns as literal suffixes, for Prisma filters. Strip every `%`
- * (the LIKE wildcards) rather than only the leading one: with `endsWith` the
- * remaining `@getodin.` is the whole match, whereas keeping the trailing `%`
- * would look for a literal percent sign in the address — which is exactly how
- * the old `contains` filter let Odin accounts through every Prisma query.
+ * The same patterns as literal suffixes, for Prisma filters. Strip the LIKE
+ * wildcards, then split by what the filter can actually express:
+ *
+ * - a pattern that only ends in `%` (`%@shogo.ai`) is a real `endsWith`;
+ * - a pattern with a wildcard in the middle (`%@getodin.%`) is **not** — the
+ *   literal body of that one is `@getodin.`, and `'russell@getodin.ai'
+ *   .endsWith('@getodin.')` is false. `endsWith` therefore let all 46
+ *   `@getodin.ai` accounts through every Prisma query that used this list.
+ *   For those, `contains: '@getodin.'` is the correct filter (an email address
+ *   has exactly one `@`, so the fragment can only match the domain).
  */
-export const INTERNAL_EMAIL_SUFFIXES = INTERNAL_EMAIL_PATTERNS.map((pattern) =>
-  pattern.replace(/%/g, ''),
-) as readonly string[]
+const partition = (patterns: readonly string[]) => {
+  const endsWith: string[] = []
+  const contains: string[] = []
+  for (const pattern of patterns) {
+    const body = pattern.replace(/^%/, '')
+    if (body.endsWith('%')) {
+      // Interior wildcard: match the literal prefix, anywhere in the address.
+      contains.push(body.replace(/%/g, ''))
+    } else {
+      endsWith.push(body.replace(/%/g, ''))
+    }
+  }
+  return { endsWith, contains }
+}
+
+const INTERNAL_MATCH = partition(INTERNAL_EMAIL_PATTERNS)
+
+/** `endsWith` fragments: `@test.shogo.ai`, `@shogo.ai`. */
+export const INTERNAL_EMAIL_ENDS_WITH = INTERNAL_MATCH.endsWith as readonly string[]
+
+/** `contains` fragments for patterns with an interior wildcard: `@getodin.`. */
+export const INTERNAL_EMAIL_CONTAINS = INTERNAL_MATCH.contains as readonly string[]
+
+/** Every internal address as a literal suffix (for logging/tests only). */
+export const INTERNAL_EMAIL_SUFFIXES = [
+  ...INTERNAL_EMAIL_ENDS_WITH,
+  ...INTERNAL_EMAIL_CONTAINS,
+] as readonly string[]
+
+/**
+ * The OR clauses that select internal addresses, in the shape Prisma wants.
+ * Pass `insensitive` on Postgres; SQLite has no `mode` option.
+ */
+export function internalEmailClauses(insensitive: boolean) {
+  const mode = insensitive ? ({ mode: 'insensitive' as const }) : {}
+  return [
+    ...INTERNAL_EMAIL_ENDS_WITH.map((suffix) => ({ email: { endsWith: suffix, ...mode } })),
+    ...INTERNAL_EMAIL_CONTAINS.map((fragment) => ({ email: { contains: fragment, ...mode } })),
+  ]
+}
 
 /** `role: 'super_admin'` is internal too, alongside these addresses. */
 export const INTERNAL_ROLE = 'super_admin'

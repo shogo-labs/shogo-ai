@@ -493,15 +493,22 @@ describe('Postgres-mode helper coverage', () => {
 
   test('internal accounts cover every Odin domain, not just getodin.ai', () => {
     const w = analytics.realUserWhere() as any
-    const suffixes = w.AND
+    const endsWithFilters = w.AND
       .filter((c: any) => c.NOT?.email?.endsWith)
       .map((c: any) => c.NOT.email.endsWith)
-    expect(suffixes).toContain('@shogo.ai')
-    expect(suffixes).toContain('@test.shogo.ai')
-    // `@getodin.%` is a LIKE wildcard, so the prisma side must match the
-    // literal prefix rather than the pattern with its `%` still in it.
-    expect(suffixes).toContain('@getodin.')
-    expect(suffixes.some((s: string) => s.includes('%'))).toBe(false)
+    expect(endsWithFilters).toContain('@shogo.ai')
+    expect(endsWithFilters).toContain('@test.shogo.ai')
+    // `%@getodin.%` has a wildcard in the middle, so `endsWith` can never match
+    // an Odin address — it has to be a `contains`.
+    expect(endsWithFilters).not.toContain('@getodin.')
+    const containsFilters = w.AND
+      .filter((c: any) => c.NOT?.email?.contains)
+      .map((c: any) => c.NOT.email.contains)
+    expect(containsFilters).toContain('@getodin.')
+    // No LIKE wildcard survives into either filter.
+    expect([...endsWithFilters, ...containsFilters].some((s: string) => s.includes('%'))).toBe(
+      false,
+    )
   })
 
   test('periodToWindow falls back to default 30d on unknown period', () => {

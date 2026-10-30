@@ -17,8 +17,8 @@ import {
 import { prisma, Prisma } from '../lib/prisma'
 import {
   INTERNAL_EMAIL_PATTERNS,
-  INTERNAL_EMAIL_SUFFIXES,
   INTERNAL_ROLE,
+  internalEmailClauses,
 } from '../lib/internal-accounts'
 import { resolveModelLabels } from './model-registry.service'
 import { countLineChanges } from '../lib/tool-line-stats'
@@ -3479,17 +3479,13 @@ function toNumOrNull(v: unknown): number | null {
 }
 
 export function realUserWhere(): Prisma.UserWhereInput {
+  const insensitive = !isSqlite
   return {
     AND: [
       { role: { not: INTERNAL_ROLE } },
-      ...INTERNAL_EMAIL_SUFFIXES.map(suffix => ({
-        NOT: {
-          email: {
-            endsWith: suffix,
-            ...(isSqlite ? {} : { mode: 'insensitive' as const }),
-          },
-        },
-      })),
+      // One NOT per clause, ANDed: an address is excluded when it matches any
+      // one of them (NOT clauseA AND NOT clauseB == NOT (clauseA OR clauseB)).
+      ...internalEmailClauses(insensitive).map((clause) => ({ NOT: clause })),
     ],
   }
 }
@@ -3512,12 +3508,7 @@ export async function getInternalUserIds(): Promise<Set<string>> {
     where: {
       OR: [
         { role: INTERNAL_ROLE },
-        ...INTERNAL_EMAIL_SUFFIXES.map(suffix => ({
-          email: {
-            endsWith: suffix,
-            ...(isSqlite ? {} : { mode: 'insensitive' as const }),
-          },
-        })),
+        ...internalEmailClauses(!isSqlite),
       ],
     },
     select: { id: true },

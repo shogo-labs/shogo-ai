@@ -126,6 +126,23 @@ export interface PromoCreditSource {
  *
  * Returns `null` when no unexpired credit is available anywhere.
  */
+/**
+ * Memoise the *resolution* (workspace kind + credit workspace), not the credit
+ * itself: `consumeUsage` is the hottest write in billing and the two `member`
+ * lookups almost never change, so a team workspace — the common case — costs
+ * zero queries after the first call instead of three on every metered request.
+ */
+const promoSourceCache = new Map<
+  string,
+  { kind: string | null; creditWorkspaceId: string | null; expiresAt: number }
+>()
+const PROMO_SOURCE_TTL_MS = 5 * 60 * 1000
+
+/** Test seam: drop the memoised lookups. */
+export function clearPromoSourceCache() {
+  promoSourceCache.clear()
+}
+
 async function resolvePromoCreditSource(
   client: PromoCreditSourceClient,
   billingWorkspaceId: string,
@@ -135,40 +152,55 @@ async function resolvePromoCreditSource(
   const ownAvailable = promoCreditAvailableUsd(ownWallet, now)
   if (ownAvailable > 0) return { walletId: billingWorkspaceId, availableUsd: ownAvailable }
 
-  const ws = await client.workspace.findUnique({
-    where: { id: billingWorkspaceId },
-    select: { kind: true },
-  })
-  if (ws?.kind !== 'personal') return null
+  const cached = promoSourceCache.get(billingWorkspaceId)
+  let entry = cached && cached.expiresAt > now.getTime() ? cached : null
 
-  const owner = await client.member.findFirst({
-    where: { workspaceId: billingWorkspaceId, role: 'owner', projectId: null },
-    select: { userId: true },
-  })
-  if (!owner?.userId) return null
+  if (!entry) {
+    const ws = await client.workspace.findUnique({
+      where: { id: billingWorkspaceId },
+      select: { kind: true },
+    })
+    let creditWorkspaceId: string | null = null
+    if (ws?.kind === 'personal') {
+      const owner = await client.member.findFirst({
+        where: { workspaceId: billingWorkspaceId, role: 'owner', projectId: null },
+        select: { userId: true },
+      })
+      if (owner?.userId) {
+        // Same workspace `findSignupCreditWorkspaceId` resolves: the user's
+        // first top-level team workspace is where sign-up granted the credit.
+        const creditWorkspace = await client.member.findFirst({
+          where: {
+            userId: owner.userId,
+            role: 'owner',
+            projectId: null,
+            workspace: { kind: 'team', parentWorkspaceId: null },
+          },
+          select: { workspaceId: true },
+          orderBy: { createdAt: 'asc' },
+        })
+        const id = creditWorkspace?.workspaceId ?? null
+        creditWorkspaceId = id && id !== billingWorkspaceId ? id : null
+      }
+    }
+    entry = {
+      kind: ws?.kind ?? null,
+      creditWorkspaceId,
+      expiresAt: now.getTime() + PROMO_SOURCE_TTL_MS,
+    }
+    promoSourceCache.set(billingWorkspaceId, entry)
+  }
 
-  // Same workspace `findSignupCreditWorkspaceId` resolves: the user's first
-  // top-level team workspace is where sign-up granted the credit.
-  const creditWorkspace = await client.member.findFirst({
-    where: {
-      userId: owner.userId,
-      role: 'owner',
-      projectId: null,
-      workspace: { kind: 'team', parentWorkspaceId: null },
-    },
-    select: { workspaceId: true },
-    orderBy: { createdAt: 'asc' },
-  })
-  if (!creditWorkspace) return null
-  const creditWorkspaceId = creditWorkspace.workspaceId
-  if (!creditWorkspaceId || creditWorkspaceId === billingWorkspaceId) return null
+  if (entry.kind !== 'personal' || !entry.creditWorkspaceId) return null
 
+  // Credit only ever decreases, so this read is not cached: granting credit we
+  // have already spent would be worse than one query.
   const creditWallet = await client.usageWallet.findUnique({
-    where: { workspaceId: creditWorkspaceId },
+    where: { workspaceId: entry.creditWorkspaceId },
     select: { promoCreditUsd: true, promoCreditExpiresAt: true },
   })
   const available = promoCreditAvailableUsd(creditWallet, now)
-  return available > 0 ? { walletId: creditWorkspaceId, availableUsd: available } : null
+  return available > 0 ? { walletId: entry.creditWorkspaceId, availableUsd: available } : null
 }
 
 /**
