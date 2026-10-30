@@ -265,20 +265,24 @@ export async function assertRowsInWorkspace(
 
   /** `model:id` → the parent row, or null when it is not on this instance. */
   const cache = new Map<string, MoveRow | null>()
+  /** `model:id` already shown to be in this workspace. */
+  const proven = new Set<string>()
   let level: RowStep[] = live.map((row) => ({ model, row }))
 
   for (let depth = 0; depth <= MAX_PARENT_DEPTH && level.length; depth++) {
     const pending = new Map<string, Set<string>>()
     for (const step of level) {
       const resolved = resolveStep(step, workspaceId)
-      if (resolved.done) continue
+      if (resolved.done) {
+        proven.add(`${step.model}:${String(step.row.id ?? '')}`)
+        continue
+      }
       const key = `${resolved.model}:${resolved.id}`
-      if (cache.has(key)) continue
+      if (proven.has(key) || cache.has(key)) continue
       const ids = pending.get(resolved.model) ?? new Set<string>()
       ids.add(resolved.id)
       pending.set(resolved.model, ids)
     }
-    if (!pending.size) return
 
     for (const [parentModel, ids] of pending) {
       const client = clientFor(db, parentModel)
@@ -297,12 +301,13 @@ export async function assertRowsInWorkspace(
       const resolved = resolveStep(step, workspaceId)
       if (resolved.done) continue
       const key = `${resolved.model}:${resolved.id}`
+      if (proven.has(key) || queued.has(key)) continue
       const row = cache.get(key)
       if (!row) throw foreignParent(resolved.model, 'id', resolved.id)
-      if (queued.has(key)) continue
       queued.add(key)
       next.push({ model: resolved.model, row })
     }
+    if (!next.length) return
     level = next
   }
 
