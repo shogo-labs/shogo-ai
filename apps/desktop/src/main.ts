@@ -48,6 +48,7 @@ import { getWebDir, getBunPath, getDbPath, getWorkspacesDirDecision, getDataDir 
 import { buildHostLimits, hostRuntimeView, writeHostLimits } from './host-limits'
 import { normalizeExecMemoryMB } from './runtime-memory'
 import { buildLocalCsp } from './local-csp'
+import { decidePermission, isTrustedAppOrigin, type TrustedOriginOptions } from './session-permissions'
 import { runSpotlightHint, SPOTLIGHT_SETTINGS_URL } from './spotlight-hint'
 import type { WorkspacesDirDecision } from './spotlight-exclusion'
 import {
@@ -1802,18 +1803,17 @@ function verifyWebBundleIntegrity(): { ok: true } | { ok: false; missing: string
 }
 
 function isTrustedMediaOrigin(url: string): boolean {
-  if (!url) return false
-  if (url.startsWith('shogo://')) return true
-  if (url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1')) return true
-  if (IS_DEV) {
-    const devUrl = process.env.DESKTOP_DEV_URL
-    if (devUrl && url.startsWith(devUrl)) return true
+  return isTrustedAppOrigin(url, permissionOptions())
+}
+
+/** Static inputs for the permission decision, re-read on every request so a
+ *  cloud-mode switch or a dev URL change takes effect without a restart. */
+function permissionOptions(): TrustedOriginOptions {
+  return {
+    isDev: IS_DEV,
+    devUrl: process.env.DESKTOP_DEV_URL,
+    cloudUrl: isCloudMode ? getCloudUrl() : undefined,
   }
-  if (isCloudMode) {
-    const cloudUrl = getCloudUrl()
-    if (cloudUrl && url.startsWith(cloudUrl)) return true
-  }
-  return false
 }
 
 /** Origin the renderer is actually served from. Packaged builds use `shogo://app`;
@@ -1836,27 +1836,34 @@ function setupSessionHandlers(): void {
   // origins. Without an explicit handler, Electron's default is to deny
   // permission requests from non-standard schemes like `shogo://`, which
   // is why getUserMedia silently fails in the packaged macOS build.
+  // `fullscreen` is granted for the same origins: a video's native fullscreen
+  // control, the huddle window and IDE zen mode all request it, and a denial
+  // rejects the promise with nothing on screen (SHO-262). Everything else is
+  // still denied.
   ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    if (permission === 'media') {
-      const requestingUrl = details?.requestingUrl || webContents.getURL()
-      if (isTrustedMediaOrigin(requestingUrl)) {
-        const mediaTypes = (details as { mediaTypes?: string[] } | undefined)?.mediaTypes
-        // Mic and camera requests must also clear the macOS TCC gate (prompting once).
-        void checkCaptureAccess(mediaTypes).then(callback)
-        return
-      }
-      console.warn(`[Desktop] denying ${permission} request from untrusted origin: ${requestingUrl}`)
-      callback(false)
+    const requestingUrl = details?.requestingUrl || webContents.getURL()
+    const decision = decidePermission(permission, requestingUrl, permissionOptions())
+    if (decision === 'media') {
+      const mediaTypes = (details as { mediaTypes?: string[] } | undefined)?.mediaTypes
+      // Mic and camera requests must also clear the macOS TCC gate (prompting once).
+      void checkCaptureAccess(mediaTypes).then(callback)
       return
+    }
+    if (decision === 'allow') {
+      callback(true)
+      return
+    }
+    if (permission === 'media') {
+      console.warn(`[Desktop] denying ${permission} request from untrusted origin: ${requestingUrl}`)
     }
     callback(false)
   })
 
-  ses.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
-    if (permission === 'media') {
-      return isTrustedMediaOrigin(requestingOrigin)
-    }
-    return false
+  ses.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    // `requestingOrigin` is empty for some non-standard schemes, so fall back to
+    // the request's URL and then to the frame itself before denying.
+    const url = requestingOrigin || details?.requestingUrl || webContents?.getURL?.() || ''
+    return decidePermission(permission, url, permissionOptions()) !== 'deny'
   })
 
   ses.setDisplayMediaRequestHandler((request, callback) => {
