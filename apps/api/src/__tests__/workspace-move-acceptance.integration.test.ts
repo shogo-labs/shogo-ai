@@ -173,7 +173,6 @@ describe('a move against a real database', () => {
       requesterId: ADMIN,
       isOwner: false,
       ownerUserId: ADMIN,
-      instanceSize: plan.target.instanceSize ?? null,
       selection: { mode: 'all' },
       plan,
       progress: {},
@@ -196,16 +195,15 @@ describe('a move against a real database', () => {
     // The target must not point at itself as "moved".
     expect(targets[0].movedToWorkspaceId).toBeNull()
 
-    // ── the target keeps the source's instance size ──
-    // `buildMovePlan` selected only `{id,name,kind}`, so the frozen size was
-    // always null and every move landed on the `micro` column default while the
-    // plan's own quota check still read the real size.
+    // ── the target gets its own size, never the source's ──
+    // A move used to carry the source's `instanceSize` into the target row, which
+    // let a caller choose a paid runtime by asking for one (SHO-256). The target
+    // is now created exactly like a normal workspace: the column default.
     const targetRow = await db.workspace.findUnique({
       where: { id: result.targetWorkspaceId },
       select: { instanceSize: true },
     })
-    expect(targetRow.instanceSize).toBe('small')
-    expect(plan.target.instanceSize).toBe('small')
+    expect(targetRow.instanceSize).toBe('micro')
 
     // ── the workspace root is walked once, not twice ──
     // It is in `plan.projects` (its bytes count against the quota) *and* added
@@ -349,7 +347,7 @@ describe('a move against a real database', () => {
       requesterId: ADMIN,
       isOwner: false,
       ownerUserId: ADMIN,
-      plan: { target: { name: 'Sho246 target', instanceSize: 'small' } },
+      plan: { target: { name: 'Sho246 target' } },
     }
     const ctx = moveJobContext(row, undefined)
     const { rows: resumedRows } = await collectMoveRows({
@@ -364,7 +362,7 @@ describe('a move against a real database', () => {
     expect(resumed).toEqual(planned)
     // And specifically: the DM did not sneak in.
     expect(resumed).not.toContain(dmId)
-    // The target size is the approved one, not a default.
-    expect(ctx.instanceSize).toBe('small')
+    // The job carries no size to impose on the target (SHO-256).
+    expect('instanceSize' in ctx).toBe(false)
   })
 })
