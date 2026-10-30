@@ -229,6 +229,14 @@ function announceLocalUser(c: Context, userId: string): void {
  * Does NOT block unauthenticated requests - that's the job of requireAuth.
  */
 export async function authMiddleware(c: Context, next: Next) {
+  // A request is authenticated once. Routers mounted at `/api` that declare
+  // `router.use('*', authMiddleware)` (scoped analytics, cost analytics) run it
+  // again for every later `/api` route, which repeated the session lookup and
+  // threw away what an earlier middleware decided — the machine copy's
+  // identity (`lib/machine-identity`), so every generated route read a
+  // machine's chats as a stranger (SHO-257).
+  if ((c.get('auth') as AuthContext | undefined)?.isAuthenticated) return next()
+
   // 1. Try shogo_sk_* API key auth (used by local instances forwarding to cloud)
   const authHeader = c.req.header("authorization")
   if (authHeader?.startsWith("Bearer shogo_sk_")) {

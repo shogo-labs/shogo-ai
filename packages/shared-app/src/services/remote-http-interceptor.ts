@@ -198,6 +198,10 @@ const MACHINE_WORKSPACE_LIVE_READS: RouteEntry[] = [
   // Attachment and conversation-file *contents* are bytes on the machine; the
   // row that names them is mirrored, the file is not.
   { pattern: /^\/api\/(conversation-files|chat-attachments)\/[^/]+(\/|$)/, target: 'remote' },
+  // A machine's triggers are rows the copy never carries (`EventSubscription`
+  // is the cloud's event bus, so the cloud must not hold a desktop's), so the
+  // copy answers an empty list. The desktop runs them; ask it (SHO-257).
+  { pattern: /^\/api\/workspaces\/[^/]+\/triggers(\/|$)/, target: 'remote' },
 ]
 
 /**
