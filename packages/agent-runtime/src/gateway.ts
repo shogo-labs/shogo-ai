@@ -3928,7 +3928,7 @@ export class AgentGateway {
     // Multi-layer context compaction pipeline (Layers 1-4)
     //
     // One cap, in one place: the resolved model's real window minus the
-    // output/buffer reserve, capped at AGENT_AUTOCOMPACT_TOKENS (200k). Until
+    // output/buffer reserve, capped at AGENT_AUTOCOMPACT_TOKENS (235k). Until
     // SHO-96 nothing ever set the window, so a 1M-window haiku/opus turn was
     // budgeted at 200k while the provider accepted 400k, and summarization —
     // which could only run at a turn boundary anyway — never fired mid-turn.
