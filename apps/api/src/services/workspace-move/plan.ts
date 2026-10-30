@@ -414,7 +414,7 @@ export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlan
   const quotaOk = limitBytes === null || totalBytes <= limitBytes
   if (!quotaOk) {
     warnings.push(
-      `The move needs ${formatBytes(totalBytes)} and the target allows ${formatBytes(limitBytes ?? 0)}. Free space or pick a larger target before starting.`,
+      `The move needs ${formatBytes(totalBytes)} and the target allows ${formatBytes(limitBytes ?? 0)}. Free space in the source before starting, or upgrade the destination workspace's plan.`,
     )
   }
 
