@@ -4,9 +4,10 @@
 // Native setup for incoming huddle calls (see lib/native-call.native.ts).
 //
 // - iOS: CallKit and the `voip` background mode, so a VoIP push can ring the
-//   call screen while the app is closed. react-native-callkeep's own plugin
-//   adds CallKit; this links PushKit and forwards its AppDelegate callbacks
-//   to react-native-voip-push-notification.
+//   call screen while the app is closed. JS registers PushKit only for allowed
+//   storefronts, and the native callback rechecks StoreKit before showing CallKit.
+//   react-native-callkeep's own plugin adds CallKit; this links PushKit and
+//   forwards its AppDelegate callbacks to react-native-voip-push-notification.
 // - Android: the permissions a self-managed calling app needs to show a
 //   full-screen incoming call and keep a call running in the background.
 
@@ -57,6 +58,9 @@ function withPushKitAppDelegate(config) {
     if (!/^import RNCallKeep$/m.test(contents)) {
       contents = contents.replace(/^import PushKit\s*$/m, (line) => `${line}\nimport RNCallKeep`)
     }
+    if (!/^import StoreKit$/m.test(contents)) {
+      contents = contents.replace(/^import RNCallKeep\s*$/m, (line) => `${line}\nimport StoreKit`)
+    }
 
     const marker = '// shogo: PushKit delegate callbacks'
     const callbacks = `${marker}
@@ -69,6 +73,8 @@ extension AppDelegate: PKPushRegistryDelegate {
     didUpdate credentials: PKPushCredentials,
     for type: PKPushType
   ) {
+    // Keep the token cached locally so it can be reused if the storefront
+    // later changes. JS keeps it off the server while CallKit is disallowed.
     RNVoipPushNotificationManager.didUpdate(credentials, forType: type.rawValue)
   }
 
@@ -82,6 +88,32 @@ extension AppDelegate: PKPushRegistryDelegate {
     for type: PKPushType,
     completion: @escaping () -> Void
   ) {
+    // The storefront can change while the app is closed, so check live StoreKit
+    // state. China and an unknown storefront must not show CallKit.
+    if #available(iOS 15.0, *) {
+      Task {
+        guard let storefront = await Storefront.current else {
+          completion()
+          return
+        }
+        let countryCode = storefront.countryCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if countryCode.isEmpty || countryCode == "CHN" {
+          completion()
+          return
+        }
+        reportHuddleCallFromPush(payload, type: type, completion: completion)
+      }
+    } else {
+      // Without StoreKit storefront data, CallKit remains disabled.
+      completion()
+    }
+  }
+
+  private func reportHuddleCallFromPush(
+    _ payload: PKPushPayload,
+    type: PKPushType,
+    completion: @escaping () -> Void
+  ) {
     let data = payload.dictionaryPayload
     let huddleId = data["huddleId"] as? String ?? ""
     let huddleUUID = UUID(uuidString: huddleId)
@@ -93,7 +125,7 @@ extension AppDelegate: PKPushRegistryDelegate {
       && !(data["conversationId"] as? String ?? "").isEmpty
       && !(data["workspaceId"] as? String ?? "").isEmpty
 
-    // CallKit must be notified from the PushKit callback itself. Waiting for
+    // CallKit must be notified from the native PushKit callback. Waiting for
     // the React Native bridge can miss Apple's reporting deadline on cold launch.
     RNCallKeep.reportNewIncomingCall(
       callUUID,
@@ -177,6 +209,7 @@ function withVoipPushNotificationBridgingHeader(config) {
       managerImplementation = managerImplementation.replace(insertionPoint, `${invalidationMethod}\n${insertionPoint}`)
       await fs.writeFile(managerImplementationPath, managerImplementation)
     }
+
     return config
   }])
 }

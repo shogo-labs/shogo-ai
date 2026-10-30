@@ -75,6 +75,8 @@ export interface ComposerProps {
 export interface ComposerHandle {
   /** Stage files dropped elsewhere on the pane. */
   addFiles: (files: File[]) => void
+  /** Put the caret in the message box, e.g. when a channel opens. */
+  focus: () => void
 }
 
 function mentionReference(c: MentionCandidate): ChatReference {
@@ -350,7 +352,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [onEditLast],
   )
 
-  useImperativeHandle(ref, () => ({ addFiles: (files) => inputRef.current?.addFiles(files) }), [])
+  useImperativeHandle(
+    ref,
+    () => ({
+      addFiles: (files) => inputRef.current?.addFiles(files),
+      focus: () => inputRef.current?.focus(),
+    }),
+    [],
+  )
 
   if (props.disabled) {
     return (

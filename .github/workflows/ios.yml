@@ -1011,6 +1011,9 @@ jobs:
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
           TESTFLIGHT_GROUP_IDS: 56865043-fc4a-40f8-ab20-ec2a8ebdd76c,98287cb2-a201-484d-9371-4619b9858daa
+          # Apple accepted recent uploads but did not expose their builds in
+          # the API within the default 30-minute processing window.
+          TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS: 7200
         run: |
           set -euo pipefail
           TESTFLIGHT_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100)) \

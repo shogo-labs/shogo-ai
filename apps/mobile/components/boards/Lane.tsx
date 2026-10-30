@@ -24,12 +24,22 @@ export interface LaneProps {
   children: ReactNode
   footer?: ReactNode
   testID?: string
+  /**
+   * Phone layout: a fixed width (so columns can snap) and a height that hugs
+   * the cards up to `maxHeight` instead of filling the screen.
+   */
+  fixedWidth?: number
+  maxHeight?: number
 }
 
-export function Lane({ title, count, countLabel, countClassName, badges, right, onDropCard, dragging, children, footer, testID }: LaneProps) {
+export function Lane({ title, count, countLabel, countClassName, badges, right, onDropCard, dragging, children, footer, testID, fixedWidth, maxHeight }: LaneProps) {
   const [over, setOver] = useState(false)
   const body = (
-    <View className={cn('w-72 flex-1 rounded-lg bg-muted/40 p-2', over && dragging && 'bg-primary/10')} testID={testID}>
+    <View
+      className={cn('rounded-lg bg-muted/40 p-2', fixedWidth ? 'shrink' : 'w-72 flex-1', over && dragging && 'bg-primary/10')}
+      style={fixedWidth ? { width: fixedWidth, maxHeight } : undefined}
+      testID={testID}
+    >
       <View className="mb-2 flex-row items-center gap-1.5 px-1">
         <Text className="min-w-0 shrink text-sm font-semibold text-foreground" numberOfLines={1}>{title}</Text>
         <Text className={cn('text-xs text-muted-foreground', countClassName)} accessibilityLabel={countLabel}>{count}</Text>
@@ -37,7 +47,7 @@ export function Lane({ title, count, countLabel, countClassName, badges, right, 
         <View className="flex-1" />
         {right}
       </View>
-      <ScrollView className="flex-1" contentContainerClassName="gap-2 pb-1">
+      <ScrollView className={fixedWidth ? 'grow-0 shrink' : 'flex-1'} contentContainerClassName="gap-2 pb-1">
         {children}
         {footer}
       </ScrollView>

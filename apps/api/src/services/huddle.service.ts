@@ -592,6 +592,9 @@ async function ringUsers(huddle: any, conversation: any, callerId: string, candi
         ...(oneToOne ? { categoryId: HUDDLE_CALL_CATEGORY } : {}),
         priority: 'high',
         sound: silent ? null : 'default',
+        // Calls stop ringing after 45 seconds, so don't let APNs/FCM surface a
+        // stored incoming-call alert after that ring window has passed.
+        ttl: Math.ceil(RING_WINDOW_MS / 1_000),
         audience: 'chat',
         data,
       }
@@ -632,10 +635,10 @@ async function ringUsers(huddle: any, conversation: any, callerId: string, candi
 
 /**
  * Which push reaches each device of someone being rung. A DM on an iPhone with
- * a VoIP token gets a PushKit call (iOS must show the call screen at once); a
- * DM on an Android phone gets a data-only push the app turns into a call; every
- * other device gets the sounding alert. Silent huddles and group calls only
- * use the alert.
+ * a VoIP token gets a PushKit call (the iOS app registers one only where CallKit
+ * is allowed); a DM on Android gets a data-only push the app turns into a call;
+ * every other device gets the sounding alert. Silent huddles and group calls
+ * only use the alert.
  */
 export function routeRingDevices<T extends RingDevice>(devices: T[], opts: { oneToOne: boolean; silent: boolean }): { voip: T[]; data: T[]; alert: T[] } {
   const routed = { voip: [] as T[], data: [] as T[], alert: [] as T[] }

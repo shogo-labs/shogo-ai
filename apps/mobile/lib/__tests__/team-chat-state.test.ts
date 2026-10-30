@@ -19,6 +19,7 @@ import {
   addOptimistic,
   applyListEvent,
   applyTimelineEvent,
+  editableMentionDraft,
   emptyTimeline,
   encodeMentions,
   failOptimistic,
@@ -32,9 +33,11 @@ import {
   newestReadableSeq,
   renderMentions,
   renderMentionsMarkdown,
+  serializeEditableMentions,
   startsGroup,
   stepConversation,
   trimToNewest,
+  updateEditableMentionRanges,
 } from '../team-chat-state'
 import { mentionHref, mentionTargetFromHref } from '../../components/chat/file-links'
 
@@ -202,14 +205,42 @@ describe('conversation list', () => {
     expect(applyListEvent(update.list, event, 'me', null).list).toBe(update.list)
   })
 
-  test('a new message becomes a direct message\'s preview; channels and thread-only replies do not get one', () => {
+  test('a new message becomes a direct message\'s preview with resolved mention names', () => {
     const list = [conv({ id: 'dm', kind: 'dm' }), conv({ id: 'ch', kind: 'public' })]
-    let update = applyListEvent(list, { type: 'message.created', conversationId: 'dm', message: msg({ id: 'a', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: 'ship it\n <@u:me>' }) }, 'me', null)
-    expect(update.list[0]!.lastMessage).toMatchObject({ preview: 'ship it @someone', authorId: 'u2' })
+    const names = mentionNames({
+      people: [{ id: 'me', name: 'Ashutosh', email: 'ashutosh@example.com', image: null, role: 'member' }],
+      agents: [],
+    })
+    const event = { type: 'message.created' as const, conversationId: 'dm', message: msg({ id: 'a', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: 'ship it\n <@u:me>' }) }
+    let update = applyListEvent(list, event, 'me', null, names)
+    expect(update.list[0]!.lastMessage).toMatchObject({ preview: 'ship it @Ashutosh', authorId: 'u2' })
+    expect(update.refetch).toBe(false)
     update = applyListEvent(update.list, { type: 'message.created', conversationId: 'ch', message: msg({ id: 'b', seq: 6, conversationId: 'ch', authorUserId: 'u2', text: 'hi' }) }, 'me', null)
     expect(update.list[1]!.lastMessage).toBeUndefined()
     update = applyListEvent(update.list, { type: 'message.created', conversationId: 'dm', message: msg({ id: 'c', seq: 7, conversationId: 'dm', authorUserId: 'u2', text: 'in thread', threadRootId: 'a' }) }, 'me', null)
-    expect(update.list[0]!.lastMessage?.preview).toBe('ship it @someone')
+    expect(update.list[0]!.lastMessage?.preview).toBe('ship it @Ashutosh')
+  })
+
+  test('a DM mention received before names load asks for the server-resolved preview', () => {
+    const list = [conv({ id: 'dm', kind: 'group_dm' })]
+    const event = { type: 'message.created' as const, conversationId: 'dm', message: msg({ id: 'a', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: 'hey <@u:someone>' }) }
+    const update = applyListEvent(list, event, 'me', null, null)
+    expect(update.list[0]!.lastMessage?.preview).toBe('hey @someone')
+    expect(update.refetch).toBe(true)
+  })
+
+  test('a list consumer without preview names does not refetch for every mention', () => {
+    const list = [conv({ id: 'dm', kind: 'dm' })]
+    const event = { type: 'message.created' as const, conversationId: 'dm', message: msg({ id: 'a', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: 'hey <@u:someone>' }) }
+    expect(applyListEvent(list, event, 'me', null).refetch).toBe(false)
+  })
+
+  test('any unresolved named DM mention requests the canonical server preview', () => {
+    const list = [conv({ id: 'dm', kind: 'group_dm' })]
+    for (const text of ['<@u:user>', '<@a:ws>', '<@g:group>']) {
+      const event = { type: 'message.created' as const, conversationId: 'dm', message: msg({ id: text, seq: 6, conversationId: 'dm', authorUserId: 'u2', text }) }
+      expect(applyListEvent(list, event, 'me', null, null).refetch).toBe(true)
+    }
   })
 
   test('a voice note with no text previews as a voice note, not as blank', () => {
@@ -476,6 +507,48 @@ describe('decodeMentions', () => {
     const { text, picked } = decodeMentions(wire, [ada, here])
     expect(text).toBe('@Ada Lovelace and @here: see <@u:ghost>')
     expect(encodeMentions(text, picked)).toBe(wire)
+  })
+})
+
+describe('editing mention ranges', () => {
+  test('deleting a shorter prefix mention keeps the longer tagged name attached to its token', () => {
+    const original = '<@u:ana> and <@u:ana-long>'
+    const names = { users: new Map([['ana', 'Ana'], ['ana-long', 'Ana Lopez']]), agents: new Map<string, string>() }
+    const draft = editableMentionDraft(original, names)
+    expect(draft.text).toBe('@Ana and @Ana Lopez')
+
+    const edited = draft.text.slice('@Ana and '.length)
+    const mentions = updateEditableMentionRanges(draft.text, edited, draft.mentions, { start: 0, end: '@Ana and '.length })
+    expect(serializeEditableMentions(edited, mentions)).toBe('<@u:ana-long>')
+  })
+
+  test('deleting one unresolved duplicate keeps the remaining mention tied to its original user', () => {
+    const original = '<@u:missing-a> and <@u:missing-b>'
+    const names = { users: new Map<string, string>(), agents: new Map<string, string>() }
+    const draft = editableMentionDraft(original, names)
+    expect(draft.text).toBe('@someone and @someone')
+
+    const edited = draft.text.slice('@someone and '.length)
+    const mentions = updateEditableMentionRanges(draft.text, edited, draft.mentions, { start: 0, end: '@someone and '.length })
+    expect(serializeEditableMentions(edited, mentions)).toBe('<@u:missing-b>')
+  })
+
+  test('editing into a mention label drops that label token instead of tagging the wrong person', () => {
+    const original = 'notify <@u:ana>'
+    const names = { users: new Map([['ana', 'Ana']]), agents: new Map<string, string>() }
+    const draft = editableMentionDraft(original, names)
+    const edited = draft.text.replace('Ana', 'Anita')
+    const mentions = updateEditableMentionRanges(draft.text, edited, draft.mentions, { start: 8, end: 11 })
+    expect(serializeEditableMentions(edited, mentions)).toBe('notify @Anita')
+  })
+
+  test('an edit that does not match the reported selection drops mention identity rather than guessing', () => {
+    const original = '<@u:missing-a> and <@u:missing-b>'
+    const names = { users: new Map<string, string>(), agents: new Map<string, string>() }
+    const draft = editableMentionDraft(original, names)
+    const edited = draft.text.slice('@someone and '.length)
+    const mentions = updateEditableMentionRanges(draft.text, edited, draft.mentions, { start: draft.text.length, end: draft.text.length })
+    expect(serializeEditableMentions(edited, mentions)).toBe('@someone')
   })
 })
 

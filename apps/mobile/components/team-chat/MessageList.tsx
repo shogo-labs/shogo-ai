@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, FlatList, Platform, Pressable, Text, View, type NativeScrollEvent, type NativeSyntheticEvent, type ViewToken } from 'react-native'
 import { ArrowDown, ArrowUp, X } from 'lucide-react-native'
-import type { ChatMessage } from '../../lib/team-chat-api'
+import type { ChatMessage, Mentionables } from '../../lib/team-chat-api'
 import { firstUnreadIndex, startsGroup, type MentionNames, type TimelineState } from '../../lib/team-chat-state'
 import { dayKey, formatDayDivider } from '../../lib/team-chat-time'
 import { attachNestedWheelPassthrough } from '../../lib/nested-wheel-passthrough'
@@ -13,13 +13,15 @@ import { MessageRow, type MessageRowProps } from './MessageRow'
 import { StatusRunRow } from './AgentStatus'
 import { DayDivider } from './DayDivider'
 
-type RowHandlers = Omit<MessageRowProps, 'message' | 'grouped' | 'me' | 'names' | 'streaming' | 'canManage' | 'inThread' | 'highlighted'>
+type RowHandlers = Omit<MessageRowProps, 'message' | 'grouped' | 'me' | 'names' | 'streaming' | 'canManage' | 'inThread' | 'highlighted' | 'mentionables' | 'channelMemberIds'>
 
 export interface MessageListProps extends RowHandlers {
   state: TimelineState
   loading: boolean
   me: string | null
   names: MentionNames
+  mentionables?: Mentionables | null
+  channelMemberIds?: Set<string> | null
   canManage: boolean
   inThread?: boolean
   emptyText?: string
@@ -56,7 +58,7 @@ const NO_INSETS = { top: 0, bottom: 0 }
 
 /** Newest-at-bottom list (an inverted FlatList, so it stays pinned to the latest message). */
 export function MessageList({
-  state, loading, me, names, canManage, inThread, emptyText, header, onLoadOlder, onTrim, trimThreshold = Infinity,
+  state, loading, me, names, mentionables, channelMemberIds, canManage, inThread, emptyText, header, onLoadOlder, onTrim, trimThreshold = Infinity,
   unreadAfterSeq = null, unreadUpToSeq = Infinity, unreadNotLoaded = false, onRevealUnread, highlightId = null, insets = NO_INSETS, ...handlers
 }: MessageListProps) {
   const rows = useMemo(() => {
@@ -185,6 +187,8 @@ export function MessageList({
         grouped={item.grouped && !dayIso && item.message.id !== firstUnreadId}
         me={me}
         names={names}
+        mentionables={mentionables}
+        channelMemberIds={channelMemberIds}
         streaming={state.streaming[item.message.id]}
         canManage={canManage}
         inThread={inThread}
@@ -208,7 +212,7 @@ export function MessageList({
         {body}
       </View>
     )
-  }, [me, names, state.streaming, canManage, inThread, rowProps, firstUnreadId, highlightId])
+  }, [me, names, mentionables, channelMemberIds, state.streaming, canManage, inThread, rowProps, firstUnreadId, highlightId])
 
   if (loading && !state.messages.length) {
     return (

@@ -28,8 +28,6 @@ export interface NativeCallHandlers {
   onHangUp(ring: NativeCallRing): void
 }
 
-export const nativeCallsSupported = false
-
 export function setNativeCallHandlers(_handlers: NativeCallHandlers | null): void {}
 
 /** Shows the incoming call. Returns false when there is no system call screen here. */
