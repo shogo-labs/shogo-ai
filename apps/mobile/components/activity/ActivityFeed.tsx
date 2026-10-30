@@ -9,13 +9,14 @@
  * for the team-chat messages you sent, newest first.
  */
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
 import { useInbox, useSentMessages } from '../../hooks/useChatPrefs'
+import { customEmojiFor, useCustomEmoji, useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
 import { useOpenQuestionCount } from '../../hooks/useOpenQuestions'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { openActiveChat } from '../../lib/open-active-chat'
@@ -51,12 +52,16 @@ function useFocused(): boolean {
 export interface ActivityFeedProps {
   /** Tighter rows for the desktop side panel. */
   compact?: boolean
+  /** Phone tab: the "Unreads" chip shares a baseline with the floating "+" on the right. */
+  withFloatingCreate?: boolean
 }
 
-export function ActivityFeed({ compact = false }: ActivityFeedProps) {
+export function ActivityFeed({ compact = false, withFloatingCreate = false }: ActivityFeedProps) {
   const router = useRouter()
   const workspace = useWorkspaceInView()
   const workspaceId = workspace?.id ?? null
+  // Reactions can use the workspace's custom emoji, so have them loaded.
+  useCustomEmojiFeed(workspaceId)
   const focused = useFocused()
   const [filter, setFilter] = useState<ActivityFilter>('all')
   const [unreadOnly, setUnreadOnly] = useState(false)
@@ -242,10 +247,21 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
           onPress={() => setUnreadOnly((v) => !v)}
           className={cn(
             // Phones keep the right corner for the floating "+".
-            compact ? 'absolute bottom-4 right-4' : 'absolute bottom-7 left-4',
+            compact
+              ? 'absolute bottom-4 right-4'
+              // Sized and centred on the floating "+" (see style below).
+              : withFloatingCreate
+                ? 'absolute left-4'
+                : 'absolute bottom-7 left-4',
             'rounded-full border px-4 py-2 shadow-sm',
             unreadOnly ? 'border-primary bg-primary' : 'border-border bg-card active:bg-accent/50',
           )}
+          style={
+            withFloatingCreate && !compact
+              // 40pt tall, centred on the 56pt "+" (measured: this container ends ~4pt above its).
+              ? { bottom: 32, height: 40, justifyContent: 'center', paddingVertical: 0, paddingHorizontal: 18 }
+              : undefined
+          }
         >
           <Text className={cn('text-xs font-medium', unreadOnly ? 'text-primary-foreground' : 'text-foreground')}>Unreads</Text>
         </Pressable>
@@ -323,6 +339,13 @@ function FeedSectionHeader({ row, compact }: { row: FeedHeaderRow; compact: bool
   )
 }
 
+/** The emoji a reaction used, so the row says what happened instead of a generic heart. */
+function ReactionEmoji({ emoji }: { emoji: string }) {
+  const custom = customEmojiFor(emoji, useCustomEmoji())
+  if (custom) return <Image source={{ uri: custom.url }} style={{ width: 20, height: 20 }} accessibilityLabel={emoji} />
+  return <Text style={{ fontSize: 16 }} accessibilityLabel={emoji}>{emoji}</Text>
+}
+
 function ActivityRow({ entry, compact, onPress }: { entry: ActivityEntry; compact: boolean; onPress: () => void }) {
   const Icon = KIND_ICON[entry.kind as InboxKind] ?? MessageSquare
   const failed = entry.agent?.state === 'failed'
@@ -337,7 +360,7 @@ function ActivityRow({ entry, compact, onPress }: { entry: ActivityEntry; compac
         <AgentMark />
       ) : (
         <View style={{ width: 32, height: 32 }} className="items-center justify-center rounded-lg bg-muted">
-          <Icon size={16} className="text-muted-foreground" />
+          {entry.emoji ? <ReactionEmoji emoji={entry.emoji} /> : <Icon size={16} className="text-muted-foreground" />}
         </View>
       )}
       <View className="min-w-0 flex-1">

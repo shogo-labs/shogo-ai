@@ -87,14 +87,112 @@ import { isConversationPath } from "../../lib/sidebar-tab";
 csMark("app:layout:module-load");
 
 /**
- * Phone stack screens draw their own header, and the shell behind them owns the
- * canvas, so a pushed screen must not paint an opaque background over it.
+ * Phone stack screens draw their own header. Each paints the canvas colour
+ * itself: transparent screens let the one underneath show through while a
+ * cross-fade or slide is mid-flight, so a quick burst of taps stacks ghosted
+ * pages on top of each other.
  */
 const PHONE_STACK_SCREEN_OPTIONS = {
   headerShown: false,
   animation: "slide_from_right",
-  contentStyle: { backgroundColor: "transparent" },
 } as const;
+
+/**
+ * What the More tab lists. The dock stays up under them, so they cross-fade like
+ * a tab, and their edge swipe is off: dragging one aside dims the page but not
+ * the dock's strip, leaving a white band along the bottom.
+ */
+const PHONE_MORE_DESTINATIONS_LIST = [
+  "analytics",
+  "work",
+  "social",
+  "marketplace",
+  "creator",
+  "starred",
+  "shared",
+];
+
+/**
+ * Screens the bottom nav switches between. The nav bar is a persistent layer
+ * outside the stack, so sliding a whole page in dims and moves everything
+ * except the strip the nav sits on, leaving a white band along the bottom for
+ * the length of the transition. Peer destinations cross-fade instead, as a tab
+ * bar does; real drill-downs keep the slide.
+ */
+const PHONE_TAB_ROUTES = new Set([
+  // The Chat tab lands on the app index; inside a project, the Chat / Canvas /
+  // Files / Plans tabs switch between these two.
+  "index",
+  "project-chat",
+  "project-surface",
+  "agent",
+  "meetings",
+  "goals",
+  "activity",
+  "tasks",
+  "canvases",
+  // The team dock's tabs.
+  "home",
+  "more",
+  ...PHONE_MORE_DESTINATIONS_LIST,
+]);
+
+/**
+ * Full route names that cross-fade although their first segment also holds
+ * real drill-downs: the DMs tab, and a conversation, which is full-bleed with
+ * the dock drawn over it (sliding it leaves a white band where the dock is).
+ */
+const PHONE_TAB_SCREENS = new Set(["c/dms", "c/[conversationId]"]);
+
+const PHONE_TAB_FADE_MS = 140;
+
+/**
+ * Phone screens that bring their own header (a large title, or a title with a
+ * back arrow), so they skip the shared hamburger header and its sidebar drawer.
+ */
+const PHONE_OWN_CHROME_ROUTES = new Set([
+  "analytics",
+  "work",
+  "social",
+  "marketplace",
+  "creator",
+  "starred",
+  "shared",
+  "affiliate",
+  "huddles",
+  "new-workspace",
+  "f",
+]);
+
+/**
+ * The edge swipe pops the stack, and these screens are peers the dock switches
+ * between rather than drill-downs, so it would reveal whichever tab came before
+ * and snap back. Workspace chat also owns a finger-following sessions drawer on
+ * a right swipe, so one swipe would do two things. Home stays a tap away on the
+ * dock. Everything in `PHONE_TAB_ROUTES` has it off, plus the DMs tab (the rest
+ * of `c/` are conversations you drill into).
+ */
+const PHONE_NO_BACK_SWIPE_SCREENS = new Set(["c/dms"]);
+
+const phoneStackScreenOptions = (canvas: string) => ({ route }: { route: { name: string } }) => ({
+  ...PHONE_STACK_SCREEN_OPTIONS,
+  contentStyle: { backgroundColor: canvas },
+  // Only read for `fade`: a short dissolve, so a quick run of tab taps never
+  // sits on two half-visible pages.
+  animationDuration: PHONE_TAB_FADE_MS,
+  gestureEnabled:
+    !PHONE_NO_BACK_SWIPE_SCREENS.has(route.name) &&
+    !PHONE_TAB_ROUTES.has(route.name.split("/")[0]),
+  animation:
+    // On a phone `/settings` only redirects to `/account`. Sliding it in would
+    // show an empty page before the redirect lands, so it appears instantly
+    // and `/account` does the sliding.
+    route.name === "settings"
+      ? ("none" as const)
+      : PHONE_TAB_SCREENS.has(route.name) || PHONE_TAB_ROUTES.has(route.name.split("/")[0])
+        ? ("fade" as const)
+        : PHONE_STACK_SCREEN_OPTIONS.animation,
+});
 
 function AppLayoutInner() {
   csMark("app:layout:render");
@@ -133,6 +231,10 @@ function AppLayoutInner() {
   const isPhone = usePhoneLayout();
   const phoneSheetOpen = useNativePhoneSheetOpen();
   const nativeDrawerCanvas = nativePhoneCanvas(isDark);
+  const stackScreenOptions = useMemo(
+    () => phoneStackScreenOptions(nativeDrawerCanvas),
+    [nativeDrawerCanvas],
+  );
   const isWide = !isNativeApp && width >= WEB_WIDE_MIN_WIDTH;
   // Phones get a real navigator so a screen you go into is pushed over Home and
   // back pops it; desktop and wide web (and tablets) keep the flat Slot.
@@ -215,10 +317,18 @@ function AppLayoutInner() {
   const isSettingsPage =
     pathname === "/settings" || pathname === "/(app)/settings";
   const isSearchPage = pathname === "/search" || pathname === "/(app)/search";
+  // "Search messages" and "Browse channels", opened from Home's lists, draw
+  // their own phone header with a back arrow.
+  const isTeamChatSubpage =
+    !isWide && !isIdeEmbed && isPhone && /\/c(\/search)?\/?$/.test(pathname);
   const isProjectChatsPage =
     pathname === "/project-chats" || pathname === "/(app)/project-chats";
   const isAIModelsPage =
     pathname === "/ai-models" || pathname === "/(app)/ai-models";
+  const isMeetingsPage = /\/meetings\/?$/.test(pathname);
+  // These pad for the status bar themselves (TabScreen or safe-area insets), so
+  // the shell must not add the inset a second time.
+  const isSelfInsetPage = /\/(analytics|work|social)\/?$/.test(pathname);
   const isNonChatWorkspacePage = [
     "/tasks",
     "/activity",
@@ -226,6 +336,12 @@ function AppLayoutInner() {
     "/goals",
     "/meetings",
   ].some((segment) => pathname.includes(segment));
+  // Screens that draw their own title or back arrow. Wrapping them in the
+  // legacy hamburger header stacked two headers and opened the full AppSidebar,
+  // a different left drawer from the rest of the phone app.
+  const isOwnChromePage = PHONE_OWN_CHROME_ROUTES.has(
+    pathname.split("/").filter((part) => part && part !== "(app)")[0] ?? "",
+  );
 
   usePostHogIdentify();
   const posthog = usePostHogSafe();
@@ -328,11 +444,13 @@ function AppLayoutInner() {
     void refresh();
     const timer = setInterval(() => void refresh(), 5 * 60_000);
     const onFocus = () => void refresh(true);
-    if (typeof window !== "undefined") window.addEventListener("focus", onFocus);
+    // `window` exists on native but has no `addEventListener`.
+    const hasWindowEvents = typeof window !== "undefined" && typeof window.addEventListener === "function";
+    if (hasWindowEvents) window.addEventListener("focus", onFocus);
     return () => {
       unsubscribe();
       clearInterval(timer);
-      if (typeof window !== "undefined") window.removeEventListener("focus", onFocus);
+      if (hasWindowEvents) window.removeEventListener("focus", onFocus);
     };
   }, [localMode, isAuthenticated, workspaces]);
 
@@ -377,8 +495,10 @@ function AppLayoutInner() {
     isProjectChatsPage ||
     isAIModelsPage ||
     isNonChatWorkspacePage ||
+    isOwnChromePage ||
     isTeamTabScreen ||
     isNewConversationPage ||
+    isTeamChatSubpage ||
     isFloatingConversation;
   // The companion mobile shell owns its own drawer and swipe gesture. Keep
   // the legacy sheet drawer inactive there so an edge swipe cannot reveal the
@@ -512,10 +632,15 @@ function AppLayoutInner() {
       !isIdeEmbed &&
       (isHomePage ||
         isTeamTabScreen ||
+        isSelfInsetPage ||
+        isTeamChatSubpage ||
+        isMeetingsPage ||
         isSearchPage ||
         isAccountPage ||
         isNotificationsPage ||
-        useMobileWorkspaceShell));
+        // A project page's header pads for nothing itself (4pt), so the shell
+        // has to keep it below the status bar.
+        (useMobileWorkspaceShell && !isProjectDetail)));
 
   return (
     <TeamChatSidebarProvider
@@ -580,10 +705,10 @@ function AppLayoutInner() {
           key={activeWorkspace?.id ?? "workspace-loading"}
           enabled={useMobileWorkspaceShell}
         >
-          {phoneStack ? <Stack screenOptions={PHONE_STACK_SCREEN_OPTIONS} /> : <Slot />}
+          {phoneStack ? <Stack screenOptions={stackScreenOptions} /> : <Slot />}
         </MobileWorkspaceShell>
       ) : phoneStack ? (
-        <Stack screenOptions={PHONE_STACK_SCREEN_OPTIONS} />
+        <Stack screenOptions={stackScreenOptions} />
       ) : (
         <Slot />
       )}

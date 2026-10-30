@@ -28,7 +28,12 @@ export const SOCIAL_RELAY_PATH = '/api/social-relay'
  * one Zernio profile per local workspace; absent/empty for the cloud scope.
  */
 export const LOCAL_SCOPE_HEADER = 'x-shogo-local-workspace'
-const REQUEST_TIMEOUT_MS = 15_000
+export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
+/**
+ * A create-post carries the media and waits for the platform to accept it, so it
+ * gets a budget of its own: 15 s is enough for a read, not for a 34 MB reel.
+ */
+export const CREATE_POST_TIMEOUT_MS = 120_000
 const MAX_RETRY_AFTER_MS = 5_000
 
 export type SocialMode = 'cloud' | 'relay' | 'byok'
@@ -43,6 +48,12 @@ export interface ZernioRequest {
   body?: unknown
   /** Sent as `Idempotency-Key`; Zernio dedupes same-key writes. */
   idempotencyKey?: string
+  /**
+   * How long to wait for the provider. Defaults to
+   * `DEFAULT_REQUEST_TIMEOUT_MS`; a publish passes `CREATE_POST_TIMEOUT_MS`
+   * because it uploads media before the platform answers.
+   */
+  timeoutMs?: number
 }
 
 export interface SocialClient {
@@ -249,7 +260,7 @@ function createHttpSocialClient(config: SocialClientConfig): SocialClient {
             method: req.method,
             headers,
             body: req.body === undefined ? undefined : JSON.stringify(req.body),
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            signal: AbortSignal.timeout(req.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
           })
         } catch (err) {
           const timedOut = err instanceof Error && err.name === 'TimeoutError'

@@ -100,8 +100,23 @@ function Swatch({
   )
 }
 
-/** Body colour: follow the app accent, a swatch, or (web) any colour. */
-function ColorOptions({ look, onChange, color }: { look: BuddyLook; onChange: (look: BuddyLook) => void; color: string }) {
+/**
+ * Body colour: follow the app accent, a swatch, or (web) any colour.
+ * `swatchesPerRow` lays the swatches out in fixed rows of their own instead of
+ * one wrapping list: a wrapping list measured a row short on iOS and clipped
+ * the last row of swatches.
+ */
+function ColorOptions({
+  look,
+  onChange,
+  color,
+  swatchesPerRow,
+}: {
+  look: BuddyLook
+  onChange: (look: BuddyLook) => void
+  color: string
+  swatchesPerRow?: number
+}) {
   const custom = look.color !== null && !BUDDY_COLORS.some((c) => c.color === look.color)
   const dot = (fill: string) => (
     <View
@@ -115,19 +130,35 @@ function ColorOptions({ look, onChange, color }: { look: BuddyLook; onChange: (l
       }}
     />
   )
+  const swatches = BUDDY_COLORS.map((c) => (
+    <Swatch
+      key={c.color}
+      label={c.label}
+      active={look.color === c.color}
+      onPress={() => onChange({ ...look, color: c.color })}
+    >
+      {dot(c.color)}
+    </Swatch>
+  ))
+  const matchTheme = <Chip label="Match theme" active={look.color === null} onPress={() => onChange({ ...look, color: null })} />
+  if (swatchesPerRow) {
+    const rows: ReactNode[][] = []
+    for (let i = 0; i < swatches.length; i += swatchesPerRow) rows.push(swatches.slice(i, i + swatchesPerRow))
+    return (
+      <View className="gap-2">
+        <View className="flex-row">{matchTheme}</View>
+        {rows.map((row, index) => (
+          <View key={index} className="flex-row gap-2">
+            {row}
+          </View>
+        ))}
+      </View>
+    )
+  }
   return (
     <>
-      <Chip label="Match theme" active={look.color === null} onPress={() => onChange({ ...look, color: null })} />
-      {BUDDY_COLORS.map((c) => (
-        <Swatch
-          key={c.color}
-          label={c.label}
-          active={look.color === c.color}
-          onPress={() => onChange({ ...look, color: c.color })}
-        >
-          {dot(c.color)}
-        </Swatch>
-      ))}
+      {matchTheme}
+      {swatches}
       {Platform.OS === "web" ? (
         <Swatch label="Custom colour" active={custom}>
           <label
@@ -189,6 +220,12 @@ interface BuddyCustomizerProps {
    * phone layout: pinned preview, preset strip and one category at a time.
    */
   layout?: "full" | "compact"
+  /**
+   * Compact only: let the options run to their full height instead of
+   * scrolling in a box of their own. For a customizer that sits on a page that
+   * already scrolls, where a nested scroller clips the last row.
+   */
+  inline?: boolean
 }
 
 /** Hops the preview whenever the look changes after the first render. */
@@ -219,6 +256,8 @@ const COMPACT_CATEGORIES: { id: CompactCategory; label: string }[] = [
 
 /** Fixed so the sheet doesn't resize as the options change between tabs. */
 const COMPACT_OPTIONS_HEIGHT = 168
+/** Swatches (40pt each, 8pt apart) that fit across the narrowest phone. */
+const SWATCHES_PER_ROW = 6
 
 function PresetThumb({
   preset,
@@ -257,6 +296,15 @@ function PresetThumb({
   )
 }
 
+function CompactOptions({ inline, children }: { inline?: boolean; children: ReactNode }) {
+  if (inline) return <View>{children}</View>
+  return (
+    <ScrollView style={{ height: COMPACT_OPTIONS_HEIGHT }} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+      {children}
+    </ScrollView>
+  )
+}
+
 function CompactBuddyCustomizer({
   look,
   onChange,
@@ -264,6 +312,7 @@ function CompactBuddyCustomizer({
   finish,
   state = "idle",
   previewSize = 130,
+  inline,
 }: BuddyCustomizerProps) {
   const preview = usePreviewHop(look)
   const [category, setCategory] = useState<CompactCategory>("color")
@@ -327,79 +376,85 @@ function CompactBuddyCustomizer({
         })}
       </View>
 
-      <ScrollView style={{ height: COMPACT_OPTIONS_HEIGHT }} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
-        <View className="flex-row flex-wrap items-center gap-2 pb-1">
-          {category === "color" && (
-            <>
+      <CompactOptions inline={inline}>
+        {/* Finishes and colours wrap in containers of their own: one wrapped
+            list with a full-width spacer between them mis-measured on iOS and
+            clipped the last row of swatches. */}
+        {category === "color" && (
+          <View className="gap-3 pb-1">
+            <View className="flex-row flex-wrap items-center gap-2">
               <FinishOptions look={look} onChange={onChange} />
-              <View className="h-1 w-full" />
-              <ColorOptions look={look} onChange={onChange} color={color} />
-            </>
-          )}
-          {category === "top" &&
-            BUDDY_TOPPER_NAMES.map((name) => (
-              <Chip
-                key={name}
-                label={BUDDY_TOPPERS[name]}
-                active={look.topper === name}
-                onPress={() => onChange({ ...look, topper: name })}
-              />
-            ))}
-          {category === "face" &&
-            BUDDY_FACE_NAMES.map((name) => (
-              <Chip
-                key={name}
-                label={BUDDY_FACES[name]}
-                active={look.face === name}
-                onPress={() => onChange({ ...look, face: name })}
-              />
-            ))}
-          {category === "eyes" && (
-            <>
-              {!classic ? <Text className="w-full text-xs text-muted-foreground">Needs the Classic face.</Text> : null}
-              {BUDDY_EYEWEAR_NAMES.map((name) => (
+            </View>
+            <ColorOptions look={look} onChange={onChange} color={color} swatchesPerRow={SWATCHES_PER_ROW} />
+          </View>
+        )}
+        {category !== "color" && (
+          <View className="flex-row flex-wrap items-center gap-2 pb-1">
+            {category === "top" &&
+              BUDDY_TOPPER_NAMES.map((name) => (
                 <Chip
                   key={name}
-                  label={BUDDY_EYEWEAR[name]}
-                  active={look.eyewear === name}
-                  disabled={!classic && name !== "none"}
-                  onPress={() => onChange({ ...look, eyewear: name })}
+                  label={BUDDY_TOPPERS[name]}
+                  active={look.topper === name}
+                  onPress={() => onChange({ ...look, topper: name })}
                 />
               ))}
-            </>
-          )}
-          {category === "tail" &&
-            BUDDY_TAIL_NAMES.map((name) => (
-              <Chip
-                key={name}
-                label={BUDDY_TAILS[name]}
-                active={look.tail === name}
-                onPress={() => onChange({ ...look, tail: name })}
-              />
-            ))}
-          {category === "neck" &&
-            BUDDY_NECK_NAMES.map((name) => (
-              <Chip
-                key={name}
-                label={BUDDY_NECKS[name]}
-                active={look.neck === name}
-                onPress={() => onChange({ ...look, neck: name })}
-              />
-            ))}
-          {category === "extras" && (
-            <>
-              <Chip label="Ear bolts" active={look.bolts} onPress={() => onChange({ ...look, bolts: !look.bolts })} />
-              <Chip
-                label="Blush"
-                active={look.blush && classic}
-                disabled={!classic}
-                onPress={() => onChange({ ...look, blush: !look.blush })}
-              />
-              {!classic ? <Text className="w-full text-xs text-muted-foreground">Blush needs the Classic face.</Text> : null}
-            </>
-          )}
-        </View>
-      </ScrollView>
+            {category === "face" &&
+              BUDDY_FACE_NAMES.map((name) => (
+                <Chip
+                  key={name}
+                  label={BUDDY_FACES[name]}
+                  active={look.face === name}
+                  onPress={() => onChange({ ...look, face: name })}
+                />
+              ))}
+            {category === "eyes" && (
+              <>
+                {!classic ? <Text className="w-full text-xs text-muted-foreground">Needs the Classic face.</Text> : null}
+                {BUDDY_EYEWEAR_NAMES.map((name) => (
+                  <Chip
+                    key={name}
+                    label={BUDDY_EYEWEAR[name]}
+                    active={look.eyewear === name}
+                    disabled={!classic && name !== "none"}
+                    onPress={() => onChange({ ...look, eyewear: name })}
+                  />
+                ))}
+              </>
+            )}
+            {category === "tail" &&
+              BUDDY_TAIL_NAMES.map((name) => (
+                <Chip
+                  key={name}
+                  label={BUDDY_TAILS[name]}
+                  active={look.tail === name}
+                  onPress={() => onChange({ ...look, tail: name })}
+                />
+              ))}
+            {category === "neck" &&
+              BUDDY_NECK_NAMES.map((name) => (
+                <Chip
+                  key={name}
+                  label={BUDDY_NECKS[name]}
+                  active={look.neck === name}
+                  onPress={() => onChange({ ...look, neck: name })}
+                />
+              ))}
+            {category === "extras" && (
+              <>
+                <Chip label="Ear bolts" active={look.bolts} onPress={() => onChange({ ...look, bolts: !look.bolts })} />
+                <Chip
+                  label="Blush"
+                  active={look.blush && classic}
+                  disabled={!classic}
+                  onPress={() => onChange({ ...look, blush: !look.blush })}
+                />
+                {!classic ? <Text className="w-full text-xs text-muted-foreground">Blush needs the Classic face.</Text> : null}
+              </>
+            )}
+          </View>
+        )}
+      </CompactOptions>
     </View>
   )
 }

@@ -12,6 +12,7 @@ import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, Vi
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { PhoneBackButton } from '../../components/layout/PhoneBackButton'
 import { KanbanSquare, List, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
@@ -198,6 +199,7 @@ export default observer(function MyWorkScreen() {
   const list = (
     <View className="min-w-0 flex-1">
       <View className="flex-row items-center gap-2 px-4 pb-2" style={{ paddingTop: insets.top + 8 }}>
+        <PhoneBackButton />
         <Text className="flex-1 text-[28px] font-bold leading-9 text-foreground" accessibilityRole="header">My work</Text>
         <View className="flex-row rounded-md border border-border" accessibilityRole="tablist">
           <ModeButton label="List" active={mode === 'list'} onPress={() => setMode('list')} icon={<List size={14} className={mode === 'list' ? 'text-foreground' : 'text-muted-foreground'} />} />

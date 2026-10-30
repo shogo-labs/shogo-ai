@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import React, { forwardRef } from 'react';
+import React, { forwardRef, useEffect, useRef } from 'react';
 import type { VariantProps } from '@gluestack-ui/utils/nativewind-utils';
 import { Animated, Easing, Platform, View } from 'react-native';
 import { skeletonStyle, skeletonTextStyle } from './styles';
@@ -34,50 +34,41 @@ const Skeleton = forwardRef<
   },
   ref
 ) {
-  const pulseAnim = new Animated.Value(1);
-  const customTimingFunction = Easing.bezier(0.4, 0, 0.6, 1);
-  const fadeDuration = 0.6;
-  const animationDuration = (fadeDuration * 10000) / Number(speed); // Convert seconds to milliseconds
+  // One value for the life of the component; the loop is started in an effect,
+  // not on every render (that restarted the pulse each time a parent updated).
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const animationDuration = (0.6 * 10000) / Number(speed); // seconds → ms
 
-  const pulse = Animated.sequence([
-    Animated.timing(pulseAnim, {
-      toValue: 1, // Start with opacity 1
-      duration: animationDuration / 2, // Third of the animation duration
-      easing: customTimingFunction,
-      useNativeDriver: Platform.OS !== 'web',
-    }),
-    Animated.timing(pulseAnim, {
-      toValue: 0.75,
-      duration: animationDuration / 2, // Third of the animation duration
-      easing: customTimingFunction,
-      useNativeDriver: Platform.OS !== 'web',
-    }),
-    Animated.timing(pulseAnim, {
-      toValue: 1,
-      duration: animationDuration / 2, // Third of the animation duration
-      easing: customTimingFunction,
-      useNativeDriver: Platform.OS !== 'web',
-    }),
-  ]);
+  useEffect(() => {
+    if (isLoaded) return;
+    const easing = Easing.bezier(0.4, 0, 0.6, 1);
+    const step = (toValue: number) =>
+      Animated.timing(pulseAnim, {
+        toValue,
+        duration: animationDuration / 2,
+        easing,
+        useNativeDriver: Platform.OS !== 'web',
+      });
+    const loop = Animated.loop(Animated.sequence([step(0.75), step(1)]));
+    loop.start();
+    return () => {
+      loop.stop();
+      pulseAnim.setValue(1);
+    };
+  }, [animationDuration, isLoaded, pulseAnim]);
 
-  if (!isLoaded) {
-    Animated.loop(pulse).start();
-    return (
-      <Animated.View
-        style={{ opacity: pulseAnim }}
-        className={`${startColor} ${skeletonStyle({
-          variant,
-          class: className,
-        })}`}
-        {...props}
-        ref={ref}
-      />
-    );
-  } else {
-    Animated.loop(pulse).stop();
-
-    return children;
-  }
+  if (isLoaded) return children;
+  return (
+    <Animated.View
+      style={{ opacity: pulseAnim }}
+      className={`${startColor} ${skeletonStyle({
+        variant,
+        class: className,
+      })}`}
+      {...props}
+      ref={ref}
+    />
+  );
 });
 
 const SkeletonText = forwardRef<

@@ -56,7 +56,7 @@ describe('tabForPathname', () => {
     expect(tabForPathname('/activity')).toBe('activity')
     expect(tabForPathname('/meetings/m1')).toBe('meetings')
     expect(tabForPathname('/goals')).toBe('goals')
-    for (const path of ['/tasks', '/canvases', '/marketplace/some-agent', '/files']) {
+    for (const path of ['/tasks', '/canvases', '/marketplace/some-agent', '/files', '/analytics', '/work', '/social', '/creator', '/starred', '/shared']) {
       expect(tabForPathname(path)).toBe('more')
     }
   })
@@ -82,7 +82,7 @@ describe('tabForPathname', () => {
 
   test('does not mistake a path that merely starts with c for chat', () => {
     expect(tabForPathname('/canvases')).toBe('more')
-    expect(tabForPathname('/creator')).toBeNull()
+    expect(tabForPathname('/cards')).toBeNull()
   })
 })
 

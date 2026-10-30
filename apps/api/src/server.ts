@@ -28,6 +28,7 @@ import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './l
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceExportRoutes } from './routes/workspace-export'
+import { workspaceMoveRoutes } from './routes/workspace-moves'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
@@ -242,6 +243,7 @@ const STRIPE_API_VERSION: any = cloud.STRIPE_API_VERSION
 const resolveInvoiceSubscriptionId: any = cloud.resolveInvoiceSubscriptionId ?? (() => null)
 const proxyToPeer: any = cloud.proxyToPeer ?? (async () => new Response('Cloud peer routing unavailable', { status: 503 }))
 const publishRoutes: any = cloud.publishRoutes ?? emptyRouter
+const publishedSitesRoutes: any = cloud.publishedSitesRoutes ?? emptyRouter
 const slackAgentRoutes: any = cloud.slackAgentRoutes ?? emptyRouter
 const projectAdminRoutes: any = cloud.projectAdminRoutes ?? emptyRouter
 const publicApiRoutes: any = cloud.publicApiRoutes ?? emptyRouter
@@ -1655,6 +1657,10 @@ app.route('/api', workspaceAgentRoutes({
 // files). Mounted before the rest of the `/api/workspaces` routes so
 // `POST /api/workspaces/import` is never shadowed by a `:workspaceId` route.
 app.route('/api/workspaces', workspaceExportRoutes())
+// Desktop <-> cloud workspace move: the driver's own endpoints plus the
+// `/serve` and `/receive` halves the other side of the link calls. Mounted on
+// both composers so a move can never work in one direction only.
+app.route('/api/workspace-moves', workspaceMoveRoutes())
 app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
 app.route('/api', sharedMeetingRoutes())
 // Workspace channels (team chat with @mentionable agents).
@@ -1927,6 +1933,49 @@ app.post('/api/projects/:projectId/republish', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.raw.body,
   })
+  return router.fetch(newReq)
+})
+
+// Desktop publishing (SHO-245): the desktop builds the bundle on the user's
+// machine and uploads it here, and these routes host it. API-key auth only —
+// machine-to-machine, never the browser.
+app.post('/api/published-sites/:sourceProjectId', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.patch('/api/published-sites/:sourceProjectId', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}`
+  const newReq = new Request(url.toString(), {
+    method: 'PATCH',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.post('/api/published-sites/:sourceProjectId/unpublish', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/unpublish`
+  const newReq = new Request(url.toString(), { method: 'POST', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.get('/api/published-sites/:sourceProjectId', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
   return router.fetch(newReq)
 })
 

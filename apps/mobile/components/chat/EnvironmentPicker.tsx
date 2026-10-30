@@ -36,6 +36,7 @@ import { authClient } from "../../lib/auth-client"
 import { useComposerPlusClose } from "./ComposerPlusMenu"
 import { WebTooltip } from "./WebTooltip"
 import { useIsNativePhoneLayout } from "../../lib/native-phone-layout"
+import { Spin } from "@/components/ui/Spin";
 
 function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === "web") return {}
@@ -110,10 +111,12 @@ export function EnvironmentPicker({ disabled, prominentMobile = false, compactMo
               accessibilityLabel="Refresh instances"
               className="h-5 w-5 items-center justify-center rounded hover:bg-muted/40"
             >
-              <RefreshCw
-                className={cn("h-3 w-3 text-muted-foreground", loading && "animate-spin")}
-                size={10}
-              />
+              <Spin active={loading}>
+                <RefreshCw
+                  className={cn("h-3 w-3 text-muted-foreground", loading && "animate-spin")}
+                  size={10}
+                />
+              </Spin>
             </Pressable>
           </View>
 

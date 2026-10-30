@@ -74,7 +74,7 @@ const ProjectRow = memo(function ProjectRow({
       accessibilityRole="link"
       accessibilityLabel={project.name}
       onPress={() => onOpen(project)}
-      className="flex-row items-center gap-2.5 rounded-md px-2 py-2 active:bg-accent/50"
+      className="flex-row items-center gap-3 rounded-md px-3 py-2 active:bg-accent/50"
     >
       <Folder size={16} className="text-muted-foreground" />
       <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
@@ -91,7 +91,7 @@ const FailedRow = memo(function FailedRow({ entry, onOpen }: { entry: ActivityEn
       accessibilityRole="button"
       accessibilityLabel={`${entry.title}, failed`}
       onPress={() => onOpen(entry)}
-      className="rounded-md px-2 py-2 active:bg-accent/50"
+      className="rounded-md px-3 py-2 active:bg-accent/50"
     >
       <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
         {entry.title}
@@ -199,6 +199,17 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
     return list
   }, [workspaceId, rows.length, unlisted, mentions, starred, unread, recent, router, chat.enabled, channels])
 
+  // A collapsed section keeps its header and hands the list no rows.
+  const visibleSections = useMemo<HomeSection[]>(
+    () =>
+      sections.map((section) =>
+        section.label && !section.fixed && (collapsed[section.key] ?? section.defaultCollapsed ?? false)
+          ? { ...section, data: [] }
+          : section,
+      ),
+    [sections, collapsed],
+  )
+
   const renderItem = useCallback(
     ({ item }: { item: HomeRow }) => {
       switch (item.kind) {
@@ -223,7 +234,7 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
         case 'link':
           return <PanelLink icon={item.icon} label={item.label} onPress={item.onPress} />
         case 'empty':
-          return <Text className="px-2 py-1 text-sm text-muted-foreground">{item.text}</Text>
+          return <Text className="px-3 py-1 text-sm text-muted-foreground">{item.text}</Text>
       }
     },
     [workspaceId, rows, openEntry, activeId, openConversation, comfortable, openProject],
@@ -260,12 +271,12 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
     >
       <SectionList
         testID="home-sections"
-        sections={sections}
+        sections={visibleSections}
         keyExtractor={keyExtractor}
         renderItem={renderItem}
         renderSectionHeader={renderSectionHeader}
         stickySectionHeadersEnabled={false}
-        contentContainerClassName="pb-36"
+        contentContainerClassName="px-1 pb-36"
         initialNumToRender={12}
         maxToRenderPerBatch={8}
         windowSize={7}
@@ -276,7 +287,7 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
             accessibilityRole="button"
             accessibilityLabel="Ask the workspace agent"
             onPress={() => router.push('/(app)/agent' as any)}
-            className="mx-4 mb-3 mt-1 flex-row items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3.5 active:bg-accent/50"
+            className="mx-3 mb-3 mt-1 flex-row items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3.5 active:bg-accent/50"
           >
             <Sparkles size={18} className="text-primary" />
             <Text className="flex-1 text-base text-muted-foreground">Ask the workspace agent…</Text>

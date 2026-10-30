@@ -42,7 +42,7 @@ export function AgentsSection({ rows, workspaceId }: { rows: AgentRow[]; workspa
   const waiting = rows.filter((r) => r.state === 'needs_you').length
   return (
     <View testID="agents-section">
-      <View className="flex-row items-center gap-2 px-4 pb-2 pt-2">
+      <View className="flex-row items-center gap-2 px-3 pb-2 pt-2">
         <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{`Agents · ${rows.length}`}</Text>
         {waiting > 0 ? (
           <View className="rounded-full bg-amber-500/20 px-2 py-0.5">

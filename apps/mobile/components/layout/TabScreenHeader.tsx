@@ -23,10 +23,13 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Plus } from 'lucide-react-native'
 import { CreateMenu } from './CreateMenu'
+import { PhoneBackButton } from './PhoneBackButton'
 import { ProfileMenu } from './ProfileMenu'
 
 export interface TabScreenHeaderProps {
   title: string
+  /** Screens you go into from the More tab show a back arrow before the title. */
+  back?: boolean
   /** Left-most control. Home puts the workspace avatar (the sidebar's only button) here. */
   leading?: ReactNode
   /** Extra controls left of the avatar. */
@@ -82,7 +85,7 @@ export function TabScreenScrollView({ onScroll, ...props }: ScrollViewProps) {
   )
 }
 
-export function TabScreenHeader({ title, leading, actions, titleSlot }: TabScreenHeaderProps) {
+export function TabScreenHeader({ title, back, leading, actions, titleSlot }: TabScreenHeaderProps) {
   const insets = useSafeAreaInsets()
   const binding = useContext(ScrollContext)
   const style = binding
@@ -97,6 +100,7 @@ export function TabScreenHeader({ title, leading, actions, titleSlot }: TabScree
   return (
     <View className="flex-row items-center justify-between px-4 pb-2" style={{ paddingTop: insets.top + 8 }} testID="tab-screen-header">
       <View className="min-w-0 flex-1 flex-row items-center gap-2">
+        {back ? <PhoneBackButton /> : null}
         {leading}
         <Animated.View className="min-w-0 flex-1 pr-3" style={style as any}>
           {titleSlot ?? (

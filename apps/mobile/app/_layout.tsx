@@ -10,10 +10,15 @@ import "../global.css";
 csMark("root:layout:after-global-css");
 import "../lib/icon-interop";
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { Stack } from "expo-router";
+import {
+  DarkTheme,
+  DefaultTheme,
+  Stack,
+  ThemeProvider as NavigationThemeProvider,
+} from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useColorScheme } from "react-native";
 import * as Sentry from "@sentry/react-native";
@@ -71,6 +76,7 @@ import { ActiveInstanceProvider } from "../contexts/active-instance";
 import { InstanceOfflineWatcher } from "../components/instance/InstanceOfflineWatcher";
 import { PostHogProvider } from "../contexts/posthog";
 import { ThemeProvider, useTheme, resolveThemeMode } from "../contexts/theme";
+import { nativePhoneCanvas } from "../lib/native-phone-layout";
 import { AccentThemeProvider } from "../contexts/accent-theme";
 import { AppearanceProvider } from "../contexts/appearance";
 import { BuddyLookProvider } from "../contexts/buddy-look";
@@ -203,7 +209,19 @@ function AuthenticatedAppShell({
   // The huddle window is a bare call surface too: no app banners or modals.
   const bare = island || getHuddleHostBridge() !== null;
 
-  return (
+  // Every navigator paints this behind its screens. The library default is a
+  // light grey, which shows as a white band along the edges of a sliding page
+  // (and around the dock) in dark mode.
+  const canvas = nativePhoneCanvas(statusBarScheme === "dark");
+  const navigationTheme = useMemo(() => {
+    const base = statusBarScheme === "dark" ? DarkTheme : DefaultTheme;
+    return {
+      ...base,
+      colors: { ...base.colors, background: canvas, card: canvas },
+    };
+  }, [statusBarScheme, canvas]);
+
+  const tree = (
     <ActiveInstanceProvider>
       {bare ? null : (
         <>
@@ -226,7 +244,13 @@ function AuthenticatedAppShell({
         {/* Fallback for a file link clicked on a screen with no side pane: it
             opens the app's own viewer instead of a browser tab. */}
         <ShareFileHost>
-          <Stack screenOptions={{ headerShown: false, lazy: true }}>
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              lazy: true,
+              contentStyle: Platform.OS === "web" ? undefined : { backgroundColor: canvas },
+            }}
+          >
             <Stack.Screen name="index" />
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="invite/[token]" />
@@ -246,6 +270,12 @@ function AuthenticatedAppShell({
         {!bare && <EnvironmentBadge />}
       </BuddyLookProvider>
     </ActiveInstanceProvider>
+  );
+  // Web and desktop keep the navigation library's own theme.
+  return Platform.OS === "web" ? (
+    tree
+  ) : (
+    <NavigationThemeProvider value={navigationTheme}>{tree}</NavigationThemeProvider>
   );
 }
 

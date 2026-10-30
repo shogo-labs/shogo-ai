@@ -16,18 +16,6 @@ export interface IdeWorkspaceFolderContext {
   path: string
 }
 
-export interface IdeContextAttachment {
-  id: string
-  kind: 'selection' | 'active-file' | 'file' | 'folder'
-  label: string
-  path?: string
-  languageId?: string
-  text?: string
-  startLine?: number
-  endLine?: number
-  truncated?: boolean
-}
-
 export interface IdeFileResult {
   type: 'file' | 'folder'
   path: string
@@ -38,7 +26,6 @@ export interface IdeContextState {
   activeFile?: IdeActiveFileContext
   workspaceFolders: IdeWorkspaceFolderContext[]
   workspaceItems?: IdeFileResult[]
-  storedContext?: IdeContextAttachment[]
 }
 
 export interface IdeReadFileResult {
@@ -49,11 +36,37 @@ export interface IdeReadFileResult {
   error?: string
 }
 
+/**
+ * A reference inserted into the chat composer (mirrors the composer's
+ * `ChatReferenceInput` file / folder / selection variants). Lines are
+ * 1-based and inclusive.
+ */
+export type IdeChatReference =
+  | { type: 'file' | 'folder'; path: string; name: string }
+  | {
+      type: 'selection'
+      path: string
+      name: string
+      startLine: number
+      endLine: number
+      text: string
+      languageId?: string
+      truncated?: boolean
+    }
+
 export type IdeToWebviewMessage =
   | ({ type: 'ide.hostReady' } & Partial<IdeContextState>)
   | ({ type: 'ide.context' } & IdeContextState)
   | { type: 'ide.fileResults'; requestId?: string; items: IdeFileResult[] }
   | { type: 'ide.readFilesResult'; requestId?: string; files: IdeReadFileResult[] }
+
+/** What the chat iframe (apps/mobile ideBridge) receives through the relay. */
+export type LegacyIdeToWebviewMessage =
+  | { type: 'shogo.ide.hostReady' }
+  | ({ type: 'shogo.ide.context' } & IdeContextState)
+  | { type: 'shogo.ide.fileResults'; requestId?: string; items: IdeFileResult[] }
+  | { type: 'shogo.ide.readFilesResult'; requestId?: string; files: IdeReadFileResult[] }
+  | { type: 'shogo.ide.addReferences'; batchId: string; references: IdeChatReference[] }
 
 export type WebviewToIdeMessage =
   | { type: 'webview.ready' }
@@ -68,3 +81,4 @@ export type LegacyIdeMessage =
   | { type: 'shogo.ide.listFiles'; requestId?: string; query?: string }
   | { type: 'shogo.ide.readFiles'; requestId?: string; paths?: string[] }
   | { type: 'shogo.ide.openFile'; path?: string }
+  | { type: 'shogo.ide.referencesAck'; batchId?: string }

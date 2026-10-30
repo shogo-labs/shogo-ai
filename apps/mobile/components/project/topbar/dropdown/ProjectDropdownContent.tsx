@@ -253,6 +253,7 @@ export function ProjectDropdownContent({
         >
           <View className="flex-row items-center px-4 pb-1">
             <NativeCircleButton
+              flat
               icon={X}
               onPress={onClose}
               accessibilityLabel="Close"

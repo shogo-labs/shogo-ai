@@ -110,10 +110,7 @@ export function MobileSettingsSheet({
         />
         <View
           className="max-h-[88%] overflow-hidden rounded-t-[28px] bg-card"
-          style={{
-            height: Math.round(height * 0.86),
-            paddingBottom: Math.max(insets.bottom, 16),
-          }}
+          style={{ height: Math.round(height * 0.86) }}
         >
           <View
             className="items-center pb-2 pt-3"
@@ -174,7 +171,8 @@ export function MobileSettingsSheet({
           ) : (
             <ScrollView
               className="flex-1"
-              contentContainerClassName="px-6 py-3"
+              contentContainerClassName="px-6 pt-3"
+              contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 12 }}
               showsVerticalScrollIndicator={false}
             >
               <WorkspaceAccountActions

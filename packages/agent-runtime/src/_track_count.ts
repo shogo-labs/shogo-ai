@@ -33,6 +33,7 @@ import { KNOWLEDGE_GRAPH_EVALS } from './evals/test-cases-knowledge-graph'
 import { TOKEN_BUDGET_EVALS } from './evals/test-cases-token-budget'
 import { CACHE_EFFICIENCY_EVALS } from './evals/test-cases-cache-efficiency'
 import { PLAN_EVALS } from './evals/test-cases-plans'
+import { ROOT_CAUSE_EVALS } from './evals/test-cases-root-cause'
 
 const tracks = {
   'canvas-v2': CANVAS_V2_EVALS, 'canvas-v2-lint': CANVAS_V2_LINT_EVALS,
@@ -55,7 +56,7 @@ const tracks = {
   'subagent-code': SUBAGENT_CODE_EVALS, 'subagent-ab': SUBAGENT_AB_EVALS,
   'knowledge-graph': KNOWLEDGE_GRAPH_EVALS, 'token-budget': TOKEN_BUDGET_EVALS,
   'cache-efficiency': CACHE_EFFICIENCY_EVALS,
-  plan: PLAN_EVALS,
+  plan: PLAN_EVALS, 'root-cause': ROOT_CAUSE_EVALS,
 }
 let total = 0
 for (const [n, e] of Object.entries(tracks)) {

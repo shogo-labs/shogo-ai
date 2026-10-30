@@ -37,6 +37,7 @@ import { useTurnFooterContext } from "./TurnFooterContext";
 import { formatRelativeTime } from "./turnShaping";
 import { usePhoneLayout } from "../../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext";
+import { Spin } from "@/components/ui/Spin";
 
 /** How often the relative-time label re-renders to stay fresh. */
 const RELATIVE_TIME_TICK_MS = 30_000;
@@ -247,10 +248,12 @@ export const TurnFooter = memo(function TurnFooter({
           accessibilityLabel="Fork conversation from here"
         >
           {forking ? (
-            <Loader2
-              size={actionIconSize}
-              className="text-muted-foreground animate-spin"
-            />
+            <Spin>
+              <Loader2
+                size={actionIconSize}
+                className="text-muted-foreground animate-spin"
+              />
+            </Spin>
           ) : (
             <GitFork
               size={actionIconSize}

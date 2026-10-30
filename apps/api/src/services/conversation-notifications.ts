@@ -126,10 +126,6 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
     add(m.userId, 'mention')
   }
 
-  if (direct) {
-    for (const userId of byUser.keys()) if (!quiet(userId)) add(userId, 'dm')
-  }
-
   if (!direct && row.text) {
     for (const userId of byUser.keys()) {
       if (quiet(userId)) continue
@@ -168,8 +164,21 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
     const followers = [
       ...authors.map((r: any) => r.authorUserId),
       ...mentioned.map((m: any) => m.targetUserId),
+      // A 1:1 DM has two people, and a thread in it is between both of them even
+      // if the other person hasn't replied yet (someone threading under their own
+      // message). Group DMs keep the follower rule above.
+      ...(conversation.kind === 'dm' ? [...byUser.keys()] : []),
     ].filter(Boolean) as string[]
     for (const id of followers) if (!quiet(id)) add(id, 'thread')
+  }
+
+  // Direct conversations come after the thread block: `add` keeps the first
+  // reason it sees, so a reply in a DM thread must be claimed as `thread` by its
+  // followers before the blanket `dm` reason. Otherwise the reply alerts the
+  // person but never reaches Activity (plain DMs only land there when
+  // `dmInActivity` is on).
+  if (direct) {
+    for (const userId of byUser.keys()) if (!quiet(userId)) add(userId, 'dm')
   }
 
   if (!direct && !row.threadRootId) {

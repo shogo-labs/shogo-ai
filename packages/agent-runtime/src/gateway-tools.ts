@@ -125,6 +125,7 @@ import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWit
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
 import { isBinaryFilePath } from '@shogo/shared-runtime'
 import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
+import { missingCodePlanSections } from './plan-sections'
 
 /**
  * Tool-layer wrapper for `assertAllowedPath` that returns a uniform
@@ -798,7 +799,9 @@ function createUnmountProjectTool(ctx: ToolContext): AgentTool {
 // ---------------------------------------------------------------------------
 
 const REMOTE_PROJECT_PARAM_DESCRIPTION =
-  'Run this tool in another project of this workspace (project id or name). Omit for the current project.'
+  'Run this tool in another project of this workspace (project id or name). Omit for the current project. ' +
+  'A file tool that ran in another project answers with `project` and `chatPath` (`<projectId>/<path>`); ' +
+  'when you mention that file in a reply, write its `chatPath`, not the bare path.'
 
 type RemoteTarget = { local: true } | { local: false; id: string; name: string } | { error: string; code: string }
 
@@ -902,6 +905,107 @@ function remoteFailure(err: unknown, project: { id: string; name: string }): Age
 }
 
 /**
+ * File tools whose result names one file the caller may want to open. Only
+ * these are in `REMOTE_TOOL_ALLOWLIST`; `share_file` is not remotable, so its
+ * result never needs placing.
+ */
+const REMOTE_FILE_PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'delete_file'])
+
+/**
+ * The fields that say which project a remote file result belongs to.
+ *
+ * A remote call answers with the target project's own relative path, so the
+ * caller reads `plans/x.md` and quotes it — which resolves nowhere in the
+ * runtime that made the call, so the chat renders no chip and the file viewer
+ * 404s (SHO-247). `chatPath` is that path prefixed with the project it lives
+ * in, which the chat can open. Result fields only: no new tool, no new
+ * parameter.
+ */
+function remoteProjectFileFields(
+  tool: string,
+  args: Record<string, unknown>,
+  details: Record<string, any>,
+  project: { id: string; name: string },
+): Record<string, any> | null {
+  const chatPath = (path: string) => `${project.id}/${path.replace(/^\/+/, '')}`
+  if (tool === 'search') {
+    const hits = Array.isArray(details.results) ? details.results : []
+    if (hits.length === 0) return null
+    return {
+      project,
+      results: hits.map((hit) =>
+        hit && typeof hit === 'object' && typeof hit.path === 'string'
+          ? { ...hit, chatPath: chatPath(hit.path) }
+          : hit,
+      ),
+    }
+  }
+  if (!REMOTE_FILE_PATH_TOOLS.has(tool)) return null
+  const path =
+    typeof details.path === 'string'
+      ? details.path
+      : typeof args.path === 'string'
+        ? args.path
+        : typeof args.filepath === 'string'
+          ? args.filepath
+          : null
+  if (!path) return null
+  return { project, chatPath: chatPath(path) }
+}
+
+/**
+ * Re-serialize the text part that carried `before`, so the model reads the
+ * added fields too — it sees `content`, not `details`. An image read carries
+ * the JSON as its last text part; anything we cannot find is appended.
+ */
+function withAnnotatedText(
+  content: AgentToolResult<any>['content'],
+  before: Record<string, any>,
+  after: Record<string, any>,
+  extra: Record<string, any>,
+): AgentToolResult<any>['content'] {
+  const parts = Array.isArray(content) ? [...content] : []
+  const serialized = JSON.stringify(before)
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index] as { type?: string; text?: unknown }
+    if (part?.type !== 'text' || typeof part.text !== 'string') continue
+    try {
+      if (JSON.stringify(JSON.parse(part.text)) !== serialized) continue
+    } catch {
+      continue
+    }
+    parts[index] = { ...part, text: JSON.stringify(after, null, 2) } as (typeof parts)[number]
+    return parts
+  }
+  parts.push({ type: 'text', text: JSON.stringify(extra, null, 2) } as (typeof parts)[number])
+  return parts
+}
+
+/**
+ * A remote file result, repeated with the project it ran in. Every other
+ * result — a failed call, exec, an unrecognised shape — comes back untouched.
+ */
+function withRemoteProjectResult(
+  tool: string,
+  args: Record<string, unknown>,
+  result: AgentToolResult<any>,
+  project: { id: string; name: string },
+): AgentToolResult<any> {
+  const details = result?.details
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return result
+  const record = details as Record<string, any>
+  if (record.error) return result
+  const extra = remoteProjectFileFields(tool, args, record, project)
+  if (!extra) return result
+  const annotated = { ...record, ...extra }
+  return {
+    ...result,
+    content: withAnnotatedText(result.content, record, annotated, extra),
+    details: annotated,
+  }
+}
+
+/**
  * Add the optional `project` parameter to a remotable tool. Without it the
  * tool runs exactly as before; with another project it runs in that
  * project's own runtime and returns that runtime's result.
@@ -925,7 +1029,11 @@ export function withRemoteProject(tool: AgentTool, ctx: ToolContext): AgentTool 
       if (target.local) return tool.execute(toolCallId, args as any, signal, onUpdate)
       try {
         const result = await callRemoteTool(target.id, tool.name, args, signal)
-        return tool.name === 'exec' ? mirrorRemoteExecTask(ctx, target, args, result) : result
+        const annotated = withRemoteProjectResult(tool.name, args, result, {
+          id: target.id,
+          name: target.name,
+        })
+        return tool.name === 'exec' ? mirrorRemoteExecTask(ctx, target, args, annotated) : annotated
       } catch (err) {
         return remoteFailure(err, { id: target.id, name: target.name })
       }
@@ -4704,6 +4812,26 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         if (res.code === 'plan_not_allowed') {
           return textResult({
             error: 'Publishing to a subdomain requires a Pro (or higher) plan. The chat now shows the user an Upgrade button. Tell them their work is saved and they can publish again once they upgrade; meanwhile they can use the preview URL.',
+            code: res.code,
+          })
+        }
+        if (res.code === 'cloud_signin_required') {
+          return textResult({
+            error:
+              'Publishing needs a Shogo Cloud account: the app is hosted there. The user is not signed in to Shogo Cloud (or the key expired) — tell them to connect Shogo Cloud in Settings, then publish again. Nothing was deployed and their work is safe.',
+            code: res.code,
+          })
+        }
+        if (res.code === 'server_backed_requires_cloud_project') {
+          return textResult({
+            error:
+              'This app has a server (server.tsx / custom-routes.ts), which cannot be hosted from the desktop. Sync the project to Shogo Cloud and publish it there. Do NOT retry publishing from here — the same call will fail again.',
+            code: res.code,
+          })
+        }
+        if (res.code === 'publish_route_missing') {
+          return textResult({
+            error: `${res.error} Do not retry with a different subdomain — the API itself has no publish route.`,
             code: res.code,
           })
         }
@@ -9198,6 +9326,14 @@ function socialPlatformSchema(platforms: SocialPlatformName[]) {
 }
 
 /**
+ * A delete of a live post is one provider call per target (15 s each on the
+ * server), so the tool's own budget has to outlast the work it starts: at 20 s
+ * a three-target take-down could finish at the provider and still time out here,
+ * leaving the agent to report a failure for work that succeeded.
+ */
+const SOCIAL_DELETE_TIMEOUT_MS = 120_000
+
+/**
  * Call the internal social routes — the same handlers the desktop composer and
  * the UI use, so a tool action cannot drift from what a person sees.
  */
@@ -9206,6 +9342,7 @@ async function socialInternalCall(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
   body?: Record<string, unknown>,
+  options: { timeoutMs?: number } = {},
 ): Promise<{ ok: true; data: any } | { ok: false; error: string; code?: string; suggestion?: string }> {
   const workspaceId = ctx.workspaceId
   if (!workspaceId) {
@@ -9220,7 +9357,7 @@ async function socialInternalCall(
         method,
         headers: getInternalHeaders(),
         ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(options.timeoutMs ?? 20_000),
       },
     )
     const data = await response.json().catch(() => ({}))
@@ -9480,6 +9617,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       `"accounts" lists the connected accounts and their ids; ` +
       `"post" publishes or schedules one post to one or more accounts (content, account_ids, media, scheduled_for/publish_now/draft); ` +
       `"posts" lists posts, "calendar" the schedule and "analytics" the numbers; ` +
+      `"delete" takes a post_id and removes a draft, a scheduled or failed post, or a published one — it unpublishes each target the provider can remove, and returns the ones the person has to remove in the Instagram / TikTok / Snapchat app with their links; ` +
       `"inbox" lists DM threads (kind "dms") or comments (kind "comments"); ` +
       `"reply" takes conversation_id + text; "comment_reply" takes comment_id + text; ` +
       `"automate" manages comment→DM automations (automation_action create/list/pause/resume/delete). ` +
@@ -9501,12 +9639,13 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           Type.Literal('accounts'),
           Type.Literal('post'),
           Type.Literal('posts'),
+          Type.Literal('delete'),
           Type.Literal('calendar'),
           Type.Literal('analytics'),
         ],
         {
           description:
-            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | calendar | analytics',
+            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | delete | calendar | analytics',
         },
       ),
       platform: Type.Optional(socialPlatformSchema(platforms)),
@@ -9579,6 +9718,15 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       draft: Type.Optional(
         Type.Boolean({ description: 'For action "post": save as a draft and publish nothing.' }),
       ),
+      post_id: Type.Optional(
+        Type.String({ description: 'For action "delete": the post id from action "posts" or "calendar".' }),
+      ),
+      allow_duplicate: Type.Optional(
+        Type.Boolean({
+          description:
+            'For action "post": publish even though the same content, accounts and media went out in the last 15 minutes. Leave it off — a repeated "post" call for a retry returns the first post instead of publishing a second copy.',
+        }),
+      ),
       tiktok: Type.Optional(
         Type.String({
           description:
@@ -9636,6 +9784,8 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         scheduled_for?: unknown
         publish_now?: unknown
         draft?: unknown
+        post_id?: unknown
+        allow_duplicate?: unknown
         tiktok?: unknown
         expected_username?: unknown
         force_reauth?: unknown
@@ -9662,6 +9812,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         'accounts',
         'post',
         'posts',
+        'delete',
         'calendar',
         'analytics',
       ])
@@ -9813,16 +9964,86 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           ...(params.publish_now === true ? { publishNow: true } : {}),
           ...(isDraft ? { draft: true } : {}),
           ...(tiktok ? { tiktok } : {}),
+          ...(params.allow_duplicate === true ? { allowDuplicate: true } : {}),
         })
         if (!created.ok) return textResult({ error: created.error, suggestion: created.suggestion })
+        const createdPost = created.data?.post
+        // A publish that ran out of budget may already be live. Saying "retry"
+        // here is what produced a second copy of a reel on every account, so the
+        // tool tells the agent to look instead.
+        if (createdPost?.outcome === 'unconfirmed') {
+          return textResult({
+            post: summarizeSocialPost(createdPost),
+            outcome: 'unconfirmed',
+            note:
+              'The publish is not confirmed yet — the provider did not answer in time, and it may well have gone out. ' +
+              'Do NOT post again. Run action "posts" in a minute to see whether it published; if it did, do nothing, and if the person wants it gone use action "delete".',
+          })
+        }
         return textResult({
-          post: summarizeSocialPost(created.data?.post),
+          post: summarizeSocialPost(createdPost),
+          outcome: createdPost?.outcome ?? 'confirmed',
+          ...(createdPost?.deduped === true ? { deduped: true } : {}),
           media_uploaded: media.urls.length,
-          note: isDraft
-            ? 'Saved as a draft: nothing is published until it is scheduled or sent.'
-            : scheduledFor
-              ? `Scheduled for ${scheduledFor}.`
-              : 'Publishing now: check each target below for its own result.',
+          note:
+            createdPost?.deduped === true
+              ? 'This is the post that already went out for the same content, accounts and media in the last 15 minutes — nothing was published again. Pass allow_duplicate: true only if the person really wants a second copy.'
+              : isDraft
+                ? 'Saved as a draft: nothing is published until it is scheduled or sent.'
+                : scheduledFor
+                  ? `Scheduled for ${scheduledFor}.`
+                  : 'Publishing now: check each target below for its own result.',
+        })
+      }
+
+      if (action === 'delete') {
+        const postId = String(params.post_id ?? '').trim()
+        if (!postId) {
+          return textResult({
+            error: 'post_id is required: run action "posts" to find the post id.',
+          })
+        }
+        const result = await socialInternalCall(
+          ctx,
+          'DELETE',
+          `/social/posts/${encodeURIComponent(postId)}`,
+          undefined,
+          { timeoutMs: SOCIAL_DELETE_TIMEOUT_MS },
+        )
+        if (!result.ok) {
+          return textResult({
+            error: result.error,
+            code: result.code,
+            suggestion:
+              result.code === 'post_in_flight'
+                ? 'The publish is still in flight. Do NOT post again — run action "posts" in a minute, then delete it if it went out.'
+                : result.suggestion,
+          })
+        }
+        const removed: any[] = Array.isArray(result.data?.removed) ? result.data.removed : []
+        const manual: any[] = Array.isArray(result.data?.manual) ? result.data.manual : []
+        const deleted = result.data?.deleted === true
+        return textResult({
+          deleted,
+          kept: result.data?.kept === true,
+          post: summarizeSocialPost(result.data?.post),
+          removed: removed.map((entry: any) => ({
+            platform: entry.platform,
+            account: entry.account ?? null,
+            url: entry.url ?? null,
+          })),
+          manual: manual.map((entry: any) => ({
+            platform: entry.platform,
+            account: entry.account ?? null,
+            url: entry.url ?? null,
+            reason: entry.reason ?? null,
+          })),
+          note: deleted
+            ? 'Deleted. Nothing was live at the provider, so there was nothing to take down.'
+            : `Removed ${removed.length} live target(s).` +
+              (manual.length
+                ? ` ${manual.length} still has to be removed by hand: give the person each link below and say which app to open.`
+                : ' Every live target is down.'),
         })
       }
 
@@ -12246,7 +12467,7 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
         description: '1-2 sentence summary of what the plan accomplishes',
       }),
       plan: Type.String({
-        description: 'Detailed plan in markdown format. Include specific file paths, code snippets, and implementation steps.',
+        description: 'Detailed plan in markdown format. Include specific file paths, code snippets, and implementation steps. For plans that change code, use the sections ## Problem, ## Root cause (each claim cites path:line), ## Options considered, ## Changes, ## Tests, ## Verification, ## Risks.',
       }),
       todos: Type.Array(
         Type.Object({
@@ -12331,7 +12552,11 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      return textResult(`Plan "${params.name}" created and saved to .shogo/plans/${filename}`)
+      const missing = missingCodePlanSections(params.plan)
+      const missingNote = missing.length > 0
+        ? `\nThis plan changes code but has no ${missing.map((s) => `"## ${s}"`).join(' or ')} section. Add ${missing.length > 1 ? 'them' : 'it'} with update_plan before handing the plan to the user.`
+        : ''
+      return textResult(`Plan "${params.name}" created and saved to .shogo/plans/${filename}${missingNote}`)
     },
   }
 }

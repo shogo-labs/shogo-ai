@@ -17,6 +17,7 @@ import { buildToolPlanningGuide } from '../optimized-prompts'
 import { buildCodeAgentGeneralGuide } from '../code-agent-prompt'
 import { buildExploreSystemPrompt, getBuiltinSubagentConfig } from '../subagent'
 import { isSearchEnabled } from '../search-flag'
+import { COORDINATOR_READONLY_TOOLS } from '../coordinator-prompt'
 import { AgentGateway } from '../gateway'
 
 const prev = process.env.SHOGO_SEARCH_ENABLED
@@ -84,6 +85,27 @@ describe('search advertisement contract (WS6)', () => {
     expect(buildExploreSystemPrompt(true)).toContain('exec, search, web')
     const cfg = getBuiltinSubagentConfig('explore', makeCtx(), [])
     expect(cfg!.toolNames).toContain('search')
+  })
+
+  test('prod-like: the coding guide only advertises registered tools', () => {
+    delete process.env.SHOGO_SEARCH_ENABLED
+    const registered = registeredToolNames()
+    const guide = buildCodeAgentGeneralGuide(false)
+    expect(guide).not.toContain('search({')
+    expect(guide).not.toContain('grep({')
+    expect(guide).not.toContain('git_history')
+    for (const name of ['exec', 'read_lints', 'impact_radius']) {
+      expect({ name, registered: registered.has(name) }).toEqual({ name, registered: true })
+    }
+  })
+
+  test('there are no separate grep/git_history tools: code search and history go through exec', () => {
+    const registered = registeredToolNames()
+    expect(registered.has('grep')).toBe(false)
+    expect(registered.has('git_history')).toBe(false)
+    const cfg = getBuiltinSubagentConfig('explore', makeCtx(), [])
+    expect(cfg!.toolNames).toContain('exec')
+    expect(COORDINATOR_READONLY_TOOLS.has('exec')).toBe(true)
   })
 
   test('prod-like: coding guide does not advertise the search tool and offers rg instead', () => {

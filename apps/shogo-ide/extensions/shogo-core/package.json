@@ -8,7 +8,8 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test"
   },
   "engines": {
     "vscode": "^1.100.0"
@@ -23,6 +24,8 @@
     "onCommand:shogo.health.check",
     "onCommand:shogo.context.addSelection",
     "onCommand:shogo.context.addActiveFile",
+    "onCommand:shogo.context.addExplorerItems",
+    "onCommand:shogo.context.addUris",
     "onCommand:shogo.context.clear",
     "onCommand:shogo.patch.preview",
     "onCommand:shogo.checkpoint.create",
@@ -60,17 +63,27 @@
       },
       {
         "command": "shogo.context.addSelection",
-        "title": "Shogo: Add Selection to Context",
+        "title": "Shogo: Add to Chat",
         "category": "Shogo"
       },
       {
         "command": "shogo.context.addActiveFile",
-        "title": "Shogo: Add Active File to Context",
+        "title": "Shogo: Add Active File to Chat",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.context.addExplorerItems",
+        "title": "Shogo: Add to Chat",
+        "category": "Shogo"
+      },
+      {
+        "command": "shogo.context.addUris",
+        "title": "Shogo: Add Dropped Files to Chat",
         "category": "Shogo"
       },
       {
         "command": "shogo.context.clear",
-        "title": "Shogo: Clear Context",
+        "title": "Shogo: Clear Pending Chat Context",
         "category": "Shogo"
       },
       {
@@ -115,7 +128,7 @@
           {
             "id": "shogo.addContext",
             "title": "Add Code Context",
-            "description": "Select code in the editor and add it to Shogo context.",
+            "description": "Select code in the editor and press Ctrl+L (⌘L on macOS) to add it to Shogo chat.",
             "media": {
               "image": "media/shogo.svg",
               "altText": "Context"
@@ -182,16 +195,29 @@
       "chat.viewSessions.enabled": false,
       "chat.commandCenter.enabled": false
     },
+    "keybindings": [
+      {
+        "command": "shogo.context.addSelection",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "editorTextFocus"
+      }
+    ],
     "menus": {
       "editor/context": [
         {
           "command": "shogo.context.addSelection",
-          "when": "editorHasSelection",
           "group": "navigation@50"
         },
         {
           "command": "shogo.context.addActiveFile",
           "group": "navigation@51"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "shogo.context.addExplorerItems",
+          "group": "navigation@90"
         }
       ],
       "scm/title": [
@@ -212,6 +238,14 @@
         },
         {
           "command": "shogo.context.addActiveFile"
+        },
+        {
+          "command": "shogo.context.addExplorerItems",
+          "when": "false"
+        },
+        {
+          "command": "shogo.context.addUris",
+          "when": "false"
         },
         {
           "command": "shogo.context.clear"

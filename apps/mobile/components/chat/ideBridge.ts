@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Platform } from "react-native"
+import { requestChatInsert } from "../../lib/chat-insert-bus"
+import type { ChatReferenceInput } from "../../lib/chat-references"
 
 export interface IdeSelectionContext {
   text: string
@@ -41,6 +43,44 @@ export interface IdeReadFileResult {
 
 const EMPTY_CONTEXT: IdeContextState = { workspaceFolders: [] }
 
+/** Batch ids remembered so a batch Shogo Code re-sends after a reconnect is inserted once. */
+const MAX_REMEMBERED_BATCHES = 100
+
+const isPositiveInt = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v > 0
+
+/** Keep only well-formed file / folder / selection references from Shogo Code. */
+export function parseIdeReferences(raw: unknown): ChatReferenceInput[] {
+  if (!Array.isArray(raw)) return []
+  const out: ChatReferenceInput[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue
+    const r = item as Record<string, unknown>
+    if (typeof r.path !== "string" || !r.path || typeof r.name !== "string" || !r.name) continue
+    if (r.type === "file" || r.type === "folder") {
+      out.push({ type: r.type, path: r.path, name: r.name })
+    } else if (
+      r.type === "selection" &&
+      isPositiveInt(r.startLine) &&
+      isPositiveInt(r.endLine) &&
+      r.endLine >= r.startLine &&
+      typeof r.text === "string" &&
+      r.text.trim()
+    ) {
+      out.push({
+        type: "selection",
+        path: r.path,
+        name: r.name,
+        startLine: r.startLine,
+        endLine: r.endLine,
+        text: r.text,
+        ...(typeof r.languageId === "string" ? { languageId: r.languageId } : {}),
+        ...(r.truncated === true ? { truncated: true } : {}),
+      })
+    }
+  }
+  return out
+}
+
 function canUseWindow(): boolean {
   return Platform.OS === "web" && typeof window !== "undefined" && !!window.parent
 }
@@ -66,11 +106,16 @@ export function useIdeBridge(enabled: boolean) {
     if (!enabled || !canUseWindow()) return
     window.parent.postMessage(message, "*")
   }, [enabled])
+  // Batch ids, in arrival order, and whether the composer has inserted them yet.
+  const batchesRef = useRef(new Map<string, "pending" | "applied">())
 
   useEffect(() => {
     if (!enabled || !canUseWindow()) return
 
     const handleMessage = (event: MessageEvent) => {
+      // Only the IDE host embedding this chat may drive it; another frame or
+      // an opener could otherwise inject "selected" code as context.
+      if (event.source !== window.parent) return
       const message = event.data
       if (!message || typeof message.type !== "string") return
 
@@ -87,6 +132,29 @@ export function useIdeBridge(enabled: boolean) {
           workspaceFolders: Array.isArray(message.workspaceFolders) ? message.workspaceFolders : [],
           workspaceItems: Array.isArray(message.workspaceItems) ? message.workspaceItems : [],
         })
+        return
+      }
+
+      // "Add to Chat" in Shogo Code (⌘L, editor/Explorer menus, Explorer drops).
+      if (message.type === "shogo.ide.addReferences") {
+        const batchId = typeof message.batchId === "string" ? message.batchId : ""
+        if (!batchId) return
+        const batches = batchesRef.current
+        const ack = () => post({ type: "shogo.ide.referencesAck", batchId })
+        const known = batches.get(batchId)
+        // A re-sent batch is acked once it has been inserted; a pending one
+        // acks when the composer applies it.
+        if (known === "applied") ack()
+        if (known) return
+        batches.set(batchId, "pending")
+        while (batches.size > MAX_REMEMBERED_BATCHES) batches.delete(batches.keys().next().value!)
+        const markApplied = () => {
+          if (batches.has(batchId)) batches.set(batchId, "applied")
+          ack()
+        }
+        const references = parseIdeReferences(message.references)
+        if (references.length > 0) requestChatInsert({ references, source: "shogo-code", onApplied: markApplied })
+        else markApplied()
         return
       }
 

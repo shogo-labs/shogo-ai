@@ -22,6 +22,7 @@
     "//test": "Per-file isolation (scripts/run-tests-isolated.ts), like apps/api: `mock.module('electron')` in debug-ipc.test.ts cannot replace an electron stub another suite already loaded, so one `bun test src/__tests__` process fails on debug-ipc/lazy-ipc depending on file order. src/__tests__ is Electron-free by design — do not import electron or local-server.ts — but local-server-respawn-acceptance.test.ts does spawn real processes (~4s).",
     "test": "bun ../../scripts/run-tests-isolated.ts . --roots src/__tests__",
     "test:e2e:streaming": "PLAYWRIGHT_E2E=1 playwright test --config e2e/playwright.config.ts streaming.spec.ts",
+    "test:e2e:ide": "PLAYWRIGHT_E2E=1 playwright test --config e2e/playwright.config.ts ide-add-to-chat.spec.ts",
     "test:shogo-ide-bundle": "node scripts/sync-shogo-ide.mjs",
     "test:packaged-shogo-ide": "node scripts/assert-packaged-shogo-ide.mjs",
     "test:desktop-bundle": "bun test-web-bundle.ts && bun test-sync-web.ts && bun test-forge-config.ts && bun test-update-channel.ts && npm run test:shogo-ide-bundle",

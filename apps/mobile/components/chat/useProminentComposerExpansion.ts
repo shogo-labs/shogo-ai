@@ -47,6 +47,12 @@ export const PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH = 10000
 export const PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET = 0
 /** Optical correction for browser text metrics in the compact toolbar row. */
 export const PROMINENT_COMPOSER_WEB_COMPACT_TEXT_OFFSET = -1
+/**
+ * iOS lays a typed line at the bottom of its 24pt line box, while the
+ * placeholder `Text` centers it, so typing dropped the text ~2.5pt below the
+ * placeholder and the row's icons. Lift the input to match.
+ */
+export const PROMINENT_COMPOSER_IOS_INPUT_TEXT_LIFT = -2.5
 /** Keep the iOS placeholder centered with the compact composer controls. */
 export const PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP = 0
 export const PROMINENT_COMPOSER_OVERLAY_Z_INDEX = 4

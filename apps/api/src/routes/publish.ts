@@ -43,11 +43,7 @@ import {
   clearSitePassword,
   hashSitePassword,
 } from "../lib/cloudflare-site-auth-kv"
-import { getShogoCloudUrl } from "../lib/cloud-urls"
-import { getUpstreamCredential } from "../lib/federated-upstream"
-import { isProjectCloudLinked } from "../lib/runtime/cloud-content-sync"
 import { staticAssetCacheControl } from "@shogo/shared-runtime"
-import { shouldSkipForwardedHeader, shouldSkipResponseHeader } from "../lib/proxy-headers"
 import {
   cfStateToStatus,
   domainCompanion,
@@ -132,68 +128,6 @@ function isKubernetes(): boolean {
   return !!(process.env.KUBERNETES_SERVICE_HOST || process.env.PROJECT_NAMESPACE)
 }
 
-/**
- * Forward a publish request from the local/desktop API to Shogo Cloud using the
- * connected `SHOGO_API_KEY`. Mirrors the marketplace proxy (apps/api/src/routes/
- * marketplace.ts): without this, local mode skips the entire build/upload/host
- * pipeline (`isKubernetes()` is false) yet returns a fake 200 + live URL — so a
- * desktop "publish" looked successful but nothing deployed. The router is
- * invoked with a path stripped of the `/api` prefix (see server.ts), so we
- * re-add it when building the upstream URL.
- */
-async function proxyPublishToCloud(c: any, cloudKey: string): Promise<Response> {
-  const method = c.req.method
-  const search = new URL(c.req.url).search
-  const fullUrl = `${getShogoCloudUrl()}/api${c.req.path}${search}`
-
-  const headers = new Headers()
-  c.req.raw.headers.forEach((value: string, key: string) => {
-    const lower = key.toLowerCase()
-    if (shouldSkipForwardedHeader(lower)) return
-    // Replace the local session auth with the cloud API key below.
-    if (lower === "authorization") return
-    headers.set(key, value)
-  })
-  headers.set("Authorization", `Bearer ${cloudKey}`)
-
-  let upstream: Response
-  try {
-    upstream = await fetch(fullUrl, {
-      method,
-      headers,
-      body: method === "GET" || method === "HEAD" ? undefined : c.req.raw.body,
-      // @ts-expect-error duplex is required for streaming request bodies in Bun/Node fetch
-      duplex: "half",
-    })
-  } catch (err: any) {
-    console.error("[Publish] cloud proxy failed:", err?.message ?? err)
-    return c.json(
-      { error: { code: "cloud_unreachable", message: "Could not reach Shogo Cloud" } },
-      502,
-    )
-  }
-
-  // The cloud rejected the API key — surface a sign-in prompt rather than the
-  // raw 401 (which the UI would read as "not authorized for this project").
-  if (upstream.status === 401) {
-    return c.json(
-      { error: { code: "cloud_signin_required", message: "Sign in to Shogo Cloud to publish." } },
-      503,
-    )
-  }
-
-  const responseHeaders = new Headers()
-  upstream.headers.forEach((value, key) => {
-    if (shouldSkipResponseHeader(key)) return
-    responseHeaders.set(key, value)
-  })
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: responseHeaders,
-  })
-}
-
 // Reserved subdomains that cannot be used
 const RESERVED_SUBDOMAINS = new Set([
   "api", "www", "studio", "app", "admin", "mail", "email", "ftp", "ssh",
@@ -213,7 +147,7 @@ const SUBDOMAIN_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 // enforced at the *.shogo.one edge Worker (see cloudflare-site-auth-kv.ts);
 // `authenticated`/`private` are stored but not yet enforced at the edge.
 export type AccessLevel = "anyone" | "authenticated" | "private" | "password"
-const ACCESS_LEVELS = new Set<AccessLevel>(["anyone", "authenticated", "private", "password"])
+export const ACCESS_LEVELS = new Set<AccessLevel>(["anyone", "authenticated", "private", "password"])
 // Minimum length for a shared site password (a low bar — this is a soft gate,
 // not per-user credentials, but block trivially empty/short values).
 const SITE_PASSWORD_MIN_LENGTH = 4
@@ -384,7 +318,7 @@ type SitePasswordResolution =
  * Returns a tagged result so callers can map bad input to a 400 without
  * tripping the outer publish_failed/500 catch.
  */
-function resolveSitePasswordHash(opts: {
+export function resolveSitePasswordHash(opts: {
   accessLevel: AccessLevel
   password?: string
   subdomain: string
@@ -416,7 +350,7 @@ function resolveSitePasswordHash(opts: {
  * Worker gates (or stops gating) the subdomain. Best-effort — the KV helpers
  * already swallow their own errors and no-op when unconfigured.
  */
-async function syncSitePasswordKv(
+export async function syncSitePasswordKv(
   subdomain: string,
   accessLevel: AccessLevel,
   hash: string | null,
@@ -954,9 +888,12 @@ async function pushPublishedData(
 async function configurePublishedService(
   projectId: string,
   subdomain: string,
-  opts?: { alwaysOn?: boolean },
+  opts?: { alwaysOn?: boolean; serverBacked?: boolean },
 ): Promise<{ serverBacked: boolean }> {
-  const serverBacked = await detectServerBacked(projectId)
+  // An uploaded bundle (desktop publish) is static by construction: there is no
+  // project pod to probe, and the caller already refused server-backed
+  // projects. Trust the caller instead of probing a runtime that isn't there.
+  const serverBacked = opts?.serverBacked ?? (await detectServerBacked(projectId))
 
   // Seed writable state before provisioning so a server-backed runtime boots
   // with the builder's data. Substrate-independent (API-side S3 write); the
@@ -1123,6 +1060,25 @@ export interface PublishProjectResult {
 }
 
 /**
+ * Where the bytes a publish uploads come from.
+ *
+ * The default source is the project's own runtime pod (build it, then download
+ * `dist/`). A desktop publish has no cloud pod holding its files: it builds on
+ * the user's machine and hands the finished bundle to the cloud, so it passes
+ * `uploaded` instead. Everything downstream — S3 upload, cache purge,
+ * provisioning, the subdomain/plan/password gates, the DB writes — is the same
+ * pipeline either way; only this step differs.
+ */
+export type PublishFileSource =
+  | { kind: 'pod' }
+  | {
+      kind: 'uploaded'
+      files: Map<string, Buffer>
+      /** An uploaded bundle is always static (server-backed is refused upstream). */
+      serverBacked: false
+    }
+
+/**
  * Core publish pipeline shared by the session-authenticated route
  * (POST /api/projects/:id/publish) and the internal/runtime route
  * (POST /api/internal/projects/:id/publish, used by the agent's publish tool).
@@ -1131,10 +1087,15 @@ export interface PublishProjectResult {
  * provisions the published Knative service + DomainMapping, tags the commit,
  * records a checkpoint, and persists publish state — preserving the exact error
  * codes/statuses the route previously returned.
+ *
+ * `fileSource` defaults to the pod (build + download). Passing `uploaded` runs
+ * the identical pipeline against files the caller already produced, which is
+ * how the cloud hosts a site the desktop built (`routes/published-sites.ts`).
  */
 export async function publishProject(
   projectId: string,
   opts: PublishProjectOptions,
+  fileSource: PublishFileSource = { kind: 'pod' },
 ): Promise<PublishProjectResult> {
   // Set once this publish takes the per-subdomain in-flight claim, so the
   // `finally` below can release it on every exit path (including a throw).
@@ -1240,24 +1201,31 @@ export async function publishProject(
       // warm-pool GC can't yank the runtime ksvc out from under us.
       await acquirePublishLock(projectId)
       try {
-        // Step 1: Trigger build
-        await setPublishStatus(projectId, 'building')
-        const buildResult = await triggerBuildWithRetry(projectId)
-        if (!buildResult.success) {
-          await setPublishStatus(projectId, 'failed', buildResult.code || 'build_failed')
-          return { ok: false, status: 500, code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
-        }
-
-        // Step 2: Download dist files
         let files: Map<string, Buffer>
-        try {
-          files = await downloadDistFiles(projectId)
-        } catch (err: any) {
-          console.error("[Publish] Failed to download dist files:", err)
-          const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
-          const code = isTimeout ? 'download_timeout' : 'download_failed'
-          await setPublishStatus(projectId, 'failed', code)
-          return { ok: false, status: 500, code, message: err.message || "Failed to download build files" }
+
+        if (fileSource.kind === 'uploaded') {
+          // The caller already built the bundle; there is nothing to build or
+          // download here, only to upload.
+          files = fileSource.files
+        } else {
+          // Step 1: Trigger build
+          await setPublishStatus(projectId, 'building')
+          const buildResult = await triggerBuildWithRetry(projectId)
+          if (!buildResult.success) {
+            await setPublishStatus(projectId, 'failed', buildResult.code || 'build_failed')
+            return { ok: false, status: 500, code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
+          }
+
+          // Step 2: Download dist files
+          try {
+            files = await downloadDistFiles(projectId)
+          } catch (err: any) {
+            console.error("[Publish] Failed to download dist files:", err)
+            const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+            const code = isTimeout ? 'download_timeout' : 'download_failed'
+            await setPublishStatus(projectId, 'failed', code)
+            return { ok: false, status: 500, code, message: err.message || "Failed to download build files" }
+          }
         }
 
         if (files.size === 0) {
@@ -1284,7 +1252,10 @@ export async function publishProject(
         try {
           const configureTimeoutMs = await publishConfigureTimeoutMs(projectId)
           await withTimeout(
-            configurePublishedService(projectId, subdomain, { alwaysOn }),
+            configurePublishedService(projectId, subdomain, {
+              alwaysOn,
+              ...(fileSource.kind === 'uploaded' ? { serverBacked: fileSource.serverBacked } : {}),
+            }),
             configureTimeoutMs,
             'Publish configure',
           )
@@ -1310,13 +1281,19 @@ export async function publishProject(
     // resolves "what's live" from. On a subdomain change we also drop the old
     // `published/<oldSubdomain>` pointer in the same round trip. Tagging
     // flushes the pod's git sync and hydrates the durable repo here.
+    //
+    // An uploaded bundle has no repo on this side: the files came from the
+    // user's machine and the project row here is a hidden host with no pod, so
+    // there is nothing to tag (and resolving a pod URL for it could spawn one).
     const previousSubdomain =
       project.publishedSubdomain && project.publishedSubdomain !== subdomain
         ? project.publishedSubdomain
         : undefined
-    const tagged = await tagPublishedCommit(projectId, subdomain, {
-      deletePointerSubdomains: previousSubdomain ? [previousSubdomain] : [],
-    })
+    const tagged = fileSource.kind === 'uploaded'
+      ? null
+      : await tagPublishedCommit(projectId, subdomain, {
+          deletePointerSubdomains: previousSubdomain ? [previousSubdomain] : [],
+        })
 
     // Update project with publish info
     const publishedAt = new Date()
@@ -1394,61 +1371,76 @@ export async function publishProject(
 }
 
 /**
+ * Tear a published site down and clear the project's publish state.
+ *
+ * Shared by the session-authenticated route (POST /projects/:id/unpublish) and
+ * the cloud's uploaded-site route, so an unpublish from the desktop and one
+ * from Studio run the identical teardown.
+ */
+export async function unpublishProject(projectId: string): Promise<PublishProjectResult> {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+    })
+    if (!project) {
+      return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
+    }
+
+    if (!project.publishedSubdomain) {
+      return { ok: false, status: 400, code: "not_published", message: "Project is not published" }
+    }
+
+    // Tear down everything the published site is made of: the runtime + edge
+    // routing on both substrates (Knative ksvc + DomainMapping, metal
+    // published microVM + placement), the static S3 content, the password
+    // gate, custom-domain routing and the `published/<subdomain>` pointer.
+    // The published-data archive is intentionally KEPT so a later republish
+    // restores end-user writes (project delete passes purgePublishedData).
+    // Same function the project-delete hook calls — see
+    // services/published-site-teardown.ts.
+    if (isKubernetes()) {
+      const outcomes = await teardownPublishedSite(projectId, project.publishedSubdomain, {
+        purgePublishedData: false,
+      })
+      const failed = outcomes.filter((o) => !o.ok)
+      if (failed.length) {
+        console.warn(
+          `[Publish] Unpublish teardown for ${projectId} completed with ${failed.length} failed step(s):`,
+          failed.map((f) => `${f.step}: ${f.error}`).join("; "),
+        )
+      }
+    }
+
+    // Clear publish info from project
+    await prisma.project.update({
+      where: { id: projectId },
+      data: {
+        publishedSubdomain: null,
+        publishedAt: null,
+        publishStatus: 'idle' as any,
+        publishError: null,
+        publishStatusAt: new Date(),
+        accessLevel: "anyone",
+        sitePasswordHash: null,
+        siteTitle: null,
+        siteDescription: null,
+        publishedCommitSha: null,
+        publishedTag: null,
+      } as any,
+    })
+
+    return { ok: true, status: 200 }
+  } catch (error: any) {
+    console.error("[Publish] Unpublish error:", error)
+    return { ok: false, status: 500, code: "unpublish_failed", message: error.message }
+  }
+}
+
+/**
  * Create publish routes
  */
 export function publishRoutes() {
   const router = new Hono()
-
-  // Local/desktop mode: publishing has no local hosting pipeline, so forward to
-  // Shogo Cloud when the project is cloud-linked and a cloud key is connected.
-  // Reads (GET) for local-only projects fall through to the local DB so the
-  // publish panel still renders; writes are blocked with an actionable error
-  // instead of the old fake-success stub. No-op in the cloud API (where
-  // SHOGO_LOCAL_MODE is unset), so the real pipeline below runs there.
-  router.use("*", async (c, next) => {
-    if (process.env.SHOGO_LOCAL_MODE !== "true") return next()
-
-    const method = c.req.method
-    const isWrite = method !== "GET" && method !== "HEAD"
-    // The router runs with the `/api` prefix stripped: /projects/:id/... .
-    const projectId = c.req.path.match(/^\/projects\/([^/]+)/)?.[1]
-
-    if (projectId) {
-      const linked = await isProjectCloudLinked(projectId)
-      if (!linked) {
-        if (isWrite) {
-          return c.json(
-            {
-              error: {
-                code: "project_not_synced",
-                message: "Sync this project to Shogo Cloud before publishing.",
-              },
-            },
-            409,
-          )
-        }
-        return next()
-      }
-    }
-
-    const cloudKey = await getUpstreamCredential()
-    if (!cloudKey) {
-      if (isWrite) {
-        return c.json(
-          {
-            error: {
-              code: "cloud_signin_required",
-              message: "Sign in to Shogo Cloud to publish.",
-            },
-          },
-          503,
-        )
-      }
-      return next()
-    }
-
-    return proxyPublishToCloud(c, cloudKey)
-  })
 
   /**
    * GET /subdomains/:subdomain/check - Check subdomain availability
@@ -1582,64 +1574,11 @@ export function publishRoutes() {
    * POST /projects/:projectId/unpublish - Unpublish a project
    */
   router.post("/projects/:projectId/unpublish", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
-
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-      })
-      if (!project) {
-        return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
-      }
-
-      if (!project.publishedSubdomain) {
-        return c.json({ error: { code: "not_published", message: "Project is not published" } }, 400)
-      }
-
-      // Tear down everything the published site is made of: the runtime + edge
-      // routing on both substrates (Knative ksvc + DomainMapping, metal
-      // published microVM + placement), the static S3 content, the password
-      // gate, custom-domain routing and the `published/<subdomain>` pointer.
-      // The published-data archive is intentionally KEPT so a later republish
-      // restores end-user writes (project delete passes purgePublishedData).
-      // Same function the project-delete hook calls — see
-      // services/published-site-teardown.ts.
-      if (isKubernetes()) {
-        const outcomes = await teardownPublishedSite(projectId, project.publishedSubdomain, {
-          purgePublishedData: false,
-        })
-        const failed = outcomes.filter((o) => !o.ok)
-        if (failed.length) {
-          console.warn(
-            `[Publish] Unpublish teardown for ${projectId} completed with ${failed.length} failed step(s):`,
-            failed.map((f) => `${f.step}: ${f.error}`).join("; "),
-          )
-        }
-      }
-
-      // Clear publish info from project
-      await prisma.project.update({
-        where: { id: projectId },
-        data: {
-          publishedSubdomain: null,
-          publishedAt: null,
-          publishStatus: 'idle' as any,
-          publishError: null,
-          publishStatusAt: new Date(),
-          accessLevel: "anyone",
-          sitePasswordHash: null,
-          siteTitle: null,
-          siteDescription: null,
-          publishedCommitSha: null,
-          publishedTag: null,
-        } as any,
-      })
-
-      return c.json({ success: true }, 200)
-    } catch (error: any) {
-      console.error("[Publish] Unpublish error:", error)
-      return c.json({ error: { code: "unpublish_failed", message: error.message } }, 500)
+    const result = await unpublishProject(c.req.param("projectId"))
+    if (!result.ok) {
+      return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
     }
+    return c.json({ success: true }, 200)
   })
 
   /**

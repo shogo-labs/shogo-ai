@@ -66,6 +66,14 @@ import {
   type AskInAgentPayload,
   type FixInAgentPayload,
 } from "./agentFixProvider";
+import {
+  addToChatResultMessage,
+  registerAddToChatAction,
+  resolveAddToChat,
+  unsavedChangesMessage,
+} from "./add-to-chat";
+import { requestChatInsert } from "../../../../lib/chat-insert-bus";
+import { AGENT_ROOT_ID, skippedReferencesMessage } from "../../../../lib/chat-drag";
 import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
@@ -1701,6 +1709,36 @@ export function Workbench({
     [activeGroupIdx, openFileInGroup],
   );
 
+  const treeSelectionRef = useRef<TreeNode[]>([]);
+  const isFileDirty = useCallback(
+    (rootId: string, path: string) =>
+      groupsRef.current.some((g) => g.files.some((f) => f.id === `${rootId}::${path}` && f.dirty)),
+    [],
+  );
+  // "Add to Chat" from the tree menu / palette. Whole files and folders are
+  // read from disk by the runtime, so only agent-workspace nodes qualify.
+  const addTreeNodesToChat = useCallback(
+    (nodes: TreeNode[]) => {
+      const referable = nodes.filter((n) => !n.isRoot && n.rootId === AGENT_ROOT_ID);
+      const skipped = nodes.filter((n) => !n.isRoot && n.rootId !== AGENT_ROOT_ID).map((n) => n.name);
+      if (referable.length > 0) {
+        requestChatInsert({
+          source: "ide-tree",
+          references: referable.map((n) =>
+            n.kind === "dir"
+              ? { type: "folder" as const, path: n.path, name: n.name }
+              : { type: "file" as const, path: n.path, name: n.name },
+          ),
+        });
+      }
+      const dirty = referable.filter((n) => n.kind === "file" && isFileDirty(n.rootId, n.path)).map((n) => n.name);
+      if (skipped.length > 0) showToast(skippedReferencesMessage(skipped), 4000);
+      else if (dirty.length > 0) showToast(unsavedChangesMessage(dirty), 4000);
+      else if (referable.length > 0) showToast("Added to chat");
+    },
+    [isFileDirty, showToast],
+  );
+
   // ─── OS file drop (one zone for the whole IDE) ───────────────────────
   // Capture-phase listeners scoped to the IDE root + the bottom drawer (which
   // is mounted outside the Workbench). A drop on a folder row lands in that
@@ -1714,6 +1752,12 @@ export function Workbench({
 
   const treeHandlers: FileTreeHandlers = useMemo(
     () => ({
+      onAddToChat: addTreeNodesToChat,
+      isDirty: isFileDirty,
+      onDraggedToChatWithUnsaved: (names) => showToast(unsavedChangesMessage(names), 4000),
+      onSelectionChange: (nodes) => {
+        treeSelectionRef.current = nodes;
+      },
       onOpen: handleOpenFile,
       onCreate: handleCreate,
       onRename: handleRenameNode,
@@ -1731,7 +1775,7 @@ export function Workbench({
         return node.path ? workspaceFsPath(root, node.path) : root;
       },
     }),
-    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree, handleCopy, openToSide, openSearch],
+    [addTreeNodesToChat, isFileDirty, showToast, handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree, handleCopy, openToSide, openSearch],
   );
 
   // ─── Save ────────────────────────────────────────────────────────────
@@ -2533,9 +2577,41 @@ export function Workbench({
           if (files.length > 1) updateGroup(activeGroupIdx, (gg) => ({ ...gg, activeId: files[(idx - 1 + files.length) % files.length].id }));
         },
       },
+      {
+        id: "chat.addSelection",
+        label: "Chat: Add Selection to Chat",
+        shortcut: "⌘L",
+        run: () => {
+          const ed = editorRefs.current[activeGroup?.id ?? ""];
+          const f = active;
+          if (!ed) {
+            showToast("Open a file to add it to chat.", 1800);
+            return;
+          }
+          const result = resolveAddToChat(
+            ed,
+            f ? { path: f.path, name: f.name, rootId: f.rootId, languageId: f.language } : null,
+          );
+          if (!("error" in result)) requestChatInsert({ references: result.references, source: "ide-editor" });
+          showToast(addToChatResultMessage(result), 1800);
+        },
+      },
+      {
+        id: "chat.addExplorerSelection",
+        label: "Explorer: Add to Chat",
+        run: () => {
+          const nodes = treeSelectionRef.current;
+          if (nodes.length === 0) {
+            showToast("Select a file or folder first");
+            return;
+          }
+          addTreeNodesToChat(nodes);
+        },
+      },
     );
     return cmds;
   }, [
+    showToast, addTreeNodesToChat,
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
     closeOtherGroup, focusNextGroup, togglePinInGroup, gotoLine, refreshAllRoots,
     openLocalFolder, closeRoot, fsaSupported, roots, sidebarOpen, bottomPanelOpen,
@@ -2694,7 +2770,7 @@ export function Workbench({
   revealInExplorerRef.current = revealInExplorer;
 
   const attachEditorInfo = useCallback(
-    (ed: import("monaco-editor").editor.IStandaloneCodeEditor) => {
+    (ed: import("monaco-editor").editor.IStandaloneCodeEditor, monaco: MonacoNs | null) => {
       if (infoAttachedRef.current.has(ed)) return;
       infoAttachedRef.current.add(ed);
       ed.onDidChangeCursorSelection(() => refreshEditorInfo(ed));
@@ -2726,6 +2802,15 @@ export function Workbench({
         window.dispatchEvent(new CustomEvent<AskInAgentPayload>(ASK_IN_AGENT_EVENT, { detail: { prompt } }));
         showToast("Sent selection to Shogo", 1800);
       };
+      if (monaco) {
+        registerAddToChatAction(ed, monaco, {
+          fileOf: () => {
+            const f = fileOf();
+            return f ? { path: f.path, name: f.name, rootId: f.rootId, languageId: f.language } : null;
+          },
+          onResult: (result) => showToast(addToChatResultMessage(result), 1800),
+        });
+      }
       const group = "9_shogo";
       ed.addAction({
         id: "shogo.copyRelativePath",
@@ -3266,7 +3351,7 @@ export function Workbench({
                       onSetMdMode={handleSetMdMode}
                       onEditorMount={(ed, monaco) => {
                         editorRefs.current[g.id] = ed;
-                        attachEditorInfo(ed);
+                        attachEditorInfo(ed, monaco ?? monacoNsRef.current);
                         if (monaco && monacoNsRef.current !== monaco) {
                           monacoNsRef.current = monaco;
                           setMonacoReadyTick((t) => t + 1);

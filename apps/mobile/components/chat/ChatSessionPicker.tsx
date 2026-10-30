@@ -53,6 +53,7 @@ import {
   Archive,
   ArchiveRestore,
 } from "lucide-react-native"
+import { Spin } from "@/components/ui/Spin";
 
 export interface ChatSession {
   id: string
@@ -700,11 +701,13 @@ export function ChatSessionSidebar({
                 )}
               >
                 {isStreaming ? (
-                  <Loader2
-                    size={mobileFullscreen ? 16 : 12}
-                    className="text-primary animate-spin shrink-0"
-                    aria-label="Chat running"
-                  />
+                  <Spin>
+                    <Loader2
+                      size={mobileFullscreen ? 16 : 12}
+                      className="text-primary animate-spin shrink-0"
+                      aria-label="Chat running"
+                    />
+                  </Spin>
                 ) : isCompleted ? (
                   <View
                     className={cn(

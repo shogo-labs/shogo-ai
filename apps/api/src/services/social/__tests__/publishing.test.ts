@@ -22,14 +22,33 @@ const store = {
 let idCounter = 0
 const nextId = (prefix: string) => `${prefix}_${++idCounter}`
 
-function hydratePost(post: Row): Row {
+/**
+ * Prisma returns only the columns a `select` names. The double has to do the
+ * same: a query that forgets `zernioAccountId` must fail here too, or a mocked
+ * row carrying the whole account hides a reconcile that never runs.
+ */
+function projectAccount(account: Row | undefined, select?: Row): Row | null {
+  if (!account) return null
+  if (!select) return account
+  const picked: Row = {}
+  for (const [key, wanted] of Object.entries(select)) {
+    if (wanted) picked[key] = account[key]
+  }
+  return picked
+}
+
+function hydratePost(post: Row, query?: Row): Row {
+  const accountSelect = query?.include?.targets?.include?.account?.select
   return {
     ...post,
     targets: store.targets
       .filter((target) => target.postId === post.id)
       .map((target) => ({
         ...target,
-        account: store.accounts.find((account) => account.id === target.accountId) ?? null,
+        account: projectAccount(
+          store.accounts.find((account) => account.id === target.accountId),
+          accountSelect,
+        ),
       })),
   }
 }
@@ -56,8 +75,17 @@ function matchesCalendar(post: Row, where: Row): boolean {
 
 function matches(row: Row, where: Row): boolean {
   return Object.entries(where).every(([key, value]) => {
-    if (value && typeof value === 'object' && 'in' in (value as any)) {
-      return ((value as any).in as unknown[]).includes(row[key])
+    if (value instanceof Date) {
+      return row[key] instanceof Date
+        ? row[key].getTime() === value.getTime()
+        : new Date(row[key]).getTime() === value.getTime()
+    }
+    if (value && typeof value === 'object') {
+      const clause = value as Row
+      if ('in' in clause) return (clause.in as unknown[]).includes(row[key])
+      if ('gte' in clause || 'lte' in clause || 'gt' in clause || 'lt' in clause) {
+        return inRange(row[key], clause)
+      }
     }
     return row[key] === value
   })
@@ -78,15 +106,26 @@ const dbMock = {
   },
   socialPost: {
     findUnique: async ({ where }: any) => store.posts.find((post) => matches(post, where)) ?? null,
-    findFirst: async ({ where }: any) => {
-      const post = store.posts.find((row) => matches(row, where))
-      return post ? hydratePost(post) : null
+    findFirst: async (query: any) => {
+      const post = store.posts.find((row) => matches(row, query.where))
+      return post ? hydratePost(post, query) : null
     },
-    findMany: async ({ where }: any) =>
-      store.posts.filter((post) => matchesCalendar(post, where)).map(hydratePost),
+    findMany: async (query: any) =>
+      store.posts
+        .filter((post) =>
+          Array.isArray(query.where?.OR) ? matchesCalendar(post, query.where) : matches(post, query.where),
+        )
+        .map((post) => hydratePost(post, query)),
     create: async ({ data }: any) => {
       const { targets, ...rest } = data
-      const post = { id: nextId('post'), publishedAt: null, scheduledFor: null, zernioPostId: null, ...rest }
+      const post = {
+        id: nextId('post'),
+        publishedAt: null,
+        scheduledFor: null,
+        zernioPostId: null,
+        createdAt: new Date(),
+        ...rest,
+      }
       store.posts.push(post)
       for (const target of targets?.create ?? []) {
         store.targets.push({ id: nextId('target'), postId: post.id, status: 'pending', ...target })
@@ -108,6 +147,12 @@ const dbMock = {
     },
   },
   socialPostTarget: {
+    findFirst: async ({ where }: any) => {
+      const target = store.targets.find((row) => matches(row, where))
+      if (!target) return null
+      const post = store.posts.find((row) => row.id === target.postId)
+      return { ...target, post: post ? { id: post.id, content: post.content } : null }
+    },
     updateMany: async ({ where, data }: any) => {
       let count = 0
       for (const target of store.targets) {
@@ -130,21 +175,36 @@ const dbMock = {
 
 mock.module('../../../lib/prisma', () => ({ prisma: dbMock }))
 
-const { createPost, updatePost, deletePost, calendar, postIdempotencyKey } = await import('../publishing.service')
-const { setSocialClient } = await import('../client')
+const { createPost, updatePost, deletePost, calendar, postIdempotencyKey, getPost, listPosts } = await import(
+  '../publishing.service'
+)
+const { setSocialClient, CREATE_POST_TIMEOUT_MS } = await import('../client')
 
 const calls: any[] = []
 let providerReply: any = {}
+/** What `GET /posts` answers — the reconcile read. */
+let providerList: any = { posts: [] }
+/** Make the next `POST /posts` behave like a provider that never answered. */
+let createTimesOut = false
 
 function useFakeClient() {
   calls.length = 0
   providerReply = {}
+  providerList = { posts: [] }
+  createTimesOut = false
   setSocialClient({
     mode: 'cloud',
     async request(req: any) {
       calls.push(req)
       if (req.path === '/profiles') return { id: 'zernio_profile_1' }
-      if (req.path === '/posts') return providerReply
+      if (req.method === 'GET' && req.path === '/posts') return providerList
+      if (req.path === '/posts') {
+        if (createTimesOut) {
+          const { SocialError } = await import('../client')
+          throw new SocialError(504, 'zernio_timeout', 'Zernio did not answer in time.')
+        }
+        return providerReply
+      }
       if (req.path.startsWith('/posts/')) return {}
       throw new Error(`unexpected ${req.path}`)
     },
@@ -157,6 +217,8 @@ function useFakeClient() {
  */
 const IMAGE = 'https://cdn.example.com/launch.jpg'
 
+const createCalls = () => calls.filter((call) => call.method === 'POST' && call.path === '/posts')
+
 function seedAccounts() {
   store.posts.length = 0
   store.targets.length = 0
@@ -165,6 +227,8 @@ function seedAccounts() {
   store.accounts.push(
     { id: 'acct_ig', workspaceId: 'ws_1', zernioAccountId: 'zernio_ig', platform: 'instagram', username: 'brand.ig', isActive: true },
     { id: 'acct_tt', workspaceId: 'ws_1', zernioAccountId: 'zernio_tt', platform: 'tiktok', username: 'brand.tt', isActive: true },
+    { id: 'acct_threads', workspaceId: 'ws_1', zernioAccountId: 'zernio_threads', platform: 'threads', username: 'brand.threads', isActive: true },
+    { id: 'acct_x', workspaceId: 'ws_1', zernioAccountId: 'zernio_x', platform: 'x', username: 'brand.x.live', isActive: true },
     { id: 'acct_dead', workspaceId: 'ws_1', zernioAccountId: 'zernio_dead', platform: 'x', username: 'brand.x', isActive: false },
   )
 }
@@ -480,5 +544,364 @@ describe('the body Zernio actually reads', () => {
       publishNow: true,
     })
     expect(post.status).toBe('published')
+  })
+})
+
+describe('deleting a post that never went live', () => {
+  test('a draft is dropped here and never sent to the provider', async () => {
+    const post = await createPost('ws_1', 'Acme', { content: 'Idea', accountIds: [], draft: true })
+    calls.length = 0
+
+    const result = await deletePost('ws_1', post.id)
+
+    expect(result).toEqual({ deleted: true, removed: [], manual: [] })
+    expect(store.posts).toHaveLength(0)
+    expect(calls).toHaveLength(0)
+  })
+
+  test('a failed post is removed', async () => {
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Never made it',
+      accountIds: ['acct_x'],
+      publishNow: true,
+    })
+    store.posts[0].status = 'failed'
+    calls.length = 0
+
+    const result = await deletePost('ws_1', post.id)
+
+    expect(result.deleted).toBe(true)
+    expect(store.posts).toHaveLength(0)
+  })
+})
+
+describe('deleting a post that went live', () => {
+  test('each target the provider can unpublish is taken down with its own platform and account', async () => {
+    providerReply = {
+      id: 'zernio_post_30',
+      targets: [
+        { accountId: 'zernio_threads', status: 'published', postId: 'th_1', url: 'https://threads.net/p/th_1' },
+        { accountId: 'zernio_x', status: 'published', postId: 'x_1', url: 'https://x.com/brand/status/x_1' },
+      ],
+    }
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Live post',
+      accountIds: ['acct_threads', 'acct_x'],
+      publishNow: true,
+    })
+    expect(post.status).toBe('published')
+    calls.length = 0
+
+    const result = await deletePost('ws_1', post.id)
+
+    const unpublish = calls.filter((call) => call.path.endsWith('/unpublish'))
+    expect(unpublish).toHaveLength(2)
+    expect(unpublish[0].path).toBe('/posts/zernio_post_30/unpublish')
+    expect(unpublish[0].method).toBe('POST')
+    // Zernio names X `twitter` in its own platform list.
+    expect(unpublish.map((call) => call.body)).toEqual([
+      { platform: 'threads', accountId: 'zernio_threads' },
+      { platform: 'twitter', accountId: 'zernio_x' },
+    ])
+
+    expect(result.deleted).toBe(false)
+    expect(result.kept).toBe(true)
+    expect(result.removed.map((entry) => entry.platform)).toEqual(['threads', 'x'])
+    expect(result.removed[0].url).toBe('https://threads.net/p/th_1')
+    expect(result.manual).toEqual([])
+    // Nothing is live any more, so the record says so instead of staying published.
+    expect(store.posts[0].status).toBe('cancelled')
+    expect(store.targets.every((target) => target.status === 'cancelled')).toBe(true)
+  })
+
+  test('an Instagram or TikTok target makes no unpublish call and comes back to remove by hand', async () => {
+    providerReply = {
+      id: 'zernio_post_31',
+      targets: [
+        { accountId: 'zernio_ig', status: 'published', url: 'https://instagram.com/p/ig_2' },
+        { accountId: 'zernio_tt', status: 'published', url: 'https://tiktok.com/@brand/video/2' },
+      ],
+    }
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Reel',
+      accountIds: ['acct_ig', 'acct_tt'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+    calls.length = 0
+
+    const result = await deletePost('ws_1', post.id)
+
+    expect(calls.filter((call) => call.path.endsWith('/unpublish'))).toHaveLength(0)
+    expect(result.removed).toEqual([])
+    expect(result.manual.map((entry) => entry.platform)).toEqual(['instagram', 'tiktok'])
+    expect(result.manual[0].url).toBe('https://instagram.com/p/ig_2')
+    expect(result.manual[0].account).toBe('brand.ig')
+    expect(result.manual[0].reason).toContain('Instagram')
+    expect(result.manual[0].reason).toContain('remove it in the Instagram app')
+    // Still live on both platforms: the row keeps saying so.
+    expect(store.posts[0].status).toBe('published')
+  })
+
+  test('a mixed post reports both what came down and what did not', async () => {
+    providerReply = {
+      id: 'zernio_post_32',
+      targets: [
+        { accountId: 'zernio_ig', status: 'published', url: 'https://instagram.com/p/ig_3' },
+        { accountId: 'zernio_threads', status: 'published', url: 'https://threads.net/p/th_3' },
+      ],
+    }
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Cross-posted',
+      accountIds: ['acct_ig', 'acct_threads'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+    calls.length = 0
+
+    const result = await deletePost('ws_1', post.id)
+
+    expect(calls.filter((call) => call.path.endsWith('/unpublish'))).toHaveLength(1)
+    expect(result.removed.map((entry) => entry.platform)).toEqual(['threads'])
+    expect(result.manual.map((entry) => entry.platform)).toEqual(['instagram'])
+    expect(store.posts[0].status).toBe('published')
+  })
+
+  test('a target still in flight is left alone and reported, not silently dropped', async () => {
+    providerReply = {
+      id: 'zernio_post_33',
+      targets: [
+        { accountId: 'zernio_threads', status: 'published', url: 'https://threads.net/p/th_4' },
+        { accountId: 'zernio_ig', status: 'pending' },
+      ],
+    }
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Half out',
+      accountIds: ['acct_threads', 'acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+    calls.length = 0
+
+    const result = await deletePost('ws_1', post.id)
+
+    expect(result.removed.map((entry) => entry.platform)).toEqual(['threads'])
+    expect(result.manual.map((entry) => entry.platform)).toEqual(['instagram'])
+    expect(result.manual[0].reason).toContain('Still being published')
+  })
+
+  test('a publish with no provider id yet is refused rather than deleted', async () => {
+    createTimesOut = true
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'In flight',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+    expect(post.status).toBe('publishing')
+    calls.length = 0
+
+    const error = await deletePost('ws_1', post.id).catch((err) => err)
+
+    expect(error.status).toBe(409)
+    expect(error.code).toBe('post_in_flight')
+    expect(error.message).toContain('again in a minute')
+    expect(store.posts).toHaveLength(1)
+    expect(calls).toHaveLength(0)
+  })
+
+  test('a live target with no provider post id is handed to the person, never `/posts/null/unpublish`', async () => {
+    providerReply = { id: 'zernio_post_50' }
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Reconciled from a relay',
+      accountIds: ['acct_x'],
+      publishNow: true,
+    })
+    // A row written by the relay path can be live with no id to unpublish against.
+    store.posts.find((row: any) => row.id === post.id)!.zernioPostId = null
+    calls.length = 0
+
+    const result = await deletePost('ws_1', post.id)
+
+    expect(result.deleted).toBe(false)
+    expect(result.removed).toEqual([])
+    expect(result.manual.map((entry) => entry.platform)).toEqual(['x'])
+    expect(result.manual[0].reason).toContain('No provider post id')
+    expect(calls.some((call) => call.path.includes('unpublish'))).toBe(false)
+    expect(calls.some((call) => call.path.includes('null'))).toBe(false)
+  })
+})
+
+describe('a publish that outruns the clock', () => {
+  test('the create-post call gets the publish budget, not the 15 s read default', async () => {
+    providerReply = { id: 'zernio_post_40' }
+    await createPost('ws_1', 'Acme', {
+      content: 'Big reel',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+
+    expect(CREATE_POST_TIMEOUT_MS).toBeGreaterThan(15_000)
+    expect(createCalls()[0].timeoutMs).toBe(CREATE_POST_TIMEOUT_MS)
+  })
+
+  test('a publish that still times out comes back unconfirmed instead of failing', async () => {
+    createTimesOut = true
+
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Big reel',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+
+    expect(post.outcome).toBe('unconfirmed')
+    expect(post.status).toBe('publishing')
+    expect(post.zernioPostId).toBeNull()
+    // Not failed: it may well be live, and the next read finds out.
+    expect(store.posts[0].status).toBe('publishing')
+    expect(store.targets[0].status).toBe('publishing')
+  })
+
+  test('retrying an unconfirmed publish returns the same post and posts nothing again', async () => {
+    createTimesOut = true
+    const first = await createPost('ws_1', 'Acme', {
+      content: 'Big reel',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+    expect(createCalls()).toHaveLength(1)
+
+    // A retry a minute later carries a new idempotency key, which is exactly how
+    // the duplicates happened; the 15-minute window has to catch it anyway.
+    store.posts[0].idempotencyKey = 'the-key-a-retry-would-not-reuse'
+    createTimesOut = false
+    providerReply = { id: 'zernio_post_41' }
+
+    const second = await createPost('ws_1', 'Acme', {
+      content: 'Big reel',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+
+    expect(second.id).toBe(first.id)
+    expect(second.deduped).toBe(true)
+    expect(store.posts).toHaveLength(1)
+    expect(createCalls()).toHaveLength(1)
+  })
+
+  test('a deliberate repost goes through when allowDuplicate says so', async () => {
+    providerReply = { id: 'zernio_post_42' }
+    const first = await createPost('ws_1', 'Acme', {
+      content: 'Big reel',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+    store.posts[0].idempotencyKey = 'the-key-a-retry-would-not-reuse'
+
+    const second = await createPost('ws_1', 'Acme', {
+      content: 'Big reel',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+      allowDuplicate: true,
+    })
+
+    expect(second.id).not.toBe(first.id)
+    expect(store.posts).toHaveLength(2)
+    expect(createCalls()).toHaveLength(2)
+  })
+
+  test('the next read reconciles it against the provider instead of publishing again', async () => {
+    createTimesOut = true
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Big reel',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+
+    // It sat in flight long enough that the provider has an answer by now.
+    store.posts[0].createdAt = new Date(Date.now() - 5 * 60_000)
+    createTimesOut = false
+    providerList = {
+      posts: [
+        {
+          _id: 'zernio_post_43',
+          content: 'Big reel',
+          platforms: [
+            {
+              platform: 'instagram',
+              accountId: { _id: 'zernio_ig', username: 'brand.ig' },
+              status: 'published',
+              platformPostUrl: 'https://instagram.com/p/ig_43',
+            },
+          ],
+        },
+      ],
+    }
+
+    const reconciled = await getPost('ws_1', post.id)
+
+    expect(reconciled.status).toBe('published')
+    expect(reconciled.zernioPostId).toBe('zernio_post_43')
+    expect(reconciled.targets[0].status).toBe('published')
+    expect(reconciled.targets[0].platformPostUrl).toBe('https://instagram.com/p/ig_43')
+    // One publish, one read: nothing was posted a second time.
+    expect(createCalls()).toHaveLength(1)
+    const read = calls.find((call) => call.method === 'GET' && call.path === '/posts')
+    expect(read.query).toMatchObject({ limit: 50, sortBy: 'created-desc' })
+  })
+
+  test('the list reconciles a stuck publish too', async () => {
+    createTimesOut = true
+    await createPost('ws_1', 'Acme', {
+      content: 'Big reel',
+      accountIds: ['acct_x'],
+      publishNow: true,
+    })
+    store.posts[0].createdAt = new Date(Date.now() - 5 * 60_000)
+    createTimesOut = false
+    providerList = {
+      posts: [
+        {
+          _id: 'zernio_post_44',
+          content: 'Big reel',
+          platforms: [{ platform: 'x', accountId: 'zernio_x', status: 'published', platformPostUrl: 'https://x.com/i/44' }],
+        },
+      ],
+    }
+
+    const posts = await listPosts('ws_1', {})
+
+    expect(posts[0].status).toBe('published')
+    expect(posts[0].targets[0].platformPostUrl).toBe('https://x.com/i/44')
+  })
+
+  test('a provider that cannot be reached leaves the post publishing, not published', async () => {
+    createTimesOut = true
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Big reel',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      publishNow: true,
+    })
+    store.posts[0].createdAt = new Date(Date.now() - 5 * 60_000)
+    setSocialClient({
+      mode: 'cloud',
+      async request() {
+        const { SocialError } = await import('../client')
+        throw new SocialError(502, 'zernio_unreachable', 'Could not reach Zernio.')
+      },
+    })
+
+    const read = await getPost('ws_1', post.id)
+
+    expect(read.status).toBe('publishing')
+    expect(store.posts[0].status).toBe('publishing')
   })
 })

@@ -153,6 +153,7 @@ ${toolsLine}
 
 ## Guidelines
 - Use exec to run shell commands (e.g. find, rg, ls) for file discovery and searching.
+- Use exec with git (\`git log -S '<literal>'\`, \`git blame -L a,b <file>\`) to learn why code is the way it is.
 ${searchGuideline}- Read files to understand implementation details.
 - Use web to look up documentation or external references when needed.
 - Use impact_radius to check blast radius for specific files when assessing change scope.

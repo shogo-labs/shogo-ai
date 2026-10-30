@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 export { Button, type ButtonProps } from './Button'
+export { PressableScale, PRESSED_SCALE, type PressableScaleProps } from './PressableScale'
 export {
   Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter,
   type CardProps,

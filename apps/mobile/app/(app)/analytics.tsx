@@ -50,7 +50,7 @@ export default function AnalyticsScreen() {
     view === "channels" && !showChannels ? "usage" : view;
 
   return (
-    <TabScreen title="Analytics" testID="analytics-screen">
+    <TabScreen title="Analytics" back testID="analytics-screen">
       <View className="flex-row flex-wrap gap-2 px-4 pb-3">
         {views.map((item) => {
           const active = activeView === item.id;

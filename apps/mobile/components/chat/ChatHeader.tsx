@@ -12,6 +12,7 @@ import * as React from "react"
 import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown, Loader2 } from "lucide-react-native"
+import { Spin } from "@/components/ui/Spin";
 
 export interface ChatHeaderProps {
   sessionName: string
@@ -34,9 +35,11 @@ export function ChatHeader({
         </Text>
 
         {isLoading && (
-          <Loader2
-            className="h-4 w-4 animate-spin text-muted-foreground shrink-0"
-          />
+          <Spin>
+            <Loader2
+              className="h-4 w-4 animate-spin text-muted-foreground shrink-0"
+            />
+          </Spin>
         )}
       </View>
 

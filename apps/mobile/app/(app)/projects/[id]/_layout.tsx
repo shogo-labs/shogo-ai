@@ -68,6 +68,7 @@ import {
   chatActivityEvents,
 } from "../../../../lib/chat-session-events";
 import { deliverPendingDesktopIslandNewChat } from "../../../../lib/desktop-island";
+import { onChatInsertRequested } from "../../../../lib/chat-insert-bus";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
@@ -143,6 +144,7 @@ import { CanvasWebView } from "../../../../components/canvas/CanvasWebView";
 import { ComposePortPreview } from "../../../../components/project/ComposePortPreview";
 import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
 import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
+import { ProjectSurfaceHeader } from "../../../../components/project/ProjectSurfaceHeader";
 import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
 import { useTeamChatNav } from "../../../../components/team-chat/TeamChatSidebarProvider";
 import { useOpenAgentDm } from "../../../../lib/use-open-agent-dm";
@@ -2882,6 +2884,13 @@ export default observer(function ProjectLayout() {
       window.removeEventListener("shogo:chat:open-with-context", handler);
   }, [openChatWithContextInCurrentWindow]);
 
+  // "Add to Chat" reveals a chat panel the user collapsed. Narrow layouts keep
+  // their current tab; the bus queues the request until a composer mounts.
+  useEffect(() => {
+    if (Platform.OS !== "web" || !isWide) return;
+    return onChatInsertRequested(() => setChatCollapsed(false));
+  }, [isWide]);
+
   // Let the sidebar switch this project's chats IN PLACE (no navigation /
   // remount) while the project is already open. The sidebar emits a select
   // request instead of router.push when its row is the active project.
@@ -3854,6 +3863,13 @@ export default observer(function ProjectLayout() {
     return (
       <>
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
+        {/* A phone enters the project on this page, so keep the way back and
+            the name on screen while it loads instead of a bare spinner. */}
+        {Platform.OS !== "web" ? (
+          <View className="bg-background" style={{ paddingTop: insets.top }}>
+            <ProjectSurfaceHeader projectId={projectId} />
+          </View>
+        ) : null}
         <View className="flex-1 bg-background items-center justify-center px-6">
           {!showStalledRecovery && (
             <>

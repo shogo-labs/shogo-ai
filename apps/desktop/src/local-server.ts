@@ -27,11 +27,12 @@ const PREFERRED_PORT = 39100
 const RUNTIME_BASE_PORT = 39110
 const PORT_RANGE = 100
 const MAX_HEALTH_RETRIES = 60
-// A restart gets a tighter health budget than the cold first boot: the
-// migrations/seed work already happened, and the whole point is to get the UI
-// back within seconds. 20 x 500ms = 10s per attempt, so the five-attempt policy
-// gives up in about a minute instead of leaving the user on a dead UI for 2.5.
-const RESTART_HEALTH_RETRIES = 20
+// A restart gets the same health budget as a cold boot. It used to get 10s,
+// which a loaded machine misses: the replacement was killed while still
+// booting, a fresh one spawned behind it, and one restart became three
+// (lacvapps/shogo-ai#5). A child that dies fails fast in `waitForHealth`, so
+// the long budget only ever goes to a child that is alive and starting up.
+const RESTART_HEALTH_RETRIES = 60
 const HEALTH_RETRY_DELAY_MS = 500
 const SHUTDOWN_TIMEOUT_MS = 5000
 // One watchdog probe's socket budget. The supervisor bounds the whole call as
@@ -40,6 +41,8 @@ const HEALTH_PROBE_TIMEOUT_MS = DEFAULT_HEALTH_WATCHDOG.timeoutMs
 
 let apiProcess: ChildProcess | null = null
 let apiPort: number = PREFERRED_PORT
+/** Epoch ms of the current child's last stdout/stderr write (watchdog progress). */
+let apiLastOutputAt: number | null = null
 
 /**
  * Everything the API child needs to be spawned. Built once on first boot so a
@@ -88,12 +91,20 @@ const apiSupervisor = new LocalApiSupervisor({
   start: ({ attempt }) =>
     bootApiServer(attempt === 0 ? MAX_HEALTH_RETRIES : RESTART_HEALTH_RETRIES),
   fetchHealth: () => probeApiHealth(),
+  lastOutputAt: () => apiLastOutputAt,
+  // Ask before killing: a busy API gets to stop its runtimes and record their
+  // final state; a wedged one costs only the shutdown timeout (lacvapps/shogo-ai#5).
   kill: async () => {
     const child = apiProcess
-    if (child) await terminateApiChild(child)
+    if (child) await terminateApiChild(child, true, 'restart')
   },
   onHealthFailure: ({ failures, maxFailures }) => {
     console.warn(`[Desktop] Local API failed health probe ${failures}/${maxFailures}`)
+  },
+  onBusyHealth: ({ unansweredMs }) => {
+    console.warn(
+      `[Desktop] Local API missed a health probe but is still writing output — busy, not restarting (no answer for ${Math.round(unansweredMs / 1000)}s)`,
+    )
   },
   onSlowHealth: ({ elapsedMs }) => {
     console.warn(`[Desktop] Local API is slow: health probe answered after ${elapsedMs}ms`)
@@ -477,6 +488,8 @@ export async function startLocalServer(): Promise<void> {
       ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'server.ts')
       : path.join(bundleDir, 'agent-runtime.js')
   const serverArgs = IS_DEV ? ['--conditions=development', serverEntry] : [serverEntry]
+  // Packaged builds ship ripgrep for the agent's grep tool (see bundle-api.mjs).
+  const bundledRg = path.join(projectRoot, 'ripgrep', process.platform === 'win32' ? 'rg.exe' : 'rg')
 
   // Kill leftover processes from a previous session
   cleanupStaleProcesses()
@@ -513,6 +526,7 @@ export async function startLocalServer(): Promise<void> {
     PATH: desktopPath,
     HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
+    ...(!IS_DEV && existsSync(bundledRg) ? { SHOGO_RG_PATH: bundledRg } : {}),
     SHOGO_HOST_TIER: hostTier,
     APP_VERSION: app.getVersion(),
     // The desktop app database travels under a Shogo-specific name, NOT the
@@ -654,6 +668,7 @@ function spawnApiServer(spec: ApiLaunchSpec): ChildProcess {
   })
 
   apiProcess = child
+  apiLastOutputAt = null
   console.log(`[Desktop] API process spawned: pid=${child.pid}`)
   logApiEvent('spawn', { pid: child.pid, port: apiPort })
 
@@ -662,10 +677,12 @@ function spawnApiServer(spec: ApiLaunchSpec): ChildProcess {
   }
 
   child.stdout?.on('data', (data: Buffer) => {
+    if (apiProcess === child) apiLastOutputAt = Date.now()
     console.log(`[API] ${data.toString().trim()}`)
   })
 
   child.stderr?.on('data', (data: Buffer) => {
+    if (apiProcess === child) apiLastOutputAt = Date.now()
     const text = data.toString()
     // The last lines before a crash are the only explanation of it, and they
     // used to die with the process (SHO-60).
@@ -729,7 +746,7 @@ async function bootApiServer(healthRetries = MAX_HEALTH_RETRIES): Promise<number
 
   const child = spawnApiServer(spec)
   try {
-    await waitForHealth(healthRetries)
+    await waitForHealth(healthRetries, () => child.exitCode === null && child.signalCode === null)
   } catch (err) {
     await terminateApiChild(child)
     throw err
@@ -745,7 +762,11 @@ async function bootApiServer(healthRetries = MAX_HEALTH_RETRIES): Promise<number
  * so the runtimes record their final state and the exit is not reported as a
  * crash (SHO-181). A failed boot has nothing to save, so it is killed.
  */
-async function terminateApiChild(child: ChildProcess, graceful = false): Promise<boolean> {
+async function terminateApiChild(
+  child: ChildProcess,
+  graceful = false,
+  reason: StopReason = stopReason,
+): Promise<boolean> {
   const pid = child.pid
   if (!pid) {
     console.warn('[Desktop] API process has no pid, cannot kill')
@@ -765,7 +786,13 @@ async function terminateApiChild(child: ChildProcess, graceful = false): Promise
         execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' })
         console.log(`[Desktop] Killed API process tree pid=${pid}`)
       } catch (err) {
-        console.log(`[Desktop] taskkill failed (already dead?): ${err}`)
+        // `/T` exits non-zero when any process in the tree is already gone or
+        // refuses, even though the root was killed — so say what it said
+        // instead of guessing the API was already dead (lacvapps/shogo-ai#5).
+        const stderr = String((err as { stderr?: unknown })?.stderr ?? '').trim()
+        console.log(
+          `[Desktop] taskkill /PID ${pid} /T /F exited non-zero (part of the tree may already be gone): ${stderr || err}`,
+        )
       }
       return
     }
@@ -786,8 +813,8 @@ async function terminateApiChild(child: ChildProcess, graceful = false): Promise
 
   const result = await stopApiProcess({
     platform: process.platform,
-    reason: stopReason,
-    requestGracefulStop: () => requestApiShutdown(stopReason),
+    reason,
+    requestGracefulStop: () => requestApiShutdown(reason),
     signalTerm: () => {
       try {
         process.kill(-pid, 'SIGTERM')
@@ -1595,10 +1622,16 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
   throw new Error('Failed to run database migrations')
 }
 
-async function waitForHealth(maxRetries: number = MAX_HEALTH_RETRIES): Promise<void> {
+async function waitForHealth(
+  maxRetries: number = MAX_HEALTH_RETRIES,
+  isAlive: () => boolean = () => true,
+): Promise<void> {
   const url = `${getApiUrl()}/health`
 
   for (let i = 0; i < maxRetries; i++) {
+    // A child that has exited will never answer; waiting out the budget would
+    // only delay the next attempt.
+    if (!isAlive()) throw new Error('API server exited before it became healthy')
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(2000) })
       if (res.ok) {

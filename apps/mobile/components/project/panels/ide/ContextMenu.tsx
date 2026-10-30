@@ -6,6 +6,8 @@ export interface MenuItem {
   icon?: React.ReactNode;
   danger?: boolean;
   disabled?: boolean;
+  /** Tooltip; also shown under a disabled item to say why it's unavailable. */
+  hint?: string;
   separator?: false;
   onClick: () => void;
 }
@@ -56,7 +58,9 @@ export function ContextMenu({
         ) : (
           <button
             key={i}
+            role="menuitem"
             disabled={(it as MenuItem).disabled}
+            title={(it as MenuItem).hint}
             onClick={() => {
               (it as MenuItem).onClick();
               onClose();
@@ -69,9 +73,14 @@ export function ContextMenu({
                 : "hover:bg-[color:var(--ide-active-bg)] hover:text-white"
             }`}
           >
-            <span className="flex items-center gap-2">
-              {(it as MenuItem).icon}
-              {(it as MenuItem).label}
+            <span className="flex flex-col">
+              <span className="flex items-center gap-2">
+                {(it as MenuItem).icon}
+                {(it as MenuItem).label}
+              </span>
+              {(it as MenuItem).disabled && (it as MenuItem).hint && (
+                <span className="text-[11px] text-[color:var(--ide-muted)]">{(it as MenuItem).hint}</span>
+              )}
             </span>
             {(it as MenuItem).shortcut && (
               <span className="text-[11px] text-[color:var(--ide-muted)]">{(it as MenuItem).shortcut}</span>

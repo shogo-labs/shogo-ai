@@ -30,6 +30,7 @@ import {
   Trash2,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { PhoneBackButton } from '../../components/layout/PhoneBackButton'
 import { useNativePhoneSheetChrome } from '../../lib/native-phone-layout'
 import {
   Popover,
@@ -442,6 +443,7 @@ export default observer(function StarredProjectsPage() {
       <View className="border-b border-border/70 px-4 pt-3 pb-3">
         <View className="w-full max-w-5xl self-center">
           <View className="flex-row items-center gap-3">
+            <PhoneBackButton />
             <View className="h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
               <Star size={19} className="text-primary" />
             </View>

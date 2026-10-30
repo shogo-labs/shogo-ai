@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act, renderHook } from "@testing-library/react";
 import {
   isComposerArchive,
@@ -10,6 +10,7 @@ import {
   releasePreviewUrl,
   useComposerAttachments,
 } from "../composer-attachments";
+import { CHAT_REFS_MIME, encodeChatDragPayload } from "../chat-drag";
 
 function picked(index: number) {
   return {
@@ -174,5 +175,115 @@ describe("composer attachments", () => {
     } finally {
       ;(URL as any).revokeObjectURL = originalRevoke;
     }
+  });
+});
+
+describe("composer drop zone: chat references", () => {
+  const originalFileReader = globalThis.FileReader;
+  afterEach(() => {
+    globalThis.FileReader = originalFileReader;
+  });
+
+  function dragEvent(type: string, data: Record<string, string>, files: File[] = []) {
+    const event = new Event(type, { bubbles: true, cancelable: true }) as any;
+    event.dataTransfer = {
+      types: [...Object.keys(data), ...(files.length ? ["Files"] : [])],
+      files,
+      dropEffect: "none",
+      getData: (t: string) => data[t] ?? "",
+    };
+    return event;
+  }
+
+  function mount(onReferenceDrop = mock((..._args: any[]) => {})) {
+    const node = document.createElement("div");
+    document.body.appendChild(node);
+    const hook = renderHook(() => {
+      const value = useComposerAttachments({ onReferenceDrop });
+      (value.dropZoneRef as any).current = node;
+      return value;
+    });
+    // The DOM listeners bind in an effect after the ref is set.
+    hook.rerender();
+    return { node, hook, onReferenceDrop };
+  }
+
+  const payload = encodeChatDragPayload([
+    { kind: "file", path: "src/a.ts", name: "a.ts", rootId: "agent" },
+    { kind: "file", path: "x.ts", name: "x.ts", rootId: "local:repo:1" },
+  ]);
+
+  test("a reference payload calls onReferenceDrop and never processes files", () => {
+    class FailingReader {
+      readAsDataURL() {
+        throw new Error("processFiles must not run for a reference drop");
+      }
+    }
+    globalThis.FileReader = FailingReader as unknown as typeof FileReader;
+    const { node, hook, onReferenceDrop } = mount();
+    const file = { name: "os.txt", type: "text/plain", size: 3 } as File;
+    act(() => {
+      node.dispatchEvent(dragEvent("drop", { [CHAT_REFS_MIME]: payload }, [file]));
+    });
+    expect(onReferenceDrop).toHaveBeenCalledTimes(1);
+    const [refs, skipped] = onReferenceDrop.mock.calls[0];
+    expect(refs).toEqual([{ type: "file", path: "src/a.ts", name: "a.ts" }]);
+    expect(skipped).toEqual(["x.ts"]);
+    expect(hook.result.current.pendingFiles).toHaveLength(0);
+  });
+
+  test("OS files are still attached", () => {
+    class ImmediateFileReader {
+      result: string | null = null;
+      onload: (() => void) | null = null;
+      readAsDataURL() {
+        this.result = "data:text/plain;base64,Zm9v";
+        this.onload?.();
+      }
+    }
+    globalThis.FileReader = ImmediateFileReader as unknown as typeof FileReader;
+    const { node, hook, onReferenceDrop } = mount();
+    act(() => {
+      node.dispatchEvent(dragEvent("drop", {}, [{ name: "os.txt", type: "text/plain", size: 3 } as File]));
+    });
+    expect(onReferenceDrop).not.toHaveBeenCalled();
+    expect(hook.result.current.pendingFiles).toHaveLength(1);
+  });
+
+  test("dragover with references asks for a copy; dragKind tracks enter/leave", () => {
+    const { node, hook } = mount();
+    expect(hook.result.current.dragKind).toBeNull();
+    act(() => {
+      node.dispatchEvent(dragEvent("dragenter", { [CHAT_REFS_MIME]: payload }));
+    });
+    expect(hook.result.current.isDragOver).toBe(true);
+    expect(hook.result.current.dragKind).toBe("references");
+    const over = dragEvent("dragover", { [CHAT_REFS_MIME]: payload });
+    act(() => {
+      node.dispatchEvent(over);
+    });
+    expect(over.dataTransfer.dropEffect).toBe("copy");
+    act(() => {
+      node.dispatchEvent(dragEvent("dragleave", {}));
+    });
+    expect(hook.result.current.dragKind).toBeNull();
+    act(() => {
+      node.dispatchEvent(dragEvent("dragenter", {}, [{ name: "f", type: "", size: 1 } as File]));
+    });
+    expect(hook.result.current.dragKind).toBe("files");
+  });
+
+  test("without an onReferenceDrop handler, reference drags are treated as plain drags", () => {
+    const node = document.createElement("div");
+    const hook = renderHook(() => {
+      const value = useComposerAttachments({});
+      (value.dropZoneRef as any).current = node;
+      return value;
+    });
+    hook.rerender();
+    act(() => {
+      node.dispatchEvent(dragEvent("dragenter", { [CHAT_REFS_MIME]: payload }));
+    });
+    expect(hook.result.current.dragKind).toBe("files");
   });
 });

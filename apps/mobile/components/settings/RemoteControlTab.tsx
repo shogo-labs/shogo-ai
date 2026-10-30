@@ -55,6 +55,7 @@ import {
   Button,
   cn,
 } from '@shogo/shared-ui/primitives'
+import { Spin } from "@/components/ui/Spin";
 
 function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === 'web') return {}
@@ -261,7 +262,9 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
             disabled={loading}
             className="h-9 w-9 p-0"
           >
-            <RefreshCw size={16} className={cn("text-muted-foreground", loading && "animate-spin")} />
+            <Spin active={loading}>
+              <RefreshCw size={16} className={cn("text-muted-foreground", loading && "animate-spin")} />
+            </Spin>
           </Button>
           <Button
             size="sm"

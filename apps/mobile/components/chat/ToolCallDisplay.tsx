@@ -31,6 +31,7 @@ import {
 } from "lucide-react-native"
 import { TransportBadge } from "./TransportBadge"
 import { CodeText } from "./CodeText"
+import { Spin } from "@/components/ui/Spin";
 
 const TRUNCATION_THRESHOLD = 500
 const MAX_DEPTH = 2
@@ -200,7 +201,9 @@ export function ToolCallDisplay({
         {isExecuting && (
           <View className="ml-auto flex-row items-center gap-1 shrink-0">
             <Text className="text-[9px] text-gray-400">Executing</Text>
-            <Loader2 className="h-2.5 w-2.5 text-gray-400 animate-spin" size={10} />
+            <Spin>
+              <Loader2 className="h-2.5 w-2.5 text-gray-400 animate-spin" size={10} />
+            </Spin>
           </View>
         )}
 

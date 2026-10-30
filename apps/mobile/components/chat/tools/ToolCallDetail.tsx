@@ -11,6 +11,7 @@ import { View, Text } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react-native"
 import { type ToolCallData, formatToolName, getToolNamespace, getToolKeyArg } from "./types"
+import { Spin } from "@/components/ui/Spin";
 
 export interface ToolCallDetailProps {
   tool: ToolCallData
@@ -72,15 +73,17 @@ export function ToolCallDetail({ tool, opacity = 1, className }: ToolCallDetailP
       {!keyArg && <View className="flex-1" />}
 
       {/* State icon */}
-      <StateIcon
-        className={cn(
-          "w-3.5 h-3.5 shrink-0",
-          tool.state === "streaming" && "text-primary animate-spin",
-          tool.state === "success" && "text-green-500",
-          tool.state === "error" && "text-red-500"
-        )}
-        size={14}
-      />
+      <Spin active={tool.state === "streaming"}>
+        <StateIcon
+          className={cn(
+            "w-3.5 h-3.5 shrink-0",
+            tool.state === "streaming" && "text-primary animate-spin",
+            tool.state === "success" && "text-green-500",
+            tool.state === "error" && "text-red-500"
+          )}
+          size={14}
+        />
+      </Spin>
     </View>
   )
 }

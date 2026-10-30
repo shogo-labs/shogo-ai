@@ -22,7 +22,13 @@ let builtinConfigImpl: (name: string) => any = (name) =>
     ? { name, description: `${name} desc`, systemPrompt: 'sys', toolNames: ['read_file'], model: 'sonnet' }
     : null
 
+const realSubagent = await import('../subagent')
 mock.module('../subagent', () => ({
+  // Spread the real exports: a module mock is process-global, and a partial one
+  // makes any other file in the same run that imports `../subagent` (or
+  // `../agent-manager` itself, for BUILTIN_SUBAGENT_TYPES) fail with a
+  // missing-export SyntaxError.
+  ...realSubagent,
   runSubagent: (...args: any[]) => runSubagentImpl(...args),
   getBuiltinSubagentConfig: (name: string) => builtinConfigImpl(name),
 }))

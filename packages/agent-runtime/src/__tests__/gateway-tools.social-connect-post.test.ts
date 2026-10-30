@@ -23,11 +23,20 @@ interface Call {
   method: string
   url: string
   body: any
+  timeoutMs?: number
 }
 
 let calls: Call[] = []
 let replies: Array<{ match: RegExp; status?: number; body: any }> = []
 const realFetch = globalThis.fetch
+// The tool arms its own abort budget per call; the duration is invisible on the
+// resulting signal, so capture what was asked for.
+const realSignalTimeout = AbortSignal.timeout.bind(AbortSignal)
+let requestedTimeoutMs: number | undefined
+AbortSignal.timeout = ((ms: number) => {
+  requestedTimeoutMs = ms
+  return realSignalTimeout(ms)
+}) as typeof AbortSignal.timeout
 
 const workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-social-tool-'))
 
@@ -41,7 +50,8 @@ globalThis.fetch = (async (input: any, init: any = {}) => {
   // A media upload PUTs raw bytes, so only a JSON string body is parsed.
   const raw = init.body
   const body = typeof raw === 'string' ? JSON.parse(raw) : raw
-  calls.push({ method, url, body })
+  calls.push({ method, url, body, timeoutMs: requestedTimeoutMs })
+  requestedTimeoutMs = undefined
   const reply = replies.find((entry) => entry.match.test(`${method} ${url}`))
   const status = reply?.status ?? 200
   const payload = reply?.body ?? {}
@@ -53,6 +63,7 @@ globalThis.fetch = (async (input: any, init: any = {}) => {
 
 afterAll(() => {
   globalThis.fetch = realFetch
+  AbortSignal.timeout = realSignalTimeout
   rmSync(workspaceDir, { recursive: true, force: true })
 })
 
@@ -320,13 +331,116 @@ describe('posting', () => {
   })
 })
 
+describe('deleting a post', () => {
+  test('calls the agent delete route and reports what came down and what did not', async () => {
+    route(/DELETE .*\/social\/posts\/post_9$/, {
+      deleted: false,
+      kept: true,
+      removed: [{ platform: 'threads', account: 'russell.shogo', url: 'https://threads.net/p/1' }],
+      manual: [
+        {
+          platform: 'instagram',
+          account: 'russell.shogo',
+          url: 'https://instagram.com/p/2',
+          reason: 'Instagram has no API to remove a published post — remove it in the Instagram app.',
+        },
+      ],
+    })
+
+    const result = await run({ action: 'delete', post_id: 'post_9' })
+
+    const call = calls.find((entry) => entry.method === 'DELETE')!
+    expect(call.url).toContain('/workspaces/ws_1/social/posts/post_9')
+    // One unpublish per live target can take 15 s each on the server, so the
+    // tool's own 20 s default would abandon work that is still going.
+    expect(call.timeoutMs).toBe(120_000)
+    expect(result.deleted).toBe(false)
+    expect(result.removed).toHaveLength(1)
+    expect(result.manual[0].url).toBe('https://instagram.com/p/2')
+    expect(result.note).toContain('Removed 1 live target(s)')
+    expect(result.note).toContain('removed by hand')
+  })
+
+  test('a draft that never went live says so plainly', async () => {
+    route(/DELETE .*\/social\/posts\/post_8$/, { deleted: true, removed: [], manual: [] })
+
+    const result = await run({ action: 'delete', post_id: 'post_8' })
+
+    expect(result.deleted).toBe(true)
+    expect(result.note).toContain('Nothing was live')
+  })
+
+  test('a publish still in flight is refused with the instruction not to post again', async () => {
+    route(
+      /DELETE .*\/social\/posts\/post_7$/,
+      { error: { code: 'post_in_flight', message: 'This post is still publishing and has no provider id yet.' } },
+      409,
+    )
+
+    const result = await run({ action: 'delete', post_id: 'post_7' })
+
+    expect(result.code).toBe('post_in_flight')
+    expect(result.suggestion).toContain('Do NOT post again')
+  })
+
+  test('a delete without a post_id is refused before the route is called', async () => {
+    const result = await run({ action: 'delete' })
+
+    expect(result.error).toContain('post_id is required')
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('a publish that did not answer', () => {
+  const accountList = {
+    accounts: [{ id: 'acct_ig', platform: 'instagram', username: 'russell.shogo', isActive: true }],
+  }
+
+  test('an unconfirmed publish tells the agent to look, never to retry', async () => {
+    route(/GET .*\/social\/accounts$/, accountList)
+    route(/POST .*\/social\/posts$/, {
+      post: { id: 'post_10', status: 'publishing', outcome: 'unconfirmed', targets: [] },
+    })
+
+    const result = await run({
+      action: 'post',
+      content: 'Big reel',
+      account_ids: ['acct_ig'],
+      media: ['https://cdn.example.com/reel.mp4'],
+      publish_now: true,
+    })
+
+    expect(result.outcome).toBe('unconfirmed')
+    expect(result.note).toContain('Do NOT post again')
+    expect(result.note).toContain('action "posts"')
+  })
+
+  test('a deduped post says nothing new was published', async () => {
+    route(/GET .*\/social\/accounts$/, accountList)
+    route(/POST .*\/social\/posts$/, {
+      post: { id: 'post_11', status: 'published', deduped: true, targets: [] },
+    })
+
+    const result = await run({
+      action: 'post',
+      content: 'Big reel',
+      account_ids: ['acct_ig'],
+      media: ['https://cdn.example.com/reel.mp4'],
+      publish_now: true,
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.note).toContain('nothing was published again')
+  })
+})
+
 describe('the capability gate', () => {
   test('management actions are refused when social management is off', async () => {
     const ctx = makeCtx({
       config: { socialMediaEnabled: true, socialManagementEnabled: false, channels: [], model: {} },
     })
 
-    for (const action of ['connect', 'accounts', 'post', 'posts', 'calendar', 'analytics']) {
+    for (const action of ['connect', 'accounts', 'post', 'posts', 'delete', 'calendar', 'analytics']) {
       const result = await run({ action, platform: 'instagram', account_ids: [] }, ctx)
       expect(result.error).toContain('Social management is off')
     }

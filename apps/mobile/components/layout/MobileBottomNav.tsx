@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, View, useWindowDimensions } from "react-native";
+import { Platform, View, useWindowDimensions } from "react-native";
 import {
   useGlobalSearchParams,
   usePathname,
@@ -24,8 +24,7 @@ import { NativePhoneBottomFade } from "../phone/NativePhoneBottomFade";
 import { MobileSettingsSheet } from "./MobileSettingsSheet";
 import { TeamDock } from "./TeamDock";
 import { usePhoneChromeOverlay } from "./PhoneChromeOverlay";
-import { LiquidGlassBackdrop } from "../ui/LiquidGlassBackdrop";
-import { cn } from "@shogo/shared-ui/primitives";
+import { GlassTabRow } from "./GlassTabRow";
 import { useResolvedTheme } from "../../contexts/theme";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import {
@@ -49,6 +48,12 @@ import {
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
 
+/**
+ * How opaque the canvas-coloured fade under the composer and tab pills ends.
+ * The glass pills only read as glass when there is content behind them to blur.
+ */
+const GLASS_DOCK_FADE_END_OPACITY = 0.4;
+
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
@@ -57,11 +62,19 @@ function isProjectPath(pathname: string) {
   return /\/(?:projects|project-chat|project-surface)\/[^/?]+/.test(pathname);
 }
 
+/** Screens whose composer is the shared chat panel, which lifts on a transform. */
+function isChatPanelPath(pathname: string) {
+  return isHomePath(pathname) || isProjectPath(pathname) || /\/agent\/?$/.test(pathname);
+}
+
 function isHomePath(pathname: string) {
   return (
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index"
   );
 }
+
+const MORE_DESTINATION_PATH =
+  /\/(analytics|work|social|marketplace|creator|starred|shared)(\/|$)/;
 
 function isBottomTabPath(pathname: string) {
   return ["/tasks", "/activity", "/canvases", "/goals"].some(
@@ -209,7 +222,9 @@ export function MobileBottomNav() {
     if (pathname.includes("/activity")) return "activity";
     if (pathname.includes("/canvases")) return "canvases";
     if (pathname.includes("/settings")) return "more";
-    if (pathname.includes("/marketplace")) return "none";
+    // The More tab's destinations keep More lit; falling through to "chat"
+    // lit Home while the screen on show was Analytics, My work or Social.
+    if (MORE_DESTINATION_PATH.test(pathname)) return "more";
     return "chat";
   }, [
     params.navTab,
@@ -221,7 +236,15 @@ export function MobileBottomNav() {
   ]);
 
   if (Platform.OS === "web" && width >= WEB_WIDE_MIN_WIDTH) return null;
-  if (isHiddenPath(pathname) || keyboardOpen) return null;
+  // iOS never resizes the window for the keyboard: it covers the nav, which can
+  // stay where it is. Unmounting it on every keyboard event re-lays out the
+  // screen above it in the middle of the keyboard's animation. Only the agent
+  // and project chats lift their composer by the keyboard's overlap, so they
+  // alone can leave it; any other screen sizes its composer from the space the
+  // nav leaves, and needs it gone to sit on the keyboard.
+  const keepsNavUnderKeyboard =
+    Platform.OS === "ios" && !chrome.overlay && isChatPanelPath(pathname);
+  if (isHiddenPath(pathname) || (keyboardOpen && !keepsNavUnderKeyboard)) return null;
 
   const goChat = () => {
     if (
@@ -238,7 +261,11 @@ export function MobileBottomNav() {
         },
       } as any);
     } else {
-      router.replace("/(app)" as any);
+      // Return to the Chat screen already in the stack. `replace` would throw
+      // it away and rebuild it, flashing a blank "Loading conversation" screen
+      // and losing the draft and scroll position; `dismissTo` keeps it mounted
+      // and only pushes a new one if Chat isn't underneath yet.
+      router.dismissTo("/(app)" as any);
     }
   };
 
@@ -428,7 +455,9 @@ export function MobileBottomNav() {
           // safe area. Reserve the inset here so the composer and this
           // capsule move up together and match the project-chat dock position.
           paddingBottom:
-            isHomePath(pathname) || chrome.overlay ? insets.bottom + 8 : 8,
+            isHomePath(pathname) || chrome.overlay || chrome.edgeToEdge
+              ? insets.bottom + 8
+              : 8,
           paddingHorizontal: navColumn.gutter,
         }}
         testID="mobile-bottom-nav"
@@ -441,6 +470,9 @@ export function MobileBottomNav() {
                 ? NATIVE_PHONE_HOME_CANVAS
                 : undefined
             }
+            // Let content show through the glass pills instead of painting an
+            // almost-opaque canvas under them (the default is 0.94).
+            endOpacity={GLASS_DOCK_FADE_END_OPACITY}
             height={
               NATIVE_PHONE_DOCK_FADE + NATIVE_PHONE_COMPOSER_PILL_HEIGHT + 16
             }
@@ -450,73 +482,15 @@ export function MobileBottomNav() {
         {teamDock ? (
           <TeamDock maxWidth={navColumn.maxWidth!} />
         ) : (
-        <View
-          className="w-full flex-row items-center gap-1 overflow-hidden bg-transparent px-1.5 shadow-sm"
-          style={{
-            height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
-            maxWidth: navColumn.maxWidth,
-            alignSelf: "center",
-            borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
-          }}
-        >
-          <LiquidGlassBackdrop
-            tintColor={
-              isDark ? "rgba(28,28,30,0.42)" : "rgba(255,255,255,0.42)"
-            }
-            style={{
-              borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
-            }}
-          />
-          {!experience.resolved && !projectMode
-            ? Array.from({ length: 4 }, (_, index) => (
-                <View
-                  key={index}
-                  className="flex-1 items-center justify-center"
-                  style={{
-                    height:
-                      NATIVE_PHONE_COMPOSER_PILL_HEIGHT -
-                      NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2,
-                  }}
-                >
-                  <View className="h-6 w-6 rounded-full bg-muted" />
-                </View>
-              ))
-            : items.map(({ id, label, Icon, onPress }) => {
-            const selected = active === id;
-            return (
-              <Pressable
-                key={id}
-                onPress={onPress}
-                accessibilityRole="tab"
-                aria-selected={selected}
-                accessibilityLabel={label}
-                className={cn(
-                  "flex-1 items-center justify-center rounded-full",
-                  selected && "bg-primary/10"
-                )}
-                style={{
-                  height:
-                    NATIVE_PHONE_COMPOSER_PILL_HEIGHT -
-                    NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2,
-                }}
-              >
-                <Icon
-                  size={23}
-                  color={
-                    selected
-                      ? isDark
-                        ? "#F09050"
-                        : "#E27927"
-                      : isDark
-                      ? "#a1a1aa"
-                      : "#6b7280"
-                  }
-                  strokeWidth={selected ? 2.2 : 1.9}
-                />
-              </Pressable>
-            );
-          })}
-        </View>
+        <GlassTabRow
+          items={items}
+          active={active}
+          loading={!experience.resolved && !projectMode}
+          height={NATIVE_PHONE_COMPOSER_PILL_HEIGHT}
+          itemInset={NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET}
+          maxWidth={navColumn.maxWidth}
+          isDark={isDark}
+        />
         )}
       </View>
       <MobileSettingsSheet

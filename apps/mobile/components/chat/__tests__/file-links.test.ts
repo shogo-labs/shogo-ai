@@ -42,6 +42,16 @@ describe("fileIndexHas", () => {
   test("is false for an empty index", () => {
     expect(fileIndexHas(new Set(), "src/app.tsx", PROJECT)).toBe(false)
   })
+
+  test("checks an unmounted project's own list for its project-relative path", () => {
+    // What `useChatFileIndex` holds for a project the workspace never mounted:
+    // that runtime's list, which is project-relative (SHO-247).
+    const plannerFiles = new Set(["plans/sealed.md"])
+    const resolved = resolveChatFilePath(`${OTHER}/plans/sealed.md`, null)
+    expect(resolved).toEqual({ projectId: OTHER, relPath: "plans/sealed.md" })
+    expect(fileIndexHas(plannerFiles, resolved!.relPath, null)).toBe(true)
+    expect(fileIndexHas(plannerFiles, "plans/other.md", null)).toBe(false)
+  })
 })
 
 describe("linkifyFilePaths", () => {

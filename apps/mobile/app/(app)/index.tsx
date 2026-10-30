@@ -32,6 +32,7 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { ComposerPlusSection } from '../../components/chat/ComposerPlusMenu'
+import { WorkspaceMovedBanner } from '../../components/settings/WorkspaceMovedBanner'
 import {
   MachineWorkspaceBanner,
   useMachineWorkspace,
@@ -276,6 +277,7 @@ export const HomeScreen = observer(function HomeScreen({
     enabled: isNativePhone,
     restPad: restComposerPad,
     iosKeyboardAvoiding: iosComposerAvoiding,
+    avoidingClearance: isNativePhone ? 0 : undefined,
   })
 
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL)
@@ -1110,6 +1112,7 @@ export const HomeScreen = observer(function HomeScreen({
                 : restComposerSidePad,
             }}
           >
+            <WorkspaceMovedBanner />
             <MachineWorkspaceBanner
               machineName={machineInstance?.name}
               onRetry={retryMachineRequest}

@@ -16,6 +16,7 @@ import { readFileSync, existsSync } from 'fs'
 import { join, isAbsolute, resolve, sep } from 'path'
 import { randomBytes } from 'crypto'
 import type { SandboxConfig } from './types'
+import { prependRgToPath } from './rg-resolve'
 import { trackExecProcess } from './exec-memory-guard'
 import { containChild, type Containment, type ProcessMember } from './process-tree'
 
@@ -545,6 +546,7 @@ export function buildExecEnv(
       if (value) merged[key] = value
     }
   }
+  prependRgToPath(merged)
   return merged
 }
 
