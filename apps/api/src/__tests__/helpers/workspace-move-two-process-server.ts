@@ -468,6 +468,9 @@ async function statePayload(c: any) {
     triggers: await prisma.eventSubscription.count(),
   }
   const userIds = (await prisma.user.findMany({ select: { id: true } as any })).map((u: any) => u.id)
+  const members = (
+    await prisma.member.findMany({ select: { userId: true, workspaceId: true, role: true } as any })
+  ).map((m: any) => ({ userId: m.userId, workspaceId: m.workspaceId, role: m.role }))
   const workspaces = await prisma.workspace.findMany({
     select: { id: true, name: true, kind: true, instanceSize: true, movedToWorkspaceId: true } as any,
   })
@@ -475,6 +478,7 @@ async function statePayload(c: any) {
   return c.json({
     workspaces,
     userIds,
+    members,
     projects,
     counts,
     cloudStorage,
