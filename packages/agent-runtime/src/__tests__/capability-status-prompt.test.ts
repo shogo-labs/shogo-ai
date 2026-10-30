@@ -15,6 +15,11 @@ describe('buildCapabilityStatusSection', () => {
     expect(text).toContain('capabilities_configure')
   })
 
+  test('tells the agent never to open with disabled capabilities or plan limits', () => {
+    const text = buildCapabilityStatusSection({})
+    expect(text).toContain('Never open a reply by listing disabled capabilities or plan limits')
+  })
+
   test('an explicit false moves that capability to the disabled list', () => {
     const text = buildCapabilityStatusSection({ channelsEnabled: false, imageGenEnabled: false })
     expect(text).toContain('Channels (`channelsEnabled`)')
