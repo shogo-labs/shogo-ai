@@ -352,9 +352,14 @@ export function workspaceMoveRoutes(): Hono {
   app.post('/receive/init', async (c) => {
     const body = await c.req.json().catch(() => ({}))
     const sourceWorkspaceId = String(body.sourceWorkspaceId ?? '')
-    const auth = await authorize(c, sourceWorkspaceId)
-    if (!auth.ok) return auth.response
-    const ownerUserId = String(auth.principal.userId ?? '')
+    // This instance has never seen `sourceWorkspaceId` — creating its copy is
+    // the whole point of the call. Authorising `workspace:move` against that id
+    // therefore always failed (`loadAccess` finds no membership), so every push
+    // died with a 403 before the target workspace existed. The caller is
+    // authenticated by its own credential; the workspace it creates is owned by
+    // it, and the later `/receive/*` calls are authorised against that target.
+    const principal = principalOf(c)
+    const ownerUserId = String(principal?.userId ?? '')
     if (!ownerUserId) return errorResponse(c, 401, 'unauthorized', 'Authentication required')
     try {
       const created = await initTargetWorkspace(prisma, {

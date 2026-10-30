@@ -53,13 +53,23 @@ export async function* streamSourceRecords(
   from: { model?: string; cursor?: number } = {},
 ): AsyncGenerator<RecordsChunk> {
   const { rows } = await collectMoveRows({ ...scope, db })
-  const order = insertOrder().filter((model) => shouldMoveModel(model) && (rows.get(model)?.length ?? 0) > 0)
+  // `User` leads: `Member` rows reference it by foreign key, and the export
+  // manifest deliberately leaves `User` out, so it has to be prepended here or
+  // the target writes a member before the account it points at exists.
+  const order = [...new Set(['User', ...insertOrder()])].filter(
+    (model) => shouldMoveModel(model) && (rows.get(model)?.length ?? 0) > 0,
+  )
 
   // Rewriting happens here, once, on the side that knows every source id: the
   // stream carries target ids already, so the receiver writes rows verbatim and
   // a replayed chunk lands on the same primary keys.
   const movedIds = new Set<string>()
-  for (const list of rows.values()) for (const row of list) movedIds.add(String(row.id))
+  for (const [model, list] of rows) {
+    // User ids are not re-identified (see `rewriteRowForMove`), so a reference
+    // to one must not be remapped either, or the member points at nothing.
+    if (model === 'User') continue
+    for (const row of list) movedIds.add(String(row.id))
+  }
   const ctx = {
     moveId: scope.moveId,
     sourceWorkspaceId: scope.workspaceId,
