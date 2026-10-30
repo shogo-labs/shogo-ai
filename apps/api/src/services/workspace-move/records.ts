@@ -35,10 +35,19 @@ export interface RewriteContext {
 /** Columns that name an account or an outside system, never a moved row. */
 const NEVER_REMAPPED = new Set(['workspaceId', 'userId', 'createdById', 'ownerUserId', 'authorUserId', 'installId'])
 
+/**
+ * Identity that belongs to the person, not to the workspace. A moved `User`
+ * keeps its id: re-identifying it makes the same account exist twice, and the
+ * second copy dies on the unique `email` the moment the target already knows
+ * that person — which it always does when the desktop learned them from the
+ * cloud in the first place.
+ */
+const NEVER_REIDENTIFIED: ReadonlySet<string> = new Set(['User'])
+
 export function rewriteRowForMove(model: string, row: MoveRow, ctx: RewriteContext): MoveRow {
   const next: MoveRow = { ...row }
   const sourceId = String(row?.id ?? '')
-  if (sourceId) next.id = deriveMoveId(ctx.moveId, sourceId)
+  if (sourceId && !NEVER_REIDENTIFIED.has(model)) next.id = deriveMoveId(ctx.moveId, sourceId)
 
   if (next.workspaceId === ctx.sourceWorkspaceId) next.workspaceId = ctx.targetWorkspaceId
 

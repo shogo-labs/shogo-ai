@@ -21,6 +21,7 @@ import { inspectFolderLinkedProject } from './git'
 import { describeIgnoreRules, moveIgnoreRules } from './ignores'
 import type {
   MoveDirection,
+  MoveFileEntry,
   MovePlan,
   MovePlanProject,
   MoveRow,
@@ -49,6 +50,23 @@ export interface BuildMovePlanInput {
   projectsDirOverride?: string
   /** Test seam: skip walking project files (row counts only). */
   skipFiles?: boolean
+  /**
+   * The side that actually holds the workspace. Set for a move whose source is
+   * remote (`cloud_to_desktop`): the plan must describe the source's rows and
+   * files, not this instance's, which hold neither.
+   */
+  remote?: {
+    planRows(scope: {
+      workspaceId: string
+      requesterId: string
+      isOwner: boolean
+      selection: MoveSelection
+    }): Promise<{ rows: Record<string, MoveRow[]> }>
+    fileManifest(input: { workspaceId: string; projectId: string }): Promise<{
+      entries: MoveFileEntry[]
+      ignored: { files: number; bytes: number }
+    }>
+  }
 }
 
 export interface MovePlanResult {
@@ -106,12 +124,35 @@ export async function collectMoveRows(input: {
     db: input.db,
   } as any)
   const closure = applySelectionClosure(snapshot.rows, input.selection)
+  await attachMemberUsers(input.db ?? prisma, closure.rows)
   return {
     rows: closure.rows,
     credentials: snapshot.credentials,
     warnings: snapshot.warnings,
     droppedDms: snapshot.droppedDms,
   }
+}
+
+/**
+ * `User` is excluded from the export manifest on purpose — it is global account
+ * data, not workspace content — but `Member` references it by foreign key. A
+ * move therefore has to carry a minimal user row for every member it carries.
+ * Without them the target fails with `Foreign key constraint violated` the
+ * moment the workspace has more than one member, which every real team
+ * workspace does, and the member is silently lost. Only the columns a member
+ * row needs travel: the profile stays the account's own business.
+ */
+async function attachMemberUsers(db: any, rows: Map<string, MoveRow[]>): Promise<void> {
+  const members = rows.get('Member') ?? []
+  const ids = [...new Set(members.map((member) => String(member.userId ?? '')).filter(Boolean))]
+  if (!ids.length) return
+  const users: MoveRow[] = await db.user
+    .findMany({
+      where: { id: { in: ids } },
+      select: { id: true, email: true, name: true, image: true },
+    })
+    .catch(() => [])
+  if (users.length) rows.set('User', users)
 }
 
 interface ProjectRow {
@@ -169,26 +210,61 @@ async function targetStorageLimit(input: BuildMovePlanInput): Promise<number | n
  */
 export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlanResult> {
   const db: any = input.db ?? prisma
-  const workspace = await db.workspace.findUnique({
-    where: { id: input.workspaceId },
-    // `instanceSize` is here because the plan freezes it for the target: without
-    // it every move created a `micro` workspace (the column default) no matter
-    // what the source was, while the quota check above still read the real size.
-    select: { id: true, name: true, kind: true, instanceSize: true },
-  })
+  // A remote source *is* the workspace: this instance holds neither its rows
+  // nor its files. Building the plan locally planned an empty move (zero
+  // projects, zero bytes) and then reported success with an empty target.
+  const remoteRows = input.remote
+    ? new Map<string, MoveRow[]>(
+        Object.entries(
+          (
+            await input.remote.planRows({
+              workspaceId: input.workspaceId,
+              requesterId: input.requesterId,
+              isOwner: input.isOwner,
+              selection: input.selection,
+            })
+          ).rows,
+        ),
+      )
+    : null
+
+  const remoteWorkspaceRow = remoteRows ? (remoteRows.get('Workspace') ?? [])[0] : undefined
+  const workspace = remoteRows
+    ? {
+        id: input.workspaceId,
+        name: String(remoteWorkspaceRow?.name ?? input.targetName ?? 'Workspace'),
+        kind: String(remoteWorkspaceRow?.kind ?? 'team'),
+        instanceSize: (remoteWorkspaceRow?.instanceSize as string | null) ?? null,
+      }
+    : await db.workspace.findUnique({
+        where: { id: input.workspaceId },
+        // `instanceSize` is here because the plan freezes it for the target: without
+        // it every move created a `micro` workspace (the column default) no matter
+        // what the source was, while the quota check above still read the real size.
+        select: { id: true, name: true, kind: true, instanceSize: true },
+      })
   if (!workspace) throw new WorkspaceMoveError('Workspace not found', 404, 'workspace_not_found')
 
-  const collected = await collectMoveRows({ ...input, db })
+  const collected = remoteRows
+    ? { rows: remoteRows, credentials: [] as any[], warnings: [] as string[], droppedDms: 0 }
+    : await collectMoveRows({ ...input, db })
   const rows = collected.rows
   const models = [...rows.entries()].map(([model, list]) => ({ model, rows: list.length }))
   const totalRows = models.reduce((sum, entry) => sum + entry.rows, 0)
 
-  const projects = await loadProjects(db, input.workspaceId, input.selection)
-  const conversations = await loadConversations(db, input.workspaceId, input.selection)
-  const folders = await projectFolderPaths(
-    db,
-    projects.map((project) => project.id),
-  )
+  const wantedProjects = input.selection.mode === 'all' ? null : new Set(input.selection.projectIds)
+  const projects: ProjectRow[] = remoteRows
+    ? (remoteRows.get('Project') ?? [])
+        .map((row) => ({ id: String(row.id), name: String(row.name ?? '') }))
+        .filter((project) => !wantedProjects || wantedProjects.has(project.id))
+    : await loadProjects(db, input.workspaceId, input.selection)
+  const conversations = remoteRows ? [] : await loadConversations(db, input.workspaceId, input.selection)
+  const folders = remoteRows
+    ? new Map<string, string>()
+    : await projectFolderPaths(
+        db,
+        projects.map((project) => project.id),
+      )
 
   const warnings: string[] = []
   const planProjects: MovePlanProject[] = []
@@ -223,9 +299,13 @@ export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlan
         )
       }
 
-      const walk = mode === 'git-relink'
-        ? { entries: [], ignored: { files: 0, bytes: 0 }, errors: [] }
-        : await walkMoveFiles(sourceDir, { rules: moveIgnoreRules(folderPath ?? sourceDir), hash: false })
+      const walk = input.remote
+        ? await input.remote
+            .fileManifest({ workspaceId: input.workspaceId, projectId: project.id })
+            .then((manifest) => ({ entries: manifest.entries, ignored: manifest.ignored, errors: [] as string[] }))
+        : mode === 'git-relink'
+          ? { entries: [], ignored: { files: 0, bytes: 0 }, errors: [] }
+          : await walkMoveFiles(sourceDir, { rules: moveIgnoreRules(folderPath ?? sourceDir), hash: false })
 
       const files = walk.entries.length
       const bytes = walk.entries.reduce((sum, entry) => sum + entry.bytes, 0)
@@ -262,7 +342,11 @@ export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlan
     // out of the plan entirely, so its bytes were missing from the totals and
     // from the quota check — the one number the user approves before starting.
     const rootDir = moveDirFor({ projectId: WORKSPACE_ROOT_ID, workspaceId: input.workspaceId, base: projectsBase })
-    const rootWalk = await walkMoveFiles(rootDir, { rules: moveIgnoreRules(rootDir), hash: false })
+    const rootWalk = input.remote
+      ? await input.remote
+          .fileManifest({ workspaceId: input.workspaceId, projectId: WORKSPACE_ROOT_ID })
+          .then((manifest) => ({ entries: manifest.entries, ignored: manifest.ignored, errors: [] as string[] }))
+      : await walkMoveFiles(rootDir, { rules: moveIgnoreRules(rootDir), hash: false })
     const rootBytes = rootWalk.entries.reduce((sum, entry) => sum + entry.bytes, 0)
     totalFiles += rootWalk.entries.length
     totalBytes += rootBytes
