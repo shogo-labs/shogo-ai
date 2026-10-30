@@ -44,6 +44,7 @@ import {
 } from '../../lib/team-chat-state'
 import type { SendInput } from '../../hooks/useTeamChat'
 import { resolveLinkPreviewOptOuts } from '../../lib/link-preview-consent'
+import { confirmsChannelBroadcast } from '../../lib/channel-broadcast-consent'
 import { useDraft } from '../../hooks/useChatItems'
 import { useCustomEmoji } from '../../hooks/useCustomEmoji'
 import { activeEmojiQuery, replaceFinishedShortcode, searchEmoji } from '../../lib/emoji-data'
@@ -70,6 +71,11 @@ export interface ComposerProps {
   channelMemberIds?: Set<string> | null
   /** Channels this reader can see, for typing `#` to reference one. */
   channels?: ChannelCandidateSource[] | null
+  /**
+   * Where this composer posts, so a `@channel` / `@here` token can be confirmed
+   * before it goes out. Omitted by surfaces with no channel or DM to broadcast to.
+   */
+  broadcastTarget?: { kind: string | null; name: string | null } | null
 }
 
 export interface ComposerHandle {
@@ -126,6 +132,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     (refs: ChatReference[] | undefined) =>
       (refs ?? []).flatMap((r) => (r.type === 'mention' && byAnyToken.has(r.id) ? [byAnyToken.get(r.id)!] : [])),
     [byAnyToken],
+  )
+
+  // `@channel` / `@here` reach the whole channel, and the chip that inserts them
+  // looks like any other mention, so the reach is invisible until it has already
+  // happened. Asked on the encoded wire text, because that is where a picked
+  // chip becomes the token the server actually acts on.
+  const broadcastKind = props.broadcastTarget?.kind ?? null
+  const broadcastName = props.broadcastTarget?.name ?? null
+  const beforeSubmit = useCallback(
+    (content: string, _files?: FileAttachment[], _model?: string, refs?: ChatReference[]) =>
+      confirmsChannelBroadcast(encodeMentions(content, picksFrom(refs)), {
+        kind: broadcastKind,
+        name: broadcastName,
+      }),
+    [picksFrom, broadcastKind, broadcastName],
   )
 
   const completions = useMemo<ComposerCompletionSource[]>(
@@ -448,6 +469,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           key={draftKey}
           ref={inputRef}
           onSubmit={onSubmit}
+          beforeSubmit={beforeSubmit}
           placeholder={props.placeholder}
           presentation="agent"
           agentControls={false}
