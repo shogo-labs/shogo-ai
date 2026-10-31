@@ -133,7 +133,9 @@ export function detectFailedMigrations(bunPath: string, dbPath: string): FailedM
   const script = `
     import { Database } from 'bun:sqlite';
     try {
-      const db = new Database(process.env.DBP, { readonly: true });
+      // Not readonly: a readonly handle on a WAL database with a leftover
+      // -shm but no -wal file cannot create the WAL and fails SQLITE_CANTOPEN.
+      const db = new Database(process.env.DBP, { create: false, readwrite: true });
       const hasTable = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='_prisma_migrations'").get();
       if (!hasTable) { console.log('[]'); process.exit(0); }
       const rows = db
