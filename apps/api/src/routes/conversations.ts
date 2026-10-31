@@ -71,7 +71,7 @@ import { getFrontendUrl } from '../lib/cloud-urls'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp, registerConversationActivity } from '../services/conversation-activity'
 import { agentPostTargets, respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
-import { agentReplySlotState, drainAgentReplyWaiters, slotSnapshot } from '../services/agent-reply-slots'
+import { agentReplySlotState, agentReplySlotStates, drainAgentReplyWaiters, slotSnapshot } from '../services/agent-reply-slots'
 import { invalidateAgentReplyCapacity, resolveAgentReplyCapacity } from '../services/agent-reply-capacity'
 import { createReplyTasks } from '../services/background-tasks.service'
 import { decideApproval, listPendingApprovals } from '../services/conversation-approvals'
@@ -1836,9 +1836,16 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
    * One run, as `GET running-agents`, `agent_runs_list` and the agent tools see
    * it. `state` says whether it is working, parked on a tool, or still in line.
    */
-  async function runView(row: any, access: Access) {
+  async function runView(
+    row: any,
+    access: Access,
+    /** Pre-resolved queue state, so a list does not ask once per row (SHO-277). */
+    knownSlot?: { state: 'running' | 'queued' | 'waiting'; position: number | null } | null,
+  ) {
     const queuedAt = (row.blocks as { queued?: { since?: string } } | null | undefined)?.queued?.since ?? null
-    const slot = await agentReplySlotState(row.workspaceId, row.id).catch(() => null)
+    const slot = knownSlot !== undefined
+      ? knownSlot
+      : await agentReplySlotState(row.workspaceId, row.id).catch(() => null)
     const waiting = slot?.state === 'waiting'
     const queued = !!queuedAt || slot?.state === 'queued'
     return {
@@ -1884,11 +1891,14 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       orderBy: { createdAt: 'desc' },
       take: 200,
     })
+    // One queue read for the whole page instead of one per row (SHO-277).
+    const slots = await agentReplySlotStates(auth.workspaceId, rows.map((row: any) => row.id))
+      .catch(() => new Map())
     const runs = []
     for (const row of rows) {
       if (sessionId && row.agentSessionId === sessionId) continue
       const access = await accessOrNull(row.conversationId, userId, cache)
-      if (access) runs.push(await runView(row, access))
+      if (access) runs.push(await runView(row, access, slots.get(row.id) ?? null))
       if (runs.length >= 50) break
     }
     // The pause is part of the answer: a wake that finds nothing to do still

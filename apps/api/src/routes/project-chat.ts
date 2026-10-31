@@ -17,6 +17,7 @@ import { resolve } from "path"
 import { existsSync } from "fs"
 import { context, propagation, trace, SpanStatusCode } from "@opentelemetry/api"
 import { ChatLatency } from "../lib/chat-latency"
+import { takeCompleteLines } from "../lib/sse-lines"
 import { captureWake } from "../lib/wake-capture"
 
 import { prisma } from "../lib/prisma"
@@ -317,64 +318,220 @@ export async function trackUsageFromStream(
   let foreignTurn = false
   let lastPartialPersistAt = 0
   let partialPersistInFlight: Promise<void> | null = null
+  /** Something changed since the last write — the flush scheduler picks it up. */
   let persistenceDirty = false
-  let persistenceUrgent = false
+  /** The assistant row we were updating no longer exists. */
+  let messageDeleted = false
 
-  function buildPersistedParts(): any[] {
-    const parts = orderedParts.filter(
-      (p) => !((p.type === 'text' || p.type === 'reasoning') && (!p.text || !p.text.trim())),
-    )
-    if (turnStartedAt !== undefined) {
-      parts.push({
-        type: 'data-turn-timing',
-        data: { startedAt: turnStartedAt, completedAt: turnCompletedAt },
-      })
-    }
-    return parts
+  /**
+   * Snapshot writes are coalesced to at most one per second per turn (SHO-277).
+   *
+   * Every tool result used to force its own full write of the whole growing
+   * assistant message — 110 rewrites of up to 1.8 MB in one turn, each a
+   * `JSON.stringify` plus an `UPDATE` on the local API's *synchronous*
+   * bun:sqlite connection, i.e. blocking every other request for the duration.
+   * The latest state wins, so dropping the intermediate writes costs nothing
+   * that a reload or a hard kill needs: the pending one is written as soon as
+   * the interval elapses, the turn end and any stream error always write, and
+   * the runtime's own frame journal (SHO-274) covers the gap.
+   */
+  const SNAPSHOT_MIN_INTERVAL_MS = 1_000
+  let snapshotTimer: ReturnType<typeof setTimeout> | null = null
+  /** Something changed since the last write — write again when the timer fires. */
+  let snapshotPending = false
+  /** The session row was deleted under us; stop trying to persist into it. */
+  let sessionGone = false
+  /** Resolved once per turn instead of one `findUnique` per flush. */
+  let sessionExistsPromise: Promise<boolean> | null = null
+  let sessionExists: boolean | null = null
+
+  // ── Incremental parts serialisation (SHO-277) ────────────────────────────
+  //
+  // Serialising the whole parts array on every flush is O(the whole turn), so a
+  // 110-step turn cost O(n²). A turn only ever appends parts and mutates the one
+  // it is streaming, so each part's JSON is cached against a mutation counter and
+  // the joined prefix is reused: a flush serialises the parts that changed plus
+  // whatever was appended since.
+  const partVersion = new WeakMap<object, number>()
+  const partJsonCache = new WeakMap<object, { version: number; json: string }>()
+  let cachedParts: any[] = []
+  let cachedVersions: number[] = []
+  let cachedPrefix = ''
+  let cachedPrefixCount = 0
+
+  /** Mark a part as changed, so the next flush re-serialises it. */
+  function markPartDirty(part: any): void {
+    if (!part || typeof part !== 'object') return
+    partVersion.set(part, (partVersion.get(part) ?? 0) + 1)
+  }
+
+  function versionOf(part: any): number {
+    return (part && typeof part === 'object' && partVersion.get(part)) || 0
+  }
+
+  function serializePart(part: any): string {
+    const version = versionOf(part)
+    const cached = typeof part === 'object' && part !== null ? partJsonCache.get(part) : undefined
+    if (cached && cached.version === version) return cached.json
+    const json = JSON.stringify(part) ?? 'null'
+    if (typeof part === 'object' && part !== null) partJsonCache.set(part, { version, json })
+    return json
   }
 
   /**
-   * Persist a partial assistant message while the stream is alive. This is
-   * intentionally throttled for text deltas, but tool results force a flush
-   * so a hard-killed desktop still has the last completed step on reload.
+   * `'[' + joined JSON of the parts`, without the closing bracket, plus the
+   * unchanged-prefix cache. Cheap in the common case (the tail is one part).
    */
-  async function persistAssistantSnapshot(force = false): Promise<void> {
-    if (foreignTurn || !chatSessionId || (!accumulatedText && toolCallMap.size === 0)) return
-    if (!force && assistantMessageId && Date.now() - lastPartialPersistAt < 2_000) return
-    if (partialPersistInFlight) {
-      await partialPersistInFlight
-      if (!force && Date.now() - lastPartialPersistAt < 2_000) return
+  function serializedPartsPrefix(parts: any[]): string {
+    const maxCommon = Math.min(parts.length, cachedPrefixCount, cachedParts.length)
+    let common = 0
+    while (
+      common < maxCommon &&
+      cachedParts[common] === parts[common] &&
+      cachedVersions[common] === versionOf(parts[common])
+    ) {
+      common++
     }
 
-    const run = (async () => {
-      const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
-      if (!session) return
-      if (pendingToolOutputWrites.length > 0) {
-        const writes = pendingToolOutputWrites
-        pendingToolOutputWrites = []
-        await Promise.all(writes)
-      }
-      const parts = buildPersistedParts()
-      const data = {
-        role: 'assistant' as const,
-        content: accumulatedText,
-        parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
-        agent: 'technical' as const,
-        model: agentMode,
-      }
-      if (assistantMessageId) {
-        const update = (prisma as any).chatMessage?.update
-        if (typeof update === 'function') {
+    if (common === cachedPrefixCount) {
+      // Nothing the cached prefix covers changed: append only what is new.
+      if (common === parts.length) return cachedPrefix
+      const tail: string[] = []
+      for (let i = common; i < parts.length; i++) tail.push(serializePart(parts[i]))
+      cachedPrefix = cachedPrefixCount === 0 ? `[${tail.join(',')}` : `${cachedPrefix},${tail.join(',')}`
+    } else {
+      // A part the prefix covered changed — a tool result landing on an earlier
+      // step. Rare enough to rebuild; the per-part cache still avoids
+      // re-serialising everything.
+      const json: string[] = []
+      for (let i = 0; i < parts.length; i++) json.push(serializePart(parts[i]))
+      cachedPrefix = `[${json.join(',')}`
+    }
+
+    cachedParts = parts.slice()
+    cachedVersions = parts.map(versionOf)
+    cachedPrefixCount = parts.length
+    return cachedPrefix
+  }
+
+  /** The persisted `parts` column, or `undefined` when there is nothing to store. */
+  function buildPersistedPartsJson(): string | undefined {
+    const parts = orderedParts.filter(
+      (p) => !((p.type === 'text' || p.type === 'reasoning') && (!p.text || !p.text.trim())),
+    )
+    if (parts.length === 0 && turnStartedAt === undefined) return undefined
+    let prefix = parts.length === 0 ? '[' : serializedPartsPrefix(parts)
+    if (turnStartedAt !== undefined) {
+      const timing = JSON.stringify({
+        type: 'data-turn-timing',
+        data: { startedAt: turnStartedAt, completedAt: turnCompletedAt },
+      })
+      prefix = parts.length === 0 ? `[${timing}` : `${prefix},${timing}`
+    }
+    return `${prefix}]`
+  }
+
+  /**
+   * Resolve whether the session row still exists — once per turn, not once per
+   * flush. `false` short-circuits every later write; a session deleted mid-turn
+   * also surfaces as P2025 on the update, handled below.
+   */
+  function sessionIsPersistable(): Promise<boolean> {
+    if (sessionGone || !chatSessionId) return Promise.resolve(false)
+    if (sessionExists !== null) return Promise.resolve(sessionExists)
+    if (!sessionExistsPromise) {
+      sessionExistsPromise = prisma.chatSession
+        .findUnique({ where: { id: chatSessionId }, select: { id: true } })
+        .then((session) => {
+          sessionExists = !!session
+          return sessionExists
+        })
+        .catch(() => {
+          // A read error must not wedge persistence for the whole turn.
+          sessionExistsPromise = null
+          return false
+        })
+    }
+    return sessionExistsPromise
+  }
+
+  /** Write the current snapshot. No throttle — callers decide when. */
+  async function writeAssistantSnapshot(): Promise<void> {
+    if (foreignTurn || !chatSessionId || sessionGone) return
+    if (!accumulatedText && toolCallMap.size === 0) return
+    if (!(await sessionIsPersistable())) return
+    if (pendingToolOutputWrites.length > 0) {
+      const writes = pendingToolOutputWrites
+      pendingToolOutputWrites = []
+      await Promise.all(writes)
+    }
+    const partsJson = buildPersistedPartsJson()
+    const data = {
+      role: 'assistant' as const,
+      content: accumulatedText,
+      parts: partsJson,
+      agent: 'technical' as const,
+      model: agentMode,
+    }
+    if (assistantMessageId && !messageDeleted) {
+      const update = (prisma as any).chatMessage?.update
+      if (typeof update === 'function') {
+        try {
           await update({ where: { id: assistantMessageId }, data })
+        } catch (err: any) {
+          if (err?.code === 'P2025') {
+            // The row (or its session) is gone. Re-create once, then give up.
+            sessionGone = true
+            messageDeleted = true
+          } else {
+            throw err
+          }
         }
-      } else {
+      }
+    } else if (!sessionGone) {
+      try {
         const message = await prisma.chatMessage.create({
           data: { sessionId: chatSessionId, ...data },
         })
         assistantMessageId = message.id
+      } catch (err: any) {
+        if (err?.code === 'P2003' || err?.code === 'P2025') sessionGone = true
+        else throw err
       }
-      lastPartialPersistAt = Date.now()
-    })().catch((err) => {
+    }
+    lastPartialPersistAt = Date.now()
+  }
+
+  /**
+   * Persist a partial assistant message while the stream is alive.
+   *
+   * Coalesced: at most one write per {@link SNAPSHOT_MIN_INTERVAL_MS}, latest
+   * state wins, single write in flight. A tool result used to force its own
+   * write immediately; that is what made a 110-tool turn O(n²), so "urgent" and
+   * "ordinary" both just schedule the next coalesced flush now.
+   */
+  function persistAssistantSnapshot(): void {
+    if (foreignTurn || !chatSessionId || sessionGone) return
+    if (!accumulatedText && toolCallMap.size === 0) return
+    snapshotPending = true
+    scheduleSnapshotFlush()
+  }
+
+  function scheduleSnapshotFlush(): void {
+    if (snapshotTimer || partialPersistInFlight) return
+    const wait = Math.max(0, SNAPSHOT_MIN_INTERVAL_MS - (Date.now() - lastPartialPersistAt))
+    snapshotTimer = setTimeout(() => {
+      snapshotTimer = null
+      void runSnapshotFlush()
+    }, wait)
+    ;(snapshotTimer as { unref?: () => void }).unref?.()
+  }
+
+  async function runSnapshotFlush(): Promise<void> {
+    if (partialPersistInFlight) return
+    if (!snapshotPending) return
+    snapshotPending = false
+    const run = writeAssistantSnapshot().catch((err) => {
       console.error('[ProjectChat] Failed to persist assistant snapshot:', err)
     })
     partialPersistInFlight = run
@@ -383,6 +540,25 @@ export async function trackUsageFromStream(
     } finally {
       if (partialPersistInFlight === run) partialPersistInFlight = null
     }
+    // Something changed while that write was in flight: latest wins.
+    if (snapshotPending) scheduleSnapshotFlush()
+  }
+
+  /**
+   * Write the final state and stop the coalescing timer. Turn end, stream error
+   * and every resume path go through here, so nothing the stream produced is
+   * left only in memory.
+   */
+  async function flushAssistantSnapshot(): Promise<void> {
+    if (snapshotTimer) {
+      clearTimeout(snapshotTimer)
+      snapshotTimer = null
+    }
+    if (partialPersistInFlight) await partialPersistInFlight
+    snapshotPending = false
+    await writeAssistantSnapshot().catch((err) => {
+      console.error('[ProjectChat] Failed to persist assistant snapshot:', err)
+    })
   }
 
   const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000', 10)
@@ -497,10 +673,12 @@ export async function trackUsageFromStream(
     }
     if (type === 'reasoning-delta' && data.delta && currentReasoningPart) {
       currentReasoningPart.text += data.delta
+      markPartDirty(currentReasoningPart)
     }
     if (type === 'reasoning-end') {
       if (currentReasoningPart && reasoningStartedAt) {
         currentReasoningPart.durationMs = Date.now() - reasoningStartedAt
+        markPartDirty(currentReasoningPart)
       }
       currentReasoningPart = null
       reasoningStartedAt = null
@@ -514,6 +692,7 @@ export async function trackUsageFromStream(
         orderedParts.push(currentTextPart)
       }
       currentTextPart.text += data.delta
+      markPartDirty(currentTextPart)
       persistenceDirty = true
     }
 
@@ -593,10 +772,12 @@ export async function trackUsageFromStream(
       if (part) {
         const output = data.output ?? { success: true }
         part.output = output
+        markPartDirty(part)
         if (chatSessionId) {
           const write = externalizeToolOutput(chatSessionId, output)
             .then((externalized) => {
               part.output = externalized
+              markPartDirty(part)
               if (record) record.result = externalized
             })
             .catch(() => undefined)
@@ -605,7 +786,6 @@ export async function trackUsageFromStream(
         part.state = 'output-available'
       }
       persistenceDirty = true
-      persistenceUrgent = true
     }
 
     if (type === 'tool-output-error') {
@@ -620,9 +800,9 @@ export async function trackUsageFromStream(
       if (part) {
         part.output = { error: data.errorText ?? data.error ?? 'tool error' }
         part.state = 'output-error'
+        markPartDirty(part)
       }
       persistenceDirty = true
-      persistenceUrgent = true
     }
 
     // The runtime emits `data-inference-retry` when it re-issues a model call
@@ -703,7 +883,6 @@ export async function trackUsageFromStream(
         },
       })
       persistenceDirty = true
-      persistenceUrgent = true
     }
 
     if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
@@ -774,6 +953,15 @@ export async function trackUsageFromStream(
    * Drain a reader to EOF, parsing SSE frames into the closure-scoped
    * accumulators. Returns true on clean EOF; false if a chunk read threw
    * or the per-chunk idle timeout fired.
+   *
+   * Nothing here awaits a database write (SHO-277): the per-line loop only
+   * marks the snapshot dirty and the coalesced scheduler writes it. Previously
+   * every tool frame awaited a full rewrite of the growing message, so a
+   * 110-tool turn was 110 blocking writes on the local synchronous driver.
+   *
+   * Line splitting is incremental too — only the trailing partial line is
+   * carried between chunks, instead of `buffer +=` plus a whole-buffer
+   * `split('\n')` per chunk.
    */
   async function consumeStream(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<boolean> {
     let buffer = ''
@@ -793,26 +981,27 @@ export async function trackUsageFromStream(
         if (done) break
         buffer += decoder.decode(value, { stream: true })
 
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
+        const { lines, rest } = takeCompleteLines(buffer)
+        buffer = rest
         for (const line of lines) {
           processLine(line)
           if (foreignTurn) {
             try { await reader.cancel() } catch { /* already closed */ }
             return true
           }
-          if (persistenceDirty) {
-            const urgent = persistenceUrgent
-            persistenceDirty = false
-            persistenceUrgent = false
-            await persistAssistantSnapshot(urgent)
-          }
+        }
+
+        if (persistenceDirty) {
+          persistenceDirty = false
+          persistAssistantSnapshot()
         }
       }
       return true
     } catch (streamErr: any) {
       console.warn(`[ProjectChat] Stream interrupted (${streamErr.code || streamErr.message}), persisting ${accumulatedText.length} chars accumulated so far`)
+      // A read error must not lose what was already seen: write the snapshot
+      // here in case the caller's own error handling returns early.
+      await flushAssistantSnapshot()
       return false
     } finally {
       try { reader.releaseLock() } catch { /* already released */ }
@@ -1000,9 +1189,11 @@ export async function trackUsageFromStream(
       .join('')
   }
 
-  // Always perform one final forced flush after resume/replay handling. This
-  // updates the row created mid-stream instead of creating a duplicate row.
-  await persistAssistantSnapshot(true)
+  // Always perform one final flush after resume/replay handling. This updates
+  // the row created mid-stream instead of creating a duplicate row, and it is
+  // the write that makes the persisted message equal the streamed one — the
+  // coalesced scheduler may have skipped the last frames (SHO-277).
+  await flushAssistantSnapshot()
   const partialTag = observedTurnComplete ? '' : ', partial'
   if (assistantMessageId) {
     console.log(

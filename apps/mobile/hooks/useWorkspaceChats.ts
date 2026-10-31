@@ -14,6 +14,7 @@ import {
   useDomainHttp,
 } from '../contexts/domain'
 import { api } from '../lib/api'
+import { workspaceActivity } from '../lib/workspace-activity'
 import { chatActivityEvents, chatSessionEvents } from '../lib/chat-session-events'
 import { sortSideChats, type SideChatItem } from '../lib/side-chats'
 
@@ -120,7 +121,10 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
   const pollActiveChats = useCallback(async (): Promise<boolean> => {
     if (!workspaceId) return false
     try {
-      const chats = await api.listWorkspaceActiveChats(httpRef.current, workspaceId)
+      // Shared with every other activity/chats hook in the window: one
+      // `active-chats` request per workspace per 5 s, not one per mount
+      // (SHO-277).
+      const chats = await workspaceActivity.activeChats(httpRef.current, workspaceId)
       const startedAt = new Map<string, string>()
       for (const chat of chats) startedAt.set(chat.chatSessionId, chat.startedAt)
       // A turn that stops being reported has really ended — the only signal for

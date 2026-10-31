@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState } from 'react-native'
 import { useDomainHttp, useNotificationCollection, useProjectCollection } from '../contexts/domain'
 import { api, type ActiveChatTurn, type AgentTask } from '../lib/api'
+import { workspaceActivity } from '../lib/workspace-activity'
 import { agentTaskEvents } from '../lib/agent-task-events'
 import { notificationEvents } from '../lib/notification-events'
 import { useWorkspaceDataScope, useWorkspaceInView } from './useWorkspaceInView'
@@ -90,7 +91,7 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
   const projectLoadScope = useRef<string | null>(null)
 
   const load = useCallback(
-    async (refreshProjects = false) => {
+    async (refreshProjects = false, fresh = false) => {
       if (inFlight.current) return inFlight.current
       const request = (async () => {
         try {
@@ -113,10 +114,12 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
             projectLoad,
             // Only this workspace's tasks: the route filters server-side, so a
             // multi-workspace account no longer downloads every other
-            // workspace's tasks on each poll.
-            api.listAgentTasks(http, workspace?.id ? { workspaceId: workspace.id } : {}),
+            // workspace's tasks on each poll. Both reads go through the shared
+            // cache, so every mounted activity hook in the window shares ONE
+            // request per workspace per 5 s instead of one each (SHO-277).
+            workspaceActivity.agentTasks(http, workspace?.id, { fresh }),
             // Active chats are supplementary; a failure here must not hide agent tasks.
-            workspace?.id ? api.listWorkspaceActiveChats(http, workspace.id).catch(() => null) : Promise.resolve([]),
+            workspace?.id ? workspaceActivity.activeChats(http, workspace.id, { fresh }).catch(() => null) : Promise.resolve([]),
           ])
           // A paired computer's workspace is resolved client-side, so keep the
           // local filter for that case; the server already scoped the rest.
@@ -191,7 +194,9 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
   const refresh = useCallback(
     async ({ projects: withProjects = true, manual = false }: { projects?: boolean; manual?: boolean } = {}) => {
       if (manual) setRefreshing(true)
-      await load(withProjects)
+      // An explicit refresh is a request for the current state, not the answer
+      // cached for every other mounted consumer (SHO-277).
+      await load(withProjects, true)
     },
     [load],
   )
