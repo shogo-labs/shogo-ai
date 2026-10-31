@@ -34,6 +34,11 @@ import {
   type ScalarType,
 } from './schema-model'
 
+/** Candidate rows read per page while pruning cloud-only rows from the copy. */
+const PRUNE_PAGE_ROWS = 500
+/** Ids per `deleteMany` — keeps each statement well under Postgres' parameter cap. */
+const PRUNE_DELETE_ROWS = 500
+
 export interface IngestRequest {
   epoch?: string
   mode?: 'changes' | 'snapshot'
@@ -624,13 +629,7 @@ async function dropUnownedRows(tx: any, instanceId: string): Promise<number> {
     if (!delegate) continue
     const ids = [...(ownedByModel.get(model) ?? new Set<string>())]
     try {
-      const result = await delegate.deleteMany({
-        where: {
-          workspaceId: { in: workspaceIds },
-          ...(ids.length ? { id: { notIn: ids } } : {}),
-        },
-      })
-      removed += result.count ?? 0
+      removed += await pruneUnowned(delegate, { workspaceId: { in: workspaceIds } }, ids)
     } catch (err) {
       console.warn(
         `[MachineSync] ${instanceId}: could not prune unowned ${model} rows (${
@@ -644,18 +643,59 @@ async function dropUnownedRows(tx: any, instanceId: string): Promise<number> {
   // cloud wrote into one of those chats is still a cloud write.
   const sessions = [...(ownedByModel.get('ChatSession') ?? new Set<string>())]
   try {
-    const result = await tx.chatSession.deleteMany({
-      where: {
-        workspaceId: null,
-        project: { workspaceId: { in: workspaceIds } },
-        ...(sessions.length ? { id: { notIn: sessions } } : {}),
-      },
-    })
-    removed += result.count ?? 0
+    removed += await pruneUnowned(
+      tx.chatSession,
+      { workspaceId: null, project: { workspaceId: { in: workspaceIds } } },
+      sessions,
+    )
   } catch (err) {
     console.warn(
       `[MachineSync] ${instanceId}: could not prune unowned project chats (${(err as Error)?.message ?? err})`,
     )
+  }
+  return removed
+}
+
+/**
+ * Delete the rows matching `where` whose ids are not owned — a page at a time.
+ *
+ * `id: { notIn: ownedIds }` puts every owned id into one statement; on a model
+ * with thousands of rows (3.5k chat messages, and Russell's copy is far bigger)
+ * that is past Postgres' bind-parameter limit. The error was swallowed, so the
+ * prune "succeeded" without deleting anything. Paging the candidates keeps each
+ * statement small whatever the copy's size, and deleting while walking upwards
+ * on `id` never skips a row (every delete is behind the cursor).
+ */
+async function pruneUnowned(
+  delegate: any,
+  where: Record<string, unknown>,
+  ownedIds: string[],
+): Promise<number> {
+  if (!ownedIds.length) {
+    const result = await delegate.deleteMany({ where })
+    return result.count ?? 0
+  }
+
+  const owned = new Set(ownedIds)
+  let removed = 0
+  let cursor: string | null = null
+  for (;;) {
+    const rows: Array<{ id: string }> = await delegate.findMany({
+      where: { ...where, ...(cursor ? { id: { gt: cursor } } : {}) },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+      take: PRUNE_PAGE_ROWS,
+    })
+    if (!rows.length) break
+    cursor = rows[rows.length - 1].id
+
+    const unowned = rows.filter((row) => !owned.has(row.id)).map((row) => row.id)
+    for (let offset = 0; offset < unowned.length; offset += PRUNE_DELETE_ROWS) {
+      const chunk = unowned.slice(offset, offset + PRUNE_DELETE_ROWS)
+      const result = await delegate.deleteMany({ where: { id: { in: chunk } } })
+      removed += result.count ?? 0
+    }
+    if (rows.length < PRUNE_PAGE_ROWS) break
   }
   return removed
 }

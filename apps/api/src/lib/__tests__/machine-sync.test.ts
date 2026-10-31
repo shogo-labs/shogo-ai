@@ -846,9 +846,17 @@ function fakeCloudDb(
         const rows = table(prop)
         return {
           findUnique: async ({ where }: any) => rows.get(where.id) ?? null,
-          findMany: async ({ where }: any) => {
-            const ids: string[] = where?.id?.in ?? [...rows.keys()]
-            return ids.map((id) => rows.get(id)).filter(Boolean)
+          findMany: async ({ where, orderBy, take }: any) => {
+            let candidates: string[] = where?.id?.in ?? [...rows.keys()]
+            if (where?.id?.gt) candidates = candidates.filter((id) => id > where.id.gt)
+            let out = candidates.map((id) => rows.get(id)).filter(Boolean) as FakeRow[]
+            if (where?.workspaceId?.in) {
+              out = out.filter((row) => (where.workspaceId.in as string[]).includes(row.workspaceId))
+            }
+            if (where?.workspaceId === null) out = out.filter((row) => row.workspaceId == null)
+            if (orderBy?.id === 'asc') out = out.sort((a, b) => (a.id < b.id ? -1 : 1))
+            if (typeof take === 'number') out = out.slice(0, take)
+            return out
           },
           upsert: async ({ where, create, update }: any) => {
             const existing = rows.get(where.id)
@@ -1182,6 +1190,43 @@ describe('the ingest', () => {
     expect('ok' in result && result.ok).toBe(true)
     expect(chat.has('old-1')).toBe(false)
     expect([...mirror.keys()]).toEqual([])
+  })
+
+  test('a completed snapshot deletes the copy’s cloud-only rows, a page at a time (AC5)', async () => {
+    // What the cloud wrote into the copy itself: a conversation it seeded on
+    // 10-28, and work items nobody's desktop ever sent. 620 of them, so the prune
+    // has to page past its first read and still keep the owned row.
+    const { db, mirror, tables } = fakeCloudDb({
+      owned: { 'Conversation|c-1': 'inst-1', 'WorkItem|keep-1': 'inst-1' },
+    })
+    // Owned by this run, so the previous-epoch sweep leaves them alone.
+    for (const row of mirror.values()) row.epoch = 'epoch-2'
+    tables.set('workspace', new Map([['w1', { id: 'w1', machineInstanceId: 'inst-1' }]]))
+    tables.set('conversation', new Map<string, FakeRow>([
+      ['c-1', { id: 'c-1', workspaceId: 'w1' }],
+      ['c-cloud', { id: 'c-cloud', workspaceId: 'w1' }],
+    ]))
+
+    const items = new Map<string, FakeRow>([['keep-1', { id: 'keep-1', workspaceId: 'w1' }]])
+    for (let i = 0; i < 620; i++) {
+      const id = `cloud-${String(i).padStart(4, '0')}`
+      items.set(id, { id, workspaceId: 'w1' })
+    }
+    tables.set('workItem', items)
+
+    const result = await applyBatch(ingestCtx(db), {
+      epoch: 'epoch-2',
+      mode: 'snapshot',
+      cursor: 0,
+      models: [],
+      snapshot: { complete: true },
+    })
+
+    expect('ok' in result && result.ok).toBe(true)
+    expect([...items.keys()]).toEqual(['keep-1'])
+    expect(tables.get('conversation')?.has('c-1')).toBe(true)
+    expect(tables.get('conversation')?.has('c-cloud')).toBe(false)
+    expect('ok' in result && result.deleted).toBe(621)
   })
 
   test('deleting a copy leaves the sync switch off, and clears the epoch', async () => {

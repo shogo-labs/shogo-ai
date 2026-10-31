@@ -179,22 +179,36 @@ export async function resolveInstanceIdentity(
     }
   }
 
-  const created = await tx.instance.create({
-    data: {
-      workspaceId,
-      userId,
-      hostname,
-      name,
-      os,
-      arch,
-      kind,
-      deviceId: deviceId ?? null,
-      ...(touch ? { lastSeenAt: new Date(), status: 'online' } : {}),
-      ...(metadata !== undefined ? { metadata } : {}),
-    },
-    select: ROW_SELECT,
-  })
-  return { ...(created as IdentityRow), existing: false, adopted: false }
+  const data = {
+    workspaceId,
+    userId,
+    hostname,
+    name,
+    os,
+    arch,
+    kind,
+    deviceId: deviceId ?? null,
+    ...(touch ? { lastSeenAt: new Date(), status: 'online' } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
+  }
+
+  let created: IdentityRow
+  try {
+    created = (await tx.instance.create({ data, select: ROW_SELECT })) as IdentityRow
+  } catch (err) {
+    // Two heartbeats of one machine can both miss the read. The hostname unique
+    // key is what used to make this safe (`upsert`), so a lost race resolves to
+    // the row the winner created instead of a 500.
+    if ((err as any)?.code !== 'P2002') throw err
+    const raced = await findIdentityRow(tx, identity)
+    if (!raced) throw err
+    await tx.instance.update({
+      where: { id: raced.id },
+      data: { ...data, hostname, name },
+    })
+    return { ...raced, hostname, name, os, arch, kind, deviceId: raced.deviceId ?? deviceId ?? null, existing: true, adopted: false }
+  }
+  return { ...created, existing: false, adopted: false }
 }
 
 

@@ -30,12 +30,17 @@ type Instance = {
   name: string
   os: string | null
   arch: string | null
+  kind?: string
+  deviceId?: string | null
   lastSeenAt: Date
   metadata: any
   wsRequestedAt: Date | null
   createdAt: Date
   updatedAt: Date
 }
+
+const hostnameKey = (workspaceId: string, userId: string | null, hostname: string) =>
+  `${workspaceId}::${userId}::${hostname}`
 const instancesById = new Map<string, Instance>()
 const membersByUserWs = new Map<string, { id: string; userId: string; workspaceId: string }>()
 
@@ -43,12 +48,45 @@ const memberKey = (userId: string, workspaceId: string) => `${userId}::${workspa
 
 const mockPrisma = {
   instance: {
+    // The heartbeat resolves a row by device id first, then by hostname, and
+    // only writes when something changed (SHO-276) — so the fake has to serve
+    // both reads, plus `create` for a machine it has never seen.
+    findFirst: async (args: any) => {
+      const { workspaceId, userId, deviceId } = args.where ?? {}
+      for (const inst of instancesById.values()) {
+        if (workspaceId !== undefined && inst.workspaceId !== workspaceId) continue
+        if (userId !== undefined && inst.userId !== userId) continue
+        if (deviceId !== undefined && inst.deviceId !== deviceId) continue
+        return { ...inst }
+      }
+      return null
+    },
     findUnique: async (args: any) => {
+      if (args.where.workspaceId_userId_hostname) {
+        const w = args.where.workspaceId_userId_hostname
+        for (const inst of instancesById.values()) {
+          if (hostnameKey(inst.workspaceId, inst.userId, inst.hostname) === hostnameKey(w.workspaceId, w.userId, w.hostname)) {
+            return { ...inst }
+          }
+        }
+        return null
+      }
       const inst = instancesById.get(args.where.id)
       return inst ? { ...inst } : null
     },
     findMany: async (args: any) =>
       [...instancesById.values()].filter((i) => matchesWhere(i as any, args.where)),
+    create: async (args: any) => {
+      const created: Instance = {
+        id: `inst-${instancesById.size + 1}`,
+        ...args.data,
+        wsRequestedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      instancesById.set(created.id, created)
+      return { ...created }
+    },
     upsert: async (args: any) => {
       const w = args.where.workspaceId_userId_hostname
       const key = `${w.workspaceId}::${w.userId}::${w.hostname}`
