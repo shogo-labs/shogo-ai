@@ -63,15 +63,15 @@ describe('buildAccountContextPrompt', () => {
     expect(out).toMatch(/real Shogo model/)
   })
 
-  test('discloses the publish gate up front on plans without subdomain publishing', () => {
+  test('mentions the publish gate only for publish/deploy, and points sharing at the preview URL', () => {
     const out = buildAccountContextPrompt({ planId: 'free', canPublishSubdomain: false })!
     expect(out).toContain('Workspace plan: **Free**')
-    expect(out).toMatch(/requires Pro or higher/)
-    expect(out).toMatch(/BEFORE starting any deploy\/publish work/)
-    // Users build a site for an hour and only then learn they can't put it
-    // live; the agent should raise the gate when that kind of build starts.
-    expect(out).toMatch(/at the start of building/i)
-    expect(out).toContain('share_file')
+    expect(out).toMatch(/only when the user asks to publish\/deploy/)
+    // A free user sharing their work gets the preview URL, not an upgrade pitch.
+    expect(out).toMatch(/Sharing means the preview URL/)
+    expect(out).toContain('preview_project')
+    expect(out).not.toMatch(/at the start of building/i)
+    expect(out).not.toMatch(/requires Pro or higher/)
   })
 
   test('says publishing is available on plans that allow it', () => {

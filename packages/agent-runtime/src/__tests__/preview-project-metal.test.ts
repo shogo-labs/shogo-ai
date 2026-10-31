@@ -174,23 +174,49 @@ describe('preview_project on a merged-root runtime (unchanged)', () => {
     expect(result.details.url).toBe('http://localhost:37287/p/other-1/')
   })
 
-  it('still mounts once on project_not_attached, then starts', async () => {
+  it('falls back to the internal preview API on project_not_attached — it never mounts', async () => {
+    // A cloud workspace runtime (no metal substrate flag) that is asked about
+    // a project it does not serve. Mounting was removed and answered 410
+    // `mounting_removed`, so the turn ended with "no longer mounted" for a
+    // project the agent had just built (SHO-258 §3). The API resolves the
+    // project's own runtime instead.
     process.env.SHOGO_RUNTIME_SUBSTRATE = 'cloud'
     let starts = 0
     const calls = stubFetch((call) => {
       if (call.url.includes('/preview/start')) {
         starts += 1
-        if (starts === 1) return Response.json({ error: 'project_not_attached' }, { status: 404 })
-        return Response.json({ ok: true, phase: 'running' })
+        return Response.json({ error: 'project_not_attached' }, { status: 404 })
       }
-      expect(call.url).toContain('/sessions/session-1/members')
-      return Response.json({ ok: true, attached: { projectId: 'other-1' } })
+      if (call.url.includes('/api/internal/')) {
+        return Response.json({ projectId: 'other-1', url: 'https://pod-7.example/p/other-1/', status: 'ready' })
+      }
+      throw new Error(`unexpected call ${call.url}`)
     })
 
     const result = await previewTool().execute('t', { projectId: 'other-1' })
 
-    expect(starts).toBe(2)
-    expect(calls.filter((call) => call.url.includes('/members'))).toHaveLength(1)
-    expect(result.details.url).toBe('http://localhost:37287/p/other-1/')
+    expect(starts).toBe(1)
+    // No `/members` call: the mount path is gone and must not be retried.
+    expect(calls.some((call) => call.url.includes('/members'))).toBe(false)
+    expect(result.details.url).toBe('https://pod-7.example/p/other-1/')
+    expect(result.details.code).toBeUndefined()
+  })
+
+  it('falls back to the API when the local route answers 410 mounting_removed', async () => {
+    process.env.SHOGO_RUNTIME_SUBSTRATE = 'cloud'
+    const calls = stubFetch((call) => {
+      if (call.url.includes('/preview/start')) {
+        return Response.json({ error: 'mounting_removed' }, { status: 410 })
+      }
+      if (call.url.includes('/api/internal/')) {
+        return Response.json({ projectId: 'other-1', url: 'https://pod-7.example/p/other-1/', status: 'ready' })
+      }
+      throw new Error(`unexpected call ${call.url}`)
+    })
+
+    const result = await previewTool().execute('t', { projectId: 'other-1' })
+
+    expect(calls.some((call) => call.url.includes('/members'))).toBe(false)
+    expect(result.details.url).toBe('https://pod-7.example/p/other-1/')
   })
 })

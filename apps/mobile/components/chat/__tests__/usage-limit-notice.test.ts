@@ -36,6 +36,40 @@ describe("usageLimitNoticeFor", () => {
     })
     expect(notice!.body).toContain("wasn't sent")
     expect(notice!.body).toContain("2099-01-01T00:00:00.000Z")
+    // The reset time leads, so a hard limit reads as temporary.
+    expect(notice!.body.indexOf("resets")).toBeLessThan(notice!.body.indexOf("Upgrade"))
+  })
+
+  test("offers the free Business trial at the block when the user is still eligible", () => {
+    const notice = usageLimitNoticeFor({
+      error: JSON.stringify({
+        error: {
+          code: "usage_limit_reached",
+          message: "You've reached your usage limit.",
+          resetsAt: "2099-01-01T00:00:00.000Z",
+        },
+      }),
+      errorDismissed: false,
+      stoppedTurn: null,
+      currentSessionId: "s-1",
+      trialEligible: true,
+      formatResetsAt,
+    })
+    expect(notice).toMatchObject({ primaryLabel: "Start free trial", secondaryLabel: "Retry" })
+    expect(notice!.body).toContain("7-day free Business trial")
+    expect(notice!.body).not.toContain("Upgrade to keep going")
+  })
+
+  test("an ineligible user keeps the Upgrade CTA", () => {
+    const notice = usageLimitNoticeFor({
+      error: JSON.stringify({ error: { code: "usage_limit_reached" } }),
+      errorDismissed: false,
+      stoppedTurn: null,
+      currentSessionId: "s-1",
+      trialEligible: false,
+      formatResetsAt,
+    })
+    expect(notice!.primaryLabel).toBe("Upgrade")
   })
 
   test("billing problems point at Billing rather than an upgrade", () => {

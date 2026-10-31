@@ -179,6 +179,13 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
+    fn: 'runCreditsResetNotify',
+    file: 'apps/api/src/jobs/credits-reset-notify.ts',
+    reason:
+      'Each region reads and clears capNotifyPendingAt only on usage_wallets it owns, via homeWorkspaceIds(); the flags live on a table that is never replicated, so a lock would just serialize peers over rows they cannot see.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runAgentScheduleDispatch',
     file: 'apps/api/src/jobs/run-agent-schedule-dispatch.ts',
     reason:

@@ -8,8 +8,8 @@
  *
  * One AlertDialog on web; on native (where this UI is currently web-first) we
  * fall back to `Alert.alert` with the same copy, so the action still has
- * friction without a custom modal. Same host indirection as
- * `EditConfirmDialog`: `requestAddToChannelConfirm()` can be called from any
+ * friction without a custom modal. Same host indirection as the
+ * chat's add-to-channel flow: `requestAddToChannelConfirm()` can be called from any
  * nested row without a ref to the host.
  */
 import { useCallback, useEffect, useState } from 'react'

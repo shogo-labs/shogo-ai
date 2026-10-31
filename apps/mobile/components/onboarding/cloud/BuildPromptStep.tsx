@@ -10,10 +10,10 @@ interface BuildPromptStepProps {
 }
 
 const EXAMPLES = [
-  'A support agent that answers customer emails',
-  'A CRM for tracking my sales pipeline',
-  'Launch a subscription coffee business',
-  'Turn meeting notes into tasks every Friday',
+  'A booking page for my salon',
+  'A habit tracker app',
+  'A landing page for my bakery',
+  'An invoice generator',
 ]
 
 /** Body of the team onboarding "What do you want to build?" step. */
@@ -54,7 +54,7 @@ export function BuildPromptStep({ value, onChange, onSubmit }: BuildPromptStepPr
         ))}
       </View>
       <Text className="text-xs text-muted-foreground">
-        Your workspace agent will research it and put a plan together before building anything.
+        Your agent builds a first version you can open, then asks a few questions to shape the next one.
       </Text>
     </View>
   )

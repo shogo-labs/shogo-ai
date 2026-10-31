@@ -30,6 +30,10 @@ export interface TurnGroupProps {
   showToolTimeline?: boolean;
   /** Show a glass recap (steps, files changed) under this turn once it is done. */
   summaryCard?: boolean;
+  /** This whole turn sits below the message being edited — dim it. */
+  dimmed?: boolean;
+  /** This turn owns the edited message: dim everything after the bubble. */
+  dimTail?: boolean;
   className?: string;
 }
 
@@ -97,6 +101,8 @@ export const TurnGroup = memo(
     phase,
     showToolTimeline = false,
     summaryCard = false,
+    dimmed = false,
+    dimTail = false,
     className,
   }: TurnGroupProps) {
     const colors = usePhaseColor(phase || "");
@@ -120,9 +126,11 @@ export const TurnGroup = memo(
         animate={{ opacity: 1, y: 0 }}
         transition={{ type: "spring", damping: 20, stiffness: 150 }}
         style={WEB_CONTAIN_STYLE}
+        pointerEvents={dimmed ? "none" : "auto"}
         className={cn(
           "gap-2",
           turn.assistantMessage ? colors.border : "border-primary/30",
+          dimmed && "opacity-40",
           className,
         )}
       >
@@ -149,6 +157,13 @@ export const TurnGroup = memo(
             defaultExpanded={turn.toolCalls.length <= 3}
           />
         )}
+
+        {/* Everything after the bubble of the message being edited is what
+            this resend will replace — dim it so the user can see it. */}
+        <View
+          className={cn("gap-2", dimTail && "opacity-40")}
+          pointerEvents={dimTail ? "none" : "auto"}
+        >
 
         {/* Assistant message with interleaved tools (default) or plain content (legacy) */}
         {turn.assistantMessage && (
@@ -204,6 +219,7 @@ export const TurnGroup = memo(
 
         {/* Loading indicator when streaming but no assistant message yet */}
         {turn.isStreaming && !turn.assistantMessage && <LoadingDots />}
+        </View>
       </Motion.View>
     );
   },
@@ -212,6 +228,8 @@ export const TurnGroup = memo(
     prev.phase === next.phase &&
     prev.showToolTimeline === next.showToolTimeline &&
     prev.summaryCard === next.summaryCard &&
+    prev.dimmed === next.dimmed &&
+    prev.dimTail === next.dimTail &&
     prev.className === next.className,
 );
 

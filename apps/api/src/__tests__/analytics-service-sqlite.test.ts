@@ -47,6 +47,8 @@ describe('analytics service SQLite raw SQL branches', () => {
         createdProject: 2n,
         sentMessage: 1n,
         engaged: 0n,
+        sawPreview: 2n,
+        hitCap: 1n,
         avgMinToFirstProject: null,
         avgMinToFirstMessage: 12.5,
       },
@@ -60,6 +62,8 @@ describe('analytics service SQLite raw SQL branches', () => {
       createdProject: 2,
       sentMessage: 1,
       engaged: 0,
+      sawPreview: 2,
+      hitCap: 1,
       avgMinToFirstProject: null,
       avgMinToFirstMessage: 12.5,
     })

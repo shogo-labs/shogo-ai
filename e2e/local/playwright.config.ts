@@ -64,7 +64,7 @@ const localEnv = {
 }
 
 // Specs written for a phone viewport; the other projects skip them.
-const PHONE_SPECS = /(mobile-personal-walkthrough|team-nav-tabs-phone|team-chat-thread-phone|team-home-phone-perf)\.test\.ts$/
+const PHONE_SPECS = /(mobile-personal-walkthrough|team-nav-tabs-phone|team-chat-thread-phone|team-home-phone-perf|phone-build-first)\.test\.ts$/
 
 export default defineConfig({
   ...(startStack
