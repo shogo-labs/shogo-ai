@@ -26,7 +26,7 @@
 
 import { createHmac } from 'crypto'
 import { safeTokenEqual } from './crypto-util'
-import { assertMintableSigningSecret } from './runtime-token'
+import { assertMintableSigningSecret } from './signing-secret-guard'
 
 function getSigningSecret(): string {
   const secret =

@@ -50,6 +50,7 @@
  */
 
 import { createHmac } from 'crypto'
+import { assertMintableSigningSecret, DEV_ONLY_SIGNING_SECRET } from './signing-secret-guard'
 import { safeTokenEqual } from './crypto-util'
 
 export function getSigningSecret(): string {
@@ -66,7 +67,7 @@ export function getSigningSecret(): string {
     )
   }
 
-  return 'shogo-dev-only-runtime-token-secret'
+  return DEV_ONLY_SIGNING_SECRET
 }
 
 /**
@@ -80,38 +81,6 @@ export const RUNTIME_TOKEN_V1_PREFIX = 'rt_v1_'
 /** 64 hex chars = 32 bytes = SHA256 digest, hex-encoded. */
 const HMAC_HEX_LEN = 64
 const HMAC_HEX_RE = /^[0-9a-f]{64}$/
-
-/** The localhost-only signing default, used when nothing is configured. */
-const DEV_ONLY_SIGNING_SECRET = 'shogo-dev-only-runtime-token-secret'
-
-/** Is this process running inside a cluster pod (any namespace, any cloud)? */
-function inCluster(): boolean {
-  return Boolean(process.env.KUBERNETES_SERVICE_HOST)
-}
-
-/**
- * Refuse to *mint* with the localhost-only default from inside a cluster.
- *
- * A minted token is handed to a pod as its `RUNTIME_AUTH_SECRET` and is the
- * only credential it has to reach the API, so a token signed with the dev
- * default is rejected as `bad_hmac` by every API replica — the pod then fails
- * every project-scoped call until someone re-assigns it, which is what a burst
- * of `runtime_token_invalid reason=bad_hmac` looks like in the logs.
- *
- * The fallback used to be chosen by `NODE_ENV` alone, so a cloud job that
- * declared `NODE_ENV=staging` and carried no signing secret signed real pod
- * credentials with it: `warm-pool-rescue --heal` did exactly that for every pod
- * it healed (SHO-265). Verification deliberately keeps degrading to `bad_hmac`
- * — a 500 from the verifier would hide the reason — but minting never does.
- */
-export function assertMintableSigningSecret(secret: string): void {
-  if (secret !== DEV_ONLY_SIGNING_SECRET || !inCluster()) return
-  throw new Error(
-    '[RuntimeToken] FATAL: refusing to mint a runtime token with the localhost-only signing secret inside a ' +
-      'cluster. Set AI_PROXY_SECRET or BETTER_AUTH_SECRET on this workload — a token signed with the fallback ' +
-      'is rejected by the API as bad_hmac.',
-  )
-}
 
 /**
  * Compute the bare 64-char hex HMAC for a projectId.
