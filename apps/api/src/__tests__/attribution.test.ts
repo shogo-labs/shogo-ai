@@ -16,6 +16,7 @@ const mockUser = { id: 'user-1', email: 'test@example.com', role: 'user' }
 const mockPrisma = {
   signupAttribution: {
     upsert: mock(() => Promise.resolve({ id: 'attr-1', userId: 'user-1' })),
+    findUnique: mock((): Promise<any> => Promise.resolve(null)),
   },
 }
 
@@ -39,6 +40,8 @@ const { deriveSourceTag } = await import('../services/analytics.service')
 
 beforeEach(() => {
   mockPrisma.signupAttribution.upsert.mockReset()
+  mockPrisma.signupAttribution.findUnique.mockReset()
+  mockPrisma.signupAttribution.findUnique.mockImplementation(() => Promise.resolve(null))
 })
 
 describe('deriveSourceTag', () => {
@@ -117,6 +120,66 @@ describe('POST /users/me/attribution', () => {
     expect(mockPrisma.signupAttribution.upsert).toHaveBeenCalledTimes(2)
     const secondCall = mockPrisma.signupAttribution.upsert.mock.calls[1][0] as any
     expect(secondCall.update).toEqual({})
+  })
+
+  test('enriches a row the server wrote at signup instead of overwriting it', async () => {
+    // The signup-time row: no UTMs, so the server recorded `direct`.
+    mockPrisma.signupAttribution.findUnique.mockImplementation(() =>
+      Promise.resolve({
+        utmSource: null,
+        utmMedium: null,
+        utmCampaign: null,
+        utmContent: null,
+        utmTerm: null,
+        referrer: null,
+        landingPage: null,
+        signupMethod: 'credential',
+        sourceTag: 'direct',
+      }),
+    )
+
+    await app.request('/api/users/me/attribution', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ utmSource: 'facebook', utmMedium: 'cpc', method: 'email' }),
+    })
+
+    const call = mockPrisma.signupAttribution.upsert.mock.calls[0][0] as any
+    expect(call.update).toEqual({
+      utmSource: 'facebook',
+      utmMedium: 'cpc',
+      sourceTag: 'facebook-ads',
+    })
+    // `signupMethod` was already recorded at signup and is not re-stamped.
+    expect(call.update.signupMethod).toBeUndefined()
+  })
+
+  test('never clobbers a source tag that already says where the user came from', async () => {
+    mockPrisma.signupAttribution.findUnique.mockImplementation(() =>
+      Promise.resolve({
+        utmSource: 'newsletter',
+        utmMedium: null,
+        utmCampaign: null,
+        utmContent: null,
+        utmTerm: null,
+        referrer: null,
+        landingPage: null,
+        signupMethod: 'credential',
+        sourceTag: 'newsletter',
+      }),
+    )
+
+    await app.request('/api/users/me/attribution', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ utmSource: 'bing', utmMedium: 'cpc' }),
+    })
+
+    const call = mockPrisma.signupAttribution.upsert.mock.calls[0][0] as any
+    // The empty `utmMedium` is filled in; the tag that already says "newsletter"
+    // is not replaced by `bing-ads`.
+    expect(call.update).toEqual({ utmMedium: 'cpc' })
+    expect(call.update.sourceTag).toBeUndefined()
   })
 
   test('handles missing optional fields', async () => {

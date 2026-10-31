@@ -553,7 +553,8 @@ export const auth = betterAuth({
             if (!e2e) {
               throw new APIError('UNPROCESSABLE_ENTITY', {
                 code: 'SIGNUP_BLOCKED',
-                message: 'We could not create an account with this email address. Please try a different email.',
+                message:
+                  "Please use a permanent email address — temporary inboxes can't be used to sign up.",
               })
             }
           }
@@ -606,6 +607,26 @@ export const auth = betterAuth({
          * Errors are logged but do not block user creation (graceful degradation).
          */
         after: async (user, ctx?: any) => {
+          // Signup attribution — written HERE, not by the client (SHO-258 §7).
+          //
+          // The app's client-side flush reads UTMs out of localStorage on the
+          // wrong origin, which is why the table had 14 rows, all from March.
+          // The cookie rides along with this POST, so read it here and derive
+          // the tag before anything else can fail. Best-effort, and never able
+          // to fail the signup: a new user with no UTMs is still a `direct` row,
+          // which is a number we were missing entirely.
+          try {
+            const { recordSignupAttribution } = await import('./lib/signup-attribution')
+            await recordSignupAttribution({
+              userId: user.id,
+              cookieHeader:
+                ctx?.request?.headers?.get?.('cookie') ?? ctx?.headers?.get?.('cookie') ?? '',
+              method: signupProviderFromPath(ctx?.path),
+            })
+          } catch (err) {
+            console.warn('[Attribution] signup attribution on signup failed', err)
+          }
+
           // Affiliate attribution — best-effort, swallow errors.
           //
           // The Cloudflare /r/:code Pages Function sets two first-party

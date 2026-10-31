@@ -1029,6 +1029,10 @@ export interface FunnelData {
   createdProject: number
   sentMessage: number
   engaged: number
+  /** Users who opened one of their own previews — they saw what was built. */
+  sawPreview?: number
+  /** Users a usage gate blocked at least once. */
+  hitCap?: number
   avgMinToFirstProject: number | null
   avgMinToFirstMessage: number | null
 }
@@ -1053,6 +1057,10 @@ export function FunnelSection({ data, loading }: { data: FunnelData | null; load
     { label: 'Created Project', value: data.createdProject },
     { label: 'Sent Message', value: data.sentMessage },
     { label: 'Engaged (5+)', value: data.engaged },
+    // SHO-258 §7's two steps: the drop-off between building and seeing is
+    // what made the first turn feel like nothing happened.
+    ...(data.sawPreview === undefined ? [] : [{ label: 'Saw Preview', value: data.sawPreview }]),
+    ...(data.hitCap === undefined ? [] : [{ label: 'Hit Cap', value: data.hitCap }]),
   ]
 
   return (

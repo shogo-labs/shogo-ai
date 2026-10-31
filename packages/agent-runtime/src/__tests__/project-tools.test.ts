@@ -297,6 +297,25 @@ describe('project_attach', () => {
     expect(calls.find((c) => c.fn === 'attachProject')?.args).toEqual(['caller-1', 'proj-2', 'readonly'])
   })
 
+  // SHO-258 §3a: the API used to answer 410 `mounting_removed` here, so every
+  // project_attach call failed even though the attachment row was written.
+  test('reports mounted:false as success — an attach on metal is not a failure', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    const before = api.attach
+    api.attach = { ok: true, status: 201, data: { attachment: { id: 'att-2', attachedProjectId: 'proj-2' }, mounted: false } }
+    try {
+      const out = await run(createProjectAttachTool(baseCtx()), { project: 'Worker' })
+      expect(out.ok).toBe(true)
+      expect(out.mounted).toBe(false)
+      expect(out.attachment.attachedProjectId).toBe('proj-2')
+    } finally {
+      api.attach = before
+    }
+  })
+
   test('errors with ambiguous when two projects share a name', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },

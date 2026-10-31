@@ -4324,7 +4324,10 @@ export function aiProxyRoutes() {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+          userId: tokenPayload.userId,
+          source: 'ai-proxy',
+        })
         return c.json(
           {
             error: {
@@ -4623,7 +4626,10 @@ export function aiProxyRoutes() {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+          userId: tokenPayload.userId,
+          source: 'ai-proxy',
+        })
         return c.json(
           { error: { message, type: 'billing_error', code, ...usageLimit } },
           402
@@ -5064,7 +5070,10 @@ export function aiProxyRoutes() {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+          userId: tokenPayload.userId,
+          source: 'ai-proxy',
+        })
         return c.json(
           { type: 'error', error: { type: 'billing_error', code, message, ...usageLimit } },
           402
@@ -5562,7 +5571,10 @@ export function aiProxyRoutes() {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+          userId: tokenPayload.userId,
+          source: 'ai-proxy',
+        })
         return c.json(
           { error: { message, type: 'billing_error', code, ...usageLimit } },
           402
@@ -5702,7 +5714,10 @@ export function aiProxyRoutes() {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+          userId: tokenPayload.userId,
+          source: 'ai-proxy',
+        })
         return c.json(
           { error: { message, type: 'billing_error', code, ...usageLimit } },
           402
@@ -6132,7 +6147,10 @@ export function aiProxyRoutes() {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+          userId: tokenPayload.userId,
+          source: 'ai-proxy',
+        })
         return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
       }
     }
@@ -6359,7 +6377,10 @@ export function aiProxyRoutes() {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+          userId: tokenPayload.userId,
+          source: 'ai-proxy',
+        })
         return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
       }
     }
@@ -6739,7 +6760,10 @@ export function aiProxyRoutes() {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+          userId: tokenPayload.userId,
+          source: 'ai-proxy',
+        })
         return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
       }
     }
@@ -7047,7 +7071,10 @@ export function aiProxyRoutes() {
     // An already-admitted chat turn still in flight is never re-gated
     // mid-message — e.g. the transcribe_audio tool running inside a turn.
     if (!(await isTurnInFlight(c, tokenPayload)) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
-      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+      const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+        userId: tokenPayload.userId,
+        source: 'ai-proxy',
+      })
       return c.json(
         { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },
         402

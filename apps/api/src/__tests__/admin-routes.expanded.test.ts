@@ -144,6 +144,7 @@ const prisma = {
   },
   signupAttribution: {
     upsert: mock(async () => ({})),
+    findUnique: mock(async () => null),
   },
   affiliate: {
     findUnique: mock(async ({ where }: any) => (where.id === 'aff-1' ? { id: 'aff-1' } : null)),

@@ -212,7 +212,10 @@ async function checkBalance(
   const balanceCheck = await billingService.checkUsageBalance(payload.workspaceId)
   if (balanceCheck.ok) return null
   const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-  const usageLimit = await buildUsageLimitInfo(payload.workspaceId)
+  const usageLimit = await buildUsageLimitInfo(payload.workspaceId, {
+    userId: payload.userId,
+    source: 'public-api',
+  })
   return c.json(
     {
       error: {

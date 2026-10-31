@@ -101,6 +101,108 @@ export async function resolveBillingWorkspaceId(workspaceId: string): Promise<st
   return ws?.parentWorkspaceId ?? workspaceId;
 }
 
+/** The reads `resolvePromoCreditSource` needs, from `prisma` or a tx client. */
+type PromoCreditSourceClient = {
+  workspace: { findUnique: typeof prisma.workspace.findUnique }
+  member: { findFirst: typeof prisma.member.findFirst }
+  usageWallet: { findUnique: typeof prisma.usageWallet.findUnique }
+}
+
+/** Where a workspace's signup promo credit is spent, and how much is left. */
+export interface PromoCreditSource {
+  walletId: string
+  availableUsd: number
+}
+
+/**
+ * Memoise the *resolution* (workspace kind + credit workspace), not the credit
+ * itself: `consumeUsage` is the hottest write in billing and the two `member`
+ * lookups almost never change, so a team workspace — the common case — costs
+ * zero queries after the first call instead of three on every metered request.
+ */
+const promoSourceCache = new Map<
+  string,
+  { kind: string | null; creditWorkspaceId: string | null; expiresAt: number }
+>()
+const PROMO_SOURCE_TTL_MS = 5 * 60 * 1000
+
+/** Test seam: drop the memoised lookups. */
+export function clearPromoSourceCache() {
+  promoSourceCache.clear()
+}
+
+/**
+ * Resolve the wallet that funds promo-credit spend for a billing workspace.
+ *
+ * Normally that's the workspace's own wallet. But signup credit is granted on
+ * the user's *team* workspace, and a new user's first messages are just as
+ * likely to land in their *personal* one — without this fallback the free
+ * window blocks them at 18 minutes while $10 of their own credit sits
+ * untouched one workspace over. So a personal workspace may also draw on the
+ * owner's signup-credit wallet.
+ *
+ * Returns `null` when no unexpired credit is available anywhere.
+ */
+async function resolvePromoCreditSource(
+  client: PromoCreditSourceClient,
+  billingWorkspaceId: string,
+  ownWallet: { promoCreditUsd: number; promoCreditExpiresAt: Date | string | null } | null,
+  now: Date,
+): Promise<PromoCreditSource | null> {
+  const ownAvailable = promoCreditAvailableUsd(ownWallet, now)
+  if (ownAvailable > 0) return { walletId: billingWorkspaceId, availableUsd: ownAvailable }
+
+  const cached = promoSourceCache.get(billingWorkspaceId)
+  let entry = cached && cached.expiresAt > now.getTime() ? cached : null
+
+  if (!entry) {
+    const ws = await client.workspace.findUnique({
+      where: { id: billingWorkspaceId },
+      select: { kind: true },
+    })
+    let creditWorkspaceId: string | null = null
+    if (ws?.kind === 'personal') {
+      const owner = await client.member.findFirst({
+        where: { workspaceId: billingWorkspaceId, role: 'owner', projectId: null },
+        select: { userId: true },
+      })
+      if (owner?.userId) {
+        // Same workspace `findSignupCreditWorkspaceId` resolves: the user's
+        // first top-level team workspace is where sign-up granted the credit.
+        const creditWorkspace = await client.member.findFirst({
+          where: {
+            userId: owner.userId,
+            role: 'owner',
+            projectId: null,
+            workspace: { kind: 'team', parentWorkspaceId: null },
+          },
+          select: { workspaceId: true },
+          orderBy: { createdAt: 'asc' },
+        })
+        const id = creditWorkspace?.workspaceId ?? null
+        creditWorkspaceId = id && id !== billingWorkspaceId ? id : null
+      }
+    }
+    entry = {
+      kind: ws?.kind ?? null,
+      creditWorkspaceId,
+      expiresAt: now.getTime() + PROMO_SOURCE_TTL_MS,
+    }
+    promoSourceCache.set(billingWorkspaceId, entry)
+  }
+
+  if (entry.kind !== 'personal' || !entry.creditWorkspaceId) return null
+
+  // Credit only ever decreases, so this read is not cached: granting credit we
+  // have already spent would be worse than one query.
+  const creditWallet = await client.usageWallet.findUnique({
+    where: { workspaceId: entry.creditWorkspaceId },
+    select: { promoCreditUsd: true, promoCreditExpiresAt: true },
+  })
+  const available = promoCreditAvailableUsd(creditWallet, now)
+  return available > 0 ? { walletId: entry.creditWorkspaceId, availableUsd: available } : null
+}
+
 /**
  * Get USD usage wallet for a workspace. Child workspaces resolve to the
  * parent's wallet (pooled billing).
@@ -820,8 +922,10 @@ export async function checkUsageBalance(
 
   // Windows exhausted — unexpired signup promo credit is next. Which models it
   // can pay for is the plan's model-tier gate in ai-proxy (economy on Free and
-  // Basic); promo credit doesn't change it.
-  if (promoCreditAvailableUsd(wallet, now) >= minimumRequiredUsd) return { ok: true };
+  // Basic); promo credit doesn't change it. A personal workspace can draw the
+  // owner's credit, which is granted on their team workspace.
+  const promoSource = await resolvePromoCreditSource(prisma, billingWorkspaceId, wallet, now);
+  if (promoSource && promoSource.availableUsd >= minimumRequiredUsd) return { ok: true };
 
   // Overage is the fallback when enabled and uncapped,
   // and only while the paid entitlement behind it is still live.
@@ -1216,6 +1320,12 @@ async function _consumeUsageTransaction(
     // means uncapped (enterprise): usage is unbounded within the windows.
     const { limits, paidTier } = await resolveEffectivePlan(tx, billingWorkspaceId, now);
 
+    // Which wallet pays for promo spend if a window is exhausted. Usually this
+    // one; a personal workspace falls back to the owner's signup credit, which
+    // lives on their team workspace.
+    const promoSource = await resolvePromoCreditSource(tx, billingWorkspaceId, wallet, now);
+    const promoAvailableUsd = promoSource?.availableUsd ?? 0;
+
     // Lazy window reset: a window "opens" on the first action and resets once
     // its full duration has elapsed (fixed-window-from-first-event).
     const five = rollWindow(wallet.fiveHourWindowStart, wallet.fiveHourUsedUsd, now, FIVE_HOUR_MS);
@@ -1269,8 +1379,7 @@ async function _consumeUsageTransaction(
         // Overage only applies while the paid entitlement behind it is live:
         // an expired grant / lapsed subscription falls through to the hard
         // "Usage limit reached" branch instead of metering unbillable usage.
-        const promoAvailable = promoCreditAvailableUsd(wallet, now);
-        const overageDue = Math.max(0, billedUsd - promoAvailable);
+        const overageDue = Math.max(0, billedUsd - promoAvailableUsd);
         const overageApplies = wallet.overageEnabled && paidTier;
         let overageBlock: 'overage_payment_pending' | 'overage_cap_reached' | null = null;
         if (overageApplies && overageDue > 0) {
@@ -1284,15 +1393,15 @@ async function _consumeUsageTransaction(
           }
         }
 
-        if (promoAvailable > 0 && (overageDue === 0 || !overageApplies || overageBlock)) {
+        if (promoAvailableUsd > 0 && (overageDue === 0 || !overageApplies || overageBlock)) {
           // Promo covers the call. When nothing billable sits behind it, the
           // last of the balance absorbs the whole call: `checkUsageBalance`
           // already admitted it on any positive balance, and a refused debit
           // would leave the balance untouched and the call free, repeatedly.
           source = 'promo';
-          promoCharged = Math.min(promoAvailable, billedUsd);
-          balanceBefore = promoAvailable;
-          balanceAfter = promoAvailable - promoCharged;
+          promoCharged = Math.min(promoAvailableUsd, billedUsd);
+          balanceBefore = promoAvailableUsd;
+          balanceAfter = promoAvailableUsd - promoCharged;
         } else if (overageApplies) {
           if (overageBlock === 'overage_payment_pending') {
             return {
@@ -1320,7 +1429,7 @@ async function _consumeUsageTransaction(
           // the windows (the window is already full). Any remaining promo
           // balance pays for the first part of the call.
           source = 'overage';
-          promoCharged = promoAvailable;
+          promoCharged = promoAvailableUsd;
           balanceBefore = overageAccumulatedUsd;
           overageAccumulatedUsd += overageDue;
           balanceAfter = overageAccumulatedUsd;
@@ -1367,10 +1476,21 @@ async function _consumeUsageTransaction(
         weeklyWindowStart: week.start,
         weeklyUsedUsd: week.used,
         overageAccumulatedUsd,
-        ...(promoCharged > 0 ? { promoCreditUsd: { decrement: promoCharged } } : {}),
+        // Promo spend is debited from whichever wallet funded it — this one, or
+        // (for a personal workspace) the owner's signup-credit wallet.
+        ...(promoCharged > 0 && promoSource?.walletId === billingWorkspaceId
+          ? { promoCreditUsd: { decrement: promoCharged } }
+          : {}),
         ...(needsMonthlyReset ? { lastMonthlyReset: now, overageBilledUsd: 0 } : {}),
       },
     });
+
+    if (promoCharged > 0 && promoSource && promoSource.walletId !== billingWorkspaceId) {
+      await tx.usageWallet.update({
+        where: { workspaceId: promoSource.walletId },
+        data: { promoCreditUsd: { decrement: promoCharged } },
+      });
+    }
 
     await tx.usageEvent.create({
       data: {

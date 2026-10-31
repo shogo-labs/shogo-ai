@@ -68,6 +68,7 @@ async function sendTemplateEmail(
   template: string,
   to: string,
   data: Record<string, unknown>,
+  options: { headers?: Record<string, string> } = {},
 ): Promise<{ success: boolean; error?: string }> {
   const email = getEmailService()
 
@@ -81,6 +82,7 @@ async function sendTemplateEmail(
       to,
       template,
       data: { ...data, appName: APP_NAME },
+      ...(options.headers ? { headers: options.headers } : {}),
     })
 
     if (result.success) {
@@ -375,6 +377,68 @@ export async function sendApproachingLimitEmail(params: {
     percentUsed: params.percentUsed,
     manageUrl: params.manageUrl,
   })
+}
+
+/**
+ * Send the "your build is ready" lifecycle email (SHO-258 §4). At most one per
+ * user per day — the caller enforces the frequency, not the template.
+ *
+ * `List-Unsubscribe` plus `List-Unsubscribe-Post` are set because this is the
+ * one non-transactional message we send; Gmail/Yahoo require the header on
+ * bulk senders and it makes the opt-out a one-click POST.
+ */
+export async function sendBuildReadyEmail(params: {
+  to: string
+  projectName: string
+  summary: string
+  projectUrl: string
+  preferencesUrl: string
+}): Promise<{ success: boolean; error?: string }> {
+  return sendTemplateEmail(
+    'build-ready',
+    params.to,
+    {
+      projectName: params.projectName,
+      summary: params.summary,
+      projectUrl: params.projectUrl,
+      preferencesUrl: params.preferencesUrl,
+    },
+    {
+      headers: {
+        'List-Unsubscribe': `<${params.preferencesUrl}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      },
+    },
+  )
+}
+
+/**
+ * Send the "your agent is back" lifecycle email once per cap (SHO-258 §4),
+ * when the exhausted 5-hour window reopens.
+ */
+export async function sendCreditsResetEmail(params: {
+  to: string
+  projectName: string
+  resetAt: string
+  continueUrl: string
+  preferencesUrl: string
+}): Promise<{ success: boolean; error?: string }> {
+  return sendTemplateEmail(
+    'credits-reset',
+    params.to,
+    {
+      projectName: params.projectName,
+      resetAt: params.resetAt,
+      continueUrl: params.continueUrl,
+      preferencesUrl: params.preferencesUrl,
+    },
+    {
+      headers: {
+        'List-Unsubscribe': `<${params.preferencesUrl}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      },
+    },
+  )
 }
 
 /**

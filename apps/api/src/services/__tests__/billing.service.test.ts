@@ -41,6 +41,8 @@ type Wallet = {
   fiveHourUsedUsd: number
   weeklyWindowStart: Date | null
   weeklyUsedUsd: number
+  promoCreditUsd: number
+  promoCreditExpiresAt: Date | null
 }
 type Grant = {
   id: string
@@ -161,6 +163,8 @@ const prismaApi = {
         fiveHourUsedUsd: data.fiveHourUsedUsd ?? 0,
         weeklyWindowStart: data.weeklyWindowStart ?? null,
         weeklyUsedUsd: data.weeklyUsedUsd ?? 0,
+        promoCreditUsd: data.promoCreditUsd ?? 0,
+        promoCreditExpiresAt: data.promoCreditExpiresAt ?? null,
       }
       wallets.set(data.workspaceId, w)
       return w
@@ -171,6 +175,8 @@ const prismaApi = {
       for (const [k, v] of Object.entries(data)) {
         if (v && typeof v === 'object' && 'increment' in (v as any)) {
           ;(w as any)[k] = ((w as any)[k] ?? 0) + (v as any).increment
+        } else if (v && typeof v === 'object' && 'decrement' in (v as any)) {
+          ;(w as any)[k] = ((w as any)[k] ?? 0) - (v as any).decrement
         } else {
           ;(w as any)[k] = v
         }
@@ -192,6 +198,8 @@ const prismaApi = {
       for (const [k, v] of Object.entries(data)) {
         if (v && typeof v === 'object' && 'increment' in (v as any)) {
           ;(w as any)[k] = ((w as any)[k] ?? 0) + (v as any).increment
+        } else if (v && typeof v === 'object' && 'decrement' in (v as any)) {
+          ;(w as any)[k] = ((w as any)[k] ?? 0) - (v as any).decrement
         } else {
           ;(w as any)[k] = v
         }
@@ -230,6 +238,28 @@ const prismaApi = {
     },
   },
   member: {
+    findFirst: async ({ where, select }: any) => {
+      const rows = members.filter((m: any) => {
+        if (where.userId !== undefined && m.userId !== where.userId) return false
+        if (where.role !== undefined && m.role !== undefined && m.role !== where.role) return false
+        if (where.workspaceId !== undefined && m.workspaceId !== where.workspaceId) return false
+        if (where.projectId === null && m.projectId !== null) return false
+        const wsWhere = where.workspace
+        if (wsWhere) {
+          const ws: any = workspaces.get(m.workspaceId)
+          if (!ws) return false
+          if (wsWhere.kind !== undefined && ws.kind !== wsWhere.kind) return false
+          if (wsWhere.parentWorkspaceId === null && (ws.parentWorkspaceId ?? null) !== null) return false
+        }
+        return true
+      })
+      const m = rows[0]
+      if (!m) return null
+      if (!select) return m
+      const out: any = {}
+      for (const k of Object.keys(select)) if (select[k]) out[k] = (m as any)[k]
+      return out
+    },
     findMany: async ({ where }: any) => {
       return members.filter((m) => {
         const wsMatch = where.workspaceId?.in
@@ -391,6 +421,8 @@ function freshWallet(over: Partial<Wallet> = {}): Wallet {
     fiveHourUsedUsd: 0,
     weeklyWindowStart: null,
     weeklyUsedUsd: 0,
+    promoCreditUsd: 0,
+    promoCreditExpiresAt: null,
     ...over,
   }
 }
@@ -1726,5 +1758,62 @@ describe('pooled child workspaces', () => {
     // Counting from either the parent or a child yields the family total.
     expect(await billing.countActiveWorkspaceMembers('parent')).toBe(2)
     expect(await billing.countActiveWorkspaceMembers('child')).toBe(2)
+  })
+})
+
+// ============================================================================
+// Signup credit reaches the personal workspace
+// ============================================================================
+// Credit is granted on the user's team workspace, but a new user's first
+// messages often land in their personal one. Without the fallback the free
+// window blocked them while untouched credit sat one workspace over.
+describe('personal workspace draws the owner\'s signup credit', () => {
+  function setupPersonalWithCredit(creditOver: Partial<Wallet> = {}) {
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    workspaces.set('personal', { id: 'personal', name: 'Personal', slug: 'personal', kind: 'personal', parentWorkspaceId: null } as any)
+    workspaces.set('team', { id: 'team', name: 'Team', slug: 'team', kind: 'team', parentWorkspaceId: null } as any)
+    members.push(
+      { workspaceId: 'personal', userId: 'u1', projectId: null, role: 'owner' } as any,
+      { workspaceId: 'team', userId: 'u1', projectId: null, role: 'owner' } as any,
+    )
+    // Free windows already spent in the personal workspace, no credit there.
+    wallets.set('personal', freshWallet({
+      workspaceId: 'personal',
+      fiveHourWindowStart: new Date(),
+      fiveHourUsedUsd: 0.2,
+      weeklyWindowStart: new Date(),
+      weeklyUsedUsd: 0.5,
+    }))
+    wallets.set('team', freshWallet({
+      workspaceId: 'team',
+      promoCreditUsd: 10,
+      promoCreditExpiresAt: future,
+      ...creditOver,
+    }))
+  }
+
+  it('checkUsageBalance admits a call on the team wallet\'s credit', async () => {
+    setupPersonalWithCredit()
+    expect((await billing.checkUsageBalance('personal')).ok).toBe(true)
+  })
+
+  it('consumeUsage debits the credit from the team wallet, not the personal one', async () => {
+    setupPersonalWithCredit()
+    const result = await billing.consumeUsage({
+      workspaceId: 'personal',
+      memberId: 'm1',
+      actionType: 'ai_proxy_completion',
+      billedUsd: 0.05,
+      rawUsd: 0.02,
+    })
+    expect(result.success).toBe(true)
+    expect(result.source).toBe('promo')
+    expect(wallets.get('team')!.promoCreditUsd).toBeCloseTo(9.95, 10)
+    expect(wallets.get('personal')!.promoCreditUsd).toBe(0)
+  })
+
+  it('blocks when the credit has expired', async () => {
+    setupPersonalWithCredit({ promoCreditExpiresAt: new Date(Date.now() - 1000) })
+    expect((await billing.checkUsageBalance('personal')).ok).toBe(false)
   })
 })

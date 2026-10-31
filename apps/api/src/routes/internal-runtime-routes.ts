@@ -248,17 +248,17 @@ function metalMountingRemoved(): boolean {
  */
 const PREVIEW_START_TIMEOUT_MS = 75_000
 
-function mountingRemovedResponse(c: Context, extra: Record<string, unknown> = {}) {
-  return c.json(
-    {
-      error: {
-        code: 'mounting_removed',
-        message: 'Projects are no longer mounted into other runtimes; use the project parameter / connect_project to reach them.',
-      },
-      ...extra,
-    },
-    410,
-  )
+/**
+ * Metal: a project lives in its own runtime, so an attach request records the
+ * durable edge and answers `mounted: false` instead of mounting. It used to
+ * answer 410 `mounting_removed`, which made `project_attach` fail on 100% of
+ * calls (SHO-258 §3a) even though the attachment itself had been written.
+ */
+const NO_LIVE_MOUNT_NOTE =
+  'Projects are not mounted into other runtimes. Reach this one with the `project` parameter or connect_project; the attachment takes effect for file access, not as a live member.'
+
+function notMountedResponse(c: Context, extra: Record<string, unknown> = {}, status: 200 | 201 = 200) {
+  return c.json({ ok: true, mounted: false, note: NO_LIVE_MOUNT_NOTE, ...extra }, status)
 }
 
 function unavailable(c: Context, capability: string) {
@@ -1125,7 +1125,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         projectId,
         body?.attachMode === 'readonly' ? 'readonly' : 'readwrite',
       )
-      if (metalMountingRemoved()) return mountingRemovedResponse(c, { attached: attachedRow, project })
+      if (metalMountingRemoved()) return notMountedResponse(c, { attached: attachedRow, project })
       const attached = await getAttachedProjects(sessionId)
       const attachedIds = attached.map((row) => row.projectId)
       const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
@@ -1174,7 +1174,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
     try {
       const removed = await detachProject(sessionId, projectId)
-      if (metalMountingRemoved()) return mountingRemovedResponse(c, { removed })
+      if (metalMountingRemoved()) return notMountedResponse(c, { removed })
       const attached = await getAttachedProjects(sessionId)
       const attachedIds = attached.map((row) => row.projectId)
       const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
@@ -2480,7 +2480,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     try {
       const svc = await import('../services/project-attachment.service')
       const attachment = await svc.attachProjectToProject(projectId, body.attachedProjectId, attachMode)
-      if (metalMountingRemoved()) return mountingRemovedResponse(c, { attachment, mounted: false })
+      if (metalMountingRemoved()) return notMountedResponse(c, { attachment }, 201)
 
       let mounted = false
       try {

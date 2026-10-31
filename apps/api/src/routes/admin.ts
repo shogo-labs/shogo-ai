@@ -1704,6 +1704,51 @@ export function adminRoutes(): Hono {
 // User Attribution Route (separate from admin — authenticated users only)
 // ============================================================================
 
+type AttributionFields = {
+  utmSource?: string | null
+  utmMedium?: string | null
+  utmCampaign?: string | null
+  utmContent?: string | null
+  utmTerm?: string | null
+  referrer?: string | null
+  landingPage?: string | null
+  signupMethod?: string | null
+  sourceTag?: string | null
+}
+
+/**
+ * The patch for the client's late flush: only fields the signup-time row left
+ * empty are written. `sourceTag` upgrades from `direct` (the fallback the
+ * server records when a signup carried no cookies) to a real tag, and never
+ * replaces one that already says where the user came from.
+ */
+export function enrichOnlyPatch(
+  existing: AttributionFields | null,
+  incoming: AttributionFields,
+): AttributionFields {
+  if (!existing) return {}
+  const patch: AttributionFields = {}
+  const fields: Array<keyof AttributionFields> = [
+    'utmSource',
+    'utmMedium',
+    'utmCampaign',
+    'utmContent',
+    'utmTerm',
+    'referrer',
+    'landingPage',
+    'signupMethod',
+  ]
+  for (const field of fields) {
+    const value = incoming[field]
+    if (!existing[field] && value) patch[field] = value
+  }
+  const sourceTag = incoming.sourceTag
+  if (sourceTag && sourceTag !== 'direct' && (!existing.sourceTag || existing.sourceTag === 'direct')) {
+    patch.sourceTag = sourceTag
+  }
+  return patch
+}
+
 export function userAttributionRoute(): Hono {
   const router = new Hono()
   // IMPORTANT: scope to /users/me/* — not '*'. Hono mounts this router at
@@ -1743,7 +1788,34 @@ export function userAttributionRoute(): Hono {
           signupMethod: body.method || null,
           sourceTag,
         },
-        update: {},
+        // Enrich only (SHO-258 §7): the server writes the row at signup, so this
+        // endpoint fills in whatever the cookie did not carry and never clobbers
+        // a value that was already recorded — an admin correction or a second
+        // signup path must survive the client's late flush.
+        update: enrichOnlyPatch(await prisma.signupAttribution.findUnique({
+          where: { userId: user.id },
+          select: {
+            utmSource: true,
+            utmMedium: true,
+            utmCampaign: true,
+            utmContent: true,
+            utmTerm: true,
+            referrer: true,
+            landingPage: true,
+            signupMethod: true,
+            sourceTag: true,
+          },
+        }), {
+          utmSource: body.utmSource,
+          utmMedium: body.utmMedium,
+          utmCampaign: body.utmCampaign,
+          utmContent: body.utmContent,
+          utmTerm: body.utmTerm,
+          referrer: body.referrer,
+          landingPage: body.landingPage,
+          signupMethod: body.method,
+          sourceTag,
+        }),
       })
 
       return c.json({ ok: true })

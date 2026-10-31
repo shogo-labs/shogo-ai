@@ -1337,12 +1337,15 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
           signal: AbortSignal.timeout(60_000),
         })
       try {
-        let response = await startPreview()
-        let result = await response.json().catch(() => ({}))
-        if (response.status === 404 && result?.error === 'project_not_attached') {
-          await mountWorkspaceProject(ctx, projectId, 'readwrite')
-          response = await startPreview()
-          result = await response.json().catch(() => ({}))
+        const response = await startPreview()
+        const result = await response.json().catch(() => ({}))
+        // Mounting a project into this runtime was removed (#1352): the old
+        // retry answered 410 `mounting_removed`, so the tool failed with "no
+        // longer mounted" for a project the agent had just built. Ask the API
+        // instead — it resolves the project's own runtime and starts the build
+        // there, which is the only path that works on both substrates.
+        if (response.status === 410 || (response.status === 404 && result?.error === 'project_not_attached')) {
+          return previewProjectViaApi(ctx, projectId)
         }
         if (!response.ok || result?.error) {
           return textResult({
@@ -4724,7 +4727,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
     name: 'publish',
     description: [
       'Publish the web app to a public, persistent URL at `{subdomain}.shogo.one`. Use this for hosting or permanently sharing the web app. For a single generated file, use `share_file` instead — never use publish to deliver a PDF, DOCX, ZIP, EXE, or other artifact.',
-      'First publish to a subdomain requires the Pro plan or higher. If the user may be on Free/Basic, tell them about this BEFORE starting deploy work so they are not surprised after you have already done the work — do not just attempt the tool call and hope. If the tool nonetheless returns `plan_not_allowed`, point the user to Settings > Billing to upgrade.',
+      'First publish to a subdomain requires the Pro plan or higher. Say so when the user asks to publish/deploy, or if this call returns `plan_not_allowed` (then point them to Settings > Billing to upgrade) — but do not pitch an upgrade when the user only wants to share what you built: the preview URL is public and anyone can open it.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
       'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds and that the scripts/stylesheets it references load — share THAT URL with the user. If it returns `brokenAssets`, the site renders blank: fix the asset paths and republish before telling the user it works.',

@@ -16,6 +16,10 @@ export const EVENTS = {
   WORKSPACE_CREATED: 'workspace_created',
   WORKSPACE_SWITCHED: 'workspace_switched',
   UPGRADE_CLICKED: 'upgrade_clicked',
+  // Activation signals (SHO-258 §§2,7): mirrored server-side as
+  // users.firstCapHitAt / firstPreviewSeenAt + the Loops `hit_cap` event.
+  USAGE_LIMIT_HIT: 'hit_cap',
+  PREVIEW_SEEN: 'preview_seen',
   SIGN_OUT: 'sign_out',
   SCREEN_VIEW: '$screen',
 } as const
