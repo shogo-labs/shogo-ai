@@ -19,7 +19,14 @@ import { resolveHistoryPaint, resolveLiveTurnAttach, type PaintableMessage } fro
 import { groupMessagesIntoTurns } from "../turns/useTurnGrouping"
 
 const user = (id: string): PaintableMessage => ({ id, role: "user" })
-const reply = (id: string): PaintableMessage => ({ id, role: "assistant" })
+const reply = (id: string): PaintableMessage => ({ id, role: "assistant", content: "reply" })
+/** The empty bubble the panel opens for a stream that has produced nothing yet. */
+const placeholder = (id: string): PaintableMessage => ({
+  id,
+  role: "assistant",
+  content: "",
+  parts: [],
+})
 
 describe("resolveHistoryPaint", () => {
   test("keeps the reply when history ends on the prompt that produced it", () => {
@@ -43,6 +50,47 @@ describe("resolveHistoryPaint", () => {
 
     expect(paint.keptLiveTail).toBe(false)
     expect(paint.messages).toBe(history as unknown as readonly PaintableMessage[])
+  })
+
+  test("does not count an empty assistant bubble as a reply", () => {
+    // A reload paints the device copy, which still carries the empty bubble the
+    // panel opened for a stream that never filled in. Counting it would make
+    // history look behind by a reply it already holds, and the paint — the only
+    // thing that can bring the reopened window up to date — would be refused
+    // forever (SHO-260).
+    const history = [user("u1"), reply("srv-a1")]
+    const current = [user("u1"), reply("srv-a1"), placeholder("sdk-a2")]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.keptLiveTail).toBe(false)
+    expect(paint.messages).toBe(history as unknown as readonly PaintableMessage[])
+  })
+
+  test("paints history over the empty bubbles a reload leaves behind", () => {
+    // The reopen from the failing chat-resume spec: the screen is a mid-stream
+    // device copy (a synthetic reply plus the placeholder opened for the queued
+    // turn's stream), and history holds the finished reply and the prompt the
+    // queued turn belongs to.
+    const history = [user("u1"), reply("srv-a1"), user("u2")]
+    const current = [
+      user("u1"),
+      reply("sdk-a1"),
+      placeholder("sdk-a2"),
+      placeholder("sdk-a3"),
+    ]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: false })
+
+    expect(paint.keptLiveTail).toBe(false)
+    expect(paint.reason).toBe("history-has-newer-prompt")
+    // history's own reply for turn 1 wins, and the queued prompt is on screen so
+    // its turn can attach a stream.
+    expect((paint.messages as readonly PaintableMessage[]).map((m) => m.id)).toEqual([
+      "u1",
+      "srv-a1",
+      "u2",
+    ])
   })
 
   test("keeps the live reply even with the flag unset when history is behind by a reply", () => {

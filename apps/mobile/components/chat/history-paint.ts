@@ -18,10 +18,18 @@
  * kept pure so it can be tested without a React tree or a running API.
  */
 
+/** One part of a live SDK message. */
+export interface PaintablePart {
+  type?: string | null
+  text?: string | null
+}
+
 /** The shape the decision needs from a message — a server row or a live SDK message. */
 export interface PaintableMessage {
   id?: string | null
   role?: string | null
+  content?: string | null
+  parts?: readonly PaintablePart[] | null
 }
 
 export interface HistoryPaintInput<T extends PaintableMessage> {
@@ -74,10 +82,26 @@ function isAssistant(message: PaintableMessage | undefined): boolean {
   return message?.role === "assistant"
 }
 
+/**
+ * Whether a message has anything to show. The panel opens a turn with an empty
+ * assistant bubble so its stream has somewhere to land, and a reload can leave
+ * those bubbles behind with synthetic ids; counting them as replies makes
+ * history look permanently "behind" and the paint below refuses forever
+ * (SHO-260). A bubble earns its place once it carries text or a real part.
+ */
+function carriesContent(message: PaintableMessage | undefined): boolean {
+  if (typeof message?.content === "string" && message.content.trim() !== "") return true
+  const parts = message?.parts
+  if (!Array.isArray(parts)) return false
+  return parts.some((part) =>
+    part?.type === "text" ? typeof part.text === "string" && part.text.trim() !== "" : Boolean(part),
+  )
+}
+
 function assistantCount(messages: readonly PaintableMessage[]): number {
   let count = 0
   for (const message of messages) {
-    if (isAssistant(message)) count += 1
+    if (isAssistant(message) && carriesContent(message)) count += 1
   }
   return count
 }
@@ -114,7 +138,9 @@ function liveReplyTail<T extends PaintableMessage>(current: readonly T[]): reado
       break
     }
   }
-  return current.slice(lastPrompt + 1).filter((message) => isAssistant(message))
+  return current
+    .slice(lastPrompt + 1)
+    .filter((message) => isAssistant(message) && carriesContent(message))
 }
 
 /**

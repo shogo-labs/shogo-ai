@@ -954,7 +954,21 @@ function messageRowToSnapshot(msg: any): any {
     typeof msg?.createdAt === "string"
       ? new Date(msg.createdAt).getTime()
       : (msg?.createdAt ?? 0)
-  return { ...msg, createdAt }
+  // Only the fields the store model declares: a row spread whole carries newer
+  // server columns (`updatedAt` in SHO-260) and the MST conversion throws,
+  // which aborted the reopen's whole hydrate → delta → probe chain.
+  return {
+    id: msg?.id,
+    sessionId: msg?.sessionId,
+    role: msg?.role,
+    content: msg?.content ?? "",
+    imageData: msg?.imageData ?? "",
+    parts: msg?.parts ?? "",
+    createdAt,
+    agent: msg?.agent ?? "technical",
+    model: msg?.model ?? "",
+    authorUserId: msg?.authorUserId ?? "",
+  }
 }
 
 /** Shape of `GET /api/chat-messages/session/:id/changes` (see SHO-260). */
@@ -5400,14 +5414,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         lastNonEmptyMessagesRef.current = painted
         setMessages(painted)
         setIsInitialLoadComplete(true)
-        if (entry.cursor) {
-          await applyChatDelta(sessionId, key, entry.cursor, loadGenerationRef.current)
+        try {
+          if (entry.cursor) {
+            await applyChatDelta(sessionId, key, entry.cursor, loadGenerationRef.current)
+          }
+        } catch (err) {
+          // A delta that fails (a store write, a row the model rejects) must
+          // not cost the reopen its live-turn attach: the probe below is the
+          // only thing that follows a running or queued reply.
+          console.warn("[ChatPanel] chat delta failed:", err)
         }
         // History is in place: attach to a turn that is genuinely running, the
         // same guarantee the cold path gives (SHO-260).
         probeLiveTurnAfterHistory(sessionId, loadGenerationRef.current)
       })
-      .catch(() => {})
+      .catch((err) => console.warn("[ChatPanel] saved history failed to load:", err))
       .finally(() => {
         historyHydrationPendingRef.current.delete(key)
         setHistoryHydrationTick((tick) => tick + 1)
