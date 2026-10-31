@@ -104,20 +104,28 @@ async function send(page: Page, text: string): Promise<void> {
   await expect(page.getByText(text, { exact: false }).first()).toBeVisible({ timeout: 30_000 })
 }
 
+/**
+ * Is a run actually streaming? The Stop affordance can stay in the DOM for a
+ * beat after the run ends (it fades out), so presence alone is not an answer —
+ * the same rule `waitIdle` polls is the one the assertion reads.
+ */
+async function stopVisible(page: Page): Promise<boolean> {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll('[data-testid="stop-streaming"]')).some((el) => {
+      let node: Element | null = el
+      while (node) {
+        if (getComputedStyle(node).opacity === "0") return false
+        node = node.parentElement
+      }
+      return true
+    }),
+  )
+}
+
 async function waitIdle(page: Page, timeoutMs = 60_000): Promise<void> {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
-    const streaming = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('[data-testid="stop-streaming"]')).some((el) => {
-        let node: Element | null = el
-        while (node) {
-          if (getComputedStyle(node).opacity === "0") return false
-          node = node.parentElement
-        }
-        return true
-      }),
-    )
-    if (!streaming) return
+    if (!(await stopVisible(page))) return
     await page.waitForTimeout(200)
   }
 }
@@ -138,11 +146,13 @@ test("editing a past message dims what follows, shows the inline choice, and res
 
   // In place: same text, a Cancel/Send footer and the keyboard hint — no modal.
   await expect(inlineEditor(page)).toBeVisible({ timeout: 10_000 })
-  soft(await page.getByText("Esc to cancel · ⏎ to send").isVisible()).toBe(true)
+  await expect.soft(page.getByText("Esc to cancel · ⏎ to send")).toBeVisible({ timeout: 5_000 })
   soft(await page.getByText("Edit message?", { exact: true }).isVisible().catch(() => false)).toBe(false)
 
   // Everything below dims under the divider.
-  soft(await page.getByText(/messages? below will be replaced/).first().isVisible()).toBe(true)
+  await expect.soft(page.getByText(/messages? below will be replaced/).first()).toBeVisible({
+    timeout: 5_000,
+  })
 
   // Change the text and resend; the revert choice is inline, never a dialog.
   await inlineEditor(page).fill("alpha message one edited")
@@ -174,7 +184,7 @@ test("an edit made while the agent is running stops the run first", async () => 
   await first.hover()
   await page.getByRole("button", { name: "Edit message" }).first().click()
   await expect(inlineEditor(page)).toBeVisible({ timeout: 10_000 })
-  soft(await page.getByText(/Stops the current run/).isVisible()).toBe(true)
+  await expect.soft(page.getByText(/Stops the current run/)).toBeVisible({ timeout: 5_000 })
 
   await inlineEditor(page).fill("gamma message three edited")
   await page.getByRole("button", { name: /^(Send|Resend|Revert & resend)$/ }).first().click()
@@ -183,10 +193,7 @@ test("an edit made while the agent is running stops the run first", async () => 
     timeout: 30_000,
   })
   await waitIdle(page)
-  const streaming = await page.evaluate(() =>
-    document.querySelectorAll('[data-testid="stop-streaming"]').length,
-  )
-  soft(streaming === 0).toBe(true)
+  soft(await stopVisible(page)).toBe(false)
 
   await page.close()
 })
