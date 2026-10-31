@@ -42,8 +42,13 @@ mock.module('../SharedAnalytics', () => ({
 }))
 mock.module('../StackedAreaChart', () => ({
   STACKED_PALETTE: ['#1', '#2', '#3', '#4', '#5', '#6', '#7', '#8', '#slate'],
-  StackedAreaChart: ({ days, series }: any) =>
-    createElement('div', { 'data-testid': 'daily-chart', 'data-days': days.length, 'data-series': series.map((s: any) => s.id).join(',') }),
+  StackedAreaChart: ({ days, series, variant }: any) =>
+    createElement('div', {
+      'data-testid': 'daily-chart',
+      'data-days': days.length,
+      'data-series': series.map((s: any) => s.id).join(','),
+      'data-variant': variant ?? 'area',
+    }),
 }))
 
 const { UsageDashboard } = await import('../UsageDashboard')
@@ -137,6 +142,8 @@ describe('UsageDashboard', () => {
 
     // Charts and panels.
     expect(screen.getByTestId('daily-chart').getAttribute('data-series')).toBe('Claude Sonnet,GPT')
+    // Daily token usage is a per-day quantity: stacked bars, not a stacked area.
+    expect(screen.getByTestId('daily-chart').getAttribute('data-variant')).toBe('bar')
     expect(screen.getByText('72.0%')).toBeTruthy()
     expect(screen.getByText(/edit_file/)).toBeTruthy()
   })

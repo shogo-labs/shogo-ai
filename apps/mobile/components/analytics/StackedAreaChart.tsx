@@ -3,8 +3,15 @@
 /**
  * StackedAreaChart
  *
- * A pure react-native-svg cumulative stacked-area chart used by the workspace
- * Usage tab. Series share a fixed palette so colors stay stable across renders.
+ * A pure react-native-svg stacked time-series chart used by every analytics
+ * page. Two variants share the same stacking math, palette, axes and tooltip:
+ *
+ * - `area` (default): cumulative stacked areas with a stroked top edge and a
+ *   hover line + dot — right for running totals and for ratios.
+ * - `bar`: one stacked bar per day — right for daily counts, where per-day
+ *   segments are easier to read as bars than as an area.
+ *
+ * Series share a fixed palette so colors stay stable across renders.
  *
  * Inputs are intentionally simple — the caller decides series order, labels,
  * and which key inside each `day.values` map corresponds to which series.
@@ -14,6 +21,7 @@ import { useMemo, useState } from 'react'
 import { View, Text, Pressable } from 'react-native'
 import Svg, {
   Path,
+  Rect,
   Defs,
   LinearGradient,
   Stop,
@@ -45,6 +53,11 @@ export interface StackedAreaChartProps {
   formatTooltip?: (n: number) => string
   /** Render a "Today" caret on the rightmost x-tick when true. */
   markToday?: boolean
+  /**
+   * `area` (default) draws stacked areas; `bar` draws one stacked bar per day.
+   * Use `bar` for daily counts, `area` for cumulative totals and ratios.
+   */
+  variant?: 'area' | 'bar'
 }
 
 /** Default palette tuned to read well on dark and light backgrounds. */
@@ -87,9 +100,11 @@ export function StackedAreaChart({
   formatY = defaultFormatY,
   formatTooltip = defaultFormatTooltip,
   markToday = true,
+  variant = 'area',
 }: StackedAreaChartProps) {
   const [width, setWidth] = useState(720)
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+  const isBar = variant === 'bar'
 
   const innerW = Math.max(0, width - PADDING.left - PADDING.right)
   const innerH = Math.max(0, height - PADDING.top - PADDING.bottom)
@@ -134,9 +149,14 @@ export function StackedAreaChart({
   }
 
   const stepX = days.length > 1 ? innerW / (days.length - 1) : innerW
+  // Bars sit in equal-width slots; areas are laid out point-to-point.
+  const slotW = days.length > 0 ? innerW / days.length : innerW
+  const barW = Math.min(28, Math.max(2, slotW * 0.7))
 
   function xFor(i: number): number {
-    return PADDING.left + i * stepX
+    return isBar
+      ? PADDING.left + (i + 0.5) * slotW
+      : PADDING.left + i * stepX
   }
   function yFor(v: number): number {
     return PADDING.top + innerH - (v / niceMax) * innerH
@@ -150,6 +170,23 @@ export function StackedAreaChart({
       .join(' ')
     return `${top} ${bottom} Z`
   })
+
+  // One rect per non-zero (day, series) segment, in series order so the first
+  // series sits at the bottom of the stack.
+  const barSegments = isBar
+    ? days.flatMap((_, i) => {
+        const x = xFor(i) - barW / 2
+        return series.flatMap((s) => {
+          const seg = stacked[i][s.id]
+          if (!seg || seg.to - seg.from <= 0) return []
+          const top = yFor(seg.to)
+          const bottom = yFor(seg.from)
+          const h = bottom - top
+          if (h < 0.5) return []
+          return [{ key: `bar-${i}-${s.id}`, x, y: top, w: barW, h, color: s.color, day: i }]
+        })
+      })
+    : []
 
   // Y-axis ticks (4)
   const yTicks = [0, niceMax * 0.25, niceMax * 0.5, niceMax * 0.75, niceMax]
@@ -166,6 +203,17 @@ export function StackedAreaChart({
   const hoverTotal = hover
     ? series.reduce((s, sr) => s + (hover.values[sr.id] ?? 0), 0)
     : 0
+
+  // Per-series breakdown for the tooltip, largest first, capped with an "Other".
+  const TOOLTIP_ROWS = 8
+  const hoverRows = hover
+    ? series
+        .map((s) => ({ id: s.id, label: s.label, color: s.color, v: hover.values[s.id] ?? 0 }))
+        .filter((r) => r.v > 0)
+        .sort((a, b) => b.v - a.v)
+    : []
+  const tooltipRows = hoverRows.slice(0, TOOLTIP_ROWS)
+  const otherTotal = hoverRows.slice(TOOLTIP_ROWS).reduce((acc, r) => acc + r.v, 0)
 
   return (
     <View
@@ -213,16 +261,28 @@ export function StackedAreaChart({
           </G>
         ))}
 
-        {/* Stacked areas */}
-        {series.map((s, i) => (
-          <Path
-            key={s.id}
-            d={areaPaths[i]}
-            fill={`url(#grad-${s.id.replace(/[^a-z0-9]/gi, '_')})`}
-            stroke={s.color}
-            strokeWidth={1}
-          />
-        ))}
+        {/* Stacked areas / stacked bars */}
+        {isBar
+          ? barSegments.map((b) => (
+              <Rect
+                key={b.key}
+                x={b.x}
+                y={b.y}
+                width={b.w}
+                height={b.h}
+                fill={b.color}
+                opacity={hoverIdx == null || hoverIdx === b.day ? 1 : 0.45}
+              />
+            ))
+          : series.map((s, i) => (
+              <Path
+                key={s.id}
+                d={areaPaths[i]}
+                fill={`url(#grad-${s.id.replace(/[^a-z0-9]/gi, '_')})`}
+                stroke={s.color}
+                strokeWidth={1}
+              />
+            ))}
 
         {/* X-axis labels */}
         {xTickIdxs.map((idx) => (
@@ -241,16 +301,18 @@ export function StackedAreaChart({
         {/* Today caret */}
         {markToday && days.length > 1 && (
           <G>
-            <Line
-              x1={xFor(todayIdx)}
-              x2={xFor(todayIdx)}
-              y1={PADDING.top}
-              y2={PADDING.top + innerH}
-              stroke="#94a3b8"
-              strokeOpacity={0.4}
-              strokeDasharray="3,3"
-              strokeWidth={1}
-            />
+            {!isBar && (
+              <Line
+                x1={xFor(todayIdx)}
+                x2={xFor(todayIdx)}
+                y1={PADDING.top}
+                y2={PADDING.top + innerH}
+                stroke="#94a3b8"
+                strokeOpacity={0.4}
+                strokeDasharray="3,3"
+                strokeWidth={1}
+              />
+            )}
             <SvgText
               x={xFor(todayIdx)}
               y={PADDING.top - 4}
@@ -263,8 +325,8 @@ export function StackedAreaChart({
           </G>
         )}
 
-        {/* Hover marker */}
-        {hover != null && hoverIdx != null && (
+        {/* Hover marker — a line + dot for areas, a highlighted bar for bars */}
+        {hover != null && hoverIdx != null && !isBar && (
           <G>
             <Line
               x1={xFor(hoverIdx)}
@@ -327,22 +389,26 @@ export function StackedAreaChart({
           <Text className="text-[11px] font-medium text-foreground mb-1">
             {formatTick(hover.date)} · {formatTooltip(hoverTotal)}
           </Text>
-          {series
-            .map((s) => ({ s, v: hover.values[s.id] ?? 0 }))
-            .filter((r) => r.v > 0)
-            .sort((a, b) => b.v - a.v)
-            .slice(0, 6)
-            .map(({ s, v }) => (
-              <View key={s.id} className="flex-row items-center gap-1.5">
-                <View
-                  style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: s.color }}
-                />
-                <Text className="text-[10px] text-muted-foreground flex-1" numberOfLines={1}>
-                  {s.label}
-                </Text>
-                <Text className="text-[10px] font-mono text-foreground">{formatTooltip(v)}</Text>
-              </View>
-            ))}
+          {tooltipRows.map((r) => (
+            <View key={r.id} className="flex-row items-center gap-1.5">
+              <View
+                style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: r.color }}
+              />
+              <Text className="text-[10px] text-muted-foreground flex-1" numberOfLines={1}>
+                {r.label}
+              </Text>
+              <Text className="text-[10px] font-mono text-foreground">{formatTooltip(r.v)}</Text>
+            </View>
+          ))}
+          {otherTotal > 0 && (
+            <View key="__other" className="flex-row items-center gap-1.5">
+              <View style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: STACKED_PALETTE[8] }} />
+              <Text className="text-[10px] text-muted-foreground flex-1" numberOfLines={1}>
+                Other
+              </Text>
+              <Text className="text-[10px] font-mono text-foreground">{formatTooltip(otherTotal)}</Text>
+            </View>
+          )}
         </View>
       )}
     </View>

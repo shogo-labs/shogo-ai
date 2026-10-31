@@ -363,6 +363,7 @@ export function UsageDashboard({
             days={data.daily.days.map((d) => ({ date: d.date, values: d.byModel }))}
             series={series}
             height={220}
+            variant="bar"
             formatY={compactNumber}
             formatTooltip={(n) => n.toLocaleString()}
           />

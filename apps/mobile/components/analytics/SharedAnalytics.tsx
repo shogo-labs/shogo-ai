@@ -1720,7 +1720,9 @@ function buildSpendSeries(data: SpendTimeseriesData | null): StackedSeries[] {
 }
 
 /**
- * Daily consumption stacked-area chart with group-by + metric controls.
+ * Daily consumption chart with group-by + metric controls. Daily values are
+ * stacked bars; the Cumulative toggle switches to a stacked area, since a
+ * running total reads as a line.
  * Shared by the workspace Usage tab and the super-admin analytics page.
  */
 export function UsageTimeseriesChart({
@@ -1821,6 +1823,7 @@ export function UsageTimeseriesChart({
           days={chartDays}
           series={series}
           height={height}
+          variant={isCumulative ? 'area' : 'bar'}
           formatY={(n) =>
             metric === 'spend'
               ? chartUsd(n)
@@ -1843,6 +1846,11 @@ export interface TrendMetricOption {
   color?: string
   /** Format used for both the Y axis and the tooltip. */
   format?: (n: number) => string
+  /**
+   * `count` (default) is a per-day quantity and renders as stacked bars;
+   * `rate` is a ratio or rolling average and stays a line.
+   */
+  kind?: 'count' | 'rate'
 }
 
 export function MetricTrendChart({
@@ -1935,6 +1943,7 @@ export function MetricTrendChart({
           days={chartDays}
           series={series}
           height={height}
+          variant={metric?.kind === 'rate' || isCumulative ? 'area' : 'bar'}
           formatY={fmt}
           formatTooltip={fmt}
         />
@@ -2100,9 +2109,9 @@ export function ActiveUsersTrendChart({
     values: { dau: d.dau, wau: d.wau, mau: d.mau },
   }))
   const metrics: TrendMetricOption[] = [
-    { id: 'dau', label: 'Daily', color: STACKED_PALETTE[1], format: formatNumber },
-    { id: 'wau', label: 'Weekly', color: STACKED_PALETTE[0], format: formatNumber },
-    { id: 'mau', label: 'Monthly', color: STACKED_PALETTE[3], format: formatNumber },
+    { id: 'dau', label: 'Daily', color: STACKED_PALETTE[1], format: formatNumber, kind: 'rate' },
+    { id: 'wau', label: 'Weekly', color: STACKED_PALETTE[0], format: formatNumber, kind: 'rate' },
+    { id: 'mau', label: 'Monthly', color: STACKED_PALETTE[3], format: formatNumber, kind: 'rate' },
   ]
   return (
     <MetricTrendChart
@@ -2148,12 +2157,12 @@ export function QualityTimeseriesChart({
     },
   }))
   const metrics: TrendMetricOption[] = [
-    { id: 'cacheHitRatio', label: 'Cache hit', color: STACKED_PALETTE[0], format: PCT },
-    { id: 'costPerMessage', label: '$/msg', color: STACKED_PALETTE[2], format: formatDollarCost },
-    { id: 'costPerActiveUser', label: '$/active user', color: STACKED_PALETTE[1], format: formatDollarCost },
-    { id: 'agentEscalatedRate', label: 'Escalated', color: STACKED_PALETTE[5], format: PCT },
-    { id: 'agentLoopRate', label: 'Loop', color: STACKED_PALETTE[6], format: PCT },
-    { id: 'agentMaxTurnsRate', label: 'Max turns', color: STACKED_PALETTE[7], format: PCT },
+    { id: 'cacheHitRatio', label: 'Cache hit', color: STACKED_PALETTE[0], format: PCT, kind: 'rate' },
+    { id: 'costPerMessage', label: '$/msg', color: STACKED_PALETTE[2], format: formatDollarCost, kind: 'rate' },
+    { id: 'costPerActiveUser', label: '$/active user', color: STACKED_PALETTE[1], format: formatDollarCost, kind: 'rate' },
+    { id: 'agentEscalatedRate', label: 'Escalated', color: STACKED_PALETTE[5], format: PCT, kind: 'rate' },
+    { id: 'agentLoopRate', label: 'Loop', color: STACKED_PALETTE[6], format: PCT, kind: 'rate' },
+    { id: 'agentMaxTurnsRate', label: 'Max turns', color: STACKED_PALETTE[7], format: PCT, kind: 'rate' },
   ]
   return (
     <MetricTrendChart
@@ -2229,7 +2238,7 @@ export function ToolCallAnalyticsPanel({
     values: { successRate: d.successRate, calls: d.calls, errors: d.errors },
   }))
   const trendMetrics: TrendMetricOption[] = [
-    { id: 'successRate', label: 'Success %', color: STACKED_PALETTE[0], format: PCT },
+    { id: 'successRate', label: 'Success %', color: STACKED_PALETTE[0], format: PCT, kind: 'rate' },
     { id: 'calls', label: 'Calls', color: STACKED_PALETTE[1], format: formatNumber },
     { id: 'errors', label: 'Errors', color: STACKED_PALETTE[6], format: formatNumber },
   ]

@@ -119,6 +119,7 @@ export function MemberUsageDetail({
                       days={chartDays}
                       series={[{ id: 'tokens', label: 'Tokens', color: '#3b82f6' }]}
                       height={210}
+                      variant="bar"
                       formatY={formatNumber}
                       formatTooltip={formatNumber}
                     />
