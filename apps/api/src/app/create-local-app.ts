@@ -189,6 +189,11 @@ export function createLocalApp(): LocalAppBundle {
       settleOrphanedAgentReplies(),
     )
     .catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+  // Frames whose turn nobody can recover any more (a session deleted mid-turn,
+  // an app closed before recovery ran) must not accumulate forever (SHO-274).
+  void import('../services/chat-turn-journal')
+    .then(({ sweepTurnFrames }) => sweepTurnFrames())
+    .catch((err) => console.warn('[ChatTurnJournal] boot sweep failed:', err?.message ?? err))
   app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
   app.post('/api/webhooks/livekit', async (c) => {

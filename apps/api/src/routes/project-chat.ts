@@ -58,6 +58,7 @@ import {
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
 import { historySeedForTurn, lastUserPromptText } from "../services/chat-history-seed.service"
+import { deleteTurnFrames, TurnJournalWriter } from "../services/chat-turn-journal"
 import { compactChatSession } from "../services/chat-compact.service"
 import { countLineChanges } from "../lib/tool-line-stats"
 import { fetchFromProjectRuntime } from "../lib/chat-runtime-fetch"
@@ -1073,6 +1074,12 @@ export async function trackUsageFromStream(
   // updates the row created mid-stream instead of creating a duplicate row.
   await persistAssistantSnapshot(true)
   unregisterSnapshotFlusher()
+  // The turn reached its terminal frame, so the journal has nothing left to
+  // recover: what the client has is now in the row (SHO-274). A turn that never
+  // gets here (the process died) keeps its frames for recovery.
+  if (observedTurnComplete && trackedTurnId) {
+    void deleteTurnFrames(trackedTurnId).catch(() => 0)
+  }
   const partialTag = observedTurnComplete ? '' : ', partial'
   if (assistantMessageId) {
     console.log(
@@ -1969,8 +1976,52 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           })
 
           let clientEnqueueErrors = 0
+          // Write-ahead journal (SHO-274): a chunk reaches the client only after
+          // the batch holding it is durable. `activityTurnId` is the turn this
+          // stream belongs to; without one (markTurnStarted failed) there is no
+          // key to journal under, so the stream behaves as before rather than
+          // blocking on a write that can never be recovered.
+          const journal = activityTurnId
+            ? new TurnJournalWriter(incomingChatSessionId, activityTurnId)
+            : null
+          let pendingFrames: Uint8Array[] = []
+          let drainScheduled = false
+          let drainChain: Promise<void> = Promise.resolve()
+          // Set once the client stream starts: frames are only forwarded from
+          // inside a drain, i.e. after the batch holding them is durable.
+          let clientController: ReadableStreamDefaultController<Uint8Array> | null = null
+          const drainJournal = async () => {
+            while (pendingFrames.length > 0) {
+              const batch = pendingFrames
+              pendingFrames = []
+              // While this insert is in flight the reader keeps pulling, so the
+              // next batch is the group of frames that arrived meanwhile.
+              if (journal) await journal.append(batch)
+              for (const chunk of batch) {
+                trackingChunks.push(chunk)
+                trackingNotify?.()
+                trackingNotify = null
+                latency.observe(chunk)
+                try { clientController?.enqueue(chunk) } catch {
+                  if (clientEnqueueErrors === 0) {
+                    console.log(`[ProjectChat:Stream] Client disconnected at chunk — stream continues for tracking/persistence`)
+                  }
+                  clientEnqueueErrors++
+                }
+              }
+            }
+          }
+          const scheduleDrain = () => {
+            if (drainScheduled) return
+            drainScheduled = true
+            drainChain = drainChain.then(() => {
+              drainScheduled = false
+              return drainJournal()
+            })
+          }
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
+              clientController = controller
               ;(async () => {
                 try {
                   let chunkCount = 0
@@ -1978,20 +2029,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                     const { done, value } = await bgReader.read()
                     if (done) break
                     chunkCount++
-                    trackingChunks.push(value)
-                    trackingNotify?.()
-                    trackingNotify = null
-                    latency.observe(value)
-                    try { controller.enqueue(value) } catch {
-                      if (clientEnqueueErrors === 0) {
-                        console.log(`[ProjectChat:Stream] Client disconnected at chunk #${chunkCount} — stream continues for tracking/persistence`)
-                      }
-                      clientEnqueueErrors++
-                    }
+                    pendingFrames.push(value)
+                    scheduleDrain()
                   }
-                  console.log(`[ProjectChat:Stream] Background reader finished: ${chunkCount} chunks, ${clientEnqueueErrors} client errors`)
+                  // Everything still held must be durable (and out) before the
+                  // client is told the stream ended.
+                  await drainChain
+                  console.log(`[ProjectChat:Stream] Background reader finished: ${chunkCount} chunks, ${clientEnqueueErrors} client errors` +
+                    `${journal ? `, ${journal.written} journal batch(es)` : ', no journal'}`)
                 } catch (err: any) {
                   console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
+                  try { await drainChain } catch { /* already logged */ }
                   try { controller.error(err) } catch { /* client gone */ }
                 } finally {
                   trackingDone = true

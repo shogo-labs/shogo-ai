@@ -268,17 +268,32 @@ export async function sweepDeadTurnsOnLocalBoot(): Promise<number> {
   })
   if (sessions.length === 0) return 0
   const { stampTurnInterrupted } = await import('./chat-resume.service')
+  // The journal holds every frame that reached the client during that turn, so
+  // the row can be rebuilt exactly — before the turn is cleared (SHO-274).
+  const { recoverTurnFromJournal } = await import('./chat-turn-recovery')
   let swept = 0
   for (const session of sessions) {
+    const turnId = session.activeTurnId
+    if (!turnId) continue
+    const recovered = await recoverTurnFromJournal(session.id, turnId, { keepFrames: true })
+      .then((result) => result.recovered)
+      .catch((error) => {
+        console.warn(`[ChatTurnState] Journal recovery for ${session.id} failed:`, error?.message ?? error)
+        return false
+      })
     const cleared = await prisma.chatSession.updateMany({
-      where: { id: session.id, activeTurnId: session.activeTurnId },
+      where: { id: session.id, activeTurnId: turnId },
       data: CLEARED_TURN,
     })
     if (cleared.count === 0) continue
     swept++
-    await stampTurnInterrupted(session.id, { reason: 'runtime_restarted' }).catch((error) =>
-      console.warn(`[ChatTurnState] Failed to stamp interrupted row for ${session.id}:`, error),
-    )
+    // A recovered row already says the turn ended; only a turn with no frames
+    // at all needs the stamp that stops it reading as unfinished.
+    if (!recovered) {
+      await stampTurnInterrupted(session.id, { reason: 'runtime_restarted' }).catch((error) =>
+        console.warn(`[ChatTurnState] Failed to stamp interrupted row for ${session.id}:`, error),
+      )
+    }
     // Whatever was waiting behind that turn has no starter left otherwise.
     drainAfterTurn(session.id)
   }

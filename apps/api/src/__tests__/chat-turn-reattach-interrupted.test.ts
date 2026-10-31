@@ -19,6 +19,7 @@ const SESSION_ID = 'sess-121'
 
 type Recorded = {
   announced: string[]
+  recovered: string[]
   tracked: number
   ended: string[]
   dispatched: string[]
@@ -29,7 +30,7 @@ type Recorded = {
  * `buffer` decides what `/agent/chat/:id/stream` answers.
  */
 function fakeDeps(opts: { target: 'missing' | 'unreachable' | 'alive' }): { deps: ReattachDeps; seen: Recorded } {
-  const seen: Recorded = { announced: [], tracked: 0, ended: [], dispatched: [] }
+  const seen: Recorded = { announced: [], recovered: [], tracked: 0, ended: [], dispatched: [] }
   const now = Date.now()
   const session = {
     id: SESSION_ID,
@@ -77,6 +78,10 @@ function fakeDeps(opts: { target: 'missing' | 'unreachable' | 'alive' }): { deps
     announceInterrupted: async (id: string) => {
       seen.announced.push(id)
       return { noted: true, queued: true }
+    },
+    recoverFromJournal: async (id: string) => {
+      seen.recovered.push(id)
+      return { recovered: false, frames: 0, assistantMessageId: null }
     },
     homeSessionWhere: () => null,
     now: () => now,

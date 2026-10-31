@@ -62,6 +62,12 @@ export type ReattachDeps = {
    * dead-runtime path is testable without a database write (SHO-121).
    */
   announceInterrupted: typeof import('../services/chat-resume.service').postInterruptedResume
+  /**
+   * Rebuild the dead turn's row from the write-ahead journal before announcing
+   * (SHO-274). The runtime's buffer is gone in both dead-end branches below, so
+   * the journal is the only record of what the person had already read.
+   */
+  recoverFromJournal: typeof import('../services/chat-turn-recovery').recoverTurnFromJournal
   homeSessionWhere: () => Record<string, unknown> | null
   now: () => number
 }
@@ -127,6 +133,7 @@ async function defaultDeps(): Promise<ReattachDeps> {
     getCallLink: callStore.getAgentCallSessionLink,
     settleCall: agentCall.settleAgentCallFromTurn,
     announceInterrupted: (await import('../services/chat-resume.service')).postInterruptedResume,
+    recoverFromJournal: (await import('../services/chat-turn-recovery')).recoverTurnFromJournal,
     homeSessionWhere: () => {
       const home = region.homeRegionWorkspaceWhere()
       return home ? { OR: [{ project: { workspace: home } }, { workspace: home }] } : null
@@ -198,6 +205,12 @@ async function reattachTurn(session: StaleTurn, deps: ReattachDeps): Promise<voi
       // silently is what left the user with no final message: say the turn was
       // interrupted and queue its one resume instead (SHO-121).
       console.warn(`[ChatTurnReattach] No runtime for ${chatSessionId}; announcing the interruption`)
+      // The runtime is gone, so its buffer never had a chance to be replayed —
+      // but the journal was written before each frame reached the client, so the
+      // row can still hold exactly what the person read (SHO-274).
+      await deps
+        .recoverFromJournal(chatSessionId, turnId)
+        .catch((err: any) => console.warn(`[ChatTurnReattach] Journal recovery for ${chatSessionId} failed:`, err?.message ?? err))
       await deps.announceInterrupted(chatSessionId).catch((err: any) =>
         console.warn(`[ChatTurnReattach] Interruption note for ${chatSessionId} failed:`, err?.message ?? err),
       )
@@ -214,7 +227,10 @@ async function reattachTurn(session: StaleTurn, deps: ReattachDeps): Promise<voi
       await res?.body?.cancel().catch(() => {})
       console.log(`[ChatTurnReattach] Runtime buffer for ${chatSessionId} is gone (${res?.status ?? 'unreachable'}); announcing the interruption`)
       // Same dead end as the branch above: the buffer this job exists to replay
-      // is unreachable, so the turn ends without a word unless we say something.
+      // is unreachable, so the journal is the only copy of the streamed reply.
+      await deps
+        .recoverFromJournal(chatSessionId, turnId)
+        .catch((err: any) => console.warn(`[ChatTurnReattach] Journal recovery for ${chatSessionId} failed:`, err?.message ?? err))
       await deps.announceInterrupted(chatSessionId).catch((err: any) =>
         console.warn(`[ChatTurnReattach] Interruption note for ${chatSessionId} failed:`, err?.message ?? err),
       )
