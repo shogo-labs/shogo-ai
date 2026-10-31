@@ -5523,6 +5523,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
               setMessages(aiMessages)
               writeSessionMessageCache(loadSessionId, aiMessages)
               cacheRefreshedAtRef.current.set(loadSessionId, performance.now())
+              // Adopt the page's own numbers. Without this the entry keeps the
+              // `total` that sent us down the fallback, so the very next delta
+              // mismatches again and the panel re-downloads the page in a loop.
+              const key = historyKeyFor(loadSessionId)
+              if (key) {
+                const newest = aiMessages[aiMessages.length - 1]
+                const rawAt = (newest as any)?.createdAt
+                const at =
+                  typeof rawAt === "number" ? rawAt : new Date(rawAt ?? NaN).getTime()
+                historyMetaRef.current.set(key, {
+                  cursor: Number.isFinite(at) ? new Date(at).toISOString() : null,
+                  total: (sessionMessages as any).total ?? aiMessages.length,
+                })
+              }
               void persistProjectHistory(loadSessionId, aiMessages)
               return
             }
