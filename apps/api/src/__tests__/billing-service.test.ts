@@ -910,8 +910,13 @@ describe('consumeUsage', () => {
   })
 
   test('monthly rollover zeros overage accumulators', async () => {
-    const lastMonth = new Date()
-    lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 2)
+    // Day 15 of the UTC month two months back: exists in every month, unlike
+    // `setUTCMonth(m - 2)` which normalizes out of the intended month (Apr 30
+    // - 2 lands on "Feb 30" -> Mar 2) and leaves the reset in the same month.
+    const lastMonth = (() => {
+      const now = new Date()
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 2, 15))
+    })()
     const start = new Date()
     subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
     seedWallet('ws-1', {

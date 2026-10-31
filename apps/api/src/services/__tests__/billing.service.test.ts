@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test'
 
 // ============================================================================
 // In-memory prisma mock
@@ -394,6 +394,8 @@ afterEach(() => {
   console.log = origConsole.log
   console.warn = origConsole.warn
   console.error = origConsole.error
+  // Any test that pins the clock must not leak it into the next one.
+  setSystemTime()
 })
 
 // Helpers. Use real current time as default so consumeUsage's needsDaily/
@@ -1656,32 +1658,56 @@ describe('consumeUsage — wallet allocation fallback (L532-540)', () => {
   })
 })
 
+/**
+ * A date that sits inside the UTC month `monthsBack` months before now, on
+ * day 15. Day 15 exists in every month, so this can never roll forward into
+ * the current month the way `setUTCMonth(getUTCMonth() - 1)` does on the
+ * 29th–31st (e.g. Sep 31 normalizes to Oct 1, i.e. "this month").
+ */
+function utcMonthOffset(monthsBack: number): Date {
+  const now = new Date()
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsBack, 15))
+}
+
+/**
+ * Seeds prior-period overage and asserts the month boundary zeroed it. Shared
+ * by the plain test and the pinned-clock guard so both exercise the same path.
+ */
+async function expectMonthRolloverZerosOverage() {
+  const lastMonth = utcMonthOffset(1)
+  const now = new Date()
+  // Precondition: the seeded reset is genuinely in an earlier UTC month.
+  expect(
+    lastMonth.getUTCFullYear() !== now.getUTCFullYear() ||
+    lastMonth.getUTCMonth() !== now.getUTCMonth(),
+  ).toBe(true)
+  // Window is exhausted so the charge takes the overage path; the month
+  // boundary should have already zeroed prior overage accumulation.
+  const start = now0()
+  setPlan('pro')
+  wallets.set('w1', freshWallet({
+    overageEnabled: true, overageHardLimitUsd: 1000,
+    overageAccumulatedUsd: 25, overageBilledUsd: 100,
+    lastMonthlyReset: lastMonth,
+    fiveHourWindowStart: start, fiveHourUsedUsd: 50,
+    weeklyWindowStart: start, weeklyUsedUsd: 50,
+  }))
+  const r = await billing.consumeUsage({
+    workspaceId: 'w1', projectId: null, memberId: 'u1',
+    actionType: 'x', billedUsd: 5,
+  })
+  expect(r.success).toBe(true)
+  expect(r.source).toBe('overage')
+  const w = wallets.get('w1')!
+  // Prior 25 was zeroed on the boundary, then 5 charged this period.
+  expect(w.overageAccumulatedUsd).toBe(5)
+  expect(w.overageBilledUsd).toBe(0)
+  expect(+w.lastMonthlyReset).toBeGreaterThan(+lastMonth)
+}
+
 describe('consumeUsage — monthly boundary resets overage bookkeeping', () => {
   it('zeros accumulated/billed overage and advances lastMonthlyReset on month rollover', async () => {
-    const lastMonth = new Date()
-    lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1)
-    // Window is exhausted so the charge takes the overage path; the month
-    // boundary should have already zeroed prior overage accumulation.
-    const start = now0()
-    setPlan('pro')
-    wallets.set('w1', freshWallet({
-      overageEnabled: true, overageHardLimitUsd: 1000,
-      overageAccumulatedUsd: 25, overageBilledUsd: 100,
-      lastMonthlyReset: lastMonth,
-      fiveHourWindowStart: start, fiveHourUsedUsd: 50,
-      weeklyWindowStart: start, weeklyUsedUsd: 50,
-    }))
-    const r = await billing.consumeUsage({
-      workspaceId: 'w1', projectId: null, memberId: 'u1',
-      actionType: 'x', billedUsd: 5,
-    })
-    expect(r.success).toBe(true)
-    expect(r.source).toBe('overage')
-    const w = wallets.get('w1')!
-    // Prior 25 was zeroed on the boundary, then 5 charged this period.
-    expect(w.overageAccumulatedUsd).toBe(5)
-    expect(w.overageBilledUsd).toBe(0)
-    expect(+w.lastMonthlyReset).toBeGreaterThan(+lastMonth)
+    await expectMonthRolloverZerosOverage()
   })
 
   it('does not drain the legacy monthly included pool on a normal charge', async () => {
@@ -1695,6 +1721,26 @@ describe('consumeUsage — monthly boundary resets overage bookkeeping', () => {
     // The vestigial monthly pool is untouched by the window path.
     expect(wallets.get('w1')!.monthlyIncludedUsd).toBe(100)
   })
+})
+
+// The rollover assertion must hold whatever today's day of the month is — the
+// original `setUTCMonth(m - 1)` arithmetic landed back in the current month on
+// the 29th–31st and turned the required CI check red for every open PR.
+describe('month rollover precondition — any day of the month', () => {
+  const clocks = [
+    '2026-10-31T00:19:00Z', // the day it broke: 31st -> "Sep 31" -> Oct 1
+    '2026-03-31T12:00:00Z',
+    '2026-08-30T23:59:59Z',
+    '2026-12-31T23:59:59Z', // month end at a year end
+    '2026-01-01T00:00:00Z', // year boundary
+    '2026-01-15T00:00:00Z', // ordinary mid-month day
+  ]
+  for (const iso of clocks) {
+    it(`zeros prior overage with the clock pinned to ${iso}`, async () => {
+      setSystemTime(new Date(iso))
+      await expectMonthRolloverZerosOverage()
+    })
+  }
 })
 
 // ============================================================================
