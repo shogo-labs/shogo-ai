@@ -6,6 +6,7 @@ import {
   APP_HOME_PATH,
   assertChatHealthy,
   buildPromptInput,
+  extendTestTimeout,
   makeTestUser,
   onboardToBuildPrompt,
   signUp,
@@ -73,8 +74,17 @@ test.describe("Onboarding build prompt", () => {
     // time-dependent (it timed out at 240s against staging). What this test
     // protects is that the brief reached the workspace chat and the turn
     // started — the build itself is covered by the preview suites.
-    const chatResponse = await request.response()
-    expect(chatResponse?.ok(), `workspace chat POST failed: ${chatResponse?.status()}`).toBe(true)
+    // The chat POST is an SSE stream, so its response object can lag the request
+    // by a beat; reading it opportunistically would turn this critical-path test
+    // red on a slow api for no product reason. Take it if it is already there,
+    // otherwise wait for it.
+    const chatResponse =
+      (await request.response()) ??
+      (await page.waitForResponse((res) => res.request() === request, { timeout: 30_000 }))
+    expect(chatResponse.ok(), `workspace chat POST failed: ${chatResponse.status()}`).toBe(true)
+    // The default test budget is 120s and the waits below can add 80s on top of
+    // an already-slow cold runtime.
+    extendTestTimeout(60_000)
     await page.waitForSelector(AGENT_STOP_SELECTOR, { state: "attached", timeout: 60_000 })
     await assertChatHealthy(page)
 
