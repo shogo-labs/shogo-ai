@@ -1763,8 +1763,11 @@ export function userAttributionRoute(): Hono {
 
   router.post('/users/me/attribution', async (c) => {
     try {
-      const user = (c as any).get('user')
-      if (!user?.id) return c.json({ error: 'unauthorized' }, 401)
+      // `authMiddleware` puts the session on the `auth` context var; nothing
+      // sets `user`, so reading it made this endpoint 401 for every caller
+      // (verified against staging — the client's enrich flush was a no-op).
+      const userId = c.get('auth')?.userId
+      if (!userId) return c.json({ error: 'unauthorized' }, 401)
 
       const body = await c.req.json()
       const sourceTag = analytics.deriveSourceTag({
@@ -1775,9 +1778,9 @@ export function userAttributionRoute(): Hono {
       })
 
       await prisma.signupAttribution.upsert({
-        where: { userId: user.id },
+        where: { userId },
         create: {
-          userId: user.id,
+          userId,
           utmSource: body.utmSource || null,
           utmMedium: body.utmMedium || null,
           utmCampaign: body.utmCampaign || null,
@@ -1793,7 +1796,7 @@ export function userAttributionRoute(): Hono {
         // a value that was already recorded — an admin correction or a second
         // signup path must survive the client's late flush.
         update: enrichOnlyPatch(await prisma.signupAttribution.findUnique({
-          where: { userId: user.id },
+          where: { userId },
           select: {
             utmSource: true,
             utmMedium: true,

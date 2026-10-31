@@ -23,9 +23,14 @@ const mockPrisma = {
 mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
 
 mock.module('../middleware/auth', () => ({
+  // Mirrors the real middleware contract: `authMiddleware` sets the `auth`
+  // context var (never `user`), and `requireAuth` reads it.
   authMiddleware: async (c: any, next: any) => {
-    c.set('user', mockUser)
-    c.set('session', { id: 'sess-1' })
+    // `x-no-auth` exercises the signed-out path without a second module mock.
+    if (!c.req.header('x-no-auth')) {
+      c.set('auth', { userId: mockUser.id, isAuthenticated: true, via: 'session' })
+      c.set('session', { id: 'sess-1' })
+    }
     await next()
   },
   requireAuth: async (_c: any, next: any) => { await next() },
@@ -193,5 +198,19 @@ describe('POST /users/me/attribution', () => {
     const call = mockPrisma.signupAttribution.upsert.mock.calls[0][0] as any
     expect(call.create.sourceTag).toBe('google-oauth')
     expect(call.create.utmSource).toBeNull()
+  })
+
+  test('rejects a signed-out request instead of writing a row', async () => {
+    const res = await app.request('/api/users/me/attribution', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-no-auth': '1' },
+      body: JSON.stringify({ utmSource: 'sho258' }),
+    })
+
+    // Regression guard: the handler must read the identity `authMiddleware`
+    // actually sets (`auth`), not a `user` var nothing populates — that made
+    // the endpoint 401 for every caller, including an authenticated one.
+    expect(res.status).toBe(401)
+    expect(mockPrisma.signupAttribution.upsert).not.toHaveBeenCalled()
   })
 })

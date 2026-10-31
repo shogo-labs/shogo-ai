@@ -115,4 +115,28 @@ describe('notifyCreditsReset', () => {
     // The dedupe key is per cap, so a second cap the same day still notifies.
     expect(notifications[0].dedupeKey).toBe(`credits_reset:ws-2:${resetAt.toISOString()}`)
   })
+
+  it('carries projectId in metadata so the phone can offer "Continue <project>"', async () => {
+    const resetAt = new Date('2026-10-30T19:00:00.000Z')
+    await notifyCreditsReset({
+      userId: 'u-2',
+      workspaceId: 'ws-2',
+      projectId: 'p-2',
+      projectName: 'Invoice generator',
+      resetAt,
+    })
+    expect(notifications[0].metadata).toMatchObject({ projectId: 'p-2', workspaceId: 'ws-2' })
+  })
+
+  it('writes projectId: null when the workspace has no project', async () => {
+    await notifyCreditsReset({
+      userId: 'u-3',
+      workspaceId: 'ws-3',
+      projectId: null,
+      projectName: 'your workspace',
+      resetAt: new Date('2026-10-30T19:00:00.000Z'),
+    })
+    expect(notifications[0].metadata).toMatchObject({ projectId: null, workspaceId: 'ws-3' })
+    expect(notifications[0].actionUrl).not.toContain('?project=')
+  })
 })

@@ -148,7 +148,13 @@ export async function notifyCreditsReset(input: CreditsResetInput): Promise<void
     title,
     message,
     actionUrl: url,
-    metadata: { workspaceId: input.workspaceId, resetAt: input.resetAt.toISOString() },
+    metadata: {
+      workspaceId: input.workspaceId,
+      // The phone app's "Continue <project>" chip reads this; without it the
+      // row can only fall back to the project list (SHO-266 QA).
+      projectId: input.projectId,
+      resetAt: input.resetAt.toISOString(),
+    },
     dedupeKey: `credits_reset:${input.workspaceId}:${input.resetAt.toISOString()}`,
   })
 
