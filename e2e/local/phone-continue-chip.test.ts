@@ -27,6 +27,8 @@ import { signIn } from "./team-nav-seed"
 import { ignoreDevErrorToast } from "./helpers"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
+/** Mirrors `appBaseUrl()` in the API: the origin it writes into `actionUrl`. */
+const APP_URL = process.env.APP_URL || "https://app.shogo.ai"
 
 const QUESTION = "Want me to wire up the pricing page next?"
 const PLAIN = "The build finished and the preview is live."
@@ -38,6 +40,8 @@ let questionProjectId = ""
 let questionProjectName = ""
 /** A project whose canonical chat ends on a plain statement. */
 let plainProjectId = ""
+/** The chat each seeded project's row names, as the API's metadata does. */
+const sessionByProject = new Map<string, string>()
 
 async function apiJson(page: Page, method: string, path: string, body?: unknown) {
   const res = await page.request.fetch(`${API}${path}`, {
@@ -102,6 +106,7 @@ async function seedProject(page: Page, name: string, reply: string): Promise<str
   const pinned = await apiJson(page, "POST", `/api/local/projects/${projectId}/workspace-session`)
   const sessionId = pinned.json?.session?.id
   expect(sessionId, JSON.stringify(pinned.json)).toBeTruthy()
+  sessionByProject.set(projectId, sessionId)
 
   for (const [role, content] of [
     ["user", "Build me a landing page"],
@@ -149,17 +154,37 @@ function trackChatSends(page: Page): string[] {
 }
 
 /**
- * Arrive the way a lifecycle push does: a notification in the inbox whose
- * `actionUrl` names the project and the lifecycle kind, tapped.
+ * Arrive the way a lifecycle notification does: the row the API itself writes
+ * (`apps/api/src/lib/lifecycle-notifications.ts`, SHO-258 §4), tapped.
+ *
+ * The row's `actionUrl` is the absolute web address the server builds
+ * (`${APP_URL}/chat?project=<id>`) — a route `apps/mobile` does not have — so the
+ * inbox maps `type` + `metadata.projectId` to the flagged project route. Seeding
+ * that exact shape (rather than a hand-made `/projects/<id>?fromLifecycle=…`
+ * link no server code writes) is what makes this spec cover the real entry.
  */
-async function openArrival(page: Page, projectId: string, kind: string) {
-  const title = `Build ready ${projectId.slice(0, 8)} ${kind}`
+async function openArrival(
+  page: Page,
+  projectId: string,
+  input: { type: "build_ready" | "credits_reset"; namesProject?: boolean },
+) {
+  const namesProject = input.namesProject !== false
+  const title = `Lifecycle ${projectId.slice(0, 8)} ${input.type}`
   const created = await apiJson(page, "POST", "/api/notifications", {
     userId,
-    type: "payment_succeeded",
+    type: input.type,
     title,
-    message: "Your project finished building.",
-    actionUrl: `/projects/${projectId}?fromLifecycle=${kind}`,
+    message: "Your agent finished a turn while you were away.",
+    // Exactly `projectChatUrl()`: absolute, `/chat`, and (for credits) no
+    // project at all. Neither is a route the app can push, which is the point.
+    actionUrl: namesProject
+      ? `${APP_URL}/chat?project=${encodeURIComponent(projectId)}`
+      : `${APP_URL}/chat`,
+    metadata: JSON.stringify(
+      namesProject
+        ? { projectId, workspaceId, chatSessionId: sessionByProject.get(projectId) }
+        : { workspaceId, resetAt: new Date().toISOString() },
+    ),
   })
   expect(created.status, JSON.stringify(created.json)).toBeLessThan(300)
 
@@ -167,7 +192,6 @@ async function openArrival(page: Page, projectId: string, kind: string) {
   const row = page.getByText(title, { exact: false }).first()
   await row.waitFor({ state: "visible", timeout: 120_000 })
   await row.click()
-  await composer(page).waitFor({ state: "visible", timeout: 120_000 })
 }
 
 test.describe("Continue <project> chip on a lifecycle arrival", () => {
@@ -212,7 +236,8 @@ test.describe("Continue <project> chip on a lifecycle arrival", () => {
   }) => {
     const sends = trackChatSends(page)
     await prepare(page)
-    await openArrival(page, questionProjectId, "build-ready")
+    await openArrival(page, questionProjectId, { type: "build_ready" })
+    await composer(page).waitFor({ state: "visible", timeout: 120_000 })
 
     const chip = page.getByRole("button", {
       name: new RegExp(`^Continue ${questionProjectName}:`),
@@ -228,19 +253,22 @@ test.describe("Continue <project> chip on a lifecycle arrival", () => {
     expect(sends, "tapping the chip must not send a message").toEqual([])
   })
 
-  test("a credits-reset arrival shows the same suggestion", async ({ page }) => {
+  test("a credits-reset row with no project still goes somewhere useful", async ({ page }) => {
+    // `notifyCreditsReset` writes `metadata: {workspaceId, resetAt}` — no
+    // project: the wallet that ran out need not have built anything. The row
+    // therefore opens the project list (where the chip's project can be
+    // picked), instead of the absolute `/chat` actionUrl that routes nowhere.
     await prepare(page)
-    await openArrival(page, questionProjectId, "credits-reset")
+    await openArrival(page, questionProjectId, { type: "credits_reset", namesProject: false })
 
-    await expect(
-      page.getByRole("button", { name: new RegExp(`^Continue ${questionProjectName}:`) }),
-    ).toBeVisible({ timeout: 60_000 })
-    await expect(page.getByTestId("continue-project-suggestion")).toHaveText(QUESTION)
+    await expect(page).toHaveURL(/\/projects(\?|$)/, { timeout: 60_000 })
+    await expect(page.getByTestId("continue-project-suggestion")).toBeHidden()
   })
 
   test("no chip when the last turn left nothing open", async ({ page }) => {
     await prepare(page)
-    await openArrival(page, plainProjectId, "build-ready")
+    await openArrival(page, plainProjectId, { type: "build_ready" })
+    await composer(page).waitFor({ state: "visible", timeout: 120_000 })
 
     await expect(page.getByText(PLAIN, { exact: false }).first()).toBeVisible({
       timeout: 60_000,

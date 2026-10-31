@@ -156,9 +156,11 @@ function messageText(message: ContinueSourceMessage): string {
 }
 
 /**
- * The suggestion for a whole transcript: only the last assistant turn is read,
- * so the chip describes where the conversation stopped rather than some older
- * exchange.
+ * The suggestion for a whole transcript: the last assistant turn that said
+ * anything is the only one read, so the chip describes where the conversation
+ * stopped rather than some older exchange. A tool-only row (no text at all) is
+ * not a turn and is skipped; anything before the first row with text is not
+ * consulted, because a turn that ended plainly left nothing open.
  */
 export function continueSuggestionFromMessages(
   messages: ReadonlyArray<ContinueSourceMessage> | null | undefined,
@@ -167,8 +169,9 @@ export function continueSuggestionFromMessages(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!
     if (message.role !== 'assistant') continue
-    const suggestion = suggestionFromAssistantText(messageText(message))
-    if (suggestion) return suggestion
+    const text = messageText(message)
+    if (!text.trim()) continue
+    return suggestionFromAssistantText(text)
   }
   return null
 }

@@ -113,12 +113,23 @@ describe('continueSuggestionFromMessages', () => {
     ).toBeNull()
   })
 
-  test('skips a trailing assistant turn that says nothing useful', () => {
+  test('skips a trailing tool-only row (a row with no text is not a turn)', () => {
     const suggestion = continueSuggestionFromMessages([
       { role: 'assistant', parts: [{ type: 'text', text: 'Add a README' }] },
       { role: 'assistant', parts: [{ type: 'tool-invocation', text: undefined }] },
     ])
     expect(suggestion).toBe('Add a README')
+  })
+
+  test('never reads past the last assistant turn that has text', () => {
+    // The last turn ended plainly: it offered nothing, and an older turn's
+    // question is not the next step of this conversation (QA, SHO-266).
+    const suggestion = continueSuggestionFromMessages([
+      { role: 'assistant', parts: [{ type: 'text', text: 'Want me to wire up the pricing page?' }] },
+      { role: 'user', parts: [{ type: 'text', text: 'No, just make it build.' }] },
+      { role: 'assistant', parts: [{ type: 'text', text: 'Done. Build passed.' }] },
+    ])
+    expect(suggestion).toBeNull()
   })
 })
 

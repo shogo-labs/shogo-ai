@@ -31,6 +31,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useNotificationCollection, useDomainActions } from '../../contexts/domain'
 import { notificationEvents } from '../../lib/notification-events'
 import { filterNotificationsForPlatform } from '../../lib/notification-policy'
+import { lifecycleNotificationRoute } from '../../lib/notifications/lifecycle-notification-link'
 
 /** Type → icon + accent color (Tailwind text class) for the row glyph. */
 function visualForType(type: string): { Icon: React.ElementType; color: string } {
@@ -110,7 +111,7 @@ export default observer(function NotificationsScreen() {
   const unread = items.filter((n) => !n.readAt)
 
   const handleOpen = useCallback(
-    async (n: { id: string; readAt: number; actionUrl: string }) => {
+    async (n: { id: string; readAt: number; actionUrl: string; type: string; metadata: unknown }) => {
       if (!n.readAt) {
         try {
           await actions.markNotificationRead(n.id)
@@ -118,6 +119,15 @@ export default observer(function NotificationsScreen() {
         } catch (e) {
           console.error('[Notifications] Failed to mark read:', e)
         }
+      }
+      // A lifecycle nudge (build-ready / credits-reset) is addressed at the
+      // project, not at a URL: its actionUrl is an absolute web `/chat?project=`
+      // link the app cannot route, so its own `type` + `metadata.projectId` pick
+      // the destination (SHO-266).
+      const lifecycleRoute = lifecycleNotificationRoute(n)
+      if (lifecycleRoute) {
+        router.push(lifecycleRoute as any)
+        return
       }
       if (n.actionUrl && n.actionUrl.startsWith('/')) {
         router.push(n.actionUrl as any)
