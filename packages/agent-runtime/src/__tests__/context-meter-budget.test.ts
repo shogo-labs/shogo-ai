@@ -6,7 +6,7 @@
  *
  * On a 1M-window model (haiku-5-5) the ring used to read "18% · 180k / 1M"
  * while the session was ~90% of the way to summarization, because
- * `autocompactThreshold` caps at AGENT_AUTOCOMPACT_TOKENS (200k). These tests
+ * `autocompactThreshold` caps at AGENT_AUTOCOMPACT_TOKENS (now 235k). These tests
  * drive a real `AgentGateway.agentTurn` and read the frames the client
  * actually renders, so the denominator is proven where it is produced.
  */
@@ -103,7 +103,7 @@ beforeEach(() => { delete process.env.AGENT_AUTOCOMPACT_TOKENS })
 afterAll(() => { rmSync(ROOT, { recursive: true, force: true }) })
 
 describe('SHO-168 context meter denominator', () => {
-  test('AC1: a 1M-window model reports the 200k summarize budget everywhere', async () => {
+  test('AC1: a 1M-window model reports the 235k summarize budget everywhere', async () => {
     const r = await runMeterTurn({ name: 'ac1' })
     expect(r.modelWindow).toBe(1_000_000)
     expect(r.threshold).toBe(DEFAULT_AUTOCOMPACT_TOKENS)
@@ -150,9 +150,9 @@ describe('SHO-168 context meter denominator', () => {
   }, 60_000)
 
   test('AC4: a session at the summarize threshold renders ~100% in the ring', async () => {
-    // ~190k of the 200k budget: the pre-fix ring read 19% against the 1M
+    // ~215k of the 235k budget: the pre-fix ring read 19% against the 1M
     // window while a compaction was one tool call away.
-    const r = await runMeterTurn({ name: 'ac4', seedMessages: 2, seedChars: 380_000 })
+    const r = await runMeterTurn({ name: 'ac4', seedMessages: 2, seedChars: 430_000 })
     const first = framesOf(r.frames, 'data-context-usage')[0]
     expect(first.data.contextWindowTokens).toBe(DEFAULT_AUTOCOMPACT_TOKENS)
 

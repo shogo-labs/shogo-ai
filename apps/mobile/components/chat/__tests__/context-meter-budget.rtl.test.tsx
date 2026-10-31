@@ -17,7 +17,9 @@ import * as React from "react"
 const { ContextTracker } = await import("../ContextTracker")
 const { ContextBreakdownPanel } = await import("../ContextBreakdownPanel")
 
-/** What the gateway reports at the point summarization fires (AGENT_AUTOCOMPACT_TOKENS). */
+/** What the gateway reports at the point summarization fires (AGENT_AUTOCOMPACT_TOKENS).
+ * The live cap moved to 235k in SHO-259; these are literal frame values, and the
+ * assertions below are about the component's arithmetic, not the current budget. */
 const SUMMARIZE_BUDGET = 200_000
 /** The model's catalog window (haiku-5-5 / opus-5-5) — info only since SHO-168. */
 const MODEL_WINDOW = 1_000_000
