@@ -5533,7 +5533,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 const at =
                   typeof rawAt === "number" ? rawAt : new Date(rawAt ?? NaN).getTime()
                 historyMetaRef.current.set(key, {
-                  cursor: Number.isFinite(at) ? new Date(at).toISOString() : null,
+                  // Same 5s backoff the seed path uses (:5177). A row's
+                  // `createdAt` can sit *after* the `updatedAt` of a reply that
+                  // is still streaming (its row was created first and appended
+                  // to), and the delta compares `updatedAt` — so a cursor taken
+                  // at the page's newest `createdAt` skips that row and the
+                  // panel settles on a mid-stream snapshot. A reopen in the
+                  // probe-failed case showed a reply one token short and the
+                  // next one missing entirely until this backed off.
+                  cursor: Number.isFinite(at)
+                    ? new Date(at - 5000).toISOString()
+                    : null,
                   total: (sessionMessages as any).total ?? aiMessages.length,
                 })
               }
