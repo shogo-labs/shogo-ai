@@ -217,6 +217,7 @@ export function StackedAreaChart({
 
   return (
     <View
+      testID={`stacked-chart-${variant}`}
       onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
       style={{ width: '100%' }}
     >
@@ -364,6 +365,7 @@ export function StackedAreaChart({
         {days.map((_, i) => (
           <Pressable
             key={`hit-${i}`}
+            testID={`stacked-chart-hit-${i}`}
             onHoverIn={() => setHoverIdx(i)}
             onHoverOut={() => setHoverIdx(null)}
             onPressIn={() => setHoverIdx(i)}
