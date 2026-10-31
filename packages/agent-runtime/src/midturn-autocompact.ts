@@ -62,6 +62,8 @@ export const MIDTURN_KEEP_RECENT_MESSAGES = 4
 
 export interface ContextSummarizedEvent {
   trigger: 'auto' | 'manual'
+  /** What fired it: the request being over the cap, or a long idle gap (SHO-259). */
+  reason: 'cap' | 'idle'
   /** Estimated request size (messages + prompt overhead) before / after. */
   tokensBefore: number
   tokensAfter: number
@@ -95,6 +97,20 @@ export interface MidTurnAutocompactOptions {
   /** System prompt + tool schema tokens, counted in the trigger and the event. */
   promptOverheadTokens?: number
   minDeltaTokens?: number
+  /**
+   * Summarize after a gap longer than this between two model calls, even under
+   * the cap (SHO-259): the prompt cache is already cold after that wait, so
+   * the rewrite is free and makes the next (full) cache write smaller. 0 or
+   * unset disables it.
+   */
+  idleCompactAfterMs?: number
+  /**
+   * Floor for the idle rule. Below it the kept tail is the whole context, so a
+   * summary would fold nothing and only lose detail.
+   */
+  idleCompactFloorTokens?: number
+  /** Injectable clock (tests). */
+  now?: () => number
   /** Injected for tests. */
 }
 
@@ -117,10 +133,21 @@ export class MidTurnAutocompactor {
    */
   private baseIndex = 0
   private lastCompactionTokens = 0
+  /**
+   * When the previous `transform` returned. A gap longer than
+   * `idleCompactAfterMs` means the loop was off the model (a `wait`, a
+   * blocking subagent/project call, a long `exec`) and the prompt cache is
+   * cold, so the summary is free and the next cache write is smaller.
+   */
+  private lastTransformAt = 0
   private manualRequested = false
   private compacting = false
 
   constructor(private readonly opts: MidTurnAutocompactOptions) {}
+
+  private now(): number {
+    return (this.opts.now ?? Date.now)()
+  }
 
   /** Ask for a compaction at the next step (the dock's manual button). */
   requestManual(): void {
@@ -145,11 +172,25 @@ export class MidTurnAutocompactor {
     messages: Message[]
     event: ContextSummarizedEvent | null
   }> {
+    try {
+      return await this.transformOnce(messages)
+    } finally {
+      // Start the idle clock when the call to the model would begin: the gap
+      // before the *next* transform is time this loop spent off the model.
+      this.lastTransformAt = this.now()
+    }
+  }
+
+  private async transformOnce(messages: Message[]): Promise<{
+    messages: Message[]
+    event: ContextSummarizedEvent | null
+  }> {
     // After a compaction in this turn the wire gets the memoized array; its
     // size (not the raw loop array's) is what the next request costs.
     const wire = this.memo ? this.withMemo(messages) : messages
     const estimate = this.estimate(wire)
-    if (!this.shouldCompact(estimate)) return { messages: wire, event: null }
+    const reason = this.compactionReason(estimate)
+    if (reason === null) return { messages: wire, event: null }
 
     const splitIndex =
       (this.opts.tailBudgetTokens
@@ -201,6 +242,7 @@ export class MidTurnAutocompactor {
         messages: emitted,
         event: {
           trigger,
+          reason,
           tokensBefore: estimate,
           tokensAfter,
           messagesBefore: wire.length,
@@ -217,14 +259,26 @@ export class MidTurnAutocompactor {
     }
   }
 
-  private shouldCompact(estimate: number): boolean {
-    if (this.manualRequested && !this.compacting) return true
-    if (estimate <= this.opts.autoCompactTokens) return false
+  private compactionReason(estimate: number): 'cap' | 'idle' | null {
+    if (this.manualRequested && !this.compacting) return 'cap'
+    if (this.idleGapOverThreshold() && estimate > (this.opts.idleCompactFloorTokens ?? 0)) return 'idle'
+    if (estimate <= this.opts.autoCompactTokens) return null
     if (this.lastCompactionTokens > 0) {
       const minDelta = this.opts.minDeltaTokens ?? DEFAULT_AUTOCOMPACT_MIN_DELTA_TOKENS
-      if (estimate - this.lastCompactionTokens < minDelta) return false
+      if (estimate - this.lastCompactionTokens < minDelta) return null
     }
-    return true
+    return 'cap'
+  }
+
+  /**
+   * Whether the loop has been off the model long enough that the prompt cache
+   * is cold. The idle path deliberately bypasses `minDeltaTokens`: there is no
+   * warm cache to protect, so the delta guard has nothing to buy.
+   */
+  private idleGapOverThreshold(): boolean {
+    const afterMs = this.opts.idleCompactAfterMs ?? 0
+    if (afterMs <= 0 || this.lastTransformAt === 0) return false
+    return this.now() - this.lastTransformAt > afterMs
   }
 
   /**

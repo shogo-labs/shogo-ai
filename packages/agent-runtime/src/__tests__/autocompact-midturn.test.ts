@@ -287,7 +287,7 @@ describe('mid-turn summarization in a real agent loop', () => {
     expect(summary).toContain('MARKER_FILE_EDITED_AT_END')
   })
 
-  test('the session is compacted so the post-turn pass has nothing left to do', async () => {
+  test('the session is compacted, and nothing is left for a turn-boundary pass', async () => {
     const sm = new SessionManager({ keepRecentMessages: 10 })
     sm.setSummarizeFn(async (chunk, prev) => `${prev ?? ''} folded ${chunk.length}`)
 
