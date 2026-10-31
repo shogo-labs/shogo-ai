@@ -1659,6 +1659,8 @@ describe('consumeUsage — wallet allocation fallback (L532-540)', () => {
 describe('consumeUsage — monthly boundary resets overage bookkeeping', () => {
   it('zeros accumulated/billed overage and advances lastMonthlyReset on month rollover', async () => {
     const lastMonth = new Date()
+    // Day 1 first: on the 31st, "Sept 31" would roll forward into this month.
+    lastMonth.setUTCDate(1)
     lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1)
     // Window is exhausted so the charge takes the overage path; the month
     // boundary should have already zeroed prior overage accumulation.

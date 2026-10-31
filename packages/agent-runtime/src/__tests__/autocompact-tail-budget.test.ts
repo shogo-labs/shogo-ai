@@ -161,9 +161,10 @@ describe('MidTurnAutocompactor tail budget', () => {
     const session = sm.getOrCreate(sessionId)
     session.messages = historyWithGiantTail(120_000)
 
-    // The session's tail budget follows the 200k cap (40% = 80k), so the
+    // The session's tail budget follows the 235k cap (40% = 94k), so the
     // post-compaction session is far below what it started at.
-    expect(sm.compactionTailBudgetTokens).toBe(80_000)
+    expect(sm.autocompactThreshold).toBe(235_000)
+    expect(sm.compactionTailBudgetTokens).toBe(94_000)
     const before = sm.estimateTokens(session)
     const out = await compactor.transform(session.messages)
 

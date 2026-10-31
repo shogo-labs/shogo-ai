@@ -158,11 +158,13 @@ export interface StableTransformOptions {
   budgetTokens?: number
 }
 
-/** Default in-loop context budget, independent of the model's window. */
-export const DEFAULT_INLOOP_CONTEXT_BUDGET_TOKENS = 180_000
+/** Default in-loop context budget, independent of the model's window. Kept at
+ * the 235k summarize cap, so the cheap checkpoint layer does not hold
+ * requests under a budget far below the cap (SHO-259). */
+export const DEFAULT_INLOOP_CONTEXT_BUDGET_TOKENS = 235_000
 
 /**
- * The in-loop budget: `AGENT_INLOOP_CONTEXT_BUDGET_TOKENS` (default 180K),
+ * The in-loop budget: `AGENT_INLOOP_CONTEXT_BUDGET_TOKENS` (default 235K),
  * capped at `ceilingTokens` (what the model can actually hold).
  *
  * A 1M-token window is not a reason to send 1M tokens: every step of an

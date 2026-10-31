@@ -245,7 +245,7 @@ export interface SessionManagerConfig {
    * The *model's* context window in tokens. The summarize threshold is
    * derived from it (minus output/buffer reserve) and capped at
    * `AGENT_AUTOCOMPACT_TOKENS` — see `resolveAutoCompactTokens`.
-   * Leave unset to inherit the 200k cap.
+   * Leave unset to inherit the 235k cap.
    */
   contextWindowTokens?: number
   /** Max output tokens reserved for the model response (default: 16384) */
@@ -313,7 +313,27 @@ export interface SessionStats {
  *
  * Override with `AGENT_AUTOCOMPACT_TOKENS`.
  */
-export const DEFAULT_AUTOCOMPACT_TOKENS = 200_000
+export const DEFAULT_AUTOCOMPACT_TOKENS = 235_000
+
+/**
+ * How long a session may sit idle before the next model call summarizes it
+ * (SHO-259). Summarizing rewrites the prompt prefix, so the next request pays
+ * a full cache write; after a wait longer than this the 5-minute cache is cold
+ * anyway, so the write happens either way — summarizing then makes it smaller
+ * and costs no cache. Override with `AGENT_IDLE_COMPACT_MINUTES`; 0 disables
+ * both idle paths.
+ */
+export const IDLE_COMPACT_AFTER_MS = 10 * 60_000
+
+/** `IDLE_COMPACT_AFTER_MS`, from `AGENT_IDLE_COMPACT_MINUTES` (0 = off). */
+export function resolveIdleCompactAfterMs(
+  raw: string | undefined = process.env.AGENT_IDLE_COMPACT_MINUTES,
+): number {
+  if (raw === undefined || raw.trim() === '') return IDLE_COMPACT_AFTER_MS
+  const minutes = Number(raw)
+  if (!Number.isFinite(minutes) || minutes < 0) return IDLE_COMPACT_AFTER_MS
+  return minutes === 0 ? 0 : minutes * 60_000
+}
 
 /** Default output + safety reserve subtracted from a model's window. */
 const DEFAULT_MAX_OUTPUT_TOKENS = 16_384
@@ -323,11 +343,11 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
 
 /**
  * The token count at which LLM summarization fires: the model's window minus
- * the output/buffer reserve, capped at `AGENT_AUTOCOMPACT_TOKENS` (200k).
+ * the output/buffer reserve, capped at `AGENT_AUTOCOMPACT_TOKENS` (235k).
  *
  * `contextWindowTokens` is the *model's* window (from the catalog, or an
  * explicit override); the cap is what keeps a 1M-window model — haiku-5-5,
- * opus-5-5 — summarizing at 200k instead of at 968k. An unknown model keeps
+ * opus-5-5 — summarizing at 235k instead of at 968k. An unknown model keeps
  * the historical 200k window.
  */
 export function resolveAutoCompactTokens(input: {
@@ -344,7 +364,7 @@ export function resolveAutoCompactTokens(input: {
     (input.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS) + (input.bufferTokens ?? DEFAULT_BUFFER_TOKENS)
   const room = windowTokens - reserve
   // A window smaller than the reserve (tiny test models) keeps its own
-  // negative/zero threshold rather than silently inheriting the 200k cap.
+  // negative/zero threshold rather than silently inheriting the 235k cap.
   return room > 0 ? Math.min(room, cap) : room
 }
 
@@ -524,7 +544,7 @@ export class SessionManager {
   /**
    * Token threshold above which Layer 4 autocompact triggers: the model's
    * window minus the output/buffer reserve, capped at
-   * `AGENT_AUTOCOMPACT_TOKENS` (default 200k).
+   * `AGENT_AUTOCOMPACT_TOKENS` (default 235k).
    */
   get autocompactThreshold(): number {
     return resolveAutoCompactTokens({
@@ -654,6 +674,16 @@ export class SessionManager {
     if (session) {
       session.lastActivityAt = Date.now()
     }
+  }
+
+  /**
+   * Milliseconds since this session last saw activity, 0 when it is not
+   * loaded (a session nobody has touched yet cannot have waited). Read at the
+   * start of a turn, before anything updates `lastActivityAt`.
+   */
+  idleGapMs(id: string, now: number = Date.now()): number {
+    const session = this.sessions.get(id)
+    return session ? Math.max(0, now - session.lastActivityAt) : 0
   }
 
   /** Add messages to a session and check if compaction is needed */
