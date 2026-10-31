@@ -2095,13 +2095,23 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
     headers['Authorization'] = `Bearer ${apiKey}`
   }
   if (isOpenRouterHost(modelConfig)) {
-    // Attribution headers — OpenRouter surfaces these in their dashboard
-    // and uses them for app-level moderation. Both are optional but
-    // recommended; users can override either via env if they prefer
-    // their own attribution. Custom providers whose base URL is OpenRouter
-    // (Hoshi 2.0) need them too; the native `openrouter:` provider is BYOK.
+    // App attribution — OpenRouter groups every request under the app
+    // identified by `HTTP-Referer` (https://shogo.ai → app 3892443) and
+    // uses the rest to name it and file it in marketplace categories.
+    // `X-Title` is the legacy name header, kept for backwards
+    // compatibility; `X-OpenRouter-Title` is the current one.
+    // Categories are lowercase, hyphenated and comma-separated; OpenRouter
+    // drops unknown values silently and merges categories across requests.
+    // `X-OpenRouter-App-Visibility` is deliberately NOT sent: Shogo's app
+    // page stays public. All three values are env-overridable. Custom
+    // providers whose base URL is OpenRouter (Hoshi 2.0) need these too;
+    // the native `openrouter:` provider is BYOK.
+    const title = process.env.OPENROUTER_X_TITLE || 'Shogo'
     headers['HTTP-Referer'] = process.env.OPENROUTER_HTTP_REFERER || 'https://shogo.ai'
-    headers['X-Title'] = process.env.OPENROUTER_X_TITLE || 'Shogo'
+    headers['X-Title'] = title
+    headers['X-OpenRouter-Title'] = title
+    headers['X-OpenRouter-Categories'] =
+      process.env.OPENROUTER_CATEGORIES || 'cloud-agent,native-app-builder,personal-agent'
   }
   return headers
 }

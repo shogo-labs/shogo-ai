@@ -36,6 +36,7 @@ const DEEPSEEK_KEY = 'sk-deepseek-staging-routing-key-abcdef'
 const OPENROUTER_KEY = 'sk-or-staging-routing-key-abcdef'
 const DEEPSEEK_UUID = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'
 const HOSHI_OPENROUTER_UUID = 'cccccccc-dddd-eeee-ffff-000000000001'
+const OPENROUTER_NATIVE_UUID = 'cccccccc-dddd-eeee-ffff-000000000002'
 
 // Opaque UUIDs are how DB models are really addressed in production (the slug
 // lives in `apiModel`/`aliases`, not the id). The prior native-routing
@@ -285,6 +286,27 @@ function seed() {
       cachedInputPerMillion: 0.2,
       cacheWritePerMillion: 2.5,
       outputPerMillion: 10,
+    },
+    // Native `openrouter:` BYOK model — the other isOpenRouterHost branch.
+    {
+      id: OPENROUTER_NATIVE_UUID,
+      provider: 'openrouter',
+      providerId: null,
+      apiModel: 'anthropic/claude-haiku-4.5',
+      displayName: 'Haiku via OpenRouter (DB)',
+      shortDisplayName: 'Haiku (OR)',
+      tier: 'economy',
+      family: 'haiku',
+      generation: 'current',
+      maxOutputTokens: 64000,
+      enabled: true,
+      sortOrder: 7,
+      aliases: [],
+      capabilities: null,
+      inputPerMillion: 1,
+      cachedInputPerMillion: 0.1,
+      cacheWritePerMillion: 1.25,
+      outputPerMillion: 5,
     },
   ]
 }
@@ -569,6 +591,10 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(headers.Authorization).toBe(`Bearer ${OPENROUTER_KEY}`)
     expect(headers['HTTP-Referer']).toBe('https://shogo.ai')
     expect(headers['X-Title']).toBe('Shogo')
+    expect(headers['X-OpenRouter-Title']).toBe('Shogo')
+    expect(headers['X-OpenRouter-Categories']).toBe('cloud-agent,native-app-builder,personal-agent')
+    // Shogo's app page must stay publicly listed.
+    expect(headers['X-OpenRouter-App-Visibility']).toBeUndefined()
     const body = lastForwardedBody()
     expect(body.model).toBe('deepseek/deepseek-v4.1-flash')
     expect(body.max_tokens).toBe(42)
@@ -582,6 +608,72 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(body.messages[1].reasoning).toBe('look it up')
     expect(body.messages[1].reasoning_content).toBeUndefined()
     expect(body.messages[1].reasoning_details).toEqual([{ type: 'reasoning.text', text: 'look it up' }])
+  })
+
+  test('lets env override the OpenRouter attribution headers', async () => {
+    const saved = {
+      referer: process.env.OPENROUTER_HTTP_REFERER,
+      title: process.env.OPENROUTER_X_TITLE,
+      categories: process.env.OPENROUTER_CATEGORIES,
+    }
+    process.env.OPENROUTER_HTTP_REFERER = 'https://staging.shogo.ai'
+    process.env.OPENROUTER_X_TITLE = 'Shogo Staging'
+    process.env.OPENROUTER_CATEGORIES = 'personal-agent'
+    try {
+      const res = await postChatBody(buildApp(), hoshiOpenRouterRequest())
+      expect(res.status).toBe(200)
+      const headers = lastFetchInit?.headers as Record<string, string>
+      expect(headers['HTTP-Referer']).toBe('https://staging.shogo.ai')
+      expect(headers['X-Title']).toBe('Shogo Staging')
+      expect(headers['X-OpenRouter-Title']).toBe('Shogo Staging')
+      expect(headers['X-OpenRouter-Categories']).toBe('personal-agent')
+    } finally {
+      for (const [key, value] of Object.entries({
+        OPENROUTER_HTTP_REFERER: saved.referer,
+        OPENROUTER_X_TITLE: saved.title,
+        OPENROUTER_CATEGORIES: saved.categories,
+      })) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  })
+
+  test('sends no attribution headers to a non-OpenRouter provider', async () => {
+    const res = await postChatBody(buildApp(), {
+      model: 'mimo-v2.5',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://api.xiaomimimo.com/v1/chat/completions')
+    const headers = lastFetchInit?.headers as Record<string, string>
+    expect(headers['HTTP-Referer']).toBeUndefined()
+    expect(headers['X-Title']).toBeUndefined()
+    expect(headers['X-OpenRouter-Title']).toBeUndefined()
+    expect(headers['X-OpenRouter-Categories']).toBeUndefined()
+    expect(headers['X-OpenRouter-App-Visibility']).toBeUndefined()
+  })
+
+  test('sends attribution headers for the native openrouter: provider too', async () => {
+    const saved = process.env.OPENROUTER_API_KEY
+    process.env.OPENROUTER_API_KEY = OPENROUTER_KEY
+    try {
+      const res = await postChatBody(buildApp(), {
+        model: OPENROUTER_NATIVE_UUID,
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      expect(res.status).toBe(200)
+      expect(lastFetchUrl).toBe('https://openrouter.ai/api/v1/chat/completions')
+      const headers = lastFetchInit?.headers as Record<string, string>
+      expect(headers.Authorization).toBe(`Bearer ${OPENROUTER_KEY}`)
+      expect(headers['HTTP-Referer']).toBe('https://shogo.ai')
+      expect(headers['X-Title']).toBe('Shogo')
+      expect(headers['X-OpenRouter-Title']).toBe('Shogo')
+      expect(headers['X-OpenRouter-Categories']).toBe('cloud-agent,native-app-builder,personal-agent')
+    } finally {
+      if (saved === undefined) delete process.env.OPENROUTER_API_KEY
+      else process.env.OPENROUTER_API_KEY = saved
+    }
   })
 
   test('honors disabled thinking for an OpenRouter-hosted DeepSeek model', async () => {
