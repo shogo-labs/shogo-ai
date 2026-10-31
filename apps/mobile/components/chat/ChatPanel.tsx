@@ -5455,6 +5455,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return false
       }
 
+      // A row the client dropped locally (a replay that removed an unfinished
+      // tail, SHO-274) never comes back through the delta: it only carries rows
+      // changed since the cursor. When the session's whole history fits the page
+      // the transcript paints, the local array must hold that many rows — a
+      // shorter one is repaired with the full first page instead of staying
+      // hidden until the next reopen.
+      if (body.total != null && body.total <= MESSAGE_PAGE_SIZE) {
+        const seen = new Set(current.map((m) => String(m.id)))
+        for (const row of items) if (row?.id) seen.add(String(row.id))
+        if (seen.size < body.total) return false
+      }
+
       const byId = new Map(current.map((m) => [String(m.id), m]))
       for (const row of items) {
         if (!row?.id) continue

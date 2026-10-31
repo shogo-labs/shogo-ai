@@ -54,6 +54,7 @@ import {
   clearActiveTurn,
   endTurnAndDrain,
   markTurnStarted,
+  registerTurnSnapshotFlusher,
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
 import { historySeedForTurn, lastUserPromptText } from "../services/chat-history-seed.service"
@@ -319,6 +320,37 @@ export async function trackUsageFromStream(
   let partialPersistInFlight: Promise<void> | null = null
   let persistenceDirty = false
   let persistenceUrgent = false
+  // The persisted row was deleted under us (the person edited the turn away).
+  // Recreating it would resurrect text they cut, so snapshots stop (SHO-274).
+  let assistantRowGone = false
+  // Size of the last successful snapshot, and whether the accumulator is still
+  // shorter than it because a resume replay is filling it from seq 0. A replay
+  // that dies early must never leave a shorter row than the partial it replaced.
+  let lastPersistedSize = 0
+  let replayShorter = false
+
+  /**
+   * How much content the accumulators hold right now — text, reasoning and
+   * every non-text part. Used only to compare a replay against the row it is
+   * rewriting, so the exact unit does not matter; it only has to be monotonic
+   * for a stream that never repeats itself.
+   */
+  function snapshotSize(): number {
+    let size = 0
+    for (const part of orderedParts) {
+      if (part.type === 'text' || part.type === 'reasoning') size += (part.text?.length ?? 0)
+      else size += 1
+    }
+    return size
+  }
+
+  /** Whether there is anything worth persisting yet (text, reasoning or a tool). */
+  function hasSnapshotContent(): boolean {
+    return orderedParts.some((part) => {
+      if (part.type === 'text' || part.type === 'reasoning') return !!(part.text && part.text.trim())
+      return true
+    })
+  }
 
   function buildPersistedParts(): any[] {
     const parts = orderedParts.filter(
@@ -327,7 +359,10 @@ export async function trackUsageFromStream(
     if (turnStartedAt !== undefined) {
       parts.push({
         type: 'data-turn-timing',
-        data: { startedAt: turnStartedAt, completedAt: turnCompletedAt },
+        // `turnId` is what lets the client keep this row on screen across a
+        // resume: it drops an unfinished tail only when that tail is the same
+        // turn the replay belongs to (SHO-274).
+        data: { startedAt: turnStartedAt, completedAt: turnCompletedAt, turnId: trackedTurnId },
       })
     }
     return parts
@@ -339,7 +374,15 @@ export async function trackUsageFromStream(
    * so a hard-killed desktop still has the last completed step on reload.
    */
   async function persistAssistantSnapshot(force = false): Promise<void> {
-    if (foreignTurn || !chatSessionId || (!accumulatedText && toolCallMap.size === 0)) return
+    if (assistantRowGone || foreignTurn || !chatSessionId || !hasSnapshotContent()) return
+    // A resume replays the turn from seq 0, so for a moment the accumulators
+    // hold less than the row already does. Writing then is how a crash during
+    // the replay used to leave the shorter copy behind (SHO-274). Applies to
+    // the forced flush too: the longer copy wins either way.
+    if (replayShorter) {
+      if (snapshotSize() < lastPersistedSize) return
+      replayShorter = false
+    }
     if (!force && assistantMessageId && Date.now() - lastPartialPersistAt < 2_000) return
     if (partialPersistInFlight) {
       await partialPersistInFlight
@@ -374,7 +417,18 @@ export async function trackUsageFromStream(
         assistantMessageId = message.id
       }
       lastPartialPersistAt = Date.now()
+      lastPersistedSize = snapshotSize()
     })().catch((err) => {
+      // P2025 = the row is gone. Every later snapshot would fail the same way,
+      // so stop trying and say so once: silently swallowing it is how a whole
+      // turn disappeared with nothing in the log (SHO-274).
+      if (err?.code === 'P2025') {
+        assistantRowGone = true
+        console.warn(
+          `[ProjectChat] assistant row deleted mid-turn for session ${chatSessionId} — stopping snapshots`,
+        )
+        return
+      }
       console.error('[ProjectChat] Failed to persist assistant snapshot:', err)
     })
     partialPersistInFlight = run
@@ -497,6 +551,10 @@ export async function trackUsageFromStream(
     }
     if (type === 'reasoning-delta' && data.delta && currentReasoningPart) {
       currentReasoningPart.text += data.delta
+      // A crash during a long thinking phase used to persist nothing at all:
+      // the snapshot skipped while there was no text or tool yet, and reasoning
+      // never marked the accumulator dirty (SHO-274).
+      persistenceDirty = true
     }
     if (type === 'reasoning-end') {
       if (currentReasoningPart && reasoningStartedAt) {
@@ -819,6 +877,13 @@ export async function trackUsageFromStream(
     }
   }
 
+  // A shutdown between two throttled writes used to lose what the person had
+  // already read. The flush is registered here, where the accumulators are in
+  // scope, and dropped as soon as this tracker finishes (SHO-274).
+  const unregisterSnapshotFlusher = chatSessionId
+    ? registerTurnSnapshotFlusher(chatSessionId, () => persistAssistantSnapshot(true))
+    : () => {}
+
   // First pass: consume the original tee'd tracking stream.
   const firstOk = await consumeStream(stream.getReader())
   if (!firstOk) originalStreamErrored = true
@@ -826,6 +891,7 @@ export async function trackUsageFromStream(
     console.log(
       `[ProjectChat] Buffer for session ${chatSessionId} holds an older turn than expected — nothing persisted`,
     )
+    unregisterSnapshotFlusher()
     return { outcome: 'foreign', status: null, text: '', assistantMessageId }
   }
 
@@ -889,6 +955,9 @@ export async function trackUsageFromStream(
         // Reset state — we're going to re-consume the entire turn from the
         // buffer's full replay, so any text/tool data we accumulated from
         // the original stream needs to be cleared to avoid duplication.
+        // The replay starts from zero, so until it catches up the row we have
+        // is the longer copy; `persistAssistantSnapshot` refuses to shrink it.
+        replayShorter = true
         resetAccumulatedState()
         const resumeOk = await consumeStream(resumeRes.body.getReader())
         if (foreignTurn) {
@@ -1003,6 +1072,7 @@ export async function trackUsageFromStream(
   // Always perform one final forced flush after resume/replay handling. This
   // updates the row created mid-stream instead of creating a duplicate row.
   await persistAssistantSnapshot(true)
+  unregisterSnapshotFlusher()
   const partialTag = observedTurnComplete ? '' : ', partial'
   if (assistantMessageId) {
     console.log(

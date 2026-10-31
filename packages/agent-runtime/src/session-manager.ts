@@ -15,6 +15,7 @@
  */
 
 import type { Message, UserMessage, AssistantMessage, ToolResultMessage, TextContent } from '@mariozechner/pi-ai'
+import { interruptedPartialMessage } from '@shogo/shared-runtime/interrupted-turn'
 import {
   assistantWindowStart,
   foldTurnMiddle,
@@ -400,6 +401,24 @@ export interface InflightTurnMarker {
   lastTool?: string
   /** 0 = never resumed; 1 = a resume already ran and died. */
   resumeAttempts: number
+  /**
+   * The assistant text streamed since the last persisted step (SHO-274).
+   * Messages are only written at a tool boundary, so without this a turn that
+   * dies mid-text leaves the transcript with no trace of what the person had
+   * already read. Capped by the writer; the tail is kept.
+   */
+  partialText?: string
+  /** Same, for the reasoning stream — a crash while thinking is still a turn. */
+  partialReasoning?: string
+}
+
+/** How much of the partial stream the in-flight marker keeps (tail, in chars). */
+export const INFLIGHT_PARTIAL_MAX_CHARS = 32_000
+
+/** Trim a partial stream to the marker's cap, keeping its tail. */
+export function capInflightPartial(text: string | undefined): string | undefined {
+  if (typeof text !== 'string' || text.length === 0) return undefined
+  return text.length > INFLIGHT_PARTIAL_MAX_CHARS ? text.slice(text.length - INFLIGHT_PARTIAL_MAX_CHARS) : text
 }
 
 /** Read a marker off session metadata, tolerating absence and older shapes. */
@@ -407,10 +426,14 @@ export function normalizeInflightTurn(value: unknown): InflightTurnMarker | null
   if (!value || typeof value !== 'object') return null
   const raw = value as Partial<InflightTurnMarker>
   if (typeof raw.startedAt !== 'number' || !Number.isFinite(raw.startedAt)) return null
+  const partialText = capInflightPartial(raw.partialText)
+  const partialReasoning = capInflightPartial(raw.partialReasoning)
   return {
     id: typeof raw.id === 'string' ? raw.id : `turn-${raw.startedAt}`,
     startedAt: raw.startedAt,
     ...(typeof raw.lastTool === 'string' && raw.lastTool ? { lastTool: raw.lastTool } : {}),
+    ...(partialText ? { partialText } : {}),
+    ...(partialReasoning ? { partialReasoning } : {}),
     resumeAttempts: typeof raw.resumeAttempts === 'number' && raw.resumeAttempts > 0 ? raw.resumeAttempts : 0,
   }
 }
@@ -520,6 +543,8 @@ export class SessionManager {
   private pruneTimer: ReturnType<typeof setInterval> | null = null
   private summarizeFn: SummarizeFn | null = null
   private persistence: SessionPersistence | null = null
+  /** Saves started but not finished, per session — drained on shutdown (SHO-274). */
+  private pendingSaves: Map<string, Promise<void>> = new Map()
   private consecutiveSummarizeFailures = 0
   private circuitBreakerTripped = false
 
@@ -750,6 +775,50 @@ export class SessionManager {
     session.messages = messages
     this.persistSession(session)
     return repaired
+  }
+
+  /**
+   * Put a crashed turn's streamed text back into the transcript as one
+   * assistant message, closed by the `[interrupted here]` marker (SHO-274).
+   *
+   * The transcript only grows at a tool boundary, so a turn that dies mid-text
+   * leaves the person's prompt as the last thing the agent remembers and the
+   * resumed model restarts from scratch. Appending what was already streamed
+   * makes the resume a continuation.
+   *
+   * Idempotent: a tail assistant message that already ends with this text (the
+   * step was persisted before the crash, or a previous recovery ran) is left
+   * alone, and no message is written when there is nothing to add.
+   */
+  appendInterruptedPartial(id: string, partial: string): boolean {
+    const session = this.sessions.get(id)
+    const text = typeof partial === 'string' ? partial.trim() : ''
+    if (!session || !text) return false
+    const tail = session.messages[session.messages.length - 1] as AssistantMessage | undefined
+    if (tail && this.extractText(tail).includes(text)) return false
+    const body = interruptedPartialMessage(text)
+    const message = {
+      role: 'assistant',
+      content: [{ type: 'text', text: body }],
+      api: tail?.api ?? 'anthropic-messages',
+      provider: tail?.provider ?? 'anthropic',
+      model: tail?.model ?? 'unknown',
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: 'stop',
+      timestamp: Date.now(),
+    } as unknown as AssistantMessage
+    session.messages.push(message)
+    session.lastActivityAt = Date.now()
+    session.totalMessages += 1
+    this.persistSession(session)
+    return true
   }
 
   /** Persist the maximum Auto tier allowed for a session after a rejection. */
@@ -1258,9 +1327,56 @@ export class SessionManager {
   private persistSession(session: ManagedSession): void {
     if (!this.persistence) return
     const { stopRequested, ...data } = session
-    this.persistence.save(session.id, data).catch((err) => {
-      console.error(`[SessionManager] Failed to persist session ${session.id}:`, err.message)
+    const persistence = this.persistence
+    const save = (async () => {
+      try {
+        await persistence.save(session.id, data)
+      } catch (first: any) {
+        // One retry: a transient SQLITE_BUSY or a volume that unmounted for a
+        // moment should not cost the turn. A second failure is reported at
+        // error level — silently dropping it is how a whole session goes
+        // missing with nothing in the log to say why (SHO-274).
+        try {
+          await persistence.save(session.id, data)
+        } catch (err: any) {
+          console.error(
+            `[SessionManager] PERSIST FAILED for session ${session.id}:`,
+            err?.message ?? err,
+            first?.message && first.message !== err?.message ? `(first attempt: ${first.message})` : '',
+          )
+        }
+      }
+    })()
+    this.pendingSaves.set(session.id, save)
+    void save.finally(() => {
+      if (this.pendingSaves.get(session.id) === save) this.pendingSaves.delete(session.id)
     })
+  }
+
+  /**
+   * Await the saves still in flight, bounded.
+   *
+   * `persistSession` is fire-and-forget, so shutdown has to drain it or the
+   * last second of a turn — often the whole reply — never reaches disk
+   * (SHO-274). The bound exists because a wedged disk must not hold SIGTERM
+   * open until the supervisor's kill.
+   */
+  async flushPendingSaves(timeoutMs = 2_000): Promise<number> {
+    const pending = [...this.pendingSaves.values()]
+    if (pending.length === 0) return 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        Promise.allSettled(pending),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs)
+          ;(timer as { unref?: () => void }).unref?.()
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+    return pending.length
   }
 
   private extractText(msg: Message): string {
