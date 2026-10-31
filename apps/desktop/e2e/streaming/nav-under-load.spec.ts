@@ -27,7 +27,6 @@ import {
   createChatSession,
   launchDesktop,
   leaveChat,
-  returnToChat,
   startBackgroundTurn,
   writeReport,
   type Harness,
@@ -51,12 +50,15 @@ const BUDGET = {
 
 interface NavSample {
   kind: string
-  toMessagesMs: number
+  /** `null` for a navigation that does not end in a chat (team channel, home). */
+  toMessagesMs: number | null
   longTasks: number
   longestTaskMs: number
   droppedFrames: number
   /** Longest gap between `requestStart` and `responseStart` — a queued request. */
   socketWaitMs: number
+  /** The request that waited longest, for the report. */
+  slowestRequest: string
   requestsWhileNavigating: number
   mountedChatPanels: number
   inFlightApiRequests: number
@@ -66,14 +68,15 @@ interface NavSample {
  * Everything the renderer knows about itself, sampled across one navigation:
  * long tasks, frame drops, resource queueing and mounted panels.
  */
-async function installNavMonitor(page: import('@playwright/test').Page): Promise<void> {
-  await page.evaluate(() => {
+async function installNavMonitor(page: import('@playwright/test').Page, apiOrigin: string): Promise<void> {
+  await page.evaluate((origin) => {
     const w = window as any
     if (w.__navMonitor) return
     const state = {
       longTasks: [] as number[],
       frames: [] as number[],
       resources: [] as Array<{ name: string; requestStart: number; responseStart: number; duration: number }>,
+      resetAt: 0,
       samples: [] as any[],
     }
     try {
@@ -95,12 +98,22 @@ async function installNavMonitor(page: import('@playwright/test').Page): Promise
         state.longTasks = []
         state.frames = []
         state.resources = []
+        // `performance.getEntriesByType('resource')` is the whole page lifetime,
+        // so a navigation's window has to be filtered out of it. Without this
+        // the socket wait is dominated by a startup request that has nothing to
+        // do with navigating under load.
+        state.resetAt = performance.now()
       },
-      /** Resource timings for this navigation's requests. */
+      /** Resource timings for this navigation's requests only. */
       collectResources() {
+        const since = state.resetAt ?? 0
         const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[]
         return entries
-          .filter((entry) => typeof entry.requestStart === 'number' && entry.requestStart > 0)
+          // API requests only: the dev server's bundle and `/symbolicate` hits
+          // are not what a navigation waits for behind a streaming SSE, and
+          // counting them made this metric report the bundle download.
+          .filter((entry) => entry.name.startsWith(origin))
+          .filter((entry) => typeof entry.requestStart === 'number' && entry.requestStart > 0 && entry.startTime >= since)
           .map((entry) => ({
             name: entry.name,
             requestStart: entry.requestStart,
@@ -115,13 +128,14 @@ async function installNavMonitor(page: import('@playwright/test').Page): Promise
         for (let i = 1; i < frames.length; i++) if (frames[i] - frames[i - 1] > 32) dropped++
         const resources = this.collectResources()
         const queued = resources
-          .map((entry) => Math.max(0, entry.responseStart - entry.requestStart))
-          .sort((a, b) => b - a)
+          .map((entry) => ({ name: entry.name, waitMs: Math.max(0, entry.responseStart - entry.requestStart) }))
+          .sort((a, b) => b.waitMs - a.waitMs)
         return {
           longTasks: longTasks.length,
           longestTaskMs: Math.round(Math.max(0, ...longTasks)),
           droppedFrames: dropped,
-          socketWaitMs: Math.round(queued[0] ?? 0),
+          socketWaitMs: Math.round(queued[0]?.waitMs ?? 0),
+          slowestRequest: queued[0]?.name ?? '',
           requests: resources.length,
         }
       },
@@ -131,7 +145,7 @@ async function installNavMonitor(page: import('@playwright/test').Page): Promise
         return panels.length
       },
     }
-  })
+  }, new URL(apiOrigin).origin)
 }
 
 /**
@@ -156,15 +170,48 @@ async function createProject(page: import('@playwright/test').Page, h: Harness, 
   return id
 }
 
-async function openProjectChat(page: import('@playwright/test').Page, projectId: string): Promise<number> {
+/**
+ * Opens a project's chat through the app's router, the way a sidebar click
+ * does. Returns the time to a visible composer, or `null` when the router
+ * ignored the synthetic popstate and the run had to fall back to a real URL
+ * load — that sample is a page load, not an in-app navigation, so it is not
+ * counted against the budget.
+ */
+async function openProjectChat(
+  page: import('@playwright/test').Page,
+  projectId: string,
+  harness?: Pick<Harness, 'devUrl' | 'apiUrl'>,
+): Promise<number | null> {
   const started = Date.now()
-  await page.evaluate((id) => {
-    window.history.pushState({}, '', `/projects/${id}`)
+  const composer = page.getByTestId('project-composer-input').filter({ visible: true }).first()
+  const route = `/projects/${encodeURIComponent(projectId)}`
+  const dispatch = () => page.evaluate((p) => {
+    window.history.pushState({}, '', p)
     window.dispatchEvent(new PopStateEvent('popstate'))
-  }, projectId)
-  await expect(page.getByTestId('project-composer-input').filter({ visible: true }).first())
-    .toBeVisible({ timeout: 60_000 })
-  return Date.now() - started
+  }, route)
+
+  await dispatch()
+  try {
+    await expect(composer).toBeVisible({ timeout: 20_000 })
+    return Date.now() - started
+  } catch { /* the router dropped this dispatch */ }
+
+  // Recover, but never report the recovery as a navigation time: it carries
+  // the 20 s just spent waiting for a dispatch the router ignored.
+  await dispatch()
+  try {
+    await expect(composer).toBeVisible({ timeout: 20_000 })
+    return null
+  } catch { /* fall through to a real load */ }
+
+  const screen = await page.evaluate(() => ({ path: location.pathname, text: document.body.innerText.slice(0, 200) }))
+  console.error(`[nav-under-load] router ignored ${route} (at ${screen.path}): ${screen.text}`)
+  if (!harness) throw new Error(`could not open ${route}`)
+  await page.goto(new URL(route, harness.devUrl).toString(), { waitUntil: 'domcontentloaded' })
+  await expect(composer).toBeVisible({ timeout: 120_000 })
+  // A real load is a new document, so the monitor has to be installed again.
+  await installNavMonitor(page, harness.apiUrl)
+  return null
 }
 
 test.describe('navigate while N chats stream', () => {
@@ -172,7 +219,7 @@ test.describe('navigate while N chats stream', () => {
     test(`N=${level}`, async () => {
       const h = await launchDesktop()
       const page = h.page
-      await installNavMonitor(page)
+      await installNavMonitor(page, h.apiUrl)
 
       // Four projects, each with chats; the open one also has restored tabs.
       const projects: string[] = []
@@ -195,54 +242,71 @@ test.describe('navigate while N chats stream', () => {
       for (let i = 0; i < RESTORED_TABS; i++) {
         await createChatSession(page, openProject, `tab-${i}`)
       }
-      await openProjectChat(page, openProject)
+      await openProjectChat(page, openProject, h)
+
+      // A project's first paint loads its route bundle lazily; that is a
+      // one-time cost, not what a person feels navigating with agents running.
+      // Visit every project once before measuring.
+      for (const project of projects) await openProjectChat(page, project, h)
+      await openProjectChat(page, openProject, h)
 
       const samples: NavSample[] = []
+      let fallbacks = 0
       for (let i = 0; i < NAVIGATIONS; i++) {
+        await installNavMonitor(page, h.apiUrl)
         await page.evaluate(() => (window as any).__navMonitor.reset())
         const kind = ['switch-chat', 'open-project', 'team-channel', 'home-and-back'][i % 4]
-        let toMessagesMs = 0
+        // Only navigations that end in a chat have a "time to messages"; the
+        // others still record long tasks, frame drops and socket waits.
+        let toMessagesMs: number | null = null
 
         if (kind === 'switch-chat') {
-          toMessagesMs = await openProjectChat(page, openProject)
+          toMessagesMs = await openProjectChat(page, openProject, h)
         } else if (kind === 'open-project') {
-          toMessagesMs = await openProjectChat(page, projects[(i + 1) % projects.length])
+          toMessagesMs = await openProjectChat(page, projects[(i + 1) % projects.length], h)
         } else if (kind === 'team-channel') {
-          const started = Date.now()
           await page.evaluate(() => {
             window.history.pushState({}, '', '/c')
             window.dispatchEvent(new PopStateEvent('popstate'))
           })
           await page.waitForTimeout(1_500)
-          toMessagesMs = Date.now() - started
         } else {
+          // Go home, then come back to the chat. The come-back is a router
+          // navigation, not `page.goBack()`: these navigations are synthetic
+          // history entries, and a back press lands on whatever was pushed
+          // before rather than reliably on the project.
           await leaveChat(page)
-          const started = Date.now()
-          await returnToChat(page)
-          toMessagesMs = Date.now() - started
+          toMessagesMs = await openProjectChat(page, openProject, h)
         }
+        if (toMessagesMs === null && kind !== 'team-channel') fallbacks++
 
-        const snapshot: any = await page.evaluate(() => (window as any).__navMonitor.snapshot())
+        const snapshot: any = await page.evaluate(() => (window as any).__navMonitor?.snapshot?.() ?? null)
         samples.push({
           kind,
           toMessagesMs,
-          longTasks: snapshot.longTasks,
-          longestTaskMs: snapshot.longestTaskMs,
-          droppedFrames: snapshot.droppedFrames,
-          socketWaitMs: snapshot.socketWaitMs,
-          requestsWhileNavigating: snapshot.requests,
-          mountedChatPanels: await page.evaluate(() => (window as any).__navMonitor.mountedPanels()),
+          longTasks: snapshot?.longTasks ?? 0,
+          longestTaskMs: snapshot?.longestTaskMs ?? 0,
+          droppedFrames: snapshot?.droppedFrames ?? 0,
+          socketWaitMs: snapshot?.socketWaitMs ?? 0,
+          slowestRequest: snapshot?.slowestRequest ?? '',
+          requestsWhileNavigating: snapshot?.requests ?? 0,
+          mountedChatPanels: await page.evaluate(() => (window as any).__navMonitor?.mountedPanels?.() ?? 0),
           inFlightApiRequests: await inflightApiRequests(page, h.apiUrl),
         })
       }
 
-      const chatOpens = samples.map((s) => s.toMessagesMs).sort((a, b) => a - b)
+      const chatOpens = samples
+        .map((s) => s.toMessagesMs)
+        .filter((ms): ms is number => ms !== null)
+        .sort((a, b) => a - b)
       const p95 = chatOpens[Math.min(chatOpens.length - 1, Math.ceil(chatOpens.length * 0.95) - 1)]
       const report = {
         generatedAt: new Date().toISOString(),
         level,
         restoredTabs: RESTORED_TABS,
         navigationBudget: BUDGET,
+        chatOpenSamples: chatOpens.length,
+        fallbackNavigations: fallbacks,
         p95ChatOpenMs: p95,
         longestTaskMs: Math.max(...samples.map((s) => s.longestTaskMs)),
         maxSocketWaitMs: Math.max(...samples.map((s) => s.socketWaitMs)),
@@ -251,6 +315,7 @@ test.describe('navigate while N chats stream', () => {
       writeReport(`nav-under-load-n${level}`, report)
 
       // Soft checks: report every problem, do not stop at the first.
+      expect(chatOpens.length, `real chat-open navigations at N=${level} (fallbacks: ${fallbacks})`).toBeGreaterThanOrEqual(3)
       expect(p95, `chat open p95 at N=${level} (${p95}ms)`).toBeLessThanOrEqual(BUDGET.chatOpenP95Ms)
       expect(report.longestTaskMs, `no long task over ${BUDGET.longTaskMaxMs}ms`).toBeLessThanOrEqual(BUDGET.longTaskMaxMs)
       expect(report.maxSocketWaitMs, `no request queued for a socket`).toBeLessThanOrEqual(BUDGET.socketWaitMs)

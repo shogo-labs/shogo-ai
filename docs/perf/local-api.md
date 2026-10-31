@@ -93,9 +93,44 @@ Starts N tool-heavy background turns across four projects plus three restored
 chat tabs, then performs ten navigations (switch chat, open another project,
 open a team channel, go home and come back). Per navigation it records
 time-to-composer, long tasks, dropped frames and the longest
-`requestStart → responseStart` gap — a navigation queued behind a streaming SSE
-shows up there, which is how the HTTP/1.1 socket question gets settled rather
-than assumed. Report: `test-results/streaming-e2e/nav-under-load-n<N>.json`.
+`requestStart → responseStart` gap on the **API origin** — a navigation queued
+behind a streaming SSE shows up there, which is how the HTTP/1.1 socket question
+gets settled rather than assumed. It also counts mounted composers, i.e. whether
+restored tabs pile up. Report:
+`test-results/streaming-e2e/nav-under-load-n<N>.json`.
+
+**Run it from a real clone, not a `.tmp` worktree.** Metro refuses to traverse a
+symlinked `node_modules` ("Unexpectedly escaped traversal"), so a worktree with
+a linked install boots the API and then hangs waiting for Metro.
+
+**A developer's own Shogo holding port 39100.** The app skips a busy preferred
+port, but on macOS a `*:39100` (IPv6 wildcard) listener leaves IPv4 loopback
+free, so `checkPort` reports 39100 free while the harness' `isListening` sees it
+taken — and `desktop-app.ts` then refuses to run rather than risk talking to
+someone else's API. Hold IPv4 loopback for the run and the app boots its own API
+one port up:
+
+```bash
+node -e 'require("net").createServer(s=>s.destroy()).listen(39100,"127.0.0.1")' &
+bun run test:e2e:load
+```
 
 Opt-in, advisory, and calibrated on the machine that recorded the baseline;
 override its budgets with `SHOGO_E2E_LOAD_*` rather than loosening them.
+
+**What it measured** (18-core macOS, N = 1/4/8, one run each):
+
+| N | chat open p95 | longest task | longest API request wait | mounted composers |
+| --- | --- | --- | --- | --- |
+| 1 | 913 ms | 0 ms | 0 ms | 1 |
+| 4 | 162 ms | 0 ms | 0 ms | 1 |
+| 8 | 376 ms | 50 ms | 0 ms | 1 |
+
+Two things this settles, both against the suspicion in the card: no request ever
+waited for a socket (0 ms at every N, with at most one API request in flight),
+and the three restored chat tabs did not multiply mounted composers — one, at
+every level. The navigation cost that is left is a ~350 ms first open of a
+project on both `main` and the branch, so **A2 does not reproduce the bug on a
+fresh database** — the renderer side of it needs the multi-megabyte assistant
+messages A1 seeds, which this harness does not create yet. It is kept as the
+instrument for those two questions, not as a red/green on `main`.
