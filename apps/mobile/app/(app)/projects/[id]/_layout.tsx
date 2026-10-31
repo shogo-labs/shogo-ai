@@ -70,6 +70,7 @@ import {
 import { deliverPendingDesktopIslandNewChat } from "../../../../lib/desktop-island";
 import { onChatInsertRequested } from "../../../../lib/chat-insert-bus";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
+import { lifecycleNotificationKind } from "../../../../lib/notifications/lifecycle-click";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
 import {
@@ -308,8 +309,23 @@ export default observer(function ProjectLayout() {
     newChatNonce?: string;
     /** When 'ide', render only the canonical chat for embedding in Shogo IDE. */
     embed?: string;
+    /**
+     * Set by the notification click router when this project was opened from a
+     * lifecycle push (SHO-266): `build-ready` or `credits-reset`. The chat uses
+     * it to greet the person with the "Continue <project>" chip.
+     */
+    fromLifecycle?: string;
   }>();
   const projectId = params.id;
+  /**
+   * The lifecycle arrival, captured once (SHO-266). The chat-URL mirror
+   * rewrites this route to `?chatSessionId=…` as soon as the chat resolves,
+   * which drops `fromLifecycle` from `params` — reading it live made the
+   * "Continue <project>" chip disappear on the frame the chat painted.
+   */
+  const [arrivedFromLifecycle] = useState(() =>
+    lifecycleNotificationKind(params.fromLifecycle)
+  );
   const openAttemptId = useMemo(() => createOpenAttemptId(), [projectId]);
 
   useEffect(() => {
@@ -424,6 +440,19 @@ export default observer(function ProjectLayout() {
   const [chatSessionId, setChatSessionId] = useState<string | null>(
     () => params.chatSessionId ?? null
   );
+
+  // The chat the person landed on, when they landed here from a lifecycle
+  // notification (SHO-266). Captured once, when that chat first resolves: a
+  // credits-reset push names no session, so the project opens its most recently
+  // active chat and that is the tab the "Continue <project>" chip belongs to —
+  // not whichever chat they switch to afterwards.
+  const [continueArrivalTabId, setContinueArrivalTabId] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    if (!arrivedFromLifecycle || continueArrivalTabId) return;
+    if (chatSessionId) setContinueArrivalTabId(chatSessionId);
+  }, [arrivedFromLifecycle, continueArrivalTabId, chatSessionId]);
 
   // Mirror the open chat into `?chatSessionId=` so the address bar names it —
   // copying, reloading or sharing the URL lands on that exact chat. One write
@@ -3665,6 +3694,10 @@ export default observer(function ProjectLayout() {
                 className="flex-1"
                 ideMode={isIdeChatEmbed}
                 enrichMessage={enrichMessage}
+                arrivedFromLifecycle={
+                  tabId === continueArrivalTabId ? arrivedFromLifecycle : null
+                }
+                continueProjectName={project?.name ?? null}
                 readOnlyReason={
                   projectReadOnly
                     ? "You have view-only access to this project"

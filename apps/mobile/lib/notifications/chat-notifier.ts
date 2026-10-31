@@ -13,6 +13,8 @@
  * matching extension file.
  */
 
+import type { LifecycleNotificationKind } from './lifecycle-click'
+
 export interface ChatNotificationPayload {
   sessionId: string
   projectId: string
@@ -20,9 +22,32 @@ export interface ChatNotificationPayload {
   preview: string
 }
 
+/**
+ * The two lifecycle nudges that land the person on a project they left mid-turn
+ * (SHO-258 §4): the build that finished while they were away, and the usage
+ * limit that came back. Both are sent server-side with `data.type` set to one of
+ * these, and both open the project's most recently active chat (SHO-266).
+ */
+export type { LifecycleNotificationKind } from './lifecycle-click'
+
+/** A lifecycle push/email tap: a project, optionally naming the chat to resume. */
+export interface LifecycleNotificationClick {
+  projectId: string
+  /** The turn's session when the server knew it (`build-ready`); else the last chat. */
+  sessionId: string | null
+  lifecycle: LifecycleNotificationKind
+}
+
 export type ChatNotificationClickData =
   | { taskId: string; sessionId?: string; projectId?: string; conversationId?: undefined }
-  | { sessionId: string; projectId: string; taskId?: string; conversationId?: undefined }
+  | {
+      sessionId: string
+      projectId: string
+      taskId?: string
+      conversationId?: undefined
+      lifecycle?: LifecycleNotificationKind
+    }
+  | (LifecycleNotificationClick & { taskId?: undefined; conversationId?: undefined })
   | { conversationId: string; threadRootId?: string | null; taskId?: undefined }
   /** A tap on the agents notification: open that agent (`shogo://agents/<key>`). */
   | { agentKey: string; conversationId?: undefined; taskId?: undefined }

@@ -295,7 +295,8 @@ import {
 } from "./turns/MessageEditContext"
 import { TurnFooterProvider } from "./turns/TurnFooterContext"
 import { EditConfirmDialogHost } from "./turns/EditConfirmDialog"
-import { PhaseEmptyState } from "./empty"
+import { ContinueProjectChip, PhaseEmptyState } from "./empty"
+import { continueSuggestionFromMessages } from "@/lib/chat/continue-suggestion"
 import {
   type SubagentProgress as SubagentProgressType,
   type RecentTool as RecentToolType,
@@ -610,6 +611,18 @@ export interface ChatPanelProps {
    * (`PersonalAgentMobileHeader`) that floats above those same buttons.
    */
   phoneTranscriptTopPadding?: "chrome" | "floating-agent"
+  /**
+   * The lifecycle notification this chat was opened from, when it was opened
+   * from one (SHO-266). Set only for the arrival that came from the push's
+   * deep link, so the "Continue <project>" chip greets that person and nobody
+   * else — a chat opened from the sidebar never shows it.
+   */
+  arrivedFromLifecycle?: "build-ready" | "credits-reset" | null
+  /**
+   * The project's display name for the chip's label (`Continue <name>`).
+   * Falls back to a bare "Continue" when the host has no name yet.
+   */
+  continueProjectName?: string | null
 }
 
 // ============================================================
@@ -1039,6 +1052,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   enrichMessage,
   readOnlyReason,
   phoneTranscriptTopPadding = "chrome",
+  arrivedFromLifecycle,
+  continueProjectName,
 }: ChatPanelProps) {
   // A machine workspace cannot take a write while its Mac is asleep, so the
   // composer is refused from the same state the banner renders (SHO-185 AC4).
@@ -7878,8 +7893,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
     for (let index = messages.length - 1; index >= 0; index--) {
       const message = messages[index]
       if (message.role !== "assistant") continue
-      return message.parts
-        .map((part) => (part.type === "text" ? part.text : ""))
+      // A legacy row (or a hand-seeded transcript) carries `content` only, so
+      // an unguarded `parts.map` here took the whole panel down (SHO-266).
+      return (message.parts ?? [])
+        .map((part) => (part?.type === "text" ? part.text : ""))
         .join("")
     }
     return ""
@@ -8124,6 +8141,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
     (prompt: string) => handleSendMessage(prompt),
     [handleSendMessage],
   )
+
+  // ---------------------------------------------------------------- SHO-266
+  // "Continue <project>": arrival from a lifecycle notification names the
+  // project and the one step the last turn left open. The suggestion is read
+  // off the transcript already on screen — no model call, no extra fetch — and
+  // tapping it only stages the line (the person presses send).
+  const [continueChipDismissed, setContinueChipDismissed] = useState(false)
+  const continueSuggestion = useMemo(() => {
+    if (!arrivedFromLifecycle || continueChipDismissed) return null
+    if (isStreaming || hasPendingQuestion || readOnlyReason) return null
+    return continueSuggestionFromMessages(displayMessages)
+  }, [
+    arrivedFromLifecycle,
+    continueChipDismissed,
+    isStreaming,
+    hasPendingQuestion,
+    readOnlyReason,
+    displayMessages,
+  ])
+
+  const handleContinueChipPress = useCallback(() => {
+    if (!continueSuggestion) return
+    setContinueChipDismissed(true)
+    setRestoreDraftRequest({
+      nonce: Date.now(),
+      content: continueSuggestion,
+      focus: true,
+    })
+  }, [continueSuggestion])
 
   // Re-render when the dock's registered panels / expand state / measured
   // height change so `dockHeight` (used to pad the message list) and the
@@ -8975,6 +9021,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     />
                   ) : null}
                   <ExecutionBadge />
+                  {continueSuggestion ? (
+                    <ContinueProjectChip
+                      projectName={continueProjectName}
+                      suggestion={continueSuggestion}
+                      onPress={handleContinueChipPress}
+                      onDismiss={() => setContinueChipDismissed(true)}
+                    />
+                  ) : null}
                   <ChatInput
                     onSubmit={handleInputSubmit}
                     uploadStatus={uploadStatus}

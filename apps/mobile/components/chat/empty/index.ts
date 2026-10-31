@@ -8,3 +8,7 @@
  */
 
 export { PhaseEmptyState, type PhaseEmptyStateProps } from "./PhaseEmptyState"
+export {
+  ContinueProjectChip,
+  type ContinueProjectChipProps,
+} from "./ContinueProjectChip"

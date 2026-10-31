@@ -21,6 +21,22 @@ export function notificationClickHref(data: ChatNotificationClickData) {
   if ('agentKey' in data && data.agentKey) {
     return { pathname: '/(app)/agents/[key]' as const, params: { key: data.agentKey } }
   }
+  // A lifecycle nudge opens the project the notification was about, and the
+  // project screen flags the arrival so its chat greets the person with the
+  // "Continue <project>" chip (SHO-266). `chatSessionId` is only present when
+  // the server knew which turn finished; otherwise the screen opens the
+  // project's most recently active chat.
+  if ('lifecycle' in data && data.lifecycle && 'projectId' in data && data.projectId) {
+    const sessionId = 'sessionId' in data ? data.sessionId : null
+    return {
+      pathname: '/(app)/projects/[id]' as const,
+      params: {
+        id: data.projectId,
+        fromLifecycle: data.lifecycle,
+        ...(sessionId ? { chatSessionId: sessionId } : {}),
+      },
+    }
+  }
   // A notification that names its own destination (an invitation accept page,
   // say) is pushed verbatim — it is an app-relative path, not a route object.
   if ('actionUrl' in data && data.actionUrl) {

@@ -35,6 +35,7 @@ import type {
   ChatNotificationPayload,
   NotificationPermissionState,
 } from './chat-notifier'
+import { lifecycleNotificationKind } from './lifecycle-click'
 
 let handlerConfigured = false
 let androidChannelConfigured = false
@@ -284,6 +285,19 @@ export function parseClickData(raw: unknown): ChatNotificationClickData | null {
     return {
       conversationId: data.conversationId,
       threadRootId: typeof data.threadRootId === 'string' ? data.threadRootId : null,
+    }
+  }
+  // A lifecycle nudge (build that finished while away, usage limit that came
+  // back) names `type` and a project — the chat to resume is the one the server
+  // knew, or (credits-reset) the project's most recently active one, which the
+  // project screen already opens by default. Handled before the generic
+  // session pair below, which would otherwise drop `type` (SHO-266).
+  const lifecycle = lifecycleNotificationKind(data.type)
+  if (lifecycle && typeof data.projectId === 'string' && data.projectId) {
+    return {
+      projectId: data.projectId,
+      sessionId: typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : null,
+      lifecycle,
     }
   }
   if (typeof data.sessionId === 'string' && typeof data.projectId === 'string') {
