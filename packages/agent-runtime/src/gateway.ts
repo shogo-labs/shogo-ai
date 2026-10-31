@@ -46,7 +46,7 @@ import { formatHeartbeatModelLog, resolveHeartbeatModel } from './heartbeat-mode
 import { sweepExecCwdMarkers } from './exec-cwd'
 import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
-import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig, type PerCallUsage, type AgentLoopResult } from './agent-loop'
+import { runAgentLoop, classifyRetryability, classifyTurnFailure, isFailoverFailure, buildTurnFailureMessage, RetryWaker, type LoopDetectorConfig, type PerCallUsage, type AgentLoopResult } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import { recordCompaction, recordTurnBoundary, isPrefixOf } from './context-telemetry'
 import { summariseTurn, lastTurnStart } from './turn-boundary'
@@ -394,6 +394,50 @@ export function resolveAutoDowngrade(
 }
 
 /**
+ * Pick a model from a *different provider family* for a one-turn failover
+ * (SHO-270). A refusal or a content filter is the model's answer, not a
+ * transport fault: re-asking the same family just refuses again, while another
+ * family usually answers.
+ *
+ * Order matters: an Auto tier on another provider is already configured and
+ * allowed, then the workspace's own model list (which the API has already
+ * narrowed to what this plan may use), cheapest useful tier first. Only the
+ * first-class providers are considered — a pinned OpenRouter/local model is
+ * not a safe landing spot for someone else's refusal.
+ */
+const CROSS_FAMILY_PROVIDERS = ['anthropic', 'openai', 'google']
+const CROSS_FAMILY_TIER_ORDER: AutoTierCeiling[] = ['standard', 'premium', 'economy']
+
+export function selectCrossFamilyFallback(opts: {
+  failedModel: string
+  failedProvider: string
+  autoTiers?: Partial<Record<AutoTierCeiling, string>>
+  autoProviderHints?: Record<string, string>
+}): { model: string; provider: string } | null {
+  const usable = (model: string, provider: string) =>
+    !!model && model !== opts.failedModel && !!provider && provider !== opts.failedProvider
+
+  if (opts.autoTiers) {
+    for (const tier of CROSS_FAMILY_TIER_ORDER) {
+      const model = opts.autoTiers[tier]
+      if (!model) continue
+      const provider = opts.autoProviderHints?.[model] ?? inferProviderFromModel(model, 'anthropic')
+      if (usable(model, provider)) return { model, provider }
+    }
+  }
+
+  const candidates = getAvailableModels().filter(
+    (m) => CROSS_FAMILY_PROVIDERS.includes(m.provider) && usable(m.id, m.provider),
+  )
+  for (const tier of CROSS_FAMILY_TIER_ORDER) {
+    const entry = candidates.find((m) => getModelEntry(m.id)?.tier === tier)
+    if (entry) return { model: entry.id, provider: entry.provider }
+  }
+  const first = candidates[0]
+  return first ? { model: first.id, provider: first.provider } : null
+}
+
+/**
  * Resolve UI-facing model aliases (basic/advanced) to concrete model IDs
  * so pi-ai can find them in its model registry and pick the correct API.
  */
@@ -486,6 +530,12 @@ export function describeTurnFailure(
   // classification so it isn't mistaken for an "unknown" provider error.
   if (/maximum iteration limit/i.test(raw)) {
     return 'This task is taking more steps than a single run allows — I kept going as far as I could, and the work so far is saved. Send a message if you want me to pick up where I left off.'
+  }
+
+  // The model answered "no" — that is not a transport failure, and another
+  // model family may well answer (SHO-270).
+  if (/stop_reason=(refusal|sensitive)|model refused|declined to (answer|respond)/i.test(raw)) {
+    return 'This model declined to answer that request. Try rephrasing it, or switch to a different model.'
   }
 
   // classifyRetryability reads the proxy's `[shogo:retryable=...]` marker (if
@@ -5252,6 +5302,22 @@ export class AgentGateway {
         result.iterations += emptyResult.iterations
       }
 
+      // One classifier decides what this failed turn actually was (SHO-270);
+      // every branch below is one of its endings, and each runs at most once.
+      const failureClass =
+        result.failureClass ??
+        classifyTurnFailure({
+          rawError: result.error?.message,
+          abortReason: result.abortReason,
+          stopReason: result.lastStopReason,
+          toolCalls: result.toolCalls.length,
+        })
+      const requestedModelId = modelId
+      const requestedProvider = provider
+      let recoveredBy: 'notice' | 'summary' | 'failover' | 'none' =
+        result.usageLimit ? 'notice' : result.failureClass === 'iteration_ceiling' ? 'summary' : 'none'
+      let fallbackModelId: string | null = null
+
       // Defense in depth for stale cloud configuration or a plan change that
       // happens after a runtime was spawned. Auto must not retry the same
       // forbidden model forever: lower the session ceiling once and re-issue
@@ -5310,6 +5376,69 @@ export class AgentGateway {
             result.toolCalls = [...failedResult.toolCalls, ...result.toolCalls]
           }
         }
+      }
+
+      // Refusal / content filter / upstream 400 (SHO-270): the model answered,
+      // it just answered "no". One re-run on a model from a different provider
+      // family is the fix; the same model would refuse again. This runs for a
+      // pinned model too — the switch is one turn only and the session's saved
+      // model is never touched — and at most once per turn.
+      if (isFailoverFailure(failureClass)) {
+        const fallback = selectCrossFamilyFallback({
+          failedModel: modelId,
+          failedProvider: provider,
+          autoTiers,
+          autoProviderHints,
+        })
+        if (fallback) {
+          const fallbackProvider = fallback.provider
+          console.warn(
+            `${this.logPrefix} Turn failed as ${failureClass}; failing over ` +
+              `${modelId} -> ${fallback.model} for session ${sessionId}`,
+          )
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'data-routing-fallback',
+              data: {
+                fromModel: modelId,
+                toModel: fallback.model,
+                reason: failureClass,
+              },
+            } as any)
+          }
+          const failedResult = result
+          result = await runAgentLoop({
+            ...loopOptions,
+            provider: fallbackProvider,
+            model: fallback.model,
+          })
+          provider = fallbackProvider
+          modelId = fallback.model
+          loopOptions.provider = fallbackProvider
+          loopOptions.model = fallback.model
+          result.inputTokens += failedResult.inputTokens
+          result.outputTokens += failedResult.outputTokens
+          result.cacheReadTokens += failedResult.cacheReadTokens
+          result.cacheWriteTokens += failedResult.cacheWriteTokens
+          result.iterations += failedResult.iterations
+          result.toolCalls = [...failedResult.toolCalls, ...result.toolCalls]
+          fallbackModelId = fallback.model
+          recoveredBy = 'failover'
+        }
+      }
+
+      // One structured line per failed turn, so the next prod query can show
+      // the fallback-text bucket shrinking per class (SHO-270).
+      if (failureClass !== 'unknown') {
+        console.log(
+          `${this.logPrefix} [turn-failure] ${JSON.stringify({
+            failureClass,
+            recoveredBy,
+            model: requestedModelId,
+            provider: requestedProvider,
+            fallbackModel: fallbackModelId,
+          })}`,
+        )
       }
 
       // Auto-continue across the iteration ceiling (ported from teammate-loop's
@@ -5613,7 +5742,12 @@ export class AgentGateway {
       // model failure, so don't tell them the model failed to respond.
       if (isUserStoppedTurn(result)) return ''
       console.warn(`${this.logPrefix} Empty model response for session ${sessionId} (${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`)
-      const emptyFallback = 'Sorry, I was unable to generate a response. Please try again.'
+      // A turn that died for a known reason ends with that reason's own line
+      // (step limit, refusal, …) — never a boilerplate apology (SHO-270).
+      const emptyFallback =
+        failureClass !== 'unknown' && failureClass !== 'aborted_by_user'
+          ? buildTurnFailureMessage(failureClass, result.toolCalls.length)
+          : 'Sorry, I was unable to generate a response. Please try again.'
       // Stream the fallback so clients (and eval bridges) never receive a
       // completely silent turn when nothing was emitted and no error fired.
       try {

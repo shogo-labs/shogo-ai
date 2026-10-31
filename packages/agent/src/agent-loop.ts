@@ -33,7 +33,14 @@ import {
 } from './pi-adapter'
 import { wrapToolsWithOrchestration, type OrchestrationOptions } from './tool-orchestration'
 import { makeStallFallbackStreamFn, resolveStallFallbackOptions, type StallFallbackOptions } from './stall-fallback'
-import { classifyRetryability } from './retry-classifier'
+import {
+  classifyRetryability,
+  classifyTurnFailure,
+  isFailoverFailure,
+  isUsageLimitFailure,
+  buildTurnFailureMessage,
+  type TurnFailureClass,
+} from './retry-classifier'
 import {
   resolveInferenceRetryOptions,
   detectInferenceFailure,
@@ -82,8 +89,15 @@ export type { ConnectivityWaitInfo } from './connectivity'
 // retry them — keeping the retry decision and the user-facing message
 // consistent (see retry-classifier.ts: "so the agent loop and any callers
 // stay consistent").
-export { classifyRetryability, stripStreamErrorMarker } from './retry-classifier'
-export type { RetryClassification, RetryReason } from './retry-classifier'
+export {
+  classifyRetryability,
+  classifyTurnFailure,
+  isFailoverFailure,
+  isUsageLimitFailure,
+  buildTurnFailureMessage,
+  stripStreamErrorMarker,
+} from './retry-classifier'
+export type { RetryClassification, RetryReason, TurnFailureClass } from './retry-classifier'
 
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
@@ -359,6 +373,12 @@ export interface AgentLoopResult {
    * turn ends with an explicit notice instead of a finalizer/auto-continue.
    */
   usageLimit?: UsageLimitInfo
+  /**
+   * What the turn's failure actually was (SHO-270), decided once by
+   * `classifyTurnFailure`. The gateway uses it to pick the recovery (failover,
+   * notice, summary) and to emit the telemetry line. Absent on a clean turn.
+   */
+  failureClass?: TurnFailureClass
 }
 
 export interface UsageLimitInfo {
@@ -368,12 +388,15 @@ export interface UsageLimitInfo {
 }
 
 /**
- * Recognize the AI proxy's own 402 (`code: usage_limit_reached`). Deliberately
- * narrower than the retry classifier's `billing` bucket: an upstream provider
- * billing failure is our problem, not something the user can fix by upgrading.
+ * Recognize Shogo's own out-of-usage signal — the AI proxy's 402
+ * (`code: usage_limit_reached`), the OpenAI-compatible gateway's "You've
+ * reached your usage limit", and the billing service's `overage_cap_reached` /
+ * `overage_payment_pending` codes. Deliberately narrower than the retry
+ * classifier's `billing` bucket: an upstream provider billing failure is our
+ * problem, not something the user can fix by upgrading (SHO-270).
  */
 export function detectUsageLimit(raw: string | undefined): UsageLimitInfo | null {
-  if (!raw || !/usage_limit_reached|usage limit reached/i.test(raw)) return null
+  if (!raw || !isUsageLimitFailure(raw)) return null
   const info: UsageLimitInfo = {}
   const jsonStart = raw.indexOf('{')
   if (jsonStart >= 0) {
@@ -806,13 +829,11 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       } else {
         promptError = err
       }
-    } else if (abortReason === 'max_iterations') {
-      // maxIterations abort should not silently swallow the error — the task
-      // was likely incomplete. Surface it so the gateway can inform the user.
-      promptError = new Error(
-        `Agent reached the maximum iteration limit (${maxIterations}). The task may be incomplete — you can continue the conversation to pick up where it left off.`
-      )
     }
+    // Hitting the iteration ceiling is not an error: the turn is incomplete, not
+    // broken, and it ends with a finalizer summary (or a plain step-limit line).
+    // Labelling it as an error made every ceiling turn look like a provider
+    // failure to the gateway and to the transcript (SHO-270).
     // External aborts (user stop) and loop detection aborts are intentional —
     // don't surface those as errors (loop detection is handled via loopBreak).
   } finally {
@@ -1311,6 +1332,28 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   const rawCoreError = (coreErrorMsg as any)?.errorMessage ?? (promptError ? undefined : unresolvedFailureText)
   const coreError = rawCoreError ? parseProviderError(rawCoreError) : undefined
 
+  // One decision, before any fallback text is written: what did this turn
+  // actually hit? Everything below (usage-limit notice, finalizer, gateway
+  // failover, telemetry) keys off this single answer instead of re-sniffing
+  // strings in three places (SHO-270).
+  const failureClass: TurnFailureClass = classifyTurnFailure({
+    rawError: coreError ?? promptError?.message,
+    abortReason: abortTriggered ? abortReason : undefined,
+    stopReason: lastStopReason,
+    toolCalls: toolCalls.length,
+  })
+  if (failureClass !== 'unknown') {
+    console.warn(
+      `[AgentLoop] TURN_FAILURE ${JSON.stringify({
+        failureClass,
+        model: modelId,
+        provider,
+        toolCalls: toolCalls.length,
+        stopReason: lastStopReason,
+      })}`,
+    )
+  }
+
   // A usage limit ends the turn with a notice (and the client's Upgrade
   // prompt) whether or not the turn made progress first.
   const usageLimit = !abortTriggered
@@ -1348,6 +1391,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     toolCalls.length === 0 && !finalText.trim() && !implicitError && !promptError
   const shouldForceFinalText =
     !usageLimit &&
+    // A refusal or a filtered request is answered by the same model the same
+    // way; skip the extra call and let the gateway fail the turn over instead.
+    !isFailoverFailure(failureClass) &&
     lastToolName !== 'ask_user' &&
     !signal?.aborted &&
     !loopBreak &&
@@ -1378,8 +1424,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
           'Do not ask the user to type "continue" unless there is a true terminal blocker that requires user input.',
         ].join('\n')
 
-    if (!stoppedByIterationLimit) {
-      try {
+    // The ceiling gets the same tool-free finalizer as any other incomplete
+    // turn: "what did you finish, what is left, no tools" is a far better
+    // ending than a boilerplate line, and it is the only way a ceiling turn can
+    // end with a real summary (SHO-270).
+    if (stoppedByIterationLimit) {
+      console.warn(`[AgentLoop] Iteration ceiling reached after ${toolCalls.length} tool calls — running the tool-free finalizer`)
+    }
+    try {
         const finalizerAgent = new Agent({
           initialState: {
             systemPrompt: system,
@@ -1414,20 +1466,20 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
           newMessages = [...newMessages, ...assistantMessages]
           allMessages = [...allMessages, ...assistantMessages]
           finalText = finalizerText
-          maxIterationsExhausted = false
+          // At the ceiling the turn stays "exhausted" so the gateway's bounded
+          // auto-continue still picks the task back up; the summary just
+          // describes where things stand (SHO-270).
+          if (!stoppedByIterationLimit) maxIterationsExhausted = false
           promptError = undefined
         }
       } catch (err: any) {
         console.warn(`[AgentLoop] Finalization pass failed after ${toolCalls.length} tool calls: ${err?.message || err}`)
       }
-    } else {
-      console.warn(`[AgentLoop] Iteration limit reached after ${toolCalls.length} tool calls — emitting explicit incomplete-turn fallback`)
-    }
 
     // An empty turn with no tool calls has nothing to preserve, so leave it
     // empty and let the caller retry or explain, not claim tool work happened.
-    if ((!finalText.trim() && !emptyNoToolTurn) || stoppedByIterationLimit) {
-      finalText = buildIncompleteTurnFallback(toolCalls.length, maxIterationsExhausted, coreError || promptError?.message)
+    if (!finalText.trim() && !emptyNoToolTurn) {
+      finalText = buildTurnFailureMessage(failureClass, toolCalls.length)
       onTextDelta?.(finalText)
       const fallbackMessage: AssistantMessage = {
         role: 'assistant',
@@ -1448,9 +1500,6 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       }
       newMessages = [...newMessages, fallbackMessage]
       allMessages = [...allMessages, fallbackMessage]
-      if (promptError && /maximum iteration limit/i.test(promptError.message)) {
-        promptError = undefined
-      }
     }
   }
 
@@ -1505,6 +1554,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     lastTurnHadToolCalls,
     abortReason: abortTriggered ? abortReason : undefined,
     usageLimit: usageLimit ?? undefined,
+    failureClass: failureClass === 'unknown' ? undefined : failureClass,
   }
 
   await onAgentEnd?.(result)
@@ -1721,15 +1771,6 @@ function replaceImageBlocks(
     mutated = true
   })
   return mutated ? out : (messages as Message[])
-}
-
-function buildIncompleteTurnFallback(toolCallCount: number, maxIterationsExhausted: boolean, error?: string): string {
-  const reason = error
-    ? ` The last model call hit a recoverable provider error: ${error}`
-    : maxIterationsExhausted
-      ? ' The turn reached its internal continuation limit before the model produced a natural final paragraph.'
-      : ''
-  return `I completed ${toolCallCount} tool call${toolCallCount === 1 ? '' : 's'}, but the model did not produce a final answer after tool execution.${reason} I preserved the completed tool results so the next turn can continue from this exact point instead of starting over.`
 }
 
 /**

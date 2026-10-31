@@ -2,7 +2,29 @@ diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
 index 3f0cc9aef9fc12485096f89362fc89884ecf87a9..aa6182977b664ae371d1e3fa74478d9faad16fdb 100644
 --- a/dist/providers/anthropic.js
 +++ b/dist/providers/anthropic.js
-@@ -529,8 +529,15 @@ function supportsAdaptiveThinking(modelId) {
+@@ -476,4 +476,10 @@
+                 else if (event.type === "message_delta") {
+                     if (event.delta.stop_reason) {
++                        // A refusal is a definitive answer, not a transport fault:
++                        // keep it classifiable so the turn can fail over to another
++                        // model family instead of ending in "An unknown error occurred".
++                        output.stopReason = mapStopReason(event.delta.stop_reason);
++                        if (output.stopReason === "refusal") {
++                            output.errorMessage = `Model refused this request (stop_reason=${event.delta.stop_reason})`;
++                        }
+-                        output.stopReason = mapStopReason(event.delta.stop_reason);
+                     }
+@@ -500,6 +506,9 @@
+             if (options?.signal?.aborted) {
+                 throw new Error("Request was aborted");
+             }
++            if (output.stopReason === "refusal") {
++                throw new Error(output.errorMessage || "Model refused this request");
++            }
+             if (output.stopReason === "aborted" || output.stopReason === "error") {
+                 throw new Error("An unknown error occurred");
+             }
+@@ -529,8 +538,15 @@ function supportsAdaptiveThinking(modelId) {
          modelId.includes("opus-4.6") ||
          modelId.includes("opus-4-7") ||
          modelId.includes("opus-4.7") ||
@@ -19,3 +41,17 @@ index 3f0cc9aef9fc12485096f89362fc89884ecf87a9..aa6182977b664ae371d1e3fa74478d9f
  }
  /**
   * Map ThinkingLevel to Anthropic effort levels for adaptive thinking.
+@@ -936,11 +945,11 @@
+         case "tool_use":
+             return "toolUse";
+         case "refusal":
+-            return "error";
++            return "refusal";
+         case "pause_turn": // Stop is good enough -> resubmit
+             return "stop";
+         case "stop_sequence":
+             return "stop"; // We don't supply stop sequences, so this should never happen
+         case "sensitive": // Content flagged by safety filters (not yet in SDK types)
+-            return "error";
++            return "refusal";
+         default:

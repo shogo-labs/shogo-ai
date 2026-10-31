@@ -6,7 +6,17 @@
 // re-exported here — it's an agent-runtime internal type that stays in
 // `./gateway-tools`. The handful of internal call sites import it from
 // there directly.
-export { runAgentLoop, classifyRetryability, stripStreamErrorMarker, RetryWaker } from '@shogo-ai/sdk/agent-loop'
+export {
+  runAgentLoop,
+  classifyRetryability,
+  classifyTurnFailure,
+  isFailoverFailure,
+  isUsageLimitFailure,
+  buildTurnFailureMessage,
+  detectUsageLimit,
+  stripStreamErrorMarker,
+  RetryWaker,
+} from '@shogo-ai/sdk/agent-loop'
 export type {
   RetryEpisodeSummary,
   RetryLayer,

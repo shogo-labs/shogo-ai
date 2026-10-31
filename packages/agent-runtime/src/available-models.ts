@@ -126,3 +126,13 @@ export function __resetAvailableModelsForTests(): void {
   fetchedAt = 0
   inflight = null
 }
+
+/**
+ * Test helper: install a model list without a network fetch (SHO-270). The
+ * cross-family failover has to pick from what the workspace may actually use,
+ * so its tests need the same list the API would have provided.
+ */
+export function __setAvailableModelsForTests(list: AvailableModel[]): void {
+  models = list
+  fetchedAt = Date.now()
+}

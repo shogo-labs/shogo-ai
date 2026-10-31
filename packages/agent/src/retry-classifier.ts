@@ -42,6 +42,134 @@ export interface RetryClassification {
   reason: RetryReason
 }
 
+/**
+ * What actually went wrong with a turn, as opposed to whether a single model
+ * call is worth retrying. Each class has exactly one better ending than a
+ * generic "the model did not produce a final answer" message: a usage-limit
+ * notice, a ceiling summary, a cross-family failover, or a plain retry line.
+ *
+ * `classifyTurnFailure` is the single place that decides this, so the loop, the
+ * gateway and the copy shown to a person never disagree about what happened.
+ */
+export type TurnFailureClass =
+  | 'aborted_by_user'
+  | 'iteration_ceiling'
+  | 'usage_limit'
+  | 'bad_tool_id'
+  | 'bad_image'
+  | 'too_large'
+  | 'refusal'
+  | 'content_filter'
+  | 'upstream_400'
+  | 'network'
+  | 'unknown'
+
+export interface TurnFailureInput {
+  /** Raw error text, already stripped of any JSON wrapper where possible. */
+  rawError?: string | null
+  /** Why the loop stopped early, if it did. */
+  abortReason?: 'external' | 'max_iterations' | 'loop_detected' | null
+  /** stopReason of the last assistant message (`refusal`, `sensitive`, …). */
+  stopReason?: string | null
+  /** How many tool calls the turn completed. */
+  toolCalls?: number
+}
+
+/**
+ * Billing failures that belong to the *upstream provider account*, not to the
+ * person using Shogo. They look like usage limits but no upgrade fixes them, so
+ * they must never produce the usage-limit notice.
+ */
+const UPSTREAM_BILLING_FAILURE =
+  /credit balance is too low|insufficient_quota|insufficient (credits|funds|balance)|billing[_ ]hard[_ ]limit/i
+
+/** True when the text is Shogo's own out-of-usage signal (upgrade helps). */
+export function isUsageLimitFailure(raw?: string | null): boolean {
+  if (!raw) return false
+  if (UPSTREAM_BILLING_FAILURE.test(raw)) return false
+  return /usage_limit_reached|usage limit reached|reached your usage limit|spending cap|overage_cap_reached|overage_payment_pending/i.test(
+    raw,
+  )
+}
+
+/** A tool-call id the next provider refused (`messages.1.content.0.tool_use.id: …`). */
+const BAD_TOOL_ID_FAILURE = /tool[_.]?use[_.]?id|tool[_.]?call[_.]?id|tool use id/i
+
+/** An image block the provider rejected outright. */
+const BAD_IMAGE_FAILURE =
+  /unsupported image|uploaded an unsupported image|invalid image|image (is )?(too large|corrupt|invalid)|does not support (images?|vision)|image input is not supported|could not (process|load|decode) (the )?image/i
+
+/** Request too large for the provider (413), including the proxy's rewrapped form. */
+const TOO_LARGE_FAILURE = /\b413\b|payload too large|request entity too large|request too large|length limit exceeded/i
+
+/** The model itself declined the request — another model may not. */
+const REFUSAL_FAILURE = /stop_reason[\"'\s:=]+(refusal|sensitive)|model refused|declined to (answer|respond)/i
+
+/** Provider-side safety filtering of the content. */
+const CONTENT_FILTER_FAILURE =
+  /content[_\s-]?(policy|filter)|moderation|safety (system|filter)|content exists risk|sensitive content|flagged/i
+
+/** A 400 from the upstream provider, with or without a specific cause. */
+const UPSTREAM_400_FAILURE = /provider returned error|upstream (provider )?(error|rejected)|\b400\b|bad request/i
+
+/**
+ * Classes the gateway can answer by re-running the turn on a model from a
+ * different provider family. These are *not* retried on the same model: the
+ * model already gave its answer.
+ */
+export function isFailoverFailure(cls: TurnFailureClass): boolean {
+  return cls === 'refusal' || cls === 'content_filter' || cls === 'upstream_400'
+}
+
+/**
+ * Classify a failed turn. Ordered so the most specific true cause wins: an
+ * abort is never a provider failure, a usage limit is never a refusal, and a
+ * named 400 cause beats the generic "provider returned error" wrapper.
+ */
+export function classifyTurnFailure(input: TurnFailureInput): TurnFailureClass {
+  if (input.abortReason === 'external') return 'aborted_by_user'
+  if (input.abortReason === 'max_iterations') return 'iteration_ceiling'
+
+  const raw = input.rawError ?? ''
+  const stopReason = (input.stopReason ?? '').toLowerCase()
+
+  if (isUsageLimitFailure(raw)) return 'usage_limit'
+  if (BAD_TOOL_ID_FAILURE.test(raw)) return 'bad_tool_id'
+  if (BAD_IMAGE_FAILURE.test(raw)) return 'bad_image'
+  if (TOO_LARGE_FAILURE.test(raw)) return 'too_large'
+  if (stopReason === 'refusal' || stopReason === 'sensitive' || REFUSAL_FAILURE.test(raw)) return 'refusal'
+  if (CONTENT_FILTER_FAILURE.test(raw)) return 'content_filter'
+
+  const { reason } = classifyRetryability({ message: raw, stopReason: input.stopReason })
+  if (reason === 'network' || reason === 'timeout' || reason === 'idle_timeout' || reason === 'truncated') {
+    return 'network'
+  }
+  if (reason === 'server_5xx' || reason === 'overloaded' || reason === 'upstream_error') return 'network'
+  if (reason === 'aborted') return 'aborted_by_user'
+
+  if (UPSTREAM_400_FAILURE.test(raw)) return 'upstream_400'
+  if (reason === 'invalid_request') return 'upstream_400'
+  return 'unknown'
+}
+
+/**
+ * The one line a person sees when a turn could not be finished and nothing
+ * better applies. Never contains provider text.
+ */
+export function buildTurnFailureMessage(cls: TurnFailureClass | undefined, toolCallCount: number): string {
+  const steps =
+    toolCallCount > 0
+      ? ` I completed ${toolCallCount} step${toolCallCount === 1 ? '' : 's'} and saved that work.`
+      : ''
+  if (cls === 'iteration_ceiling') {
+    return `I hit the step limit for this turn, so I stopped before writing the final answer.${steps} Send another message and I'll pick up exactly where I left off.`
+  }
+  if (cls === 'content_filter') {
+    return `The model provider's content filter blocked this request.${steps} Try rephrasing it, or continue with a different model.`
+  }
+  return `The model couldn't finish this step.${steps} Your work so far is saved — send another message to pick up from here.`
+}
+
 export interface RetryClassifyInput {
   /** Raw error text (pi-ai `errorMessage` or a thrown Error's message). */
   message?: string | null

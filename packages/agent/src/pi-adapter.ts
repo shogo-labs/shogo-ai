@@ -329,8 +329,64 @@ export function sumUsage(messages: Message[]): {
 // ---------------------------------------------------------------------------
 
 /**
+ * Providers only accept tool-call ids matching `^[a-zA-Z0-9_-]+$` within a
+ * length cap, but an id is whatever the provider that *made* the call chose
+ * (OpenAI `call_ab:c`, Gemini ids, custom gateways with dots or slashes). A
+ * replayed id the next provider rejects fails the whole turn with a 400
+ * (`messages.3.content.0.tool_use.id: …`), and re-sending cannot fix it — the
+ * bad id is in the transcript. Normalize on the way out instead (SHO-270).
+ *
+ * Pure function of the original id, so a tool call and its result always map
+ * to the same outbound id.
+ */
+export function sanitizeToolCallId(id: string): string {
+  const cleaned = String(id ?? '').replace(/[^a-zA-Z0-9_-]/g, '_')
+  if (!cleaned) return 'tool_call'
+  if (cleaned.length <= 64) return cleaned
+  // Same 64-char prefix on two ids would merge two different calls; a short
+  // hash of the original keeps truncated ids distinct and still stable.
+  let hash = 0x811c9dc5
+  for (let i = 0; i < cleaned.length; i++) {
+    hash ^= cleaned.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return `${cleaned.slice(0, 57)}_${hash.toString(36).slice(0, 6)}`
+}
+
+/**
+ * Rewrite every tool-call id in a converted history through
+ * `sanitizeToolCallId`. Returns the input array unchanged when nothing needed
+ * rewriting, so callers can use reference equality.
+ */
+export function sanitizeToolCallIds(messages: Message[]): Message[] {
+  let mutated = false
+  const out = messages.map((msg) => {
+    if (msg.role === 'toolResult') {
+      const next = sanitizeToolCallId(msg.toolCallId)
+      if (next === msg.toolCallId) return msg
+      mutated = true
+      return { ...msg, toolCallId: next }
+    }
+    if (msg.role !== 'assistant') return msg
+    let changed = false
+    const content = msg.content.map((block) => {
+      if (block.type !== 'toolCall') return block
+      const next = sanitizeToolCallId(block.id)
+      if (next === block.id) return block
+      changed = true
+      return { ...block, id: next }
+    })
+    if (!changed) return msg
+    mutated = true
+    return { ...msg, content }
+  })
+  return mutated ? out : messages
+}
+
+/**
  * Default message converter: keeps only LLM-compatible messages, with tool
- * results re-paired to their tool calls (see `repairToolResultPairing`).
+ * results re-paired to their tool calls (see `repairToolResultPairing`) and
+ * tool-call ids normalized to what any provider will accept.
  */
 export function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
   const llm = messages.filter(
@@ -343,7 +399,7 @@ export function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
       `[pi-adapter] Repaired tool-result pairing: moved=${repaired.moved} dropped=${repaired.dropped}`,
     )
   }
-  return repaired.messages
+  return sanitizeToolCallIds(repaired.messages)
 }
 
 /**
