@@ -4849,15 +4849,20 @@ export class AgentGateway {
         this.sessionManager.addMessages(sessionId, persistedPromptMessage)
         persistedProgressMessages.add(persistedPromptMessage)
       }
-      let promptDeduped = false
       /**
-       * Whether `message` is the loop's own copy of the prompt persisted above.
-       * pi-agent-core builds that message itself, so identity cannot match it;
-       * the text can. `startsWith` because an image-carrying prompt is sent as
-       * the person's text followed by the folded image descriptions.
+       * The loop's own copies of the prompt persisted above. pi-agent-core builds
+       * those messages itself, so identity cannot match the persisted row; the
+       * text can. It is a set of *objects*, not a one-shot latch: the same copy
+       * is offered twice (at the step boundary, then again in `newMessages`), and
+       * a latch only caught the first offer — so the tail write appended the
+       * person's message a second time. `startsWith` because an image-carrying
+       * prompt is sent as the person's text followed by the folded image
+       * descriptions.
        */
+      const droppedPromptCopies = new Set<Message>()
       const isDuplicatePrompt = (message: Message): boolean => {
-        if (!persistedPromptMessage || promptDeduped || message === persistedPromptMessage) return false
+        if (!persistedPromptMessage || message === persistedPromptMessage) return false
+        if (droppedPromptCopies.has(message)) return true
         if (message.role !== 'user') return false
         const raw = (message as any).content
         const text = typeof raw === 'string'
@@ -4866,9 +4871,10 @@ export class AgentGateway {
             ? raw.filter((block: any) => block?.type === 'text').map((block: any) => block.text).join('')
             : ''
         if (!text.trim().startsWith(prompt.trim())) return false
-        promptDeduped = true
+        droppedPromptCopies.add(message)
         return true
       }
+
 
       const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         provider,

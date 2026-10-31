@@ -89,7 +89,13 @@ mock.module('../lib/prisma', () => ({
 
 // Only the access check the route uses; the delivery service's own access
 // rules are covered by `chat-mention-delivery.test.ts`.
+//
+// The real module is spread in: the route's import graph pulls in middleware
+// that needs the full surface (`decide`, `denialResponse`, …), and a two-key
+// mock makes that a module-link error rather than a test failure.
+const actualAuthz = await import('../lib/authz')
 mock.module('../lib/authz', () => ({
+  ...actualAuthz,
   loadAccess: async () => ({ permissions: new Set(['project:read']) }),
   accessibleProjectsWhere: async () => ({}),
 }))
