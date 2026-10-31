@@ -78,7 +78,7 @@ const PROD_FAILURES: Fixture[] = [
   {
     bucket: 'request shape 400 (roles must alternate)',
     raw: '400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: roles must alternate between \\"user\\" and \\"assistant\\""}}',
-    expected: 'unknown',
+    expected: 'invalid_request',
   },
   { bucket: 'tool-call id crash in our code', raw: 'msg.content.map is not a function', expected: 'unknown' },
   { bucket: 'JS identifier naming a tool call id', raw: 'TypeError in sanitizeToolCallIds(toolCallId)', expected: 'unknown' },
@@ -113,7 +113,7 @@ describe('isFailoverFailure', () => {
     expect(isFailoverFailure('refusal')).toBe(true)
     expect(isFailoverFailure('content_filter')).toBe(true)
     expect(isFailoverFailure('upstream_400')).toBe(true)
-    for (const cls of ['usage_limit', 'iteration_ceiling', 'network', 'unknown', 'bad_image', 'bad_tool_id', 'too_large', 'aborted_by_user'] as TurnFailureClass[]) {
+    for (const cls of ['usage_limit', 'iteration_ceiling', 'network', 'unknown', 'bad_image', 'bad_tool_id', 'too_large', 'aborted_by_user', 'invalid_request'] as TurnFailureClass[]) {
       expect(isFailoverFailure(cls)).toBe(false)
     }
   })

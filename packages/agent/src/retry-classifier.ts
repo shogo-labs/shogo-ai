@@ -61,6 +61,7 @@ export type TurnFailureClass =
   | 'refusal'
   | 'content_filter'
   | 'upstream_400'
+  | 'invalid_request'
   | 'network'
   | 'unknown'
 
@@ -157,9 +158,9 @@ export function classifyTurnFailure(input: TurnFailureInput): TurnFailureClass {
   if (reason === 'aborted') return 'aborted_by_user'
 
   if (UPSTREAM_400_FAILURE.test(raw)) return 'upstream_400'
-  // `invalid_request` is our own payload shape (a bare 400, a role-ordering
-  // complaint, a crash). Another family would reject it identically, so it
-  // stays `unknown` and never earns a failover.
+  // A request-shape 400 (role ordering, invalid params, a malformed payload)
+  // fails identically on every family, so it is never failover-eligible.
+  if (reason === 'invalid_request') return 'invalid_request'
   return 'unknown'
 }
 
@@ -177,6 +178,9 @@ export function buildTurnFailureMessage(cls: TurnFailureClass | undefined, toolC
   }
   if (cls === 'content_filter') {
     return `The model provider's content filter blocked this request.${steps} Try rephrasing it, or continue with a different model.`
+  }
+  if (cls === 'invalid_request') {
+    return `The request to the model was rejected as malformed.${steps} Send another message to pick up from here; if it keeps happening, start a new conversation.`
   }
   return `The model couldn't finish this step.${steps} Your work so far is saved — send another message to pick up from here.`
 }
