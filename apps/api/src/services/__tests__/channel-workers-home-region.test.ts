@@ -90,7 +90,15 @@ const mockPrisma = {
 }
 
 mock.module('../../lib/prisma', () => ({ prisma: mockPrisma }))
+// `mock.module` replaces the whole module, so override on top of the real
+// exports. Without the spread, any transitively-imported module that needs
+// another region export (billing.service reads `getPeer`) dies with
+// "Export named 'getPeer' not found" — which is what a partial mock here did
+// to the required check once `project-lifecycle.service.ts` reached
+// `model-access` → `billing.service` (SHO-264).
+const realRegion = await import('../../lib/region')
 mock.module('../../lib/region', () => ({
+  ...realRegion,
   homeRegionWorkspaceWhere: () => state.home,
   homeWorkspaceIds: async (ids: string[]) =>
     state.home ? new Set(ids.filter((id) => state.homeIds.has(id))) : null,
