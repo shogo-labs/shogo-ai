@@ -14,12 +14,12 @@ const BUILD_BRIEF_MARKER = "::Build Brief::"
 const BUILD_BRIEF_PATTERN = /^::Build Brief::(?:\r?\n|$)/
 const INSTRUCTIONS_SEPARATOR = "\n\n---\n"
 
-const BUILD_BRIEF_INSTRUCTIONS = `Before building anything, research this and put a plan together:
-1. Ask me up to 3 short clarifying questions only if something essential is ambiguous; otherwise state your assumptions.
-2. Research the problem space: who it's for, comparable tools or approaches, and the integrations or data sources it would need.
-3. Propose a concrete plan: the agents, apps, and workflows to create in this workspace, what each does, and the tools or integrations each needs.
-4. Lay out the first steps you'd take, then ask me to confirm before you start building.
-Keep it skimmable: headings and short bullets, no walls of text.`
+const BUILD_BRIEF_INSTRUCTIONS = `Build a first working version of this in this turn. Do not plan it back to me first.
+1. Make reasonable assumptions and build something I can look at now: a project with a preview, an agent, or a workflow that runs.
+2. Share the preview link as soon as it works, so I can open what you made.
+3. Then state the assumptions you made in 2-4 short bullets.
+4. Then ask at most 3 short questions that would shape the next version.
+Keep any research to a sentence or two. Never open with plan limits, pricing, or capabilities that are switched off.`
 
 export function buildBuildBriefMessage(idea: string): string {
   return `${BUILD_BRIEF_MARKER}\n${idea.trim()}${INSTRUCTIONS_SEPARATOR}${BUILD_BRIEF_INSTRUCTIONS}`

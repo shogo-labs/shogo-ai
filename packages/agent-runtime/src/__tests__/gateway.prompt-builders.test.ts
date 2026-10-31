@@ -283,7 +283,11 @@ describe('loadBootstrapContext profile routing', () => {
     gw.setAccountContext({ modelDisplayName: 'Hoshi 2.0', planId: 'free', canPublishSubdomain: false })
     const out: string = (gw as any).loadBootstrapContext()
     expect(out).toContain('## Account')
-    expect(out).toMatch(/requires Pro or higher/)
+    // SHO-258 §6: the plan is mentioned for publishing, never as an opener, and
+    // sharing is the preview URL — not a Pro upsell.
+    expect(out).toMatch(/cannot publish to a `\*\.shogo\.one` subdomain/)
+    expect(out).toMatch(/Sharing means the preview URL/)
+    expect(out).not.toMatch(/requires Pro or higher/)
     gw.setAccountContext({})
     expect((gw as any).loadBootstrapContext()).not.toContain('## Account')
   })

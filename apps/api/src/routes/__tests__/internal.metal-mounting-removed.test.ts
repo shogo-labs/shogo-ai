@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * On metal a project is online only in its own runtime, so the live member
- * mount routes answer 410 `mounting_removed` while still recording (or
- * removing) the durable attachment.
+ * mount routes record (or remove) the durable attachment and report
+ * `mounted: false`. They used to answer 410 `mounting_removed`, which made
+ * `project_attach` fail on every call (SHO-258 §3a).
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
@@ -68,42 +69,46 @@ afterEach(() => {
   else process.env.SHOGO_LOCAL_MODE = saved.local
 })
 
-describe('metal: live member mounts are removed', () => {
-  test('session member POST records the attachment and answers 410 without mounting', async () => {
+describe('metal: live member mounts report mounted:false instead of failing', () => {
+  test('session member POST records the attachment and answers 200 without mounting', async () => {
     const res = await app.request(`/workspaces/${w.workspaceA}/sessions/${sessionId}/members`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ projectId: w.projects.open }),
     })
-    expect(res.status).toBe(410)
+    expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.error.code).toBe('mounting_removed')
+    expect(body.ok).toBe(true)
+    expect(body.mounted).toBe(false)
+    expect(body.note).toContain('connect_project')
     expect(body.attached.projectId).toBe(w.projects.open)
     expect(await db.chatSessionProject.findMany({ where: { sessionId } })).toHaveLength(1)
     expect(mountCalls).toEqual([])
   })
 
-  test('session member DELETE removes the attachment and answers 410 without unmounting', async () => {
+  test('session member DELETE removes the attachment and answers 200 without unmounting', async () => {
     const res = await app.request(`/workspaces/${w.workspaceA}/sessions/${sessionId}/members/${w.projects.open}`, {
       method: 'DELETE',
       headers,
       body: JSON.stringify({}),
     })
-    expect(res.status).toBe(410)
-    expect((await res.json()).removed).toBe(true)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.mounted).toBe(false)
+    expect(body.removed).toBe(true)
     expect(await db.chatSessionProject.findMany({ where: { sessionId } })).toHaveLength(0)
     expect(mountCalls).toEqual([])
   })
 
-  test('project attachment POST records the durable edge and answers 410 without mounting', async () => {
+  test('project attachment POST records the durable edge and answers 201 without mounting', async () => {
     const res = await app.request(`/projects/${w.projects.restricted}/attachments`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ attachedProjectId: w.projects.open }),
     })
-    expect(res.status).toBe(410)
+    expect(res.status).toBe(201)
     const body = await res.json()
-    expect(body.error.code).toBe('mounting_removed')
+    expect(body.ok).toBe(true)
     expect(body.mounted).toBe(false)
     expect(body.attachment.attachedProjectId).toBe(w.projects.open)
     const edges = await db.projectAttachment.findMany({ where: { projectId: w.projects.restricted } })

@@ -10,10 +10,14 @@ describe('workspace meta-agent tools', () => {
       WORKSPACE_RUNTIME: process.env.WORKSPACE_RUNTIME,
       WORKSPACE_ID: process.env.WORKSPACE_ID,
       SHOGO_API_URL: process.env.SHOGO_API_URL,
+      WORKSPACE_ANCHOR_PROJECT_ID: process.env.WORKSPACE_ANCHOR_PROJECT_ID,
     }
     const originalFetch = globalThis.fetch
     const calls: Array<{ url: string; method: string; body?: any }> = []
     try {
+      // A project-anchored runtime (the normal cloud case) does not offer
+      // mount/unmount, so the workspace case has to unset the anchor.
+      delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
       process.env.WORKSPACE_RUNTIME = 'true'
       process.env.WORKSPACE_ID = 'ws-test'
       process.env.SHOGO_API_URL = 'http://api.test'
@@ -132,26 +136,29 @@ describe('workspace meta-agent tools', () => {
     })
   })
 
-  it('preview_project mounts once when the project is not attached, then starts the preview', async () => {
+  it('preview_project asks the API when the project is not attached — it never mounts', async () => {
+    // Mounting a foreign project into this runtime was removed (#1352) and
+    // answered 410 `mounting_removed`, which is how a project the agent had
+    // just built ended up with "no longer mounted" (SHO-258 §3).
     await withWorkspaceEnv({ PORT: '37287' }, async () => {
       const calls: string[] = []
       globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input)
         calls.push(`${init?.method || 'GET'} ${url}`)
-        if (url.includes('/preview/start') && calls.filter((c) => c.includes('/preview/start')).length === 1) {
+        if (url.includes('/preview/start')) {
           return Response.json({ error: 'project_not_attached' }, { status: 404 })
         }
-        if (url.includes('/members')) {
-          return Response.json({ ok: true, attached: { projectId: 'COUNTER' } })
+        if (url.includes('/api/internal/')) {
+          return Response.json({ projectId: 'COUNTER', url: 'https://pod-7.example/p/COUNTER/', status: 'ready' })
         }
-        return Response.json({ ok: true, phase: 'running' })
+        throw new Error(`unexpected call ${url}`)
       }) as typeof fetch
       const preview = createTools(wsCtx()).find((tool) => tool.name === 'preview_project')
       const result = await preview!.execute('call-1', { projectId: 'COUNTER' })
       expect(calls[0]).toBe('POST http://localhost:37287/p/COUNTER/preview/start')
-      expect(calls[1]).toContain('/sessions/session-1/members')
-      expect(calls[2]).toBe('POST http://localhost:37287/p/COUNTER/preview/start')
-      expect(result.details.url).toBe('http://localhost:37287/p/COUNTER/')
+      expect(calls[1]).toContain('/api/internal/workspaces/ws-test/sessions/session-1/projects/COUNTER/preview')
+      expect(calls.some((c) => c.includes('/members'))).toBe(false)
+      expect(result.details.url).toBe('https://pod-7.example/p/COUNTER/')
     })
   })
 
