@@ -119,8 +119,16 @@ beforeAll(async () => {
 
     if (mode === 'preview' && url.includes('/preview/start')) {
       previewStarts++
+      // The merged-root route 404s for a project this runtime doesn't serve;
+      // since #1352 mounting was removed, so `preview_project` must ask the API
+      // instead of mounting (SHO-258 §3a).
       if (previewStarts === 1) return send(res, 404, { error: 'project_not_attached' })
       return send(res, 200, { ready: true })
+    }
+    if (mode === 'preview' && url.endsWith('/preview') && req.method === 'POST') {
+      // The API path the tool falls back to: it resolves the project's own
+      // runtime and returns the one reachable URL.
+      return send(res, 200, { url: `http://localhost:${port}/p/proj-anchor/`, mode: 'metal', status: 'ready' })
     }
     if (mode === 'preview' && url.includes('/members') && req.method === 'POST') {
       mountAttempts++
@@ -346,16 +354,23 @@ describe('mount and preview against the workspace API', () => {
     expect(JSON.stringify(result.details)).not.toMatch(/cloudflare|<html/i)
   })
 
-  test('preview_project mounts once after project_not_attached, then starts', async () => {
+  test('preview_project goes to the API on project_not_attached and never mounts the project', async () => {
+    // SHO-258 §3a: mounting a member project into this runtime was removed
+    // (#1352, `mounting_removed`), so the tool asks the API — which resolves the
+    // project's own runtime — instead of mounting and retrying. That is the one
+    // path that works on both substrates, and it is why this spec no longer
+    // expects a mount attempt.
     armWorkspaceEnv()
     setEnv('PORT', String(port))
     const dir = tempDir('ws-preview-')
     mode = 'preview'
     const result = await tool(workspace(dir), 'preview_project').execute('t', { projectId: 'proj-anchor' })
-    expect(previewStarts).toBe(2)
-    expect(mountAttempts).toBe(1)
-    expect(result.details.ready).toBe(true)
+    expect(previewStarts).toBe(1)
+    expect(mountAttempts).toBe(0)
     expect(result.details.url).toBe(`http://localhost:${port}/p/proj-anchor/`)
+    expect(result.details.projectId).toBe('proj-anchor')
+    // No mount request was made for the project at all.
+    expect(hits.some((h) => h.url.includes('/members') && h.method === 'POST')).toBe(false)
   })
 
   test('every file and shell tool aimed at an unreachable project returns the attach remedy', async () => {

@@ -37,6 +37,13 @@ model User {
   lastSeenAnnouncementVersion String?
   onboardingIntent            String?
   buddyLook                   String?
+  // Activation funnel timestamps (SHO-258 §§2,7). `firstCapHitAt` is the first
+  // time a usage gate answered 402 for this user; `firstPreviewSeenAt` is the
+  // first time they opened one of their own project previews. Both are written
+  // once (updateMany ... where null) and shown as funnel steps, so they stay
+  // null for users who never got that far.
+  firstCapHitAt               DateTime?
+  firstPreviewSeenAt          DateTime?
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 
@@ -1326,6 +1333,8 @@ model UsageWallet {
   overageOutstandingInvoiceId  String?
   overageOutstandingUsd        Float     @default(0)
   overageOutstandingInvoiceUrl String?
+  // See prisma/schema.prisma UsageWallet.capNotifyPendingAt.
+  capNotifyPendingAt          DateTime?
   // JSON-encoded per-period alert dedupe ledger (Json? on PG). See
   // prisma/schema.prisma UsageWallet.alertsSentThisPeriod.
   alertsSentThisPeriod         String?

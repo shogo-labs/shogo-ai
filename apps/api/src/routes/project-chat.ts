@@ -1329,12 +1329,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
         chatSpan.setAttribute("error.type", code)
         chatSpan.end()
-        // FIRE-AND-FORGET: track usage limit hit for conversion campaign C1
+        // The cap is recorded by buildUsageLimitInfo (firstCapHitAt + hit_cap),
+        // the single place every 402 goes through.
         const limitUserId = (parsedBody as any)?.userId || c.req.header("X-Billing-User-Id")
-        if (limitUserId && limitUserId !== 'system') {
-          trackEvent(limitUserId, 'usage_limit_hit', { project_id: projectId }).catch(() => {})
-        }
-        const { resetsAt, window } = await buildUsageLimitInfo(project.workspaceId)
+        const { resetsAt, window } = await buildUsageLimitInfo(project.workspaceId, {
+          userId: limitUserId,
+          source: 'project-chat',
+        })
         return c.json(
           { error: { code, message, resetsAt, window } },
           402

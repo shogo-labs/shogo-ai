@@ -58,7 +58,7 @@ import { buildExposedPortsPrompt } from './exposed-ports-prompt'
 import { buildConcurrentChatsPrompt, concurrentChatLabel, type ConcurrentChat } from './concurrent-chats-prompt'
 import { HookEmitter, loadAllHooks, workspaceHooksSignature } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
-import { SessionManager, type SessionManagerConfig, applyToolResultBudget, isChatSessionId, snipConsumedResults } from './session-manager'
+import { SessionManager, type SessionManagerConfig, applyToolResultBudget, isChatSessionId, resolveIdleCompactAfterMs, snipConsumedResults } from './session-manager'
 import { microcompact } from './microcompact'
 import {
   type ContentReplacementState,
@@ -3400,6 +3400,11 @@ export class AgentGateway {
     chatContext?: ChatContext,
     turnOrigin?: TurnOrigin,
   ): Promise<string> {
+    // How long this session sat idle before the turn started (SHO-259). Read
+    // first, before anything in the turn touches `lastActivityAt` — after a
+    // wait this long the prompt cache is cold, so summarizing now is free.
+    const idleGapMs = this.sessionManager.idleGapMs(sessionId)
+
     // Resolve the surface up front and remember it for the session, so every
     // capability decision this turn makes — tools, prompt block, the
     // capabilities_configure tool — reads the same config.
@@ -3923,7 +3928,7 @@ export class AgentGateway {
     // Multi-layer context compaction pipeline (Layers 1-4)
     //
     // One cap, in one place: the resolved model's real window minus the
-    // output/buffer reserve, capped at AGENT_AUTOCOMPACT_TOKENS (200k). Until
+    // output/buffer reserve, capped at AGENT_AUTOCOMPACT_TOKENS (235k). Until
     // SHO-96 nothing ever set the window, so a 1M-window haiku/opus turn was
     // budgeted at 200k while the provider accepted 400k, and summarization —
     // which could only run at a turn boundary anyway — never fired mid-turn.
@@ -3951,8 +3956,20 @@ export class AgentGateway {
       console.log(`${this.logPrefix} Microcompact saved ~${mc.tokensSaved} tokens for session ${sessionId}`)
     }
 
-    // Layer 4: LLM autocompact if still over threshold after cheap layers
-    if (this.sessionManager.estimateTokens(session) > this.sessionManager.autocompactThreshold) {
+    // Layer 4: LLM autocompact if still over threshold after cheap layers, or
+    // if the turn is resuming after a wait long enough that the prompt cache
+    // is already cold (SHO-259) — summarizing then costs no cache and makes
+    // the full write the next request pays smaller. The idle path keeps a
+    // floor: below it the kept tail is the whole context, so a summary would
+    // fold nothing and only lose detail.
+    const contextBeforeLayer4 = this.sessionManager.estimateTokens(session)
+    const idleCompactAfterMs = resolveIdleCompactAfterMs()
+    const idleCompaction =
+      idleCompactAfterMs > 0 &&
+      idleGapMs > idleCompactAfterMs &&
+      contextBeforeLayer4 > this.sessionManager.compactionTailBudgetTokens
+    if (contextBeforeLayer4 > this.sessionManager.autocompactThreshold || idleCompaction) {
+      const compactionTrigger = idleCompaction ? 'idle' : 'pre-turn'
       const fileStateSummary = this.fileStateCache.size > 0
         ? this.fileStateCache.getSummary(this.workspaceDir)
         : undefined
@@ -3961,7 +3978,7 @@ export class AgentGateway {
         turnCompaction = { before: preCompactResult.messagesBefore, after: preCompactResult.messagesAfter }
         recordCompaction({
           sessionId,
-          trigger: 'pre-turn',
+          trigger: compactionTrigger,
           messagesBefore: preCompactResult.messagesBefore,
           messagesAfter: preCompactResult.messagesAfter,
           summaryChars: preCompactResult.summary.length,
@@ -3970,7 +3987,7 @@ export class AgentGateway {
           foldedRounds: preCompactResult.foldedRounds ?? 0,
         })
         console.log(
-          `${this.logPrefix} Pre-turn autocompact: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
+          `${this.logPrefix} ${idleCompaction ? 'Idle' : 'Pre-turn'} autocompact after ${Math.round(idleGapMs / 1000)}s idle: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
         )
         // Autocompact rewrites the prefix — drop stable-compaction state so
         // the new transformContext decisions are taken against the new history.
@@ -4692,6 +4709,13 @@ export class AgentGateway {
         tailBudgetTokens: this.sessionManager.compactionTailBudgetTokens,
         minKeepMessages: 1,
         promptOverheadTokens,
+        // A gap longer than this between two model calls means the loop was off
+        // the model (a `wait`, a blocking subagent/project call, a long `exec`)
+        // and the prompt cache is cold, so summarizing costs no cache and makes
+        // the next full write smaller (SHO-259). Floor: below it the kept tail
+        // is the whole context, so a summary would only lose detail.
+        idleCompactAfterMs: resolveIdleCompactAfterMs(),
+        idleCompactFloorTokens: this.sessionManager.compactionTailBudgetTokens,
         summarize: (head, previousSummary) => this.sessionManager.summarizeHead(head, previousSummary),
         apply: (summary, splitIndex, opts) => {
           // Session-relative index: the loop's array may include a head that a
@@ -4820,7 +4844,7 @@ export class AgentGateway {
             runningContextEstimate = event.tokensAfter
             recordCompaction({
               sessionId,
-              trigger: 'mid-turn',
+              trigger: event.reason === 'idle' ? 'idle' : 'mid-turn',
               messagesBefore: event.messagesBefore,
               messagesAfter: event.messagesAfter,
               summaryChars: event.summaryChars,
@@ -4828,7 +4852,7 @@ export class AgentGateway {
               toolsUsed: [],
             })
             console.log(
-              `${this.logPrefix} Mid-turn summarization (${event.trigger}): ` +
+              `${this.logPrefix} Mid-turn summarization (${event.trigger}/${event.reason}): ` +
               `${event.tokensBefore} -> ${event.tokensAfter} tokens, ` +
               `${event.messagesBefore} -> ${event.messagesAfter} messages ` +
               `(cap ${autoCompactTokens}, window ${modelContextWindowTokens}) for session ${sessionId}`,
@@ -5436,8 +5460,7 @@ export class AgentGateway {
 
       // Turn-boundary telemetry (SHO-122): what this turn started with, what the
       // previous turn actually contained at that moment, and the cache numbers
-      // of its first model call. Emitted before any post-turn compaction, so
-      // `compactedHere` describes the boundary itself.
+      // of its first model call.
       recordTurnBoundary({
         sessionId,
         model: modelId,
@@ -5453,50 +5476,13 @@ export class AgentGateway {
         cacheWriteTokens: turnFirstCallUsage?.cacheWrite ?? null,
       })
 
-      if (this.sessionManager.needsCompaction(session)) {
-        const fileStateSummary = this.fileStateCache.size > 0
-          ? this.fileStateCache.getSummary(this.workspaceDir)
-          : undefined
-        const tokensBeforePostTurn = this.sessionManager.estimateTokens(session)
-        const compactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
-        if (compactResult) {
-          recordCompaction({
-            sessionId,
-            trigger: 'post-turn',
-            messagesBefore: compactResult.messagesBefore,
-            messagesAfter: compactResult.messagesAfter,
-            summaryChars: compactResult.summary.length,
-            filesTouched: compactResult.filesTouched ?? [],
-            toolsUsed: compactResult.toolsUsed ?? [],
-            foldedRounds: compactResult.foldedRounds ?? 0,
-          })
-          console.log(
-            `${this.logPrefix} Post-turn compaction: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
-          )
-          // Prefix rewritten — drop stable-compaction state. Next turn's
-          // transformContext takes fresh decisions against the new history.
-          this.contentReplacementStates.delete(sessionId)
-          runningContextEstimate = this.sessionManager.estimateTokens(session)
-          // Same transcript row as a mid-turn summarization: every compaction
-          // shows up in history exactly once, whichever layer ran it (SHO-96).
-          if (uiWriter) {
-            try {
-              uiWriter.write({
-                type: 'data-context-summarized',
-                data: {
-                  trigger: 'auto',
-                  tokensBefore: tokensBeforePostTurn,
-                  tokensAfter: runningContextEstimate,
-                  messagesBefore: compactResult.messagesBefore,
-                  messagesAfter: compactResult.messagesAfter,
-                  summaryChars: compactResult.summary.length,
-                  contextWindowTokens,
-                },
-              } as any)
-            } catch { /* client gone — the row still persists via the API */ }
-          }
-        }
-      }
+      // No summarization at the end of a turn (SHO-259). Summarizing rewrites
+      // the prompt prefix, so the *next* request pays a full cache write — and
+      // the next turn is usually a quick reply or a `[Task update]` that would
+      // have read the warm cache. A session that ends a turn over the cap is
+      // summarized by the next turn's pre-turn Layer 4, or by the idle rule
+      // when that turn resumes after a wait long enough for the cache to be
+      // cold anyway. `addMessages`' return value stays informational only.
 
       this.sessionManager.touch(sessionId)
 

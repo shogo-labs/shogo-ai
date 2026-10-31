@@ -502,6 +502,18 @@ export interface ChatInputProps {
    * between the composer's bordered box and the panel edges.
    */
   flush?: boolean;
+  /**
+   * In-place paste/edit target inside a past message (SHO-263). Keeps
+   * text, paste, attachments, mentions and the model picker, and drops
+   * the send/stop/voice chrome — the caller renders its own footer
+   * (Cancel + a labelled Send) under the box.
+   */
+  inlineEdit?: boolean;
+  /**
+   * Reports the live draft (text + attachment count) so an inline editor
+   * can tell an untouched draft from an edited one.
+   */
+  onComposerDraftChange?: (draft: { text: string; fileCount: number }) => void;
   /** The workspace-agent shell uses a quieter, focused composer. */
   presentation?: "agent" | "studio";
   /**
@@ -578,6 +590,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   dimWhenDisabled = true,
   highlighted = false,
   flush = false,
+  inlineEdit = false,
+  onComposerDraftChange,
   presentation = "studio",
   agentControls = true,
   leadingControls,
@@ -782,6 +796,13 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       setTimeout(() => textInputRef.current?.focus(), 0);
     onDraftRestored?.(restoreDraftRequest.nonce);
   }, [restoreDraftRequest, cancelPendingTextChangeFlush, onDraftRestored]);
+
+  // Inline-edit callers need to know whether the draft still matches the
+  // message being edited (outside-click closes an untouched draft only) and
+  // which label the submit button should carry.
+  useEffect(() => {
+    onComposerDraftChange?.({ text: inputValue, fileCount: pendingFiles.length });
+  }, [onComposerDraftChange, inputValue, pendingFiles.length]);
 
   const [showSkillPicker, setShowSkillPicker] = useState(false);
   const [filterText, setFilterText] = useState("");
@@ -3275,7 +3296,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                   </>
                 )}
 
-                {submitting ? (
+                {inlineEdit ? null : submitting ? (
                   <ComposerSendButton
                     canSend={false}
                     loading

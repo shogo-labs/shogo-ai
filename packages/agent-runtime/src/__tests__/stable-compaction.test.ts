@@ -613,10 +613,11 @@ describe('resolveInLoopContextBudgetTokens', () => {
     else process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS = original
   }
 
-  test('defaults to 180K and is capped by the model ceiling', () => {
+  test('defaults to the 235K summarize cap and is capped by the model ceiling', () => {
     delete process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS
     expect(resolveInLoopContextBudgetTokens()).toBe(DEFAULT_INLOOP_CONTEXT_BUDGET_TOKENS)
-    expect(resolveInLoopContextBudgetTokens(1_000_000)).toBe(180_000)
+    expect(resolveInLoopContextBudgetTokens(1_000_000)).toBe(235_000)
+    expect(resolveInLoopContextBudgetTokens(235_000)).toBe(235_000)
     expect(resolveInLoopContextBudgetTokens(168_616)).toBe(168_616)
     restore()
   })
@@ -625,7 +626,7 @@ describe('resolveInLoopContextBudgetTokens', () => {
     process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS = '120000'
     expect(resolveInLoopContextBudgetTokens(1_000_000)).toBe(120_000)
     process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS = 'lots'
-    expect(resolveInLoopContextBudgetTokens()).toBe(180_000)
+    expect(resolveInLoopContextBudgetTokens()).toBe(235_000)
     restore()
   })
 

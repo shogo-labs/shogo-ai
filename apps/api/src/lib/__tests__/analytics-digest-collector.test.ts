@@ -12,9 +12,12 @@ let funnelImpl: any = async () => ({
   avgMinToFirstProject: 1,
   avgMinToFirstMessage: 1,
 })
-let activityImpl: any = async () => ({
-  total: 1,
-  users: [{ spendUsd: 2, toolCalls: 3, messages: 4, sessions: 5 }],
+let totalsImpl: any = async () => ({
+  activeUsers: 1,
+  totalMessages: 4,
+  totalSessions: 5,
+  totalToolCalls: 3,
+  totalSpendUsd: 2,
 })
 let templatesImpl: any = async () => ({ templates: [] })
 let sourcesImpl: any = async () => ({ sources: [] })
@@ -22,7 +25,7 @@ let convosImpl: any = async () => ({ conversations: [] })
 
 mock.module('../../services/analytics.service', () => ({
   getUserFunnel: (...a: any[]) => funnelImpl(...a),
-  getUserActivityTable: (...a: any[]) => activityImpl(...a),
+  getDigestTotals: (...a: any[]) => totalsImpl(...a),
   getTemplateEngagement: (...a: any[]) => templatesImpl(...a),
   getChatConversations: (...a: any[]) => convosImpl(...a),
   getSourceBreakdown: (...a: any[]) => sourcesImpl(...a),
@@ -103,7 +106,7 @@ beforeEach(() => {
     signups: 1, onboarded: 1, createdProject: 1, sentMessage: 1, engaged: 1,
     avgMinToFirstProject: 1, avgMinToFirstMessage: 1,
   })
-  activityImpl = async () => ({ total: 1, users: [{ spendUsd: 2, toolCalls: 3, messages: 4, sessions: 5 }] })
+  totalsImpl = async () => ({ activeUsers: 1, totalMessages: 4, totalSessions: 5, totalToolCalls: 3, totalSpendUsd: 2 })
   templatesImpl = async () => ({ templates: [{ id: 't1' }] })
   sourcesImpl = async () => ({ sources: [{ tag: 'web', count: 2 }] })
   convosImpl = async () => ({ conversations: [] })
@@ -343,9 +346,9 @@ describe('generateDigest', () => {
       calls.funnel = a
       return { signups: 0, onboarded: 0, createdProject: 0, sentMessage: 0, engaged: 0, avgMinToFirstProject: null, avgMinToFirstMessage: null }
     }
-    activityImpl = async (...a: any[]) => {
-      calls.activity = a
-      return { total: 0, users: [] }
+    totalsImpl = async (...a: any[]) => {
+      calls.totals = a
+      return { activeUsers: 0, totalMessages: 0, totalSessions: 0, totalToolCalls: 0, totalSpendUsd: 0 }
     }
     sourcesImpl = async (...a: any[]) => {
       calls.sources = a
@@ -361,7 +364,7 @@ describe('generateDigest', () => {
 
     expect(upsertCalls[0].where.date_period_region.date.toISOString()).toBe('2026-10-01T00:00:00.000Z')
     expect(calls.funnel).toEqual(['30d', true, asOf])
-    expect(calls.activity[1].asOf).toBe(asOf)
+    expect(calls.totals[0].asOf).toBe(asOf)
     expect(calls.sources).toEqual(['30d', true, asOf])
     expect(calls.convos[0].toISOString()).toBe('2026-09-30T08:00:00.000Z')
     expect(calls.convos[2]).toBe(asOf)

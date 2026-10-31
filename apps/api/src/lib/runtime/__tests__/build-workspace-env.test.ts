@@ -209,6 +209,13 @@ describe('buildWorkspaceEnv', () => {
     expect(k8s.SHOGO_DURABILITY_HOST_MEDIATED).toBeUndefined()
   })
 
+  it('forMetal stamps the substrate so preview_project asks the API instead of the local route', async () => {
+    const metal = await buildWorkspaceEnv('ws-1', ['p1'], { ...seams, forMetal: true } as any)
+    expect(metal.SHOGO_RUNTIME_SUBSTRATE).toBe('metal')
+    const k8s = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
+    expect(k8s.SHOGO_RUNTIME_SUBSTRATE).toBeUndefined()
+  })
+
   describe('home-state key', () => {
     const savedKey = process.env.SECRETS_ENCRYPTION_KEY
     afterEach(() => {

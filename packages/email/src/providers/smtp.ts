@@ -101,7 +101,7 @@ export class SmtpProvider implements IEmailProvider {
    * Send an email via SMTP
    */
   async send(params: SendEmailParams): Promise<EmailResult> {
-    const { to, subject, html, text, from, replyTo, cc, bcc } = params
+    const { to, subject, html, text, from, replyTo, cc, bcc, headers } = params
 
     if (!from) {
       throw EmailError.configMissing('from address')
@@ -128,6 +128,10 @@ export class SmtpProvider implements IEmailProvider {
 
       if (bcc) {
         mailOptions.bcc = this.formatRecipients(bcc)
+      }
+
+      if (headers && Object.keys(headers).length > 0) {
+        mailOptions.headers = headers
       }
 
       const info = await transporter.sendMail(mailOptions)

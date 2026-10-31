@@ -176,6 +176,7 @@ export function buildCapabilityStatusSection(
   }
   lines.push(
     '',
+    'Never open a reply by listing disabled capabilities or plan limits. Mention one only when the user\'s request needs it, in one line, and carry on with what does work.',
     scope === 'workspace'
       ? 'You can turn these on or off for the workspace with `capabilities_configure` (it uses the workspace scope here by default; pass `scope: "project"` to change a project\'s). Changes apply from your next turn. Turn on a disabled capability when the user\'s task needs it, rather than telling them it is unavailable. Do not change a locked capability.'
       : 'You can turn these on or off for this project with `capabilities_configure`. Changes apply from your next turn. Turn on a disabled capability when the user\'s task needs it, rather than telling them it is unavailable. Do not change a locked capability.',

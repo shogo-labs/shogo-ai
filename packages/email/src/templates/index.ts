@@ -45,6 +45,10 @@ export {
   dripHeartbeatTemplate,
 } from './lifecycle/drip.js'
 
+// Lifecycle — Activation
+export { buildReadyTemplate } from './lifecycle/build-ready.js'
+export { creditsResetTemplate } from './lifecycle/credits-reset.js'
+
 // Lifecycle — Conversion
 export {
   conversionUsageLimitTemplate,
@@ -83,6 +87,8 @@ import {
   dripPowerUpTemplate,
   dripHeartbeatTemplate,
 } from './lifecycle/drip.js'
+import { buildReadyTemplate } from './lifecycle/build-ready.js'
+import { creditsResetTemplate } from './lifecycle/credits-reset.js'
 import {
   conversionUsageLimitTemplate,
   conversionPowerUserTemplate,
@@ -115,6 +121,9 @@ export const allTemplates: EmailTemplate[] = [
   dripReEngagementTemplate,
   dripPowerUpTemplate,
   dripHeartbeatTemplate,
+  // Lifecycle — Activation
+  buildReadyTemplate,
+  creditsResetTemplate,
   // Lifecycle — Conversion
   conversionUsageLimitTemplate,
   conversionPowerUserTemplate,

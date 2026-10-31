@@ -638,6 +638,14 @@ jobs:
           # so it needs the fake-model stack. Own entry: restarting a runtime
           # under a shared job costs every spec after it.
           - { name: 'E2E (task restart)', spec: 'chat-task-interrupted-restart' }
+          # chat-edit-resend (SHO-263) edits a past message against a live
+          # transcript: two real turns, an inline edit of the first, the
+          # dim + "N messages below will be replaced" divider, a resend with
+          # revert off, and an edit made while a turn is streaming. It needs
+          # the fake model, so it needs its own entry: left in the shards
+          # (where only E2E_LOCAL_START_STACK is set) it would `test.skip`
+          # itself and run nowhere (SHO-122).
+          - { name: 'E2E (chat edit resend)', spec: 'chat-edit-resend' }
           # agent-model-truth (SHO-145) seeds two `local` models into the stack's
           # SQLite file and checks /ai/v1/models against the runtime's model
           # cache entry by entry, so it needs the fake-model stack. Own entry,

@@ -75,8 +75,14 @@ function matchWhere<T extends Record<string, any>>(row: T, where?: any): boolean
       if (!v.some((w) => matchWhere(row, w))) return false
       continue
     }
+    if (k === 'NOT') {
+      if (matchWhere(row, v)) return false
+      continue
+    }
     const rv = row[k]
     if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date)) {
+      if ('endsWith' in v && !(typeof rv === 'string' && rv.toLowerCase().endsWith(String(v.endsWith).toLowerCase()))) return false
+      if ('contains' in v && !(typeof rv === 'string' && rv.toLowerCase().includes(String(v.contains).toLowerCase()))) return false
       if ('gte' in v && !(rv instanceof Date && rv >= v.gte)) return false
       if ('lte' in v && !(rv instanceof Date && rv <= v.lte)) return false
       if ('lt' in v && !(rv instanceof Date && rv < v.lt)) return false
@@ -288,6 +294,22 @@ describe('getOverviewStats', () => {
     expect((out as any).totalWorkspaces).toBe(1)
     expect((out as any).activeSubscriptions).toBe(1)
   })
+
+  test('the Total Users tile leaves internal accounts out (SHO-258 §7)', async () => {
+    // The headline number the card was opened about: Shogo, the test domain and
+    // every Odin domain are internal and must not be counted as users.
+    store.users.push(
+      { id: 'u-real', email: 'real@example.com', role: 'user' },
+      { id: 'u-shogo', email: 'dev@shogo.ai', role: 'user' },
+      { id: 'u-test', email: 'qa@test.shogo.ai', role: 'user' },
+      { id: 'u-odin-ai', email: 'russell@getodin.ai', role: 'user' },
+      { id: 'u-odin-io', email: 'someone@getodin.io', role: 'user' },
+      { id: 'u-admin', email: 'ops@elsewhere.com', role: 'super_admin' },
+    )
+    rebuildModels()
+    const out = await analytics.getOverviewStats()
+    expect((out as any).totalUsers).toBe(1)
+  })
 })
 
 // =========================================================================
@@ -318,6 +340,19 @@ describe('getGrowthTimeSeries', () => {
     expect(day.workspaces).toBe(1)
     expect(day.projects).toBe(1)
     expect(day.sessions).toBe(1)
+  })
+
+  test('the platform growth curve leaves internal accounts out (SHO-258 §7)', async () => {
+    const now = new Date()
+    store.users.push(
+      { id: 'u-real', email: 'real@example.com', role: 'user', createdAt: now },
+      { id: 'u-shogo', email: 'dev@shogo.ai', role: 'user', createdAt: now },
+      { id: 'u-odin', email: 'russell@getodin.ai', role: 'user', createdAt: now },
+    )
+    rebuildModels()
+    const out = (await analytics.getGrowthTimeSeries()) as Array<Record<string, unknown>>
+    const totalUsersPoints = out.reduce((s, p) => s + Number(p.users ?? 0), 0)
+    expect(totalUsersPoints).toBe(1)
   })
 })
 
@@ -1652,6 +1687,8 @@ describe('raw-SQL paths via $queryRawUnsafe stub', () => {
         createdProject: 5,
         sentMessage: 4,
         engaged: 2,
+        sawPreview: 2,
+        hitCap: 3,
         avgMinToFirstProject: 12.3,
         avgMinToFirstMessage: 33.7,
       },
@@ -1659,6 +1696,9 @@ describe('raw-SQL paths via $queryRawUnsafe stub', () => {
     const out = await analytics.getUserFunnel()
     expect(out.signups).toBe(10)
     expect(out.engaged).toBe(2)
+    // The two activation steps behind the numbers (SHO-258 §7).
+    expect(out.sawPreview).toBe(2)
+    expect(out.hitCap).toBe(3)
     expect(out.avgMinToFirstProject).toBe(12.3)
   })
 

@@ -85,10 +85,15 @@ describe('analytics.service.ts — Postgres dialect branches (SHOGO_LOCAL_MODE u
     await getGrowthTimeSeries()
     // One grouped COUNT per table: users, workspaces, projects, chat_sessions.
     expect(captured.length).toBe(4)
-    expect(captured.every((sql) => sql.includes(`date_trunc('day', "createdAt")`))).toBe(true)
+    expect(
+      captured.every((sql) => /date_trunc\('day', (?:u\.)?"createdAt"\)/.test(sql)),
+    ).toBe(true)
     expect(captured.every((sql) => sql.includes('$1'))).toBe(true)
     const tables = captured.map((sql) => sql.match(/FROM "(\w+)"/)?.[1])
     expect(tables).toEqual(['users', 'workspaces', 'projects', 'chat_sessions'])
+    // The users bucket is aliased so the shared internal-account filter applies.
+    const usersSql = captured.find((sql) => sql.includes('FROM "users"')) ?? ''
+    expect(usersSql).toContain('NOT ILIKE')
   })
 
 })

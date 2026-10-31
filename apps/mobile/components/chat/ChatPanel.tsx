@@ -73,6 +73,7 @@ import {
   stampSendTime,
   type OptimisticEchoInput as OptimisticUserInput,
 } from "./optimistic-echo"
+import { usePersistedMessageIds } from "./use-persisted-message-ids"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
 import { useMachineWorkspace } from "../instance/MachineWorkspaceBanner"
 import AsyncStorage from "@react-native-async-storage/async-storage"
@@ -292,9 +293,11 @@ import {
   MessageEditProvider,
   dispatchNativeInlineEditTap,
   type MessageEditOptions,
+  type PendingEditDraft,
 } from "./turns/MessageEditContext"
 import { TurnFooterProvider } from "./turns/TurnFooterContext"
 import { EditConfirmDialogHost } from "./turns/EditConfirmDialog"
+import { filesRevertedNote, formatRelativeTime } from "./turns/editResend"
 import { ContinueProjectChip, PhaseEmptyState } from "./empty"
 import { continueSuggestionFromMessages } from "@/lib/chat/continue-suggestion"
 import {
@@ -1174,9 +1177,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
       : true
   const refetchUsageWallet =
     billingData?.refetchUsageWallet ?? ownBillingData.refetchUsageWallet
+  // A user who has never taken a trial should be offered it right where they
+  // hit the limit, not sent to a pricing page to work it out.
+  const trialEligible = Boolean(
+    (billingData ? (billingData as any).trialEligible : (ownBillingData as any).trialEligible),
+  )
 
   const handleUpgradeClick = useCallback(() => {
     router.push("/(app)/billing" as any)
+  }, [router])
+
+  const handleStartTrialClick = useCallback(() => {
+    router.push("/(app)/billing?trial=business" as any)
   }, [router])
 
   // Panel state
@@ -1416,6 +1428,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [isFollowing, setIsFollowing] = useState(true)
   const [hasScrollableTranscript, setHasScrollableTranscript] = useState(false)
   const [nativeInlineEditing, setNativeInlineEditing] = useState(false)
+  // SHO-263: which past message is open in the in-place editor. Lives here so
+  // only one editor can be open at a time and TurnList can dim what follows.
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  // Whether the open editor's draft differs from the original message — set by
+  // InlineMessageEditor so clicking Edit on another row can't discard it.
+  const [inlineEditDirty, setInlineEditDirty] = useState(false)
+  // SHO-263: the in-flight edit draft, hoisted out of the editor so a failed
+  // truncate/rollback can re-open it with what the user typed (the optimistic
+  // collapse unmounts the row that owned it).
+  const [pendingEdit, setPendingEdit] = useState<PendingEditDraft | null>(null)
+  // "Files reverted to the checkpoint from …" notes, keyed by message id so
+  // the note travels with the resent message instead of a floating banner.
+  const [revertedNotes, setRevertedNotes] = useState<Record<string, string>>({})
+  const pendingRevertNoteRef = useRef<{ text: string; note: string } | null>(null)
   const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
   // Phone chrome renders the bottom nav outside this chat surface and that
   // nav owns the home-indicator inset. Reserving it here too created an extra
@@ -3485,6 +3511,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
+  // SHO-263: adopt the persisted `ChatMessage.id` for every bubble sent in
+  // this page session (see `use-persisted-message-ids`). Without this the
+  // transcript keeps useChat's nanoids, which no server route can resolve —
+  // `truncate-from` 404s and the edit silently rolls back.
+  const handleIdAdopted = useCallback((from: string, to: string) => {
+    // The swap can land while an editor is already open on that bubble (the
+    // POST resolves a beat after the send). Move the edit state onto the row
+    // id instead of letting the editor vanish under the user.
+    setEditingMessageId((prev) => (prev === from ? to : prev))
+    setPendingEdit((prev) =>
+      prev && prev.messageId === from ? { ...prev, messageId: to } : prev,
+    )
+    setRevertedNotes((prev) => {
+      const note = prev[from]
+      if (!note) return prev
+      const next = { ...prev }
+      delete next[from]
+      next[to] = note
+      return next
+    })
+  }, [])
+
+  const { adopt: adoptPersistedUserId } = usePersistedMessageIds(
+    messages,
+    setMessages,
+    handleIdAdopted,
+  )
+
+
   if (isActive && messages.length > 0) {
     cachedMessagesRef.current = messages
     if (currentSessionId) {
@@ -3799,8 +3854,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         errorDismissed,
         stoppedTurn: usageLimitNotice,
         currentSessionId,
+        trialEligible,
       }),
-    [error?.message, errorDismissed, usageLimitNotice, currentSessionId],
+    [error?.message, errorDismissed, usageLimitNotice, currentSessionId, trialEligible],
   )
   const usageLimitBlocked = usageLimitView?.variant === "blocked"
   useEffect(() => {
@@ -4688,6 +4744,47 @@ const ChatPanelContent = observer(function ChatPanelContent({
     currentSessionId,
     setMessages,
   ])
+
+  /**
+   * SHO-263: an edit/retry made while the agent is running must stop the run
+   * first, then wait for the stream to settle before truncating — otherwise
+   * the truncate races the in-flight turn and can leave an orphan reply.
+   */
+  const stopStreamingAndWait = useCallback(async () => {
+    if (!isStreamingRef.current) return
+    handleStop()
+    await new Promise<void>((resolve) => {
+      let waited = 0
+      const tick = () => {
+        // 20s covers a slow abort round-trip; the old 3s cap gave up while the
+        // stream was still writing and let the truncate race the live turn.
+        if (!isStreamingRef.current || waited >= 20_000) {
+          resolve()
+          return
+        }
+        waited += 50
+        setTimeout(tick, 50)
+      }
+      setTimeout(tick, 50)
+    })
+  }, [handleStop])
+
+  // Attach the "Files reverted…" note to the message the resend created, once
+  // it shows up in the transcript (we don't know its id until then).
+  useEffect(() => {
+    const pendingNote = pendingRevertNoteRef.current
+    if (!pendingNote) return
+    const target = [...messages]
+      .reverse()
+      .find(
+        (m) =>
+          m.role === "user" &&
+          extractTextContent(m).trim() === pendingNote.text.trim(),
+      )
+    if (!target) return
+    pendingRevertNoteRef.current = null
+    setRevertedNotes((prev) => ({ ...prev, [target.id]: pendingNote.note }))
+  }, [messages])
 
   // Keep the shared subagent-stop helper pointed at the current API/runtime
   // so SubagentCard (chat) and AgentEntry (agents panel) can cancel without
@@ -5988,6 +6085,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
           content: trimmedContent,
           parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
         })
+        .then((row) => {
+          // The row is the thing every server route addresses; hand its id to
+          // the bubble so edit/retry/feedback don't have to guess (SHO-263).
+          const rowId = (row as { id?: string } | undefined)?.id
+          if (rowId) adoptPersistedUserId(rowId, trimmedContent)
+        })
         .catch((err) =>
           console.warn("[ChatPanel] Failed to persist user message:", err),
         )
@@ -6143,6 +6246,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       maybeAutoNameSession,
       releaseStopSnapshot,
       showOptimisticEcho,
+      adoptPersistedUserId,
     ],
   )
 
@@ -7385,27 +7489,34 @@ const ChatPanelContent = observer(function ChatPanelContent({
       options: MessageEditOptions | undefined,
     ) => {
       if (!sessionMessages) {
-        console.warn("[ChatPanel] truncateAndResend without sessionMessages")
-        return
+        throw new Error("This chat is still loading — try again in a moment.")
       }
       const current = messagesRef.current
       const idx = current.findIndex((m) => m.id === messageId)
       if (idx === -1) {
-        console.warn(
-          "[ChatPanel] truncateAndResend: message not found locally",
-          messageId,
-        )
-        return
+        throw new Error("That message is no longer in this chat.")
       }
+
+      // Optimistic collapse: the turns that will be replaced disappear the
+      // moment the user hits Send, and the normal working row takes over.
+      // If the truncate itself fails nothing was deleted server-side, so the
+      // whole transcript comes back and the editor reopens with the draft.
+      const previous = current
+      setMessages(current.slice(0, idx))
+      let truncated = false
 
       // Step 1: chat truncation. This is the source of truth — if it
       // fails we abort the whole rewind. The local MST cache is
       // mirrored inside truncateMessagesFrom.
       try {
         await truncateMessagesFrom(sessionMessages, messageId)
+        truncated = true
       } catch (err) {
         console.error("[ChatPanel] truncate-from failed:", err)
-        throw err
+        setMessages(previous)
+        throw err instanceof Error
+          ? err
+          : new Error("Could not remove the messages after this one.")
       }
 
       // Step 2: optional file rollback. Runs BETWEEN the chat
@@ -7414,8 +7525,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       //     before the (potentially slow) git checkout runs.
       //   - A rollback failure leaves us in a coherent state — chat
       //     is at the new edit point, files are unchanged, no new
-      //     send is fired. The error bubbles up to EditableUserMessage
-      //     where it's logged + the bubble's busy state clears.
+      //     send is fired. The error bubbles up to the editor where
+      //     it is shown inline under the draft.
       //   - The server's pre-rollback auto-save still protects any
       //     uncommitted user changes in the workspace.
       if (options?.revertFiles && options.checkpoint) {
@@ -7424,20 +7535,29 @@ const ChatPanelContent = observer(function ChatPanelContent({
             projectId: options.checkpoint.projectId,
             checkpointId: options.checkpoint.id,
             checkpointCreatedAt: options.checkpoint.createdAt,
-            // We don't surface the includeDatabase toggle in the chat
-            // bubble dialog yet — power users still have the
-            // CheckpointsPanel for that finer-grained call. Default
-            // to false so we don't surprise users with DB rollbacks
-            // triggered from a chat edit.
+            // The database toggle is not offered from a chat edit — power
+            // users still have the Checkpoints panel for that finer-grained
+            // call. Default false so an edit never surprises anyone with a
+            // DB rollback.
             includeDatabase: false,
           })
+          // The note lands on the resent message as soon as the transcript
+          // shows it (see the `messages` effect that drains this ref).
+          pendingRevertNoteRef.current = {
+            text: newContent,
+            note: filesRevertedNote(
+              formatRelativeTime(options.checkpoint.createdAt),
+            ),
+          }
         } catch (err) {
           console.error("[ChatPanel] checkpoint rollback failed:", err)
-          throw err
+          if (!truncated) setMessages(previous)
+          throw err instanceof Error
+            ? err
+            : new Error("Could not revert project files to the checkpoint.")
         }
       }
 
-      setMessages(current.slice(0, idx))
       await sendMessageInternal(newContent, newFiles)
     },
     [sessionMessages, setMessages, sendMessageInternal],
@@ -7489,10 +7609,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [truncateAndResend, extractMediaType],
   )
 
-  // Used by the EditConfirmDialog to decide whether to render the
-  // "Also revert project files" checkbox. We resolve through the
-  // SDK env's HttpClient (via shared-app helper) so the remote-aware
-  // interceptor proxies to the desktop instance when one is
+  // Feeds the inline editor's "Revert files to before this message" checkbox.
+  // We resolve through the SDK env's HttpClient (via shared-app helper) so the
+  // remote-aware interceptor proxies to the desktop instance when one is
   // connected — same code path as truncate-from.
   //
   // A null collection / null checkpoint short-circuits to "no
@@ -7547,13 +7666,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
     ],
   )
 
+  const revertedNote = useCallback(
+    (messageId: string) => revertedNotes[messageId] ?? null,
+    [revertedNotes],
+  )
+
   const messageEditValue = useMemo(
     () => ({
       editMessage: handleEditMessage,
       retryFromMessage: handleRetryFromMessage,
       countMessagesAfter,
       isStreaming,
+      stopStreaming: stopStreamingAndWait,
+      editingMessageId,
+      setEditingMessageId,
+      inlineEditDirty,
+      setInlineEditDirty,
       canEditMessage,
+      pendingEdit,
+      setPendingEdit,
+      revertedNote,
       getPrecedingCheckpoint: handleGetPrecedingCheckpoint,
       composerProps: messageEditComposerProps,
     }),
@@ -7562,7 +7694,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       handleRetryFromMessage,
       countMessagesAfter,
       isStreaming,
+      stopStreamingAndWait,
+      editingMessageId,
+      inlineEditDirty,
       canEditMessage,
+      pendingEdit,
+      revertedNote,
       handleGetPrecedingCheckpoint,
       messageEditComposerProps,
     ],
@@ -8352,12 +8489,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
       headerActions: (
         <View className="flex-row gap-1.5">
           <Pressable
-            onPress={handleUpgradeClick}
+            onPress={
+              usageLimitView.primaryLabel === "Start free trial"
+                ? handleStartTrialClick
+                : handleUpgradeClick
+            }
             accessibilityRole="button"
             accessibilityLabel={
-              usageLimitView.primaryLabel === "Upgrade"
-                ? "Upgrade plan"
-                : "Open billing settings"
+              usageLimitView.primaryLabel === "Start free trial"
+                ? "Start the 7-day free Business trial"
+                : usageLimitView.primaryLabel === "Upgrade"
+                  ? "Upgrade plan"
+                  : "Open billing settings"
             }
             className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
           >
@@ -8392,7 +8535,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         </Text>
       ),
     }
-  }, [usageLimitView, handleUpgradeClick, handleSendMessage, handleRetry])
+  }, [usageLimitView, handleUpgradeClick, handleStartTrialClick, handleSendMessage, handleRetry])
   useDockPanel(usageLimitDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
@@ -8663,11 +8806,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     <TodoStateStoreContext.Provider value={todoStateStore}>
       <FileChangeStoreContext.Provider value={fileChangeStore}>
         <ChatContextProvider value={contextValue}>
-          {/* Hosts the destructive-confirmation modal for in-place message
-          edit and "retry from here". Rendered once per ChatPanel and
-          accepts requests pushed from any nested EditableUserMessage
-          via the module-level subscriber in EditConfirmDialog.tsx. */}
-          <EditConfirmDialogHost />
+          {/* In-place message edit (SHO-263) has no modal host any more: the
+          revert/keep choice lives inline in the editor footer. */}
           {/* Dock panels that don't need a fixed spot in the JSX tree — each
           is a no-render component that registers itself with
           `chatDockStore` (see chat-dock-store.ts) and unregisters when its

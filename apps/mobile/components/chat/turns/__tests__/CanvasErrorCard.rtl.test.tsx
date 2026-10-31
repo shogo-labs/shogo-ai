@@ -57,9 +57,6 @@ mock.module(resolve(import.meta.dir, "../MessageContent.tsx"), () => ({
         "",
     ),
 }))
-mock.module(resolve(import.meta.dir, "../EditConfirmDialog.tsx"), () => ({
-  requestEditConfirmation: async () => null,
-}))
 mock.module(resolve(import.meta.dir, "../../../../lib/native-phone-layout.ts"), () => ({
   useIsNativePhoneLayout: () => false,
   usePhoneLayout: () => false,

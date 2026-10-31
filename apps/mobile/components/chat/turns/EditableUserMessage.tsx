@@ -3,52 +3,38 @@
 /**
  * EditableUserMessage
  *
- * Renders a previously-sent user message as a full-width row that
- * the user can click to enter edit mode. Edit mode swaps the row
- * for a full `<ChatInput>` pre-populated with the original text +
- * attachments (via `restoreDraftRequest`) and the same model picker
- * the bottom composer uses (via `MessageEditContext.composerProps`).
+ * Renders a previously-sent user message. Clicking plain text (or the
+ * pencil in the hover action row) opens an in-place editor right where
+ * the message sits — the Cursor/Lovable model:
  *
- * Why reuse ChatInput instead of a bespoke <TextInput>:
- *   - One source of truth for shortcuts, paste handling, file
- *     attachments, model picker, voice input, and skill picker —
- *     the editing experience is identical to writing a brand new
- *     message, just rooted at this position in history.
- *   - The model picker is shared with the bottom composer, so
- *     switching models inside an edit also affects subsequent
- *     fresh sends — matching user mental model.
- *
- * Display vs edit:
- *   - DISPLAY (web / tablet): full-width Pressable. Clicking the row
- *     enters edit mode. On web a hover-revealed "Retry from here" icon
- *     sits on the right; on native tablet it is always visible.
- *   - DISPLAY (native phone): ChatGPT-style right-aligned gray bubble.
- *     Long-press opens Copy / Edit / Retry. Edit and Retry still use
- *     the existing rewind confirmation dialogs.
- *   - EDIT: full ChatInput. ChatInput's send button (or ⌘↩) triggers
- *     `onSubmit`, routed through the same destructive-confirmation +
- *     optional file-revert pipeline. Escape cancels (web).
- *
- * Guards (same as the previous v1):
- *   - Disabled entirely while the agent is streaming — editing
- *     mid-stream would race the in-flight `useChat` request.
- *   - Disabled for optimistic / temp ids — those rows have no
- *     server presence yet, so `truncate-from` would 404.
- *   - When no MessageEditProvider is mounted (Storybook,
- *     isolated tests) the row degrades to a plain MessageContent
- *     display with no actions.
+ *   - Display mode is selection-safe: selecting text, or clicking a link,
+ *     mention, code block or attachment inside the message, never opens
+ *     the editor.
+ *   - A hover action row (web/desktop) offers Copy, Edit and Retry with
+ *     labels and tooltips. Native touch devices keep the long-press sheet.
+ *   - Edit mode is `<InlineMessageEditor>`: the composer's text/paste/
+ *     attachment/mention/model behaviour, without the send or voice chrome,
+ *     with an inline footer (revert-files choice, Cancel, labelled Send).
+ *   - Everything below the edited message dims via `MessageEditContext`
+ *     (`editingMessageId`) so the user sees exactly what will be replaced,
+ *     and no confirmation modal is ever shown.
+ *   - A failed truncate/rollback keeps the editor open with the draft and
+ *     shows the API's message inline.
+ *   - Editing while the agent runs is allowed: the run is stopped first
+ *     (see `stopStreaming`).
  */
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   View,
   Pressable,
+  Text,
   Platform,
   ActivityIndicator,
   ActionSheetIOS,
   Alert,
 } from "react-native"
-import { RotateCcw } from "lucide-react-native"
+import { Check, Copy, Pencil, RotateCcw } from "lucide-react-native"
 import * as Clipboard from "expo-clipboard"
 import * as Haptics from "expo-haptics"
 import type { UIMessage } from "@ai-sdk/react"
@@ -60,15 +46,13 @@ import {
   type MessageEditOptions,
 } from "./MessageEditContext"
 import {
-  requestEditConfirmation,
-  type EditConfirmCheckpoint,
-  type EditConfirmKind,
-} from "./EditConfirmDialog"
-import {
-  ChatInput,
-  type FileAttachment,
-  type RestoreDraftRequest,
-} from "../ChatInput"
+  hasNonEmptySelection,
+  isEditGestureIgnored,
+  type EditCheckpointSummary,
+} from "./editResend"
+import { InlineMessageEditor } from "./InlineMessageEditor"
+import { WebTooltip } from "../WebTooltip"
+import type { FileAttachment } from "../ChatInput"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { AskUserAnswerCard } from "./AskUserAnswerCard"
@@ -130,6 +114,36 @@ function showNativeUserMessageActions(opts: {
   ])
 }
 
+/** Native retry keeps a system Alert (two destructive flavours + Cancel). */
+function showNativeRetryChoice(opts: {
+  hasCheckpoint: boolean
+  onRetry: (revertFiles: boolean) => void
+}) {
+  const buttons: Array<{
+    text: string
+    style?: "cancel" | "destructive" | "default"
+    onPress?: () => void
+  }> = [{ text: "Cancel", style: "cancel" }]
+  if (opts.hasCheckpoint) {
+    buttons.push({
+      text: "Revert & retry",
+      style: "destructive",
+      onPress: () => opts.onRetry(true),
+    })
+    buttons.push({
+      text: "Retry without reverting",
+      onPress: () => opts.onRetry(false),
+    })
+  } else {
+    buttons.push({
+      text: "Retry",
+      style: "destructive",
+      onPress: () => opts.onRetry(false),
+    })
+  }
+  Alert.alert("Retry from this message?", undefined, buttons)
+}
+
 export interface EditableUserMessageProps {
   message: UIMessage
   answeredQuestion?: AnsweredQuestion
@@ -147,7 +161,7 @@ function extractMediaType(dataUrl: string): string {
 }
 
 /**
- * Build the `FileAttachment[]` shape ChatInput expects from a UI
+ * Build the `FileAttachment[]` shape the composer expects from a UI
  * message's `parts`. Matches the logic in
  * `ChatPanel.handleRetryFromMessage` so display-mode → edit-mode
  * round-trips preserve attachments faithfully.
@@ -175,25 +189,26 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
   const usesCompactBubble = nativePhone || usesMobileWorkspaceChrome
 
-  const [isEditing, setIsEditing] = useState(false)
+  const [localEditing, setLocalEditing] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [restoreDraftRequest, setRestoreDraftRequest] =
-    useState<RestoreDraftRequest | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [checkpoint, setCheckpoint] = useState<EditCheckpointSummary | null>(
+    null,
+  )
+  const [error, setError] = useState<string | null>(null)
+  const [retryMenuOpen, setRetryMenuOpen] = useState(false)
 
-  // Monotonically-increasing nonce so a second click on the same
-  // bubble (e.g. user cancels, then clicks again) forces ChatInput
-  // to re-run its restore-draft effect even though the content
-  // string itself didn't change.
-  const draftNonceRef = useRef(0)
+  const isEditing = ctx ? ctx.editingMessageId === message.id : localEditing
 
-  // Ref to the edit-mode container so the global outside-click
-  // listener (web only) can distinguish "click inside the edit
-  // surface" from "click somewhere else in the page" via
-  // `node.contains(event.target)`. On RN Web, a View's ref is the
-  // underlying DOM element — we cast through `unknown` to access
-  // DOM APIs without dragging in DOM types in the public surface.
-  const containerRef = useRef<View>(null)
+  // A failed truncate/rollback re-mounts this row (the optimistic collapse
+  // removed it), so the editor's draft and error live in the context and are
+  // handed back as its initial values.
+  const pendingEdit =
+    ctx?.pendingEdit && ctx.pendingEdit.messageId === message.id
+      ? ctx.pendingEdit
+      : null
+  const revertedNote = ctx?.revertedNote?.(message.id) ?? null
 
   const originalText = useMemo(
     () => stripBuildBriefMarker(stripAskUserAnswerMarker(extractTextContent(message))),
@@ -205,260 +220,219 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   )
 
   const editable = ctx ? ctx.canEditMessage(message) : false
-  const canEdit = Boolean(
-    ctx && editable && !ctx.isStreaming && !busy && !answeredQuestion,
-  )
-  const canRetry = Boolean(ctx && editable && !ctx.isStreaming && !busy)
-  const interactive = canEdit
+  const canEdit = Boolean(editable && !answeredQuestion)
+  // Editing and retry stay available during a run — sending stops it first.
+  const canRetry = Boolean(editable)
+  const discardCount = ctx ? ctx.countMessagesAfter(message.id) : 0
 
-  // Retry icon on the right of the bubble. Web: hover-revealed to
-  // keep historical turns visually quiet. Native (no hover): always
-  // visible — same convention as the queued-message row in
-  // ChatInput.tsx (~774).
-  const showRetryIcon = Boolean(
-    canRetry && !isEditing && (Platform.OS !== "web" || hovered),
-  )
-
-  const handleStartEdit = useCallback(() => {
-    if (!interactive) return
-    draftNonceRef.current += 1
-    setRestoreDraftRequest({
-      nonce: draftNonceRef.current,
-      content: originalText,
-      files: originalFiles,
-    })
-    setIsEditing(true)
-  }, [interactive, originalText, originalFiles])
-
-  const handleCancelEdit = useCallback(() => {
-    setIsEditing(false)
+  const clearEditState = useCallback(() => {
+    setCheckpoint(null)
+    setError(null)
     setBusy(false)
-    setRestoreDraftRequest(null)
   }, [])
 
-  const handleNativeOutsideTap = useCallback(
-    (pageX: number, pageY: number) => {
-      const node = containerRef.current
-      if (!node) {
-        handleCancelEdit()
-        return
-      }
-      node.measureInWindow((x, y, width, height) => {
-        const pad = 12
-        if (
-          pageX >= x - pad &&
-          pageX <= x + width + pad &&
-          pageY >= y - pad &&
-          pageY <= y + height + pad
-        ) {
-          return
+  const handleStartEdit = useCallback(() => {
+    if (!canEdit || busy) return
+    // Only one editor at a time: another message's Edit closes an untouched
+    // editor, but a changed draft is never thrown away from under the user.
+    const otherOpen = ctx?.editingMessageId && ctx.editingMessageId !== message.id
+    if (otherOpen && ctx.inlineEditDirty) return
+    setRetryMenuOpen(false)
+    setError(null)
+    setCheckpoint(null)
+    if (ctx) ctx.setEditingMessageId(message.id)
+    else setLocalEditing(true)
+  }, [canEdit, busy, ctx, message.id])
+
+  // Resolve the revert target when the editor opens (not on submit) so the
+  // footer can show the choice straight away. Runs for a re-mounted editor
+  // too — after a failed send the row is fresh, so it has to re-resolve.
+  const checkpointRequestedRef = useRef(false)
+  useEffect(() => {
+    if (!isEditing || !ctx) {
+      checkpointRequestedRef.current = false
+      return
+    }
+    if (checkpointRequestedRef.current) return
+    if (ctx.countMessagesAfter(message.id) <= 0) return
+    checkpointRequestedRef.current = true
+    let cancelled = false
+    void ctx
+      .getPrecedingCheckpoint(message.id)
+      .then((result) => {
+        const found = result.checkpoint
+        const projectId = result.projectId
+        if (cancelled || !found || !projectId) return
+        const next: EditCheckpointSummary = {
+          id: found.id,
+          projectId,
+          createdAt: found.createdAt,
+          filesChanged: found.filesChanged,
+          includesDb: found.includesDb,
         }
-        handleCancelEdit()
+        setCheckpoint((prev) => (prev?.id === next.id ? prev : next))
       })
-    },
-    [handleCancelEdit],
-  )
-
-  useEffect(() => {
-    if (!isEditing || !ctx) return
-    return ctx.registerInlineEditCancel(handleNativeOutsideTap)
-  }, [isEditing, ctx, handleNativeOutsideTap])
-
-  // Escape cancels the edit (web only — native keyboard dismissal
-  // is handled by the OS chrome around the TextInput). We attach
-  // to the window because ChatInput's TextInput doesn't expose a
-  // dedicated escape callback and we don't want to fork it.
-  useEffect(() => {
-    if (Platform.OS !== "web") return
-    if (!isEditing) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault()
-        handleCancelEdit()
-      }
-    }
-    window.addEventListener("keydown", handler)
-    return () => window.removeEventListener("keydown", handler)
-  }, [isEditing, handleCancelEdit])
-
-  // Click-outside cancels (web only). The classic "popover dismiss"
-  // pattern: any mousedown that lands outside the edit container
-  // OR outside an interaction surface that logically belongs to the
-  // edit (a portaled popover, the destructive-confirm dialog, the
-  // attach sheet, the model menu, etc.) collapses the row back to
-  // display mode.
-  //
-  // We use `mousedown` instead of `click` so the dismiss feels
-  // snappy (matches the "blur" mental model — same instant the
-  // press lands). Capture phase so we observe the event before any
-  // inner stopPropagation can hide it.
-  //
-  // The exempted-roles list mirrors the ARIA surfaces Gluestack's
-  // Popover / Menu / Modal / AlertDialog primitives render with;
-  // missing one would mean opening a model picker from inside an
-  // edit and clicking a model option would cancel the edit out
-  // from under the user. `aria-modal="true"` is the broad
-  // catch-all that picks up any future surface we forget.
-  useEffect(() => {
-    if (Platform.OS !== "web") return
-    if (!isEditing) return
-
-    const handler = (e: MouseEvent) => {
-      const target = e.target
-      if (!(target instanceof Element)) return
-
-      // Click landed inside the edit container itself — that's the
-      // ChatInput, its toolbar, the Cancel button, etc. Stay in
-      // edit mode.
-      const node = containerRef.current as unknown as Element | null
-      if (node && node.contains(target)) return
-
-      // Click landed inside a portaled overlay (popover / menu /
-      // dropdown / dialog). These render outside our container's
-      // subtree, but logically belong to the in-edit interaction
-      // — e.g. the model picker popover the user just opened from
-      // inside the in-place ChatInput, or the destructive-confirm
-      // dialog that opens when they hit Send. Cancelling on those
-      // would yank the editor out from under them mid-decision.
-      if (
-        target.closest(
-          '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [aria-modal="true"]',
-        )
-      ) {
-        return
-      }
-
-      handleCancelEdit()
-    }
-
-    window.addEventListener("mousedown", handler, true)
-    return () => window.removeEventListener("mousedown", handler, true)
-  }, [isEditing, handleCancelEdit])
-
-  /**
-   * Resolve the checkpoint (if any) to offer as a file-revert target
-   * for the upcoming dialog. We only bother querying when there are
-   * messages that would actually be discarded — when `discardCount`
-   * is 0 the user is editing the most recent message and there's no
-   * agent work to roll back.
-   */
-  const resolveCheckpoint = useCallback(
-    async (discardCount: number): Promise<EditConfirmCheckpoint | null> => {
-      if (!ctx || discardCount <= 0) return null
-      try {
-        const result = await ctx.getPrecedingCheckpoint(message.id)
-        if (!result.checkpoint || !result.projectId) return null
-        return {
-          id: result.checkpoint.id,
-          projectId: result.projectId,
-          createdAt: result.checkpoint.createdAt,
-          commitMessage: result.checkpoint.commitMessage,
-          filesChanged: result.checkpoint.filesChanged,
-          includesDb: result.checkpoint.includesDb,
-        }
-      } catch (err) {
+      .catch((err) => {
+        // No rollback target: the editor simply offers chat-only resend.
         console.warn(
-          "[EditableUserMessage] preceding-checkpoint lookup failed; offering chat-only revert:",
+          "[EditableUserMessage] preceding-checkpoint lookup failed:",
           err,
         )
-        return null
-      }
-    },
-    [ctx, message.id],
-  )
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isEditing, ctx, message.id])
 
-  /**
-   * Shared closure for "ask the dialog, then dispatch through the
-   * provider". Pulled out so edit and retry stay in lock-step on
-   * confirm semantics + file-revert plumbing.
-   */
-  const dispatchRewind = useCallback(
+  const handleCancelEdit = useCallback(() => {
+    clearEditState()
+    ctx?.setPendingEdit(null)
+    if (ctx) ctx.setEditingMessageId(null)
+    else setLocalEditing(false)
+  }, [clearEditState, ctx])
+
+  const handleEditorSubmit = useCallback(
     async (
-      kind: EditConfirmKind,
-      perform: (options: MessageEditOptions) => Promise<void>,
+      content: string,
+      files: FileAttachment[] | undefined,
+      options: MessageEditOptions,
     ) => {
-      if (!ctx || busy) return
-      const discardCount = ctx.countMessagesAfter(message.id)
-      const checkpoint = await resolveCheckpoint(discardCount)
-      const result = await requestEditConfirmation(
-        kind,
-        discardCount,
-        checkpoint,
-      )
-      if (!result.confirmed) return
+      if (!ctx) return
+      setError(null)
       setBusy(true)
       try {
-        await perform({
-          revertFiles: result.revertFiles,
-          checkpoint:
-            result.revertFiles && checkpoint
-              ? {
-                  id: checkpoint.id,
-                  projectId: checkpoint.projectId,
-                  createdAt: checkpoint.createdAt,
-                  includesDb: checkpoint.includesDb,
-                }
-              : undefined,
-        })
+        // Editing mid-run: stop first and let the stream settle, so the
+        // truncate can't race the in-flight turn.
+        if (ctx.isStreaming) await ctx.stopStreaming()
+        await ctx.editMessage(message.id, content, files, options)
+        // On success the message id disappears from the transcript and this
+        // component unmounts; reset defensively for layouts that keep it.
+        ctx.setPendingEdit(null)
+        clearEditState()
+        ctx.setEditingMessageId(null)
       } catch (err) {
-        console.error(`[EditableUserMessage] ${kind} failed:`, err)
+        // This row is usually already unmounted by the optimistic collapse,
+        // so the error and the draft that must reopen with it are recorded in
+        // the context (EditableUserMessage remounts from `pendingEdit`).
+        const detail =
+          err instanceof Error && err.message
+            ? err.message
+            : "Could not resend this message."
+        ctx.setPendingEdit({
+          messageId: message.id,
+          content,
+          files,
+          error: detail,
+        })
+        setError(detail)
+        setBusy(false)
+        throw err
+      }
+    },
+    [ctx, message.id, clearEditState],
+  )
+
+  const runRetry = useCallback(
+    async (revertFiles: boolean) => {
+      if (!ctx) return
+      setRetryMenuOpen(false)
+      setError(null)
+      setBusy(true)
+      const options: MessageEditOptions = {
+        revertFiles: revertFiles && Boolean(checkpoint),
+        checkpoint:
+          revertFiles && checkpoint
+            ? {
+                id: checkpoint.id,
+                projectId: checkpoint.projectId,
+                createdAt: checkpoint.createdAt,
+                includesDb: checkpoint.includesDb,
+              }
+            : undefined,
+      }
+      try {
+        if (ctx.isStreaming) await ctx.stopStreaming()
+        await ctx.retryFromMessage(message.id, options)
+      } catch (err) {
+        setError(
+          err instanceof Error && err.message
+            ? err.message
+            : "Could not retry this message.",
+        )
       } finally {
         setBusy(false)
       }
     },
-    [ctx, busy, message.id, resolveCheckpoint],
+    [ctx, message.id, checkpoint],
   )
 
-  /**
-   * Wraps ChatInput's `onSubmit(content, files, modelId)` and routes
-   * it through the destructive-confirmation + optional file revert
-   * pipeline before triggering the actual truncate + resend.
-   *
-   * We deliberately ignore `modelId` here even though ChatInput
-   * passes it. The model is already wired through
-   * `composerProps.onModelChange` (see `MessageEditContext.tsx`),
-   * which keeps the bottom composer in sync — so by the time the
-   * resend fires, ChatPanel's selectedModel is already the user's
-   * chosen value and `sendMessageInternal` picks it up naturally.
-   */
-  const handleChatInputSubmit = useCallback(
-    async (content: string, files?: FileAttachment[]) => {
-      if (!ctx) return
-      const trimmed = content.trim()
-      const hasFiles = !!files && files.length > 0
-      // ChatInput already enforces non-empty before firing, but
-      // double-check so a stray programmatic submit can't wipe the
-      // assistant turn with literally nothing.
-      if (!trimmed && !hasFiles) return
-      await dispatchRewind("edit", async (options) => {
-        await ctx.editMessage(message.id, trimmed, files, options)
-        // On success the message id will disappear from the parent
-        // collection and THIS component unmounts. We still reset
-        // local state defensively in case the parent decides to
-        // keep us mounted (e.g. dedicated edit panel in a future
-        // layout).
-        setIsEditing(false)
-        setRestoreDraftRequest(null)
+  const needRetryCheckpoint = useCallback(async () => {
+    if (!ctx) return null
+    if (discardCount <= 0) return null
+    if (checkpoint) return checkpoint
+    try {
+      const result = await ctx.getPrecedingCheckpoint(message.id)
+      if (!result.checkpoint || !result.projectId) return null
+      const next: EditCheckpointSummary = {
+        id: result.checkpoint.id,
+        projectId: result.projectId,
+        createdAt: result.checkpoint.createdAt,
+        filesChanged: result.checkpoint.filesChanged,
+        includesDb: result.checkpoint.includesDb,
+      }
+      setCheckpoint(next)
+      return next
+    } catch {
+      return null
+    }
+  }, [ctx, discardCount, checkpoint, message.id])
+
+  const handleRetryClick = useCallback(async () => {
+    if (!canRetry || busy) return
+    const resolved = await needRetryCheckpoint()
+    if (Platform.OS !== "web") {
+      showNativeRetryChoice({
+        hasCheckpoint: Boolean(resolved),
+        onRetry: (revert) => {
+          void runRetry(revert)
+        },
       })
-    },
-    [ctx, message.id, dispatchRewind],
-  )
-
-  const handleRetry = useCallback(async () => {
-    await dispatchRewind("retry", async (options) => {
-      if (!ctx) return
-      await ctx.retryFromMessage(message.id, options)
-    })
-  }, [ctx, message.id, dispatchRewind])
+      return
+    }
+    if (!resolved) {
+      await runRetry(false)
+      return
+    }
+    // Anchored two-option popover, never the old full-screen dialog.
+    setRetryMenuOpen(true)
+  }, [canRetry, busy, needRetryCheckpoint, runRetry])
 
   const handleCopy = useCallback(async () => {
     if (!originalText) return
     try {
       await Clipboard.setStringAsync(originalText)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
     } catch {
       // Clipboard can be unavailable in some simulators — ignore.
     }
   }, [originalText])
+
+  // Selection-safe click-to-edit: a press that is part of selecting text,
+  // or that lands on a link / mention / code block, is not an edit request.
+  const handleRowPress = useCallback(
+    (event?: unknown) => {
+      if (!canEdit || busy) return
+      if (Platform.OS === "web") {
+        const anyEvent = event as { target?: unknown; nativeEvent?: { target?: unknown } } | undefined
+        const target = anyEvent?.target ?? anyEvent?.nativeEvent?.target
+        if (hasNonEmptySelection(globalThis as any)) return
+        if (isEditGestureIgnored(target, false)) return
+      }
+      handleStartEdit()
+    },
+    [canEdit, busy, handleStartEdit],
+  )
 
   const handleNativeLongPress = useCallback(() => {
     if (busy) return
@@ -471,32 +445,16 @@ export const EditableUserMessage = memo(function EditableUserMessage({
       },
       onEdit: handleStartEdit,
       onRetry: () => {
-        void handleRetry()
+        void handleRetryClick()
       },
     })
-  }, [busy, canEdit, canRetry, handleCopy, handleStartEdit, handleRetry])
+  }, [busy, canEdit, canRetry, handleCopy, handleStartEdit, handleRetryClick])
 
-  // ─── EDIT MODE ────────────────────────────────────────────────
-  // Just ChatInput rendered inline, with `highlighted` toggled on
-  // so the accent ring sits directly on the visible input box (no
-  // outer wrapper styling, no padding, no banner, no separate
-  // cancel chrome). The ring is the only mode signal. Cancellation
-  // is handled by Escape + outside-mousedown on web, and by a
-  // hit-tested tap on the transcript (or hiding the bottom composer)
-  // on native. Submitting still routes through the destructive-confirm
-  // dialog regardless.
-  //
-  // We can't draw the ring from a wrapping <View> at this level
-  // because ChatInput's outermost element carries `p-3 pt-0` of
-  // its own — wrapping it with a ring/padding from outside would
-  // leave a 12px gap on three sides. The ring lives inside
-  // ChatInput where it can hug the actual rounded box.
-  //
-  // The wrapping <View> below adds NO visual chrome — it exists
-  // solely to give the outside-click handler a stable DOM node to
-  // check `node.contains(event.target)` against. ChatInput itself
-  // is memoized and not forward-ref'd, so we can't get the same
-  // handle from the component directly without an invasive change.
+  useEffect(() => {
+    setRetryMenuOpen(false)
+  }, [isEditing])
+
+  // ─── Non-message rows ─────────────────────────────────────────
   const taskNotification = taskNotificationOf(message)
   if (taskNotification) {
     return (
@@ -540,61 +498,40 @@ export const EditableUserMessage = memo(function EditableUserMessage({
     )
   }
 
-  if (isEditing && ctx) {
+  // ─── EDIT MODE ────────────────────────────────────────────────
+  if (isEditing) {
     return (
-      <View ref={containerRef} collapsable={false} className="w-full">
-        <ChatInput
-          onSubmit={handleChatInputSubmit}
-          disabled={busy}
-          isStreaming={busy}
-          placeholder="Edit your message…"
-          restoreDraftRequest={restoreDraftRequest}
-          selectedModel={ctx.composerProps.selectedModel}
-          onModelChange={ctx.composerProps.onModelChange}
-          isPro={ctx.composerProps.isPro}
-          onUpgradeClick={ctx.composerProps.onUpgradeClick}
-          highlighted
-          // `flush` strips ChatInput's default `p-3` outer wrapper
-          // (it'd otherwise inset the bordered box 12px from the
-          // bubble's edges — visually fatter than the display row
-          // it replaces). The display Pressable already provides
-          // an `px-3` text inset; the inline editor doesn't add
-          // its own on top.
-          flush
-          // The queue and quick-actions surfaces belong to the bottom
-          // composer's lifecycle — exposing them from inside a
-          // historical edit would mean the user could queue a message
-          // from an edit-in-progress bubble, which is confusing. Keep
-          // them inert here.
-          queuedMessages={[]}
-          dimWhenDisabled={false}
+      <View className={cn("w-full", className)}>
+        <InlineMessageEditor
+          messageId={message.id}
+          originalText={originalText}
+          originalFiles={originalFiles}
+          initialText={pendingEdit?.content}
+          initialFiles={pendingEdit?.files}
+          discardCount={discardCount}
+          checkpoint={checkpoint}
+          streaming={Boolean(ctx?.isStreaming)}
+          error={pendingEdit?.error ?? error}
+          onCancel={handleCancelEdit}
+          onSubmit={handleEditorSubmit}
         />
       </View>
     )
   }
 
   // ─── DISPLAY MODE ─────────────────────────────────────────────
-  // Desktop/tablet: full-width Pressable. The companion mobile shell and
-  // native phone use a compact, right-aligned bubble. Native long-press opens
-  // Copy / Edit / Retry; mobile web keeps the normal tap-to-edit behavior.
-  // Image/file thumbnails inside MessageContent own their Pressable, so
-  // opening an attachment does not switch the bubble into edit mode.
+  // Web/desktop: full-width row. Compact bubble on the companion mobile
+  // shell and native phone (long-press sheet there).
   if (usesCompactBubble) {
     return (
       <View className={cn("w-full items-end px-1", className)}>
         <Pressable
           onPress={
-            nativePhone || answeredQuestion ? undefined : handleStartEdit
+            nativePhone || answeredQuestion ? undefined : () => handleRowPress()
           }
           onLongPress={nativePhone ? handleNativeLongPress : undefined}
           delayLongPress={nativePhone ? 400 : undefined}
-          disabled={
-            nativePhone
-              ? busy
-              : answeredQuestion
-                ? !canRetry
-                : !interactive
-          }
+          disabled={nativePhone ? busy : answeredQuestion ? !canRetry : !canEdit}
           accessibilityRole="button"
           accessibilityLabel={
             nativePhone
@@ -604,11 +541,11 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           accessibilityHint={
             nativePhone
               ? undefined
-              : "Activates an inline composer pre-filled with this message."
+              : "Activates an inline editor pre-filled with this message."
           }
           className={cn(
             answeredQuestion ? "max-w-full" : "max-w-[85%]",
-            Platform.OS === "web" && interactive && "cursor-text",
+            Platform.OS === "web" && canEdit && "cursor-text",
             busy && "opacity-60",
           )}
         >
@@ -621,88 +558,208 @@ export const EditableUserMessage = memo(function EditableUserMessage({
             <MessageContent message={message} variant="userBubble" />
           )}
         </Pressable>
+        {error ? (
+          <Text className="mt-1 px-2 text-xs text-destructive">{error}</Text>
+        ) : null}
         {busy ? (
           <View className="mt-1 pr-2">
             <ActivityIndicator size="small" />
           </View>
         ) : null}
+        {revertedNote ? (
+          <Text className="mt-1 px-2 text-[11px] text-muted-foreground">
+            {revertedNote}
+          </Text>
+        ) : null}
       </View>
     )
   }
 
-  // Plain text rows need their own padded, tinted box. The answered-question
-  // card already draws its own border, padding and background, so it must not
-  // get a second set.
   const isNative = Platform.OS !== "web"
   const isWeb = Platform.OS === "web"
 
-  // Resting fill is intentionally subtler than the previous chat-bubble
-  // bg-secondary so a long thread of historical user messages doesn't read
-  // as a row of stacked CTAs.
-  const textRowBoxStyle = cn(
-    "rounded-md bg-secondary/60",
-    isNative ? "min-h-12 px-4 py-3" : "px-3 py-2",
-    isWeb && interactive && "cursor-text hover:bg-secondary",
+  // Resting fill is intentionally subtler than a chat bubble so a long thread
+  // of historical user messages doesn't read as a row of stacked CTAs.
+  const rowBoxStyle = answeredQuestion
+    ? undefined
+    : cn(
+        "rounded-md bg-secondary/60",
+        isNative ? "min-h-12 px-4 py-3" : "px-3 py-2",
+        isWeb && canEdit && "cursor-text hover:bg-secondary",
+      )
+
+  // Hover actions: Copy / Edit / Retry. Web reveals them on hover; native
+  // tablets (no hover) always show them. Positioned absolutely so opening
+  // them never shifts the transcript.
+  const showActions = !answeredQuestion && (isWeb ? hovered || retryMenuOpen : true)
+
+  const actionButtonClass = cn(
+    "h-6 w-6 items-center justify-center rounded-md",
+    "hover:bg-muted/60 active:opacity-70",
   )
 
-  const rowBoxStyle = answeredQuestion ? undefined : textRowBoxStyle
-
   return (
-    <Pressable
-      onPress={answeredQuestion ? undefined : handleStartEdit}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      disabled={answeredQuestion ? !canRetry : !interactive}
-      accessibilityRole={interactive ? "button" : undefined}
-      accessibilityLabel={
-        interactive ? "Edit this message and re-run from here" : undefined
-      }
-      accessibilityHint={
-        interactive
-          ? "Activates an inline composer pre-filled with this message."
-          : undefined
-      }
-      className={cn(
-        "w-full flex-row items-start gap-2",
-        rowBoxStyle,
-        busy && "opacity-60",
-        className,
-      )}
+    // Hover has to be a DOM handler on the View: react-native-web's View
+    // whitelists `onMouseEnter`/`onMouseLeave` (mouseProps) but drops
+    // `onHoverIn` — that one only exists on Pressable. With `onHoverIn` here
+    // `hovered` never flipped in a browser and the Copy/Edit/Retry row never
+    // rendered at all (caught by e2e/local/chat-edit-resend).
+    <View
+      className={cn("w-full", className)}
+      {...(isWeb
+        ? ({
+            onMouseEnter: () => setHovered(true),
+            onMouseLeave: () => setHovered(false),
+          } as any)
+        : {})}
     >
-      <View className="flex-1 min-w-0">
-        {answeredQuestion ? (
-          <AskUserAnswerCard
-            answeredQuestion={answeredQuestion}
-            variant="row"
-          />
-        ) : (
-          <MessageContent message={message} />
+      <Pressable
+        onPress={answeredQuestion ? undefined : handleRowPress}
+        disabled={answeredQuestion ? !canRetry : !canEdit}
+        accessibilityRole={canEdit ? "button" : undefined}
+        accessibilityLabel={
+          canEdit ? "Edit this message and re-run from here" : undefined
+        }
+        accessibilityHint={
+          canEdit
+            ? "Activates an inline editor pre-filled with this message."
+            : undefined
+        }
+        className={cn(
+          "w-full flex-row items-start gap-2",
+          rowBoxStyle,
+          busy && "opacity-60",
         )}
-      </View>
-      {showRetryIcon && (
-        <Pressable
-          onPress={handleRetry}
-          disabled={busy}
-          accessibilityRole="button"
-          accessibilityLabel="Retry from this message"
-          className={cn(
-            "items-center justify-center rounded-md",
-            Platform.OS !== "web" ? "h-9 w-9" : "h-6 w-6",
-            Platform.OS === "web" && "hover:bg-muted/60",
-            busy && "opacity-40",
-          )}
-        >
-          {busy ? (
-            <ActivityIndicator size="small" />
-          ) : (
-            <RotateCcw
-              className="h-3.5 w-3.5 text-muted-foreground"
-              size={Platform.OS !== "web" ? 18 : 14}
+      >
+        <View className="flex-1 min-w-0">
+          {answeredQuestion ? (
+            <AskUserAnswerCard
+              answeredQuestion={answeredQuestion}
+              variant="row"
             />
+          ) : (
+            <MessageContent message={message} />
           )}
-        </Pressable>
+        </View>
+      </Pressable>
+
+      {showActions && (
+        <View className="relative">
+          <View
+            className="absolute right-1 -top-3 flex-row items-center gap-0.5 rounded-md border border-border/40 bg-background/95 px-1 py-0.5"
+            style={{ zIndex: 5 }}
+          >
+            <WebTooltip label={copied ? "Copied" : "Copy"}>
+              <Pressable
+                onPress={() => {
+                  void handleCopy()
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Copy message text"
+                className={actionButtonClass}
+              >
+                {copied ? (
+                  <Check className="h-3.5 w-3.5 text-primary" size={14} />
+                ) : (
+                  <Copy className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                )}
+              </Pressable>
+            </WebTooltip>
+
+            {canEdit && (
+              <WebTooltip label="Edit">
+                <Pressable
+                  onPress={handleStartEdit}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Edit message"
+                  className={actionButtonClass}
+                >
+                  <Pencil
+                    className="h-3.5 w-3.5 text-muted-foreground"
+                    size={14}
+                  />
+                </Pressable>
+              </WebTooltip>
+            )}
+
+            {canRetry && (
+              <WebTooltip label="Retry from here">
+                <Pressable
+                  onPress={() => {
+                    void handleRetryClick()
+                  }}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry from this message"
+                  className={actionButtonClass}
+                >
+                  {busy ? (
+                    <ActivityIndicator size="small" />
+                  ) : (
+                    <RotateCcw
+                      className="h-3.5 w-3.5 text-muted-foreground"
+                      size={14}
+                    />
+                  )}
+                </Pressable>
+              </WebTooltip>
+            )}
+          </View>
+
+          {retryMenuOpen && (
+            <View
+              accessibilityRole="menu"
+              className="absolute right-1 top-4 z-10 w-56 rounded-md border border-border bg-popover p-1 shadow-md"
+            >
+              <Pressable
+                onPress={() => {
+                  void runRetry(true)
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Revert files and retry"
+                className="rounded px-2 py-1.5 hover:bg-muted/60"
+              >
+                <Text className="text-xs text-foreground">Revert & retry</Text>
+                {checkpoint ? (
+                  <Text className="text-[11px] text-muted-foreground">
+                    {checkpoint.filesChanged > 0
+                      ? `${checkpoint.filesChanged} file${
+                          checkpoint.filesChanged === 1 ? "" : "s"
+                        } back to the checkpoint`
+                      : "Files back to the checkpoint"}
+                  </Text>
+                ) : null}
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  void runRetry(false)
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Retry without reverting files"
+                className="rounded px-2 py-1.5 hover:bg-muted/60"
+              >
+                <Text className="text-xs text-foreground">
+                  Retry without reverting
+                </Text>
+                <Text className="text-[11px] text-muted-foreground">
+                  Chat only — files stay as they are
+                </Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
       )}
-    </Pressable>
+
+      {error ? (
+        <Text className="mt-1 px-3 text-xs text-destructive">{error}</Text>
+      ) : null}
+      {revertedNote ? (
+        <Text className="mt-1 px-3 text-[11px] text-muted-foreground">
+          {revertedNote}
+        </Text>
+      ) : null}
+    </View>
   )
 })
 
