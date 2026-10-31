@@ -20,7 +20,7 @@
  *     chat-edit-resend --project chromium --retries 0
  */
 import { expect, test, type BrowserContext, type Page } from "@playwright/test"
-import { FakeLlmServer } from "../../apps/desktop/e2e/streaming/fake-llm-server"
+import { FakeLlmServer, marker } from "../../apps/desktop/e2e/streaming/fake-llm-server"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
 const LLM_PORT = Number(process.env.E2E_FAKE_LLM_PORT || 18765)
@@ -64,6 +64,18 @@ test.beforeAll(async ({ browser }, info) => {
   })
   projectId = created?.data?.id ?? created?.id
   if (!projectId) throw new Error(`project create failed: ${JSON.stringify(created).slice(0, 300)}`)
+
+  // §C cold start, paid once outside any test's budget: the first `/projects/:id`
+  // in a fresh stack is a Metro route compile plus the project's runtime spawn,
+  // and the round-1 CI runs lost the first attempt of the edit test to that
+  // window (3 of 4) before passing on retry. No message is sent, so the
+  // transcripts the tests read are unchanged.
+  const warm = await context.newPage()
+  try {
+    await openChat(warm)
+  } finally {
+    await warm.close()
+  }
 })
 
 test.afterAll(async () => {
@@ -172,28 +184,46 @@ test("editing a past message dims what follows, shows the inline choice, and res
 })
 
 test("an edit made while the agent is running stops the run first", async () => {
+  // The second turn is HELD by the scripted model (nothing is emitted until
+  // `release`), so the run is unambiguously live while the editor opens. A
+  // plain message races the fake model's instant `ok`: the turn usually ends
+  // before the editor paints, and the hint then correctly hides itself.
+  const holdTag = "d4"
   const page = await context.newPage()
-  await openChat(page)
+  try {
+    await openChat(page)
 
-  await send(page, "gamma message three")
-  await waitIdle(page)
-  await send(page, "delta message four")
+    await send(page, "gamma message three")
+    await waitIdle(page)
+    await send(page, `${marker("hold", holdTag, 40)} delta message four`)
+    await llm.waitForTurn(holdTag, 30_000)
 
-  // While the second turn streams, edit the first one.
-  const first = page.getByText("gamma message three", { exact: false }).first()
-  await first.hover()
-  await page.getByRole("button", { name: "Edit message" }).first().click()
-  await expect(inlineEditor(page)).toBeVisible({ timeout: 10_000 })
-  await expect.soft(page.getByText(/Stops the current run/)).toBeVisible({ timeout: 5_000 })
+    // While the held turn is live, edit the first one.
+    await expect.poll(() => stopVisible(page), { timeout: 30_000 }).toBe(true)
+    const first = page.getByText("gamma message three", { exact: false }).first()
+    await first.hover()
+    await page.getByRole("button", { name: "Edit message" }).first().click()
+    await expect(inlineEditor(page)).toBeVisible({ timeout: 10_000 })
+    // The hint is the point of the test: hard, never soft.
+    await expect(page.getByText(/Stops the current run/)).toBeVisible({ timeout: 5_000 })
 
-  await inlineEditor(page).fill("gamma message three edited")
-  await page.getByRole("button", { name: /^(Send|Resend|Revert & resend)$/ }).first().click()
+    await inlineEditor(page).fill("gamma message three edited")
+    await page.getByRole("button", { name: /^(Send|Resend|Revert & resend)$/ }).first().click()
 
-  await expect(page.getByText("gamma message three edited", { exact: false }).first()).toBeVisible({
-    timeout: 30_000,
-  })
-  await waitIdle(page)
-  soft(await stopVisible(page)).toBe(false)
+    await expect(page.getByText("gamma message three edited", { exact: false }).first()).toBeVisible({
+      timeout: 30_000,
+    })
+    // The held request was hung up on by the client, i.e. the run really was
+    // stopped rather than left streaming behind the new one.
+    await expect
+      .poll(() => llm.wasCancelled(holdTag), { timeout: 30_000 })
+      .toBe(true)
 
-  await page.close()
+    await waitIdle(page)
+    expect(await stopVisible(page)).toBe(false)
+  } finally {
+    // Never leave a request held into the next test, pass or fail.
+    llm.release(holdTag)
+    await page.close()
+  }
 })

@@ -127,50 +127,63 @@ const projectComposer = (page: Page) => page.getByTestId("project-composer-input
  *
  * `e2e/local/helpers.ts#openTeamHome` waits on the sidebar's
  * `navigation[name="App sidebar"]`, which a 390px viewport does not render —
- * phone chrome is the hamburger + bottom dock. The explicit builder route
- * (`/(app)/new-project`) is the phone's build entry point and paints without
- * the sidebar, so the phone path goes through it.
+ * phone chrome is the hamburger + bottom dock. The builder route
+ * (`/(app)/new-project`, addressed as `/new-project`, exactly what
+ * `router.push("/(app)/new-project")` puts in the address bar) is the phone's
+ * build entry point and paints without the sidebar.
+ *
+ * The sign-in pair and the active workspace are settled BEFORE the document
+ * loads, so the builder is the page's **first and only** hard navigation. That
+ * is the fix for the WebKit hang (SHO-273): the trace of run 41167419500 shows
+ * every `:8002` API call of the walkthrough answering 200, then a second
+ * `page.goto("/(app)/new-project")` issued while that first page was still
+ * booting. That navigation cancelled ~20 in-flight fetches from the booting
+ * page (the "Load failed" banners in the failure snapshot) and the document
+ * request to Metro never got a response at all for 120s. A real user reaches
+ * the builder by `router.push` — a client route — never by a second hard load
+ * mid-boot.
+ *
+ * `page.request` shares this page's browser context, so the session cookie it
+ * sets is already in the jar when the app boots; `addInitScript` writes the
+ * active workspace before any app script runs. No `waitUntil` and no timeout is
+ * relaxed here.
  */
 async function openPhoneBuilder(page: Page): Promise<void> {
-  await page.goto("/")
+  const signIn = await page.request.post(`${LOCAL_API_BASE}/api/local/auto-sign-in`)
+  expect(signIn.ok(), `local auto-sign-in failed (${signIn.status()})`).toBe(true)
 
   // A fresh local stack starts signed out with only a personal workspace; the
   // team workspace appears once onboarding completes (`/api/local/auto-sign-in`
   // → `/api/onboarding/complete`, the same pair `mobile-personal-walkthrough`
   // uses). Both are idempotent.
-  const workspaceId = await page.evaluate(async (apiBase) => {
-    const signIn = await fetch(`${apiBase}/api/local/auto-sign-in`, {
-      method: "POST",
-      credentials: "include",
-    })
-    if (!signIn.ok) {
-      throw new Error(`Local auto-sign-in failed (${signIn.status})`)
-    }
-    await fetch(`${apiBase}/api/onboarding/complete`, {
-      method: "POST",
-      credentials: "include",
-    }).catch(() => undefined)
+  await page.request
+    .post(`${LOCAL_API_BASE}/api/onboarding/complete`)
+    .catch(() => undefined)
 
-    const res = await fetch(`${apiBase}/api/workspaces`, { credentials: "include" })
-    const body = await res.json()
-    const items = (body?.items ?? body?.data?.items ?? []) as Array<{
-      id: string
-      kind?: string
-    }>
-    return (
-      items.find((w) => w.kind !== "personal")?.id ??
-      items.find((w) => w.kind === "personal")?.id ??
-      null
-    )
-  }, LOCAL_API_BASE)
-  expect(workspaceId, "local stack has no workspace to build in").not.toBeNull()
+  const res = await page.request.get(`${LOCAL_API_BASE}/api/workspaces`)
+  const body = await res.json()
+  const items = (body?.items ?? body?.data?.items ?? []) as Array<{
+    id: string
+    kind?: string
+  }>
+  const workspace =
+    items.find((w) => w.kind !== "personal") ??
+    items.find((w) => w.kind === "personal") ??
+    null
+  expect(workspace, "local stack has no workspace to build in").not.toBeNull()
 
-  await page.evaluate((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
-  }, workspaceId!)
+  // Exactly the record `apps/mobile/lib/workspace-store.ts` persists: the id on
+  // its own and the kind as `{id, kind}` JSON. A bare "team" string is read back
+  // as a corrupt cache and ignored.
+  await page.addInitScript(
+    (record: { id: string; kind: string }) => {
+      localStorage.setItem("shogo:active-workspace-id", record.id)
+      localStorage.setItem("shogo:active-workspace-kind", JSON.stringify(record))
+    },
+    { id: workspace!.id, kind: workspace!.kind ?? "team" },
+  )
 
-  await page.goto("/(app)/new-project")
+  await page.goto("/new-project")
   await page
     .getByTestId("home-composer-input")
     .first()
