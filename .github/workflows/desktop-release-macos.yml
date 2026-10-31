@@ -324,7 +324,7 @@ jobs:
           - arch: x64
             bun-target: bun-darwin-x64
 
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -377,7 +377,7 @@ jobs:
           # server.tsx crashes on first project open. electron-packager
           # preserves hardlinks as independent files, so this survives
           # `.app` packaging cleanly. We do not exec the binary here:
-          # macos-14 runners are arm64 and cannot run the bun-darwin-x64
+          # macos-15 runners are arm64 and cannot run the bun-darwin-x64
           # binary natively, so a `--version` self-check would SIGILL
           # (exit 132) on the x64 matrix leg.
           ln bun bunx
