@@ -123,6 +123,7 @@ import {
   chatSessionHistoryKey,
   deltaSince,
   readChatHistory,
+  removeChatHistory,
   writeChatHistory,
   type ChatHistoryEntry,
 } from "../../lib/chat-history-store"
@@ -7932,6 +7933,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Note: reuses the existing `messagesRef` declared near the top of
   // the component (right after the `useChat` setup) so we don't
   // duplicate the ref-update side effect.
+  // A truncation is a deletion, so every copy a later delta or paint merges
+  // from has to shrink with the transcript. Leaving the tail in the panel cache
+  // and the device store lets the next delta paint the rows the server just
+  // deleted straight back — a delta cannot carry a deletion, so the stored
+  // cursor goes too and the next open reads the full page (SHO-260).
+  const forgetTruncatedHistory = useCallback(
+    (sessionId: string | null, keep: any[]) => {
+      cachedMessagesRef.current = keep
+      lastNonEmptyMessagesRef.current = keep
+      if (!sessionId) return
+      writeSessionMessageCache(sessionId, keep)
+      const key = historyKeyFor(sessionId)
+      if (!key) return
+      historyMetaRef.current.delete(key)
+      void removeChatHistory("project", key).catch(() => {})
+    },
+    [historyKeyFor],
+  )
+
   const truncateAndResend = useCallback(
     async (
       messageId: string,
@@ -7953,7 +7973,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // If the truncate itself fails nothing was deleted server-side, so the
       // whole transcript comes back and the editor reopens with the draft.
       const previous = current
-      setMessages(current.slice(0, idx))
+      const kept = current.slice(0, idx)
+      setMessages(kept)
       let truncated = false
 
       // Step 1: chat truncation. This is the source of truth — if it
@@ -7962,6 +7983,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       try {
         await truncateMessagesFrom(sessionMessages, messageId)
         truncated = true
+        forgetTruncatedHistory(currentSessionIdRef.current ?? null, kept)
       } catch (err) {
         console.error("[ChatPanel] truncate-from failed:", err)
         setMessages(previous)
@@ -8011,7 +8033,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
       await sendMessageInternal(newContent, newFiles)
     },
-    [sessionMessages, setMessages, sendMessageInternal],
+    [sessionMessages, setMessages, sendMessageInternal, forgetTruncatedHistory],
   )
 
   const handleEditMessage = useCallback(
