@@ -150,7 +150,10 @@ export async function settleOrphanedAgentReplies(minAgeMs = 0): Promise<number> 
     where: {
       authorType: 'agent',
       agentStatus: 'running',
-      createdAt: { lt: cutoff },
+      // `lte`, not `lt`: with the default floor of 0 a row written in this same
+      // millisecond is exactly at the cutoff, and `< now` would skip it — a boot
+      // settle that runs immediately after a send would leave that reply running.
+      createdAt: { lte: cutoff },
       deletedAt: null,
       ...(home ? { conversation: { workspace: home } } : {}),
       // A copy's running reply is live on the desktop that owns it: settling it

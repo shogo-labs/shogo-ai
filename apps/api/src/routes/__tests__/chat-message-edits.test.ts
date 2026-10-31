@@ -66,6 +66,10 @@ const sessionsById = new Map<string, SessionFixture>()
 const checkpointsByProject = new Map<string, CheckpointFixture[]>()
 const sessionUpdatedAt = new Map<string, Date>()
 const deleteManyCalls: Array<{ where: any }> = []
+const liveTurnBySession = new Map<
+  string,
+  { activeTurnId: string | null; activeTurnHeartbeatAt: Date | null }
+>()
 
 // Build the nested shape `findUnique` returns for either route.
 // `findUnique` is called with the same `include` block (session ->
@@ -127,6 +131,12 @@ const mockPrisma = {
     }),
   },
   chatSession: {
+    // The edit route refuses to cut a turn that is still being written
+    // (SHO-274). Default: no live turn.
+    findUnique: mock(
+      async (_args: any): Promise<{ activeTurnId: string | null; activeTurnHeartbeatAt: Date | null } | null> =>
+        liveTurnBySession.get(_args?.where?.id) ?? null,
+    ),
     update: mock(async (args: any) => {
       sessionUpdatedAt.set(args.where.id, args.data.updatedAt)
       return { id: args.where.id, updatedAt: args.data.updatedAt }
@@ -281,7 +291,9 @@ beforeEach(() => {
   checkpointsByProject.clear()
   sessionUpdatedAt.clear()
   deleteManyCalls.length = 0
+  liveTurnBySession.clear()
   mockPrisma.chatMessage.findUnique.mockClear()
+  mockPrisma.chatSession.findUnique.mockClear()
   mockPrisma.chatMessage.deleteMany.mockClear()
   mockPrisma.chatSession.update.mockClear()
   mockPrisma.projectCheckpoint.findFirst.mockClear()
@@ -327,6 +339,46 @@ describe('POST /api/chat-messages/:id/truncate-from — auth gate', () => {
     })
     expect(res.status).toBe(403)
     expect(messagesById.has('msg-1')).toBe(true)
+  })
+})
+
+describe('POST /api/chat-messages/:id/truncate-from — live turn guard', () => {
+  test('409 while the turn is still being written, and nothing is deleted', async () => {
+    seedSession({
+      sessionId: 's1',
+      ownerUserId: 'owner-user',
+      rows: [{ id: 'msg-1', createdAtMs: 1000 }],
+    })
+    liveTurnBySession.set('s1', {
+      activeTurnId: 'turn-1',
+      activeTurnHeartbeatAt: new Date(),
+    })
+    const app = createApp({ isAuthenticated: true, userId: 'owner-user' })
+    const res = await app.request('/api/chat-messages/msg-1/truncate-from', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(409)
+    expect((await res.json()).error.code).toBe('turn_active')
+    expect(messagesById.has('msg-1')).toBe(true)
+    expect(deleteManyCalls.length).toBe(0)
+  })
+
+  test('stale heartbeat is ignored — the edit goes through', async () => {
+    seedSession({
+      sessionId: 's1',
+      ownerUserId: 'owner-user',
+      rows: [{ id: 'msg-1', createdAtMs: 1000 }],
+    })
+    liveTurnBySession.set('s1', {
+      activeTurnId: 'turn-1',
+      activeTurnHeartbeatAt: new Date(Date.now() - 10 * 60 * 1000),
+    })
+    const app = createApp({ isAuthenticated: true, userId: 'owner-user' })
+    const res = await app.request('/api/chat-messages/msg-1/truncate-from', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(200)
+    expect(messagesById.has('msg-1')).toBe(false)
   })
 })
 

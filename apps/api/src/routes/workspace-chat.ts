@@ -38,7 +38,9 @@ import { stampTeamWorkspaceNames } from '../lib/stamp-team-workspace-names'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
+import { persistUserMessageForTurn } from '../services/chat-user-message'
 import { TurnJournalWriter } from '../services/chat-turn-journal'
+import { createJournalledForwarder } from '../lib/journalled-forwarder'
 import {
   attachProject,
   assertWorkspaceSessionAccess,
@@ -888,6 +890,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // `<@c:CHAT_ID>` is context (see the promotion above and `chat_handoff` when
     // the person explicitly wants something sent).
 
+    // The person's message must be durable before the turn starts (SHO-274), on
+    // the same contract as project-chat: awaited after every gate (a rejected
+    // send writes nothing) and before the first proxy attempt.
+    await persistUserMessageForTurn(sessionId, parsedBody as Record<string, unknown>)
+
     // Serialise once, after every mutation above. Each of those steps used to
     // re-`JSON.stringify` the whole body, which was fine until attachments rode
     // inside it as base64 (SHO-213) — the same 15 MB string was built six times.
@@ -1136,37 +1143,22 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           const journal = activityTurnId
             ? new TurnJournalWriter(sessionId, activityTurnId)
             : null
-          let pendingFrames: Uint8Array[] = []
-          let drainScheduled = false
-          let drainChain: Promise<void> = Promise.resolve()
           let clientController: ReadableStreamDefaultController<Uint8Array> | null = null
-          const drainJournal = async () => {
-            while (pendingFrames.length > 0) {
-              const batch = pendingFrames
-              pendingFrames = []
-              if (journal) await journal.append(batch)
-              for (const chunk of batch) {
-                trackingChunks.push(chunk)
-                trackingNotify?.()
-                trackingNotify = null
-                latency.observe(chunk)
-                try {
-                  clientController?.enqueue(chunk)
-                } catch {
-                  /* client gone — stream continues for tracking */
-                  clientGone = true
-                }
+          const forwarder = createJournalledForwarder({
+            journal,
+            forward(chunk) {
+              trackingChunks.push(chunk)
+              trackingNotify?.()
+              trackingNotify = null
+              latency.observe(chunk)
+              try {
+                clientController?.enqueue(chunk)
+              } catch {
+                /* client gone — stream continues for tracking */
+                clientGone = true
               }
-            }
-          }
-          const scheduleDrain = () => {
-            if (drainScheduled) return
-            drainScheduled = true
-            drainChain = drainChain.then(() => {
-              drainScheduled = false
-              return drainJournal()
-            })
-          }
+            },
+          })
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
               clientController = controller
@@ -1176,15 +1168,14 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                     const { done, value } = await bgReader.read()
                     if (done) break
                     streamTrace.mark('upstream', value.byteLength)
-                    pendingFrames.push(value)
-                    scheduleDrain()
+                    forwarder.push(value)
                   }
                   // Everything still held must be durable (and out) before the
                   // client is told the stream ended.
-                  await drainChain
+                  await forwarder.drain()
                 } catch (err: any) {
                   try {
-                    await drainChain
+                    await forwarder.drain()
                   } catch {
                     /* already logged */
                   }
