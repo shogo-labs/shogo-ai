@@ -669,6 +669,13 @@ spec:
               value: "proj_LqG158bE40BOg"
             - name: LATITUDESH_SSH_KEY_ID
               value: "ssh_XDO7NYqJvNPgw"
+            # Per-host microVM capacity the control plane plans against (util %,
+            # idle-suspend tier, burst trigger). 80 was the pilot guess; a
+            # 512 GB / 48-thread s3-large host ran 64 assigned VMs at ~67 GB RAM
+            # and load <8 (2026-10-30 review), so 120 is still conservative.
+            # Keep in step with METAL_MAX_VMS_PER_HOST in /etc/metal-agent.env.
+            - name: METAL_MAX_VMS_PER_HOST
+              value: "120"
             - name: PROMOTED_POD_GC_ENABLED
               value: "true"
             # 30 min: needs to be longer than typical user-think-time
