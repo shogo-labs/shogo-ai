@@ -368,6 +368,9 @@ export function sanitizeToolCallIds(messages: Message[]): Message[] {
       return { ...msg, toolCallId: next }
     }
     if (msg.role !== 'assistant') return msg
+    // Hydrated / compacted histories can carry an assistant message whose
+    // content is a plain string rather than blocks.
+    if (!Array.isArray(msg.content)) return msg
     let changed = false
     const content = msg.content.map((block) => {
       if (block.type !== 'toolCall') return block
@@ -438,6 +441,7 @@ export function repairToolResultPairing(messages: Message[]): {
     }
     const group: Group = { assistant: msg, results: [] }
     items.push(group)
+    if (!Array.isArray(msg.content)) continue
     for (const block of msg.content) {
       if (block.type !== 'toolCall') continue
       const stack = pending.get(block.id) ?? []

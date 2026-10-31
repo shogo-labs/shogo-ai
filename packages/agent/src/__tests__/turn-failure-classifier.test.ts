@@ -74,6 +74,14 @@ const PROD_FAILURES: Fixture[] = [
   // A user stop is never a failure.
   { bucket: 'user stop', raw: 'Request was aborted.', abortReason: 'external', expected: 'aborted_by_user' },
   { bucket: 'user stop wins over text', raw: '402 You have reached your usage limit', abortReason: 'external', expected: 'aborted_by_user' },
+  // Our own malformed payload, not a provider-side 400: no failover helps.
+  {
+    bucket: 'request shape 400 (roles must alternate)',
+    raw: '400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: roles must alternate between \\"user\\" and \\"assistant\\""}}',
+    expected: 'unknown',
+  },
+  { bucket: 'tool-call id crash in our code', raw: 'msg.content.map is not a function', expected: 'unknown' },
+  { bucket: 'JS identifier naming a tool call id', raw: 'TypeError in sanitizeToolCallIds(toolCallId)', expected: 'unknown' },
 ]
 
 describe('classifyTurnFailure — production fixtures', () => {

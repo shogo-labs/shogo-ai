@@ -92,8 +92,12 @@ export function isUsageLimitFailure(raw?: string | null): boolean {
   )
 }
 
-/** A tool-call id the next provider refused (`messages.1.content.0.tool_use.id: …`). */
-const BAD_TOOL_ID_FAILURE = /tool[_.]?use[_.]?id|tool[_.]?call[_.]?id|tool use id/i
+/**
+ * A tool-call id the next provider refused (`messages.1.content.0.tool_use.id: …`).
+ * Requires the provider's key form (`tool_use.id`, `tool_call_id`) so a JS
+ * identifier like `sanitizeToolCallId` in a stack trace is not mistaken for one.
+ */
+const BAD_TOOL_ID_FAILURE = /\btool[_.](?:use|call)[_.]?id\b|\btool[_.]?(?:use|call)[_.]id\b/i
 
 /** An image block the provider rejected outright. */
 const BAD_IMAGE_FAILURE =
@@ -109,8 +113,13 @@ const REFUSAL_FAILURE = /stop_reason[\"'\s:=]+(refusal|sensitive)|model refused|
 const CONTENT_FILTER_FAILURE =
   /content[_\s-]?(policy|filter)|moderation|safety (system|filter)|content exists risk|sensitive content|flagged/i
 
-/** A 400 from the upstream provider, with or without a specific cause. */
-const UPSTREAM_400_FAILURE = /provider returned error|upstream (provider )?(error|rejected)|\b400\b|bad request/i
+/**
+ * A 400 the *upstream provider* returned, with or without a specific cause.
+ * A bare `400` / `invalid_request_error` is our own malformed payload — every
+ * family rejects it the same way, so it is not failover-eligible.
+ */
+const UPSTREAM_400_FAILURE =
+  /provider returned error|upstream (provider )?(error|rejected|returned)|content exists risk/i
 
 /**
  * Classes the gateway can answer by re-running the turn on a model from a
@@ -148,7 +157,9 @@ export function classifyTurnFailure(input: TurnFailureInput): TurnFailureClass {
   if (reason === 'aborted') return 'aborted_by_user'
 
   if (UPSTREAM_400_FAILURE.test(raw)) return 'upstream_400'
-  if (reason === 'invalid_request') return 'upstream_400'
+  // `invalid_request` is our own payload shape (a bare 400, a role-ordering
+  // complaint, a crash). Another family would reject it identically, so it
+  // stays `unknown` and never earns a failover.
   return 'unknown'
 }
 

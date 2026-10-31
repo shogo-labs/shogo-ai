@@ -28,10 +28,20 @@ describe('empty-turn fallback wiring', () => {
 
   test('the stop check runs before the fallback is built or streamed', () => {
     const stopCheck = source.indexOf('if (isUserStoppedTurn(result)) return')
-    const fallback = source.indexOf("const emptyFallback = 'Sorry, I was unable to generate a response")
+    // The empty-turn line is class-derived since SHO-270; the boilerplate
+    // apology is only the `unknown` branch.
+    const fallback = source.indexOf('const emptyFallback =')
     expect(stopCheck).toBeGreaterThan(-1)
     expect(fallback).toBeGreaterThan(-1)
     expect(stopCheck).toBeLessThan(fallback)
+  })
+
+  test('a known failure class ends the turn with its own line, not the apology', () => {
+    const fallback = source.slice(source.indexOf('const emptyFallback ='))
+    const failureLine = fallback.indexOf('buildTurnFailureMessage(failureClass')
+    const apology = fallback.indexOf('Sorry, I was unable to generate a response')
+    expect(failureLine).toBeGreaterThan(-1)
+    expect(apology).toBeGreaterThan(failureLine)
   })
 
   test('the zero-token "issue processing your message" error is skipped for a stop and a usage limit', () => {

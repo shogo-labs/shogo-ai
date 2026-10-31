@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'bun:test'
 import type { AssistantMessage, Message, ToolResultMessage, UserMessage } from '@mariozechner/pi-ai'
 import { convertMessages } from '@mariozechner/pi-ai/openai-completions'
-import { defaultConvertToLlm, repairToolResultPairing, resolveModel } from '../pi-adapter'
+import { defaultConvertToLlm, repairToolResultPairing, resolveModel, sanitizeToolCallIds } from '../pi-adapter'
 
 const usage = {
   input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -131,5 +131,16 @@ describe('defaultConvertToLlm', () => {
     const converted = defaultConvertToLlm(history)
     expect(strayToolMessages(toOpenAi(converted))).toEqual([])
     expect(converted[2]).toMatchObject({ role: 'toolResult', toolCallId: 'x' })
+  })
+
+  // A hydrated/compacted session can carry an assistant message whose content
+  // is a plain string. Id normalisation and pairing must not assume blocks.
+  it('passes a string-content assistant message through untouched', () => {
+    const hydrated = { ...text('hydrated reply'), content: 'hydrated reply' } as unknown as AssistantMessage
+    const history = [user('a'), hydrated, result('x')]
+    expect(() => defaultConvertToLlm(history)).not.toThrow()
+    expect(() => repairToolResultPairing([user('a'), hydrated])).not.toThrow()
+    expect(() => sanitizeToolCallIds([user('a'), hydrated])).not.toThrow()
+    expect(defaultConvertToLlm(history)[1]).toBe(hydrated)
   })
 })
