@@ -576,7 +576,7 @@ jobs:
           - { name: 'E2E (local mode) (1/3)', shard: '1/3' }
           - { name: 'E2E (local mode) (2/3)', shard: '2/3' }
           - { name: 'E2E (local mode) (3/3)', shard: '3/3' }
-          # These eight specs all need the API pointed at the fake model, which
+          # These specs all need the API pointed at the fake model, which
           # would change every other spec, so they get stacks of their own.
           # They are FOUR jobs, not one (SHO-251): on one worker, all 27 tests
           # could not finish inside the cap, so every run was cancelled at 35
@@ -646,6 +646,12 @@ jobs:
           # (where only E2E_LOCAL_START_STACK is set) it would `test.skip`
           # itself and run nowhere (SHO-122).
           - { name: 'E2E (chat edit resend)', spec: 'chat-edit-resend' }
+          # chat-crash-keeps-what-was-seen (SHO-274) reads the transcript back
+          # through the API while a turn is held at the model and while it
+          # streams, so it needs the fake-model stack. Own entry rather than a
+          # place in a chat job: it reloads a window mid-stream, and anything
+          # sharing its stack would pay for that replay.
+          - { name: 'E2E (crash survival)', spec: 'chat-crash-keeps-what-was-seen' }
           # agent-model-truth (SHO-145) seeds two `local` models into the stack's
           # SQLite file and checks /ai/v1/models against the runtime's model
           # cache entry by entry, so it needs the fake-model stack. Own entry,
