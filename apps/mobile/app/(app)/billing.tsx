@@ -114,9 +114,14 @@ function StartTrialButton({ onPress, disabled }: { onPress: () => void; disabled
 
 export default observer(function BillingPage() {
   const router = useRouter()
-  const { redeem: redeemParam, workspace: workspaceParam } = useLocalSearchParams<{
+  const {
+    redeem: redeemParam,
+    workspace: workspaceParam,
+    trial: trialParam,
+  } = useLocalSearchParams<{
     redeem?: string
     workspace?: string
+    trial?: string
   }>()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
@@ -558,6 +563,27 @@ export default observer(function BillingPage() {
       setIsCheckoutLoading(false)
     }
   }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchUsageWallet])
+
+  // The usage notice's "Start free trial" CTA lands here with `?trial=business`:
+  // take them straight to Stripe's trial checkout for the Business plan rather
+  // than making them find the right card on the page.
+  const autoTrialStartedRef = useRef(false)
+  useEffect(() => {
+    if (trialParam !== 'business') return
+    if (isBillingLoading || !currentWorkspace?.id) return
+    if (!trialEligible || hasStripeSubscription) return
+    if (autoTrialStartedRef.current) return
+    autoTrialStartedRef.current = true
+    void handleCheckout('business', businessSeats, { trial: true })
+  }, [
+    trialParam,
+    isBillingLoading,
+    currentWorkspace?.id,
+    trialEligible,
+    hasStripeSubscription,
+    businessSeats,
+    handleCheckout,
+  ])
 
   const handleManageSubscription = useCallback(async () => {
     if (!currentWorkspace?.id) return

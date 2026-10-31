@@ -229,14 +229,19 @@ async function projectFolderPaths(db: any, projectIds: string[]): Promise<Map<st
   return new Map(folders.map((folder) => [folder.projectId, folder.path]))
 }
 
+/**
+ * The storage a cloud target will actually have.
+ *
+ * A move creates its target workspace at the default instance size — the same
+ * row `POST /api/workspaces` produces — and never at the source's size (SHO-256).
+ * So the quota the plan shows has to be the default's too: reading the source's
+ * size here approved moves into a target that could not hold them.
+ */
+const DEFAULT_NEW_WORKSPACE_SIZE: InstanceSizeName = 'micro'
+
 async function targetStorageLimit(input: BuildMovePlanInput): Promise<number | null> {
   if (input.targetKind === 'desktop') return null
-  const workspace: { instanceSize?: string } | null = await (input.db ?? prisma).workspace.findUnique({
-    where: { id: input.workspaceId },
-    select: { instanceSize: true },
-  })
-  const size = (workspace?.instanceSize ?? 'micro') as InstanceSizeName
-  return INSTANCE_SIZES[size]?.storageLimitBytes ?? null
+  return INSTANCE_SIZES[DEFAULT_NEW_WORKSPACE_SIZE]?.storageLimitBytes ?? null
 }
 
 /**
@@ -269,14 +274,10 @@ export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlan
         id: input.workspaceId,
         name: String(remoteWorkspaceRow?.name ?? input.targetName ?? 'Workspace'),
         kind: String(remoteWorkspaceRow?.kind ?? 'team'),
-        instanceSize: (remoteWorkspaceRow?.instanceSize as string | null) ?? null,
       }
     : await db.workspace.findUnique({
         where: { id: input.workspaceId },
-        // `instanceSize` is here because the plan freezes it for the target: without
-        // it every move created a `micro` workspace (the column default) no matter
-        // what the source was, while the quota check above still read the real size.
-        select: { id: true, name: true, kind: true, instanceSize: true },
+        select: { id: true, name: true, kind: true },
       })
   if (!workspace) throw new WorkspaceMoveError('Workspace not found', 404, 'workspace_not_found')
 
@@ -413,7 +414,7 @@ export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlan
   const quotaOk = limitBytes === null || totalBytes <= limitBytes
   if (!quotaOk) {
     warnings.push(
-      `The move needs ${formatBytes(totalBytes)} and the target allows ${formatBytes(limitBytes ?? 0)}. Free space or pick a larger target before starting.`,
+      `The move needs ${formatBytes(totalBytes)} and the target allows ${formatBytes(limitBytes ?? 0)}. Free space in the source before starting, or upgrade the destination workspace's plan.`,
     )
   }
 
@@ -433,9 +434,6 @@ export async function buildMovePlan(input: BuildMovePlanInput): Promise<MovePlan
     source: { workspaceId: workspace.id, name: workspace.name, kind: String(workspace.kind ?? 'team') },
     target: {
       name: input.targetName?.trim() || `${workspace.name} (moved)`,
-      // Frozen into the approved plan: the job creates the target later, and on
-      // a resume there is no request to carry the size.
-      instanceSize: workspace.instanceSize ?? null,
     },
     selection: {
       mode: input.selection.mode,

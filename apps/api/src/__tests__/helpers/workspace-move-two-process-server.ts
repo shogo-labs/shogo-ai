@@ -189,6 +189,13 @@ const { Hono } = await import('hono')
 const { prisma } = await import('../../lib/prisma')
 const { workspaceMoveRoutes } = await import('../../routes/workspace-moves')
 
+// A desktop is the default. `QA_SURFACE=cloud` makes this process answer like
+// the cloud API, which is the one difference that matters to `/receive/init`:
+// the workspace it creates is gated by the create rule there and not here
+// (SHO-256). The Prisma client above is already built against SQLite, so the
+// flag only changes what the per-call mode readers see.
+if (process.env.QA_SURFACE === 'cloud') delete process.env.SHOGO_LOCAL_MODE
+
 /** Deterministic bytes so both ends can compare checksums across processes. */
 function deterministicBytes(seed: string, size: number): Buffer {
   const out = Buffer.alloc(size)
@@ -256,20 +263,56 @@ const IGNORED = [
 
 app.post('/__qa/seed', async (c) => {
   try {
-    return await seedWorkspace(c)
+    const body = (await c.req.json().catch(() => ({}))) as { instanceSize?: string }
+    return await seedWorkspace(c, body)
   } catch (error) {
     console.error('SEED FAILED', error)
     return c.json({ error: String((error as Error)?.message ?? error) }, 500)
   }
 })
 
-async function seedWorkspace(c: any) {
+// Give the account an owned workspace of one kind, i.e. spend (or leave unspent)
+// that kind's free allowance. What `/receive/init` refuses or allows turns on
+// this count, so the test needs to set it without seeding a whole workspace.
+app.post('/__qa/own-workspace', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { kind?: string; instanceSize?: string }
+  const kind = body.kind === 'personal' ? 'personal' : 'team'
+  await ensureUser()
+  const id = `ws-own-${kind}`
+  await prisma.workspace.create({
+    data: { id, name: `${kind} owned`, slug: `own-${kind}`, kind, instanceSize: body.instanceSize } as any,
+  })
+  await prisma.member.create({ data: { userId, workspaceId: id, role: 'owner' } as any })
+  return c.json({ ok: true, workspaceId: id })
+})
+
+async function ensureUser() {
+  if (!(await prisma.user.findUnique({ where: { id: userId } as any }))) {
+    await prisma.user.create({ data: { id: userId, email: 'owner246@example.com', name: 'Owner' } as any })
+  }
+}
+
+// Accounts the target already knows, so a pushed workspace's other members are
+// not refused as strangers (`workspace_move_unknown_user`).
+app.post('/__qa/ensure-users', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: string[] }
+  await ensureUser()
+  for (const id of body.ids ?? []) {
+    if (await prisma.user.findUnique({ where: { id } as any })) continue
+    await prisma.user.create({ data: { id, email: `${id}@example.com`, name: id } as any })
+  }
+  return c.json({ ok: true })
+})
+
+async function seedWorkspace(c: any, body: { instanceSize?: string } = {}) {
   const w = cloudStorage ? 'ws-252' : 'ws-246'
-  await prisma.user.create({ data: { id: userId, email: 'owner246@example.com', name: 'Owner' } as any })
+  await ensureUser()
   for (const id of ['u-admin-246', 'u-viewer-246']) {
     await prisma.user.create({ data: { id, email: `${id}@example.com`, name: id } as any })
   }
-  await prisma.workspace.create({ data: { id: w, name: 'Content Studio', slug: 'content-246', kind: 'team' } as any })
+  await prisma.workspace.create({
+    data: { id: w, name: 'Content Studio', slug: 'content-246', kind: 'team', instanceSize: body.instanceSize } as any,
+  })
   await prisma.member.create({ data: { userId, workspaceId: w, role: 'owner' } as any })
   await prisma.member.create({ data: { userId: 'u-admin-246', workspaceId: w, role: 'admin' } as any })
   await prisma.member.create({ data: { userId: 'u-viewer-246', workspaceId: w, role: 'member' } as any })
@@ -438,11 +481,17 @@ async function statePayload(c: any) {
     triggers: await prisma.eventSubscription.count(),
   }
   const userIds = (await prisma.user.findMany({ select: { id: true } as any })).map((u: any) => u.id)
-  const workspaces = await prisma.workspace.findMany({ select: { id: true, movedToWorkspaceId: true } as any })
+  const members = (
+    await prisma.member.findMany({ select: { userId: true, workspaceId: true, role: true } as any })
+  ).map((m: any) => ({ userId: m.userId, workspaceId: m.workspaceId, role: m.role }))
+  const workspaces = await prisma.workspace.findMany({
+    select: { id: true, name: true, kind: true, instanceSize: true, movedToWorkspaceId: true } as any,
+  })
   const moves = await prisma.workspaceMove.findMany({ orderBy: { createdAt: 'desc' } as any })
   return c.json({
     workspaces,
     userIds,
+    members,
     projects,
     counts,
     cloudStorage,

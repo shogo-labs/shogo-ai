@@ -41,6 +41,15 @@ mock.module('../services/analytics.service', () => ({
   getTemplateEngagement: mock(async () => analyticsFixtures.templates),
   getSourceBreakdown: mock(async () => analyticsFixtures.sources),
   getChatConversations: mock(async () => analyticsFixtures.conversations),
+  // The collector computes digest totals from an aggregate now, not from a
+  // page of rows, so the module surface has to carry it.
+  getDigestTotals: mock(async () => ({
+    activeUsers: 2,
+    totalMessages: 12,
+    totalSessions: 3,
+    totalToolCalls: 7,
+    totalSpendUsd: 4,
+  })),
 }))
 
 // The collector no longer POSTs to api.anthropic.com directly — it routes

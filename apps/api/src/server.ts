@@ -3020,6 +3020,14 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
   }
 
+  // Funnel step between "sent a message" and "came back": the authenticated
+  // preview fetch is the moment a user actually sees what was built, so it
+  // stamps `firstPreviewSeenAt` once (SHO-258 §7). Fire-and-forget — never
+  // delay the preview on a metrics write.
+  void import('./lib/usage-cap-events')
+    .then(({ recordFirstPreviewSeen }) => recordFirstPreviewSeen(userId))
+    .catch(() => {})
+
   // The canvas iframe must point at the runtime the agent edits, which only
   // the workspace's home region resolves (see the preview wake route).
   const pinned = await pinChatToHomeRegion(c, projectId)
@@ -10321,6 +10329,14 @@ setTimeout(async () => {
       startExpireSignupCreditsCron()
     } catch (err: any) {
       console.error('[SignupCredit] failed to schedule expiry cron (non-fatal):', err?.message ?? err)
+    }
+    // "Your agent is back": the cap notice promises a reset time, this is what
+    // tells the person when it arrives (SHO-258 §4).
+    try {
+      const { startCreditsResetNotifyCron } = await import('./jobs/credits-reset-notify')
+      startCreditsResetNotifyCron()
+    } catch (err: any) {
+      console.error('[CreditsReset] failed to schedule reset-notify cron (non-fatal):', err?.message ?? err)
     }
   })()
 }

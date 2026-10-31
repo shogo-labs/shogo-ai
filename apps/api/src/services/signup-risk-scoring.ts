@@ -11,11 +11,13 @@
 import {
   BLOCKED_EMAIL_DOMAINS,
   DISPOSABLE_EMAIL_DOMAINS,
+  EXTRA_BLOCKED_EMAIL_DOMAINS,
   RANDOM_LOCAL_PART_PATTERNS,
   SIGNUP_RISK_BANDS,
   SIGNUP_RISK_WEIGHTS,
   type SignupRiskBand,
 } from '../config/signup-risk-config'
+import { GENERATED_DISPOSABLE_DOMAINS } from '../config/disposable-domains.generated'
 import {
   SIGNUP_CREDIT_INITIAL_USD,
   SIGNUP_CREDIT_TOTAL_USD,
@@ -77,8 +79,33 @@ export function bandForScore(score: number): SignupRiskBand {
   return 'low'
 }
 
+/**
+ * True when the address's domain — or any parent of it — is on one of the
+ * blocklists. Walking parents means `mail.mailinator.com` is blocked by
+ * `mailinator.com`, and `x.0-mailer.dynv6.net` by `0-mailer.dynv6.net`,
+ * without needing an entry per subdomain.
+ *
+ * The lists: our own farm domains, the well-known disposable providers, the
+ * vendors' farm domains and the 10k-entry community blocklist. Signup rejects
+ * all of them (SHO-258 §8).
+ */
 export function isBlockedEmailDomain(email: string): boolean {
-  return BLOCKED_EMAIL_DOMAINS.has(emailDomain(email))
+  const domain = emailDomain(email)
+  if (!domain) return false
+  const labels = domain.split('.')
+  // Stop at the registrable domain: never test a bare TLD.
+  for (let i = 0; i <= labels.length - 2; i++) {
+    const candidate = labels.slice(i).join('.')
+    if (
+      BLOCKED_EMAIL_DOMAINS.has(candidate) ||
+      DISPOSABLE_EMAIL_DOMAINS.has(candidate) ||
+      EXTRA_BLOCKED_EMAIL_DOMAINS.has(candidate) ||
+      GENERATED_DISPOSABLE_DOMAINS.has(candidate)
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 export function isDisposableEmailDomain(email: string): boolean {

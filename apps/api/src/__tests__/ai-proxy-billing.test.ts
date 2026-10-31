@@ -137,6 +137,16 @@ mock.module('../lib/prisma', () => withPrismaExports({
     },
     $transaction: async (fn: any) =>
       fn({
+        // SHO-258 §2: the consume transaction resolves its promo-credit source,
+        // which reads the workspace kind (and, for a personal workspace, the
+        // owner + their credit wallet). ws-cloud is a team workspace, so it
+        // stops at the kind lookup.
+        workspace: {
+          findUnique: async () => ({ kind: 'team', parentWorkspaceId: null }),
+        },
+        member: {
+          findFirst: async () => null,
+        },
         usageWallet: {
           findUnique: async ({ where }: any) => (where.workspaceId === wallet.workspaceId ? wallet : null),
           update: async ({ data }: any) => {

@@ -407,6 +407,10 @@ export function workspaceMoveRoutes(): Hono {
     // died with a 403 before the target workspace existed. The caller is
     // authenticated by its own credential; the workspace it creates is owned by
     // it, and the later `/receive/*` calls are authorised against that target.
+    //
+    // Being signed in is not enough to create a workspace, though: the create
+    // itself is gated by the same one-free-per-kind rule as
+    // `POST /api/workspaces` inside `initTargetWorkspace` (SHO-256).
     const principal = principalOf(c)
     const ownerUserId = String(principal?.userId ?? '')
     if (!ownerUserId) return errorResponse(c, 401, 'unauthorized', 'Authentication required')
@@ -415,7 +419,6 @@ export function workspaceMoveRoutes(): Hono {
         name: String(body.name ?? 'Moved workspace'),
         sourceWorkspaceId,
         ownerUserId,
-        instanceSize: body.instanceSize ? String(body.instanceSize) : null,
       })
       return c.json(created, 201)
     } catch (err) {

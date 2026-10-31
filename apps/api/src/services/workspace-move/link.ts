@@ -56,7 +56,6 @@ export interface MoveTarget {
     name: string
     sourceWorkspaceId: string
     ownerUserId: string
-    instanceSize?: string | null
   }): Promise<{ workspaceId: string }>
   writeRecords(input: { workspaceId: string; model: string; rows: MoveRow[] }): Promise<{ inserted: number }>
   fileManifest(input: { workspaceId: string; projectId: string }): Promise<MoveFileManifest>
@@ -125,7 +124,7 @@ export class LocalMoveTarget implements MoveTarget {
     private readonly base = workspacesDir(),
   ) {}
 
-  init(input: { name: string; sourceWorkspaceId: string; ownerUserId: string; instanceSize?: string | null }) {
+  init(input: { name: string; sourceWorkspaceId: string; ownerUserId: string }) {
     return initTargetWorkspace(this.db, input)
   }
 
@@ -295,7 +294,7 @@ export class HttpMoveTarget implements MoveTarget {
     return (await res.json()) as T
   }
 
-  init(input: { name: string; sourceWorkspaceId: string; ownerUserId: string; instanceSize?: string | null }) {
+  init(input: { name: string; sourceWorkspaceId: string; ownerUserId: string }) {
     return this.post<{ workspaceId: string }>('/api/workspace-moves/receive/init', input)
   }
 

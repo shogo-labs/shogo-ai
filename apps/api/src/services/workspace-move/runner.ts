@@ -51,7 +51,6 @@ export interface RunnerInput {
   requesterId: string
   isOwner: boolean
   ownerUserId: string
-  instanceSize?: string | null
   selection: MoveSelection
   plan: MovePlan
   progress: MoveProgress
@@ -107,11 +106,13 @@ export async function runMove(input: RunnerInput): Promise<RunnerResult> {
   try {
     // ── 1. target workspace ────────────────────────────────────────
     if (!targetWorkspaceId) {
+      // No size on the wire: the target gets its own default, exactly like a
+      // normal workspace create (SHO-256). A bigger runtime is the plan/billing
+      // flow's call, not the move's.
       const created = await input.target.init({
         name: input.plan.target.name,
         sourceWorkspaceId: input.sourceWorkspaceId,
         ownerUserId: input.ownerUserId,
-        instanceSize: input.instanceSize ?? null,
       })
       targetWorkspaceId = created.workspaceId
       await save({ targetWorkspaceId })

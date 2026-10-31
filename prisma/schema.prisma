@@ -57,6 +57,13 @@ model User {
   // Normalized email (lowercased; Gmail dots and plus tags removed) used by the
   // signup risk scorer to detect duplicate accounts. Cloud-only.
   emailCanonical              String?
+  // Activation funnel timestamps (SHO-258 §§2,7). `firstCapHitAt` is the first
+  // time a usage gate answered 402 for this user; `firstPreviewSeenAt` is the
+  // first time they opened one of their own project previews. Both are written
+  // once (updateMany ... where null) and shown as funnel steps, so they stay
+  // null for users who never got that far.
+  firstCapHitAt               DateTime?
+  firstPreviewSeenAt          DateTime?
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 
@@ -1521,6 +1528,11 @@ enum NotificationType {
   // Fires when a bring-your-own custom domain finishes DNS + SSL
   // validation and goes live (written by the poll-custom-domains cron).
   custom_domain_live
+  // Lifecycle nudges (SHO-258 §4): `build_ready` when a turn built or changed a
+  // project while the user was away, `credits_reset` when an exhausted 5-hour
+  // window reopens.
+  build_ready
+  credits_reset
   agent_task_started
   agent_task_completed
   agent_task_failed
@@ -1594,6 +1606,11 @@ model UsageWallet {
   // Stripe's hosted page for the outstanding invoice: where the customer pays
   // it or confirms a bank-required authentication (3-D Secure).
   overageOutstandingInvoiceUrl String?
+  // Set when a 402 usage gate fired for this wallet's workspace; the
+  // credits-reset job clears it once the 5-hour window has reopened and it has
+  // sent "your agent is back" (SHO-258 §4). Persisted rather than timed in
+  // memory so a runtime restart can't lose the notification.
+  capNotifyPendingAt          DateTime?
   // Per-period dedupe ledger for proactive usage/overage alerts so a given
   // threshold notification (e.g. "overage started", "80% of spend cap")
   // fires at most once per allocation period. Shape:

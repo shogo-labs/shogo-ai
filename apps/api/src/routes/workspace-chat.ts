@@ -677,7 +677,12 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const balanceCheck = await billingService.checkUsageBalance(workspaceId)
     if (!balanceCheck.ok) {
       const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-      const { resetsAt, window } = await buildUsageLimitInfo(workspaceId)
+      // Records firstCapHitAt + the hit_cap event: this route blocked the most
+      // people and used to record nothing (SHO-258 §2).
+      const { resetsAt, window } = await buildUsageLimitInfo(workspaceId, {
+        userId: auth.userId,
+        source: 'workspace-chat',
+      })
       return c.json(
         { error: { code, message, resetsAt, window } },
         402,
@@ -965,6 +970,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       // Runtime keys its durable-turn + billing state on the chat session id.
       headers['x-chat-session-id'] = sessionId
 
+      // Everything a turn creates or changes after this instant belongs to it.
+      // The build-ready nudge asks for a project touched since then (SHO-258 §4).
+      const turnStartedAt = new Date()
       const MAX_RETRIES = 30
       const BASE_DELAY_MS = 500
       const MAX_DELAY_MS = 4000
@@ -1115,6 +1123,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             },
           })
 
+          // A push is only worth sending to someone who is not watching this
+          // stream. `clientGone` flips the first time the browser's stream is
+          // already closed when we try to write to it.
+          let clientGone = false
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
               ;(async () => {
@@ -1131,6 +1143,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                       controller.enqueue(value)
                     } catch {
                       /* client gone — stream continues for tracking */
+                      clientGone = true
                     }
                   }
                 } catch (err: any) {
@@ -1199,7 +1212,49 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                   runtimeExtra,
                 ).catch(() => null),
             },
-          ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err)).finally(() => {
+          ).then(async () => {
+            // The workspace chat is where most people build, but only project
+            // chats used to announce a finished turn. Fire the "build ready"
+            // nudge for a turn that created or changed a project while the
+            // person was away (SHO-258 §4).
+            try {
+              const touched = await (prisma as any).project?.findFirst?.({
+                where: {
+                  workspaceId,
+                  OR: [
+                    { createdAt: { gte: turnStartedAt } },
+                    { lastMessageAt: { gte: turnStartedAt } },
+                  ],
+                },
+                orderBy: { lastMessageAt: 'desc' },
+                select: { id: true, name: true },
+              })
+              const notifyUserId = billingUserId && billingUserId !== 'system' ? billingUserId : null
+              if (touched && notifyUserId) {
+                const lastAssistant = await (prisma as any).chatMessage?.findFirst?.({
+                  where: { sessionId, role: 'assistant' },
+                  orderBy: { createdAt: 'desc' },
+                  select: { content: true },
+                })
+                const summary = String(lastAssistant?.content ?? '')
+                  .replace(/\s+/g, ' ')
+                  .trim()
+                  .slice(0, 160)
+                const { notifyBuildReady } = await import('../lib/lifecycle-notifications')
+                await notifyBuildReady({
+                  userId: notifyUserId,
+                  workspaceId,
+                  chatSessionId: sessionId,
+                  projectId: touched.id,
+                  projectName: touched.name || 'Your project',
+                  summary,
+                  userAway: clientGone,
+                })
+              }
+            } catch (err: any) {
+              console.warn('[WorkspaceChat] build-ready nudge failed:', err?.message ?? err)
+            }
+          }).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err)).finally(() => {
             stopTurnHeartbeat?.()
             // Clearing the turn hands the session on (chat-turn-state): its own
             // queue first, then the thread's wakes. Every ender does it there.

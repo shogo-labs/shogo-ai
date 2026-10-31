@@ -100,6 +100,19 @@ export const BLOCKED_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
   'mapsguy.com',
 ])
 
+/**
+ * Farm domains reported from production that are not in the vendored
+ * blocklist, kept here so a refresh of
+ * `disposable-domains.generated.ts` can never unblock them. `ofags` was
+ * recorded without a TLD in the analytics report; the .com/.net/.org forms
+ * cover it conservatively.
+ */
+export const EXTRA_BLOCKED_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
+  'ofags.com',
+  'ofags.net',
+  'ofags.org',
+])
+
 /** Domains whose local-part dots and plus tags are not significant. */
 export const GMAIL_DOMAINS: ReadonlySet<string> = new Set(['gmail.com', 'googlemail.com'])
 

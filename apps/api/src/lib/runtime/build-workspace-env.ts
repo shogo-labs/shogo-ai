@@ -168,6 +168,12 @@ export async function buildWorkspaceEnv(
   // after assign and exports it on evict. Mirrors buildProjectEnv({ forMetal }).
   if (opts.forMetal) {
     env.SHOGO_DURABILITY_HOST_MEDIATED = '1'
+    // Stamp the substrate explicitly rather than relying on the
+    // host-mediated-durability fallback: `preview_project` chooses between the
+    // local multiplex and the internal preview API on `isMetalRuntime()`, and a
+    // runtime that fell through to the local branch answered "no longer
+    // mounted" for a project the agent had just built (SHO-258 §3).
+    env.SHOGO_RUNTIME_SUBSTRATE = 'metal'
   }
 
   // Workspace identity carries the base agent persona; per-project

@@ -13,6 +13,7 @@
  */
 
 import { join } from 'node:path'
+import { checkWorkspaceCreateAllowance } from '../workspace-create-limit.service'
 import { workspacesDir } from '../workspace-export/files'
 import { isIncludedModel } from '../workspace-export/manifest'
 import {
@@ -38,8 +39,6 @@ export interface InitTargetInput {
   sourceWorkspaceId: string
   /** The member who becomes owner of the new workspace. */
   ownerUserId: string
-  /** Copied from the source so the copy has the same limits. */
-  instanceSize?: string | null
 }
 
 export interface InitTargetResult {
@@ -48,18 +47,41 @@ export interface InitTargetResult {
 }
 
 /**
+ * Local mode has no billing, so a workspace created there is never limited
+ * (SHO-43). Read per call, not at import, so a test can exercise both sides.
+ */
+function isLocalMode(): boolean {
+  return process.env.SHOGO_LOCAL_MODE === 'true'
+}
+
+/**
  * Create the workspace a move lands in. Always a new workspace (decision D2):
  * merging into an existing one needs per-model conflict rules and is explicitly
  * out of scope.
+ *
+ * This creates a real `team` workspace, so on the cloud it has to obey the same
+ * gate as `POST /api/workspaces`: `/receive/init` is authenticated but the
+ * target workspace does not exist yet, which meant any signed-in account could
+ * mint unlimited workspaces past the one-free-per-kind rule by calling it
+ * (SHO-256). The size is no longer taken from the caller either — the row gets
+ * the column default, exactly like a normal create; a plan/billing flow is what
+ * moves a workspace to a bigger runtime.
  */
 export async function initTargetWorkspace(db: any, input: InitTargetInput): Promise<InitTargetResult> {
+  if (!isLocalMode()) {
+    const allowance = await checkWorkspaceCreateAllowance(input.ownerUserId, 'team')
+    if (!allowance.ok) {
+      // 400 is what the generated create route answers for this code
+      // (`hookErrorStatus`), so the composer sees one status for one rule.
+      throw new WorkspaceMoveError(allowance.error.message, 400, allowance.error.code)
+    }
+  }
   const name = (input.name || 'Moved workspace').slice(0, 120)
   const workspace = await db.workspace.create({
     data: {
       name,
       slug: `move-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       kind: 'team',
-      ...(input.instanceSize ? { instanceSize: input.instanceSize } : {}),
     },
   })
   await db.member.create({

@@ -224,8 +224,8 @@ describe('SHO-96 acceptance', () => {
     // A long turn compacts more than once now that the cap is enforced on every
     // call; each one must be its own row.
     expect(autoFrames.length).toBeGreaterThanOrEqual(2)
-    // One row per compaction: the post-turn pass audits the same session and
-    // must not append a second row for a compaction already reported.
+    // One row per compaction: nothing runs at turn end (SHO-259), so the rows
+    // the loop emitted are the whole story.
     expect(r.session.compactionCount).toBe(autoFrames.length)
     for (const f of autoFrames) {
       expect(f.data.tokensAfter).toBeLessThan(f.data.tokensBefore)
