@@ -14,6 +14,21 @@ export function inCluster(): boolean {
 }
 
 /**
+ * Is this a deployed workload, rather than a test or a local process?
+ *
+ * `KUBERNETES_SERVICE_HOST` alone is not enough to tell: the export and
+ * workspace-move suites set it deliberately to exercise Kubernetes mode, so
+ * keying on it alone failed every one of them (SHO-265 round 4). A *deployment*
+ * is the case where `NODE_ENV` says so — which is exactly the case the
+ * `warm-pool-rescue` Job declared as `staging` while shipping no signing
+ * secret.
+ */
+function isDeployedWorkload(): boolean {
+  const env = process.env.NODE_ENV
+  return env === 'production' || env === 'staging'
+}
+
+/**
  * Refuse to *mint* with the localhost-only default from inside a cluster.
  *
  * A minted token is handed to a pod as its `RUNTIME_AUTH_SECRET` and is the
@@ -29,7 +44,7 @@ export function inCluster(): boolean {
  * — a 500 from the verifier would hide the reason — but minting never does.
  */
 export function assertMintableSigningSecret(secret: string): void {
-  if (secret !== DEV_ONLY_SIGNING_SECRET || !inCluster()) return
+  if (secret !== DEV_ONLY_SIGNING_SECRET || !inCluster() || !isDeployedWorkload()) return
   throw new Error(
     '[RuntimeToken] FATAL: refusing to mint a runtime token with the localhost-only signing secret inside a ' +
       'cluster. Set AI_PROXY_SECRET or BETTER_AUTH_SECRET on this workload — a token signed with the fallback ' +

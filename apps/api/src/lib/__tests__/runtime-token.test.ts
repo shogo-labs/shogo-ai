@@ -235,6 +235,22 @@ describe('the dev-only fallback never signs a token that leaves the process', ()
     }
   })
 
+  test('a test process that sets KUBERNETES_SERVICE_HOST still mints', () => {
+    // The export and workspace-move suites set it deliberately to exercise
+    // Kubernetes mode; keying the guard on it alone failed 8 export cases and an
+    // E2E move (SHO-265 round 4).
+    delete process.env.AI_PROXY_SECRET
+    delete process.env.BETTER_AUTH_SECRET
+    delete process.env.PREVIEW_TOKEN_SECRET
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    process.env.NODE_ENV = 'test'
+    try {
+      expect(() => deriveRuntimeToken('proj-k8s-mode')).not.toThrow()
+    } finally {
+      restore()
+    }
+  })
+
   test('local dev (not in a cluster) still mints with the fallback', () => {
     delete process.env.AI_PROXY_SECRET
     delete process.env.BETTER_AUTH_SECRET
