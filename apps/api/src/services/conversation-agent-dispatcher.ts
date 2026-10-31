@@ -128,13 +128,6 @@ interface DispatcherConfig {
 
 let config: DispatcherConfig = {}
 
-/**
- * Least time between two durable writes of a running reply's text (SHO-274).
- * Slower than the socket delta throttle: this write exists so a crash leaves
- * the thread with what the person read, not to drive the live view.
- */
-const DURABLE_REPLY_TEXT_MS = 5_000
-
 export function configureConversationAgentDispatcher(next: DispatcherConfig): void {
   config = { ...config, ...next }
 }
@@ -2130,21 +2123,14 @@ async function runReservedReply(
   let pending: ReturnType<typeof setTimeout> | null = null
   let latest: StreamProgress = { text: '', tool: null, tools: [] }
   const approvalCards: string[] = []
-  // The thread row's text was only written when the run settled, so a restart
-  // mid-reply left the placeholder with nothing in it and `settleOrphaned` had
-  // nothing to append (SHO-274). Write it on its own slower throttle: the socket
-  // deltas above already carry the live view, this is the durable one.
-  let lastDurableText = 0
+  // The thread row's text is settled from the session's `ChatMessage`, which the
+  // journal keeps current even when this process dies mid-reply (SHO-274) — so
+  // the durable copy is no longer written from here; the socket delta above
+  // carries the live view only.
   const flush = () => {
     pending = null
     lastPublish = Date.now()
     void streamAgentReply(reply, latest)
-    if (latest.text && Date.now() - lastDurableText >= DURABLE_REPLY_TEXT_MS) {
-      lastDurableText = Date.now()
-      void updateMessageInternal(messageId, { text: latest.text }).catch((err: Error) =>
-        console.warn('[ChannelAgent] durable reply text write failed:', err.message),
-      )
-    }
   }
 
   // ── Slot parking ──

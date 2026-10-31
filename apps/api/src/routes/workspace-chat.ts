@@ -38,6 +38,7 @@ import { stampTeamWorkspaceNames } from '../lib/stamp-team-workspace-names'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
+import { TurnJournalWriter } from '../services/chat-turn-journal'
 import {
   attachProject,
   assertWorkspaceSessionAccess,
@@ -1127,26 +1128,66 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           // stream. `clientGone` flips the first time the browser's stream is
           // already closed when we try to write to it.
           let clientGone = false
+          // Write-ahead journal (SHO-274), same contract as project-chat: a
+          // chunk reaches the client only after the batch holding it is
+          // durable. Workspace-scoped turns are the ones a channel reply and
+          // the personal companion run through, so without this their reply had
+          // no durable copy until it settled.
+          const journal = activityTurnId
+            ? new TurnJournalWriter(sessionId, activityTurnId)
+            : null
+          let pendingFrames: Uint8Array[] = []
+          let drainScheduled = false
+          let drainChain: Promise<void> = Promise.resolve()
+          let clientController: ReadableStreamDefaultController<Uint8Array> | null = null
+          const drainJournal = async () => {
+            while (pendingFrames.length > 0) {
+              const batch = pendingFrames
+              pendingFrames = []
+              if (journal) await journal.append(batch)
+              for (const chunk of batch) {
+                trackingChunks.push(chunk)
+                trackingNotify?.()
+                trackingNotify = null
+                latency.observe(chunk)
+                try {
+                  clientController?.enqueue(chunk)
+                } catch {
+                  /* client gone — stream continues for tracking */
+                  clientGone = true
+                }
+              }
+            }
+          }
+          const scheduleDrain = () => {
+            if (drainScheduled) return
+            drainScheduled = true
+            drainChain = drainChain.then(() => {
+              drainScheduled = false
+              return drainJournal()
+            })
+          }
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
+              clientController = controller
               ;(async () => {
                 try {
                   while (true) {
                     const { done, value } = await bgReader.read()
                     if (done) break
-                    trackingChunks.push(value)
-                    trackingNotify?.()
-                    trackingNotify = null
                     streamTrace.mark('upstream', value.byteLength)
-                    latency.observe(value)
-                    try {
-                      controller.enqueue(value)
-                    } catch {
-                      /* client gone — stream continues for tracking */
-                      clientGone = true
-                    }
+                    pendingFrames.push(value)
+                    scheduleDrain()
                   }
+                  // Everything still held must be durable (and out) before the
+                  // client is told the stream ended.
+                  await drainChain
                 } catch (err: any) {
+                  try {
+                    await drainChain
+                  } catch {
+                    /* already logged */
+                  }
                   try {
                     controller.error(err)
                   } catch {
