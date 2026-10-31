@@ -358,8 +358,13 @@ its home region would boot it on the wrong fleet. For each one:
 
 A job never suspends a runtime that a user opened while it was warming
 (`user-opened`), or one with an agent turn in flight (`busy`). It waits while a
-host is above `METAL_REWARM_MAX_HOST_UTIL_PCT` (75%) or over its disk
-watermark. Other outcomes to know:
+host is above its headroom ceiling — RAM in use (`METAL_REWARM_MAX_HOST_UTIL_PCT`,
+90%), or, for an agent too old to report memory, its VM count
+(`METAL_REWARM_MAX_HOST_VM_UTIL_PCT`, 95%) — or over its disk watermark. The
+count ceiling is deliberately not applied to hosts that do report memory: one
+big host carries twice the nominal VM cap while most of its RAM is free, and
+gating it on the count would bar warms from where most of the wave lands. Other
+outcomes to know:
 
 - `warmed-api-not-ready`: suspended, but the project's API server did not come
   up within the readiness window. The next open works, but look at the project.
@@ -424,7 +429,8 @@ a project during the job get a normal cold boot, and the job skips that project.
 | `METAL_REWARM_MAX_BYTES` | `0` (off) | Stop after this many snapshot bytes |
 | `METAL_REWARM_MIN_INTERVAL_MS` | 2 hours | Minimum gap between automatic jobs per region |
 | `METAL_REWARM_SETTLE_MS` | 2 minutes | How long the new sha must hold before a job starts |
-| `METAL_REWARM_MAX_HOST_UTIL_PCT` | `75` | Wait while a host is busier than this |
+| `METAL_REWARM_MAX_HOST_UTIL_PCT` | `90` | Wait while a host's RAM in use is above this |
+| `METAL_REWARM_MAX_HOST_VM_UTIL_PCT` | `95` | The same ceiling for hosts that report no memory, measured as % of the VM cap |
 | `METAL_PLACEMENT_TTL_S` | 7 days | How long the API remembers which host holds a runtime |
 | `METAL_STOP_TIMEOUT_MS` | 90 seconds | How long the API waits for a host to suspend a runtime |
 

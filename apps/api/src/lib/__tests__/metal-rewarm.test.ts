@@ -351,12 +351,12 @@ describe('runRewarm limits', () => {
 
   test('waits while every host is saturated', async () => {
     const h = harness()
-    h.hosts = [{ hostId: 'h1', region: 'us', utilPct: 90, overWatermark: false }]
+    h.hosts = [{ hostId: 'h1', region: 'us', utilPct: 90, reportsMemory: true, overWatermark: false }]
     let waited = 0
     const baseSleep = h.deps.sleep
     h.deps.sleep = async (ms) => {
       waited += ms
-      if (waited >= 30_000) h.hosts = [{ hostId: 'h1', region: 'us', utilPct: 10, overWatermark: false }]
+      if (waited >= 30_000) h.hosts = [{ hostId: 'h1', region: 'us', utilPct: 10, reportsMemory: true, overWatermark: false }]
       await baseSleep(ms)
     }
     const s = await runRewarm(opts, h.deps, [cand('p1')], cfg)
@@ -681,41 +681,52 @@ describe('markRuntimeOpened', () => {
 describe('hasWarmHeadroom', () => {
   const cfg = { maxHostUtilPct: 90, maxHostVmUtilPct: 95 }
 
-  test('warms a host that is busy by VM count but has memory headroom', () => {
-    // 80% of the VM cap, 22% of RAM in use — the US fleet's shape on a peak day.
-    expect(hasWarmHeadroom({ utilPct: 22, vmUtilPct: 80, overWatermark: false }, cfg)).toBe(true)
+  test('warms a memory-reporting host however full its VM count is (dal-1: 157 VMs, 196% of an 80 cap)', () => {
+    // QA round 1: a 95% VM-count backstop applied to every host barred warms
+    // from dal-1 — 71% of US microVMs and most of the post-release wave.
+    expect(hasWarmHeadroom({ utilPct: 22, reportsMemory: true, vmUtilPct: 196, overWatermark: false }, cfg)).toBe(true)
   })
 
-  test('stops at the memory/headroom ceiling', () => {
-    expect(hasWarmHeadroom({ utilPct: 90, vmUtilPct: 10, overWatermark: false }, cfg)).toBe(false)
+  test('stops a memory-reporting host at the RAM ceiling', () => {
+    expect(hasWarmHeadroom({ utilPct: 90, reportsMemory: true, vmUtilPct: 10, overWatermark: false }, cfg)).toBe(false)
   })
 
-  test('keeps a VM-count backstop near the cap', () => {
-    expect(hasWarmHeadroom({ utilPct: 5, vmUtilPct: 95, overWatermark: false }, cfg)).toBe(false)
-    expect(hasWarmHeadroom({ utilPct: 5, vmUtilPct: 94, overWatermark: false }, cfg)).toBe(true)
+  test('a host that reports no memory is gated on its VM count near the cap, not the RAM ceiling', () => {
+    expect(hasWarmHeadroom({ utilPct: 95, reportsMemory: false, vmUtilPct: 95, overWatermark: false }, cfg)).toBe(false)
+    expect(hasWarmHeadroom({ utilPct: 94, reportsMemory: false, vmUtilPct: 94, overWatermark: false }, cfg)).toBe(true)
+    // 92 is past the 90 RAM ceiling but under the 95 count ceiling: the two
+    // knobs are independent, and a count-gated host is not held to the RAM one.
+    expect(hasWarmHeadroom({ utilPct: 92, reportsMemory: false, vmUtilPct: 92, overWatermark: false }, cfg)).toBe(true)
+    // A memory-reporting host ignores the count ceiling entirely (dal-1 at 196%).
+    expect(hasWarmHeadroom({ utilPct: 22, reportsMemory: true, vmUtilPct: 196, overWatermark: false }, cfg)).toBe(true)
   })
 
   test('never warms onto a host whose NVMe cache is shedding', () => {
-    expect(hasWarmHeadroom({ utilPct: 1, vmUtilPct: 1, overWatermark: true }, cfg)).toBe(false)
-  })
-
-  test('a host that reports no VM count is gated on headroom alone', () => {
-    expect(hasWarmHeadroom({ utilPct: 10, overWatermark: false }, cfg)).toBe(true)
+    expect(hasWarmHeadroom({ utilPct: 1, reportsMemory: true, vmUtilPct: 1, overWatermark: true }, cfg)).toBe(false)
   })
 })
 
 describe('rewarmConfig defaults (SHO-271)', () => {
-  test('the VM-cap gate no longer defaults to 75%, and a backstop exists', () => {
-    for (const k of ['METAL_REWARM_MAX_HOST_UTIL_PCT', 'METAL_REWARM_MAX_HOST_VM_UTIL_PCT', 'METAL_REWARM_SINCE_HOURS', 'METAL_REWARM_MAX_RUNTIMES']) {
+  test('the RAM gate is 90% and the count ceiling for memory-blind hosts is 95%', () => {
+    for (const k of ['METAL_REWARM_MAX_HOST_UTIL_PCT', 'METAL_REWARM_MAX_HOST_VM_UTIL_PCT']) {
       delete process.env[k]
     }
     const c = rewarmConfig()
     expect(c.maxHostUtilPct).toBe(90)
     expect(c.maxHostVmUtilPct).toBe(95)
-    // 48h missed every project opened less than twice a week: it keeps its
-    // snapshot, so the next open cold-boots on stale_reason=rootfs.
-    expect(c.sinceHours).toBe(168)
-    expect(c.maxRuntimes).toBe(2000)
+  })
+
+  test('both ceilings are tunable', () => {
+    process.env.METAL_REWARM_MAX_HOST_UTIL_PCT = '70'
+    process.env.METAL_REWARM_MAX_HOST_VM_UTIL_PCT = '88'
+    try {
+      const c = rewarmConfig()
+      expect(c.maxHostUtilPct).toBe(70)
+      expect(c.maxHostVmUtilPct).toBe(88)
+    } finally {
+      delete process.env.METAL_REWARM_MAX_HOST_UTIL_PCT
+      delete process.env.METAL_REWARM_MAX_HOST_VM_UTIL_PCT
+    }
   })
 })
 

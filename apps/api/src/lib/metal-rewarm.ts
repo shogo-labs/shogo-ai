@@ -68,7 +68,13 @@ export interface RewarmHost {
    * matters — hosts have hundreds of GB free while their VM count is high.
    */
   utilPct: number
-  /** assigned ÷ MAX_VMS_PER_HOST, i.e. the VM-count utilization. Backstop only. */
+  /**
+   * True when `utilPct` is RAM in use rather than the VM count — i.e. the host
+   * reported `load.mem`. Only a host WITHOUT this fallback is gated on its VM
+   * count (see `hasWarmHeadroom`).
+   */
+  reportsMemory?: boolean
+  /** assigned ÷ MAX_VMS_PER_HOST: the VM-count utilization, used only when the host reports no memory. */
   vmUtilPct?: number
   overWatermark: boolean
   /** A rebuilt rootfs waiting for activation on this host (see metal-agent self-update.ts). */
@@ -212,29 +218,26 @@ function envInt(name: string, fallback: number): number {
 export function rewarmConfig() {
   return {
     auto: process.env.METAL_REWARM_AUTO !== 'false',
-    /**
-     * Candidate window. 48h missed every project a user opens less than twice a
-     * week: it still holds a snapshot, so the next open cold-boots on
-     * `stale_reason=rootfs` after a release. 7 days covers a normal weekly
-     * rhythm; the NVMe budget (`maxBytes`, plus the GC watermarks) is what
-     * actually bounds the cache.
-     */
-    sinceHours: envInt('METAL_REWARM_SINCE_HOURS', 168),
+    sinceHours: envInt('METAL_REWARM_SINCE_HOURS', 48),
     concurrencyPerHost: envInt('METAL_REWARM_CONCURRENCY_PER_HOST', 4),
-    maxRuntimes: envInt('METAL_REWARM_MAX_RUNTIMES', 2000),
+    maxRuntimes: envInt('METAL_REWARM_MAX_RUNTIMES', 1000),
     maxBytes: envInt('METAL_REWARM_MAX_BYTES', 0),
     minIntervalMs: envInt('METAL_REWARM_MIN_INTERVAL_MS', 2 * 60 * 60_000),
     settleMs: envInt('METAL_REWARM_SETTLE_MS', 2 * 60_000),
     /**
-     * Memory/disk headroom ceiling for a warm (see `warmUtilPct`). Raised from
-     * 75 because 75% of the *VM cap* was skipping hosts that had ~400 GB of RAM
-     * free — the US fleet peaked at 80% of its cap on Oct 26/28/30, so warms
-     * were skipped exactly when a release needed them.
+     * Headroom ceiling for a warm, measured by `warmUtilPct`: RAM in use when
+     * the host reports `load.mem`, else its VM count. Raised 75 -> 90 because a
+     * host reporting 75% of its RAM in use still has room for one more small VM,
+     * and the post-release pre-warm is exactly when that matters.
      */
     maxHostUtilPct: envInt('METAL_REWARM_MAX_HOST_UTIL_PCT', 90),
     /**
-     * VM-count backstop: never warm onto a host this close to its VM cap, even
-     * with memory to spare (a new VM needs a tap, a slot and a boot).
+     * VM-count ceiling, applied ONLY to hosts that report no memory (for them
+     * `utilPct` IS the VM count, so this replaces the RAM ceiling above). Never
+     * applied to a memory-reporting host: `MAX_VMS_PER_HOST`
+     * is 80 while dal-1 runs 157 assigned VMs on ~400 GB of free RAM, so a
+     * count-based gate there bans warms from the busiest host in the fleet —
+     * 71% of US microVMs and most of the post-release cold-boot wave.
      */
     maxHostVmUtilPct: envInt('METAL_REWARM_MAX_HOST_VM_UTIL_PCT', 95),
     leaseBudget: rewarmLeaseBudget(),
@@ -1495,23 +1498,31 @@ export function warmUtilPct(h: { utilPct: number; load?: { mem?: { totalMiB: num
 }
 
 /**
- * May this host take a warm? Gated on real headroom (memory when the host
- * reports it, else its VM count) with a VM-count backstop near the cap.
+ * May this host take a warm?
  *
- * The old rule used one number — VM count / cap, at 75% — for both jobs, so a
- * host with 400 GB of free RAM was "busy" at 80% of its VM cap and got skipped
- * exactly when a release needed its pre-warm. `overWatermark` still means the
- * NVMe cache is shedding and is never a good place to boot.
+ * Gated on real headroom: RAM in use whenever the host reports `load.mem`
+ * (`warmUtilPct`), because idle VMs are small and a host with 400 GB free is not
+ * busy however many VMs it holds. Agents too old to report memory are gated on
+ * their VM count instead — near the cap (95%), not the RAM ceiling.
+ *
+ * Do NOT apply the count ceiling to a memory-reporting host: `MAX_VMS_PER_HOST`
+ * is 80 while dal-1 carries 157 assigned VMs (196% of it, 131% after the 120 cap
+ * in #1853) on ~400 GB of free RAM, so the count alone would permanently bar
+ * warms from the host where most of the post-release cold-boot wave happens.
+ *
+ * `overWatermark` still means the NVMe cache is shedding, which is never a good
+ * place to boot.
  */
 export function hasWarmHeadroom(
-  h: { utilPct: number; vmUtilPct?: number; overWatermark: boolean },
+  h: { utilPct: number; vmUtilPct?: number; reportsMemory?: boolean; overWatermark: boolean },
   cfg: { maxHostUtilPct: number; maxHostVmUtilPct?: number },
 ): boolean {
   if (h.overWatermark) return false
-  if (h.utilPct >= cfg.maxHostUtilPct) return false
-  const vmCeiling = cfg.maxHostVmUtilPct ?? 95
-  if (typeof h.vmUtilPct === 'number' && h.vmUtilPct >= vmCeiling) return false
-  return true
+  // One ceiling per kind of number: RAM in use for a host that reports memory,
+  // its VM count (near the cap) for one that does not.
+  const ceiling = h.reportsMemory ? cfg.maxHostUtilPct : (cfg.maxHostVmUtilPct ?? 95)
+  const used = h.reportsMemory ? h.utilPct : (h.vmUtilPct ?? h.utilPct)
+  return used < ceiling
 }
 
 /** The real controller, resolvers and Redis, wired for the job and watcher. */
@@ -1528,6 +1539,7 @@ export async function defaultRewarmDeps(): Promise<RewarmDeps> {
         region: h.region,
         rootfsSha: h.rootfsSha,
         utilPct: warmUtilPct(h),
+        reportsMemory: !!h.load?.mem?.totalMiB,
         vmUtilPct: h.utilPct,
         overWatermark: h.overWatermark,
         stagedRootfs: h.stagedRootfs,

@@ -80,7 +80,7 @@ class FakeFleet {
   failing = new Set<string>()
 
   addHost(hostId: string, region = 'us') {
-    this.hosts.set(hostId, { hostId, region, rootfsSha: 'sha-1', base: `A-${hostId}`, utilPct: 10, restarts: 0 })
+    this.hosts.set(hostId, { hostId, region, rootfsSha: 'sha-1', base: `A-${hostId}`, utilPct: 10, reportsMemory: true, vmUtilPct: 10, restarts: 0 })
   }
 
   host(id: string) {
@@ -247,6 +247,8 @@ class FakeFleet {
           region: h.region,
           rootfsSha: h.rootfsSha,
           utilPct: h.utilPct,
+          reportsMemory: h.reportsMemory,
+          vmUtilPct: h.vmUtilPct,
           overWatermark: false,
           stagedRootfs: h.staged
             ? {
@@ -627,6 +629,21 @@ describe('stale-rootfs refresh queue', () => {
     expect((await drainRefreshQueue(fleet.deps, CFG)).started).toEqual([])
     fleet.host('h1').utilPct = 10
     expect((await drainRefreshQueue(fleet.deps, CFG)).started).toEqual(['ws:proj:a'])
+  })
+
+  test('a host that reports no memory is judged by its VM count, not the RAM ceiling', async () => {
+    await retire('ws:proj:a', 'h1')
+    const h = fleet.host('h1')
+    h.reportsMemory = false
+    // Past the 75% RAM ceiling but well under the 95% count ceiling: the busiest
+    // host in the fleet looks like this, and barring it here is the QA round 1
+    // regression (dal-1: 157 assigned VMs on ~400 GB of free RAM).
+    h.utilPct = 80
+    h.vmUtilPct = 80
+    expect((await drainRefreshQueue(fleet.deps, CFG)).started).toEqual(['ws:proj:a'])
+    await retire('ws:proj:a', 'h1')
+    h.vmUtilPct = 96
+    expect((await drainRefreshQueue(fleet.deps, CFG)).started).toEqual([])
   })
 
   test('a failing refresh is retried once, later, then dropped', async () => {
