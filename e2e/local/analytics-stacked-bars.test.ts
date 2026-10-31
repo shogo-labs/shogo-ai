@@ -158,8 +158,10 @@ test.describe("Analytics usage chart bars", () => {
     expect(columns.size).toBe(DAYS - 1)
     for (const column of columns.values()) {
       expect(column.length).toBe(2)
-      const [low, high] = [...column].sort((a, b) => b.y - a.y)
-      expect(low.y + low.h).toBeCloseTo(high.y, 1)
+      // Sorted by y: the top segment's bottom edge meets the lower one's top
+      // edge, so the two segments tile the day's bar with no gap or overlap.
+      const [top, bottom] = [...column].sort((a, b) => a.y - b.y)
+      expect(top.y + top.h).toBeCloseTo(bottom.y, 1)
       expect(column[0].w).toBeCloseTo(column[1].w, 1)
       expect(column[0].w).toBeLessThanOrEqual(28)
     }
