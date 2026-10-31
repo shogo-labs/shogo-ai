@@ -32,9 +32,6 @@ mock.module(resolve(import.meta.dir, '../turns/MessageContent.tsx'), () => ({
   MessageContent: ({ message }: { message: { content?: string; parts?: Array<{ type: string; text?: string }> } }) =>
     createElement('div', null, message.parts?.find((part) => part.type === 'text')?.text ?? message.content ?? ''),
 }))
-mock.module(resolve(import.meta.dir, '../turns/EditConfirmDialog.tsx'), () => ({
-  requestEditConfirmation: async () => null,
-}))
 mock.module(resolve(import.meta.dir, '../../../lib/native-phone-layout.ts'), () => ({
   useIsNativePhoneLayout: () => false,
   usePhoneLayout: () => false,

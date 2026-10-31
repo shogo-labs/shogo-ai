@@ -141,7 +141,8 @@ describe('getUserFunnel', () => {
     const query = mockPrisma.$queryRawUnsafe.mock.calls[0][0] as string
     expect(query).toContain('@test.shogo.ai')
     expect(query).toContain('@shogo.ai')
-    expect(query).toContain('@getodin.ai')
+    // Every Odin domain is internal, not just .ai (SHO-258).
+    expect(query).toContain('@getodin.%')
     expect(query).toContain('super_admin')
   })
 

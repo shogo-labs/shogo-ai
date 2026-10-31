@@ -16,7 +16,7 @@ import { generateText } from 'ai'
 import type { PrismaClient } from './prisma'
 import {
   getUserFunnel,
-  getUserActivityTable,
+  getDigestTotals,
   getTemplateEngagement,
   getChatConversations,
   getSourceBreakdown,
@@ -275,18 +275,18 @@ export async function generateDigest(prisma: PrismaClient, options: { asOf?: Dat
     `[AnalyticsDigest] Generating digest for ${dateOnly.toISOString().split('T')[0]} (region=${region})`,
   )
 
-  const [funnel, activityResult, templates, sourceData, convos] = await Promise.all([
+  // Totals come from an aggregate over the whole period. Deriving them from a
+  // `limit: 100` page of the user table both capped the sums and read the
+  // table's `total` (a sign-up count) as "active users".
+  const [funnel, totals, templates, sourceData, convos] = await Promise.all([
     getUserFunnel('30d', true, asOf),
-    getUserActivityTable('30d', { page: 1, limit: 100, excludeInternal: true, asOf }),
+    getDigestTotals({ period: '30d', asOf }),
     getTemplateEngagement(true),
     getSourceBreakdown('30d', true, asOf),
     getChatConversations(since, true, asOf),
   ])
 
-  const totalSpendUsd = activityResult.users.reduce((s, u) => s + u.spendUsd, 0)
-  const totalToolCalls = activityResult.users.reduce((s, u) => s + u.toolCalls, 0)
-  const totalMessages = activityResult.users.reduce((s, u) => s + u.messages, 0)
-  const totalSessions = activityResult.users.reduce((s, u) => s + u.sessions, 0)
+  const { activeUsers, totalMessages, totalSessions, totalToolCalls, totalSpendUsd } = totals
 
   let aiInsights: ChunkAnalysis | null = null
   let chunksProcessed = 0
@@ -302,7 +302,7 @@ export async function generateDigest(prisma: PrismaClient, options: { asOf?: Dat
     const metricsContext = [
       `Signups: ${funnel.signups}, Onboarded: ${funnel.onboarded}, Created Project: ${funnel.createdProject}`,
       `Sent Message: ${funnel.sentMessage}, Engaged (5+): ${funnel.engaged}`,
-      `Active Users: ${activityResult.total}, Total Messages: ${totalMessages}`,
+      `Active Users: ${activeUsers}, Total Messages: ${totalMessages}`,
       `Source breakdown: ${sourceData.sources.map(s => `${s.tag}=${s.count}`).join(', ')}`,
     ].join('\n')
 
@@ -325,7 +325,7 @@ export async function generateDigest(prisma: PrismaClient, options: { asOf?: Dat
       funnelEngaged: funnel.engaged,
       avgMinToFirstProject: funnel.avgMinToFirstProject,
       avgMinToFirstMessage: funnel.avgMinToFirstMessage,
-      activeUsers: activityResult.total,
+      activeUsers,
       totalMessages,
       totalSessions,
       totalToolCalls,
@@ -343,7 +343,7 @@ export async function generateDigest(prisma: PrismaClient, options: { asOf?: Dat
       funnelEngaged: funnel.engaged,
       avgMinToFirstProject: funnel.avgMinToFirstProject,
       avgMinToFirstMessage: funnel.avgMinToFirstMessage,
-      activeUsers: activityResult.total,
+      activeUsers,
       totalMessages,
       totalSessions,
       totalToolCalls,

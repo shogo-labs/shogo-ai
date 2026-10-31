@@ -81,7 +81,7 @@ export function buildAccountContextPrompt(ctx: AccountContext): string | null {
     const plan = ctx.planId.charAt(0).toUpperCase() + ctx.planId.slice(1)
     if (ctx.canPublishSubdomain === false) {
       lines.push(
-        `- Workspace plan: **${plan}**. Publishing to a \`*.shogo.one\` subdomain requires Pro or higher, which this workspace does not have. Say so BEFORE starting any deploy/publish work, and also at the start of building something the user clearly means to put online (a website, landing page, portfolio, or app to share) — mention it once, briefly, then carry on. Offer what works on this plan instead: the preview URL for the app, or **share_file** for a single file. If \`publish\` returns \`plan_not_allowed\`, the chat shows the user an Upgrade button; tell them their work is saved and they can publish once they upgrade.`,
+        `- Workspace plan: **${plan}**. This plan cannot publish to a \`*.shogo.one\` subdomain. Mention that only when the user asks to publish/deploy or when \`publish\` is called — not when they say they want to share their work. Sharing means the preview URL from \`preview_project\`, which anyone can open. If \`publish\` returns \`plan_not_allowed\`, the chat shows the user an Upgrade button; tell them their work is saved and they can publish once they upgrade.`,
       )
     } else if (ctx.canPublishSubdomain === true) {
       lines.push(`- Workspace plan: **${plan}**. Publishing to a \`*.shogo.one\` subdomain is available.`)

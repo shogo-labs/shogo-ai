@@ -28,7 +28,7 @@ describe('model catalog context windows', () => {
     expect(getContextWindowTokens('definitely-not-a-model')).toBeUndefined()
   })
 
-  test('every 1M-window model summarizes at the 200k cap', () => {
+  test('every 1M-window model summarizes at the 235k cap', () => {
     for (const id of ['claude-opus-5-5', 'claude-haiku-5-5']) {
       expect(resolveAutoCompactTokens({ contextWindowTokens: getContextWindowTokens(id) })).toBe(
         DEFAULT_AUTOCOMPACT_TOKENS,

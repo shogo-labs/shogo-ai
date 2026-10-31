@@ -50,6 +50,12 @@ export interface SendEmailParams {
   cc?: EmailAddress | EmailAddress[]
   /** BCC recipients */
   bcc?: EmailAddress | EmailAddress[]
+  /**
+   * Extra raw headers, e.g. `List-Unsubscribe` on lifecycle mail. Providers
+   * that speak raw MIME (SMTP) send them; the JSON-based providers ignore the
+   * field rather than failing the send.
+   */
+  headers?: Record<string, string>
 }
 
 /**
@@ -70,6 +76,12 @@ export interface SendTemplateParams<TData extends Record<string, unknown> = Reco
   cc?: EmailAddress | EmailAddress[]
   /** BCC recipients */
   bcc?: EmailAddress | EmailAddress[]
+  /**
+   * Extra raw headers, e.g. `List-Unsubscribe` on lifecycle mail. Providers
+   * that speak raw MIME (SMTP) send them; the JSON-based providers ignore the
+   * field rather than failing the send.
+   */
+  headers?: Record<string, string>
 }
 
 /**

@@ -100,7 +100,7 @@ export function recordTurnBoundary(record: TurnBoundaryRecord): void {
   }
 }
 
-export type CompactionTrigger = 'pre-turn' | 'post-turn' | 'reactive' | 'mid-turn'
+export type CompactionTrigger = 'pre-turn' | 'post-turn' | 'reactive' | 'mid-turn' | 'idle'
 
 export interface CompactionRecord {
   sessionId: string

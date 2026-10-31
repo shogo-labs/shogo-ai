@@ -53,6 +53,23 @@ export interface MessageEditOptions {
   }
 }
 
+/**
+ * The draft of an inline edit that is mid-flight.
+ *
+ * Sending an edit collapses the transcript optimistically, which unmounts
+ * the very row that owns the editor — and with it the editor's local draft
+ * and error state. ChatPanel therefore keeps them here, keyed by message
+ * id, so a failed truncate/rollback can re-mount the editor with exactly
+ * what the user typed plus the API's error message (SHO-263 AC 8).
+ */
+export interface PendingEditDraft {
+  messageId: string
+  content: string
+  files?: FileAttachment[]
+  /** API error from the last attempt, rendered under the editor. */
+  error?: string | null
+}
+
 export interface MessageEditContextValue {
   /**
    * Apply an edited content (and optionally a new set of file
@@ -107,12 +124,33 @@ export interface MessageEditContextValue {
   countMessagesAfter: (messageId: string) => number
 
   /**
-   * Block all edit affordances while the agent is streaming. Editing
-   * mid-stream would race with the in-flight `useChat` request and
-   * the auto-resume fetch, so we hide both Edit and Retry until the
-   * turn settles.
+   * True while the agent is streaming. Editing is still allowed — the
+   * panel stops the run before it truncates (`stopStreaming`) — but the
+   * editor says so in its footer.
    */
   isStreaming: boolean
+
+  /**
+   * Stop the in-flight run and resolve once the stream has settled.
+   * No-op when nothing is streaming. `editMessage` / `retryFromMessage`
+   * call this first so an edit made mid-run can't race the live turn.
+   */
+  stopStreaming: () => Promise<void>
+
+  /**
+   * The message currently open in an in-place editor, if any. Used by
+   * `TurnList` to dim every turn below it ("N messages below will be
+   * replaced") and by the bubbles to keep only one editor open.
+   */
+  editingMessageId: string | null
+  setEditingMessageId: (messageId: string | null) => void
+  /**
+   * Whether the open editor's draft differs from the original message.
+   * Clicking Edit on another message closes an untouched editor but must
+   * not throw away a changed draft.
+   */
+  inlineEditDirty: boolean
+  setInlineEditDirty: (dirty: boolean) => void
 
   /**
    * Whether a message id is editable. Optimistic local-only ids
@@ -120,6 +158,20 @@ export interface MessageEditContextValue {
    * yet, so we surface the actions only once the row has a real id.
    */
   canEditMessage: (message: UIMessage) => boolean
+
+  /**
+   * The in-flight edit draft (see `PendingEditDraft`). Owned by ChatPanel
+   * so it survives the optimistic collapse that unmounts the editor row.
+   */
+  pendingEdit: PendingEditDraft | null
+  setPendingEdit: (next: PendingEditDraft | null) => void
+
+  /**
+   * The "Files reverted to the checkpoint from …" note attached to the
+   * resent message, or null. Keyed by message id so the note travels with
+   * the message the user is looking at, like Cursor/Lovable.
+   */
+  revertedNote: (messageId: string) => string | null
 
   /**
    * Resolve the checkpoint that would be offered as the rollback
@@ -203,7 +255,15 @@ export function MessageEditProvider({
   retryFromMessage,
   countMessagesAfter,
   isStreaming,
+  stopStreaming,
+  editingMessageId,
+  setEditingMessageId,
+  inlineEditDirty,
+  setInlineEditDirty,
   canEditMessage,
+  pendingEdit,
+  setPendingEdit,
+  revertedNote,
   getPrecedingCheckpoint,
   composerProps,
   onInlineEditingChange,
@@ -235,7 +295,15 @@ export function MessageEditProvider({
       retryFromMessage,
       countMessagesAfter,
       isStreaming,
+      stopStreaming,
+      editingMessageId,
+      setEditingMessageId,
+      inlineEditDirty,
+      setInlineEditDirty,
       canEditMessage,
+      pendingEdit,
+      setPendingEdit,
+      revertedNote,
       getPrecedingCheckpoint,
       composerProps,
       registerInlineEditCancel,
@@ -245,7 +313,15 @@ export function MessageEditProvider({
       retryFromMessage,
       countMessagesAfter,
       isStreaming,
+      stopStreaming,
+      editingMessageId,
+      setEditingMessageId,
+      inlineEditDirty,
+      setInlineEditDirty,
       canEditMessage,
+      pendingEdit,
+      setPendingEdit,
+      revertedNote,
       getPrecedingCheckpoint,
       composerProps,
       registerInlineEditCancel,
