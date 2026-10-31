@@ -5259,7 +5259,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       writeSessionMessageCache(sessionId, painted)
       if (!paint.carriedLiveReply) liveReplySessionRef.current = null
       historyMetaRef.current.set(key, {
-        cursor: body.cursor ?? cursor,
+        // A delta that carried nothing must not touch the floor: a server that
+        // echoes `since` would walk it backwards 5 s per quiet reopen.
+        cursor: items.length ? (body.cursor ?? cursor) : cursor,
         total: body.total ?? meta?.total ?? null,
       })
       cacheRefreshedAtRef.current.set(sessionId, performance.now())
@@ -5374,7 +5376,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * device has never seen, and as the fallback when a delta cannot be applied.
    */
   const loadFirstPage = useCallback(
-    (loadSessionId: string, myGeneration: number) => {
+    (loadSessionId: string, myGeneration: number, authoritative = false) => {
       if (!sessionMessages) return
         sessionMessages
           .loadPage(
@@ -5413,6 +5415,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
             })
 
             const cached = cachedMessagesRef.current
+            // The server told this caller the chat changed shape (`reset`, or a
+            // count that does not add up), so rows were deleted and this page —
+            // not the screen — is the transcript. SHO-85's "never paint behind
+            // the screen" rule is about a reply the server has not written yet;
+            // with no live tail to protect, applying it here would keep the
+            // deleted rows on screen forever (SHO-260).
+            if (authoritative && liveReplySessionRef.current !== loadSessionId) {
+              cachedMessagesRef.current = aiMessages
+              lastNonEmptyMessagesRef.current = aiMessages
+              setMessages(aiMessages)
+              writeSessionMessageCache(loadSessionId, aiMessages)
+              cacheRefreshedAtRef.current.set(loadSessionId, performance.now())
+              void persistProjectHistory(loadSessionId, aiMessages)
+              return
+            }
             // Never paint a transcript that is behind what is on screen: the reply
             // this panel just streamed is written server-side after the stream
             // EOFs, so history can legitimately be missing it (SHO-85).
@@ -5614,7 +5631,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
           }
           isLoadingMessagesRef.current = true
           setIsLoadingMessages(true)
-          loadFirstPage(loadSessionId, ++loadGenerationRef.current)
+          // `reset` / a count that does not add up: the page is authoritative.
+          loadFirstPage(loadSessionId, ++loadGenerationRef.current, true)
         },
       )
       return

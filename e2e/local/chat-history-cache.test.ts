@@ -93,6 +93,23 @@ function savedRow(
   }
 }
 
+/**
+ * Epoch millis from a row timestamp. The rows this spec serves carry numbers
+ * (that is what the panel's store expects), and `new Date(String(1793404957871))`
+ * is an Invalid Date — which silently filtered every "changed" row out of the
+ * delta and made the spec fail for the wrong reason (SHO-260).
+ */
+function msOf(value: unknown): number {
+  if (typeof value === "number") return value
+  if (typeof value === "string") {
+    const numeric = Number(value)
+    if (Number.isFinite(numeric)) return numeric
+    const parsed = new Date(value).getTime()
+    return Number.isNaN(parsed) ? 0 : parsed
+  }
+  return 0
+}
+
 interface HistoryState {
   sessionId: string | null
   rows: Array<Record<string, unknown>>
@@ -188,18 +205,22 @@ async function installMocks(page: Page): Promise<HistoryState> {
       const items = state.forceReset
         ? []
         : state.rows
-            .filter((row) => new Date(String(row.updatedAt)).getTime() >= since)
+            .filter((row) => msOf(row.updatedAt) >= since)
             .map((row) => ({ ...row, sessionId }))
-      let cursor = since
-      for (const row of items) {
-        const at = new Date(String(row.updatedAt)).getTime()
+      // The real route answers with the newest `updatedAt` in scope, and with
+      // the scope's newest row when nothing changed — never by echoing `since`.
+      // Echoing it would walk the client's floor 5 s backwards on every quiet
+      // reopen (the client sends `cursor − 5 s`) and hide a real regression.
+      let cursor = 0
+      for (const row of state.rows) {
+        const at = msOf(row.updatedAt)
         if (at > cursor) cursor = at
       }
       const body = {
         ok: true,
         items,
         total: state.total,
-        cursor: new Date(cursor).toISOString(),
+        cursor: cursor ? new Date(cursor).toISOString() : new Date(since).toISOString(),
         reset: state.forceReset,
       }
       const size = JSON.stringify(body).length

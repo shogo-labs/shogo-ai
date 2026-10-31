@@ -65,6 +65,14 @@ const mockPrisma = {
       return args.take ? matched.slice(0, args.take) : matched
     },
     count: async (args: any) => matching(args.where).length,
+    findFirst: async (args: any) => {
+      const matched = matching(args.where)
+      if (!matched.length) return null
+      matched.sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime())
+      return args?.orderBy?.updatedAt === 'desc'
+        ? matched[matched.length - 1]
+        : matched[0]
+    },
   },
 }
 
@@ -183,12 +191,24 @@ describe('GET /api/chat-messages/session/:id/changes', () => {
     expect(body.items.map((i: any) => i.id)).toEqual(['grew'])
   })
 
-  test('nothing changed returns an empty list and echoes the cursor', async () => {
+  test('nothing changed returns an empty list and keeps the floor moving forward', async () => {
+    // The client sends `cursor − 5 s` for clock skew, so echoing `since` would
+    // walk its floor backwards on every quiet reopen (SHO-260). The scope's
+    // newest row is the floor instead.
     rows.push(row({ id: 'quiet', createdAt: new Date('2026-10-30T08:00:00.000Z') }))
     const { body } = await get('/api/chat-messages/session/s1/changes?since=2026-10-30T09:00:00.000Z')
     expect(body.items).toEqual([])
     expect(body.total).toBe(1)
-    expect(body.cursor).toBe('2026-10-30T09:00:00.000Z')
+    expect(body.cursor).toBe('2026-10-30T08:00:00.000Z')
+    expect(body.reset).toBe(false)
+  })
+
+  test('nothing changed in an empty scope answers no cursor, and the client keeps its own', async () => {
+    // No rows means there is no floor to hand back; the client keeps the one it
+    // sent, so a delta that carried nothing never moves it (SHO-260).
+    const { body } = await get('/api/chat-messages/session/s1/changes?since=2026-10-30T09:00:00.000Z')
+    expect(body.items).toEqual([])
+    expect(body.cursor).toBeNull()
     expect(body.reset).toBe(false)
   })
 

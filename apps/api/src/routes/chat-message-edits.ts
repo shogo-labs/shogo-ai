@@ -142,6 +142,28 @@ export function createChatMessageEditRoutes(): Hono {
     const capped = rows.length > CHAT_CHANGES_CAP
     const items = capped ? rows.slice(-CHAT_CHANGES_CAP) : rows
 
+    if (items.length === 0) {
+      // Nothing changed: hand back the scope's newest row, not `since`. The
+      // caller sends `cursor − 5 s` for clock skew, so echoing `since` walks
+      // its floor 5 s backwards on every quiet reopen until a delta re-sends
+      // rows the device already has (SHO-260).
+      const newest = await prisma.chatMessage.findFirst({
+        where: where as any,
+        orderBy: { updatedAt: 'desc' },
+        select: { updatedAt: true },
+      })
+      const newestMs = (newest as { updatedAt?: Date | null } | null)?.updatedAt
+        ? new Date((newest as { updatedAt: Date }).updatedAt).getTime()
+        : NaN
+      return c.json({
+        ok: true,
+        items: [],
+        total,
+        cursor: Number.isNaN(newestMs) ? null : new Date(newestMs).toISOString(),
+        reset: false,
+      })
+    }
+
     let cursorMs = sinceDate.getTime()
     for (const row of items) {
       const at = (row as { updatedAt?: Date | null }).updatedAt
