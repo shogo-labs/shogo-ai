@@ -27,6 +27,7 @@ import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace
 import { conversationRoutes } from '../routes/conversations'
 import { workBoardRoutes } from '../routes/work-boards'
 import { configureConversationAgentDispatcher, settleOrphanedAgentReplies } from '../services/conversation-agent-dispatcher'
+import { sweepDeadTurnsOnLocalBoot } from '../services/chat-turn-state.service'
 import { scriptedAgentInvokeFromEnv } from '../services/conversation-agent-script'
 import { createAgentTaskRoutes } from '../routes/agent-tasks'
 import { diagnosticsRoutes } from '../../../../packages/shared-runtime/src/diagnostics'
@@ -178,8 +179,21 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', sharedMeetingRoutes())
   const scriptedChannelAgents = scriptedAgentInvokeFromEnv()
   configureConversationAgentDispatcher({ runtimeManager, ...(scriptedChannelAgents ? { invoke: scriptedChannelAgents } : {}) })
-  // One process writes every reply here, so any placeholder still marked running was cut off by a restart.
-  void settleOrphanedAgentReplies().catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+  // The previous process's turns are gone: every runtime was killed on boot. Clear
+  // them before settling replies, or `settleOrphanedAgentReplies` reads their fresh
+  // heartbeats as live and skips exactly the replies it exists for (SHO-274).
+  void sweepDeadTurnsOnLocalBoot()
+    .catch((err) => console.warn('[ChatTurnState] could not sweep dead turns on boot:', err?.message ?? err))
+    .then(() =>
+      // One process writes every reply here, so any placeholder still marked running was cut off by a restart.
+      settleOrphanedAgentReplies(),
+    )
+    .catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+  // Frames whose turn nobody can recover any more (a session deleted mid-turn,
+  // an app closed before recovery ran) must not accumulate forever (SHO-274).
+  void import('../services/chat-turn-journal')
+    .then(({ sweepTurnFrames }) => sweepTurnFrames())
+    .catch((err) => console.warn('[ChatTurnJournal] boot sweep failed:', err?.message ?? err))
   app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
   app.post('/api/webhooks/livekit', async (c) => {

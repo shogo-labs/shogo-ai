@@ -19,10 +19,7 @@ import { useChat, type UIMessage } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { appendQueuedUserMessage } from "../chat/queued-user-message"
 import { buildChatTurnUrl, useChatTransportConfig } from "@shogo/shared-app/chat"
-import {
-  useChatMessageCollectionForSession,
-  useDomainActions,
-} from "@shogo/shared-app/domain"
+import { useChatMessageCollectionForSession } from "@shogo/shared-app/domain"
 import { API_URL, api } from "../../lib/api"
 import { workspaceHttp } from "../../lib/workspace-http"
 import { buildChatSendBody, generateClientTurnId } from "../../lib/chat-send-body"
@@ -249,7 +246,6 @@ export function useOwnedIslandSession(
   initialSend?: { text: string; files?: IslandFileRef[]; attachments?: IslandAttachment[] } | null,
 ): IslandChatSession {
   const { bridge, projectId, sessionId, workspaceId, userId, modelId, workspaceAgent } = ctx
-  const actions = useDomainActions()
   const { collection, load } = useSessionHistory(sessionId)
   // The workspace agent is addressed by workspace, not by project; sending a
   // project id would route the turn back through a project runtime.
@@ -407,10 +403,10 @@ export function useOwnedIslandSession(
           })
           return OK
         }
-        const parts = [...(content ? [{ type: "text", text: content }] : []), ...fileParts]
-        actions
-          .addMessage({ sessionId, role: "user", content, parts: JSON.stringify(parts) })
-          .catch((err: unknown) => console.warn("[Island] Failed to persist user message:", err))
+        // The chat route writes this row before it proxies the turn, using the
+        // id the message carries in the request body (SHO-274) — writing it
+        // here too would duplicate the send, and skipping the await is what
+        // lost the prompt on a crash right after Send.
         clientTurnIdRef.current = clientTurnId
         await sendMessage({ text: content, ...(fileParts.length ? { files: fileParts } : {}) }, { body })
         return OK
@@ -419,7 +415,7 @@ export function useOwnedIslandSession(
         return fail(err)
       }
     },
-    [actions, chatProjectId, chatWorkspaceId, modelId, sendMessage, serverQueue, sessionId, userId],
+    [chatProjectId, chatWorkspaceId, modelId, sendMessage, serverQueue, sessionId, userId],
   )
 
   const send = useCallback(

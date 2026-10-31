@@ -14,6 +14,28 @@
 export const INTERRUPTED_TURN_FALLBACK_ACTION = 'while working'
 
 /**
+ * The line that closes a partial reply recovered after a crash (SHO-274).
+ *
+ * A turn killed mid-text now leaves its streamed text in the runtime's
+ * in-flight marker, and the boot sweep puts that text back into the transcript
+ * as an assistant message. Without a closing line the resumed model reads the
+ * partial as a finished answer and restarts from scratch. Fixed wording, so the
+ * recovery is idempotent and a test can find it.
+ */
+export const INTERRUPTED_TURN_PARTIAL_MARKER = '[interrupted here]'
+
+/**
+ * A streamed partial as the assistant message the resumed turn will read: the
+ * exact characters the person already saw, then the marker. Trailing blank
+ * lines are trimmed so a partial that ended on whitespace does not open a gap
+ * between the text and the marker.
+ */
+export function interruptedPartialMessage(partial: string): string {
+  const text = typeof partial === 'string' ? partial.replace(/\s+$/, '') : ''
+  return text ? `${text}\n\n${INTERRUPTED_TURN_PARTIAL_MARKER}` : INTERRUPTED_TURN_PARTIAL_MARKER
+}
+
+/**
  * A turn interrupted longer ago than this is left alone: the person has moved
  * on, and a resume that re-reads ancient work costs a full model call.
  * `AGENT_RESUME_MAX_AGE_MINUTES=0` disables resuming altogether.

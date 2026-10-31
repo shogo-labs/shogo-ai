@@ -63,8 +63,12 @@ interface PanelState {
   now: number
   /** Whether the watchdog has already fired and force-stopped this turn. */
   watchdogTripped: boolean
-  /** counts of side-effects we care about */
-  addMessageCalls: Array<{ sessionId: string; content: string }>
+  /**
+   * Counts of side-effects we care about. There is no `addMessageCalls`
+   * mirror any more: the client stopped writing its own user row for a
+   * send (SHO-274 §2.7). The API's chat route owns that row, keyed by the
+   * id the client sends, so exactly one writer exists.
+   */
   sendMessageCalls: Array<{ chatSessionId: string; text: string }>
   /** user-facing identity the panel is bound to */
   currentSessionId: string
@@ -81,7 +85,6 @@ function freshState(currentSessionId = 'session-typed'): PanelState {
     lastProgressAt: 0,
     now: 0,
     watchdogTripped: false,
-    addMessageCalls: [],
     sendMessageCalls: [],
     currentSessionId,
   }
@@ -103,7 +106,7 @@ function advanceTime(state: PanelState, deltaMs: number): void {
  * Mirror of `handleSendMessage` in ChatPanel.tsx. The single gate is on
  * `isStreaming || isProcessingQueueRef || isSendingMessageRef`. When the
  * gate is open, sendMessageInternal runs synchronously enough that the
- * test can inspect addMessage / sendMessage call counts immediately.
+ * test can inspect the sendMessage call count immediately.
  */
 function handleSendMessage(state: PanelState, content: string): void {
   if (!state.currentSessionId) return
@@ -119,7 +122,6 @@ function handleSendMessage(state: PanelState, content: string): void {
 
   state.isSendingMessage = true
   try {
-    state.addMessageCalls.push({ sessionId: state.currentSessionId, content })
     state.sendMessageCalls.push({ chatSessionId: state.currentSessionId, text: content })
     // The real send moves `status` to 'submitted' synchronously when it
     // invokes `chatRef.current.sendMessage`. Mirror that and stamp the
@@ -161,7 +163,6 @@ function tickStatusObserver(state: PanelState): void {
       const next = state.messageQueue.shift()!
       state.isProcessingQueue = true
       try {
-        state.addMessageCalls.push({ sessionId: state.currentSessionId, content: next.content })
         state.sendMessageCalls.push({ chatSessionId: state.currentSessionId, text: next.content })
         state.status = 'submitted'
         state.lastProgressAt = state.now
@@ -186,13 +187,10 @@ describe('handleSendMessage / queue gate (ChatPanel.tsx mirror)', () => {
     state = freshState()
   })
 
-  test('control: status=ready → message goes straight through to addMessage + sendMessage', () => {
+  test('control: status=ready → message goes straight through to sendMessage', () => {
     handleSendMessage(state, 'first message')
 
     expect(state.messageQueue).toHaveLength(0)
-    expect(state.addMessageCalls).toEqual([
-      { sessionId: 'session-typed', content: 'first message' },
-    ])
     expect(state.sendMessageCalls).toEqual([
       { chatSessionId: 'session-typed', text: 'first message' },
     ])
@@ -211,7 +209,6 @@ describe('handleSendMessage / queue gate (ChatPanel.tsx mirror)', () => {
       handleSendMessage(state, `follow-up #${i}`)
     }
 
-    expect(state.addMessageCalls).toHaveLength(1)
     expect(state.sendMessageCalls).toHaveLength(1)
     expect(state.messageQueue.map((m) => m.content)).toEqual([
       'follow-up #1',
@@ -232,7 +229,6 @@ describe('handleSendMessage / queue gate (ChatPanel.tsx mirror)', () => {
     tickStatusObserver(state)
 
     expect(state.messageQueue).toHaveLength(0)
-    expect(state.addMessageCalls).toHaveLength(4)
     expect(state.sendMessageCalls).toHaveLength(4)
   })
 
@@ -257,7 +253,6 @@ describe('handleSendMessage / queue gate (ChatPanel.tsx mirror)', () => {
 
     expect(state.messageQueue).toHaveLength(0)
     expect(state.sendMessageCalls).toHaveLength(6)
-    expect(state.addMessageCalls).toHaveLength(6)
   })
 
   test('recovery: no spurious force-stop while the stream is making forward progress', () => {

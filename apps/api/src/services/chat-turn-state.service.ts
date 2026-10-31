@@ -142,6 +142,60 @@ export function startTurnHeartbeat(
 const heartbeatingTurns = new Set<{ chatSessionId: string; turnId: string; timer: ReturnType<typeof setInterval> }>()
 
 /**
+ * Live turn trackers that can write one last snapshot on demand, keyed by chat
+ * session (SHO-274).
+ *
+ * `trackUsageFromStream` writes the assistant row on a 2s throttle, so a clean
+ * shutdown used to drop up to two seconds of a reply — and a desktop quit drops
+ * the tracker outright. The tracker registers itself here and the shutdown
+ * handoff drains it before the process goes away.
+ */
+const liveSnapshotFlushers = new Map<string, Set<() => Promise<void>>>()
+
+/** Register a tracker's final flush. Returns the unregister function. */
+export function registerTurnSnapshotFlusher(chatSessionId: string, flush: () => Promise<void>): () => void {
+  const flushers = liveSnapshotFlushers.get(chatSessionId) ?? new Set<() => Promise<void>>()
+  flushers.add(flush)
+  liveSnapshotFlushers.set(chatSessionId, flushers)
+  return () => {
+    const current = liveSnapshotFlushers.get(chatSessionId)
+    if (!current) return
+    current.delete(flush)
+    if (current.size === 0) liveSnapshotFlushers.delete(chatSessionId)
+  }
+}
+
+/**
+ * Force one snapshot from every live tracker (or one session's), bounded.
+ * Returns how many trackers ran. Failures are logged, never thrown: shutdown
+ * must not be held open by a database that is going away with it.
+ */
+export async function flushLiveSnapshots(
+  chatSessionId?: string,
+  timeoutMs: number = 2_000,
+): Promise<number> {
+  const flushers = chatSessionId
+    ? [...(liveSnapshotFlushers.get(chatSessionId) ?? [])]
+    : [...liveSnapshotFlushers.values()].flatMap((set) => [...set])
+  if (flushers.length === 0) return 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      Promise.allSettled(flushers.map((flush) => flush())),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs)
+        ;(timer as { unref?: () => void }).unref?.()
+      }),
+    ])
+  } catch (error) {
+    console.warn('[ChatTurnState] Flushing live snapshots failed:', error)
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+  return flushers.length
+}
+
+/**
  * On shutdown, hand every turn this process is following to the reattach
  * job: stop heartbeating and age the heartbeat past TURN_REATTACH_AFTER_MS,
  * so the next sweep on another replica claims it.
@@ -150,6 +204,11 @@ const heartbeatingTurns = new Set<{ chatSessionId: string; turnId: string; timer
  * its termination grace period, so waiting for a takeover would not finish.
  */
 export async function releaseTurnsForHandoff(): Promise<number> {
+  // Persist what the trackers hold before anything else: the buffer survives a
+  // pod handoff, but a desktop quit or a killed process does not, and the row is
+  // the only copy of what the person already read (SHO-274).
+  const flushed = await flushLiveSnapshots(undefined, 2_000)
+  if (flushed > 0) console.log(`[ChatTurnState] Flushed ${flushed} live turn snapshot(s) before handoff`)
   const turns = [...heartbeatingTurns]
   heartbeatingTurns.clear()
   if (turns.length === 0) return 0
@@ -185,6 +244,61 @@ export async function clearActiveTurn(
     data: CLEARED_TURN,
   })
   if (cleared.count > 0 && opts.handOff !== 'caller') drainAfterTurn(scope.id)
+}
+
+/**
+ * Clear every turn the previous desktop process was running (SHO-274).
+ *
+ * The desktop kills every runtime on boot (`local-server.ts
+ * killStaleProcessGroup`), so no turn from the previous process can still be
+ * alive — but nothing cleared `activeTurnId`, and `isSessionIdle` reads a
+ * heartbeat under 10 minutes as live. A crash therefore blocked its own session
+ * for ten minutes: the SHO-121 resume and anything the person sent after the
+ * restart queued behind a turn that no process was running ("my message
+ * vanished").
+ *
+ * Cloud does not need this: its reattach job clears the turn it cannot follow.
+ * The stamping below is the same function that job uses, so both surfaces leave
+ * the transcript in the same state.
+ */
+export async function sweepDeadTurnsOnLocalBoot(): Promise<number> {
+  const sessions = await prisma.chatSession.findMany({
+    where: { activeTurnId: { not: null } },
+    select: { id: true, activeTurnId: true },
+  })
+  if (sessions.length === 0) return 0
+  const { stampTurnInterrupted } = await import('./chat-resume.service')
+  // The journal holds every frame that reached the client during that turn, so
+  // the row can be rebuilt exactly — before the turn is cleared (SHO-274).
+  const { recoverTurnFromJournal } = await import('./chat-turn-recovery')
+  let swept = 0
+  for (const session of sessions) {
+    const turnId = session.activeTurnId
+    if (!turnId) continue
+    const recovered = await recoverTurnFromJournal(session.id, turnId, { keepFrames: true })
+      .then((result) => result.recovered)
+      .catch((error) => {
+        console.warn(`[ChatTurnState] Journal recovery for ${session.id} failed:`, error?.message ?? error)
+        return false
+      })
+    const cleared = await prisma.chatSession.updateMany({
+      where: { id: session.id, activeTurnId: turnId },
+      data: CLEARED_TURN,
+    })
+    if (cleared.count === 0) continue
+    swept++
+    // A recovered row already says the turn ended; only a turn with no frames
+    // at all needs the stamp that stops it reading as unfinished.
+    if (!recovered) {
+      await stampTurnInterrupted(session.id, { reason: 'runtime_restarted' }).catch((error) =>
+        console.warn(`[ChatTurnState] Failed to stamp interrupted row for ${session.id}:`, error),
+      )
+    }
+    // Whatever was waiting behind that turn has no starter left otherwise.
+    drainAfterTurn(session.id)
+  }
+  if (swept > 0) console.log(`[ChatTurnState] Cleared ${swept} turn(s) left running by the previous process`)
+  return swept
 }
 
 /**

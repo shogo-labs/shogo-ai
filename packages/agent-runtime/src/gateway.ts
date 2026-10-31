@@ -36,7 +36,7 @@ import {
   planContinuationLimit,
   shouldContinuePlan,
 } from './plan-continuation'
-import { interruptedTurnResumePrompt, resumeMaxAgeMinutes } from '@shogo/shared-runtime/interrupted-turn'
+import { interruptedPartialMessage, interruptedTurnResumePrompt, resumeMaxAgeMinutes } from '@shogo/shared-runtime/interrupted-turn'
 import {
   heartbeatSessionIdFor,
   heartbeatSessionProjectId,
@@ -58,7 +58,7 @@ import { buildExposedPortsPrompt } from './exposed-ports-prompt'
 import { buildConcurrentChatsPrompt, concurrentChatLabel, type ConcurrentChat } from './concurrent-chats-prompt'
 import { HookEmitter, loadAllHooks, workspaceHooksSignature } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
-import { SessionManager, type SessionManagerConfig, applyToolResultBudget, isChatSessionId, resolveIdleCompactAfterMs, snipConsumedResults } from './session-manager'
+import { SessionManager, type SessionManagerConfig, INFLIGHT_PARTIAL_MAX_CHARS, applyToolResultBudget, capInflightPartial, isChatSessionId, resolveIdleCompactAfterMs, snipConsumedResults } from './session-manager'
 import { microcompact } from './microcompact'
 import {
   type ContentReplacementState,
@@ -358,6 +358,13 @@ const TURN_REMOTE_REFRESH_MS = 10_000
  * session on every tool call of a long turn.
  */
 const INFLIGHT_TOOL_MARKER_MS = 2_000
+
+/**
+ * Least time between two `inflightTurn.partialText` writes (SHO-274). Same
+ * reason as the tool marker: every write persists the session. 2s bounds how
+ * much of a crashed reply is lost to one model-call checkpoint.
+ */
+const INFLIGHT_PARTIAL_MARKER_MS = 2_000
 
 /**
  * How much of a tool result is searched for a `/f/<token>` share link. Share
@@ -3133,6 +3140,14 @@ export class AgentGateway {
         )
         continue
       }
+      // What the person already read goes back into the transcript first, so the
+      // resumed model continues from it instead of restarting (SHO-274). The
+      // marker was cleared above, so this runs once per death.
+      if (marker.partialText && this.sessionManager.appendInterruptedPartial(sessionId, marker.partialText)) {
+        console.warn(
+          `${this.logPrefix} Restored ${marker.partialText.length} chars of interrupted reply for session ${sessionId}`,
+        )
+      }
       const repaired = this.sessionManager.repairInterruptedTail(sessionId)
       const toolName = marker.lastTool ?? repaired[repaired.length - 1]?.toolName
       // Either count saying "already restarted" is enough: the marker is what the
@@ -4167,6 +4182,12 @@ export class AgentGateway {
       if (uiWriter) {
         uiWriter.write({ type: 'data-inference-retry', data: retry } as any)
       }
+      // The failed step's text is discarded from the transcript, so it must not
+      // survive in the checkpoint either: a crash after the retry started would
+      // otherwise restore words the person never kept (SHO-274).
+      partialText = ''
+      partialReasoning = ''
+      stampInflightTurn()
     }
 
     // True between a provider-backoff heartbeat and the re-issued call's first
@@ -4217,14 +4238,25 @@ export class AgentGateway {
     // Count this turn against the session's one automatic restart before the
     // marker below reads the count (SHO-227). A person's message clears it.
     if (tracksInflightTurn) this.noteTurnOrigin(sessionId, turnOrigin ?? 'person')
+    // Text streamed since the last persisted step (SHO-274). The transcript only
+    // grows at a tool boundary or at turn end, so a turn killed mid-text — the
+    // common case: one model call, no tools — used to leave nothing behind but
+    // the person's prompt. These buffers ride in the marker instead.
+    let partialText = ''
+    let partialReasoning = ''
     let inflightMarkerWrite = 0
+    let partialMarkerWrite = 0
     const stampInflightTurn = (lastTool?: string) => {
       if (!tracksInflightTurn) return
+      const text = capInflightPartial(partialText)
+      const reasoning = capInflightPartial(partialReasoning)
       this.sessionManager.setSessionMetadata(sessionId, {
         inflightTurn: {
           id: inflightTurnId,
           startedAt: inflightStartedAt,
           ...(lastTool ? { lastTool } : {}),
+          ...(text ? { partialText: text } : {}),
+          ...(reasoning ? { partialReasoning: reasoning } : {}),
           // Automatic restarts already spent since a person last wrote: if this
           // turn also dies, the next boot posts the note instead of resuming
           // again. Kept on the session, not in memory, so a resume that ends
@@ -4233,6 +4265,27 @@ export class AgentGateway {
         },
       })
       inflightMarkerWrite = Date.now()
+      partialMarkerWrite = inflightMarkerWrite
+    }
+    /**
+     * Append streamed text/reasoning to the turn's checkpoint, writing the
+     * marker at most every INFLIGHT_PARTIAL_MARKER_MS. A delta can arrive
+     * thousands of times a turn; the marker is one SQLite row.
+     */
+    const checkpointPartial = (kind: 'text' | 'reasoning', delta: string) => {
+      if (!tracksInflightTurn || !delta) return
+      if (kind === 'text') partialText += delta
+      else partialReasoning += delta
+      // Keep the buffers bounded even between writes: a 200k-char reply would
+      // otherwise hold every char in memory until the next stamp.
+      if (partialText.length > INFLIGHT_PARTIAL_MAX_CHARS * 2) {
+        partialText = partialText.slice(partialText.length - INFLIGHT_PARTIAL_MAX_CHARS)
+      }
+      if (partialReasoning.length > INFLIGHT_PARTIAL_MAX_CHARS * 2) {
+        partialReasoning = partialReasoning.slice(partialReasoning.length - INFLIGHT_PARTIAL_MAX_CHARS)
+      }
+      if (Date.now() - partialMarkerWrite < INFLIGHT_PARTIAL_MARKER_MS) return
+      stampInflightTurn()
     }
     stampInflightTurn()
 
@@ -4781,6 +4834,48 @@ export class AgentGateway {
         },
       })
 
+      // Persist the person's prompt before the model is called (SHO-274). The
+      // loop's own user message only reaches the transcript at the first tool
+      // boundary or at turn end, so a text-only turn killed early left the
+      // session with no trace of the request at all — and the boot sweep then
+      // resumed an agent whose transcript never mentioned it. It is tracked in
+      // `persistedProgressMessages` so the final write cannot duplicate it; the
+      // loop's own copy is recognised by text below.
+      const persistedPromptMessage: Message | null =
+        !isHeartbeat && prompt.trim()
+          ? ({ role: 'user', content: prompt, timestamp: Date.now() } as unknown as Message)
+          : null
+      if (persistedPromptMessage) {
+        this.sessionManager.addMessages(sessionId, persistedPromptMessage)
+        persistedProgressMessages.add(persistedPromptMessage)
+      }
+      /**
+       * The loop's own copies of the prompt persisted above. pi-agent-core builds
+       * those messages itself, so identity cannot match the persisted row; the
+       * text can. It is a set of *objects*, not a one-shot latch: the same copy
+       * is offered twice (at the step boundary, then again in `newMessages`), and
+       * a latch only caught the first offer — so the tail write appended the
+       * person's message a second time. `startsWith` because an image-carrying
+       * prompt is sent as the person's text followed by the folded image
+       * descriptions.
+       */
+      const droppedPromptCopies = new Set<Message>()
+      const isDuplicatePrompt = (message: Message): boolean => {
+        if (!persistedPromptMessage || message === persistedPromptMessage) return false
+        if (droppedPromptCopies.has(message)) return true
+        if (message.role !== 'user') return false
+        const raw = (message as any).content
+        const text = typeof raw === 'string'
+          ? raw
+          : Array.isArray(raw)
+            ? raw.filter((block: any) => block?.type === 'text').map((block: any) => block.text).join('')
+            : ''
+        if (!text.trim().startsWith(prompt.trim())) return false
+        droppedPromptCopies.add(message)
+        return true
+      }
+
+
       const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         provider,
         model: modelId,
@@ -5000,11 +5095,17 @@ export class AgentGateway {
         onProgress: (progressMessages) => {
           const durableMessages = progressMessages.filter((message) => {
             const tagged = (message as Message & { __shogoBackgroundNote?: boolean }).__shogoBackgroundNote
-            return !tagged && !persistedProgressMessages.has(message)
+            return !tagged && !persistedProgressMessages.has(message) && !isDuplicatePrompt(message)
           })
           if (durableMessages.length > 0) {
             this.sessionManager.addMessages(sessionId, ...durableMessages)
             for (const message of durableMessages) persistedProgressMessages.add(message)
+            // Everything streamed so far is now in the transcript itself, so the
+            // checkpoint starts empty (SHO-274). Without this a crash after a
+            // later step would append the earlier step's text a second time.
+            partialText = ''
+            partialReasoning = ''
+            stampInflightTurn()
           }
         },
         onThinkingStart: () => {
@@ -5015,6 +5116,7 @@ export class AgentGateway {
           }
         },
         onThinkingDelta: (delta) => {
+          checkpointPartial('reasoning', delta)
           if (uiWriter && uiReasoningId) {
             uiWriter.write({ type: 'reasoning-delta', id: uiReasoningId, delta })
           }
@@ -5027,6 +5129,7 @@ export class AgentGateway {
         },
         onTextDelta: (delta) => {
           endProviderBackoff()
+          checkpointPartial('text', delta)
           runningContextEstimate += Math.ceil(delta.length / 4)
           emitAssistantText(linkRewriter.push(delta))
         },
@@ -5285,8 +5388,12 @@ export class AgentGateway {
       // ourselves. Only the prompt and the empty reply were saved so far; drop
       // them so the retry doesn't record the user's message twice.
       if (!isHeartbeat && isEmptyTurnResult(result) && !turnAbort.signal.aborted) {
-        this.sessionManager.removeMessages(sessionId, persistedProgressMessages)
-        persistedProgressMessages.clear()
+        // Drop the empty reply, not the request: the prompt is the only durable
+        // record that a person asked for this at all, and the retry below must
+        // not be able to leave the session with neither (SHO-274).
+        const droppable = [...persistedProgressMessages].filter((message) => message !== persistedPromptMessage)
+        this.sessionManager.removeMessages(sessionId, droppable)
+        for (const message of droppable) persistedProgressMessages.delete(message)
         console.warn(
           `${this.logPrefix} Empty model response for session ${sessionId} ` +
             `(model: ${modelId}, provider: ${provider}, outputTokens: ${result.outputTokens}` +
@@ -5551,7 +5658,7 @@ export class AgentGateway {
       }
       result.newMessages = accumulatedNewMessages.filter((message) => {
         const tagged = (message as Message & { __shogoBackgroundNote?: boolean }).__shogoBackgroundNote
-        return !tagged && !persistedProgressMessages.has(message)
+        return !tagged && !persistedProgressMessages.has(message) && !isDuplicatePrompt(message)
       })
 
       // Defense-in-depth: rewrite any localhost link the model emitted into the

@@ -230,6 +230,7 @@ const NEVER_CLOUD_PLATFORM = [
 
 const NEVER_MACHINE_LOCAL = [
   'AgentWake', // a queued run on this machine
+  'ChatTurnFrame', // live SSE frames for a turn in flight; a crash on this machine, not a syncable row
   'ConversationMessageEmbedding', // a local vector index, rebuilt on demand
   'ConversationAttachmentChunk', // file text for retrieval, local only
   'MachineSyncState',

@@ -95,6 +95,77 @@ function hasResumePart(parts: string | null | undefined): boolean {
   }
 }
 
+/** The part that tells a reader (and the client) a row ended mid-stream. */
+export const TURN_INTERRUPTED_PART = 'data-turn-interrupted'
+
+export interface StampInterruptedResult {
+  /** The turn's assistant row was marked. */
+  stamped: boolean
+  /** The row had no text at all, so the interruption note became its text. */
+  wroteNote: boolean
+}
+
+/**
+ * Mark the dead turn's own assistant row as ended, keeping its text (SHO-274).
+ *
+ * A turn that dies mid-stream leaves a row that looks exactly like a reply still
+ * being written: partial text, a `data-turn-timing` part with no `completedAt`,
+ * and nothing else. The client treated it as unfinished and dropped it from
+ * screen on the next resume replay. The part written here says the turn is over,
+ * so both the transcript and the client can keep it.
+ *
+ * Idempotent: a row that already carries the part is left alone, so the
+ * runtime's boot sweep and the API's reattach job can both notice one death.
+ */
+export async function stampTurnInterrupted(
+  chatSessionId: string,
+  opts: { reason: string; note?: string; at?: number },
+): Promise<StampInterruptedResult> {
+  const latest = await prisma.chatMessage
+    .findFirst({
+      where: { sessionId: chatSessionId, role: 'assistant' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, content: true, parts: true },
+    })
+    .catch(() => null)
+  if (!latest) return { stamped: false, wroteNote: false }
+  // A note is not an in-flight turn: it is the row that already said this death
+  // is over. Stamping it would report a second note for the same death.
+  if (
+    isInterruptedTurnNote(latest.content, { resuming: true }) ||
+    isInterruptedTurnNote(latest.content, { resuming: false })
+  ) {
+    return { stamped: false, wroteNote: false }
+  }
+
+  let parts: any[] = []
+  if (typeof latest.parts === 'string' && latest.parts.trim()) {
+    try {
+      const parsed = JSON.parse(latest.parts)
+      if (Array.isArray(parsed)) parts = parsed
+    } catch {
+      parts = []
+    }
+  }
+  if (parts.some((part) => part?.type === TURN_INTERRUPTED_PART)) return { stamped: false, wroteNote: false }
+
+  const empty = !(latest.content ?? '').trim() && !parts.some((part) => part?.type === 'text' && (part.text ?? '').trim())
+  const note = empty ? (opts.note ?? '').trim() : ''
+  if (note) parts.push({ type: 'text', text: note })
+  parts.push({ type: TURN_INTERRUPTED_PART, data: { at: opts.at ?? Date.now(), reason: opts.reason } })
+
+  await prisma.chatMessage
+    .update({
+      where: { id: latest.id },
+      data: {
+        parts: JSON.stringify(parts),
+        ...(note ? { content: note } : {}),
+      },
+    })
+    .catch(() => undefined)
+  return { stamped: true, wroteNote: Boolean(note) }
+}
+
 /**
  * The step that never returned, read off the transcript.
  *
@@ -204,7 +275,15 @@ export async function postInterruptedResume(
     latestAssistant.createdAt.getTime() >= Date.now() - NOTE_DEDUPE_WINDOW_MS &&
     isInterruptedTurnNote(latestAssistant.content, { resuming })
 
-  if (!notedRecently) {
+  // Mark the dead turn's own row before writing anything new: its partial text
+  // must stay, and it must stop looking like a turn still in flight (SHO-274).
+  const stamped = await stampTurnInterrupted(chatSessionId, {
+    reason: toolName ? `interrupted_${toolName}` : 'interrupted',
+    note: notedRecently ? undefined : note,
+  }).catch(() => ({ stamped: false, wroteNote: false }))
+  if (stamped.stamped) result.noted = true
+
+  if (!notedRecently && !stamped.wroteNote) {
     await prisma.chatMessage
       .create({
         data: {

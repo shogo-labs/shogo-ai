@@ -31,6 +31,9 @@ export function isUnfinishedAssistant(message: UIMessage | undefined): boolean {
   for (const part of (message.parts ?? []) as Array<Record<string, any>>) {
     if (part?.type === "data-turn-complete") return false
     if (part?.type === TURN_STOPPED_PART_TYPE) return false
+    // A turn the server declared dead is finished history: its text is what the
+    // person read before the crash, and the resume appends to it (SHO-274).
+    if (part?.type === TURN_INTERRUPTED_PART_TYPE) return false
     if (
       part?.type === "data-turn-timing" &&
       typeof part?.data?.completedAt === "number"
@@ -39,6 +42,40 @@ export function isUnfinishedAssistant(message: UIMessage | undefined): boolean {
     }
   }
   return true
+}
+
+/** The part the API stamps on a turn it declared dead (SHO-274). */
+export const TURN_INTERRUPTED_PART_TYPE = "data-turn-interrupted"
+
+/**
+ * Which turn a message belongs to, as `turn:<id>` or `at:<startedAt>`.
+ *
+ * The runtime stamps `data-turn-start` on everything it streams and the API
+ * copies the same stamp onto the persisted row as `data-turn-timing`, so one
+ * key identifies a turn on both sides of the wire (SHO-274).
+ */
+export function messageTurnKey(message: UIMessage | undefined): string | null {
+  for (const part of (message?.parts ?? []) as Array<Record<string, any>>) {
+    if (part?.type !== "data-turn-start" && part?.type !== "data-turn-timing") continue
+    const turnId = part?.data?.turnId
+    if (typeof turnId === "string" && turnId) return `turn:${turnId}`
+    const startedAt = part?.data?.startedAt
+    if (typeof startedAt === "number") return `at:${startedAt}`
+  }
+  return null
+}
+
+/**
+ * Whether this assistant message has a row behind it (`data-turn-timing` is
+ * only ever written by the API when it persists a reply). A bubble built by the
+ * AI SDK from this window's own stream has none, so it is the copy a replay
+ * rebuilds; a persisted one is history and must survive (SHO-274).
+ */
+function hasServerRow(message: UIMessage | undefined): boolean {
+  for (const part of (message?.parts ?? []) as Array<Record<string, any>>) {
+    if (part?.type === "data-turn-timing" || part?.type === TURN_INTERRUPTED_PART_TYPE) return true
+  }
+  return false
 }
 
 /**
@@ -51,7 +88,7 @@ export function applyMessageSnapshot<T extends UIMessage>(
   snapshot: T,
 ): T[] {
   return [
-    ...dropUnfinishedAssistantTail(messages.filter((m) => m.id !== snapshot.id)),
+    ...dropUnfinishedAssistantTail(messages.filter((m) => m.id !== snapshot.id), snapshot),
     snapshot,
   ]
 }
@@ -89,10 +126,32 @@ export function foldSnapshotContinuation<T extends UIMessage>(
   ]
 }
 
+/**
+ * Drop the unfinished assistant tail, but only when the replay is going to
+ * rebuild *that* message.
+ *
+ * A crash leaves an unfinished assistant row on screen. Dropping it whenever a
+ * replay arrives deleted history the person had already read — and the next
+ * device-cache write stored the array without it (SHO-274). A stored row is kept
+ * unless the replay is the same turn; a bubble this window streamed is dropped
+ * because the replay rebuilds it from scratch.
+ *
+ * @param replay the message the replay starts from, when the caller knows it
+ *   (a snapshot carries its turn). Without it, only a bubble with no stored row
+ *   is dropped — a replay never rewrites a row it is not following.
+ */
 export function dropUnfinishedAssistantTail<T extends UIMessage>(
   messages: T[],
+  replay?: T | null,
 ): T[] {
-  if (!isUnfinishedAssistant(messages[messages.length - 1])) return messages
+  const tail = messages[messages.length - 1]
+  if (!isUnfinishedAssistant(tail)) return messages
+  if (hasServerRow(tail)) {
+    const replayKey = messageTurnKey(replay ?? undefined)
+    const tailKey = messageTurnKey(tail)
+    // Same turn: the replay is rebuilding this row, so its copy goes.
+    if (!replayKey || !tailKey || replayKey !== tailKey) return messages
+  }
   return messages.slice(0, -1)
 }
 

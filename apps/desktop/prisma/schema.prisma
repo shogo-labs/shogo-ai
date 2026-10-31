@@ -647,6 +647,7 @@ model ChatSession {
 
   project      Project?      @relation(fields: [contextId], references: [id], onDelete: Cascade)
   messages     ChatMessage[]
+  turnFrames   ChatTurnFrame[]
   toolCallLogs ToolCallLog[]
   agentTasks   AgentTask[]
 
@@ -675,6 +676,33 @@ model ChatMessage {
   @@index([sessionId, createdAt])
   @@index([sessionId, agent, createdAt])
   @@map("chat_messages")
+}
+
+/// Write-ahead journal of one turn's raw SSE frames (SHO-274).
+///
+/// A frame is inserted here *before* it is forwarded to the client, so what a
+/// person has seen is always a subset of what is stored: a process that dies
+/// mid-turn leaves the frames behind, and `recoverTurnFromJournal` replays them
+/// through the same parser that writes the assistant row. Append-only, and one
+/// row per *batch* of frames (`seq` = batch order), so a long turn costs a
+/// handful of small inserts instead of one per delta.
+model ChatTurnFrame {
+  id        String   @id @default(uuid())
+  sessionId String
+  turnId    String
+  /// Batch order within the turn. `@@unique([turnId, seq])` is what makes a
+  /// retried insert idempotent rather than a duplicate of the same frames.
+  seq       Int
+  /// One or more raw SSE frames, exactly as the runtime sent them.
+  data      String
+  createdAt DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([turnId, seq])
+  @@index([sessionId, turnId])
+  @@index([createdAt])
+  @@map("chat_turn_frames")
 }
 
 /// A user's thumbs up/down reaction to one assistant `ChatMessage` (one

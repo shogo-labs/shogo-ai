@@ -16,12 +16,15 @@ mock.module('../../lib/prisma', () => ({
 
 const {
   clearActiveTurn,
+  flushLiveSnapshots,
   heartbeatTurn,
   listActiveChatTurns,
   markTurnEnded,
   markTurnStarted,
+  registerTurnSnapshotFlusher,
   releaseTurnsForHandoff,
   startTurnHeartbeat,
+  sweepDeadTurnsOnLocalBoot,
   TURN_REATTACH_AFTER_MS,
 } = await import('../chat-turn-state.service')
 
@@ -210,5 +213,86 @@ describe('chat-turn-state service', () => {
     const stop = startTurnHeartbeat('session-done', 'turn-done', 60_000)
     stop()
     expect(await releaseTurnsForHandoff()).toBe(0)
+  })
+
+  // -------------------------------------------------------------------------
+  // The reply the person already read must reach the row before the process
+  // goes away: the row is the only copy a desktop quit leaves behind (SHO-274).
+  // -------------------------------------------------------------------------
+
+  test('flushes a live tracker before handing its turn off', async () => {
+    const flushed: string[] = []
+    const unregister = registerTurnSnapshotFlusher('session-f', async () => {
+      flushed.push('session-f')
+    })
+    const stop = startTurnHeartbeat('session-f', 'turn-f', 60_000)
+
+    updateMany.mockClear()
+    expect(await releaseTurnsForHandoff()).toBe(1)
+    expect(flushed).toEqual(['session-f'])
+
+    unregister()
+    stop()
+  })
+
+  test('flushLiveSnapshots can target one session and survives a failing flusher', async () => {
+    const ran: string[] = []
+    const unA = registerTurnSnapshotFlusher('session-a', async () => {
+      ran.push('a')
+    })
+    const unBroken = registerTurnSnapshotFlusher('session-b', async () => {
+      throw new Error('database is going away with the process')
+    })
+    const unB = registerTurnSnapshotFlusher('session-b', async () => {
+      ran.push('b')
+    })
+
+    expect(await flushLiveSnapshots('session-a')).toBe(1)
+    expect(ran).toEqual(['a'])
+
+    // The broken tracker must not stop the one next to it.
+    expect(await flushLiveSnapshots('session-b')).toBe(2)
+    expect(ran).toContain('b')
+
+    unA()
+    unB()
+    unBroken()
+  })
+
+  test('an unregistered tracker is not flushed', async () => {
+    const ran: string[] = []
+    const unregister = registerTurnSnapshotFlusher('session-g', async () => {
+      ran.push('g')
+    })
+    unregister()
+
+    expect(await flushLiveSnapshots('session-g')).toBe(0)
+    expect(ran).toEqual([])
+  })
+
+  test('a fresh boot clears the turns the previous process was running', async () => {
+    // No runtime from the previous process survives boot, so each of these is
+    // dead even though its heartbeat is seconds old.
+    findMany.mockResolvedValueOnce([
+      { id: 'session-dead', activeTurnId: 'turn-dead' },
+      { id: 'session-raced', activeTurnId: 'turn-raced' },
+    ] as never)
+    updateMany
+      .mockResolvedValueOnce({ count: 1 } as never)
+      .mockResolvedValueOnce({ count: 0 } as never)
+
+    expect(await sweepDeadTurnsOnLocalBoot()).toBe(1)
+
+    expect(updateMany).toHaveBeenCalledWith({ where: { id: 'session-dead', activeTurnId: 'turn-dead' }, data: CLEARED })
+    // A turn another process already cleared is not counted twice.
+    expect(updateMany).toHaveBeenCalledWith({ where: { id: 'session-raced', activeTurnId: 'turn-raced' }, data: CLEARED })
+  })
+
+  test('a boot with no active turns writes nothing', async () => {
+    findMany.mockResolvedValueOnce([] as never)
+    updateMany.mockClear()
+
+    expect(await sweepDeadTurnsOnLocalBoot()).toBe(0)
+    expect(updateMany).not.toHaveBeenCalled()
   })
 })
