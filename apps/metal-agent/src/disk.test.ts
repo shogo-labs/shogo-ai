@@ -5,7 +5,7 @@ import { execFileSync } from 'child_process'
 import { describe, expect, test } from 'bun:test'
 import { tmpdir } from 'os'
 
-import { diskUsage, usageFromBlocks } from './disk'
+import { diskUsage, rootDiskUsage, usageFromBlocks } from './disk'
 
 describe('usageFromBlocks', () => {
   const KIB4 = 4096
@@ -79,5 +79,28 @@ describe('diskUsage', () => {
     // like abundant free space to the GC watermarks.
     const u = diskUsage('/definitely/not/a/real/path/xyzzy')
     expect(u).toEqual({ totalBytes: 0, freeBytes: 0, usedBytes: 0, usedPct: 0 })
+  })
+})
+
+
+/**
+ * The ROOT filesystem, where docker runtime images live (SHO-271). Nothing
+ * reported it, so dal-2 sat at 100% and failed every self-update for ten days
+ * without paging anyone.
+ */
+describe('rootDiskUsage', () => {
+  test('reports the filesystem holding /', () => {
+    const u = rootDiskUsage('/')
+    expect(u.totalBytes).toBeGreaterThan(0)
+    expect(u.freeBytes).toBeGreaterThanOrEqual(0)
+    expect(u.usedPct).toBeGreaterThanOrEqual(0)
+    expect(u.usedPct).toBeLessThanOrEqual(100)
+    // One decimal place: the gauge multiplies back to a percent.
+    expect(Math.round(u.usedPct * 10)).toBeCloseTo(u.usedPct * 10, 6)
+  })
+
+  test('an unreadable path is zeros (no signal), never a healthy-looking 0% disk', () => {
+    const u = rootDiskUsage('/definitely-not-a-mount-point-sho271')
+    expect(u).toEqual({ totalBytes: 0, freeBytes: 0, usedPct: 0 })
   })
 })

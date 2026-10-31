@@ -28,6 +28,9 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, r
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
+import { rootDiskUsage } from './disk'
+import { runImageGc } from './image-gc'
+import { metrics, M } from './metrics'
 import { computeRootfsIdentity } from './snapshot-store'
 
 export interface DesiredAgent {
@@ -181,6 +184,83 @@ export function shouldRebuildRootfs(
   if (!desired?.version || !desired?.rebuildRootfs) return false
   return desired.version !== lastBuilt && desired.version !== staged
 }
+
+// --- runtime-image GC ---------------------------------------------------------
+//
+// Every rootfs rebuild pulls a fresh `shogo-runtime` image and never removes the
+// old one, so `/var/lib/docker` grows ~5.7 GB per release on the ROOT disk,
+// which the NVMe watermarks never look at (dal-2 filled it and could not update
+// for ten days). See image-gc.ts for the collector.
+
+/** Images this host must keep: the release image and its docker-class variant. */
+export function imagesToKeep(desired?: DesiredAgent | null, extra: (string | null | undefined)[] = []) {
+  const standard = desired?.runtimeImage ?? process.env.RUNTIME_IMAGE
+  return [standard, dockerRuntimeImage(standard), ...extra]
+}
+
+export type ImageGcFn = (reason: string, keep: (string | null | undefined)[]) => Promise<unknown>
+
+/**
+ * The collector, indirected so a test can observe WHEN it runs without a docker
+ * daemon. `_setImageGc(null)` restores the real one.
+ */
+const defaultImageGc: ImageGcFn = async (reason, keep) => {
+  const disk = rootDiskUsage('/')
+  metrics.gauge(M.rootDiskUsedPct, disk.usedPct)
+  metrics.gauge(M.rootDiskFreeBytes, disk.freeBytes)
+  const res = await runImageGc({ reason, keep, root: '/' })
+  metrics.inc(M.imageGcFailed, res.failed.length)
+  metrics.inc(M.imageGcFreedBytes, Math.round(res.freedBytes))
+  metrics.gauge(M.rootDiskUsedPct, res.rootDiskAfter.usedPct)
+  metrics.gauge(M.rootDiskFreeBytes, res.rootDiskAfter.freeBytes)
+  return res
+}
+
+let collectImages: ImageGcFn = defaultImageGc
+
+export function _setImageGc(fn: ImageGcFn | null): void {
+  collectImages = fn ?? defaultImageGc
+}
+
+/**
+ * Run the collector WITHOUT taking the single-flight flag — for callers that
+ * already hold it (the rebuild path). Never throws.
+ */
+async function collectUnderLock(reason: string, keep: (string | null | undefined)[]): Promise<void> {
+  try {
+    await collectImages(reason, keep)
+  } catch (err: any) {
+    console.warn(`[self-update] image GC (${reason}) failed:`, err?.message ?? err)
+  }
+}
+
+/**
+ * The unattended/opportunistic entry point: collect old runtime images, sharing
+ * the single-flight `updating` flag with the rebuild and self-update paths so a
+ * `docker rmi` can never run under a `build-runtime-rootfs.sh` that is
+ * exporting that image. Skips (never waits) while one of those holds it.
+ *
+ * `force` runs unconditionally (after a successful rebuild the old images are
+ * dead weight whatever the disk says); otherwise it only runs once the ROOT
+ * disk crosses `config.rootDiskGcPct`, so a healthy host is not churning.
+ */
+export async function maybeImageGc(
+  reason: string,
+  keep: (string | null | undefined)[] = imagesToKeep(null),
+  opts: { force?: boolean; diskPath?: string; usedPct?: number } = {},
+): Promise<boolean> {
+  if (updating) return false
+  const used = opts.usedPct ?? rootDiskUsage(opts.diskPath ?? '/').usedPct
+  if (!opts.force && used < config.rootDiskGcPct) return false
+  updating = true
+  try {
+    await collectUnderLock(reason, keep)
+    return true
+  } finally {
+    updating = false
+  }
+}
+
 
 // --- staged rootfs -------------------------------------------------------------
 //
@@ -505,12 +585,19 @@ async function downloadS3(url: string): Promise<Buffer> {
  * The live image is never touched here; `maybeActivateRootfs` renames the
  * staged one into place later.
  */
-async function stageRootfs(baseDir: string, desired: DesiredAgent): Promise<StagedRootfs> {
+export async function stageRootfs(baseDir: string, desired: DesiredAgent): Promise<StagedRootfs> {
   const script = join(baseDir, 'scripts', 'metal-agent', 'build-runtime-rootfs.sh')
   if (!existsSync(script)) throw new Error('build-runtime-rootfs.sh not in bundle')
   // The previous marker no longer describes the staged file once a rebuild starts.
   clearStagedMarker()
   const out = stagedRootfsPath(config.baseRootfs)
+  const keep = imagesToKeep(desired)
+  // Free space BEFORE the pull. A host at 100% (dal-2) cannot successfully pull,
+  // so cleanup must not be conditional on the rebuild succeeding — and the
+  // collector keeps the image we are about to build from.
+  if (rootDiskUsage('/').usedPct >= config.rootDiskGcPct) {
+    await collectUnderLock('pre-rebuild', keep)
+  }
   await buildRootfsImage({
     script,
     out,
@@ -538,6 +625,8 @@ async function stageRootfs(baseDir: string, desired: DesiredAgent): Promise<Stag
     stagedAt: Date.now(),
   }
   writeStagedMarker(staged)
+  // The rebuild is done with every other image: keep only this release's.
+  await collectUnderLock('post-rebuild', keep)
   return staged
 }
 

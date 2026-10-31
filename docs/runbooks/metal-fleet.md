@@ -475,6 +475,27 @@ to watch, not an incident. If it climbs anyway:
    networking (`Failed to write to tap: File descriptor in bad state`) and the
    project must be recycled.
 
+### `MetalHostRootDiskPressure` — ROOT disk > 80% (critical 90%)
+The ROOT filesystem, not the NVMe cache: it holds `/var/lib/docker`, where each
+rootfs rebuild leaves its `shogo-runtime` image (~5.7 GB). At 100% every
+self-update on the host fails with "no space left on device" while the host
+keeps serving old guest code (dal-2, Oct 21–31 2026: 83 images, 100%, 14k failed
+updates in 24h). The agent collects old images itself (`image-gc.ts`) after a
+rebuild, before a pull above `METAL_ROOT_DISK_GC_PCT` (70%), and hourly above
+the same threshold. When the alert fires, the collector is not running (an agent
+older than that change), the daemon is unreachable, or a failed build left a
+multi-GB tar. Triage:
+
+```
+ssh root@<host>
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -c shogo-runtime   # expect 1-2
+journalctl -u metal-agent | grep image-gc                                    # removals + disk % before/after
+ls -la /opt/fc-spike/build/rootfs.tar                                        # should not exist
+```
+
+Cordon the host until it is back under 80%; the fleet keeps serving from its
+siblings. `metal.host.root_disk_used_pct` on the fleet dashboard is the graph.
+
 ### `MetalHostDiskPressure` — NVMe > 85%
 GC evicting to S3 can't keep up. Cordon the hot host so it stops taking new cold
 placements; burst/siblings absorb; disk recovers as idle projects evict. If

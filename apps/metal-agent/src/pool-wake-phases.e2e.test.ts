@@ -84,6 +84,37 @@ describe('open() wake report', () => {
   }, 30_000)
 })
 
+describe('stale reason honesty (SHO-271)', () => {
+  /**
+   * A durable pull that returns nothing was ALWAYS labelled `rootfs`, even when
+   * the identity matched. That inflated the measured post-release cold-boot wave
+   * and sent rewarm tuning after the wrong cause, so the store now reports why
+   * it missed and the pool records that.
+   */
+  test('a pull miss that is not a rootfs change is labelled store_miss', async () => {
+    const { host, pool } = rig()
+    await pool.open('p1', ENV)
+    await pool.suspend('p1')
+    // The durable tier exists but has a metadata entry whose snapshot cannot be
+    // pulled, for a reason other than the golden image having changed.
+    ;(pool as unknown as { store: SnapshotStore }).store = {
+      kind: 'fs',
+      slim: false,
+      head: async () => ({ projectId: 'p1', rootfsIdentity: 'current', createdAt: Date.now() }) as never,
+      pull: async () => null,
+      missReason: async () => 'absent' as const,
+      push: async () => {},
+      remove: async () => {},
+      ensureBase: async () => {},
+      pullBase: async () => false,
+    } as unknown as SnapshotStore
+    ;(pool as unknown as { evictLocal(id: string): void }).evictLocal('p1')
+    const r = await pool.open('p1', ENV)
+    expect(r.mode).toBe('assigned')
+    expect(r.staleReason).toBe('store_miss')
+  }, 30_000)
+})
+
 describe('member writable-state drift', () => {
   const ANCHOR = 'ws:proj:m1'
   const WS_ENV = { ...ENV, WORKSPACE_PROJECT_IDS: 'm1' }

@@ -62,7 +62,14 @@ export interface RewarmHost {
   hostId: string
   region: string
   rootfsSha?: string
+  /**
+   * How full the host is for warm-up purposes: RAM in use when it reports
+   * memory, else the VM-count figure (see `warmUtilPct`). This is the gate that
+   * matters — hosts have hundreds of GB free while their VM count is high.
+   */
   utilPct: number
+  /** assigned ÷ MAX_VMS_PER_HOST, i.e. the VM-count utilization. Backstop only. */
+  vmUtilPct?: number
   overWatermark: boolean
   /** A rebuilt rootfs waiting for activation on this host (see metal-agent self-update.ts). */
   stagedRootfs?: StagedRootfsReport
@@ -205,13 +212,31 @@ function envInt(name: string, fallback: number): number {
 export function rewarmConfig() {
   return {
     auto: process.env.METAL_REWARM_AUTO !== 'false',
-    sinceHours: envInt('METAL_REWARM_SINCE_HOURS', 48),
+    /**
+     * Candidate window. 48h missed every project a user opens less than twice a
+     * week: it still holds a snapshot, so the next open cold-boots on
+     * `stale_reason=rootfs` after a release. 7 days covers a normal weekly
+     * rhythm; the NVMe budget (`maxBytes`, plus the GC watermarks) is what
+     * actually bounds the cache.
+     */
+    sinceHours: envInt('METAL_REWARM_SINCE_HOURS', 168),
     concurrencyPerHost: envInt('METAL_REWARM_CONCURRENCY_PER_HOST', 4),
-    maxRuntimes: envInt('METAL_REWARM_MAX_RUNTIMES', 1000),
+    maxRuntimes: envInt('METAL_REWARM_MAX_RUNTIMES', 2000),
     maxBytes: envInt('METAL_REWARM_MAX_BYTES', 0),
     minIntervalMs: envInt('METAL_REWARM_MIN_INTERVAL_MS', 2 * 60 * 60_000),
     settleMs: envInt('METAL_REWARM_SETTLE_MS', 2 * 60_000),
-    maxHostUtilPct: envInt('METAL_REWARM_MAX_HOST_UTIL_PCT', 75),
+    /**
+     * Memory/disk headroom ceiling for a warm (see `warmUtilPct`). Raised from
+     * 75 because 75% of the *VM cap* was skipping hosts that had ~400 GB of RAM
+     * free — the US fleet peaked at 80% of its cap on Oct 26/28/30, so warms
+     * were skipped exactly when a release needed them.
+     */
+    maxHostUtilPct: envInt('METAL_REWARM_MAX_HOST_UTIL_PCT', 90),
+    /**
+     * VM-count backstop: never warm onto a host this close to its VM cap, even
+     * with memory to spare (a new VM needs a tap, a slot and a boot).
+     */
+    maxHostVmUtilPct: envInt('METAL_REWARM_MAX_HOST_VM_UTIL_PCT', 95),
     leaseBudget: rewarmLeaseBudget(),
   }
 }
@@ -312,7 +337,7 @@ export async function runRewarm(
   const capacity = async (): Promise<boolean> => {
     while (true) {
       const hosts = (await deps.listHosts().catch(() => [] as RewarmHost[])).filter((h) => !region || h.region === region)
-      if (hosts.length === 0 || hosts.some((h) => !h.overWatermark && h.utilPct < cfg.maxHostUtilPct)) return true
+      if (hosts.length === 0 || hosts.some((h) => hasWarmHeadroom(h, cfg))) return true
       if (!(await proceed())) return false
       await deps.sleep(CAPACITY_POLL_MS)
     }
@@ -1043,7 +1068,7 @@ export async function drainRefreshQueue(
       res.deferred.push(key)
       continue
     }
-    if (host && (host.overWatermark || host.utilPct >= cfg.maxHostUtilPct)) continue
+    if (host && !hasWarmHeadroom(host, cfg)) continue
     let slot: string | undefined
     for (let i = 0; i < SWITCHOVER.refreshPerHost && !slot; i++) {
       const k = refreshSlotKey(item.hostId, i)
@@ -1469,6 +1494,26 @@ export function warmUtilPct(h: { utilPct: number; load?: { mem?: { totalMiB: num
   return Math.round(((mem.totalMiB - mem.availableMiB) / mem.totalMiB) * 100)
 }
 
+/**
+ * May this host take a warm? Gated on real headroom (memory when the host
+ * reports it, else its VM count) with a VM-count backstop near the cap.
+ *
+ * The old rule used one number — VM count / cap, at 75% — for both jobs, so a
+ * host with 400 GB of free RAM was "busy" at 80% of its VM cap and got skipped
+ * exactly when a release needed its pre-warm. `overWatermark` still means the
+ * NVMe cache is shedding and is never a good place to boot.
+ */
+export function hasWarmHeadroom(
+  h: { utilPct: number; vmUtilPct?: number; overWatermark: boolean },
+  cfg: { maxHostUtilPct: number; maxHostVmUtilPct?: number },
+): boolean {
+  if (h.overWatermark) return false
+  if (h.utilPct >= cfg.maxHostUtilPct) return false
+  const vmCeiling = cfg.maxHostVmUtilPct ?? 95
+  if (typeof h.vmUtilPct === 'number' && h.vmUtilPct >= vmCeiling) return false
+  return true
+}
+
 /** The real controller, resolvers and Redis, wired for the job and watcher. */
 export async function defaultRewarmDeps(): Promise<RewarmDeps> {
   const ctl = await import('./metal-warm-pool-controller')
@@ -1483,6 +1528,7 @@ export async function defaultRewarmDeps(): Promise<RewarmDeps> {
         region: h.region,
         rootfsSha: h.rootfsSha,
         utilPct: warmUtilPct(h),
+        vmUtilPct: h.utilPct,
         overWatermark: h.overWatermark,
         stagedRootfs: h.stagedRootfs,
       })),

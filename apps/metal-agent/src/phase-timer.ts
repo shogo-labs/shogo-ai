@@ -36,6 +36,9 @@ export class PhaseTimer {
 /** Why a snapshot was not used for a resume. Bounded set: it is a metric label. */
 export type StaleReason =
   | 'rootfs'
+  /** The durable store had a snapshot but the pull returned nothing for a
+   * reason other than a rootfs-identity mismatch (see SnapshotStore.missReason). */
+  | 'store_miss'
   | 'source'
   | 'repo'
   | 'data'

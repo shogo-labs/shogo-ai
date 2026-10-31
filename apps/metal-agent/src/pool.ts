@@ -4963,7 +4963,14 @@ export class MetalWarmPool {
       timer.add('store_pull', performance.now() - pullT0 - pullWait)
       if (!pulled) {
         metrics.inc(M.resumeColdMiss)
-        if (meta) this.lastStaleReason.set(projectId, 'rootfs')
+        if (meta) {
+          // Label the miss honestly: only an identity mismatch is a rootfs
+          // problem. Everything else used to be reported as 'rootfs' too, which
+          // inflated the release cold-boot wave (2,250 US boots in 14 days) and
+          // sent rewarm tuning after the wrong cause.
+          const why = (await this.store.missReason?.(projectId, this.classRootfsIdentity(requestedClass))) ?? 'rootfs'
+          this.lastStaleReason.set(projectId, why === 'rootfs' ? 'rootfs' : 'store_miss')
+        }
         return null // absent or stale → cold boot
       }
       await assertArtifacts(pulled.files)

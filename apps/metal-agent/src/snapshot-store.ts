@@ -167,6 +167,14 @@ export interface SnapshotStore {
    * null = absent OR stale (rootfsIdentity mismatch) → caller should cold-boot.
    */
   pull(projectId: string, destDir: string, rootfsIdentity: string): Promise<PulledSnapshot | null>
+  /**
+   * WHY `pull` missed, so the caller can label a cold boot honestly instead of
+   * calling every miss a rootfs change. `rootfs` = the durable snapshot exists
+   * but was taken on a different golden image (the real staleness); `absent` =
+   * there is nothing durable for this project. Optional: a store that does not
+   * implement it is recorded as `rootfs`, the historical label.
+   */
+  missReason?(projectId: string, rootfsIdentity: string): Promise<'absent' | 'rootfs'>
   remove(projectId: string): Promise<void>
   /** Upload the shared golden base once per identity (slim/diff mode). No-op otherwise. */
   ensureBase(identity: string, baseRootfsPath: string): Promise<void>
@@ -203,6 +211,9 @@ class NoneStore implements SnapshotStore {
   }
   async pull(): Promise<PulledSnapshot | null> {
     return null
+  }
+  async missReason(): Promise<'absent'> {
+    return 'absent'
   }
   async remove(): Promise<void> {}
   async ensureBase(): Promise<void> {}
@@ -422,6 +433,12 @@ class FsStore implements SnapshotStore {
     }
   }
 
+  async missReason(projectId: string, rootfsIdentity: string): Promise<'absent' | 'rootfs'> {
+    const meta = await this.head(projectId)
+    if (!meta) return 'absent'
+    return meta.rootfsIdentity !== rootfsIdentity ? 'rootfs' : 'absent'
+  }
+
   async pull(projectId: string, destDir: string, rootfsIdentity: string): Promise<PulledSnapshot | null> {
     const meta = await this.head(projectId)
     if (!meta) return null
@@ -558,6 +575,12 @@ class S3Store implements SnapshotStore {
     } catch {
       return null
     }
+  }
+
+  async missReason(projectId: string, rootfsIdentity: string): Promise<'absent' | 'rootfs'> {
+    const meta = await this.head(projectId)
+    if (!meta) return 'absent'
+    return meta.rootfsIdentity !== rootfsIdentity ? 'rootfs' : 'absent'
   }
 
   async pull(projectId: string, destDir: string, rootfsIdentity: string): Promise<PulledSnapshot | null> {

@@ -20,7 +20,8 @@
     { "i": "time_to_ready", "x": 0, "y": 28, "w": 6, "h": 5 },
     { "i": "wake_phase_p95", "x": 6, "y": 28, "w": 6, "h": 5 },
     { "i": "repo_hydrate_mode", "x": 0, "y": 33, "w": 6, "h": 5 },
-    { "i": "repo_hydrate_deferred", "x": 6, "y": 33, "w": 6, "h": 5 }
+    { "i": "repo_hydrate_deferred", "x": 6, "y": 33, "w": 6, "h": 5 },
+    { "i": "root_disk_used",    "x": 0, "y": 38, "w": 6, "h": 5 }
   ],
   "widgets": [
     {
@@ -102,6 +103,15 @@
       "panelTypes": "graph",
       "query": { "queryType": "promql", "promql": [
         { "query": "max by (host_id) (metal_host_cache_local_count)", "legend": "{{host_id}}" }
+      ] }
+    },
+    {
+      "id": "root_disk_used",
+      "title": "ROOT disk used % (by host)",
+      "panelTypes": "graph",
+      "description": "Docker runtime images live on the ROOT filesystem, which the NVMe panel above never covers. Sustained >80% -> MetalHostRootDiskPressure; at 100% every self-update on the host fails with 'no space left on device'. A healthy host is one release image, low single digits.",
+      "query": { "queryType": "promql", "promql": [
+        { "query": "max by (host_id) (metal_host_root_disk_used_pct)", "legend": "{{host_id}}" }
       ] }
     },
     {

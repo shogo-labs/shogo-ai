@@ -567,6 +567,18 @@ export const config = {
    */
   selfUpdateSettleMs: parseInt(env('METAL_SELF_UPDATE_SETTLE_MS', '20000'), 10),
 
+  // --- Runtime-image GC (root disk) -----------------------------------------
+
+  /**
+   * Root-disk used % at which a rootfs rebuild collects old `shogo-runtime`
+   * images BEFORE its `docker pull`, and at which the hourly GC runs on its own.
+   * The dal-2 case was a host at 100% whose rebuilds could never succeed, so
+   * cleanup must not depend on a rebuild succeeding first.
+   */
+  rootDiskGcPct: parseInt(env('METAL_ROOT_DISK_GC_PCT', '70'), 10),
+  /** How often the unattended image sweep runs (it still waits for the disk % above). */
+  imageGcIntervalMs: parseInt(env('METAL_IMAGE_GC_INTERVAL_MS', String(60 * 60_000)), 10),
+
   // --- Phase 1 (Tier 2 docker project class): VM classes --------------------
   dockerClass,
 } as const

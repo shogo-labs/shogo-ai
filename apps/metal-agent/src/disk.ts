@@ -94,6 +94,31 @@ export function diskUsage(path: string): DiskUsage {
 }
 
 /**
+ * The ROOT filesystem — where `/var/lib/docker` and its runtime images live —
+ * as opposed to the NVMe cache `diskUsage(config.work)` covers. Nothing used to
+ * look at it, so dal-2 filled it with 83 stale runtime images and failed every
+ * update for ten days without paging anyone. Reported in the heartbeat and
+ * exported as `metal.host.root_disk_*`.
+ *
+ * Same statfs-truncation guard as the NVMe path (see usageFromBlocks): an
+ * implausible reading becomes "no signal", never a healthy-looking 0%.
+ */
+export interface RootDiskUsage {
+  totalBytes: number
+  freeBytes: number
+  usedPct: number
+}
+
+export function rootDiskUsage(path = '/'): RootDiskUsage {
+  const u = diskUsage(path)
+  return {
+    totalBytes: Math.round(u.totalBytes),
+    freeBytes: Math.round(u.freeBytes),
+    usedPct: Math.round(u.usedPct * 10) / 10,
+  }
+}
+
+/**
  * Actual NVMe bytes a file consumes (allocated blocks), not its logical size.
  * A reflink/sparse rootfs reports size≈8 GiB but blocks may be a few hundred
  * MiB — this returns the truthful, disk-pressure-relevant number.

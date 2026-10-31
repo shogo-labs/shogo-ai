@@ -87,7 +87,20 @@ else
 fi
 
 TAR="$WORKDIR/rootfs.tar"
-CID="$(docker create "$RUNTIME_IMAGE" /bin/true)"
+MNT="$WORKDIR/mnt"
+# The tar is the biggest single artifact here (several GB) and it is only
+# removed on the success path below. A failed export or extract used to leave it
+# behind, so a host that failed a couple of rebuilds lost its root disk to tars
+# nobody would ever look at (dal-2, 2026-10-31). Arm the trap before the export.
+STAGE=""
+cleanup() {
+  umount "$MNT" 2>/dev/null || true
+  [ -n "$STAGE" ] && rm -f "$STAGE"
+  rm -f "$TAR"
+}
+trap cleanup EXIT
+
+CID="$(docker create --label shogo-rootfs-build=1 "$RUNTIME_IMAGE" /bin/true)"
 log "exporting flattened rootfs from container $CID ..."
 docker export "$CID" -o "$TAR"
 docker rm "$CID" >/dev/null
@@ -116,11 +129,6 @@ STAGE="$OUT.new.$$"
 log "creating ${SIZE_MB} MB ext4 at $STAGE (will replace $OUT atomically) ..."
 
 MNT="$WORKDIR/mnt"
-cleanup() {
-  umount "$MNT" 2>/dev/null || true
-  rm -f "$STAGE"
-}
-trap cleanup EXIT
 
 rm -f "$STAGE"
 truncate -s "${SIZE_MB}M" "$STAGE"

@@ -30,6 +30,7 @@ import {
   getMetalPlacementRegistry,
   type HostScalars,
   type MetalPlacementRegistry,
+  type RootDiskScalars,
   type StagedRootfsReport,
 } from './metal-placement-registry'
 import { idleDirective, idlePolicyConfig, type IdleDirective, type IdleTier } from './metal-idle-policy'
@@ -153,6 +154,16 @@ const hostDiskFreeGauge = meter.createObservableGauge('metal.host.disk_free_byte
 const hostCacheCountGauge = meter.createObservableGauge('metal.host.cache_local_count', {
   description: 'Locally cached suspended-project snapshots on a metal host',
 })
+// ROOT filesystem, where the docker runtime images pile up. The NVMe gauges
+// above never described it, so a host could sit at 100% and fail every update
+// with nobody paged (dal-2, 2026-10-31). Absent for agents that do not report it.
+const hostRootDiskUsedGauge = meter.createObservableGauge('metal.host.root_disk_used_pct', {
+  description: 'ROOT filesystem used percent on a metal host (docker runtime images live here)',
+})
+const hostRootDiskFreeGauge = meter.createObservableGauge('metal.host.root_disk_free_bytes', {
+  description: 'ROOT filesystem free bytes on a metal host',
+  unit: 'By',
+})
 // Per-VM /30 consumption. A host has 16384 tap slots and nothing degrades as they
 // fill — until the last one goes and every /assign there fails, which is how the
 // July US-region outage started. The node-agent GC reclaims leaked devices, so
@@ -257,6 +268,11 @@ function ensureFleetGauges(): void {
           obs.observe(hostDiskFreeGauge, h.disk.freeBytes, attrs)
           obs.observe(hostCacheCountGauge, h.disk.localCount, attrs)
         }
+        // Only when the agent reports it: a zero would read as an empty root disk.
+        if (h.rootDisk) {
+          obs.observe(hostRootDiskUsedGauge, h.rootDisk.usedPct, attrs)
+          obs.observe(hostRootDiskFreeGauge, h.rootDisk.freeBytes, attrs)
+        }
         // Absent on agents predating tap reporting; a zero would read as a
         // pristine host rather than "no data", which is the wrong way to be
         // wrong about an address space filling up.
@@ -297,6 +313,8 @@ function ensureFleetGauges(): void {
       hostDiskUsedGauge,
       hostDiskFreeGauge,
       hostCacheCountGauge,
+      hostRootDiskUsedGauge,
+      hostRootDiskFreeGauge,
       hostTapsInUseGauge,
       hostTapUsedPctGauge,
       hostAppActiveGauge,
@@ -370,6 +388,12 @@ export interface MetalHostRegistration {
   }
   /** NVMe cache scalars (Phase 5). Absent on older agents → treated as headroom. */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
+  /**
+   * ROOT filesystem usage (docker images live there). Absent on agents predating
+   * the field — then no series is emitted, so an old host reads as "no data"
+   * rather than "empty disk".
+   */
+  rootDisk?: RootDiskScalars
   /** Compact node-agent counters (gc/resume) for fleet observability. */
   metrics?: Record<string, number>
   /**
@@ -760,6 +784,7 @@ export class MetalWarmPoolController {
       capacity: reg.capacity,
       load: reg.load,
       disk: reg.disk,
+      rootDisk: reg.rootDisk,
       stagedRootfs: reg.stagedRootfs,
       restarting: reg.restarting,
       lastSeenAt: entry.lastSeenAt,
@@ -2020,6 +2045,7 @@ export class MetalWarmPoolController {
           capacity: h.capacity,
           load: h.load,
           disk: h.disk,
+          rootDisk: h.rootDisk,
           live: h.lastSeenAt >= this.now() - HOST_TTL_MS,
           overWatermark: overWatermark(h),
           cordoned: this.cordoned.has(h.hostId),
@@ -2065,6 +2091,7 @@ export class MetalWarmPoolController {
           capacity: h.capacity,
           load: h.load,
           disk: h.disk,
+          rootDisk: h.rootDisk,
           stagedRootfs: h.stagedRootfs,
           restarting: h.restarting,
           live: true,

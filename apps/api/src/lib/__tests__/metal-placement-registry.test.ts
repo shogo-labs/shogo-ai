@@ -20,6 +20,17 @@ const host = (id: string, over: Partial<HostScalars> = {}): HostScalars => ({
 })
 
 describe('MetalPlacementRegistry (in-memory fallback)', () => {
+  // SHO-271: the ROOT filesystem (docker images) is reported alongside the NVMe
+  // `disk`, and an agent that predates the field simply omits it.
+  it('round-trips rootDisk and accepts a host that does not report it', async () => {
+    const r = mk()
+    await r.upsertHost(host('new', { rootDisk: { totalBytes: 440e9, freeBytes: 44e9, usedPct: 90 } }))
+    await r.upsertHost(host('old'))
+    const byId = new Map((await r.listHosts()).map((h) => [h.hostId, h]))
+    expect(byId.get('new')?.rootDisk).toEqual({ totalBytes: 440e9, freeBytes: 44e9, usedPct: 90 })
+    expect(byId.get('old')?.rootDisk).toBeUndefined()
+  })
+
   it('upserts and lists live hosts', async () => {
     const r = mk()
     await r.upsertHost(host('a'))

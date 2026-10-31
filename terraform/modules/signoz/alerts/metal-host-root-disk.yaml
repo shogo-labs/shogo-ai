@@ -1,0 +1,106 @@
+# SigNoz alert: metal host ROOT disk pressure
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (dotted metric names, builder queries not PromQL, v2alpha1, real
+# channel).
+#
+# Why: the ROOT filesystem is not the NVMe cache. `metal.host.disk_used_pct`
+# describes the NVMe cache only; the ROOT disk holds /var/lib/docker, where every
+# rootfs rebuild used to leave its `shogo-runtime` image (~5.7 GB each) forever.
+# Nothing watched it, so dal-2 sat at 100% from Oct 21 to Oct 31 with 83 images
+# and failed 14,007 updates in 24h ("no space left on device") — while serving a
+# ten-day-old guest image — and nobody was paged. dal-1 had 98 images, 63% full.
+#
+# The node-agent now collects old images (apps/metal-agent/src/image-gc.ts) after
+# a rebuild, before a pull on a full disk, and hourly above
+# METAL_ROOT_DISK_GC_PCT (70%). This alert is the backstop for when that is not
+# enough (a release storm, a GC that cannot reach the docker daemon, a tar left
+# by a failed export).
+
+alert: MetalHostRootDiskPressure
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    unit: percent
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.host.root_disk_used_pct
+              # Heartbeats round-robin across API replicas, so the same host is
+              # reported by several pods; max collapses them to one value.
+              spaceAggregation: max
+              timeAggregation: max
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{host_id}} root_disk_used_pct"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: warning
+        op: above
+        matchType: on_average
+        target: 80
+        channels: [platform-oncall]
+      - name: critical
+        op: above
+        matchType: on_average
+        target: 90
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 10m
+    frequency: 1m
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+notificationSettings:
+  groupBy: [host_id]
+  renotify:
+    enabled: true
+    interval: 6h
+    alertStates: [firing]
+annotations:
+  summary: "Metal host root disk above 80% — runtime images are not being collected"
+  description: |
+    A metal host's ROOT filesystem has been above 80% for 10+ minutes (90% is
+    critical). The root disk is where `/var/lib/docker` holds the
+    `shogo-runtime` images each rootfs rebuild pulls. At 100% every update on
+    the host fails with "no space left on device", so it keeps serving old guest
+    code indefinitely (dal-2, Oct 21–31 2026).
+
+    Triage:
+    1. SSH to the host and count the images:
+         docker images --format '{{.Repository}}:{{.Tag}}' | grep -c shogo-runtime
+       More than one or two means the collector is not running (or the agent is
+       older than the image-gc change).
+    2. Run the collector by hand — it keeps the current release image and the
+       docker-class variant, and removes every other shogo-runtime tag:
+         docker images --format '{{json .}}'   # inspect first
+         docker rmi <repo>:<old-tag> …          # or restart metal-agent so the
+                                                # hourly sweep runs
+         docker image prune -f                  # dangling layers
+         docker container prune -f --filter label=shogo-rootfs-build=1
+    3. Look for a leftover export tar from a failed rebuild:
+         ls -la /opt/fc-spike/build/rootfs.tar
+       (the build script's EXIT trap removes it; a multi-GB file here means an
+       old script or a killed build — delete it).
+    4. Check the agent's log for image-gc lines: `journalctl -u metal-agent |
+       grep image-gc`. They report images removed and root-disk % before/after.
+    5. If one host is hot, cordon it and free space before it starts failing
+       updates; the fleet keeps serving from the other hosts.
+
+    Runbook: docs/runbooks/metal-fleet.md

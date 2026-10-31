@@ -63,6 +63,17 @@ export const M = {
   tapCapacity: 'metal_tap_capacity',
   tapUsedPct: 'metal_tap_used_pct',
   gcStaleReclaimed: 'metal_gc_stale_reclaimed_total',
+  // Docker runtime images removed by image-gc.ts, and the root-disk space they
+  // gave back. The images live on the ROOT disk, which the NVMe watermarks
+  // above never see — dal-2 filled it to 100% with 83 stale images (2026-10-31).
+  imageGcRemoved: 'metal_image_gc_removed_total',
+  imageGcFailed: 'metal_image_gc_failed_total',
+  imageGcFreedBytes: 'metal_image_gc_freed_bytes_total',
+  // Root filesystem, sampled with the heartbeat — NOT the NVMe cache. This is
+  // the disk a host dies on when nobody is deleting images.
+  rootDiskUsedPct: 'metal_root_disk_used_pct',
+  rootDiskFreeBytes: 'metal_root_disk_free_bytes',
+  rootDiskDockerBytes: 'metal_root_disk_docker_bytes',
   // Rootfs switch-over: pre-warmed snapshots made current at activation, and
   // idle VMs on a superseded rootfs backed up and stopped instead of snapshotted.
   stagedSnapshotsPromoted: 'metal_staged_snapshots_promoted_total',

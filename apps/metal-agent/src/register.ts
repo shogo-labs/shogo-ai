@@ -19,8 +19,9 @@
 
 import { readFileSync } from 'fs'
 import { config } from './config'
+import { rootDiskUsage } from './disk'
 import { currentIdleWindow, setIdleDirective, type IdleDirective } from './idle-policy'
-import { metrics } from './metrics'
+import { metrics, M } from './metrics'
 import type { MetalWarmPool } from './pool'
 import {
   getRootfsRevision,
@@ -68,6 +69,9 @@ export function hostMemory(meminfo?: string): { totalMiB: number; availableMiB: 
 function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
   const s = pool.status()
   const cap = pool.capacity()
+  const rootDisk = rootDiskUsage('/')
+  metrics.gauge(M.rootDiskUsedPct, rootDisk.usedPct)
+  metrics.gauge(M.rootDiskFreeBytes, rootDisk.freeBytes)
   return {
     hostId: config.hostId,
     meshIp: config.meshIp,
@@ -132,6 +136,11 @@ function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
       cacheBytes: cap.cacheBytes,
       localCount: cap.localCount,
     },
+    // The ROOT filesystem — where docker images for the runtime rootfs live. The
+    // NVMe fields above never described it, so a host whose root disk filled
+    // with stale images looked healthy while it failed every update (dal-2,
+    // 2026-10-31). Old agents simply omit this.
+    rootDisk: rootDisk,
     metrics: metrics.snapshot().counters,
     // Only meaningful when the reaper runs; the control plane's hysteresis reads `directiveTier`.
     idle: config.idleSuspendMs > 0 ? currentIdleWindow(s.assigned.length) : undefined,

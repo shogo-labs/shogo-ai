@@ -14,7 +14,17 @@ import { spawnSync } from 'child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { buildRootfsImage, getRootfsRevision, readImageRevision, type BuildRootfsDeps } from './self-update'
+import { config } from './config'
+import {
+  _setImageGc,
+  buildRootfsImage,
+  getRootfsRevision,
+  imagesToKeep,
+  maybeImageGc,
+  readImageRevision,
+  stageRootfs,
+  type BuildRootfsDeps,
+} from './self-update'
 
 const SHA = '50be85788b10561c7052f2eaef7a7f88f0633a3a'
 const OTHER = '5f2728d0000000000000000000000000000000aa'
@@ -170,5 +180,97 @@ describe.skipIf(!haveE2fs)('readImageRevision on a real ext4', () => {
 
   test('getRootfsRevision is null for a missing image', () => {
     expect(getRootfsRevision(join(dir, 'nope.ext4'))).toBeNull()
+  })
+})
+
+/**
+ * Runtime-image GC around a rootfs rebuild (SHO-271). Every rebuild pulls a new
+ * `shogo-runtime` image and used to keep the old one forever, filling the ROOT
+ * disk (dal-2: 83 images, 100%, ten days of failed updates). The collector must
+ * run after the rebuild, and before the pull once the root disk is tight — never
+ * at the same time as another rebuild/self-update.
+ */
+describe('image GC around a rebuild', () => {
+  const saved = {
+    agentDir: config.agentDir,
+    baseRootfs: config.baseRootfs,
+    rootDiskGcPct: config.rootDiskGcPct,
+  }
+  let calls: { reason: string; keep: (string | null | undefined)[] }[]
+
+  const desired = {
+    version: 'v1',
+    bundleUrl: 'https://example.test/bundle.tgz',
+    runtimeImage: 'registry.test/shogo/shogo-runtime:production-multiarch-abc',
+  }
+
+  beforeEach(() => {
+    calls = []
+    _setImageGc(async (reason, keep) => {
+      calls.push({ reason, keep })
+    })
+    const agentDir = join(dir, 'agent')
+    mkdirSync(join(agentDir, 'scripts', 'metal-agent'), { recursive: true })
+    // Stands in for the real build: writes the requested image to $OUT.
+    writeFileSync(join(agentDir, 'scripts', 'metal-agent', 'build-runtime-rootfs.sh'), '#!/usr/bin/env bash\nset -e\nprintf rev > "$OUT"\n')
+    ;(config as any).agentDir = agentDir
+    ;(config as any).baseRootfs = join(dir, 'rootfs.ext4')
+  })
+
+  afterEach(() => {
+    _setImageGc(null)
+    ;(config as any).agentDir = saved.agentDir
+    ;(config as any).baseRootfs = saved.baseRootfs
+    ;(config as any).rootDiskGcPct = saved.rootDiskGcPct
+  })
+
+  test('collects BEFORE the pull when the root disk is at/over the threshold, and again after the rebuild', async () => {
+    ;(config as any).rootDiskGcPct = 0 // every real disk qualifies
+    const staged = await stageRootfs(join(dir, 'agent'), desired)
+    expect(staged.version).toBe('v1')
+    expect(calls.map((c) => c.reason)).toEqual(['pre-rebuild', 'post-rebuild'])
+    // The image about to be built from must survive the pre-pull sweep.
+    const keep = calls[0].keep
+    expect(keep).toContain(desired.runtimeImage)
+    expect(keep).toContain('registry.test/shogo/shogo-runtime:production-docker-multiarch-abc')
+  })
+
+  test('does not collect before the pull while the root disk has room', async () => {
+    ;(config as any).rootDiskGcPct = 101 // nothing can be this full
+    await stageRootfs(join(dir, 'agent'), desired)
+    expect(calls.map((c) => c.reason)).toEqual(['post-rebuild'])
+  })
+
+  test('an opportunistic sweep is skipped (never queued) while a rebuild holds the lock', async () => {
+    let nested: boolean | undefined
+    _setImageGc(async () => {
+      nested = await maybeImageGc('nested', [], { force: true })
+    })
+    const ran = await maybeImageGc('outer', [], { force: true })
+    expect(ran).toBe(true)
+    expect(nested).toBe(false)
+  })
+
+  test('the hourly sweep only runs once the root disk crosses the threshold', async () => {
+    expect(await maybeImageGc('timer', [], { usedPct: 69 })).toBe(false)
+    expect(calls).toHaveLength(0)
+    expect(await maybeImageGc('timer', [], { usedPct: 70 })).toBe(true)
+    expect(calls.map((c) => c.reason)).toEqual(['timer'])
+  })
+
+  test('a forced sweep ignores the threshold (just finished a rebuild)', async () => {
+    expect(await maybeImageGc('post-rebuild', [], { force: true, usedPct: 5 })).toBe(true)
+    expect(calls).toHaveLength(1)
+  })
+
+  test('imagesToKeep falls back to RUNTIME_IMAGE when the release pins no image', () => {
+    const prev = process.env.RUNTIME_IMAGE
+    process.env.RUNTIME_IMAGE = 'registry.test/shogo/shogo-runtime:production-multiarch-latest'
+    try {
+      expect(imagesToKeep(null)).toContain('registry.test/shogo/shogo-runtime:production-multiarch-latest')
+    } finally {
+      if (prev === undefined) delete process.env.RUNTIME_IMAGE
+      else process.env.RUNTIME_IMAGE = prev
+    }
   })
 })

@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { downloadRanged, type RangeFetcher } from './snapshot-store'
+import { createSnapshotStore, downloadRanged, type RangeFetcher } from './snapshot-store'
+import { mkdirSync, writeFileSync } from 'fs'
 
 let dir: string
 beforeEach(() => {
@@ -130,5 +131,42 @@ describe('downloadRanged', () => {
     await downloadRanged(dest, src.length, fetcherFor(src, calls), { partBytes: 0, concurrency: 2 })
     expect(new Uint8Array(readFileSync(dest))).toEqual(src)
     expect(calls.length).toBe(3) // one part per byte
+  })
+})
+
+
+/**
+ * Why a durable pull missed (SHO-271). Every miss used to be labelled
+ * `stale_reason=rootfs`, which inflated the measured post-release cold-boot wave
+ * (2,250 US boots in 14 days) and sent rewarm tuning after the wrong cause.
+ */
+describe('missReason', () => {
+  const store = () =>
+    createSnapshotStore({
+      snapStore: 'fs',
+      snapStoreDir: dir,
+      snapStorePrefix: 'snap',
+      snapSlim: false,
+      snapBasePrefix: 'bases/',
+    } as any)
+
+  const writeMeta = (projectId: string, meta: Record<string, unknown>) => {
+    const d = join(dir, 'snap', projectId)
+    mkdirSync(d, { recursive: true })
+    writeFileSync(join(d, 'meta.json'), JSON.stringify({ projectId, ...meta }))
+  }
+
+  test('absent when the project has no durable snapshot at all', async () => {
+    expect(await store().missReason!('p1', 'sz1-mt2')).toBe('absent')
+  })
+
+  test('rootfs when the snapshot was taken on a different golden image', async () => {
+    writeMeta('p1', { rootfsIdentity: 'sz1-mt1' })
+    expect(await store().missReason!('p1', 'sz1-mt2')).toBe('rootfs')
+  })
+
+  test('absent (not rootfs) when the identity matches but the pull still missed', async () => {
+    writeMeta('p1', { rootfsIdentity: 'sz1-mt2' })
+    expect(await store().missReason!('p1', 'sz1-mt2')).toBe('absent')
   })
 })

@@ -33,6 +33,15 @@ import { getSharedRedis } from './tunnel-redis'
 
 export type PlacementTier = 'local' | 's3' | 'cold'
 
+/** Root-filesystem usage as a node-agent reports it (see metal-agent disk.ts). */
+export interface RootDiskScalars {
+  totalBytes: number
+  freeBytes: number
+  usedPct: number
+  /** Bytes under /var/lib/docker, when the agent measured it. */
+  dockerBytes?: number
+}
+
 export interface HostScalars {
   hostId: string
   meshIp: string
@@ -57,6 +66,12 @@ export interface HostScalars {
   }
   /** NVMe cache scalars from the heartbeat (Phase 5). */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
+  /**
+   * The ROOT filesystem (where docker runtime images live), NOT the NVMe cache
+   * above. Absent on agents that predate it — a missing value must read as "no
+   * data", never as a healthy 0%.
+   */
+  rootDisk?: RootDiskScalars
   /** A rebuilt rootfs built beside the live one, waiting for activation. Drives the switch-over pre-warm. */
   stagedRootfs?: StagedRootfsReport
   /** The host's last heartbeat came from an agent about to restart (control port briefly down). */

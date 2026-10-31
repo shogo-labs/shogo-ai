@@ -36,7 +36,7 @@ import { ForeignMemberError, MetalWarmPool, StagedRootfsUnavailableError, type S
 import { PortForward } from './port-forward'
 import { announceRestarting, reportPlacement, startRegistration } from './register'
 import { RequestDrain } from './request-drain'
-import { getRootfsRevision, getRootfsSha, getStagedRootfs } from './self-update'
+import { getRootfsRevision, getRootfsSha, getStagedRootfs, imagesToKeep, maybeImageGc } from './self-update'
 import { SerialWatcher } from './serial-watcher'
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
@@ -598,6 +598,21 @@ if (config.projectDataExportIntervalMs > 0) {
   )
 }
 
+// Runtime-image GC on a timer. The rootfs rebuild removes its own images on
+// success and before a pull when the root disk is tight (self-update.ts), but a
+// host that hasn't rebuilt in weeks still carries every image it ever pulled.
+// Only runs above METAL_ROOT_DISK_GC_PCT, and skips (never waits) while a
+// rebuild or self-update holds the single-flight flag.
+let imageGc: GuardedInterval | null = null
+if (config.imageGcIntervalMs > 0) {
+  console.log(
+    `[metal-agent] runtime-image GC on: interval=${config.imageGcIntervalMs}ms threshold=${config.rootDiskGcPct}%`,
+  )
+  imageGc = guardedInterval('image gc', config.imageGcIntervalMs, () =>
+    maybeImageGc('timer', imagesToKeep(null)),
+  )
+}
+
 // Graceful shutdown for rolling deploys. systemd is configured `KillMode=process`
 // so it signals ONLY this agent; the firecracker children keep running. We must
 // therefore NOT tear down the live data path: leave assigned VMs and their DNAT
@@ -616,6 +631,7 @@ process.on('SIGTERM', async () => {
   if (gc) clearInterval(gc)
   if (pubDataExporter) clearInterval(pubDataExporter)
   projectDataExporter?.stop()
+  imageGc?.stop()
   await announceRestarting(pool).catch(() => {})
   const inFlight = drain.active
   const drained = await drain.drain(DRAIN_TIMEOUT_MS)
