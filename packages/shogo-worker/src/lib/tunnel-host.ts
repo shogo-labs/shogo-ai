@@ -61,6 +61,8 @@ export interface TunnelHostOptions {
   cloudUrl: string
   name?: string
   kind?: string
+  /** Stable per-machine id; the cloud keys a machine on this, not on hostname. */
+  deviceId?: string
   wsUrlOverride?: string
   /** Everything the tunnel asks about the local machine. */
   resolver: RuntimeResolver
@@ -236,6 +238,7 @@ export function startTunnelInWorker(options: TunnelHostOptions): TunnelHost {
       cloudUrl: options.cloudUrl,
       name: options.name,
       kind: options.kind,
+      deviceId: options.deviceId,
       wsUrlOverride: options.wsUrlOverride,
     },
   })

@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto'
 import type { TrackedStreamResult } from '../routes/project-chat'
 import { TURN_REATTACH_AFTER_MS } from '../services/chat-turn-state.service'
+import { machineSessionExclusion } from '../lib/machine-workspace'
 
 const TICK_MS = 30_000
 const LEASE_KEY = 'chat-turn-reattach:leader'
@@ -31,6 +32,25 @@ const MAX_CLAIMS_PER_TICK = 20
 
 const holder = randomUUID()
 const reattaching = new Set<string>()
+
+/**
+ * Ids of the workspaces whose rows live on a paired desktop.
+ *
+ * Read through the injected client (not the module singleton) so a sweep in a
+ * test never reaches a live database, and a client that cannot answer simply
+ * yields no exclusion — the same behaviour as a workspace with no machine.
+ */
+async function machineWorkspaceIdsFrom(db: any): Promise<string[]> {
+  try {
+    const rows: Array<{ id: string }> = await db.workspace.findMany({
+      where: { machineInstanceId: { not: null } },
+      select: { id: true },
+    })
+    return rows.map((row) => row.id)
+  } catch {
+    return []
+  }
+}
 
 type StaleTurn = {
   id: string
@@ -146,12 +166,18 @@ export async function reattachStaleTurns(depsArg?: ReattachDeps): Promise<string
 
   const now = deps.now()
   const home = deps.homeSessionWhere()
+  // A mirrored session belongs to a desktop: its turn is running (or died)
+  // there, and the cloud has no runtime buffer for it. Claiming it wrote an
+  // "I was interrupted" note into the copy and queued a resume that then ran on
+  // the cloud (SHO-276).
+  const machine = machineSessionExclusion(await machineWorkspaceIdsFrom(deps.db))
   const candidates: StaleTurn[] = await deps.db.chatSession.findMany({
     where: {
       activeTurnId: { not: null },
       activeTurnHeartbeatAt: { lt: new Date(now - TURN_REATTACH_AFTER_MS), gt: new Date(now - MAX_HEARTBEAT_AGE_MS) },
       activeTurnStartedAt: { gt: new Date(now - MAX_TURN_AGE_MS) },
       ...(home ?? {}),
+      ...machine,
     },
     select: {
       id: true,

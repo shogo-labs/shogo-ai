@@ -278,6 +278,7 @@ class ThreadedTunnel implements TunnelHandle {
         cloudUrl: this.options.cloudUrl,
         name: this.options.name,
         kind: this.options.kind,
+        deviceId: this.options.deviceId,
         wsUrlOverride: this.options.wsUrlOverride,
         resolver: this.options.resolver,
         onAuthRevoked: this.options.onAuthRevoked,

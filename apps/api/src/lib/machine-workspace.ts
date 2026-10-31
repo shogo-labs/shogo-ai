@@ -143,6 +143,47 @@ export async function notMachineWorkspaceWhere(): Promise<Record<string, unknown
   return ids.length ? { workspaceId: { notIn: ids } } : {}
 }
 
+/**
+ * The same exclusion for a `ChatSession`, which reaches its workspace two ways:
+ * directly (`workspaceId`, workspace chats) or through its project
+ * (`contextId`, project chats — those have `workspaceId: null`).
+ *
+ * A job that reads a session row has to skip both, or a mirrored session on the
+ * cloud looks like a live cloud turn (SHO-276).
+ */
+export function machineSessionExclusion(workspaceIds: string[]): Record<string, unknown> {
+  if (!workspaceIds.length) return {}
+  return {
+    AND: [
+      { OR: [{ workspaceId: null }, { workspaceId: { notIn: workspaceIds } }] },
+      { OR: [{ contextType: { not: 'project' } }, { project: { workspaceId: { notIn: workspaceIds } } }] },
+    ],
+  }
+}
+
+export async function notMachineWorkspaceSessionWhere(): Promise<Record<string, unknown>> {
+  return machineSessionExclusion(await machineWorkspaceIds())
+}
+
+/** Whether this session's agent runs on a paired desktop rather than the cloud. */
+export async function isMachineWorkspaceSession(
+  session: { workspaceId?: string | null; contextType?: string | null; contextId?: string | null } | null,
+): Promise<boolean> {
+  if (!session) return false
+  const ids = await machineWorkspaceIds()
+  if (!ids.length) return false
+  const own = session.workspaceId ?? null
+  if (own && ids.includes(own)) return true
+  if (session.contextType === 'project' && session.contextId) {
+    const project = await prisma.project.findUnique({
+      where: { id: session.contextId },
+      select: { workspaceId: true },
+    })
+    return Boolean(project?.workspaceId && ids.includes(project.workspaceId))
+  }
+  return false
+}
+
 export function machineWorkspaceWriteError(machineInstanceId: string | null) {
   return {
     error: {

@@ -358,6 +358,24 @@ export async function applyBatch(
         )
       }
 
+      // "Does the cloud already have this id?" — one `findMany` per model, not
+      // one `findUnique` per row (SHO-276). A 4 MB ChatMessage page is hundreds
+      // of rows, and a round trip each is what made applying a page take longer
+      // than uploading it.
+      const unownedIds = entry.rows
+        .map((raw) => String(raw.id))
+        .filter((id) => !ownerByKey.has(`${entry.model}\u0000${id}`))
+      const presentInCloud = unownedIds.length
+        ? new Set(
+            (
+              (await delegate.findMany({
+                where: { id: { in: unownedIds } },
+                select: { id: true },
+              })) as Array<{ id: string }>
+            ).map((row) => row.id),
+          )
+        : new Set<string>()
+
       for (const raw of entry.rows) {
         if (orphans.has(String(raw.id))) continue
         const row = normaliseRow(entry.model, raw, modelMeta)
@@ -391,11 +409,7 @@ export async function applyBatch(
         if (!owner) {
           // The id could still be a cloud row of the same model that the mirror
           // table does not track (a row created before this machine existed).
-          const existing = await delegate.findUnique({
-            where: { id: recordId },
-            select: { id: true },
-          })
-          if (existing) {
+          if (presentInCloud.has(recordId)) {
             throw new OwnershipError(`${entry.model}/${recordId} already exists in the cloud`)
           }
         }
@@ -438,6 +452,15 @@ export async function applyBatch(
     if (snapshotComplete) {
       const removed = await dropOtherEpochs(tx, instanceId, epoch)
       deleted += removed
+      // The desktop is the only writer of a machine workspace (SHO-276). A
+      // completed snapshot is the moment to prove it: anything in the copy that
+      // this machine never sent — cloud-written interrupted notes, queued
+      // resumes, a `#general` the cloud seeded — is not part of the copy.
+      const unowned = await dropUnownedRows(tx, instanceId)
+      if (unowned) {
+        deleted += unowned
+        console.log(`[MachineSync] ${instanceId}: removed ${unowned} cloud-only row(s) from the copy`)
+      }
     }
 
     // `lastIngestAt` is the cloud's record of an *accepted* copy, and the desktop
@@ -556,6 +579,84 @@ async function dropOtherEpochs(tx: any, instanceId: string, epoch: string): Prom
     removed += result.count ?? 0
   }
   await tx.machineMirrorRow.deleteMany({ where: { instanceId, epoch: { not: epoch } } })
+  return removed
+}
+
+/**
+ * Delete rows of the copy that this machine never sent.
+ *
+ * Only meaningful right after a completed snapshot, when `machine_mirror_rows`
+ * says exactly which rows the desktop has. Children go first, and the
+ * session/message tables cascade from their parents (`ChatSession`,
+ * `Conversation`), so removing the parent removes the notes written under it.
+ *
+ * Best-effort per model: a model whose children live outside this set would
+ * fail its foreign key, and one unremovable table must not fail a snapshot that
+ * is otherwise complete.
+ */
+async function dropUnownedRows(tx: any, instanceId: string): Promise<number> {
+  const meta = loadMetadata()
+  const tagged: Array<{ id: string }> = await tx.workspace.findMany({
+    where: { machineInstanceId: instanceId },
+    select: { id: true },
+  })
+  const workspaceIds = tagged.map((row) => row.id)
+  if (!workspaceIds.length) return 0
+
+  const owned = await tx.machineMirrorRow.findMany({
+    where: { instanceId },
+    select: { model: true, recordId: true },
+  })
+  const ownedByModel = new Map<string, Set<string>>()
+  for (const row of owned) {
+    const set = ownedByModel.get(row.model) ?? new Set<string>()
+    set.add(row.recordId)
+    ownedByModel.set(row.model, set)
+  }
+
+  const models = MIRROR_MODELS.filter((model) => meta.get(model)?.hasWorkspaceId).sort(
+    (a, b) => (meta.get(b)?.order ?? 0) - (meta.get(a)?.order ?? 0),
+  )
+
+  let removed = 0
+  for (const model of models) {
+    const delegate = tx[delegateName(model)]
+    if (!delegate) continue
+    const ids = [...(ownedByModel.get(model) ?? new Set<string>())]
+    try {
+      const result = await delegate.deleteMany({
+        where: {
+          workspaceId: { in: workspaceIds },
+          ...(ids.length ? { id: { notIn: ids } } : {}),
+        },
+      })
+      removed += result.count ?? 0
+    } catch (err) {
+      console.warn(
+        `[MachineSync] ${instanceId}: could not prune unowned ${model} rows (${
+          (err as Error)?.message ?? err
+        })`,
+      )
+    }
+  }
+
+  // Project chats carry no `workspaceId`: they belong to a project. Anything the
+  // cloud wrote into one of those chats is still a cloud write.
+  const sessions = [...(ownedByModel.get('ChatSession') ?? new Set<string>())]
+  try {
+    const result = await tx.chatSession.deleteMany({
+      where: {
+        workspaceId: null,
+        project: { workspaceId: { in: workspaceIds } },
+        ...(sessions.length ? { id: { notIn: sessions } } : {}),
+      },
+    })
+    removed += result.count ?? 0
+  } catch (err) {
+    console.warn(
+      `[MachineSync] ${instanceId}: could not prune unowned project chats (${(err as Error)?.message ?? err})`,
+    )
+  }
   return removed
 }
 
