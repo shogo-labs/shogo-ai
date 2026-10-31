@@ -103,7 +103,7 @@
     "test:e2e:hosted": "npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:critical": "E2E_SUITE=critical npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:hosted:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
-    "test:load:local": "cd apps/api && bun --no-env-file test src/__tests__/local-load/many-agents.load.test.ts && bun --no-env-file test src/__tests__/local-load/snapshot-write-budget.test.ts",
+    "test:load:local": "cd apps/api && SHOGO_LOAD_TESTS=1 bun --no-env-file test src/__tests__/local-load/many-agents.load.test.ts && bun --no-env-file test src/__tests__/local-load/snapshot-write-budget.test.ts",
     "test:e2e:load": "cd apps/desktop && bun run test:e2e:load",
     "test:e2e:local": "npx playwright test --config e2e/local/playwright.config.ts",
     "test:e2e:local:ui": "npx playwright test --config e2e/local/playwright.config.ts --ui",

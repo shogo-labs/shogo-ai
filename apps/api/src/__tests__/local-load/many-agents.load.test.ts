@@ -384,7 +384,19 @@ async function runLevel(n: number): Promise<LevelResult> {
 }
 
 // ─── The test ────────────────────────────────────────────────────────────
-describe('many agents streaming on one computer', () => {
+/**
+ * Opt-in (`SHOGO_LOAD_TESTS=1`, which `bun run test:load:local` sets).
+ *
+ * The budgets below are wall-clock budgets for the machine Russell reported
+ * from — 18 cores, sitting at load average 7–10. On a 2-vCPU CI runner the
+ * *identical* code measures 180–285 ms of event-loop p99 at N=8–16 simply
+ * because sixteen concurrent turns saturate two cores; the numbers measure the
+ * runner, not the relay, so gating CI on them would be a false alarm either
+ * way (fail on a green branch, pass on a bad one). The deterministic half of
+ * this card — writes per turn and bytes per turn — runs everywhere in
+ * `snapshot-write-budget.test.ts`.
+ */
+describe.skipIf(process.env.SHOGO_LOAD_TESTS !== '1')('many agents streaming on one computer', () => {
   let results: LevelResult[] = []
 
   afterAll(async () => {

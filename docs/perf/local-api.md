@@ -61,6 +61,14 @@ Scale knobs: `SHOGO_LOAD_LEVELS`, `SHOGO_LOAD_TOOL_COUNT`, `SHOGO_LOAD_TURN_MS`,
 `SHOGO_LOAD_PROJECTS`, `SHOGO_LOAD_SESSIONS`, `SHOGO_LOAD_HEAVY_SESSIONS`,
 `SHOGO_LOAD_HEAVY_MESSAGE_BYTES`.
 
+The sweep is gated on `SHOGO_LOAD_TESTS=1` (the `test:load:local` script sets
+it), so `bun test` in `apps/api` skips it. Its budgets are wall-clock budgets
+for a real machine: on a 2-vCPU CI runner sixteen concurrent turns saturate the
+CPU and the same code reports 180–285 ms of event-loop p99 regardless of what
+the relay does. What runs everywhere is `snapshot-write-budget.test.ts` — the
+deterministic half (writes and bytes per turn, and the persisted turn matching
+the streamed one byte for byte).
+
 Budgets (the test fails above them, at N=16):
 
 | Metric | Budget |
