@@ -158,6 +158,8 @@ mock.module('../../../lib/team-chat-connection', () => ({
   sendTyping: (_ws: string, conversationId: string) => sentTyping.push(conversationId),
 }))
 const muteCalls: Array<{ id: string; projectId: string | null; muted: boolean }> = []
+// The server reports huddles as on only when it has LiveKit configured.
+let huddlesOn = false
 mock.module('../../../lib/team-chat-api', () => ({
   absoluteApiUrl: (url: string) => url,
   newClientMsgId: () => 'client-msg-1',
@@ -165,6 +167,7 @@ mock.module('../../../lib/team-chat-api', () => ({
   isAgentDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'agent'),
   isSelfDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'user' && p.self === true),
   teamChatApi: () => ({
+    huddles: async () => ({ enabled: huddlesOn, huddles: [] }),
     pin: async (id: string, pinned: boolean) => { pins.push({ id, pinned }) },
     createReminder: async (_ws: string, input: { messageId: string; remindAt: string }) => {
       reminders.push({ messageId: input.messageId, remindAt: input.remindAt })
@@ -372,6 +375,7 @@ const { PhoneLayoutOverrideProvider } = await import('../../../lib/native-phone-
 const { MessageRow } = await import('../MessageRow')
 const { MessageList } = await import('../MessageList')
 const { ConversationHeader, splitHeaderActions } = await import('../ConversationHeader')
+import type { ChannelTabItem } from '../ChannelTabs'
 const { TimelinePane } = await import('../TimelinePane')
 
 const mentionables = {
@@ -1657,7 +1661,8 @@ describe('ConversationHeader channel editing', () => {
         onBack={onBack}
       />,
     )
-    expect(screen.getByText('2 members')).toBeTruthy()
+    // The pill and the panel's own heading both carry the count.
+    expect(screen.getAllByText('2 members').length).toBeGreaterThan(0)
     fireEvent.click(screen.getByLabelText('Back'))
     expect(onBack).toHaveBeenCalled()
     for (const label of ['Edit channel', 'Notification settings', 'Star', 'Pinned messages', 'Members', 'Leave channel', 'Archive']) {
@@ -1670,6 +1675,56 @@ describe('ConversationHeader channel editing', () => {
       fireEvent.click(screen.getByLabelText('Save channel'))
     })
     expect(updates).toEqual([{ id: 'c9', patch: { topic: 'Ship it' } }])
+  })
+
+  const members = [{ id: 'm1', type: 'user' as const, userId: 'u-ana', name: 'Ana' }, { id: 'm2', type: 'user' as const, userId: 'u-me', name: 'Me' }]
+  const items = (selected: 'messages' | 'board', onBoard = () => {}): ChannelTabItem[] => [
+    { key: 'messages', kind: 'messages', label: 'Messages', active: selected === 'messages', onPress: () => {} },
+    { key: 'b1', kind: 'board', label: 'Support Tickets', active: selected === 'board', onPress: onBoard, testID: 'channel-tab-board-support' },
+    { key: 'doc', kind: 'doc', label: 'Add doc', active: false, onPress: () => {}, placeholder: true },
+  ]
+  const header = (tabs: ChannelTabItem[]) => (
+    <ConversationHeader
+      conversation={channel({ members })}
+      mentionables={null}
+      me="u-me"
+      onChanged={() => {}}
+      onLeft={() => {}}
+      floating
+      onBack={() => {}}
+      tabsMenu={{ items: tabs }}
+    />
+  )
+
+  test('floating phone header: the pill counts the tabs and the panel lists them', () => {
+    const onBoard = mock(() => {})
+    render(header(items('messages', onBoard)))
+    // Add doc is a prompt, not a tab, so it is not counted.
+    expect(screen.getAllByText('2 members • 2 tabs').length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByTestId('channel-tab-board-support'))
+    expect(onBoard).toHaveBeenCalled()
+    expect(screen.getByLabelText('Add doc')).toBeTruthy()
+  })
+
+  test('floating phone header keeps the huddle button beside Catch me up', async () => {
+    const { _resetHuddlesForTests } = await import('../../../hooks/useHuddles')
+    huddlesOn = true
+    _resetHuddlesForTests()
+    try {
+      render(header(items('messages')))
+      expect(await screen.findByLabelText('Start a huddle')).toBeTruthy()
+      expect(screen.getByLabelText('Catch me up')).toBeTruthy()
+      expect(screen.getByLabelText('More actions')).toBeTruthy()
+    } finally {
+      huddlesOn = false
+      _resetHuddlesForTests()
+    }
+  })
+
+  test('floating phone header: the pill names the open board instead of the counts', () => {
+    render(header(items('board')))
+    expect(screen.getAllByText('Support Tickets').length).toBeGreaterThan(0)
+    expect(screen.queryByText('2 members • 2 tabs')).toBeNull()
   })
 })
 
