@@ -26,6 +26,7 @@
 
 import { createHmac } from 'crypto'
 import { safeTokenEqual } from './crypto-util'
+import { assertMintableSigningSecret } from './runtime-token'
 
 function getSigningSecret(): string {
   const secret =
@@ -67,7 +68,15 @@ export function deriveWorkspaceRuntimeToken(workspaceId: string): string {
   if (!workspaceId) {
     throw new Error('[WorkspaceRuntimeToken] deriveWorkspaceRuntimeToken: workspaceId is required')
   }
-  return `${WORKSPACE_RUNTIME_TOKEN_V1_PREFIX}${workspaceId}_${deriveWorkspaceRuntimeTokenHmac(workspaceId)}`
+  const secret = getSigningSecret()
+  // Same trap as the project token: a workspace runtime's only credential to
+  // the API must never be signed with the localhost-only default from inside a
+  // cluster, or the API answers `workspace_token_invalid reason=bad_hmac`
+  // forever (SHO-265).
+  assertMintableSigningSecret(secret)
+  return `${WORKSPACE_RUNTIME_TOKEN_V1_PREFIX}${workspaceId}_${createHmac('sha256', secret)
+    .update(`workspace-runtime-auth:${workspaceId}`)
+    .digest('hex')}`
 }
 
 export type ParsedWorkspaceRuntimeToken = { format: 'v1'; workspaceId: string; hmac: string }

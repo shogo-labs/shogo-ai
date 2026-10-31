@@ -59,3 +59,35 @@ describe('workspace-runtime-token', () => {
     expect(() => deriveWorkspaceRuntimeToken('')).toThrow(/workspaceId is required/)
   })
 })
+
+describe('workspace tokens and the dev-only signing fallback', () => {
+  it('refuses to mint in-cluster with only the localhost-only default', () => {
+    const saved = {
+      aiProxy: process.env.AI_PROXY_SECRET,
+      better: process.env.BETTER_AUTH_SECRET,
+      preview: process.env.PREVIEW_TOKEN_SECRET,
+      nodeEnv: process.env.NODE_ENV,
+      k8s: process.env.KUBERNETES_SERVICE_HOST,
+    }
+    delete process.env.AI_PROXY_SECRET
+    delete process.env.BETTER_AUTH_SECRET
+    delete process.env.PREVIEW_TOKEN_SECRET
+    process.env.NODE_ENV = 'staging'
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    try {
+      // A workspace runtime's RUNTIME_AUTH_SECRET is a `wrt_v1_` token, so the
+      // same fallback would mint one the API refuses as bad_hmac (SHO-265).
+      expect(() => deriveWorkspaceRuntimeToken('ws-heal')).toThrow(/localhost-only signing secret/)
+    } finally {
+      const put = (k: string, v: string | undefined) => {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+      put('AI_PROXY_SECRET', saved.aiProxy)
+      put('BETTER_AUTH_SECRET', saved.better)
+      put('PREVIEW_TOKEN_SECRET', saved.preview)
+      put('NODE_ENV', saved.nodeEnv)
+      put('KUBERNETES_SERVICE_HOST', saved.k8s)
+    }
+  })
+})

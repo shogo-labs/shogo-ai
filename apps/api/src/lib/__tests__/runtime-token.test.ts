@@ -182,3 +182,87 @@ describe('verifyRuntimeToken', () => {
     if (!result.ok) expect(result.reason).toBe('bad_hmac')
   })
 })
+
+describe('the dev-only fallback never signs a token that leaves the process', () => {
+  // Every case here runs with the file's own signing secret removed, so
+  // `getSigningSecret()` falls through to its localhost-only default.
+  const saved = {
+    aiProxy: process.env.AI_PROXY_SECRET,
+    better: process.env.BETTER_AUTH_SECRET,
+    preview: process.env.PREVIEW_TOKEN_SECRET,
+    nodeEnv: process.env.NODE_ENV,
+    k8s: process.env.KUBERNETES_SERVICE_HOST,
+  }
+  const restore = () => {
+    const put = (key: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    put('AI_PROXY_SECRET', saved.aiProxy)
+    put('BETTER_AUTH_SECRET', saved.better)
+    put('PREVIEW_TOKEN_SECRET', saved.preview)
+    put('NODE_ENV', saved.nodeEnv)
+    put('KUBERNETES_SERVICE_HOST', saved.k8s)
+  }
+
+  test('refuses to mint in-cluster when the fallback is all it has', () => {
+    // The warm-pool-rescue Job: NODE_ENV=staging, no signing secret in its env,
+    // running in-cluster. Before SHO-265 this minted a token for every pod it
+    // healed that the API rejected as bad_hmac.
+    delete process.env.AI_PROXY_SECRET
+    delete process.env.BETTER_AUTH_SECRET
+    delete process.env.PREVIEW_TOKEN_SECRET
+    process.env.NODE_ENV = 'staging'
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    try {
+      expect(() => deriveRuntimeToken('proj-heal')).toThrow(/localhost-only signing secret inside a cluster/)
+    } finally {
+      restore()
+    }
+  })
+
+  test('mints in-cluster with the secret the API uses, and it verifies', () => {
+    delete process.env.AI_PROXY_SECRET
+    process.env.BETTER_AUTH_SECRET = 'better-auth-secret-from-api-secrets'
+    process.env.NODE_ENV = 'staging'
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    try {
+      const token = deriveRuntimeToken('proj-heal')
+      expect(verifyRuntimeToken(token)).toMatchObject({ ok: true, projectId: 'proj-heal', format: 'v1' })
+    } finally {
+      delete process.env.BETTER_AUTH_SECRET
+      restore()
+    }
+  })
+
+  test('local dev (not in a cluster) still mints with the fallback', () => {
+    delete process.env.AI_PROXY_SECRET
+    delete process.env.BETTER_AUTH_SECRET
+    delete process.env.PREVIEW_TOKEN_SECRET
+    delete process.env.KUBERNETES_SERVICE_HOST
+    process.env.NODE_ENV = 'development'
+    try {
+      const token = deriveRuntimeToken('proj-local')
+      expect(verifyRuntimeToken(token)).toMatchObject({ ok: true, projectId: 'proj-local' })
+    } finally {
+      restore()
+    }
+  })
+
+  test('verification still degrades to bad_hmac instead of throwing in that job', () => {
+    // The verifier must never turn a bad token into a 500: the reason is what
+    // makes the log line actionable, and an in-cluster caller can legitimately
+    // hold tokens it did not sign.
+    delete process.env.AI_PROXY_SECRET
+    delete process.env.BETTER_AUTH_SECRET
+    delete process.env.PREVIEW_TOKEN_SECRET
+    process.env.NODE_ENV = 'staging'
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    try {
+      const foreign = `${RUNTIME_TOKEN_V1_PREFIX}proj-heal_${'a'.repeat(64)}`
+      expect(verifyRuntimeToken(foreign)).toEqual({ ok: false, reason: 'bad_hmac' })
+    } finally {
+      restore()
+    }
+  })
+})

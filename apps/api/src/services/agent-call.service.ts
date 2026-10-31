@@ -450,6 +450,15 @@ export const CALLEE_TURN_LOST = 'callee_turn_lost'
 export const CALLEE_TURN_NEVER_STARTED = 'callee_turn_never_started'
 
 /**
+ * Error code for a call that never reached the callee at all — the probe was
+ * refused or unanswered for the whole presence budget, so the runtime was
+ * booting, restarting or gone. Distinct from `callee_turn_never_started`, which
+ * blames the runtime for dropping a call it was up for: this one says "we could
+ * not reach it", and nothing was asked of the callee (SHO-265).
+ */
+export const CALLEE_UNREACHABLE = 'callee_unreachable'
+
+/**
  * How long the callee may show no sign of this call before the follower
  * declares it lost. A call that is queued behind the chat's own turn keeps
  * pushing this window out (the runtime reports it as `queued`), so the budget
@@ -673,11 +682,13 @@ async function waitForCalleeTurn(
  * What the callee said about our call, decided by the call's name when the
  * runtime knows it and by the turn's age only for a runtime that does not.
  */
+export type CalleeTurnLostReason = 'stopped' | 'unknown' | 'unreachable'
+
 export type CalleeTurn =
   | { kind: 'started'; turnId?: string }
   | { kind: 'queued' }
   | { kind: 'waiting' }
-  | { kind: 'lost'; reason?: 'stopped' | 'unknown' | 'unreachable' }
+  | { kind: 'lost'; reason?: CalleeTurnLostReason }
 
 type CalleeTurnProbe = {
   status?: string
@@ -730,6 +741,7 @@ async function followCallTurn(
   const stopCallHeartbeat = link ? startAgentCallHeartbeat(link.projectId, link.runId) : () => {}
   let result: TrackedStreamResult | null = null
   let neverStarted = false
+  let lostReason: CalleeTurnLostReason | undefined
   try {
     const turn = await waitForCalleeTurn(projectId, chatSessionId, callId, startedAt, deps)
     if (turn.kind === 'started') {
@@ -739,6 +751,7 @@ async function followCallTurn(
       // said the call is gone: the queued item vanished or the chat was
       // stopped. That is a different failure from a lost reply.
       neverStarted = true
+      lostReason = turn.kind === 'lost' ? turn.reason : undefined
       console.warn(
         `[AgentCall] call ${link?.runId ?? chatSessionId} never started: ` +
           (turn.kind === 'lost' ? `lost (${turn.reason ?? 'unknown'})` : 'no turn and no queued call'),
@@ -747,7 +760,7 @@ async function followCallTurn(
   } finally {
     stopCallHeartbeat()
     stopHeartbeat()
-    if (link) await settleAgentCallFromTurn(link, chatSessionId, result, { neverStarted }).catch(() => {})
+    if (link) await settleAgentCallFromTurn(link, chatSessionId, result, { neverStarted, lostReason }).catch(() => {})
     if (turnId) await deps.markTurnEnded(chatSessionId, turnId).catch(() => {})
   }
 }
@@ -797,7 +810,7 @@ export async function settleAgentCallFromTurn(
   link: AgentCallSessionLink,
   chatSessionId: string,
   result: TrackedStreamResult | null,
-  opts: { neverStarted?: boolean } = {},
+  opts: { neverStarted?: boolean; lostReason?: CalleeTurnLostReason } = {},
 ): Promise<void> {
   const base = { runId: link.runId, sessionId: chatSessionId, chatSessionId, startedAt: link.startedAt, updatedAt: Date.now() }
   // The tracker owns the assistant row when it persisted one.
@@ -817,14 +830,22 @@ export async function settleAgentCallFromTurn(
     if (!replyRowWritten) await ensureCallReplyRow(link.projectId, chatSessionId, result.text || null, 'agent_turn_failed')
     return
   }
-  const lost = opts.neverStarted
-    ? {
-        code: CALLEE_TURN_NEVER_STARTED,
-        message:
-          'The target agent never started this run — the runtime lost the call before it began (it restarted, or the ' +
-          'queued call was dropped). Nothing ran; retry it.',
-      }
-    : { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' }
+  const lost =
+    opts.neverStarted && opts.lostReason === 'unreachable'
+      ? {
+          code: CALLEE_UNREACHABLE,
+          message:
+            "Could not reach the target project's runtime — it did not answer while the call was being placed, so " +
+            'nothing can be said about whether it ran. Retry it once the project is up.',
+        }
+      : opts.neverStarted
+        ? {
+            code: CALLEE_TURN_NEVER_STARTED,
+            message:
+              'The target agent never started this run — the runtime lost the call before it began (it restarted, or the ' +
+              'queued call was dropped). Nothing ran; retry it.',
+          }
+        : { code: CALLEE_TURN_LOST, message: 'The target agent turn ended before its reply could be read.' }
   await putAgentCall(link.projectId, {
     ...base,
     status: 'failed',

@@ -78,6 +78,19 @@ spec:
                   key: DATABASE_URL
             # Required by build-project-env (mints fresh AI_PROXY_TOKEN /
             # RUNTIME_AUTH_SECRET for the --heal path).
+            #
+            # BETTER_AUTH_SECRET is the one that matters: `getSigningSecret()`
+            # tries AI_PROXY_SECRET first and falls through to it, and prod's
+            # `api-secrets` has no AI_PROXY_SECRET key at all. Without it, a
+            # --heal run signed every healed pod's RUNTIME_AUTH_SECRET with the
+            # localhost-only default and the API rejected the pods as
+            # `bad_hmac` (SHO-265) — which is why `deriveRuntimeToken` now
+            # refuses to mint with that default inside a cluster.
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: BETTER_AUTH_SECRET
             - name: AI_PROXY_SECRET
               valueFrom:
                 secretKeyRef:

@@ -596,7 +596,11 @@ describe('callProjectAgentAsChat — chat persistence', () => {
       })
       await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-dark', wait: false, track: true })
       const rec = await settled('run-dark')
-      expect(rec).toMatchObject({ status: 'failed', error: { code: svc.CALLEE_TURN_NEVER_STARTED } })
+      // The caller must be told it could not reach the callee, not that a live
+      // runtime dropped its call — that is what this call's rejection means.
+      expect(rec).toMatchObject({ status: 'failed', error: { code: svc.CALLEE_UNREACHABLE } })
+      expect(rec!.error!.message).toContain("Could not reach the target project's runtime")
+      expect(rec!.error!.message).not.toContain('never started')
       expect(trackCalls).toHaveLength(0)
     })
 
