@@ -1443,7 +1443,31 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
           toolExecution: 'parallel',
           convertToLlm: defaultConvertToLlm,
           transformContext: wrappedTransformContext as any,
-          streamFn: effectiveStreamFn,
+          streamFn: (m, ctx, opts) => {
+            const run: any = effectiveStreamFn
+            const inner: any = run(m, ctx, opts)
+            // The finalizer is offered no tools, so a provider that still
+            // answers with a tool call would make pi-agent-core loop looking
+            // for a tool that was never offered. Answer with the class-derived
+            // summary instead of the tool call: the pass ends, the turn keeps a
+            // real closing line, and nothing is left spinning.
+            const push = inner.push.bind(inner)
+            inner.push = (ev: any) => {
+              const content = ev?.message?.content
+              if (ev?.type === 'done' && Array.isArray(content) && content.some((c: any) => c?.type === 'toolCall')) {
+                console.warn('[AgentLoop] Finalizer answered with a tool call despite no tools — using the failure summary instead')
+                const text = buildTurnFailureMessage(failureClass, toolCalls.length)
+                onTextDelta?.(text)
+                return push({
+                  ...ev,
+                  reason: 'stop',
+                  message: { ...ev.message, content: [{ type: 'text', text }], stopReason: 'stop' },
+                })
+              }
+              return push(ev)
+            }
+            return inner
+          },
           getApiKey: (prov) => {
             if (apiKey && prov === provider) return apiKey
             return resolveApiKey(prov)
@@ -1460,7 +1484,12 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
         await finalizerAgent.prompt(finalizationPrompt)
         const finalizerMessages = finalizerAgent.state.messages.slice(allMessages.length)
-        const assistantMessages = finalizerMessages.filter((m): m is AssistantMessage => m.role === 'assistant')
+        // A pass we aborted above (or that errored) produced no answer — never
+        // let its placeholder message become the turn's final text.
+        const assistantMessages = finalizerMessages.filter(
+          (m): m is AssistantMessage =>
+            m.role === 'assistant' && m.stopReason !== 'aborted' && m.stopReason !== 'error',
+        )
         const finalizerText = extractFinalText(assistantMessages)
         if (finalizerText.trim()) {
           newMessages = [...newMessages, ...assistantMessages]

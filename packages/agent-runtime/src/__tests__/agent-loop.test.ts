@@ -132,8 +132,11 @@ describe('runAgentLoop', () => {
     })
 
     expect(result.error).toBeUndefined()
-    expect(result.text).toContain('I completed')
-    expect(result.text).toContain('tool call')
+    // The ceiling now ends with the class-derived summary instead of a raw
+    // "aborted" line (SHO-270). The model here only ever returns tool calls,
+    // so the tool-free finalizer is stopped and this is the copy that shows.
+    expect(result.text).toContain('I completed 1 step')
+    expect(result.text.toLowerCase()).not.toContain('aborted')
     expect(result.toolCalls).toHaveLength(1)
     expect(tracker.calls).toHaveLength(1)
     expect(streamedText.join('')).toContain('I completed')
