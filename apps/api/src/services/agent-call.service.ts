@@ -462,6 +462,19 @@ export const CALLEE_TURN_START_TIMEOUT_MS = 90_000
 /** The runtime's clock and ours can disagree by this much. */
 const TURN_CLOCK_SKEW_MS = 30_000
 
+/**
+ * How long a call stays with a callee that is not answering at all before the
+ * follower gives up on it.
+ *
+ * Separate from {@link CALLEE_TURN_START_TIMEOUT_MS} on purpose: a callee that
+ * refuses the probe because it is booting (a cold microVM, a Knative pod the
+ * activator is holding) has not had a chance to start the call yet, and
+ * charging that boot time to the start budget settles accepted calls as
+ * `callee_turn_never_started` while the runtime was still coming up — 24 of
+ * them in one prod week (SHO-265). This budget covers only the wait.
+ */
+export const CALLEE_UNREACHABLE_TIMEOUT_MS = 10 * 60_000
+
 type CallTurnDeps = {
   track: typeof import('../routes/project-chat').trackUsageFromStream
   markTurnStarted: (chatSessionId: string) => Promise<string>
@@ -471,6 +484,8 @@ type CallTurnDeps = {
   turnPollIntervalMs: number
   /** Give up on a callee turn that never starts after this long. */
   turnStartTimeoutMs: number
+  /** Give up on a callee that never answers the probe at all after this long. */
+  calleeUnreachableTimeoutMs: number
 }
 
 let callTurnDepsOverride: Partial<CallTurnDeps> | null = null
@@ -491,6 +506,7 @@ async function callTurnDeps(): Promise<CallTurnDeps> {
     startTurnHeartbeat: o.startTurnHeartbeat ?? ((id, turnId) => turnState!.startTurnHeartbeat(id, turnId)),
     turnPollIntervalMs: o.turnPollIntervalMs ?? 1_000,
     turnStartTimeoutMs: o.turnStartTimeoutMs ?? CALLEE_TURN_START_TIMEOUT_MS,
+    calleeUnreachableTimeoutMs: o.calleeUnreachableTimeoutMs ?? CALLEE_UNREACHABLE_TIMEOUT_MS,
   }
 }
 
@@ -612,16 +628,41 @@ async function waitForCalleeTurn(
   deps: CallTurnDeps,
 ): Promise<CalleeTurn> {
   let deadline = Date.now() + deps.turnStartTimeoutMs
+  // When the callee last answered nothing at all (probe threw, or answered
+  // non-2xx while it boots). A callee that is not up yet cannot have started
+  // the call, so that time is spent booting, not waiting — it must not eat the
+  // start budget, and the moment the callee answers again the call gets a full
+  // budget to become a turn (SHO-265).
+  let unreachableSince: number | null = null
   for (;;) {
     const path = `/agent/chat/${encodeURIComponent(chatSessionId)}/turn?callId=${encodeURIComponent(callId)}`
     const res = await fetchCalleeRuntime(projectId, path).catch(() => null)
-    if (res?.ok) {
-      const probe = (await res.json().catch(() => null)) as CalleeTurnProbe | null
-      const answer = readCalleeTurn(probe, startedAt)
-      if (answer.kind === 'queued') deadline = Date.now() + deps.turnStartTimeoutMs
-      else if (answer.kind !== 'waiting') return answer
+    // 5xx (or no response at all) means the callee is not up yet: a cold
+    // microVM, a pod the activator is holding, a runtime mid-restart. A 4xx is
+    // still an answer from a live runtime (it doesn't know this chat), so it
+    // counts against the start budget like any other answer.
+    const notReady = !res || res.status >= 500
+    if (!notReady) {
+      if (unreachableSince !== null) {
+        deadline = Date.now() + deps.turnStartTimeoutMs
+        unreachableSince = null
+      }
+      if (res!.ok) {
+        const probe = (await res!.json().catch(() => null)) as CalleeTurnProbe | null
+        const answer = readCalleeTurn(probe, startedAt)
+        if (answer.kind === 'queued') deadline = Date.now() + deps.turnStartTimeoutMs
+        else if (answer.kind !== 'waiting') return answer
+      } else {
+        await res!.body?.cancel().catch(() => {})
+      }
     } else {
       await res?.body?.cancel().catch(() => {})
+      const now = Date.now()
+      unreachableSince ??= now
+      if (now - unreachableSince >= deps.calleeUnreachableTimeoutMs) {
+        return { kind: 'lost', reason: 'unreachable' }
+      }
+      deadline = Math.max(deadline, now + deps.turnStartTimeoutMs)
     }
     if (Date.now() >= deadline) return { kind: 'lost' }
     await new Promise((resolve) => setTimeout(resolve, deps.turnPollIntervalMs))
@@ -636,7 +677,7 @@ export type CalleeTurn =
   | { kind: 'started'; turnId?: string }
   | { kind: 'queued' }
   | { kind: 'waiting' }
-  | { kind: 'lost'; reason?: 'stopped' | 'unknown' }
+  | { kind: 'lost'; reason?: 'stopped' | 'unknown' | 'unreachable' }
 
 type CalleeTurnProbe = {
   status?: string

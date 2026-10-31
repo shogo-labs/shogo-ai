@@ -657,6 +657,68 @@ describe('POST /projects/:projectId/agent-call', () => {
     expect(res.status).toBe(401)
   })
 
+  /** Capture the reject lines a request emits. */
+  async function rejects(run: () => Promise<unknown>): Promise<string[]> {
+    const lines: string[] = []
+    const original = console.warn
+    console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(' ')) }
+    try {
+      await run()
+    } finally {
+      console.warn = original
+    }
+    return lines.filter((l) => l.startsWith('[InternalAuth] rejected:'))
+  }
+
+  test('a workspace token that fails its HMAC is reported as a workspace token, not a malformed project one', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    // The project verifier answers `malformed` for a `wrt_v1_…` token (wrong
+    // format); the workspace verifier is the one that actually judged it.
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: false, reason: 'bad_hmac' }
+    const lines = await rejects(() =>
+      app.request('/projects/proj-2/agent-call', {
+        method: 'POST',
+        headers: { 'x-runtime-token': 'wrt_v1_ws-1_' + 'a'.repeat(64), ...JSON_H },
+        body: JSON.stringify({ message: 'hi' }),
+      }).then((res) => expect(res.status).toBe(401)),
+    )
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('workspace_token_invalid reason=bad_hmac')
+    expect(lines[0]).toContain('route=POST /projects/proj-2/agent-call')
+  })
+
+  test('a project token whose HMAC fails names the route it was used on', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    store.runtimeVerify = { ok: false, reason: 'bad_hmac' }
+    store.workspaceVerify = { ok: false, reason: 'malformed' }
+    const lines = await rejects(() =>
+      app.request('/projects/proj-2/agent-call', {
+        method: 'POST',
+        headers: { 'x-runtime-token': 'rt_v1_proj-2_' + 'a'.repeat(64), ...JSON_H },
+        body: JSON.stringify({ message: 'hi' }),
+      }).then((res) => expect(res.status).toBe(401)),
+    )
+    // The token failed before the project could be resolved, so the route (which
+    // carries the project) is what attributes the reject to a call.
+    expect(lines[0]).toContain('runtime_token_invalid reason=bad_hmac')
+    expect(lines[0]).toContain('route=POST /projects/proj-2/agent-call')
+  })
+
+  test('a workspace runtime key used as a projectId is named as such, not as a token failure', async () => {
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    const lines = await rejects(() =>
+      app.request('/projects/ws:ws-1/agent-call', {
+        method: 'POST',
+        headers: { 'x-runtime-token': 'wrt_v1_ws-1_' + 'a'.repeat(64), ...JSON_H },
+        body: JSON.stringify({ message: 'hi' }),
+      }).then((res) => expect(res.status).toBe(401)),
+    )
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('project_ref_is_a_workspace_key')
+    expect(lines[0]).toContain('projectId=ws:ws-1')
+  })
+
   test('400 when message is missing', async () => {
     store.projects.set('proj-2', { workspaceId: 'ws-1' })
     const res = await app.request('/projects/proj-2/agent-call', {

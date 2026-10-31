@@ -543,6 +543,63 @@ describe('callProjectAgentAsChat — chat persistence', () => {
       expect(svc.CALLEE_TURN_START_TIMEOUT_MS).toBe(90_000)
     })
 
+    it('does not spend the turn-start budget while the callee is still booting', async () => {
+      // A cold callee refuses the probe until it is up, then starts the queued
+      // call. The outage lasts far longer than the start budget; before SHO-265
+      // that settled the call as callee_turn_never_started while the runtime
+      // was still coming up.
+      const BOOT_POLLS = 40
+      let polls = 0
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url)
+        if (u.endsWith('/agent/pipeline/call')) return new Response(JSON.stringify({ status: 'queued' }), { status: 202 })
+        if (u.includes('/turn')) {
+          polls++
+          if (polls <= BOOT_POLLS) return new Response(JSON.stringify({ error: { code: 'runtime_not_ready' } }), { status: 503 })
+          return new Response(JSON.stringify({ turnId: 't1', status: 'active', callId: 'call-boot', createdAt: Date.now() }), { status: 200 })
+        }
+        if (u.includes('/stream')) return new Response('data: {"type":"text-delta"}\n\n', { status: 200 })
+        return new Response('not found', { status: 404 })
+      }) as any
+      svc.setCallTurnDeps({
+        track: (async (...args: any[]) => {
+          trackCalls.push(args)
+          return trackResult()
+        }) as any,
+        markTurnStarted: async () => 't',
+        markTurnEnded: async () => {},
+        startTurnHeartbeat: () => () => {},
+        turnPollIntervalMs: 1,
+        turnStartTimeoutMs: 10,
+        calleeUnreachableTimeoutMs: 5_000,
+      })
+      await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-boot', wait: false, track: true })
+      const rec = await settled('run-boot')
+      expect(rec).toMatchObject({ status: 'completed' })
+      expect(polls).toBeGreaterThan(BOOT_POLLS)
+      expect(trackCalls).toHaveLength(1)
+    })
+
+    it('gives up on a callee that never answers the probe at all', async () => {
+      globalThis.fetch = (async (url: any) => {
+        if (String(url).endsWith('/agent/pipeline/call')) return new Response(JSON.stringify({ status: 'queued' }), { status: 202 })
+        return new Response(null, { status: 503 })
+      }) as any
+      svc.setCallTurnDeps({
+        track: (async (...args: any[]) => { trackCalls.push(args) }) as any,
+        markTurnStarted: async () => 't',
+        markTurnEnded: async () => {},
+        startTurnHeartbeat: () => () => {},
+        turnPollIntervalMs: 1,
+        turnStartTimeoutMs: 50,
+        calleeUnreachableTimeoutMs: 20,
+      })
+      await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-dark', wait: false, track: true })
+      const rec = await settled('run-dark')
+      expect(rec).toMatchObject({ status: 'failed', error: { code: svc.CALLEE_TURN_NEVER_STARTED } })
+      expect(trackCalls).toHaveLength(0)
+    })
+
     it('records a failed callee turn as failed', async () => {
       fakeCallee()
       trackResult = async () => ({ outcome: 'complete', status: 'failed', text: '', assistantMessageId: null })

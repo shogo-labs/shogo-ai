@@ -11,8 +11,46 @@
 
 import type { Context } from 'hono'
 
-export function logAuthReject(reason: string, projectId?: string): void {
-  console.warn(`[InternalAuth] rejected: ${reason}${projectId ? ` projectId=${projectId}` : ''}`)
+/**
+ * The reject line operators grep for. `route` is the one field that makes a
+ * reject attributable: without it a `bad_hmac` burst says which project was
+ * addressed but not which call the runtime was making, so nobody can tell a
+ * `project_call` from a token-validation round-trip (SHO-265). Nothing secret
+ * is ever logged — the token itself never appears here.
+ */
+export function logAuthReject(reason: string, projectId?: string, route?: string): void {
+  console.warn(
+    `[InternalAuth] rejected: ${reason}` +
+      `${projectId ? ` projectId=${projectId}` : ''}` +
+      `${route ? ` route=${route}` : ''}`,
+  )
+}
+
+/** `GET /api/internal/projects/x/agent-call` for the reject line. */
+export function requestRoute(c: Context): string {
+  return `${c.req.method} ${c.req.path}`
+}
+
+/** Runtime keys a merged-root runtime uses for itself; never a project id. */
+const WORKSPACE_RUNTIME_KEY_PREFIX = 'ws:'
+
+/**
+ * Turn the project reference on a project-scoped internal route into a real
+ * project id.
+ *
+ * A workspace runtime names itself `ws:<workspaceId>`, and that key reaches
+ * `/api/internal/projects/:projectId/...` from callers that hold it and pass it
+ * straight through. The lookup then resolves no project and prod logged the
+ * result as `workspace_token_mismatch … projectWorkspace=none projectId=ws:…`,
+ * a 401 that reads as a token failure and hides the real mistake (SHO-265).
+ *
+ * Returns null for a workspace key, which cannot name a single project, so the
+ * caller can say so instead of blaming the token.
+ */
+export function projectIdFromRef(ref: string): string | null {
+  const key = ref.trim()
+  if (key.startsWith(WORKSPACE_RUNTIME_KEY_PREFIX)) return null
+  return key || null
 }
 
 /**
@@ -49,9 +87,10 @@ export async function authenticateRuntimeToken(
   projectId?: string,
   hadBearer = false,
 ): Promise<InternalIdentity | null> {
+  const route = requestRoute(c)
   const runtimeToken = c.req.header('x-runtime-token')
   if (!runtimeToken) {
-    logAuthReject(hadBearer ? 'invalid_sa_token_and_no_runtime_token' : 'missing_credentials', projectId)
+    logAuthReject(hadBearer ? 'invalid_sa_token_and_no_runtime_token' : 'missing_credentials', projectId, route)
     return null
   }
 
@@ -61,7 +100,7 @@ export async function authenticateRuntimeToken(
     if (!projectId || verified.projectId === projectId) {
       return { kind: 'project', projectId: verified.projectId }
     }
-    logAuthReject(`runtime_token_project_mismatch tokenProject=${verified.projectId}`, projectId)
+    logAuthReject(`runtime_token_project_mismatch tokenProject=${verified.projectId}`, projectId, route)
     return null
   }
 
@@ -77,11 +116,21 @@ export async function authenticateRuntimeToken(
     logAuthReject(
       `workspace_token_mismatch tokenWorkspace=${wsVerified.workspaceId} projectWorkspace=${workspaceId ?? 'none'}`,
       projectId,
+      route,
     )
     return null
   }
 
-  logAuthReject(`runtime_token_invalid reason=${verified.reason}`, projectId)
+  // Name the token kind that actually failed. `verifyRuntimeToken` answers
+  // `malformed` for a `wrt_v1_…` token (it isn't its format), so a workspace
+  // token with a bad HMAC would otherwise be logged as a parse error on the
+  // project path and send whoever reads the log after the wrong problem; the
+  // workspace verifier is the one that judged it (SHO-265).
+  if (wsVerified.reason === 'bad_hmac') {
+    logAuthReject('workspace_token_invalid reason=bad_hmac', projectId, route)
+    return null
+  }
+  logAuthReject(`runtime_token_invalid reason=${verified.reason}`, projectId, route)
   return null
 }
 

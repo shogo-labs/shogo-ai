@@ -58,6 +58,8 @@ import { agentSocialRoutes } from './social'
 import {
   createInternalAuthorizers,
   logAuthReject,
+  projectIdFromRef,
+  requestRoute,
   type InternalAuthenticate,
   type InternalIdentity,
 } from './internal-runtime-auth'
@@ -2263,6 +2265,14 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     c: Context,
     projectId: string,
   ): Promise<{ identity: InternalIdentity; workspaceId: string } | null> {
+    // A workspace runtime name (`ws:<workspaceId>`) is a runtime key, not a
+    // project. Naming it as such stops a caller's wrong id from reading as a
+    // token failure, which is what prod logged and what senders retried
+    // forever (SHO-265).
+    if (!projectIdFromRef(projectId)) {
+      logAuthReject('project_ref_is_a_workspace_key', projectId, requestRoute(c))
+      return null
+    }
     const identity = await authenticate(c)
     if (!identity) return null
     const project = (await prisma.project.findUnique({
@@ -2273,7 +2283,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (identity.kind === 'sa') return { identity, workspaceId: project.workspaceId }
     const scope = await identityWorkspaceId(identity)
     if (scope !== project.workspaceId) {
-      logAuthReject(`lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'}`, projectId)
+      logAuthReject(
+        `lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'}`,
+        projectId,
+        requestRoute(c),
+      )
       return null
     }
     return { identity, workspaceId: project.workspaceId }
@@ -2294,7 +2308,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (identity.kind === 'sa') return { identity, workspaceId }
     const scope = await identityWorkspaceId(identity)
     if (scope !== workspaceId) {
-      logAuthReject(`lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'} requestedWorkspace=${workspaceId}`)
+      logAuthReject(
+        `lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'} requestedWorkspace=${workspaceId}`,
+        undefined,
+        requestRoute(c),
+      )
       return null
     }
     return { identity, workspaceId }
@@ -2385,7 +2403,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (identity.kind !== 'sa') {
       const scope = await identityWorkspaceId(identity)
       if (scope !== workspaceId) {
-        logAuthReject(`lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'} path=${workspaceId}`)
+        logAuthReject(
+          `lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'} path=${workspaceId}`,
+          undefined,
+          requestRoute(c),
+        )
         return c.json({ error: 'Unauthorized' }, 401)
       }
     }
