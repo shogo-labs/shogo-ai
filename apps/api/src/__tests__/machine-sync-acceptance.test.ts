@@ -221,11 +221,23 @@ beforeAll(async () => {
 
 describeIfPg('AC1 — the first snapshot finishes', () => {
   test('a 20 MB chat history arrives in pages no proxy would cut, and completes', async () => {
-    const { conversation } = await seedDesktop(`ac1-${suffix}`)
+    const { ws, session, conversation } = await seedDesktop(`ac1-${suffix}`)
     await ownEverything()
 
+    // What the cloud wrote into the copy that the desktop never sent — the 37
+    // "I was interrupted" notes in prod. It must not survive the completed
+    // snapshot, while the owner's own membership row must (RBAC lane, round 3).
+    const frozen = await freezeDesktop()
+    const stray = await db.chatMessage.create({
+      data: {
+        sessionId: session.id,
+        role: 'assistant',
+        content: 'I was interrupted while working before the turn finished.',
+      },
+    })
+
     const seen: Seen = { sizes: [], batches: [], statuses: [] }
-    expect(await drain(pusherFor(cloud(seen), await freezeDesktop()))).toBe(true)
+    expect(await drain(pusherFor(cloud(seen), frozen))).toBe(true)
 
     // Every request the cloud saw is under the byte cap, including the
     // completion one — the 21 MB page that Envoy cut cannot be built.
@@ -248,6 +260,13 @@ describeIfPg('AC1 — the first snapshot finishes', () => {
     expect(mirrored?.name).toBe(`#general-ac1-${suffix}`)
     expect(await db.chatMessage.count({ where: { content: { startsWith: `ac1-${suffix}:0:` } } })).toBe(1)
     expect(seen.statuses.every((status) => status === 200)).toBe(true)
+
+    // The prune did its job on the cloud-only row…
+    expect(await db.chatMessage.count({ where: { id: stray.id } })).toBe(0)
+    // …and kept the membership row that lets the owner read their own copy.
+    expect(
+      await db.member.count({ where: { workspaceId: ws.id, userId: OWNER, projectId: null } }),
+    ).toBe(1)
   })
 })
 
