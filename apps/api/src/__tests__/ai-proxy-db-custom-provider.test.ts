@@ -37,6 +37,13 @@ const OPENROUTER_KEY = 'sk-or-staging-routing-key-abcdef'
 const DEEPSEEK_UUID = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'
 const HOSHI_OPENROUTER_UUID = 'cccccccc-dddd-eeee-ffff-000000000001'
 const OPENROUTER_NATIVE_UUID = 'cccccccc-dddd-eeee-ffff-000000000002'
+// The default `OPENROUTER_CATEGORIES` the proxy falls back to.
+const DEFAULT_OPENROUTER_CATEGORIES = ['cloud-agent', 'native-app-builder', 'personal-agent']
+
+/** Split a sent `X-OpenRouter-Categories` value into its category list. */
+function sentCategories(headers: Record<string, string>): string[] {
+  return (headers['X-OpenRouter-Categories'] ?? '').split(',').filter(Boolean)
+}
 
 // Opaque UUIDs are how DB models are really addressed in production (the slug
 // lives in `apiModel`/`aliases`, not the id). The prior native-routing
@@ -395,7 +402,12 @@ afterAll(() => { globalThis.fetch = originalFetch })
 // ─── Imports AFTER mocks ──────────────────────────────────────────────────
 const { MODEL_CATALOG } = await import('@shogo/model-catalog')
 const { Hono } = await import('hono')
-const { aiProxyRoutes, __resetReasoningNoneCacheForTests } = await import('../routes/ai-proxy')
+const {
+  aiProxyRoutes,
+  __resetReasoningNoneCacheForTests,
+  openRouterCategoriesForRequest,
+  OPENROUTER_MAX_CATEGORIES_PER_REQUEST,
+} = await import('../routes/ai-proxy')
 const { generateProxyToken } = await import('../lib/ai-proxy-token')
 const { primeModelRegistry, invalidateModelRegistry } = await import('../services/model-registry.service')
 
@@ -592,7 +604,10 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(headers['HTTP-Referer']).toBe('https://shogo.ai')
     expect(headers['X-Title']).toBe('Shogo')
     expect(headers['X-OpenRouter-Title']).toBe('Shogo')
-    expect(headers['X-OpenRouter-Categories']).toBe('cloud-agent,native-app-builder,personal-agent')
+    const categories = sentCategories(headers)
+    expect(categories.length).toBeGreaterThan(0)
+    expect(categories.length).toBeLessThanOrEqual(OPENROUTER_MAX_CATEGORIES_PER_REQUEST)
+    expect(DEFAULT_OPENROUTER_CATEGORIES).toEqual(expect.arrayContaining(categories))
     // Shogo's app page must stay publicly listed.
     expect(headers['X-OpenRouter-App-Visibility']).toBeUndefined()
     const body = lastForwardedBody()
@@ -669,11 +684,31 @@ describe('ai-proxy DB-defined model routing', () => {
       expect(headers['HTTP-Referer']).toBe('https://shogo.ai')
       expect(headers['X-Title']).toBe('Shogo')
       expect(headers['X-OpenRouter-Title']).toBe('Shogo')
-      expect(headers['X-OpenRouter-Categories']).toBe('cloud-agent,native-app-builder,personal-agent')
+      const categories = sentCategories(headers)
+    expect(categories.length).toBeGreaterThan(0)
+    expect(categories.length).toBeLessThanOrEqual(OPENROUTER_MAX_CATEGORIES_PER_REQUEST)
+    expect(DEFAULT_OPENROUTER_CATEGORIES).toEqual(expect.arrayContaining(categories))
     } finally {
       if (saved === undefined) delete process.env.OPENROUTER_API_KEY
       else process.env.OPENROUTER_API_KEY = saved
     }
+  })
+
+  test('rotates the category window so every default category is sent within a few requests', async () => {
+    expect(DEFAULT_OPENROUTER_CATEGORIES.length).toBeGreaterThan(OPENROUTER_MAX_CATEGORIES_PER_REQUEST)
+    const sent = new Set<string>()
+    // Two windows cover a 3-item list; ask for a couple of extra requests so a
+    // change to the starting slot cannot make this flaky.
+    for (let i = 0; i < DEFAULT_OPENROUTER_CATEGORIES.length * 2; i++) {
+      const res = await postChatBody(buildApp(), hoshiOpenRouterRequest())
+      expect(res.status).toBe(200)
+      const headers = lastFetchInit?.headers as Record<string, string>
+      const categories = sentCategories(headers)
+      expect(categories.length).toBeLessThanOrEqual(OPENROUTER_MAX_CATEGORIES_PER_REQUEST)
+      expect(categories.length).toBeGreaterThan(0)
+      for (const category of categories) sent.add(category)
+    }
+    expect([...sent].sort()).toEqual([...DEFAULT_OPENROUTER_CATEGORIES].sort())
   })
 
   test('honors disabled thinking for an OpenRouter-hosted DeepSeek model', async () => {
@@ -1248,5 +1283,47 @@ describe('ai-proxy Responses API — cloud-proxy forwarding', () => {
     expect(auth).toBe('Bearer shogo_sk_cloud_test')
     // Body passes through unresolved (the cloud owns model resolution).
     expect(lastForwardedModel()).toBe(GPT_UUID)
+  })
+})
+
+// ─── OpenRouter category window (SHO-281) ─────────────────────────────────
+// OpenRouter takes at most 2 categories per request; the helper hands out a
+// rotating window so a longer configured list still gets fully recorded.
+describe('openRouterCategoriesForRequest', () => {
+  test('sends a list of at most two categories unchanged', () => {
+    expect(openRouterCategoriesForRequest('cloud-agent,personal-agent', 0)).toBe('cloud-agent,personal-agent')
+    expect(openRouterCategoriesForRequest('personal-agent', 3)).toBe('personal-agent')
+  })
+
+  test('rotates a three-item list as a, b → c, a', () => {
+    const windowAt = (slot: number) => openRouterCategoriesForRequest('a,b,c', slot)
+    expect(windowAt(0)).toBe('a,b')
+    expect(windowAt(1)).toBe('c,a')
+    expect(windowAt(2)).toBe('a,b')
+    expect(windowAt(3)).toBe('c,a')
+  })
+
+  test('covers every item of an odd five-item list', () => {
+    const sent = new Set<string>()
+    for (let slot = 0; slot < 3; slot++) {
+      const categories = openRouterCategoriesForRequest('a,b,c,d,e', slot).split(',')
+      expect(categories.length).toBe(OPENROUTER_MAX_CATEGORIES_PER_REQUEST)
+      for (const category of categories) sent.add(category)
+    }
+    expect([...sent].sort()).toEqual(['a', 'b', 'c', 'd', 'e'])
+  })
+
+  test('trims, lowercases and drops empty or duplicate entries', () => {
+    expect(openRouterCategoriesForRequest(' Personal-Agent , ,PERSONAL-AGENT, general-chat ', 0))
+      .toBe('personal-agent,general-chat')
+  })
+
+  test('returns an empty string for an empty or whitespace-only list', () => {
+    expect(openRouterCategoriesForRequest('', 0)).toBe('')
+    expect(openRouterCategoriesForRequest(' , ,', 2)).toBe('')
+  })
+
+  test('handles a negative slot without going out of range', () => {
+    expect(openRouterCategoriesForRequest('a,b,c', -1)).toBe('c,a')
   })
 })
