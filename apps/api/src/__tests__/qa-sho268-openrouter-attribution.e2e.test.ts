@@ -29,7 +29,14 @@ const OPENROUTER_KEY = 'sk-or-staging-attribution-e2e'
 const MIMO_KEY = 'sk-mimo-staging-attribution-e2e'
 const OPENROUTER_NATIVE_UUID = 'd2680000-0000-4000-8000-000000000001'
 
-const EXPECTED_CATEGORIES = 'cloud-agent,native-app-builder,personal-agent'
+const DEFAULT_CATEGORIES = ['cloud-agent', 'native-app-builder', 'personal-agent']
+// OpenRouter accepts at most 2 categories per request (up to 10 merged across
+// requests), so the proxy sends a rotating window — see SHO-281.
+const MAX_CATEGORIES_PER_REQUEST = 2
+
+function sentCategories(headers: Headers): string[] {
+  return (headers.get('x-openrouter-categories') ?? '').split(',').filter(Boolean)
+}
 
 // ─── Local stand-in for OpenRouter ────────────────────────────────────────
 let upstream: ReturnType<typeof Bun.serve>
@@ -235,7 +242,10 @@ describe('SHO-268 OpenRouter app attribution over the wire', () => {
     expect(headers.get('http-referer')).toBe('https://shogo.ai')
     expect(headers.get('x-title')).toBe('Shogo')
     expect(headers.get('x-openrouter-title')).toBe('Shogo')
-    expect(headers.get('x-openrouter-categories')).toBe(EXPECTED_CATEGORIES)
+    const categories = sentCategories(headers)
+    expect(categories.length).toBeGreaterThan(0)
+    expect(categories.length).toBeLessThanOrEqual(MAX_CATEGORIES_PER_REQUEST)
+    expect(DEFAULT_CATEGORIES).toEqual(expect.arrayContaining(categories))
     expect(headers.get('x-openrouter-app-visibility')).toBeNull()
   })
 
@@ -246,7 +256,23 @@ describe('SHO-268 OpenRouter app attribution over the wire', () => {
     const headers = lastReceived().headers
     expect(headers.get('http-referer')).toBe('https://shogo.ai')
     expect(headers.get('x-openrouter-title')).toBe('Shogo')
-    expect(headers.get('x-openrouter-categories')).toBe(EXPECTED_CATEGORIES)
+    const categories = sentCategories(headers)
+    expect(categories.length).toBeGreaterThan(0)
+    expect(categories.length).toBeLessThanOrEqual(MAX_CATEGORIES_PER_REQUEST)
+    expect(DEFAULT_CATEGORIES).toEqual(expect.arrayContaining(categories))
+  })
+
+  test('no request ever carries more than 2 categories, and they rotate to cover all three', async () => {
+    const sent = new Set<string>()
+    for (let i = 0; i < DEFAULT_CATEGORIES.length * 2; i++) {
+      const res = await postChat('hoshi-e2e')
+      expect(res.status).toBe(200)
+      const categories = sentCategories(lastReceived().headers)
+      expect(categories.length).toBeGreaterThan(0)
+      expect(categories.length).toBeLessThanOrEqual(MAX_CATEGORIES_PER_REQUEST)
+      for (const category of categories) sent.add(category)
+    }
+    expect([...sent].sort()).toEqual([...DEFAULT_CATEGORIES].sort())
   })
 
   test('a non-OpenRouter provider receives none of them', async () => {
@@ -284,6 +310,24 @@ describe('SHO-268 OpenRouter app attribution over the wire', () => {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value
       }
+    }
+  })
+
+  test('omits the header entirely when the configured list parses to nothing', async () => {
+    const saved = process.env.OPENROUTER_CATEGORIES
+    // Whitespace-only and empty entries all resolve to no categories.
+    process.env.OPENROUTER_CATEGORIES = ' , ,'
+    try {
+      const res = await postChat('hoshi-e2e')
+      expect(res.status).toBe(200)
+      const headers = lastReceived().headers
+      expect(headers.get('x-openrouter-categories')).toBeNull()
+      // The rest of the attribution set is unconditional.
+      expect(headers.get('x-openrouter-title')).toBe('Shogo')
+      expect(headers.get('http-referer')).toBe('https://shogo.ai')
+    } finally {
+      if (saved === undefined) delete process.env.OPENROUTER_CATEGORIES
+      else process.env.OPENROUTER_CATEGORIES = saved
     }
   })
 })
