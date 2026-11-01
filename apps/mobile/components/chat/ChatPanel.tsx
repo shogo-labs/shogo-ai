@@ -6982,6 +6982,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const hasOfflineQueued = messageQueue.some((m) => m.offline)
   useEffect(() => {
     if (!hasOfflineQueued || !currentSessionId) return
+    // A hidden tab stops watching for connectivity (SHO-277). The effect
+    // re-runs when the tab is shown again, which drains the queue and restarts
+    // the poll.
+    if (!isActive) return
 
     let cancelled = false
     const checkUpstreamReachable = async (): Promise<boolean> => {
@@ -7069,6 +7073,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     currentSessionId,
     processMessageQueue,
     expoFetch,
+    isActive,
   ])
 
   // Stall watchdog — break a wedged `submitted`/`streaming` status so the
@@ -7156,7 +7161,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [])
 
   useEffect(() => {
-    if (!isStreaming) return
+    if (!isStreaming || !isActive) return
     const intervalMs = Math.min(
       DEFAULT_SUBMITTED_STALL_MS,
       DEFAULT_STREAMING_STALL_MS,
@@ -7220,7 +7225,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     }, intervalMs)
     return () => clearInterval(timer)
-  }, [isStreaming, status, stop, projectId, currentSessionId])
+  }, [isStreaming, status, stop, projectId, currentSessionId, isActive])
 
   // Hydrate the queue for the active session from the per-session cache when
   // the session changes. Previously this effect *cleared* the queue on every

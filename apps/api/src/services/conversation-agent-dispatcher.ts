@@ -60,6 +60,7 @@ import { resolveFriendlyMentions } from './conversation-directory'
 import { expirePendingApprovals, postApprovalCard, type ApprovalRequest } from './conversation-approvals'
 import type { AgentWork, IntegrationConnectRequest, StatusCard } from './conversation-message-kind'
 import { agentWorkOf } from './agent-work-log'
+import { takeCompleteLines } from '../lib/sse-lines'
 import { AGENT_REPLY_TIMEOUT_MS, emitTaskEvent, replyEvent, replyTargetRef, silenceSessionTasks } from './background-tasks.service'
 import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
@@ -1770,8 +1771,8 @@ export async function readAgentStream(
       const { done, value } = await reader.read()
       if (done) break
       buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split(/\r?\n/)
-      buffer = lines.pop() ?? ''
+      const { lines, rest } = takeCompleteLines(buffer, { stripCr: true })
+      buffer = rest
       for (const line of lines) {
         if (line.startsWith('data:')) handle(line.slice(line.startsWith('data: ') ? 6 : 5).trim())
       }

@@ -229,6 +229,53 @@ export async function agentReplySlotState(
   return rank ? { state: 'queued', position: rank } : { state: 'running', position: null }
 }
 
+/**
+ * The same answer for many runs at once, in one queue round trip (SHO-277).
+ *
+ * `GET running-agents` used to call {@link agentReplySlotState} once per row —
+ * up to 50 sequential Redis `EVAL`s while the desktop's API event loop is busy
+ * serving the very screens that poll it. The in-memory cases stay in memory;
+ * only the runs whose state genuinely lives in Redis are sent in one batch.
+ */
+export async function agentReplySlotStates(
+  workspaceId: string,
+  runIds: string[],
+): Promise<Map<string, { state: AgentReplySlotState; position: number | null }>> {
+  const states = new Map<string, { state: AgentReplySlotState; position: number | null }>()
+  if (runIds.length === 0) return states
+  const b = books.get(workspaceId)
+  const client = redis()
+  const unknown: string[] = []
+
+  for (const runId of runIds) {
+    const holder = b?.holders.get(runId)
+    if (holder) {
+      states.set(runId, { state: holder.parked ? 'waiting' : 'running', position: null })
+      continue
+    }
+    if (!client) {
+      const i = b?.waiters.findIndex((w) => w.runId === runId) ?? -1
+      states.set(runId, i >= 0 ? { state: 'queued', position: i + 1 } : { state: 'running', position: null })
+      continue
+    }
+    const known = redisRunStates.get(runId)
+    if (known && known !== 'queued') {
+      states.set(runId, { state: known, position: null })
+      continue
+    }
+    unknown.push(runId)
+  }
+
+  if (unknown.length > 0 && client) {
+    const positions = await ranksOf(client, workspaceId, unknown)
+    for (const runId of unknown) {
+      const rank = positions.get(runId) ?? null
+      states.set(runId, rank ? { state: 'queued', position: rank } : { state: 'running', position: null })
+    }
+  }
+  return states
+}
+
 // ─── Redis keys and scripts ──────────────────────────────────────────────────
 
 const waitersKey = (workspaceId: string) => `chat:slotq:${workspaceId}`

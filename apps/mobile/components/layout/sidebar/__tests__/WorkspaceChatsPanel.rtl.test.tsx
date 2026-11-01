@@ -160,9 +160,13 @@ const { WorkspaceChatsPanel } = await import("../WorkspaceChatsPanel");
 const { chatActivityEvents, chatSessionEvents } = await import(
   "../../../../lib/chat-session-events"
 );
+// The 5 s activity cache is one per window (SHO-277); a case here must not see
+// the answer an earlier case cached.
+const { workspaceActivity } = await import("../../../../lib/workspace-activity");
 
 beforeEach(() => {
   cleanup();
+  workspaceActivity.reset();
   push.mockClear();
   updateChatSession.mockClear();
   deleteChatSession.mockClear();
