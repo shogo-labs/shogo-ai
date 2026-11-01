@@ -45,7 +45,7 @@ import { FilesPane } from '../../../components/team-chat/FilesPane'
 import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/team-chat/SidePaneResizer'
 import { DocPane } from '../../../components/team-chat/DocPane'
 import { UserProfilePane } from '../../../components/team-chat/UserProfilePane'
-import { ChannelTabs, channelSupportsDoc } from '../../../components/team-chat/ChannelTabs'
+import { ChannelTabs, channelSupportsDoc, channelTabItems } from '../../../components/team-chat/ChannelTabs'
 import { ShareFileView } from '../../../components/chat/ShareFileViewer'
 import { ShareFileProvider, type ShareFileTarget } from '../../../components/chat/share-file-context'
 import { parseInAppFileHref } from '../../../lib/share-file-links'
@@ -113,7 +113,6 @@ export default function ConversationScreen() {
   const [focused, setFocused] = useState(true)
   const [foreground, setForeground] = useState(AppState.currentState === 'active')
   const [headerHeight, setHeaderHeight] = useState(0)
-  const [tabsHeight, setTabsHeight] = useState(0)
   const [addingBoard, setAddingBoard] = useState(false)
   const chrome = usePhoneChromeOverlay()
   const insets = useSafeAreaInsets()
@@ -408,6 +407,20 @@ export default function ConversationScreen() {
     if (router.canGoBack()) router.back()
     else router.replace((conversation.kind === 'dm' || conversation.kind === 'group_dm' ? '/(app)/c/dms' : '/(app)') as any)
   }
+  const boards = channelBoards.boards
+  const onAddBoard = boardsOn && conversation.canPost && !conversation.archivedAt ? () => setAddingBoard(true) : undefined
+  const tabProps = {
+    conversation,
+    docOpen,
+    onOpenDoc: openDoc,
+    onShowMessages: closeDoc,
+    boards,
+    activeBoardId: boardId,
+    onOpenBoard: openBoard,
+    onAddBoard,
+  }
+  // On a phone the tabs live in the header's glass panel (like Slack), not in a strip under it.
+  const tabsMenu = supportsDoc && floating ? { items: channelTabItems(tabProps), onAddBoard } : undefined
   const header = (
     <ConversationHeader
       conversation={conversation}
@@ -422,37 +435,12 @@ export default function ConversationScreen() {
       onOpenFiles={openFiles}
       onOpenDoc={supportsDoc ? openDoc : undefined}
       onLayout={floating ? (e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height)) : undefined}
+      tabsMenu={tabsMenu}
     />
   )
-  const boards = channelBoards.boards
-  const tabsBar = supportsDoc && (!floating || boards.length > 0 || !!boardId) ? (
-    <ChannelTabs
-      conversation={conversation}
-      docOpen={docOpen}
-      onOpenDoc={openDoc}
-      onShowMessages={closeDoc}
-      boards={boards}
-      activeBoardId={boardId}
-      onOpenBoard={openBoard}
-      onAddBoard={boardsOn && conversation.canPost && !conversation.archivedAt ? () => setAddingBoard(true) : undefined}
-    />
-  ) : null
-  // A floating phone header draws over the content, so the tabs float with it.
-  // With tabs the header and tabs read as one band: a solid backing keeps
-  // scrolled messages from showing through the glass pills above a solid strip.
-  const tabs = tabsBar && floating ? (
-    <>
-      <View pointerEvents="none" className="absolute left-0 right-0 top-0 z-20 bg-background" style={{ height: headerHeight }} />
-      <View
-        className="absolute left-0 right-0 z-20 bg-background pt-1.5"
-        style={{ top: headerHeight }}
-        onLayout={(e) => setTabsHeight(Math.round(e.nativeEvent.layout.height))}
-      >
-        {tabsBar}
-      </View>
-    </>
-  ) : tabsBar
-  const topInset = headerHeight + (tabsBar && floating ? tabsHeight : 0)
+  const tabs = supportsDoc && !floating ? <ChannelTabs {...tabProps} /> : null
+  // The phone header floats over the content; the content clears it with this inset.
+  const topInset = headerHeight
 
   const huddleLabel =
     conversation.kind === 'dm' || conversation.kind === 'group_dm'
