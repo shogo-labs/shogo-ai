@@ -18,10 +18,13 @@ import { Hono } from 'hono'
 const mockInstance = {
   id: 'inst-1',
   workspaceId: 'ws-1',
+  userId: 'user-1',
   name: 'my-laptop',
   hostname: 'my-laptop',
   os: 'darwin',
   arch: 'arm64',
+  kind: 'desktop',
+  deviceId: null as string | null,
   status: 'offline',
   lastSeenAt: new Date(),
   wsRequestedAt: null as Date | null,
@@ -32,8 +35,11 @@ const mockInstance = {
 
 const mockPrisma = {
   instance: {
-    upsert: mock(() => Promise.resolve({ ...mockInstance })),
     findUnique: mock(() => Promise.resolve({ ...mockInstance })),
+    // Identity is resolved device-first, then by hostname; `create` writes the
+    // row for a machine that has none (SHO-276 replaced the hostname upsert).
+    findFirst: mock(() => Promise.resolve(null)),
+    create: mock(() => Promise.resolve({ ...mockInstance })),
     findMany: mock(() => Promise.resolve([{ ...mockInstance }])),
     update: mock(() => Promise.resolve({ ...mockInstance })),
     delete: mock(() => Promise.resolve({ ...mockInstance })),
@@ -90,11 +96,15 @@ function createTestApp() {
 
 describe('POST /api/instances/heartbeat', () => {
   beforeEach(() => {
-    mockPrisma.instance.upsert.mockReset()
-    mockPrisma.instance.upsert.mockImplementation(() =>
+    mockPrisma.instance.create.mockReset()
+    mockPrisma.instance.create.mockImplementation(() =>
       Promise.resolve({ ...mockInstance, wsRequestedAt: null }),
     )
-    // First heartbeat of a machine: no row yet, so the upsert path runs.
+    mockPrisma.instance.update.mockReset()
+    mockPrisma.instance.update.mockImplementation(() =>
+      Promise.resolve({ ...mockInstance, wsRequestedAt: null }),
+    )
+    // First heartbeat of a machine: no row yet, so the create path runs.
     mockPrisma.instance.findUnique.mockReset()
     mockPrisma.instance.findUnique.mockImplementation(() => Promise.resolve(null) as any)
     _testing.activeViewers.clear()
@@ -140,7 +150,8 @@ describe('POST /api/instances/heartbeat', () => {
       const data = await res.json()
       expect(data.instanceId).toBe('inst-1')
       expect(data.nextPollIn).toBe(_testing.POLL_INTERVAL_IDLE_S)
-      expect(mockPrisma.instance.upsert).not.toHaveBeenCalled()
+      expect(mockPrisma.instance.update).not.toHaveBeenCalled()
+      expect(mockPrisma.instance.create).not.toHaveBeenCalled()
     })
 
     test('still reports wsRequested from the row it did not rewrite', async () => {
@@ -150,7 +161,8 @@ describe('POST /api/instances/heartbeat', () => {
       const data = await (await beat()).json()
       expect(data.wsRequested).toBe(true)
       expect(data.nextPollIn).toBe(_testing.POLL_INTERVAL_WS_REQUESTED_S)
-      expect(mockPrisma.instance.upsert).not.toHaveBeenCalled()
+      expect(mockPrisma.instance.update).not.toHaveBeenCalled()
+      expect(mockPrisma.instance.create).not.toHaveBeenCalled()
     })
 
     test('a lastSeenAt older than 30 s is refreshed', async () => {
@@ -158,13 +170,13 @@ describe('POST /api/instances/heartbeat', () => {
         () => Promise.resolve(existingRow({ lastSeenAt: new Date(Date.now() - 31_000) })) as any,
       )
       await beat()
-      expect(mockPrisma.instance.upsert).toHaveBeenCalledTimes(1)
+      expect(mockPrisma.instance.update).toHaveBeenCalledTimes(1)
     })
 
     test('changed metadata is written straight away', async () => {
       mockPrisma.instance.findUnique.mockImplementation(() => Promise.resolve(existingRow()) as any)
       await beat({ ...meta, tunnelStatus: 'connected' })
-      expect(mockPrisma.instance.upsert).toHaveBeenCalledTimes(1)
+      expect(mockPrisma.instance.update).toHaveBeenCalledTimes(1)
     })
 
     test('a renamed machine is written straight away', async () => {
@@ -172,7 +184,7 @@ describe('POST /api/instances/heartbeat', () => {
         () => Promise.resolve(existingRow({ name: 'old-name' })) as any,
       )
       await beat()
-      expect(mockPrisma.instance.upsert).toHaveBeenCalledTimes(1)
+      expect(mockPrisma.instance.update).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -218,7 +230,7 @@ describe('POST /api/instances/heartbeat', () => {
     expect(res.status).toBe(400)
   })
 
-  test('upserts instance and returns idle poll interval', async () => {
+  test('creates the row for a machine it has never seen and returns idle poll interval', async () => {
     const app = createTestApp()
     const res = await app.request('/api/instances/heartbeat', {
       method: 'POST',
@@ -230,7 +242,7 @@ describe('POST /api/instances/heartbeat', () => {
     expect(data.instanceId).toBe('inst-1')
     expect(data.nextPollIn).toBe(_testing.POLL_INTERVAL_IDLE_S)
     expect(data.wsRequested).toBe(false)
-    expect(mockPrisma.instance.upsert).toHaveBeenCalled()
+    expect(mockPrisma.instance.create).toHaveBeenCalledTimes(1)
   })
 
   test('returns faster poll when viewer is active', async () => {
@@ -249,7 +261,7 @@ describe('POST /api/instances/heartbeat', () => {
   })
 
   test('returns wsRequested and fastest poll when WS requested', async () => {
-    mockPrisma.instance.upsert.mockImplementation(() =>
+    mockPrisma.instance.create.mockImplementation(() =>
       Promise.resolve({ ...mockInstance, wsRequestedAt: new Date() }),
     )
 
@@ -267,7 +279,7 @@ describe('POST /api/instances/heartbeat', () => {
 
   test('expired wsRequestedAt is not treated as requested', async () => {
     const expired = new Date(Date.now() - _testing.WS_REQUEST_TTL_MS - 1000)
-    mockPrisma.instance.upsert.mockImplementation(() =>
+    mockPrisma.instance.create.mockImplementation(() =>
       Promise.resolve({ ...mockInstance, wsRequestedAt: expired }),
     )
 
@@ -285,10 +297,12 @@ describe('POST /api/instances/heartbeat', () => {
 
 describe('authenticateInstanceWs', () => {
   beforeEach(() => {
-    mockPrisma.instance.upsert.mockReset()
-    mockPrisma.instance.upsert.mockImplementation(() =>
+    mockPrisma.instance.create.mockReset()
+    mockPrisma.instance.create.mockImplementation(() =>
       Promise.resolve({ ...mockInstance }),
     )
+    mockPrisma.instance.findUnique.mockReset()
+    mockPrisma.instance.findUnique.mockImplementation(() => Promise.resolve(null) as any)
     mockResolveApiKey.mockReset()
     mockResolveApiKey.mockImplementation(async (key: string) => {
       if (key === 'shogo_valid_key' || key === 'shogo_bearer_key' || key === 'shogo_x_api_key' || key === 'shogo_legacy_key') {
@@ -345,7 +359,7 @@ describe('authenticateInstanceWs', () => {
     expect(String(warn.mock.calls[0][0])).toContain('legacy ?key= query param')
   })
 
-  test('header identity overrides query identity in instance upsert', async () => {
+  test('header identity overrides query identity when the row is created', async () => {
     await authenticateInstanceWs(new Request(
       'https://tunnel.test.shogo.ai/api/instances/ws?hostname=query-host&name=Query%20Name&os=linux&arch=x64',
       {
@@ -359,19 +373,9 @@ describe('authenticateInstanceWs', () => {
       },
     ))
 
-    expect(mockPrisma.instance.upsert).toHaveBeenCalledTimes(1)
-    const args = mockPrisma.instance.upsert.mock.calls[0][0] as any
-    expect(args.where.workspaceId_userId_hostname).toEqual({
-      workspaceId: 'ws-1',
-      userId: 'user-1',
-      hostname: 'header-host',
-    })
-    expect(args.update).toMatchObject({
-      name: 'Header Name',
-      os: 'darwin',
-      arch: 'arm64',
-    })
-    expect(args.create).toMatchObject({
+    expect(mockPrisma.instance.create).toHaveBeenCalledTimes(1)
+    const args = mockPrisma.instance.create.mock.calls[0][0] as any
+    expect(args.data).toMatchObject({
       workspaceId: 'ws-1',
       userId: 'user-1',
       hostname: 'header-host',
@@ -388,7 +392,8 @@ describe('authenticateInstanceWs', () => {
 
     expect(result).toBeNull()
     expect(mockResolveApiKey).not.toHaveBeenCalled()
-    expect(mockPrisma.instance.upsert).not.toHaveBeenCalled()
+    expect(mockPrisma.instance.findUnique).not.toHaveBeenCalled()
+    expect(mockPrisma.instance.create).not.toHaveBeenCalled()
   })
 })
 

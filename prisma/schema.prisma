@@ -3002,6 +3002,12 @@ model Instance {
   userId        String?
   name          String
   hostname      String
+  /// Stable per-machine id (`~/.shogo/device-id`), sent as `x-shogo-device-id`.
+  /// A macOS host renames itself per network (SHO-276), so `hostname` is not an
+  /// identity: a row found by this id keeps its id and only has its hostname
+  /// updated. Null for clients that pre-date the header — those fall back to
+  /// hostname and are adopted by the first heartbeat that carries the id.
+  deviceId      String?
   os            String?
   arch          String?
   /// Connection kind: "desktop" = the Electron app, "cli-worker" = the
@@ -3025,6 +3031,7 @@ model Instance {
   @@unique([workspaceId, userId, hostname])
   @@index([workspaceId])
   @@index([workspaceId, userId])
+  @@index([workspaceId, userId, deviceId])
   @@index([workspaceId, kind])
   @@map("instances")
 }

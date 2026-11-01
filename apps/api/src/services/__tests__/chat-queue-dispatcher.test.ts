@@ -36,8 +36,14 @@ const mockPrisma = {
       activeTurnId: null,
       activeTurnHeartbeatAt: null,
     }),
+    // The dispatcher asks which of its sessions may run in the cloud at all
+    // (a machine copy's agent runs on the desktop, SHO-276).
+    findMany: async () => [
+      { id: state.session.id, workspaceId: state.session.workspaceId, project: null },
+    ],
     update: async () => state.session,
   },
+  workspace: { findMany: async () => [] },
   chatQueuedMessage: {
     findFirst: async () =>
       state.row.status === "pending" ? { ...state.row } : null,
