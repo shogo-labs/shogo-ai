@@ -7522,6 +7522,16 @@ async function gracefulShutdown(signal: string): Promise<void> {
     })
   }
 
+  // The last second of a turn is often the whole reply: `persistSession` is
+  // fire-and-forget, so drain what this process already started writing before
+  // the sessions db is torn down (SHO-274).
+  try {
+    const pendingSaves = await (agentGateway?.getSessionManager?.()?.flushPendingSaves?.(2_000) ?? Promise.resolve(0))
+    if (pendingSaves > 0) console.log(`[agent-runtime] Drained ${pendingSaves} pending session save(s)`)
+  } catch (err: any) {
+    console.warn('[agent-runtime] Draining pending session saves failed:', err?.message ?? err)
+  }
+
   streamBufferStore.dispose()
 
   // Published mode: flush the writable-state archive (the SQLite DB + upload

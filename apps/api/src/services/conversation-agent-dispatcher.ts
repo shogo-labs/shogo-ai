@@ -151,14 +151,17 @@ export async function settleOrphanedAgentReplies(minAgeMs = 0): Promise<number> 
     where: {
       authorType: 'agent',
       agentStatus: 'running',
-      createdAt: { lt: cutoff },
+      // `lte`, not `lt`: with the default floor of 0 a row written in this same
+      // millisecond is exactly at the cutoff, and `< now` would skip it — a boot
+      // settle that runs immediately after a send would leave that reply running.
+      createdAt: { lte: cutoff },
       deletedAt: null,
       ...(home ? { conversation: { workspace: home } } : {}),
       // A copy's running reply is live on the desktop that owns it: settling it
       // here would flip the copy to `error` behind a run that never died.
       ...(await notMachineWorkspaceWhere()),
     },
-    select: { id: true, threadRootId: true, authorAgentRef: true, agentSessionId: true, createdAt: true },
+    select: { id: true, threadRootId: true, authorAgentRef: true, agentSessionId: true, createdAt: true, text: true },
     take: 500,
   })
   const orphans = await withoutLiveTurn(stale)
@@ -166,11 +169,13 @@ export async function settleOrphanedAgentReplies(minAgeMs = 0): Promise<number> 
   const { noteCardRunEnded } = await import('./work-boards.service')
   let settled = 0
   for (const m of orphans) {
+    const note = 'This reply was interrupted because the server restarted. Mention the agent again to retry.'
+    const text = await interruptedReplyText(m, m.text, note)
     // Only the pod that flips the row may act on it: two pods booting at once
     // compute the same list, and each would otherwise re-hand the card again.
     const { count } = await db.conversationMessage.updateMany({
       where: { id: m.id, agentStatus: 'running' },
-      data: { agentStatus: 'error', text: 'This reply was interrupted because the server restarted. Mention the agent again to retry.' },
+      data: { agentStatus: 'error', text },
     }).catch(() => ({ count: 0 }))
     if (count !== 1) continue
     settled++
@@ -233,7 +238,7 @@ export async function sweepDeadAgentReplies(opts: { staleAfterMs?: number } = {}
       // not this pod's to end.
       ...(await notMachineWorkspaceWhere()),
     },
-    select: { id: true, threadRootId: true, authorAgentRef: true, agentSessionId: true, createdAt: true },
+    select: { id: true, threadRootId: true, authorAgentRef: true, agentSessionId: true, createdAt: true, text: true },
     take: 200,
   })
   if (!rows.length) return 0
@@ -250,13 +255,12 @@ export async function sweepDeadAgentReplies(opts: { staleAfterMs?: number } = {}
   const { noteCardRunEnded } = await import('./work-boards.service')
   let settled = 0
   for (const m of dead) {
+    const note = `This run stopped sending heartbeats ${Math.round((opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS) / 60_000)} minutes ago, so its process is gone. Mention the agent again to retry.`
+    const text = await interruptedReplyText(m, m.text, note)
     // Only the sweep that flips the row 'running' may act on it.
     const { count } = await db.conversationMessage.updateMany({
       where: { id: m.id, agentStatus: 'running' },
-      data: {
-        agentStatus: 'error',
-        text: `This run stopped sending heartbeats ${Math.round((opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS) / 60_000)} minutes ago, so its process is gone. Mention the agent again to retry.`,
-      },
+      data: { agentStatus: 'error', text },
     }).catch(() => ({ count: 0 }))
     if (count !== 1) continue
     settled++
@@ -1802,6 +1806,31 @@ async function latestAssistantText(sessionId: string, after: Date): Promise<stri
 }
 
 /**
+ * What a dead reply should say: the text it already streamed, then the reason
+ * it stopped (SHO-274).
+ *
+ * Settling used to *replace* the row's text with the note, so a thread that had
+ * half an answer on screen lost it on the next restart — the partial was still
+ * in the session's `ChatMessage` (the reply ran through the internal chat route)
+ * and simply never looked at. Append instead, and fall back to the row's own
+ * text when the session copy is missing (a run that died before its first
+ * snapshot) or older than the reply.
+ */
+async function interruptedReplyText(
+  message: { agentSessionId?: string | null; createdAt: Date },
+  fallback: string | null | undefined,
+  note: string,
+): Promise<string> {
+  const partial = message.agentSessionId
+    ? await latestAssistantText(message.agentSessionId, message.createdAt).catch(() => null)
+    : null
+  const body = (partial ?? fallback ?? '').trim()
+  if (!body) return note
+  if (body === note || body.endsWith(note)) return body
+  return `${body}\n\n${note}`
+}
+
+/**
  * One-off workspace-agent turn in a fresh session (e.g. "catch me up").
  * Nothing is posted to a conversation; the caller decides what to do with
  * the text.
@@ -2098,6 +2127,10 @@ async function runReservedReply(
   let pending: ReturnType<typeof setTimeout> | null = null
   let latest: StreamProgress = { text: '', tool: null, tools: [] }
   const approvalCards: string[] = []
+  // The thread row's text is settled from the session's `ChatMessage`, which the
+  // journal keeps current even when this process dies mid-reply (SHO-274) — so
+  // the durable copy is no longer written from here; the socket delta above
+  // carries the live view only.
   const flush = () => {
     pending = null
     lastPublish = Date.now()

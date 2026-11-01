@@ -55,9 +55,13 @@ import {
   clearActiveTurn,
   endTurnAndDrain,
   markTurnStarted,
+  registerTurnSnapshotFlusher,
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
 import { historySeedForTurn, lastUserPromptText } from "../services/chat-history-seed.service"
+import { deleteTurnFrames, TurnJournalWriter } from "../services/chat-turn-journal"
+import { persistUserMessageForTurn } from "../services/chat-user-message"
+import { createJournalledForwarder } from "../lib/journalled-forwarder"
 import { compactChatSession } from "../services/chat-compact.service"
 import { countLineChanges } from "../lib/tool-line-stats"
 import { fetchFromProjectRuntime } from "../lib/chat-runtime-fetch"
@@ -322,6 +326,11 @@ export async function trackUsageFromStream(
   let persistenceDirty = false
   /** The assistant row we were updating no longer exists. */
   let messageDeleted = false
+  // Size of the last successful snapshot, and whether the accumulator is still
+  // shorter than it because a resume replay is filling it from seq 0. A replay
+  // that dies early must never leave a shorter row than the partial it replaced.
+  let lastPersistedSize = 0
+  let replayShorter = false
 
   /**
    * Snapshot writes are coalesced to at most one per second per turn (SHO-277).
@@ -424,7 +433,10 @@ export async function trackUsageFromStream(
     if (turnStartedAt !== undefined) {
       const timing = JSON.stringify({
         type: 'data-turn-timing',
-        data: { startedAt: turnStartedAt, completedAt: turnCompletedAt },
+        // `turnId` is what lets the client keep this row on screen across a
+        // resume: it drops an unfinished tail only when that tail is the same
+        // turn the replay belongs to (SHO-274).
+        data: { startedAt: turnStartedAt, completedAt: turnCompletedAt, turnId: trackedTurnId },
       })
       prefix = parts.length === 0 ? `[${timing}` : `${prefix},${timing}`
     }
@@ -456,9 +468,41 @@ export async function trackUsageFromStream(
   }
 
   /** Write the current snapshot. No throttle — callers decide when. */
+  /**
+   * Whether there is anything worth persisting yet: text, reasoning, or a tool.
+   *
+   * Reasoning counts on its own (SHO-274). A turn killed while the model was
+   * still thinking used to persist nothing at all, because this gate only looked
+   * at text and tools — and the person had already watched the reasoning arrive.
+   */
+  function hasSnapshotContent(): boolean {
+    return orderedParts.some((part) => {
+      if (part.type === 'text' || part.type === 'reasoning') return !!(part.text && part.text.trim())
+      return true
+    })
+  }
+
+  /** How much content the accumulators hold now — see {@link replayShorter}. */
+  function snapshotSize(): number {
+    let size = 0
+    for (const part of orderedParts) {
+      if (part.type === 'text' || part.type === 'reasoning') size += (part.text?.length ?? 0)
+      else size += 1
+    }
+    return size
+  }
+
   async function writeAssistantSnapshot(): Promise<void> {
     if (foreignTurn || !chatSessionId || sessionGone) return
-    if (!accumulatedText && toolCallMap.size === 0) return
+    if (!hasSnapshotContent()) return
+    // A resume replays the turn from seq 0, so for a moment the accumulators
+    // hold less than the row already does. Writing then is how a crash during
+    // the replay used to leave the shorter copy behind; the longer copy wins
+    // until the replay has caught up (SHO-274).
+    if (replayShorter) {
+      if (snapshotSize() < lastPersistedSize) return
+      replayShorter = false
+    }
     if (!(await sessionIsPersistable())) return
     if (pendingToolOutputWrites.length > 0) {
       const writes = pendingToolOutputWrites
@@ -500,6 +544,7 @@ export async function trackUsageFromStream(
       }
     }
     lastPartialPersistAt = Date.now()
+    lastPersistedSize = snapshotSize()
   }
 
   /**
@@ -512,7 +557,7 @@ export async function trackUsageFromStream(
    */
   function persistAssistantSnapshot(): void {
     if (foreignTurn || !chatSessionId || sessionGone) return
-    if (!accumulatedText && toolCallMap.size === 0) return
+    if (!hasSnapshotContent()) return
     snapshotPending = true
     scheduleSnapshotFlush()
   }
@@ -674,6 +719,10 @@ export async function trackUsageFromStream(
     if (type === 'reasoning-delta' && data.delta && currentReasoningPart) {
       currentReasoningPart.text += data.delta
       markPartDirty(currentReasoningPart)
+      // A crash during a long thinking phase used to persist nothing at all: the
+      // snapshot skipped while there was no text or tool yet, and reasoning never
+      // asked for one (SHO-274).
+      persistAssistantSnapshot()
     }
     if (type === 'reasoning-end') {
       if (currentReasoningPart && reasoningStartedAt) {
@@ -1008,6 +1057,13 @@ export async function trackUsageFromStream(
     }
   }
 
+  // A shutdown between two coalesced writes used to lose what the person had
+  // already read. The flush is registered here, where the accumulators are in
+  // scope, and dropped as soon as this tracker finishes (SHO-274).
+  const unregisterSnapshotFlusher = chatSessionId
+    ? registerTurnSnapshotFlusher(chatSessionId, () => flushAssistantSnapshot())
+    : () => {}
+
   // First pass: consume the original tee'd tracking stream.
   const firstOk = await consumeStream(stream.getReader())
   if (!firstOk) originalStreamErrored = true
@@ -1015,6 +1071,7 @@ export async function trackUsageFromStream(
     console.log(
       `[ProjectChat] Buffer for session ${chatSessionId} holds an older turn than expected — nothing persisted`,
     )
+    unregisterSnapshotFlusher()
     return { outcome: 'foreign', status: null, text: '', assistantMessageId }
   }
 
@@ -1079,6 +1136,9 @@ export async function trackUsageFromStream(
         // buffer's full replay, so any text/tool data we accumulated from
         // the original stream needs to be cleared to avoid duplication.
         resetAccumulatedState()
+        // The accumulators are empty again and the row is not: nothing may be
+        // written until the replay has produced at least what was there (SHO-274).
+        replayShorter = true
         const resumeOk = await consumeStream(resumeRes.body.getReader())
         if (foreignTurn) {
           resumeOutcome = 'buffer-gone'
@@ -1194,6 +1254,13 @@ export async function trackUsageFromStream(
   // the write that makes the persisted message equal the streamed one — the
   // coalesced scheduler may have skipped the last frames (SHO-277).
   await flushAssistantSnapshot()
+  unregisterSnapshotFlusher()
+  // The turn reached its terminal frame, so the journal has nothing left to
+  // recover: what the client has is now in the row (SHO-274). A turn that never
+  // gets here (the process died) keeps its frames for recovery.
+  if (observedTurnComplete && trackedTurnId) {
+    void deleteTurnFrames(trackedTurnId).catch(() => 0)
+  }
   const partialTag = observedTurnComplete ? '' : ', partial'
   if (assistantMessageId) {
     console.log(
@@ -1915,6 +1982,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         ? AbortSignal.any([clientSignal, fetchTimeoutSignal])
         : fetchTimeoutSignal
 
+      // The person's message must be durable before the turn starts (SHO-274):
+      // a crash between Send and the first frame used to leave the agent with a
+      // turn and the transcript with no question. Awaited here, i.e. after the
+      // usage-limit and attachment gates (a rejected send writes nothing) and
+      // before the first proxy attempt.
+      await persistUserMessageForTurn(incomingChatSessionId, parsedBody as Record<string, unknown>)
+
       // Serialise once, after every mutation above (SHO-213). Each step used to
       // re-stringify the whole body, which multiplied a 15 MB base64 attachment
       // into six copies before the upstream fetch ever started.
@@ -2090,8 +2164,36 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           })
 
           let clientEnqueueErrors = 0
+          // Write-ahead journal (SHO-274): a chunk reaches the client only after
+          // the batch holding it is durable. Without a turn id there is no key to
+          // journal under, so the stream behaves as before rather than blocking
+          // on a write that could never be recovered.
+          const journal = activityTurnId
+            ? new TurnJournalWriter(incomingChatSessionId, activityTurnId)
+            : null
+          // Set once the client stream starts: frames are only forwarded from
+          // inside the forwarder, i.e. after the batch holding them is durable.
+          let clientController: ReadableStreamDefaultController<Uint8Array> | null = null
+          const forwarder = createJournalledForwarder({
+            journal,
+            forward(chunk) {
+              trackingChunks.push(chunk)
+              trackingNotify?.()
+              trackingNotify = null
+              latency.observe(chunk)
+              try {
+                clientController?.enqueue(chunk)
+              } catch {
+                if (clientEnqueueErrors === 0) {
+                  console.log(`[ProjectChat:Stream] Client disconnected at chunk — stream continues for tracking/persistence`)
+                }
+                clientEnqueueErrors++
+              }
+            },
+          })
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
+              clientController = controller
               ;(async () => {
                 try {
                   let chunkCount = 0
@@ -2099,20 +2201,16 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                     const { done, value } = await bgReader.read()
                     if (done) break
                     chunkCount++
-                    trackingChunks.push(value)
-                    trackingNotify?.()
-                    trackingNotify = null
-                    latency.observe(value)
-                    try { controller.enqueue(value) } catch {
-                      if (clientEnqueueErrors === 0) {
-                        console.log(`[ProjectChat:Stream] Client disconnected at chunk #${chunkCount} — stream continues for tracking/persistence`)
-                      }
-                      clientEnqueueErrors++
-                    }
+                    forwarder.push(value)
                   }
-                  console.log(`[ProjectChat:Stream] Background reader finished: ${chunkCount} chunks, ${clientEnqueueErrors} client errors`)
+                  // Everything still held must be durable (and out) before the
+                  // client is told the stream ended.
+                  await forwarder.drain()
+                  console.log(`[ProjectChat:Stream] Background reader finished: ${chunkCount} chunks, ${clientEnqueueErrors} client errors` +
+                    `${journal ? `, ${forwarder.batches} journal batch(es)` : ', no journal'}`)
                 } catch (err: any) {
                   console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
+                  try { await forwarder.drain() } catch { /* already logged */ }
                   try { controller.error(err) } catch { /* client gone */ }
                 } finally {
                   trackingDone = true

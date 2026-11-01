@@ -86,6 +86,66 @@ describe("dropUnfinishedAssistantTail", () => {
   })
 })
 
+// A crash leaves the row the person was already reading on screen. The replay
+// that follows only rebuilds the turn it belongs to, so dropping the stored row
+// deleted text they had read and the next cache write stored the array without
+// it (SHO-274).
+describe("a stored partial reply survives a replay of another turn", () => {
+  const storedPartial = (turnId: string) =>
+    ({
+      id: "msg_stored",
+      role: "assistant",
+      parts: [
+        { type: "text", text: "Reading the migration files" },
+        { type: "data-turn-timing", data: { startedAt: 1, turnId } },
+      ],
+    }) as unknown as UIMessage
+
+  const replayOf = (turnId: string) =>
+    ({
+      id: "msg_replay",
+      role: "assistant",
+      parts: [
+        { type: "step-start" },
+        { type: "data-turn-start", data: { turnId } },
+      ],
+    }) as unknown as UIMessage
+
+  test("it is kept when the replay belongs to a different turn", () => {
+    const history = [message("user"), storedPartial("turn-1")]
+    expect(dropUnfinishedAssistantTail(history, replayOf("turn-2"))).toBe(history)
+  })
+
+  test("it is kept when either side has no turn to compare", () => {
+    const history = [message("user"), storedPartial("turn-1")]
+    expect(dropUnfinishedAssistantTail(history, null)).toBe(history)
+    const noKey = [message("user"), message("assistant", [{ type: "text", text: "half" }, { type: "data-turn-timing", data: { startedAt: 1 } }])] as UIMessage[]
+    expect(dropUnfinishedAssistantTail(noKey, replayOf("turn-2"))).toBe(noKey)
+  })
+
+  test("it is dropped only when the replay rebuilds that same turn", () => {
+    const history = [message("user"), storedPartial("turn-1")]
+    expect(dropUnfinishedAssistantTail(history, replayOf("turn-1"))).toEqual([history[0]])
+  })
+
+  test("a bubble this window streamed has no stored row, so it still goes", () => {
+    const history = [message("user"), message("assistant", [{ type: "reasoning", text: "hm" }])]
+    expect(dropUnfinishedAssistantTail(history, replayOf("turn-2"))).toEqual([history[0]])
+  })
+
+  test("a row the server declared dead is finished history, not a partial", () => {
+    expect(
+      isUnfinishedAssistant(
+        message("assistant", [
+          { type: "text", text: "Reading the migration files" },
+          { type: "data-turn-timing", data: { startedAt: 1 } },
+          { type: "data-turn-interrupted", data: { reason: "interrupted_exec" } },
+        ]),
+      ),
+    ).toBe(false)
+  })
+})
+
 describe("foldSnapshotContinuation", () => {
   const user = { id: "u1", role: "user", parts: [{ type: "text", text: "go" }] } as UIMessage
   const snapshot = {

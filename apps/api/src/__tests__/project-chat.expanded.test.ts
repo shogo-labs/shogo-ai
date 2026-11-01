@@ -43,6 +43,7 @@ let projectUpdateImpl: (args: any) => Promise<any> = async () => ({})
 
 const prismaCalls = {
   chatMessageCreate: [] as any[],
+  chatMessageFindUnique: [] as any[],
   toolCallLogCreateMany: [] as any[],
   projectUpdate: [] as any[],
   chatSessionFindUnique: [] as any[],
@@ -93,6 +94,12 @@ mock.module('../lib/prisma', () => ({
       },
     },
     chatMessage: {
+      findUnique: async (args: any) => {
+        prismaCalls.chatMessageFindUnique.push(args)
+        // The user-row write pre-checks for an existing row (SHO-274); this
+        // harness has no store, so every id looks new.
+        return null
+      },
       create: async (args: any) => {
         prismaCalls.chatMessageCreate.push(args)
         return chatMessageCreateImpl(args)
@@ -255,6 +262,7 @@ beforeEach(() => {
   lastFetchInit = undefined
   fetchHistory.length = 0
   prismaCalls.chatMessageCreate.length = 0
+  prismaCalls.chatMessageFindUnique.length = 0
   prismaCalls.toolCallLogCreateMany.length = 0
   prismaCalls.projectUpdate.length = 0
   prismaCalls.chatSessionFindUnique.length = 0
@@ -414,7 +422,7 @@ describe('trackUsageFromStream — processLine branches', () => {
     const parts = JSON.parse(prismaCalls.chatMessageCreate[0].data.parts)
     const timing = parts.find((p: any) => p.type === 'data-turn-timing')
     expect(timing).toBeDefined()
-    expect(timing.data).toEqual({ startedAt: 1000, completedAt: 5000 })
+    expect(timing.data).toEqual({ startedAt: 1000, completedAt: 5000, turnId: 't-1' })
   })
 
   test('persists a data-turn-timing part with only startedAt when the turn never completes (partial/cut stream)', async () => {
@@ -429,6 +437,7 @@ describe('trackUsageFromStream — processLine branches', () => {
     expect(timing).toBeDefined()
     expect(timing.data.startedAt).toBe(2000)
     expect(timing.data.completedAt).toBeUndefined()
+    expect(timing.data.turnId).toBe('t-2')
   })
 
   test('does not persist a data-turn-timing part when data-turn-start was never observed', async () => {
@@ -757,8 +766,10 @@ describe('trackUsageFromStream — auto-resume on cut stream', () => {
       'data: {"type":"text-delta","delta":"original-partial"}\n',
       // no turn-complete — simulate activator cut.
     ])
+    // A real replay re-sends the turn from seq 0, so it carries at least what was
+    // already accumulated. The row must keep the longer of the two (SHO-274).
     const replay = streamFromChunks([
-      'data: {"type":"text-delta","delta":"full message"}\n',
+      'data: {"type":"text-delta","delta":"original-partial and the rest"}\n',
       'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
     ])
     let resumeArg: number | null = null
@@ -774,7 +785,7 @@ describe('trackUsageFromStream — auto-resume on cut stream', () => {
       },
     )
     expect(resumeArg).toBe(0)
-    expect(prismaCalls.chatMessageCreate[0].data.content).toBe('full message')
+    expect(prismaCalls.chatMessageCreate[0].data.content).toBe('original-partial and the rest')
   })
 
   test('resume returns 200 but no turn-complete — outcome "failed"', async () => {
@@ -898,6 +909,60 @@ function buildApp(opts: { runtimeManager?: any } = {}) {
   app.route('/api', projectChatRoutes({ runtimeManager: opts.runtimeManager ?? runtimeManager }))
   return app
 }
+
+describe('POST /projects/:projectId/chat — the prompt is durable before the turn', () => {
+  test('the user row is written before the runtime is proxied', async () => {
+    const sse = 'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n'
+    fetchResponses = [
+      () => {
+        // Read the ordering at the moment the upstream call is made: the row
+        // must already be committed, or a crash right here loses the question.
+        expect(prismaCalls.chatMessageCreate).toHaveLength(1)
+        return new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+      },
+    ]
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        chatSessionId: 'c-1',
+        messageId: 'ui-msg-1',
+        messages: [{ id: 'ui-msg-1', role: 'user', parts: [{ type: 'text', text: 'do the thing' }] }],
+      }),
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    expect(res.status).toBe(200)
+    await res.text()
+
+    expect(prismaCalls.chatMessageCreate[0].data).toMatchObject({
+      id: 'ui-msg-1',
+      sessionId: 'c-1',
+      role: 'user',
+      content: 'do the thing',
+    })
+  })
+
+  test('a body with no new user message (a resume) writes nothing', async () => {
+    fetchResponses = [
+      () => new Response('data: {"type":"data-turn-complete","data":{"status":"completed"}}\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    ]
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        chatSessionId: 'c-1',
+        messages: [{ id: 'a-1', role: 'assistant', parts: [{ type: 'text', text: 'only a reply' }] }],
+      }),
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    expect(res.status).toBe(200)
+    await res.text()
+    expect(prismaCalls.chatMessageFindUnique).toHaveLength(0)
+  })
+})
 
 describe('POST /projects/:projectId/chat — error branches', () => {
   test('4xx from pod returns pod_error with status', async () => {

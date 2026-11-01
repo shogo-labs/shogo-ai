@@ -38,6 +38,9 @@ import { stampTeamWorkspaceNames } from '../lib/stamp-team-workspace-names'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
+import { persistUserMessageForTurn } from '../services/chat-user-message'
+import { TurnJournalWriter } from '../services/chat-turn-journal'
+import { createJournalledForwarder } from '../lib/journalled-forwarder'
 import {
   attachProject,
   assertWorkspaceSessionAccess,
@@ -887,6 +890,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // `<@c:CHAT_ID>` is context (see the promotion above and `chat_handoff` when
     // the person explicitly wants something sent).
 
+    // The person's message must be durable before the turn starts (SHO-274), on
+    // the same contract as project-chat: awaited after every gate (a rejected
+    // send writes nothing) and before the first proxy attempt.
+    await persistUserMessageForTurn(sessionId, parsedBody as Record<string, unknown>)
+
     // Serialise once, after every mutation above. Each of those steps used to
     // re-`JSON.stringify` the whole body, which was fine until attachments rode
     // inside it as base64 (SHO-213) — the same 15 MB string was built six times.
@@ -1127,26 +1135,50 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           // stream. `clientGone` flips the first time the browser's stream is
           // already closed when we try to write to it.
           let clientGone = false
+          // Write-ahead journal (SHO-274), same contract as project-chat: a
+          // chunk reaches the client only after the batch holding it is
+          // durable. Workspace-scoped turns are the ones a channel reply and
+          // the personal companion run through, so without this their reply had
+          // no durable copy until it settled.
+          const journal = activityTurnId
+            ? new TurnJournalWriter(sessionId, activityTurnId)
+            : null
+          let clientController: ReadableStreamDefaultController<Uint8Array> | null = null
+          const forwarder = createJournalledForwarder({
+            journal,
+            forward(chunk) {
+              trackingChunks.push(chunk)
+              trackingNotify?.()
+              trackingNotify = null
+              latency.observe(chunk)
+              try {
+                clientController?.enqueue(chunk)
+              } catch {
+                /* client gone — stream continues for tracking */
+                clientGone = true
+              }
+            },
+          })
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
+              clientController = controller
               ;(async () => {
                 try {
                   while (true) {
                     const { done, value } = await bgReader.read()
                     if (done) break
-                    trackingChunks.push(value)
-                    trackingNotify?.()
-                    trackingNotify = null
                     streamTrace.mark('upstream', value.byteLength)
-                    latency.observe(value)
-                    try {
-                      controller.enqueue(value)
-                    } catch {
-                      /* client gone — stream continues for tracking */
-                      clientGone = true
-                    }
+                    forwarder.push(value)
                   }
+                  // Everything still held must be durable (and out) before the
+                  // client is told the stream ended.
+                  await forwarder.drain()
                 } catch (err: any) {
+                  try {
+                    await forwarder.drain()
+                  } catch {
+                    /* already logged */
+                  }
                   try {
                     controller.error(err)
                   } catch {

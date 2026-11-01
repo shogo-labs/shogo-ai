@@ -5455,6 +5455,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return false
       }
 
+      // A row the client dropped locally (a replay that removed an unfinished
+      // tail, SHO-274) never comes back through the delta: it only carries rows
+      // changed since the cursor. When the session's whole history fits the page
+      // the transcript paints, the local array must hold that many rows — a
+      // shorter one is repaired with the full first page instead of staying
+      // hidden until the next reopen.
+      if (body.total != null && body.total <= MESSAGE_PAGE_SIZE) {
+        const seen = new Set(current.map((m) => String(m.id)))
+        for (const row of items) if (row?.id) seen.add(String(row.id))
+        if (seen.size < body.total) return false
+      }
+
       const byId = new Map(current.map((m) => [String(m.id), m]))
       for (const row of items) {
         if (!row?.id) continue
@@ -6518,10 +6530,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Internal function that actually sends a message (used by queue processor)
   // Isolated "actually put it on the wire" step, factored out of
   // `sendMessageInternal` so a network-class failure can be queued for
-  // automatic retry WITHOUT re-running the persistence/optimistic-UI side
-  // effects (`actions.addMessage`, `setOptimisticUserInput`) that already
-  // ran before this is called — re-running those on retry would duplicate
-  // the persisted user message. Non-network failures (auth, usage limit,
+  // automatic retry WITHOUT re-running the optimistic-UI side effects
+  // (`setOptimisticUserInput`) that already ran before this is called. The
+  // user row itself is written by the chat route, idempotently on the
+  // message id, so a retried POST cannot duplicate it (SHO-274).
+  // Non-network failures (auth, usage limit,
   // 5xx, etc. — the server DID respond) still propagate normally so the
   // existing error banner handles them.
   const deliverMessage = useCallback(
@@ -6676,17 +6689,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setUploadStatus(null)
       }
 
-      const parts: Array<
-        | { type: "text"; text: string }
-        | OutgoingFilePart
-      > = []
-
-      if (trimmedContent) {
-        parts.push({ type: "text", text: trimmedContent })
-      }
-
-      parts.push(...outgoingParts)
-
       // Let EZ Mode know a new turn is starting. This is what
       // triggers the overlay to arm its heartbeat / activity buffer.
       try {
@@ -6695,22 +6697,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         console.warn("[ChatPanel] bridge.emitTurnStart threw", err)
       }
 
-      actions
-        .addMessage({
-          sessionId: currentSessionId,
-          role: "user",
-          content: trimmedContent,
-          parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
-        })
-        .then((row) => {
-          // The row is the thing every server route addresses; hand its id to
-          // the bubble so edit/retry/feedback don't have to guess (SHO-263).
-          const rowId = (row as { id?: string } | undefined)?.id
-          if (rowId) adoptPersistedUserId(rowId, trimmedContent)
-        })
-        .catch((err) =>
-          console.warn("[ChatPanel] Failed to persist user message:", err),
-        )
+      // The row for this message is written by the chat route, which waits for
+      // the commit before it proxies the turn (SHO-274). The route uses the id
+      // the message already carries in the request body, so the bubble's id is
+      // the row id and there is nothing to create here and nothing to match
+      // back by text. Writing it from the client too would leave two rows for
+      // one send — or none at all if this POST never lands.
 
       // Start AI naming alongside the agent turn instead of waiting for the
       // assistant response to finish. The onFinish fallback above covers
@@ -6863,7 +6855,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
       maybeAutoNameSession,
       releaseStopSnapshot,
       showOptimisticEcho,
-      adoptPersistedUserId,
     ],
   )
 
@@ -8102,7 +8093,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   //       hydrators don't render ghosts)
   //   2. setMessages(messages.slice(0, idx)) -> in-memory truncation
   //   3. sendMessageInternal(newContent, files) -> recreates the user
-  //      message via the normal pipeline (actions.addMessage + stream)
+  //      message via the normal pipeline (the chat route writes its row)
   //
   // Both Edit and Retry use the SAME primitive; the only difference is
   // whether the re-sent content is the original or the edited string.

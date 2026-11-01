@@ -997,6 +997,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Target rows are created with their post in one insert (same home region) and only updated afterwards; the pair is unique by construction.',
   },
+  {
+    key: 'ChatTurnFrame.(seq,turnId)',
+    category: 'request_scoped',
+    reason:
+      'chat-turn-journal.ts appends frame N of one turn from the request that is streaming it; the pair is the idempotency key that lets a retried append detect it already landed, and a turn streams from exactly one region.',
+  },
 ]
 
 // ===========================================================================

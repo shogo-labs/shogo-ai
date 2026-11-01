@@ -127,4 +127,30 @@ describe('settleOrphanedAgentReplies', () => {
     const after = await db.conversationMessage.findUnique({ where: { id: done.id } })
     expect([after.agentStatus, after.text]).toEqual(['done', 'All done'])
   })
+
+  test('a reply that already streamed text keeps it and gets the reason appended', async () => {
+    // Settling used to overwrite the row's text with the note, so a thread with
+    // half an answer on screen lost it on the next restart (SHO-274).
+    const conv = await db.conversation.create({ data: { workspaceId: seed.workspaceId, kind: 'channel', name: 'partial', createdById: seed.owner } })
+    const partial = 'The migration adds an index to session_id, and the second one'
+    const stuck = await db.conversationMessage.create({
+      data: {
+        conversationId: conv.id,
+        workspaceId: seed.workspaceId,
+        authorType: 'agent',
+        seq: 9101,
+        text: partial,
+        agentStatus: 'running',
+      },
+    })
+
+    expect(await settleOrphanedAgentReplies(0)).toBeGreaterThanOrEqual(1)
+
+    const after = await db.conversationMessage.findUnique({ where: { id: stuck.id } })
+    expect(after.agentStatus).toBe('error')
+    expect(after.text.startsWith(partial)).toBe(true)
+    expect(after.text).toContain('interrupted because the server restarted')
+    // Appended once, not once per settlement pass.
+    expect(after.text.split('interrupted because the server restarted')).toHaveLength(2)
+  })
 })

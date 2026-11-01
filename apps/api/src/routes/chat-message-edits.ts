@@ -51,6 +51,7 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { scopeChatMessages } from '../generated/chat-message.hooks'
+import { DEFAULT_STALE_AFTER_MS } from '../services/chat-turn-state.service'
 
 /** Rows one delta read may return before the client is told to reload. */
 export const CHAT_CHANGES_CAP = 200
@@ -255,6 +256,31 @@ export function createChatMessageEditRoutes(): Hono {
 
     const sessionId = message.sessionId
     const cutoff = message.createdAt
+
+    // Refuse to cut a turn that is still being written. `trackUsageFromStream`
+    // keeps its assistant row id and updates it on a 2s throttle; deleting that
+    // row mid-turn made every later snapshot fail P2025 and vanish, which is one
+    // way a whole reply went missing (SHO-274). The client stops the turn and
+    // retries, so 409 is a signal, not an error it has to explain.
+    const live = await prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      select: { activeTurnId: true, activeTurnHeartbeatAt: true },
+    })
+    if (
+      live?.activeTurnId &&
+      live.activeTurnHeartbeatAt &&
+      Date.now() - live.activeTurnHeartbeatAt.getTime() < DEFAULT_STALE_AFTER_MS
+    ) {
+      return c.json(
+        {
+          error: {
+            code: 'turn_active',
+            message: 'This turn is still running. Stop it, then edit the message.',
+          },
+        },
+        409,
+      )
+    }
 
     // Atomic: bump everything after the cutoff AND the row itself in
     // one transaction so a partial failure can't leave the session
