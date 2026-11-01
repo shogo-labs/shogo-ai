@@ -4,10 +4,30 @@
 # README (dotted metric names, builder queries not PromQL, v2alpha1, real
 # channel).
 #
-# Why: when warm-pool depth drops below 3, every new project request eats a
-# 5-minute cold start (the b11c65dd-shaped tail latency). The warm-pool
-# controller is supposed to refill, but it can't if the system pool is out of
-# memory or if the runtime image fails to pull. Either way: page on-call.
+# Why: when warm-pool depth drops below the region's declared minimum, every
+# new project request eats a 5-minute cold start (the b11c65dd-shaped tail
+# latency). The warm-pool controller is supposed to refill, but it can't if the
+# system pool is out of memory or if the runtime image fails to pull. Either
+# way: page on-call.
+#
+# THRESHOLD SOURCE: this used to be the literal `3`, which is below every
+# minimum the overlays declare — `production` (the base overlay) declares
+# `WARM_POOL_MIN_PODS: "10"`, `production-us` and `production-eu` declare `5`.
+# A rule that fires only under 3 therefore tolerates a two-pod shortfall in a
+# region that declares five, and EU can sit on its floor all night without ever
+# paging. The floor here is the lowest declared production minimum (5), not the
+# base overlay's 10: this is one rule with one target and the deployed
+# v2alpha1 schema has not been shown to accept a per-region target map, so a
+# target of 10 would page EU (which declares 5) permanently. When you change a
+# production overlay's `WARM_POOL_MIN_PODS`, change this to match — and if the
+# deployed schema does take per-region targets, prefer that over this literal.
+# `scripts/__tests__/signoz-warm-pool-thresholds.test.ts` pins the relationship.
+#
+# ACCEPTED RESIDUAL: with one global target of 5, a region parked at 6-9 pods
+# does not page even though the base overlay declares 10. Accepted by the plan
+# owner on 2026-10-14 — a target of 10 would page EU (which declares 5)
+# permanently, which is worse than an under-sensitive floor. Closing this
+# properly needs a per-region target, i.e. the schema question above.
 #
 # SIGNAL CHANGE: this used to be a PromQL join of kube_pod_status_phase against
 # kube_pod_labels{label_shogo_io_pool_status="available"}. Neither series exists
@@ -56,7 +76,11 @@ condition:
       - name: warning
         op: below
         matchType: all_the_times
-        target: 3
+        # Lowest declared production minimum: production-us and production-eu
+        # both set WARM_POOL_MIN_PODS=5 (the base `production` overlay sets 10,
+        # which no single region satisfies). See the THRESHOLD SOURCE note at
+        # the top of this file before changing it.
+        target: 5
         channels: [platform-oncall]
   # If the API stops publishing the gauge entirely (crash, or the controller
   # never starting) that is at least as bad as a low reading, and a "below"
@@ -79,9 +103,9 @@ notificationSettings:
     interval: 6h
     alertStates: [firing]
 annotations:
-  summary: "Warm pool has fewer than 3 available pods for 10+ minutes"
+  summary: "Warm pool has fewer than 5 available pods for 10+ minutes"
   description: |
-    Warm-pool depth has been below 3 for 10+ minutes in a production region.
+    Warm-pool depth has been below 5 for 10+ minutes in a production region.
     This means most new project starts are hitting the 5-minute cold-start path
     instead of the sub-second warm-pool handoff.
 
