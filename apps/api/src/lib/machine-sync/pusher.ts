@@ -18,14 +18,31 @@ import type { PrismaClient } from '../../generated/prisma-pg/client'
 import { applyRewrites, delegateName, MIRROR_MODELS } from './models'
 import { installSyncTriggers } from './triggers'
 
-/** Rows per page when a whole model is sent for the first time. */
-const SNAPSHOT_PAGE_ROWS = 500
+/** Rows read from the desktop per query while building a snapshot page. */
+const SNAPSHOT_READ_CHUNK = 100
 /** Change rows read from the log per tick. */
 const CHANGE_BATCH_ROWS = 5_000
 /** Rows per HTTPS request. */
 const MAX_ROWS_PER_REQUEST = 500
-/** Bytes per HTTPS request, before it is split. */
-const MAX_BYTES_PER_REQUEST = 1_000_000
+/**
+ * Bytes of serialized rows per HTTPS request.
+ *
+ * This is the limit that matters, and the one that was missing (SHO-276): a
+ * 500-row ChatMessage page is 21 MB of JSON, which took over 125 s to upload, so
+ * Envoy cut it (`0 DR 21429930 … 125004`) and the snapshot started over under a
+ * new epoch — forever. Four megabytes goes through well inside the proxy's
+ * window, and a page that would exceed it is split instead of being sent.
+ */
+const MAX_BYTES_PER_REQUEST = 4_000_000
+/**
+ * Client-side deadline per request. What the proxy enforces is 125 s; giving up
+ * first means a page we abandoned is retried under the same epoch rather than
+ * discovered as a socket reset with no body to read.
+ */
+const REQUEST_TIMEOUT_MS = Math.max(
+  5_000,
+  Number(process.env.SHOGO_MACHINE_SYNC_TIMEOUT_MS ?? 90_000) || 90_000,
+)
 /** How long a change may wait before it is pushed anyway. */
 const IDLE_PUSH_INTERVAL_MS = 30_000
 /** Poll for new changes. Cheap: one indexed `SELECT max(seq)`. */
@@ -142,6 +159,24 @@ export class MachineSyncPusher {
   private stalledUntil = 0
   private pendingChanges = 0
   private copyReady = false
+  /**
+   * Where the current snapshot got to, so a page that fails is retried from
+   * there under the *same* epoch instead of sending the database again under a
+   * new one (SHO-276 — eight epochs, and no copy, in one day). In memory only:
+   * a restart may start over.
+   */
+  private snapshotProgress: {
+    epoch: string
+    /** Change-log position this snapshot speaks for, taken before the pages. */
+    claimed: number
+    modelIndex: number
+    lastId: string | null
+    /** Byte budget for the next page; halved after a timeout or a 413. */
+    pageBytes: number
+  } | null = null
+  /** Status and code of the last failed POST, for the retry decision. */
+  private lastPostStatus = 0
+  private lastPostCode: string | null = null
 
   constructor(opts: MachineSyncPusherOptions) {
     this.opts = opts
@@ -245,6 +280,7 @@ export class MachineSyncPusher {
         this.epoch = null
         this.cursor = 0
         this.snapshotNeeded = false
+        this.snapshotProgress = null
         this.copyReady = false
       }
       const state = await this.loadState(instanceId)
@@ -436,14 +472,31 @@ export class MachineSyncPusher {
   ): Promise<boolean> {
     const fetchImpl = this.opts.fetchImpl ?? fetch
     const url = `${this.opts.getCloudUrl().replace(/\/$/, '')}/api/machines/${encodeURIComponent(instanceId)}/sync`
-    const response = await fetchImpl(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: toJson(body),
-    })
+    const payload = toJson(body)
+    this.lastPostStatus = 0
+    this.lastPostCode = null
+    const startedPost = Date.now()
+    let response: Response
+    try {
+      response = await fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: payload,
+        // Give up before the proxy does, so the page is retried under the same
+        // epoch instead of being cut mid-upload with no reply to read.
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      })
+    } catch (err) {
+      // No status: a timeout or a dropped socket. `shouldShrinkPage` treats that
+      // as "send a smaller body next time".
+      this.failureCount++
+      this.lastError = (err as Error)?.name === 'TimeoutError' ? 'request timeout' : (err as Error).message
+      this.log(`[MachineSync] push failed after ${Date.now() - startedPost} ms: ${this.lastError}`)
+      return false
+    }
 
     if (response.ok) {
       this.failureCount = 0
@@ -462,8 +515,10 @@ export class MachineSyncPusher {
       return true
     }
 
+    this.lastPostStatus = response.status
     const result = (await response.json().catch(() => ({}))) as SyncBatchResponse
     const code = result.code ?? result.error?.code
+    this.lastPostCode = code ?? null
     if (code === 'epoch_mismatch') {
       // The cloud holds rows from a database that no longer exists here, or it
       // has never accepted a snapshot from this one.
@@ -527,62 +582,132 @@ export class MachineSyncPusher {
    * The cloud keeps the rows it already has for this machine until the last
    * request of the snapshot (which may carry `complete: true`), so a desktop
    * that goes offline halfway through leaves a readable, if stale, copy.
+   *
+   * A page is bounded by **bytes**, not rows: one 500-row ChatMessage page was
+   * 21 MB, which no request survives (SHO-276). And a page that fails resumes
+   * from the same model and keyset under the same epoch — a new epoch is what
+   * made every retry start the database again.
    */
   private async runSnapshot(instanceId: string, apiKey: string): Promise<boolean> {
     const prisma = this.opts.prisma as any
-    const epoch = crypto.randomUUID()
-    // The change-log position this snapshot speaks for, taken *before* the
-    // pages: a row written while a page is being read may not be in it, and
-    // claiming a later position would prune that change unsent.
-    const claimed = await this.maxSeq()
     const order = modelOrder()
     const models = [...MIRROR_MODELS].sort(
       (a, b) => (order.get(a) ?? 999) - (order.get(b) ?? 999),
     )
 
-    for (const model of models) {
-      let lastId: string | null = null
-      for (;;) {
-        const page: Record<string, unknown>[] = await prisma[delegateName(model)].findMany({
-          orderBy: { id: 'asc' },
-          take: SNAPSHOT_PAGE_ROWS,
-          ...(lastId ? { where: { id: { gt: lastId } } } : {}),
-        })
-        if (!page.length) break
-        lastId = String(page[page.length - 1].id)
+    if (!this.snapshotProgress) {
+      // The change-log position this snapshot speaks for, taken *before* the
+      // pages: a row written while a page is being read may not be in it, and
+      // claiming a later position would prune that change unsent.
+      this.snapshotProgress = {
+        epoch: crypto.randomUUID(),
+        claimed: await this.maxSeq(),
+        modelIndex: 0,
+        lastId: null,
+        pageBytes: MAX_BYTES_PER_REQUEST,
+      }
+    }
+    const progress = this.snapshotProgress
+
+    for (; progress.modelIndex < models.length; progress.modelIndex++) {
+      const model = models[progress.modelIndex]
+      let done = false
+      while (!done) {
+        const page = await this.readSnapshotPage(model, progress.lastId, progress.pageBytes)
+        if (!page.rows.length) break
+        const lastId = String(page.rows[page.rows.length - 1].id)
         const ok = await this.post(instanceId, apiKey, {
-          epoch,
+          epoch: progress.epoch,
           mode: 'snapshot',
           cursor: 0,
-          models: [{ model, rows: page }],
+          models: [{ model, rows: page.rows }],
         })
-        if (!ok) return false
-        if (page.length < SNAPSHOT_PAGE_ROWS) break
+        if (!ok) {
+          // Same epoch, same keyset position, smaller page if the failure was
+          // the size of the body. Nothing is re-read from the start.
+          if (this.shouldShrinkPage()) {
+            progress.pageBytes = Math.max(64_000, Math.floor(progress.pageBytes / 2))
+            this.log(
+              `[MachineSync] Retrying ${model} page at ${progress.pageBytes} bytes after ${
+                this.lastPostStatus || 'timeout'
+              }`,
+            )
+          }
+          return false
+        }
+        progress.lastId = lastId
+        done = page.exhausted
       }
+      progress.lastId = null
     }
 
     // Anything written while the pages were read is replayed as a delta: the
     // upserts are idempotent, and a change can never be pruned before it was
     // sent.
     const done = await this.post(instanceId, apiKey, {
-      epoch,
+      epoch: progress.epoch,
       mode: 'snapshot',
-      cursor: claimed,
+      cursor: progress.claimed,
       models: [],
       snapshot: { complete: true, models },
     })
     if (!done) return false
 
+    const epoch = progress.epoch
+    this.snapshotProgress = null
     this.snapshotNeeded = false
     this.epoch = epoch
     this.copyReady = true
     // The cloud now holds `epoch`; keep the same one here, or every later
     // delta goes out under a stale epoch and is answered with a full snapshot.
-    await this.advance(instanceId, claimed, epoch)
+    await this.advance(instanceId, progress.claimed, epoch)
     this.log(`[MachineSync] Snapshot complete under epoch ${epoch.slice(0, 8)}`)
     return true
   }
+
+  /**
+   * One page of one model: rows in id order, stopped at the byte budget.
+   *
+   * `exhausted` means the model has no more rows after this page. Rows read past
+   * the budget are simply re-read by the next page, because the next page starts
+   * after this one's last id.
+   */
+  private async readSnapshotPage(
+    model: string,
+    afterId: string | null,
+    byteBudget: number,
+  ): Promise<{ rows: Record<string, unknown>[]; exhausted: boolean }> {
+    const prisma = this.opts.prisma as any
+    const rows: Record<string, unknown>[] = []
+    let bytes = 0
+    let cursor = afterId
+    for (;;) {
+      const chunk: Record<string, unknown>[] = await prisma[delegateName(model)].findMany({
+        orderBy: { id: 'asc' },
+        take: SNAPSHOT_READ_CHUNK,
+        ...(cursor ? { where: { id: { gt: cursor } } } : {}),
+      })
+      if (!chunk.length) return { rows, exhausted: true }
+      for (const row of chunk) {
+        const size = toJson(row).length
+        // A single row bigger than the budget still has to go, alone.
+        if (rows.length && bytes + size > byteBudget) return { rows, exhausted: false }
+        rows.push(row)
+        bytes += size
+        cursor = String(row.id)
+      }
+      if (chunk.length < SNAPSHOT_READ_CHUNK) return { rows, exhausted: true }
+    }
+  }
+
+  /** A failure this retry can answer by sending a smaller body. */
+  private shouldShrinkPage(): boolean {
+    const status = this.lastPostStatus
+    if (!status) return true // a client timeout: the body was too slow to upload
+    return status === 413 || status === 408 || status === 429 || status >= 500
+  }
 }
+
 
 /** One entry per row: the last op wins. */
 function coalesceChanges(

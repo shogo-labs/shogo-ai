@@ -25,6 +25,7 @@ import { prisma, InstanceKind } from '../lib/prisma'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
 import { machineCopyOwnerIds } from '../lib/machine-workspace'
 import { retireMachineSiblings } from '../lib/machine-siblings'
+import { resolveInstanceIdentity, findIdentityRow, deviceIdFrom } from '../lib/instance-identity'
 import { can } from '../lib/authz'
 import { deleteMachineCopy } from '../lib/machine-sync/ingest'
 import { resolveApiKey } from './api-keys'
@@ -503,26 +504,22 @@ export async function authenticateInstanceWs(
       req.headers.get('x-shogo-kind') || url.searchParams.get('kind'),
     )
 
-    const instance = await prisma.instance.upsert({
-      where: {
-        workspaceId_userId_hostname: {
-          workspaceId: resolved.workspaceId,
-          userId: resolved.userId,
-          hostname,
-        },
-      },
-      update: { name, os, arch, kind, status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
-      create: {
-        workspaceId: resolved.workspaceId,
-        userId: resolved.userId,
-        name,
-        hostname,
-        os,
-        arch,
-        kind,
-        status: 'online',
-        lastSeenAt: new Date(),
-      },
+    // Hostname is not an identity: macOS renames itself per network, so a row
+    // is found by device id first and the hostname is a field on it (SHO-276).
+    const deviceId = req.headers.get('x-shogo-device-id') || url.searchParams.get('deviceId')
+    const resolvedRow = await resolveInstanceIdentity(prisma, {
+      workspaceId: resolved.workspaceId,
+      userId: resolved.userId,
+      hostname,
+      name,
+      os,
+      arch,
+      kind,
+      deviceId,
+    })
+    const instance = await prisma.instance.update({
+      where: { id: resolvedRow.id },
+      data: { status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
     })
 
     return { instanceId: instance.id, workspaceId: resolved.workspaceId }
@@ -713,6 +710,7 @@ export function instanceRoutes() {
       os?: string
       arch?: string
       kind?: string
+      deviceId?: string
       metadata?: Record<string, unknown>
     }>()
 
@@ -724,18 +722,26 @@ export function instanceRoutes() {
     // The worker sends both, the desktop sends neither, so the default
     // 'desktop' here keeps existing clients on the existing row shape.
     const kind = parseInstanceKind(c.req.header('x-shogo-kind') || body.kind)
-    const where = {
-      workspaceId_userId_hostname: {
-        workspaceId: resolved.workspaceId,
-        userId: resolved.userId,
-        hostname: body.hostname,
-      },
+    const deviceId = deviceIdFrom(
+      c.req.header('x-shogo-device-id') || body.deviceId || null,
+      body.metadata,
+    )
+    const identity = {
+      workspaceId: resolved.workspaceId,
+      userId: resolved.userId,
+      hostname: body.hostname,
+      name: body.name || body.hostname,
+      os: body.os || null,
+      arch: body.arch || null,
+      kind,
+      deviceId,
+      metadata: body.metadata,
     }
 
     // A viewer puts the desktop on a 5 s poll; writing the row on every one of
     // those was ~190k upserts/day for a lastSeenAt nobody reads that finely
     // (PERF-6). Read first and only write when something changed or the
-    // timestamp is getting old. The read is a unique-index lookup.
+    // timestamp is getting old. The read is an indexed lookup.
     const fields = {
       name: body.name || body.hostname,
       os: body.os || null,
@@ -743,34 +749,19 @@ export function instanceRoutes() {
       kind,
       metadata: body.metadata,
     }
-    const existing = await prisma.instance.findUnique({ where })
+    const existing = await findIdentityRow(prisma, identity)
+    // A hostname the row does not carry yet, or a device id it has not adopted,
+    // is a change the write has to make (SHO-276): skipping it is what left a
+    // renamed Mac on a stale hostname.
+    const identityChanged = Boolean(
+      existing && (existing.hostname !== body.hostname || (deviceId && !existing.deviceId)),
+    )
     const instance =
-      existing && !heartbeatNeedsWrite(existing, fields)
+      existing && !identityChanged && !heartbeatNeedsWrite(existing as any, fields)
         ? existing
-        : await prisma.instance.upsert({
-            where,
-            update: {
-              name: fields.name,
-              os: fields.os,
-              arch: fields.arch,
-              kind,
-              lastSeenAt: new Date(),
-              metadata: (body.metadata ?? undefined) as any,
-            },
-            create: {
-              workspaceId: resolved.workspaceId,
-              userId: resolved.userId,
-              name: fields.name,
-              hostname: body.hostname,
-              os: fields.os,
-              arch: fields.arch,
-              kind,
-              lastSeenAt: new Date(),
-              metadata: (body.metadata ?? undefined) as any,
-            },
-          })
+        : await resolveInstanceIdentity(prisma, { ...identity, touch: true })
 
-    const wsRequested = isWsRequested(instance.wsRequestedAt)
+    const wsRequested = isWsRequested((instance as any).wsRequestedAt ?? null)
     const nextPollIn = await computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
     const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })
 
@@ -786,6 +777,8 @@ export function instanceRoutes() {
           userId: resolved.userId,
           hostname: body.hostname,
           kind,
+          deviceId,
+          metadata: body.metadata,
         })
       } catch (err) {
         // Never fail a heartbeat over cleanup: the machine stays reachable and

@@ -51,15 +51,20 @@ export async function pendingMachineWorkspaceIds(userId: string): Promise<Map<st
   if (cached && Date.now() - cached.at < PENDING_TTL_MS) return cached.ids
   const ids = new Map<string, string>()
   try {
+    // Most recently seen first: when one machine has forked into two instance
+    // rows, the workspace's relay has to name the one that is still answering
+    // heartbeats (SHO-276).
     const instances = (await prisma.instance.findMany({
       where: { userId },
       select: { id: true, metadata: true },
+      orderBy: [{ lastSeenAt: { sort: 'desc', nulls: 'last' } }],
     })) as Array<{ id: string; metadata: unknown }>
     for (const instance of instances) {
       for (const entry of snapshotWorkspaceIds(instance.metadata)) {
         // The snapshot's own `machine.id` is the desktop's device id, not the
         // cloud instance id; the row it arrived on is what the relay needs.
-        ids.set(entry.id, instance.id)
+        // First writer wins, and the list is freshest-first.
+        if (!ids.has(entry.id)) ids.set(entry.id, instance.id)
       }
     }
   } catch {

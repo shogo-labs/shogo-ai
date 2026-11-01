@@ -648,6 +648,9 @@ async function startClaimedRow(row: QueueRow): Promise<QueueRowOutcome> {
  * hook or drain worker picks the replicated row up.
  */
 export async function dispatchNext(chatSessionId: string): Promise<boolean> {
+  // A machine workspace's chat is run by its desktop. Starting a turn here is
+  // what put cloud tool calls into a mirrored chat (SHO-276).
+  if ((await cloudSessionIds([chatSessionId])).size === 0) return false
   if (!(await isHomeRegionSession(chatSessionId))) return false
   if (!(await isSessionIdle(chatSessionId))) return false
   const row = await claimNextDispatchableRow(chatSessionId)

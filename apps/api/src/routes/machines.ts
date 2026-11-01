@@ -727,6 +727,8 @@ export function machineRoutes() {
     }
 
     try {
+      const pageBytes = Math.max(0, Number(c.req.header('content-length') ?? 0) || 0)
+      const startedApply = Date.now()
       const result = await applyBatch(
         {
           prisma,
@@ -736,6 +738,17 @@ export function machineRoutes() {
         },
         body,
       )
+      // A page's size and the time it took to apply are the two numbers that
+      // explain a copy that never finishes (SHO-276): a 21 MB page against a
+      // 125 s proxy window reads as a plain timeout in the logs otherwise.
+      if (!('code' in result)) {
+        const models = Array.isArray(body.models) ? body.models.length : 0
+        console.log(
+          `[MachineSync] ${instanceId}: applied ${result.applied} row(s) from ${models} model(s) in ${
+            Date.now() - startedApply
+          } ms (${(pageBytes / 1_048_576).toFixed(1)} MB${body.mode === 'snapshot' ? ', snapshot' : ''})`,
+        )
+      }
       if ('code' in result) {
         // `epoch_mismatch` is a normal step in a desktop's life (its database
         // was recreated, or it has never completed a snapshot): 409 tells it to

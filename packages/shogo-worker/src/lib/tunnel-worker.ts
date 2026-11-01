@@ -27,6 +27,7 @@ export interface TunnelWorkerInit {
     cloudUrl: string
     name?: string
     kind?: string
+    deviceId?: string
     wsUrlOverride?: string
   }
 }

@@ -23,6 +23,10 @@
 //      succeeded rows alone.
 //   6. After repair, detectFailedMigrations() returns [] for the same
 //      DB.
+//   7. detectFailedMigrations() works on a WAL DB whose -wal file is
+//      gone but whose -shm file was left behind.
+//   8. The chat_message_updated_at migration applies to a populated
+//      chat_messages table.
 //
 // This script exits 0 on success, 1 on any assertion failure, 2 on
 // setup error. It's intentionally not wired into CI yet — the desktop
@@ -422,6 +426,83 @@ console.log('\n── Test 10: on-demand repair composition ──')
     detectFailedMigrations(BUN_PATH, broken).length === 0,
   )
   queueCleanup(path.dirname(broken))
+}
+
+// =============================================================================
+// Test 11: detect on a WAL DB with a leftover -shm but no -wal
+// =============================================================================
+console.log('\n── Test 11: detectFailedMigrations on WAL DB with orphan -shm ──')
+{
+  const dbPath = makeDb()
+  seed(dbPath, [
+    { name: 'baseline', startedAt: 1_000, finishedAt: 1_100 },
+    { name: 'wedged', startedAt: 2_000, finishedAt: null, logs: 'oops' },
+  ])
+  const walDb = new Database(dbPath)
+  walDb.exec('PRAGMA journal_mode = WAL')
+  walDb.close()
+  fs.rmSync(`${dbPath}-wal`, { force: true })
+  fs.writeFileSync(`${dbPath}-shm`, '')
+
+  let failures: ReturnType<typeof detectFailedMigrations> = []
+  let error: unknown
+  try {
+    failures = detectFailedMigrations(BUN_PATH, dbPath)
+  } catch (err) {
+    error = err
+  }
+  check('does not throw', error === undefined, String(error ?? ''))
+  check('detects the wedged migration', failures.length === 1 && failures[0]?.name === 'wedged')
+
+  queueCleanup(path.dirname(dbPath))
+}
+
+// =============================================================================
+// Test 12: chat_message_updated_at migration applies to a populated table
+// =============================================================================
+console.log('\n── Test 12: chat_message_updated_at on a non-empty chat_messages ──')
+{
+  const dbPath = makeDb()
+  const db = new Database(dbPath, { create: true })
+  db.exec(`
+    CREATE TABLE "chat_sessions" ("id" TEXT NOT NULL PRIMARY KEY);
+    CREATE TABLE "chat_messages" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "sessionId" TEXT NOT NULL,
+      "role" TEXT NOT NULL,
+      "content" TEXT NOT NULL,
+      "imageData" TEXT,
+      "parts" TEXT,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "agent" TEXT NOT NULL DEFAULT 'technical', "model" TEXT, "authorUserId" TEXT,
+      CONSTRAINT "chat_messages_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "chat_sessions" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    );
+    CREATE INDEX "chat_messages_sessionId_idx" ON "chat_messages"("sessionId");
+    CREATE INDEX "chat_messages_sessionId_createdAt_idx" ON "chat_messages"("sessionId", "createdAt");
+    CREATE INDEX "chat_messages_sessionId_agent_createdAt_idx" ON "chat_messages"("sessionId", "agent", "createdAt");
+    CREATE INDEX "chat_messages_authorUserId_createdAt_idx" ON "chat_messages"("authorUserId", "createdAt");
+    INSERT INTO "chat_sessions" ("id") VALUES ('s1');
+    INSERT INTO "chat_messages" ("id", "sessionId", "role", "content", "createdAt")
+      VALUES ('m1', 's1', 'user', 'hi', '2026-10-31T09:56:01.127+00:00');
+  `)
+  const sql = fs.readFileSync(
+    path.join(import.meta.dir, 'prisma/migrations/20261030120000_chat_message_updated_at/migration.sql'),
+    'utf-8',
+  )
+  let error: unknown
+  try {
+    db.exec(sql)
+  } catch (err) {
+    error = err
+  }
+  check('migration applies without error', error === undefined, String(error ?? ''))
+  const row = db.query('SELECT "createdAt", "updatedAt" FROM "chat_messages" WHERE "id" = \'m1\'').get() as
+    | { createdAt: string; updatedAt: string }
+    | null
+  check('existing row backfilled from createdAt', row?.updatedAt === row?.createdAt, JSON.stringify(row))
+  db.close()
+
+  queueCleanup(path.dirname(dbPath))
 }
 
 // =============================================================================

@@ -44,8 +44,41 @@ const mockPrisma = {
       return { ...created }
     }),
     findUnique: mock(async (args: any) => {
+      if (args.where.workspaceId_userId_hostname) {
+        const w = args.where.workspaceId_userId_hostname
+        const id = instancesByKey.get(`${w.workspaceId}:${w.userId}:${w.hostname}`)
+        const found = id ? instancesById.get(id) : null
+        return found ? { ...found } : null
+      }
       const inst = instancesById.get(args.where.id)
       return inst ? { ...inst } : null
+    }),
+    // The heartbeat finds the row by device id before it looks at the hostname
+    // (SHO-276), and creates one for a machine it has never seen.
+    findFirst: mock(async (args: any) => {
+      const { workspaceId, userId, deviceId } = args.where ?? {}
+      for (const inst of instancesById.values()) {
+        if (workspaceId !== undefined && inst.workspaceId !== workspaceId) continue
+        if (userId !== undefined && inst.userId !== userId) continue
+        if (deviceId !== undefined && inst.deviceId !== deviceId) continue
+        return { ...inst }
+      }
+      return null
+    }),
+    create: mock(async (args: any) => {
+      const created = {
+        id: `inst-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ...args.data,
+        wsRequestedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      instancesById.set(created.id, created)
+      instancesByKey.set(
+        `${created.workspaceId}:${created.userId}:${created.hostname}`,
+        created.id,
+      )
+      return { ...created }
     }),
     findMany: mock(async (args: any) => {
       return [...instancesById.values()]

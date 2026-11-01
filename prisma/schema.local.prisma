@@ -2315,6 +2315,8 @@ model Instance {
   userId        String?
   name          String
   hostname      String
+  /// Stable per-machine id (`~/.shogo/device-id`). See schema.prisma.
+  deviceId      String?
   os            String?
   arch          String?
   kind          String    @default("desktop")
@@ -2333,6 +2335,7 @@ model Instance {
   @@unique([workspaceId, userId, hostname])
   @@index([workspaceId])
   @@index([workspaceId, userId])
+  @@index([workspaceId, userId, deviceId])
   @@index([workspaceId, kind])
   @@map("instances")
 }

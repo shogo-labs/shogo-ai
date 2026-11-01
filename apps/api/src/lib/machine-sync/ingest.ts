@@ -34,6 +34,11 @@ import {
   type ScalarType,
 } from './schema-model'
 
+/** Candidate rows read per page while pruning cloud-only rows from the copy. */
+const PRUNE_PAGE_ROWS = 500
+/** Ids per `deleteMany` — keeps each statement well under Postgres' parameter cap. */
+const PRUNE_DELETE_ROWS = 500
+
 export interface IngestRequest {
   epoch?: string
   mode?: 'changes' | 'snapshot'
@@ -81,6 +86,12 @@ interface ModelMeta {
   required: Array<{ name: string; type: ScalarType }>
   hasWorkspaceId: boolean
   order: number
+  /**
+   * Foreign keys that trace this model back to a workspace: `column` holds the
+   * parent's id, `target` is the parent model. Empty for a model nothing in a
+   * workspace points at.
+   */
+  scope: Array<{ column: string; target: string }>
 }
 
 let metadata: Map<string, ModelMeta> | null = null
@@ -123,8 +134,38 @@ function loadMetadata(): Map<string, ModelMeta> {
         .map((field) => ({ name: field.name, type: field.typeName as ScalarType })),
       hasWorkspaceId: model.fields.some((field) => field.name === 'workspaceId'),
       order: order.get(model.name) ?? 0,
+      scope: [],
     })
   }
+
+  // Which rows of a model belong to a workspace — directly (`project.workspaceId`)
+  // or through a parent (`chatMessage.sessionId → chatSession`). Built from the
+  // schema's own foreign keys so a new model is covered without a list here, and
+  // so a parent that links to its workspace by an unusual column (`ChatSession`'s
+  // project is `contextId`) still resolves.
+  const roots = new Set(['Workspace'])
+  for (let depth = 0; depth < 4; depth++) {
+    let added = false
+    for (const [name, modelMeta] of map) {
+      if (modelMeta.scope.length || roots.has(name)) continue
+      for (const fk of foreignKeys(modelMeta.model)) {
+        const [fromModel, column] = fk.from.split('.')
+        if (fromModel !== name) continue
+        const target = fk.to.split('.')[0]
+        if (target === name) continue
+        // The workspace column itself is handled by `hasWorkspaceId`.
+        if (column === 'workspaceId' && target === 'Workspace') continue
+        const targetMeta = map.get(target)
+        if (!targetMeta) continue
+        if (roots.has(target) || targetMeta.hasWorkspaceId || targetMeta.scope.length) {
+          modelMeta.scope.push({ column, target })
+        }
+      }
+      if (modelMeta.scope.length) added = true
+    }
+    if (!added) break
+  }
+
   metadata = map
   return map
 }
@@ -358,6 +399,24 @@ export async function applyBatch(
         )
       }
 
+      // "Does the cloud already have this id?" — one `findMany` per model, not
+      // one `findUnique` per row (SHO-276). A 4 MB ChatMessage page is hundreds
+      // of rows, and a round trip each is what made applying a page take longer
+      // than uploading it.
+      const unownedIds = entry.rows
+        .map((raw) => String(raw.id))
+        .filter((id) => !ownerByKey.has(`${entry.model}\u0000${id}`))
+      const presentInCloud = unownedIds.length
+        ? new Set(
+            (
+              (await delegate.findMany({
+                where: { id: { in: unownedIds } },
+                select: { id: true },
+              })) as Array<{ id: string }>
+            ).map((row) => row.id),
+          )
+        : new Set<string>()
+
       for (const raw of entry.rows) {
         if (orphans.has(String(raw.id))) continue
         const row = normaliseRow(entry.model, raw, modelMeta)
@@ -391,11 +450,7 @@ export async function applyBatch(
         if (!owner) {
           // The id could still be a cloud row of the same model that the mirror
           // table does not track (a row created before this machine existed).
-          const existing = await delegate.findUnique({
-            where: { id: recordId },
-            select: { id: true },
-          })
-          if (existing) {
+          if (presentInCloud.has(recordId)) {
             throw new OwnershipError(`${entry.model}/${recordId} already exists in the cloud`)
           }
         }
@@ -438,6 +493,15 @@ export async function applyBatch(
     if (snapshotComplete) {
       const removed = await dropOtherEpochs(tx, instanceId, epoch)
       deleted += removed
+      // The desktop is the only writer of a machine workspace (SHO-276). A
+      // completed snapshot is the moment to prove it: anything in the copy that
+      // this machine never sent — cloud-written interrupted notes, queued
+      // resumes, a `#general` the cloud seeded — is not part of the copy.
+      const unowned = await dropUnownedRows(tx, instanceId, ownerUserId)
+      if (unowned) {
+        deleted += unowned
+        console.log(`[MachineSync] ${instanceId}: removed ${unowned} cloud-only row(s) from the copy`)
+      }
     }
 
     // `lastIngestAt` is the cloud's record of an *accepted* copy, and the desktop
@@ -556,6 +620,193 @@ async function dropOtherEpochs(tx: any, instanceId: string, epoch: string): Prom
     removed += result.count ?? 0
   }
   await tx.machineMirrorRow.deleteMany({ where: { instanceId, epoch: { not: epoch } } })
+  return removed
+}
+
+/**
+ * Delete rows of the copy that this machine never sent.
+ *
+ * Only meaningful right after a completed snapshot, when `machine_mirror_rows`
+ * says exactly which rows the desktop has. Children go first, and the
+ * session/message tables cascade from their parents (`ChatSession`,
+ * `Conversation`), so removing the parent removes the notes written under it.
+ *
+ * Best-effort per model: a model whose children live outside this set would
+ * fail its foreign key, and one unremovable table must not fail a snapshot that
+ * is otherwise complete.
+ *
+ * One cloud-written row is part of the copy on purpose: the machine owner's
+ * `Member` row on each tagged workspace, which `ensureOwnerMember` creates so
+ * the owner can read their copy through the normal routes. The desktop's own
+ * member rows use local user ids, so that row is never in `machine_mirror_rows`
+ * — pruning it would lock the owner out of their own workspace (RBAC lane).
+ *
+ * Two kinds of model are walked: those that carry a `workspaceId`, and those
+ * that hang off a session/project/conversation (`ChatMessage`,
+ * `ChatQueuedMessage`, …) — the interrupted notes the cloud wrote into a chat
+ * the desktop owns are exactly the second kind.
+ */
+async function dropUnownedRows(
+  tx: any,
+  instanceId: string,
+  ownerUserId: string | null,
+): Promise<number> {
+  const meta = loadMetadata()
+  const tagged: Array<{ id: string }> = await tx.workspace.findMany({
+    where: { machineInstanceId: instanceId },
+    select: { id: true },
+  })
+  const workspaceIds = tagged.map((row) => row.id)
+  if (!workspaceIds.length) return 0
+
+  const owned = await tx.machineMirrorRow.findMany({
+    where: { instanceId },
+    select: { model: true, recordId: true },
+  })
+  const ownedByModel = new Map<string, Set<string>>()
+  for (const row of owned) {
+    const set = ownedByModel.get(row.model) ?? new Set<string>()
+    set.add(row.recordId)
+    ownedByModel.set(row.model, set)
+  }
+
+  if (ownerUserId) {
+    const ownerRows: Array<{ id: string }> = await tx.member.findMany({
+      where: { workspaceId: { in: workspaceIds }, userId: ownerUserId },
+      select: { id: true },
+    })
+    const members = ownedByModel.get('Member') ?? new Set<string>()
+    for (const row of ownerRows) members.add(row.id)
+    ownedByModel.set('Member', members)
+  }
+
+  const models = MIRROR_MODELS.filter((model) => meta.get(model)).sort(
+    (a, b) => (meta.get(b)?.order ?? 0) - (meta.get(a)?.order ?? 0),
+  )
+
+  /**
+   * The ids of the rows of `model` that belong to this copy.
+   *
+   * `ChatMessage`, `ChatQueuedMessage` and the rest of the session/project-time
+   * tables carry no `workspaceId` — only a foreign key — so pruning by workspace
+   * never reached the interrupted notes the cloud wrote into a session the
+   * desktop owns (SHO-276 AC5). Each model resolves through the foreign keys the
+   * schema declares (`ModelMeta.scope`), memoised per run.
+   */
+  const scopedIds = new Map<string, string[]>()
+  const idsOf = async (model: string, stack: Set<string> = new Set()): Promise<string[]> => {
+    const cached = scopedIds.get(model)
+    if (cached) return cached
+    if (stack.has(model)) return []
+    const seen = new Set(stack)
+    seen.add(model)
+
+    const found = new Set<string>()
+    if (model === 'Workspace') {
+      for (const id of workspaceIds) found.add(id)
+      scopedIds.set(model, [...found])
+      return [...found]
+    }
+    const modelMeta = meta.get(model)
+    const delegate = tx[delegateName(model)]
+    if (modelMeta && delegate) {
+      if (modelMeta.hasWorkspaceId) {
+        for (const row of (await delegate.findMany({
+          where: { workspaceId: { in: workspaceIds } },
+          select: { id: true },
+        })) as Array<{ id: string }>) {
+          found.add(row.id)
+        }
+      }
+      for (const { column, target } of modelMeta.scope) {
+        const parentList = await idsOf(target, seen)
+        // A parent page at a time: the session list alone runs to thousands.
+        for (let offset = 0; offset < parentList.length; offset += PRUNE_DELETE_ROWS) {
+          const chunk = parentList.slice(offset, offset + PRUNE_DELETE_ROWS)
+          for (const row of (await delegate.findMany({
+            where: { [column]: { in: chunk } },
+            select: { id: true },
+          })) as Array<{ id: string }>) {
+            found.add(row.id)
+          }
+        }
+      }
+    }
+    scopedIds.set(model, [...found])
+    return [...found]
+  }
+
+  let removed = 0
+  for (const model of models) {
+    const delegate = tx[delegateName(model)]
+    if (!delegate) continue
+    const ids = [...(ownedByModel.get(model) ?? new Set<string>())]
+    try {
+      const modelMeta = meta.get(model)!
+      if (modelMeta.hasWorkspaceId) {
+        removed += await pruneUnowned(delegate, { workspaceId: { in: workspaceIds } }, ids)
+      }
+      if (!modelMeta.hasWorkspaceId && !modelMeta.scope.length) continue
+      for (const { column, target } of modelMeta.scope) {
+        const parentList = await idsOf(target)
+        for (let offset = 0; offset < parentList.length; offset += PRUNE_DELETE_ROWS) {
+          const chunk = parentList.slice(offset, offset + PRUNE_DELETE_ROWS)
+          removed += await pruneUnowned(delegate, { [column]: { in: chunk } }, ids)
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[MachineSync] ${instanceId}: could not prune unowned ${model} rows (${
+          (err as Error)?.message ?? err
+        })`,
+      )
+    }
+  }
+
+  return removed
+}
+
+/**
+ * Delete the rows matching `where` whose ids are not owned — a page at a time.
+ *
+ * `id: { notIn: ownedIds }` puts every owned id into one statement; on a model
+ * with thousands of rows (3.5k chat messages, and Russell's copy is far bigger)
+ * that is past Postgres' bind-parameter limit. The error was swallowed, so the
+ * prune "succeeded" without deleting anything. Paging the candidates keeps each
+ * statement small whatever the copy's size, and deleting while walking upwards
+ * on `id` never skips a row (every delete is behind the cursor).
+ */
+async function pruneUnowned(
+  delegate: any,
+  where: Record<string, unknown>,
+  ownedIds: string[],
+): Promise<number> {
+  if (!ownedIds.length) {
+    const result = await delegate.deleteMany({ where })
+    return result.count ?? 0
+  }
+
+  const owned = new Set(ownedIds)
+  let removed = 0
+  let cursor: string | null = null
+  for (;;) {
+    const rows: Array<{ id: string }> = await delegate.findMany({
+      where: { ...where, ...(cursor ? { id: { gt: cursor } } : {}) },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+      take: PRUNE_PAGE_ROWS,
+    })
+    if (!rows.length) break
+    cursor = rows[rows.length - 1].id
+
+    const unowned = rows.filter((row) => !owned.has(row.id)).map((row) => row.id)
+    for (let offset = 0; offset < unowned.length; offset += PRUNE_DELETE_ROWS) {
+      const chunk = unowned.slice(offset, offset + PRUNE_DELETE_ROWS)
+      const result = await delegate.deleteMany({ where: { id: { in: chunk } } })
+      removed += result.count ?? 0
+    }
+    if (rows.length < PRUNE_PAGE_ROWS) break
+  }
   return removed
 }
 

@@ -63,10 +63,14 @@ mock.module('../useActiveWorkspace', () => ({
 }))
 
 const { useAgentActivity } = await import('../useAgentActivity')
+const { workspaceActivity } = await import('../../lib/workspace-activity')
 
 const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 60)))
 
 beforeEach(() => {
+  // The shared activity cache is one cache per window; a fresh test is a fresh
+  // window (SHO-277).
+  workspaceActivity.reset()
   listCalls = []
   serverTasks = [
     { id: 't-1', status: 'running', updatedAt: '2026-10-26T00:00:00.000Z', workspaceId: 'ws-1', title: 'Build it' },

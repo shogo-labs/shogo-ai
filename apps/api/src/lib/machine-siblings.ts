@@ -15,6 +15,7 @@
  * rows and sync state move to the row we keep.
  */
 import { prisma, InstanceKind, type InstanceKind as InstanceKindType } from './prisma'
+import { duplicateMachineRowIds } from './instance-identity'
 
 /**
  * Machines already swept in this process.
@@ -47,33 +48,48 @@ export async function retireMachineSiblings(params: {
   userId: string | null
   hostname: string
   kind: InstanceKindType
+  /** Stable per-machine id: the real identity of a desktop row (SHO-276). */
+  deviceId?: string | null
+  /** The heartbeat's metadata, for the pre-device-id duplicates. */
+  metadata?: unknown
 }): Promise<RetireResult> {
-  const { instanceId, workspaceId, userId, hostname, kind } = params
-  if (!userId || !hostname) return { retired: 0 }
+  const { instanceId, workspaceId, userId, hostname, kind, deviceId, metadata } = params
+  if (!userId || (!hostname && !deviceId)) return { retired: 0 }
 
-  const key = `${userId}\u0000${hostname}\u0000${kind}`
+  // Keyed on the machine, not the hostname: a hostname-keyed sweep is blind to
+  // the duplicate a *rename* created, which is exactly the row that keeps every
+  // push refused `409 mirror_ownership` (SHO-276).
+  const key = `${userId}\u0000${deviceId ?? hostname}\u0000${kind}`
   if (swept.has(key)) return { retired: 0 }
 
   const siblings = await prisma.instance.findMany({
     where: {
       userId,
-      hostname,
       kind,
       id: { not: instanceId },
       // A `cli_worker` is a workspace's dev box, not the person's machine: the
       // same host running one in two workspaces is two registrations, and both
       // stay. Only a desktop's rows are one machine.
       ...(kind === InstanceKind.cli_worker ? { workspaceId } : {}),
+      ...(deviceId ? { OR: [{ deviceId }, { hostname }] } : { hostname }),
     },
-    select: { id: true },
+    select: { id: true, metadata: true },
   })
+  const duplicateIds = await duplicateMachineRowIds({
+    tx: prisma,
+    instanceId,
+    workspaceId,
+    userId,
+    kind: kind as string,
+    deviceId: deviceId ?? null,
+    metadata,
+  })
+  const ids = [...new Set([...siblings.map((row) => row.id), ...duplicateIds])]
   // Nothing to do: remember it so the next heartbeat goes straight to its answer.
-  if (!siblings.length) {
+  if (!ids.length) {
     swept.add(key)
     return { retired: 0 }
   }
-
-  const ids = siblings.map((row) => row.id)
 
   await prisma.$transaction(async (tx) => {
     // A project pinned to a sibling keeps its machine, not a dangling id.

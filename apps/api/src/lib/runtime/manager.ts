@@ -21,7 +21,6 @@ import {
   realpathSync,
   renameSync,
   copyFileSync,
-  readdirSync,
 } from 'fs'
 import { join, dirname, resolve, basename } from 'path'
 import { connect } from 'node:net'
@@ -31,6 +30,7 @@ import { pkg } from '../../../../../packages/cli/src/pkg'
 import { stackSeedsItself } from '../../../../../packages/core/src/tech-stack-registry'
 import { cloneTree, defaultCloneMode, type CloneMode } from './clone-tree'
 import { reapChildLedger } from '@shogo-ai/sdk/child-ledger'
+import { reapChildLedgersUnder } from './child-ledger-sweep'
 import {
   WorkerRuntimeManager,
   type ProjectSpawnConfig,
@@ -339,6 +339,21 @@ export function resolveRuntimeMaxCount(): number {
   return resolveWorkspacePreviewMax() + resolveWorkspaceBackgroundMax() + 3
 }
 
+/**
+ * How often the running API re-sweeps for orphaned runtime children (SHO-277).
+ * 10 minutes is frequent enough that a dev server launched by an agent that
+ * then died does not survive a working day, and rare enough that the `ps` scan
+ * is invisible. `0` disables the periodic sweep (boot sweep still runs).
+ */
+export function resolveOrphanReapIntervalMs(): number {
+  const explicit = process.env.RUNTIME_ORPHAN_REAP_INTERVAL_MS
+  if (explicit !== undefined && explicit !== '') {
+    const parsed = parseInt(explicit, 10)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 10 * 60_000
+  }
+  return 10 * 60_000
+}
+
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
   basePort: PORT_RANGE_START,
@@ -536,12 +551,16 @@ export class RuntimeManager implements IRuntimeManager {
    */
   private readonly liveTerminalSessions: Map<string, number> = new Map()
 
+  /** Periodic orphan sweep; `null` when disabled or not started yet. */
+  private orphanReapTimer: ReturnType<typeof setInterval> | null = null
+
   constructor(config: Partial<IRuntimeConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     // Fire and forget: the sweep shells out to `ps`/`lsof`, and awaiting it in
     // the constructor would block this API's event loop (and, on the desktop, its
     // tunnel) for the whole scan (SHO-185).
     void this.cleanupStaleProcesses()
+    this.startOrphanReapTimer()
     this.agentManager = new WorkerRuntimeManager({
       // Spawn `bun run <RUNTIME_SERVER>` so the desktop dev path can
       // use the source bundle / TS entry directly without depending on
@@ -726,37 +745,80 @@ export class RuntimeManager implements IRuntimeManager {
   }
 
   /**
-   * Reap the detached groups each project's runtime recorded before it died
-   * (SHO-144). `cleanupOrphanedViteWatchers` only ever knew about vite, which
-   * is the one child that leaves a pidfile; an exec shell or an API sidecar of
-   * a runtime that was SIGKILLed had no trail at all and survived to launchd.
+   * Reap the detached groups each runtime recorded before it died (SHO-144).
+   * `cleanupOrphanedViteWatchers` only ever knew about vite, which is the one
+   * child that leaves a pidfile; an exec shell or an API sidecar of a runtime
+   * that was SIGKILLed had no trail at all and survived to launchd.
    *
-   * The ledger is per project workspace, so this walks one level down. Each
-   * entry is only signalled while its command line still matches what was
-   * recorded — a reused pid is dropped, never killed.
+   * Walks the plain project dirs AND `.workspace-roots/*` (SHO-277) — the
+   * merged-root runtimes are the only kind the agent teams get, so skipping
+   * them meant the agents' exec children were never reaped. Each entry is only
+   * signalled while its command line still matches what was recorded, so a
+   * reused pid is dropped, never killed.
    */
   private reapOrphanedChildLedgers(workspacesDir: string): void {
     if (process.platform === 'win32') return
-    let entries: Array<{ name: string; isDirectory: () => boolean }>
+    let swept: ReturnType<typeof reapChildLedgersUnder>
     try {
-      entries = readdirSync(workspacesDir, { withFileTypes: true }) as any
-    } catch {
+      swept = reapChildLedgersUnder(workspacesDir)
+    } catch (err: any) {
+      console.warn(`[RuntimeManager] Child ledger reap failed: ${err?.message ?? err}`)
       return
     }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-      const workspaceDir = join(workspacesDir, entry.name)
-      try {
-        const { reaped } = reapChildLedger(workspaceDir)
-        if (reaped.length > 0) {
-          console.log(
-            `[RuntimeManager] Reaped ${reaped.length} orphaned child group(s) for ${entry.name}: ` +
-              reaped.map((child) => `${child.label}(pgid=${child.pgid})`).join(', '),
-          )
-        }
-      } catch (err: any) {
-        console.warn(`[RuntimeManager] Child ledger reap failed for ${entry.name}: ${err?.message ?? err}`)
+    for (const { dir, result } of swept) {
+      if (result.reaped.length === 0) continue
+      const name = dir.slice(workspacesDir.length + 1)
+      console.log(
+        `[RuntimeManager] Reaped ${result.reaped.length} orphaned child group(s) for ${name}: ` +
+          result.reaped.map((child) => `${child.label}(pgid=${child.pgid})`).join(', '),
+      )
+    }
+  }
+
+  /**
+   * The orphan sweep used to run once per API boot, so a desktop left open for
+   * days only ever reaped what was already orphaned when it started (SHO-277:
+   * 12 orphans, 3.6 GB, some 12 days old). Re-run it on a timer for as long as
+   * this process lives.
+   */
+  private startOrphanReapTimer(): void {
+    if (this.orphanReapTimer) return
+    const intervalMs = resolveOrphanReapIntervalMs()
+    if (intervalMs <= 0) return
+    const timer = setInterval(() => { void this.sweepOrphanedChildren('timer') }, intervalMs)
+    // Never keep the process alive for a housekeeping sweep.
+    ;(timer as { unref?: () => void }).unref?.()
+    this.orphanReapTimer = timer
+  }
+
+  /** Stop the periodic sweep (teardown + tests). */
+  stopOrphanReapTimer(): void {
+    if (!this.orphanReapTimer) return
+    clearInterval(this.orphanReapTimer)
+    this.orphanReapTimer = null
+  }
+
+  /**
+   * One orphan sweep: vite watcher groups and every runtime's child ledger.
+   * Called on the timer and by {@link stop} for the runtime it tore down.
+   */
+  private async sweepOrphanedChildren(reason: 'timer' | 'runtime-stop', runtimeDir?: string): Promise<void> {
+    if (process.platform === 'win32') return
+    if (reason === 'runtime-stop') {
+      if (!runtimeDir) return
+      const { reaped } = reapChildLedger(runtimeDir)
+      if (reaped.length > 0) {
+        console.log(
+          `[RuntimeManager] Reaped ${reaped.length} child group(s) of a stopped runtime: ` +
+            reaped.map((child) => `${child.label}(pgid=${child.pgid})`).join(', '),
+        )
       }
+      return
+    }
+    try {
+      await this.cleanupOrphanedViteWatchers()
+    } catch (err: any) {
+      console.warn(`[RuntimeManager] Periodic orphan sweep failed: ${err?.message ?? err}`)
     }
   }
 
@@ -3720,6 +3782,27 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     if (mi >= 0) this.workspacePreviewMru.splice(mi, 1)
     this.previewViewedAt.delete(key)
     this.dropBackgroundMru(key)
+    // The runtime is gone, so nothing else will ever clean up the detached
+    // groups it left behind. Reap its ledger now instead of waiting for the
+    // periodic sweep (SHO-277).
+    const runtimeDir = this.runtimeWorkingDir(key)
+    if (runtimeDir) await this.sweepOrphanedChildren('runtime-stop', runtimeDir)
+  }
+
+  /**
+   * The on-disk root a runtime key is spawned at. Merged-root runtimes live
+   * under the dot-prefixed `.workspace-roots`; a plain project runtime is
+   * `workspaces/<projectId>`.
+   */
+  private runtimeWorkingDir(key: string): string | null {
+    const workspacesDir = this.resolvedWorkspacesDir()
+    const projectWorkspacePrefix = 'ws:proj:'
+    if (key.startsWith(projectWorkspacePrefix)) {
+      return join(workspacesDir, '.workspace-roots', `proj-${key.slice(projectWorkspacePrefix.length)}`)
+    }
+    if (key.startsWith('ws:')) return join(workspacesDir, '.workspace-roots', key.slice('ws:'.length))
+    if (!key || key.includes(':')) return null
+    return join(workspacesDir, key)
   }
 
   /**

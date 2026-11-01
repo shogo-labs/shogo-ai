@@ -68,6 +68,7 @@ const { useWorkspaceChats } = await import("../useWorkspaceChats");
 const { chatActivityEvents, chatSessionEvents } = await import(
   "../../lib/chat-session-events"
 );
+const { workspaceActivity } = await import("../../lib/workspace-activity");
 
 function turn(id: string, startedAt = "2026-10-03T10:00:00.000Z") {
   return {
@@ -82,8 +83,13 @@ function turn(id: string, startedAt = "2026-10-03T10:00:00.000Z") {
   };
 }
 
-/** Let the poll's promise land and React re-render. */
+/**
+ * Let the poll's promise land and React re-render. Bun's fake timers move the
+ * timer queue, not `Date.now`, so each flush also starts a fresh shared
+ * activity window (SHO-277) — the same thing 5 s of real time would do.
+ */
 async function flush() {
+  workspaceActivity.reset()
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
@@ -124,6 +130,8 @@ function emitActivity(event: {
 
 beforeEach(async () => {
   cleanup();
+  // One shared activity cache per window (SHO-277).
+  workspaceActivity.reset();
   appStateListeners.clear();
   AppState.currentState = "active";
   sessionsResult = () => CHATS();

@@ -1,0 +1,40 @@
+name: API load (many agents)
+
+# Advisory and manual only. The sweep's budgets are wall-clock budgets measured
+# on the machine the bug was reported from (18 cores, load average 7–10); on a
+# 2-vCPU runner sixteen concurrent turns saturate the CPU and the same code
+# reports 180–285 ms of event-loop p99 whatever the relay does. The
+# deterministic half of the same card — writes and bytes per turn — runs on
+# every PR in the required `Lint, Typecheck, Test` lane via
+# `apps/api/src/__tests__/local-load/snapshot-write-budget.test.ts`.
+#
+# Dispatch this from a runner with real cores (`docs/perf/local-api.md`), or run
+# `bun run test:load:local` on the laptop you are profiling.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: api-load-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  many-agents:
+    name: many agents streaming on one computer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: bun run test:load:local
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-load
+          path: test-results/local-load/
+          if-no-files-found: ignore

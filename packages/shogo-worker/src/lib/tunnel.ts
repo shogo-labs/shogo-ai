@@ -21,6 +21,7 @@
  */
 import { hostname as osHostname, platform, arch as osArch } from 'node:os';
 import { workerUserAgent } from './user-agent.ts';
+import { getOrCreateDeviceId } from './device-id.ts';
 
 /**
  * Structured reason returned to the cloud (and ultimately to a Studio
@@ -170,6 +171,12 @@ export interface WorkerTunnelOptions {
   cloudUrl: string;
   /** Friendly machine name reported to the cloud (default: hostname). */
   name?: string;
+  /**
+   * Stable per-machine id (`~/.shogo/device-id` by default). The cloud keys a
+   * machine on this rather than on `hostname`: macOS renames the host per
+   * network, and a hostname-keyed row forked one machine into two (SHO-276).
+   */
+  deviceId?: string;
   /** Override the protocol-version-derived `kind` field on the heartbeat. */
   kind?: string;
   /** Explicit WS URL override (env: SHOGO_TUNNEL_WS_URL). */
@@ -248,6 +255,29 @@ export class WorkerTunnel {
 
   private getCloudUrl(): string {
     return this.opts.cloudUrl.replace(/\/$/, '');
+  }
+
+  /**
+   * The device id this machine reports, read once.
+   *
+   * A machine keeps its cloud row across a hostname change because of this id
+   * (SHO-276). `~/.shogo/device-id` is the same value `shogo login` sends, so a
+   * desktop and a worker on one box agree; a failure to read it is not fatal —
+   * the cloud then falls back to hostname, exactly as before.
+   */
+  private deviceIdValue: string | null = null;
+  private get deviceId(): string {
+    if (this.deviceIdValue !== null) return this.deviceIdValue;
+    let value = (this.opts.deviceId ?? '').trim();
+    if (!value) {
+      try {
+        value = getOrCreateDeviceId();
+      } catch {
+        value = '';
+      }
+    }
+    this.deviceIdValue = value;
+    return value;
   }
 
   private getWsBaseUrl(): string {
@@ -348,6 +378,7 @@ export class WorkerTunnel {
         'User-Agent': workerUserAgent(),
         'x-api-key': this.opts.apiKey,
         'x-shogo-kind': this.opts.kind ?? 'cli-worker',
+        ...(this.deviceId ? { 'x-shogo-device-id': this.deviceId } : {}),
       },
       body: JSON.stringify({
         hostname: hn,
@@ -630,6 +661,7 @@ export class WorkerTunnel {
         'x-shogo-os': os,
         'x-shogo-arch': arch,
         'x-shogo-kind': this.opts.kind ?? 'cli-worker',
+        ...(this.deviceId ? { 'x-shogo-device-id': this.deviceId } : {}),
       },
     };
 

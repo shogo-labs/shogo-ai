@@ -5,9 +5,9 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 const instanceUpdates: any[] = []
-const instanceUpserts: any[] = []
+const instanceCreates: any[] = []
 let resolveApiKeyResult: any = { workspaceId: 'ws-1', userId: 'user-1' }
-let upsertError: Error | null = null
+let createError: Error | null = null
 let registerError: Error | null = null
 let unregisterError: Error | null = null
 const registered: string[] = []
@@ -20,12 +20,15 @@ mock.module('../lib/prisma', () => withPrismaExports({
         instanceUpdates.push(args)
         return { id: args.where.id, ...args.data }
       }),
-      upsert: mock(async (args: any) => {
-        instanceUpserts.push(args)
-        if (upsertError) throw upsertError
-        return { id: 'inst-upserted', workspaceId: args.create.workspaceId }
+      // The WS handshake resolves the row by device id, then hostname (SHO-276).
+      findFirst: mock(async () => null),
+      findUnique: mock(async () => null),
+      create: mock(async (args: any) => {
+        instanceCreates.push(args)
+        if (createError) throw createError
+        return { id: 'inst-created', ...args.data }
       }),
-    },
+      },
   },
 }))
 
@@ -93,11 +96,11 @@ const {
 beforeEach(() => {
   _testing.tunnels.clear()
   instanceUpdates.length = 0
-  instanceUpserts.length = 0
+  instanceCreates.length = 0
   registered.length = 0
   unregistered.length = 0
   resolveApiKeyResult = { workspaceId: 'ws-1', userId: 'user-1' }
-  upsertError = null
+  createError = null
   registerError = null
   unregisterError = null
 })
@@ -278,19 +281,19 @@ describe('authenticateInstanceWs', () => {
         'x-shogo-arch': 'arm64',
       },
     }))
-    expect(bearer).toEqual({ instanceId: 'inst-upserted', workspaceId: 'ws-1' })
-    expect(instanceUpserts[0].create).toMatchObject({ hostname: 'host-a', name: 'Desktop A', os: 'darwin', arch: 'arm64' })
+    expect(bearer).toEqual({ instanceId: 'inst-created', workspaceId: 'ws-1' })
+    expect(instanceCreates[0].data).toMatchObject({ hostname: 'host-a', name: 'Desktop A', os: 'darwin', arch: 'arm64' })
 
     const xKey = await authenticateInstanceWs(new Request('http://x/api/instances/ws', {
       headers: { 'x-api-key': 'shogo_key_2', 'x-shogo-hostname': 'host-b' },
     }))
-    expect(xKey?.instanceId).toBe('inst-upserted')
+    expect(xKey?.instanceId).toBe('inst-created')
 
     const legacy = await authenticateInstanceWs(new Request('http://x/api/instances/ws?key=legacy&hostname=host-c&name=Desktop%20C'))
     expect(legacy?.workspaceId).toBe('ws-1')
   })
 
-  test('returns null for missing keys, unresolved keys, and upsert errors', async () => {
+  test('returns null for missing keys, unresolved keys, and row-write errors', async () => {
     expect(await authenticateInstanceWs(new Request('http://x/api/instances/ws'))).toBeNull()
 
     resolveApiKeyResult = null
@@ -299,7 +302,7 @@ describe('authenticateInstanceWs', () => {
     }))).toBeNull()
 
     resolveApiKeyResult = { workspaceId: 'ws-1', userId: 'user-1' }
-    upsertError = new Error('db down')
+    createError = new Error('db down')
     expect(await authenticateInstanceWs(new Request('http://x/api/instances/ws', {
       headers: { 'x-api-key': 'good' },
     }))).toBeNull()
