@@ -364,3 +364,63 @@ describeIfPg('AC4 — the cloud does not run a turn on the copy', () => {
     expect(await db.chatQueuedMessage.count({ where: { sessionId: session.id } })).toBe(queuedBefore)
   })
 })
+
+describeIfPg('AC5 — a completed snapshot removes what the cloud wrote into the copy', () => {
+  test('the interrupted note and the queued resume do not survive it', async () => {
+    const { ws, session, conversation, user } = await seedDesktop(`ac5-${suffix}`)
+    // A finished run from an earlier case would make `drain` a delta, and rows
+    // written straight into this database are not in the desktop's change log.
+    await db.machineSyncState.updateMany({ where: { instanceId: INSTANCE }, data: { lastIngestAt: null } })
+    await db.workspace.update({ where: { id: ws.id }, data: { machineInstanceId: INSTANCE } })
+    await ownEverything()
+
+    const seen: Seen = { sizes: [], batches: [], statuses: [] }
+    expect(await drain(pusherFor(cloud(seen), await freezeDesktop()))).toBe(true)
+
+    // What `postInterruptedResume` and the cloud's own seeding put in the copy:
+    // rows in tables that carry only `sessionId`/`workspaceId`, not a machine id.
+    const note = await db.chatMessage.create({
+      data: { sessionId: session.id, role: 'assistant', content: 'I was interrupted while working…' },
+    })
+    const resumeRow = await db.chatQueuedMessage.create({
+      data: {
+        sessionId: session.id,
+        userId: user.id,
+        kind: 'resume',
+        content: 'resume',
+        body: 'resume',
+      },
+    })
+    const seeded = await db.conversation.create({
+      data: { workspaceId: ws.id, name: '#cloud-seeded', slug: `cloud-${suffix}` },
+    })
+    const desktopMessage = await db.chatMessage.findFirst({
+      where: { sessionId: session.id, content: { startsWith: `ac5-${suffix}:0:` } },
+    })
+
+    const state = await db.machineSyncState.findFirst({ where: { instanceId: INSTANCE } })
+    const res = await cloud({ sizes: [], batches: [], statuses: [] })(
+      `http://cloud.test/api/machines/${INSTANCE}/sync`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          epoch: state?.epoch,
+          mode: 'snapshot',
+          cursor: 0,
+          models: [],
+          snapshot: { complete: true },
+        }),
+      },
+    )
+    expect(res.status).toBe(200)
+
+    // Gone: the note under a chat the desktop owns, the resume queued in it, and
+    // a channel the cloud seeded. Kept: everything the desktop actually sent.
+    expect(await db.chatMessage.findUnique({ where: { id: note.id } })).toBeNull()
+    expect(await db.chatQueuedMessage.findUnique({ where: { id: resumeRow.id } })).toBeNull()
+    expect(await db.conversation.findUnique({ where: { id: seeded.id } })).toBeNull()
+    expect(await db.chatMessage.findUnique({ where: { id: desktopMessage!.id } })).not.toBeNull()
+    expect(await db.conversation.findUnique({ where: { id: conversation.id } })).not.toBeNull()
+  }, 180_000)
+})

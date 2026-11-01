@@ -86,6 +86,12 @@ interface ModelMeta {
   required: Array<{ name: string; type: ScalarType }>
   hasWorkspaceId: boolean
   order: number
+  /**
+   * Foreign keys that trace this model back to a workspace: `column` holds the
+   * parent's id, `target` is the parent model. Empty for a model nothing in a
+   * workspace points at.
+   */
+  scope: Array<{ column: string; target: string }>
 }
 
 let metadata: Map<string, ModelMeta> | null = null
@@ -128,8 +134,38 @@ function loadMetadata(): Map<string, ModelMeta> {
         .map((field) => ({ name: field.name, type: field.typeName as ScalarType })),
       hasWorkspaceId: model.fields.some((field) => field.name === 'workspaceId'),
       order: order.get(model.name) ?? 0,
+      scope: [],
     })
   }
+
+  // Which rows of a model belong to a workspace — directly (`project.workspaceId`)
+  // or through a parent (`chatMessage.sessionId → chatSession`). Built from the
+  // schema's own foreign keys so a new model is covered without a list here, and
+  // so a parent that links to its workspace by an unusual column (`ChatSession`'s
+  // project is `contextId`) still resolves.
+  const roots = new Set(['Workspace'])
+  for (let depth = 0; depth < 4; depth++) {
+    let added = false
+    for (const [name, modelMeta] of map) {
+      if (modelMeta.scope.length || roots.has(name)) continue
+      for (const fk of foreignKeys(modelMeta.model)) {
+        const [fromModel, column] = fk.from.split('.')
+        if (fromModel !== name) continue
+        const target = fk.to.split('.')[0]
+        if (target === name) continue
+        // The workspace column itself is handled by `hasWorkspaceId`.
+        if (column === 'workspaceId' && target === 'Workspace') continue
+        const targetMeta = map.get(target)
+        if (!targetMeta) continue
+        if (roots.has(target) || targetMeta.hasWorkspaceId || targetMeta.scope.length) {
+          modelMeta.scope.push({ column, target })
+        }
+      }
+      if (modelMeta.scope.length) added = true
+    }
+    if (!added) break
+  }
+
   metadata = map
   return map
 }
@@ -604,6 +640,11 @@ async function dropOtherEpochs(tx: any, instanceId: string, epoch: string): Prom
  * the owner can read their copy through the normal routes. The desktop's own
  * member rows use local user ids, so that row is never in `machine_mirror_rows`
  * — pruning it would lock the owner out of their own workspace (RBAC lane).
+ *
+ * Two kinds of model are walked: those that carry a `workspaceId`, and those
+ * that hang off a session/project/conversation (`ChatMessage`,
+ * `ChatQueuedMessage`, …) — the interrupted notes the cloud wrote into a chat
+ * the desktop owns are exactly the second kind.
  */
 async function dropUnownedRows(
   tx: any,
@@ -639,9 +680,61 @@ async function dropUnownedRows(
     ownedByModel.set('Member', members)
   }
 
-  const models = MIRROR_MODELS.filter((model) => meta.get(model)?.hasWorkspaceId).sort(
+  const models = MIRROR_MODELS.filter((model) => meta.get(model)).sort(
     (a, b) => (meta.get(b)?.order ?? 0) - (meta.get(a)?.order ?? 0),
   )
+
+  /**
+   * The ids of the rows of `model` that belong to this copy.
+   *
+   * `ChatMessage`, `ChatQueuedMessage` and the rest of the session/project-time
+   * tables carry no `workspaceId` — only a foreign key — so pruning by workspace
+   * never reached the interrupted notes the cloud wrote into a session the
+   * desktop owns (SHO-276 AC5). Each model resolves through the foreign keys the
+   * schema declares (`ModelMeta.scope`), memoised per run.
+   */
+  const scopedIds = new Map<string, string[]>()
+  const idsOf = async (model: string, stack: Set<string> = new Set()): Promise<string[]> => {
+    const cached = scopedIds.get(model)
+    if (cached) return cached
+    if (stack.has(model)) return []
+    const seen = new Set(stack)
+    seen.add(model)
+
+    const found = new Set<string>()
+    if (model === 'Workspace') {
+      for (const id of workspaceIds) found.add(id)
+      scopedIds.set(model, [...found])
+      return [...found]
+    }
+    const modelMeta = meta.get(model)
+    const delegate = tx[delegateName(model)]
+    if (modelMeta && delegate) {
+      if (modelMeta.hasWorkspaceId) {
+        for (const row of (await delegate.findMany({
+          where: { workspaceId: { in: workspaceIds } },
+          select: { id: true },
+        })) as Array<{ id: string }>) {
+          found.add(row.id)
+        }
+      }
+      for (const { column, target } of modelMeta.scope) {
+        const parentList = await idsOf(target, seen)
+        // A parent page at a time: the session list alone runs to thousands.
+        for (let offset = 0; offset < parentList.length; offset += PRUNE_DELETE_ROWS) {
+          const chunk = parentList.slice(offset, offset + PRUNE_DELETE_ROWS)
+          for (const row of (await delegate.findMany({
+            where: { [column]: { in: chunk } },
+            select: { id: true },
+          })) as Array<{ id: string }>) {
+            found.add(row.id)
+          }
+        }
+      }
+    }
+    scopedIds.set(model, [...found])
+    return [...found]
+  }
 
   let removed = 0
   for (const model of models) {
@@ -649,7 +742,18 @@ async function dropUnownedRows(
     if (!delegate) continue
     const ids = [...(ownedByModel.get(model) ?? new Set<string>())]
     try {
-      removed += await pruneUnowned(delegate, { workspaceId: { in: workspaceIds } }, ids)
+      const modelMeta = meta.get(model)!
+      if (modelMeta.hasWorkspaceId) {
+        removed += await pruneUnowned(delegate, { workspaceId: { in: workspaceIds } }, ids)
+      }
+      if (!modelMeta.hasWorkspaceId && !modelMeta.scope.length) continue
+      for (const { column, target } of modelMeta.scope) {
+        const parentList = await idsOf(target)
+        for (let offset = 0; offset < parentList.length; offset += PRUNE_DELETE_ROWS) {
+          const chunk = parentList.slice(offset, offset + PRUNE_DELETE_ROWS)
+          removed += await pruneUnowned(delegate, { [column]: { in: chunk } }, ids)
+        }
+      }
     } catch (err) {
       console.warn(
         `[MachineSync] ${instanceId}: could not prune unowned ${model} rows (${
@@ -659,20 +763,6 @@ async function dropUnownedRows(
     }
   }
 
-  // Project chats carry no `workspaceId`: they belong to a project. Anything the
-  // cloud wrote into one of those chats is still a cloud write.
-  const sessions = [...(ownedByModel.get('ChatSession') ?? new Set<string>())]
-  try {
-    removed += await pruneUnowned(
-      tx.chatSession,
-      { workspaceId: null, project: { workspaceId: { in: workspaceIds } } },
-      sessions,
-    )
-  } catch (err) {
-    console.warn(
-      `[MachineSync] ${instanceId}: could not prune unowned project chats (${(err as Error)?.message ?? err})`,
-    )
-  }
   return removed
 }
 

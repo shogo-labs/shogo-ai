@@ -748,6 +748,35 @@ describe('the pusher', () => {
  * minted, but no snapshot was ever accepted — so the cloud holds no copy and a
  * delta cannot be applied to it.
  */
+/**
+ * The slice of Prisma's `where` the ingest actually sends: equality, `in`,
+ * `gt`, `not`, a bare `null`, and `OR` of those.
+ */
+function matchesWhere(row: FakeRow, where: any): boolean {
+  if (!where) return true
+  if (Array.isArray(where.OR)) {
+    if (!where.OR.some((clause: any) => matchesWhere(row, clause))) return false
+  }
+  for (const [key, condition] of Object.entries(where)) {
+    if (key === 'OR') continue
+    const value = (row as any)[key]
+    if (condition === null) {
+      if (value != null) return false
+      continue
+    }
+    if (condition && typeof condition === 'object' && !(condition instanceof Date)) {
+      const cond = condition as any
+      if (cond.in && !cond.in.includes(value)) return false
+      if (cond.not !== undefined && cond.not !== null && value === cond.not) return false
+      if (cond.gt !== undefined && !(value > cond.gt)) return false
+      if (cond.equals !== undefined && value !== cond.equals) return false
+      continue
+    }
+    if (value !== condition) return false
+  }
+  return true
+}
+
 function fakeCloudDb(
   options: {
     owned?: Record<string, string>
@@ -865,14 +894,11 @@ function fakeCloudDb(
         return {
           findUnique: async ({ where }: any) => rows.get(where.id) ?? null,
           findMany: async ({ where, orderBy, take }: any) => {
-            let candidates: string[] = where?.id?.in ?? [...rows.keys()]
-            if (where?.id?.gt) candidates = candidates.filter((id) => id > where.id.gt)
-            let out = candidates.map((id) => rows.get(id)).filter(Boolean) as FakeRow[]
-            if (where?.workspaceId?.in) {
-              out = out.filter((row) => (where.workspaceId.in as string[]).includes(row.workspaceId))
-            }
-            if (where?.workspaceId === null) out = out.filter((row) => row.workspaceId == null)
+            let out = [...rows.values()].filter((row) => matchesWhere(row, where))
             if (orderBy?.id === 'asc') out = out.sort((a, b) => (a.id < b.id ? -1 : 1))
+            if (typeof orderBy?.id === 'string' && orderBy.id !== 'asc') {
+              out = out.sort((a, b) => (a.id > b.id ? -1 : 1))
+            }
             if (typeof take === 'number') out = out.slice(0, take)
             return out
           },
@@ -883,9 +909,13 @@ function fakeCloudDb(
             return next
           },
           deleteMany: async ({ where }: any) => {
-            const ids: string[] = where?.id?.in ?? (where?.id ? [where.id] : [...rows.keys()])
             let count = 0
-            for (const id of ids) if (rows.delete(id)) count++
+            for (const [id, row] of [...rows]) {
+              if (matchesWhere(row, where)) {
+                rows.delete(id)
+                count++
+              }
+            }
             return { count }
           },
           update: async ({ where, data }: any) => {
@@ -1215,7 +1245,12 @@ describe('the ingest', () => {
     // 10-28, and work items nobody's desktop ever sent. 620 of them, so the prune
     // has to page past its first read and still keep the owned row.
     const { db, mirror, members, tables } = fakeCloudDb({
-      owned: { 'Conversation|c-1': 'inst-1', 'WorkItem|keep-1': 'inst-1' },
+      owned: {
+        'Conversation|c-1': 'inst-1',
+        'WorkItem|keep-1': 'inst-1',
+        'ChatSession|s-1': 'inst-1',
+        'ChatMessage|m-keep': 'inst-1',
+      },
     })
     // Owned by this run, so the previous-epoch sweep leaves them alone.
     for (const row of mirror.values()) row.epoch = 'epoch-2'
@@ -1226,6 +1261,17 @@ describe('the ingest', () => {
     tables.set('conversation', new Map<string, FakeRow>([
       ['c-1', { id: 'c-1', workspaceId: 'w1' }],
       ['c-cloud', { id: 'c-cloud', workspaceId: 'w1' }],
+    ]))
+    // A chat the desktop owns, with what the cloud wrote into it: an interrupted
+    // note and a queued resume. They carry only `sessionId`, which is why
+    // pruning by workspace alone never reached them (SHO-276 AC5).
+    tables.set('chatSession', new Map<string, FakeRow>([['s-1', { id: 's-1', workspaceId: 'w1' }]]))
+    tables.set('chatMessage', new Map<string, FakeRow>([
+      ['m-keep', { id: 'm-keep', sessionId: 's-1' }],
+      ['m-note', { id: 'm-note', sessionId: 's-1' }],
+    ]))
+    tables.set('chatQueuedMessage', new Map<string, FakeRow>([
+      ['q-resume', { id: 'q-resume', sessionId: 's-1' }],
     ]))
 
     const items = new Map<string, FakeRow>([['keep-1', { id: 'keep-1', workspaceId: 'w1' }]])
@@ -1247,8 +1293,10 @@ describe('the ingest', () => {
     expect([...items.keys()]).toEqual(['keep-1'])
     expect(tables.get('conversation')?.has('c-1')).toBe(true)
     expect(tables.get('conversation')?.has('c-cloud')).toBe(false)
+    expect([...(tables.get('chatMessage') ?? new Map()).keys()]).toEqual(['m-keep'])
+    expect([...(tables.get('chatQueuedMessage') ?? new Map()).keys()]).toEqual([])
     expect(members.map((row) => row.id)).toEqual(['m-owner'])
-    expect('ok' in result && result.deleted).toBe(621)
+    expect('ok' in result && result.deleted).toBe(623)
   })
 
   test('deleting a copy leaves the sync switch off, and clears the epoch', async () => {
