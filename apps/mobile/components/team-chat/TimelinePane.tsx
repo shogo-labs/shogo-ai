@@ -31,6 +31,7 @@ import { Composer, type ComposerHandle } from './Composer'
 import { MentionNudgeCard } from './MentionNudgeCard'
 import { EphemeralNotice } from './EphemeralNotice'
 import { AddToChannelConfirmHost, confirmsAddToChannel } from './AddToChannelConfirm'
+import { ChannelBroadcastConfirmHost } from './ChannelBroadcastConfirm'
 import { LinkPreviewConsentHost } from './LinkPreviewConsent'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
@@ -514,6 +515,7 @@ export function TimelinePane(props: TimelinePaneProps) {
         />
       )}
       <AddToChannelConfirmHost />
+      <ChannelBroadcastConfirmHost />
       <LinkPreviewConsentHost />
       <Composer
         ref={composerRef}
@@ -529,6 +531,7 @@ export function TimelinePane(props: TimelinePaneProps) {
         onEditLast={onEditLast}
         channelMemberIds={channelMemberIds}
         channels={channelDirectory}
+        broadcastTarget={{ kind: conversation.kind, name: conversation.name ?? null }}
       />
     </>
   )
