@@ -461,7 +461,7 @@ export async function applyBatch(
       // completed snapshot is the moment to prove it: anything in the copy that
       // this machine never sent — cloud-written interrupted notes, queued
       // resumes, a `#general` the cloud seeded — is not part of the copy.
-      const unowned = await dropUnownedRows(tx, instanceId)
+      const unowned = await dropUnownedRows(tx, instanceId, ownerUserId)
       if (unowned) {
         deleted += unowned
         console.log(`[MachineSync] ${instanceId}: removed ${unowned} cloud-only row(s) from the copy`)
@@ -598,8 +598,18 @@ async function dropOtherEpochs(tx: any, instanceId: string, epoch: string): Prom
  * Best-effort per model: a model whose children live outside this set would
  * fail its foreign key, and one unremovable table must not fail a snapshot that
  * is otherwise complete.
+ *
+ * One cloud-written row is part of the copy on purpose: the machine owner's
+ * `Member` row on each tagged workspace, which `ensureOwnerMember` creates so
+ * the owner can read their copy through the normal routes. The desktop's own
+ * member rows use local user ids, so that row is never in `machine_mirror_rows`
+ * — pruning it would lock the owner out of their own workspace (RBAC lane).
  */
-async function dropUnownedRows(tx: any, instanceId: string): Promise<number> {
+async function dropUnownedRows(
+  tx: any,
+  instanceId: string,
+  ownerUserId: string | null,
+): Promise<number> {
   const meta = loadMetadata()
   const tagged: Array<{ id: string }> = await tx.workspace.findMany({
     where: { machineInstanceId: instanceId },
@@ -617,6 +627,16 @@ async function dropUnownedRows(tx: any, instanceId: string): Promise<number> {
     const set = ownedByModel.get(row.model) ?? new Set<string>()
     set.add(row.recordId)
     ownedByModel.set(row.model, set)
+  }
+
+  if (ownerUserId) {
+    const ownerRows: Array<{ id: string }> = await tx.member.findMany({
+      where: { workspaceId: { in: workspaceIds }, userId: ownerUserId },
+      select: { id: true },
+    })
+    const members = ownedByModel.get('Member') ?? new Set<string>()
+    for (const row of ownerRows) members.add(row.id)
+    ownedByModel.set('Member', members)
   }
 
   const models = MIRROR_MODELS.filter((model) => meta.get(model)?.hasWorkspaceId).sort(

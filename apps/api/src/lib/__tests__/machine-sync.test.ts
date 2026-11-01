@@ -836,9 +836,27 @@ function fakeCloudDb(
                   row.userId === where.userId &&
                   (row.projectId ?? null) === (where.projectId ?? null),
               ) ?? null,
+            findMany: async ({ where }: any) =>
+              members.filter(
+                (row) =>
+                  (where?.workspaceId?.in ?? []).includes(row.workspaceId) &&
+                  (where?.userId === undefined || row.userId === where.userId),
+              ),
             create: async ({ data }: any) => {
               members.push(data)
               return data
+            },
+            deleteMany: async ({ where }: any) => {
+              const ids: string[] = where?.id?.in ?? []
+              let count = 0
+              for (const id of ids) {
+                const at = members.findIndex((row) => row.id === id)
+                if (at >= 0) {
+                  members.splice(at, 1)
+                  count++
+                }
+              }
+              return { count }
             },
           }
         }
@@ -1196,12 +1214,15 @@ describe('the ingest', () => {
     // What the cloud wrote into the copy itself: a conversation it seeded on
     // 10-28, and work items nobody's desktop ever sent. 620 of them, so the prune
     // has to page past its first read and still keep the owned row.
-    const { db, mirror, tables } = fakeCloudDb({
+    const { db, mirror, members, tables } = fakeCloudDb({
       owned: { 'Conversation|c-1': 'inst-1', 'WorkItem|keep-1': 'inst-1' },
     })
     // Owned by this run, so the previous-epoch sweep leaves them alone.
     for (const row of mirror.values()) row.epoch = 'epoch-2'
     tables.set('workspace', new Map([['w1', { id: 'w1', machineInstanceId: 'inst-1' }]]))
+    // The owner's membership is a cloud write that belongs to the copy: without
+    // it the owner cannot read their own workspace (RBAC lane, SHO-276).
+    members.push({ id: 'm-owner', workspaceId: 'w1', userId: 'cloud-user-1', projectId: null })
     tables.set('conversation', new Map<string, FakeRow>([
       ['c-1', { id: 'c-1', workspaceId: 'w1' }],
       ['c-cloud', { id: 'c-cloud', workspaceId: 'w1' }],
@@ -1226,6 +1247,7 @@ describe('the ingest', () => {
     expect([...items.keys()]).toEqual(['keep-1'])
     expect(tables.get('conversation')?.has('c-1')).toBe(true)
     expect(tables.get('conversation')?.has('c-cloud')).toBe(false)
+    expect(members.map((row) => row.id)).toEqual(['m-owner'])
     expect('ok' in result && result.deleted).toBe(621)
   })
 
