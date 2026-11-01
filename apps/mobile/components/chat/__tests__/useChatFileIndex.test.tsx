@@ -21,6 +21,13 @@ const FILES: Record<string, string[]> = {
 /** Every base URL a file list was read from, in order. */
 const listCalls: string[] = []
 
+/**
+ * While true, a list read stays pending until the test settles it — a turn-end
+ * refresh runs while the previous list is still the only one in hand.
+ */
+let manualReads = false
+const pendingReads: Array<{ baseUrl: string; settle: () => void }> = []
+
 mock.module("@shogo-ai/sdk/agent", () => ({
   AgentClient: class {
     baseUrl: string
@@ -29,7 +36,13 @@ mock.module("@shogo-ai/sdk/agent", () => ({
     }
     listWorkspaceFiles() {
       listCalls.push(this.baseUrl)
-      return Promise.resolve({ files: FILES[this.baseUrl] ?? [] })
+      if (!manualReads) {
+        return Promise.resolve({ files: FILES[this.baseUrl] ?? [] })
+      }
+      const baseUrl = this.baseUrl
+      return new Promise<{ files: string[] }>((resolve) => {
+        pendingReads.push({ baseUrl, settle: () => resolve({ files: FILES[baseUrl] ?? [] }) })
+      })
     }
   },
 }))
@@ -41,6 +54,8 @@ const { useChatFileIndex } = await import("../useChatFileIndex")
 
 beforeEach(() => {
   listCalls.length = 0
+  manualReads = false
+  pendingReads.length = 0
 })
 
 afterEach(() => {
@@ -118,6 +133,43 @@ describe("useChatFileIndex", () => {
       await waitFor(() => expect(result.current(`${PLANNER}/plans/next.md`)).toBe(true))
     } finally {
       FILES[PLANNER_URL] = ["plans/sealed.md"]
+    }
+  })
+
+  test("a finished turn keeps the other project's list until the new one arrives", async () => {
+    const projectAgentUrl = (projectId: string) =>
+      projectId === PLANNER ? PLANNER_URL : null
+    const { result, rerender } = renderHook(
+      ({ isStreaming }: { isStreaming: boolean }) =>
+        useChatFileIndex(WORKSPACE_URL, null, isStreaming, { projectAgentUrl }),
+      { initialProps: { isStreaming: true } },
+    )
+    await waitFor(() => expect(result.current("notes.md")).toBe(true))
+    await waitFor(() => expect(result.current(`${PLANNER}/plans/sealed.md`)).toBe(true))
+    const readsBefore = listCalls.filter((url) => url === PLANNER_URL).length
+
+    // The next turn writes one more file there, and the refresh is still in
+    // flight when the reply renders. The list already in hand stays readable:
+    // blanking it here is what made a chip depend on which request won.
+    manualReads = true
+    FILES[PLANNER_URL] = ["plans/sealed.md", "plans/next.md"]
+    try {
+      rerender({ isStreaming: false })
+
+      // Synchronously, before any read settles: no chip check ran to trigger
+      // anything, so this proves the refresh is eager *and* in place.
+      expect(result.current(`${PLANNER}/plans/sealed.md`)).toBe(true)
+      expect(listCalls.filter((url) => url === PLANNER_URL).length).toBe(readsBefore + 1)
+
+      act(() => {
+        for (const read of pendingReads.splice(0)) read.settle()
+      })
+      await waitFor(() => expect(result.current(`${PLANNER}/plans/next.md`)).toBe(true))
+      expect(result.current(`${PLANNER}/plans/sealed.md`)).toBe(true)
+    } finally {
+      FILES[PLANNER_URL] = ["plans/sealed.md"]
+      manualReads = false
+      pendingReads.length = 0
     }
   })
 })
