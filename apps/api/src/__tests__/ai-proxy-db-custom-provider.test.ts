@@ -685,9 +685,9 @@ describe('ai-proxy DB-defined model routing', () => {
       expect(headers['X-Title']).toBe('Shogo')
       expect(headers['X-OpenRouter-Title']).toBe('Shogo')
       const categories = sentCategories(headers)
-    expect(categories.length).toBeGreaterThan(0)
-    expect(categories.length).toBeLessThanOrEqual(OPENROUTER_MAX_CATEGORIES_PER_REQUEST)
-    expect(DEFAULT_OPENROUTER_CATEGORIES).toEqual(expect.arrayContaining(categories))
+      expect(categories.length).toBeGreaterThan(0)
+      expect(categories.length).toBeLessThanOrEqual(OPENROUTER_MAX_CATEGORIES_PER_REQUEST)
+      expect(DEFAULT_OPENROUTER_CATEGORIES).toEqual(expect.arrayContaining(categories))
     } finally {
       if (saved === undefined) delete process.env.OPENROUTER_API_KEY
       else process.env.OPENROUTER_API_KEY = saved

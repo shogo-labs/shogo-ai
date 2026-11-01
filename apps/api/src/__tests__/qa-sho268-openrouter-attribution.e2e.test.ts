@@ -312,4 +312,22 @@ describe('SHO-268 OpenRouter app attribution over the wire', () => {
       }
     }
   })
+
+  test('omits the header entirely when the configured list parses to nothing', async () => {
+    const saved = process.env.OPENROUTER_CATEGORIES
+    // Whitespace-only and empty entries all resolve to no categories.
+    process.env.OPENROUTER_CATEGORIES = ' , ,'
+    try {
+      const res = await postChat('hoshi-e2e')
+      expect(res.status).toBe(200)
+      const headers = lastReceived().headers
+      expect(headers.get('x-openrouter-categories')).toBeNull()
+      // The rest of the attribution set is unconditional.
+      expect(headers.get('x-openrouter-title')).toBe('Shogo')
+      expect(headers.get('http-referer')).toBe('https://shogo.ai')
+    } finally {
+      if (saved === undefined) delete process.env.OPENROUTER_CATEGORIES
+      else process.env.OPENROUTER_CATEGORIES = saved
+    }
+  })
 })
