@@ -364,7 +364,11 @@ async function expectRestoredDraft(page: Page, name: string, text: string) {
   const deadline = Date.now() + 20_000
   let seen = ""
   while (Date.now() < deadline) {
-    seen = await (await composer(page, name)).inputValue()
+    // Re-scope on every tick and never block on one locator: a re-render can
+    // drop the panel stamp `composer` just put on it.
+    seen = await (await composer(page, name))
+      .inputValue({ timeout: 2_000 })
+      .catch(() => "<detached>")
     if (seen === text) return
     await page.waitForTimeout(250)
   }
@@ -573,6 +577,15 @@ test.describe("Per-chat composer memory (local)", () => {
    * mount, so a run that passes on a fast machine can fail on a slow one; this
    * makes that race deterministic instead of leaving it to luck (QA's round-2
    * report: "the rate rises with any render slowdown").
+   *
+   * The throttle covers the work that races: the reload's first paint, and the
+   * chat panel mounting and reading its record after the switch. Input is not
+   * throttled. A pointer click under 20× on a 2-core CI runner only measured the
+   * runner — it sat at "performing click action" for 15 s on a resolved,
+   * visible, stable row, on four branches — so the throttle is lifted for the
+   * sidebar click and put back the moment the click has landed. It is lifted
+   * again before the box is read: a restore that lost the race leaves the box
+   * empty for good, so the read needs no starvation to catch it.
    */
   test("AC 3 stress: a slow first paint still restores the draft", async ({ page }) => {
     test.setTimeout(240_000)
@@ -592,7 +605,14 @@ test.describe("Per-chat composer memory (local)", () => {
         await cdp.send("Emulation.setCPUThrottlingRate", { rate })
         await page.reload()
         await anyComposer(page).waitFor({ state: "visible", timeout: 120_000 })
-        await openChat(page, alphaChat.name, alphaChat.id)
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 })
+        await page.getByLabel(`Chat: ${alphaChat.name}`, { exact: true }).first().click()
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate })
+        await expect.poll(() => chatParam(page), { timeout: 60_000 }).toBe(alphaChat.id)
+        await expect
+          .poll(() => markChatPanel(page, alphaChat.name), { timeout: 120_000 })
+          .toBe(true)
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 })
         await expectRestoredDraft(page, alphaChat.name, alpha)
       }
     } finally {
