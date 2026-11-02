@@ -62,6 +62,7 @@ import {
   resolveAgentModeDefault,
   getMaxOutputTokens,
   modelSupportsAudioInput,
+  modelSupportsVideoInput,
   isLiveModel,
   isOpenRouterModel,
   isAutoModel,
@@ -139,6 +140,11 @@ interface ChatCompletionContentBlock {
    *  (currently `gpt-audio`) accept it — see the `input_audio` validation
    *  in the `/ai/v1/chat/completions` handler below. */
   input_audio?: { data: string; format: string }
+  /** OpenRouter video-input shape. Only video-native models
+   *  (`capabilities.supportsVideoInput`) accept it — see the `video_url`
+   *  validation and the `image_url` → `video_url` bridge in
+   *  `buildOpenAICompatibleBody`. */
+  video_url?: { url: string }
   /** Anthropic-native passthrough (used when client pre-translated). */
   cache_control?: AnthropicCacheControl
   /** Vercel AI SDK style; translated to wire `cache_control` in convertToAnthropicFormat. */
@@ -344,6 +350,23 @@ export function resolveModelSupportsAudioInput(model: string): boolean {
   const dbEntry = getMergedModelEntrySync(model)
   if (dbEntry) return dbEntry.capabilities?.supportsAudioInput === true
   return modelSupportsAudioInput(model)
+}
+
+/**
+ * Whether a model accepts `video_url` content blocks natively, honoring
+ * DB-defined models (e.g. GLM 5.3 Flash on OpenRouter) over the static
+ * catalog. Mirrors `resolveModelSupportsAudioInput`.
+ *
+ * BYOK `openrouter:` ids we have no metadata for are treated as allowed and
+ * let upstream decide: OpenRouter drops every endpoint that can't take video
+ * from the candidate list, so the worst case is a 400 naming the model rather
+ * than video bytes being silently dropped locally.
+ */
+export function resolveModelSupportsVideoInput(model: string): boolean {
+  const dbEntry = getMergedModelEntrySync(model)
+  if (dbEntry) return dbEntry.capabilities?.supportsVideoInput === true
+  if (modelSupportsVideoInput(model)) return true
+  return isOpenRouterModel(model)
 }
 
 /**
@@ -2232,6 +2255,37 @@ function stripCacheMarkersFromMessage(
   return { ...message, content }
 }
 
+/**
+ * Rewrite pi-ai's `image_url` carrying a `data:video/*` payload into
+ * OpenRouter's `video_url` block.
+ *
+ * pi-ai only models `text` and `image` content, so a video read from disk
+ * arrives here as an `ImageContent` and pi-ai turns it into
+ * `{ type: 'image_url', image_url: { url: 'data:video/mp4;base64,…' } }`.
+ * OpenRouter rejects that shape and only accepts video under `video_url`.
+ * Anything else (real images, text, tool calls) passes through untouched, and
+ * the message/array references are preserved when nothing needed rewriting so
+ * prompt-cache hashes stay stable.
+ */
+export function bridgeVideoContentBlocks(
+  messages: ChatCompletionRequest['messages'],
+): ChatCompletionRequest['messages'] {
+  let mutated = false
+  const next = messages.map((message) => {
+    if (!Array.isArray(message.content)) return message
+    let contentMutated = false
+    const content = message.content.map((block) => {
+      if (block.type !== 'image_url' || !block.image_url?.url?.startsWith('data:video/')) return block
+      contentMutated = true
+      return { type: 'video_url', video_url: { url: block.image_url.url } } as ChatCompletionContentBlock
+    })
+    if (!contentMutated) return message
+    mutated = true
+    return { ...message, content }
+  })
+  return mutated ? next : messages
+}
+
 function buildOpenAICompatibleBody(
   request: ChatCompletionRequest,
   modelConfig: ModelConfig,
@@ -2244,6 +2298,9 @@ function buildOpenAICompatibleBody(
   if (!isOpenRouterHost(modelConfig)) {
     body.messages = request.messages.map(stripCacheMarkersFromMessage)
     if (request.tools) body.tools = request.tools.map(({ cache_control: _cc, ...tool }) => tool)
+  } else if (resolveModelSupportsVideoInput(request.model)) {
+    // pi-ai can only emit `image_url`; OpenRouter wants `video_url` for video.
+    body.messages = bridgeVideoContentBlocks(request.messages)
   }
   if (max_tokens !== undefined) {
     if (modelConfig.provider === 'openai') body.max_completion_tokens = max_tokens
@@ -4473,6 +4530,35 @@ export function aiProxyRoutes() {
                 message: `Model '${request.model}' does not accept audio input. Use an audio-native model (e.g. 'gpt-audio' or 'mimo-v2.5') for input_audio content blocks, or transcribe the audio to text first.`,
                 type: 'invalid_request_error',
                 code: 'audio_input_not_supported',
+              },
+            },
+            400
+          )
+        }
+      }
+
+      // Reject video content up front for models that can't watch it, so the
+      // bytes never reach Anthropic/OpenAI (which would 400 the whole request
+      // with a generic content-block error). Accepts both the native
+      // `video_url` shape and pi-ai's `image_url` + `data:video/*` bridge
+      // shape; see `resolveModelSupportsVideoInput`.
+      if (!resolveModelSupportsVideoInput(request.model)) {
+        const hasVideoBlock = request.messages.some(
+          (msg) =>
+            Array.isArray(msg.content) &&
+            msg.content.some(
+              (block) =>
+                block.type === 'video_url' ||
+                (block.type === 'image_url' && block.image_url?.url?.startsWith('data:video/') === true),
+            ),
+        )
+        if (hasVideoBlock) {
+          return c.json(
+            {
+              error: {
+                message: `Model '${request.model}' does not accept video input. Use a video-native model (e.g. 'glm-5-3-flash') for video_url content blocks.`,
+                type: 'invalid_request_error',
+                code: 'video_input_not_supported',
               },
             },
             400

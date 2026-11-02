@@ -225,7 +225,7 @@ export function serializeModelEntryEnv(entry: AgentModelEntry | undefined): stri
  */
 export function serializeModelRegistryEnv(): string | undefined {
   const seen = new Set<string>()
-  const out: Array<{ id: string; provider: string; apiModel?: string; contextWindow?: number; maxOutputTokens?: number }> = []
+  const out: Array<{ id: string; provider: string; apiModel?: string; contextWindow?: number; maxOutputTokens?: number; supportsVideoInput?: boolean }> = []
   const entries = [
     ...(modelRegistryService.getDbModelEntriesSync?.() ?? []),
     ...(modelRegistryService.getCloudModelEntriesSync?.() ?? []),
@@ -239,6 +239,7 @@ export function serializeModelRegistryEnv(): string | undefined {
       ...(entry.apiModel ? { apiModel: entry.apiModel } : {}),
       ...(entry.contextWindow ? { contextWindow: entry.contextWindow } : {}),
       ...(entry.maxOutputTokens ? { maxOutputTokens: entry.maxOutputTokens } : {}),
+      ...(entry.capabilities?.supportsVideoInput === true ? { supportsVideoInput: true } : {}),
     })
   }
   return out.length > 0 ? JSON.stringify(out) : undefined

@@ -10,7 +10,7 @@
  * ToolContext, since Pi's execute() signature doesn't accept external context.
  */
 
-import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
+import { getModelTier, resolveModelId, calculateDollarCost, modelSupportsVideoInput } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
 import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
@@ -2808,6 +2808,18 @@ const IMAGE_READ_MIME: Record<string, string> = {
 }
 const MAX_IMAGE_READ_BYTES = 20 * 1024 * 1024
 
+/**
+ * Video extensions `read_file` can hand to a video-native model. Deliberately
+ * short: these are the containers OpenRouter's video input documents.
+ */
+const VIDEO_READ_MIME: Record<string, string> = {
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+}
+const MAX_VIDEO_READ_BYTES = 20 * 1024 * 1024
+
 const BINARY_EXTENSION_LABELS: Record<string, { label: string; mediaType: string }> = {
   '.zip': { label: 'ZIP archive', mediaType: 'application/zip' },
   '.gz': { label: 'gzip archive', mediaType: 'application/gzip' },
@@ -2910,7 +2922,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
     description:
-      `Read a file from the agent workspace. Prefer this over \`exec\` with \`cat\`/\`head\`/\`tail\`. Supports partial reads via offset and limit to handle large files without consuming the full context window. \`offset\` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); \`limit\` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or ${isSearchEnabled() ? 'use the `search` tool' : 'run `rg -n` via `exec`'} to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected.`,
+      `Read a file from the agent workspace. Prefer this over \`exec\` with \`cat\`/\`head\`/\`tail\`. Supports partial reads via offset and limit to handle large files without consuming the full context window. \`offset\` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); \`limit\` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or ${isSearchEnabled() ? 'use the `search` tool' : 'run `rg -n` via `exec`'} to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected. When called on a video file (.mp4, .m4v, .webm, .mov) and the current model can watch video (e.g. GLM 5.3 Flash), the clip is returned as video content so you can describe what happens in it; other models get a text error instead, and videos larger than 20 MB are rejected.`,
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -3089,6 +3101,47 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           const msg = err instanceof Error ? err.message : String(err)
           return textResult({
             error: `Failed to read image file: ${filePath} — ${msg}`,
+          })
+        }
+      }
+
+      const videoMime = VIDEO_READ_MIME[imageExt]
+      if (videoMime) {
+        if (!modelSupportsVideoInput(ctx.effectiveModel ?? '')) {
+          return textResult({
+            error:
+              `This model cannot watch video, so "${filePath}" was not sent. ` +
+              "Switch to a video-native model (e.g. 'GLM 5.3 Flash') to read video files.",
+          })
+        }
+        try {
+          const vidStat = statSync(resolved)
+          if (vidStat.size > MAX_VIDEO_READ_BYTES) {
+            return textResult({
+              error:
+                `Video too large to read: ${filePath} (${vidStat.size} bytes, max ${MAX_VIDEO_READ_BYTES}). ` +
+                'Downscale it first, e.g. `ffmpeg -i <input> -vf scale=-2:480 -an <output>.mp4`.',
+            })
+          }
+          const buf = readFileSync(resolved)
+          const base64 = buf.toString('base64')
+          const details = {
+            path: filePath,
+            bytes: buf.length,
+            mimeType: videoMime,
+            ...(offset !== undefined || limit !== undefined ? { note: 'offset/limit are ignored for video files.' } : {}),
+          }
+          return {
+            content: [
+              { type: 'image' as const, data: base64, mimeType: videoMime },
+              { type: 'text' as const, text: JSON.stringify(details) },
+            ],
+            details,
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return textResult({
+            error: `Failed to read video file: ${filePath} — ${msg}`,
           })
         }
       }

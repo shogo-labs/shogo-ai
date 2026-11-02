@@ -502,6 +502,26 @@ export function buildInvalidImagePlaceholder(opts: InvalidImagePlaceholderOption
   return { type: 'text', text: lines.join(' ') }
 }
 
+/**
+ * Build a TextContent block that replaces a video block sent to a model that
+ * cannot watch video. Names the problem and a model that can, since there is
+ * no local conversion that would help.
+ */
+export function buildUnsupportedVideoPlaceholder(opts: {
+  label: string
+  mimeType?: string
+  pathHint?: string
+}): TextContent {
+  const { label, mimeType, pathHint } = opts
+  const lines: string[] = [
+    `[Video omitted — ${label}]`,
+    `Reason: this model cannot watch video${mimeType ? ` (${mimeType})` : ''}. ` +
+      "Use a video-native model (e.g. 'GLM 5.3 Flash') to send video input.",
+  ]
+  if (pathHint) lines.push(`The file is still on disk at "${pathHint}".`)
+  return { type: 'text', text: lines.join(' ') }
+}
+
 /** Per-image pixel cap a provider enforces (see `ImageGuardOptions`). */
 export interface ImageGuardOptions {
   /**
@@ -512,6 +532,14 @@ export interface ImageGuardOptions {
    * stable for every session that never hit the cap.
    */
   maxDimension?: number
+  /**
+   * The current model accepts video input (`capabilities.supportsVideoInput`).
+   * When true, `video/*` blocks pass through untouched — they are not images,
+   * so the image format/size/decode rules do not apply, and there is no video
+   * decoder here to validate them. When false, a `video/*` block is replaced
+   * with a placeholder so the bytes never reach a provider that would 400.
+   */
+  allowVideo?: boolean
 }
 
 /**
@@ -538,6 +566,22 @@ export function enforceImageSizeLimit(
       continue
     }
     const normalizedMime = block.mimeType?.toLowerCase().trim()
+    // Video is not an image: the image format/size/decode rules below would
+    // throw every video away. Pass it through only when the model can watch
+    // it; otherwise the bytes must not reach the provider.
+    if (normalizedMime?.startsWith('video/')) {
+      if (opts.allowVideo) {
+        next.push(block)
+      } else {
+        next.push(buildUnsupportedVideoPlaceholder({
+          label: opts.label,
+          mimeType: block.mimeType,
+          pathHint: opts.pathHint,
+        }))
+        mutated = true
+      }
+      continue
+    }
     const sniffedMime = sniffImageMimeType(block.data)
     const effectiveMime = sniffedMime ?? normalizedMime
     if (effectiveMime && !SUPPORTED_IMAGE_MIME_TYPES.has(effectiveMime)) {
@@ -620,7 +664,11 @@ export function scrubInvalidImages(
   const next: Message[] = []
   for (const msg of messages) {
     if (msg.role === 'user' && Array.isArray(msg.content)) {
-      const cleaned = enforceImageSizeLimit(msg.content, { label: 'user_input', maxDimension: opts.maxDimension })
+      const cleaned = enforceImageSizeLimit(msg.content, {
+        label: 'user_input',
+        maxDimension: opts.maxDimension,
+        allowVideo: opts.allowVideo,
+      })
       if (cleaned !== msg.content) {
         next.push({ ...msg, content: cleaned })
         mutated = true
@@ -630,6 +678,7 @@ export function scrubInvalidImages(
       const cleaned = enforceImageSizeLimit(msg.content, {
         label: `tool:${msg.toolName}`,
         maxDimension: opts.maxDimension,
+        allowVideo: opts.allowVideo,
       })
       if (cleaned !== msg.content) {
         next.push({ ...msg, content: cleaned })

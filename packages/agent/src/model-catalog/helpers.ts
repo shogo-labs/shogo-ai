@@ -229,6 +229,18 @@ export function modelSupportsAudioInput(id: string): boolean {
 }
 
 /**
+ * Whether a model accepts `video_url` content blocks natively (see
+ * `ModelCapabilities.supportsVideoInput`). Unknown/unrated models (incl.
+ * DB-defined and OpenRouter models not in the static catalog) return
+ * `false` — callers must not send video bytes to them.
+ */
+export function modelSupportsVideoInput(id: string): boolean {
+  const entry = getModelEntry(id)
+  if (entry?.capabilities?.supportsVideoInput === true) return true
+  return getDynamicModel(id)?.supportsVideoInput === true
+}
+
+/**
  * The model's real context window in tokens, when the catalog knows it.
  *
  * Used to derive the summarize threshold (window − output/buffer reserve,

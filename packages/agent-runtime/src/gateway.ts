@@ -96,6 +96,7 @@ import {
   AGENT_MODE_DEFAULTS,
   setAgentModeOverrides,
   isAutoModel,
+  modelSupportsVideoInput,
   AUTO_MODEL_ID,
   parseDynamicModelsEnv,
   registerDynamicModels,
@@ -2765,8 +2766,10 @@ export class AgentGateway {
     let images: ImageContent[] | undefined
     let effectiveText = text
     if (options?.fileParts && options.fileParts.length > 0) {
+      const attachmentModelAlias = options.modelOverride || this.config.model.name
       const parsed = parseFileAttachments(options.fileParts, {
         workspaceDir: this.workspaceDir,
+        supportsVideo: modelSupportsVideoInput(resolveModelAlias(attachmentModelAlias)),
       })
       if (parsed.images.length > 0) {
         images = parsed.images
@@ -3596,6 +3599,10 @@ export class AgentGateway {
     }
 
     const turnModelDisplayName = this.turnModelDisplayName(modelId, session, autoRouting)
+    // Whether this turn's model can watch video. Drives the image guard (a
+    // video block is only legitimate history for a video-native model) and
+    // read_file's video branch.
+    const allowVideoInput = modelSupportsVideoInput(modelId)
 
     let systemPrompt = this.loadBootstrapContext(
       sessionId,
@@ -4904,7 +4911,8 @@ export class AgentGateway {
         extraHeaders,
         // Stage 1 of the image-400 repair ladder: drop only the blocks that
         // provably cannot decode, instead of every image in history.
-        scrubInvalidImages,
+        scrubInvalidImages: (msgs, opts) =>
+          scrubInvalidImages(msgs, { ...opts, allowVideo: allowVideoInput }),
         // Anthropic names a per-image pixel cap on a long image-heavy request
         // ("… many-image requests: 3000 pixels"). Keep it for the session so
         // later screenshots are replaced before they go out.
@@ -4978,6 +4986,7 @@ export class AgentGateway {
           // invariant.
           const wire = scrubInvalidImages(result.messages, {
             maxDimension: this.sessionImageMaxDimensions.get(sessionId),
+            allowVideo: allowVideoInput,
           })
           const compacted = await midTurnCompactor.transform(wire)
           const event = compacted.event
