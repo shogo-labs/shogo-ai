@@ -149,6 +149,8 @@ import {
   composerSendChrome,
 } from "../../lib/composer-phone";
 import { executeNativeAttachAction } from "../../lib/native-attachment-picker";
+import type { NativeAttachAction } from "../../lib/native-attachment-picker";
+import { useLaunchAfterSheetCloses } from "../../lib/use-launch-after-sheet-closes";
 import {
   ComposerPlusSection,
   ComposerPlusSheet,
@@ -1425,13 +1427,38 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     });
   }, [inputValue]);
 
+  /**
+   * Web: the chooser only opens from a click inside the tap's own task
+   * (transient user activation), so this must stay synchronous — no `await`,
+   * timer or dynamic import between the press and `.click()` (SHO-283).
+   */
+  const openWebAttachPicker = useCallback((action: NativeAttachAction) => {
+    const input = fileInputRef.current as HTMLInputElement | null;
+    if (!input) return;
+    if (action === "documents") {
+      input.removeAttribute("accept");
+      input.removeAttribute("capture");
+      input.multiple = true;
+    } else if (action === "library") {
+      input.setAttribute("accept", "image/*");
+      input.removeAttribute("capture");
+      input.multiple = true;
+    } else {
+      input.setAttribute("accept", "image/*");
+      input.setAttribute("capture", "environment");
+      input.multiple = false;
+    }
+    input.value = "";
+    input.click();
+  }, []);
+
   const handleAttachClick = useCallback(() => {
     if (Platform.OS === "web") {
-      fileInputRef.current?.click();
+      openWebAttachPicker("documents");
       return;
     }
     setAttachSheetOpen(true);
-  }, []);
+  }, [openWebAttachPicker]);
 
   const closePlusMenu = useCallback(() => {
     setPlusMenuOpen(false);
@@ -1442,9 +1469,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     setPlusExpandedId((current) => (current === id ? null : id));
   }, []);
 
-  const handlePlusAttach = useCallback(
-    (action: Parameters<typeof executeNativeAttachAction>[0]) => {
-      closePlusMenu();
+  const runNativeAttach = useCallback(
+    (action: NativeAttachAction) => {
       executeNativeAttachAction(action, {
         currentCount: pendingFiles.length,
         maxFiles: MAX_FILES,
@@ -1453,7 +1479,29 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         onError: (message) => setFileError(message),
       });
     },
-    [applyPickedFiles, closePlusMenu, pendingFiles.length, fileSizeLimit]
+    [applyPickedFiles, pendingFiles.length, fileSizeLimit]
+  );
+
+  const {
+    launchAfterClose: launchAttachAfterClose,
+    onSheetDismiss: handleAttachSheetDismiss,
+  } = useLaunchAfterSheetCloses(runNativeAttach);
+
+  const handlePlusAttach = useCallback(
+    (action: NativeAttachAction) => {
+      if (Platform.OS === "web") {
+        // Open the chooser before the sheet starts closing: the tap's user
+        // activation is gone by the time the modal has dismissed.
+        openWebAttachPicker(action);
+        closePlusMenu();
+        return;
+      }
+      // iOS drops a picker presented while the modal is still dismissing, so
+      // the launch waits for the sheet to go (SHO-283).
+      closePlusMenu();
+      launchAttachAfterClose(action);
+    },
+    [closePlusMenu, launchAttachAfterClose, openWebAttachPicker]
   );
 
   const appendTranscriptToInput = useCallback(
@@ -2850,6 +2898,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                   <ComposerPlusSheet
                     visible={plusMenuOpen}
                     onClose={closePlusMenu}
+                    onDismiss={handleAttachSheetDismiss}
                     expandedId={plusExpandedId}
                     onToggleSection={togglePlusSection}
                     maxHeight={Math.round(
