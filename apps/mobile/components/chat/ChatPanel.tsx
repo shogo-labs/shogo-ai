@@ -111,6 +111,7 @@ import {
 } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
+import { mergeTranscriptRows, sortTranscriptRows } from "./transcript-merge"
 import {
   patchSessionFeedbackCache,
   readSessionFeedbackCache,
@@ -3693,16 +3694,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!snapshot) return
     setMessages((prev) => mergeStoppedSnapshot(prev, snapshot))
   }, [setMessages])
+  // Keep the stop control visible while the transport is recovering a turn
+  // whose server-side agent may still be running.
+  const [streamAutoRecovering, setStreamAutoRecovering] = useState(false)
+  /**
+   * A probe found this chat's turn still running in the runtime, and this
+   * window has not attached to it yet. Stop must be here for that whole gap:
+   * the turn is live, even though nothing is streaming into this window
+   * (SHO-287).
+   */
+  const [liveTurnActive, setLiveTurnActive] = useState(false)
   // Stop state belongs to one chat: carrying a snapshot (or a cancelled turn
   // id) into another one would hold that chat's transcript still.
   useEffect(() => {
     stoppedMessagesRef.current = null
     stoppedTurnIdRef.current = null
     setStoppedMessages(null)
+    setLiveTurnActive(false)
   }, [currentSessionId])
-  // Keep the stop control visible while the transport is recovering a turn
-  // whose server-side agent may still be running.
-  const [streamAutoRecovering, setStreamAutoRecovering] = useState(false)
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
@@ -3754,6 +3763,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     stoppedMessages === null
   const isStreaming =
     (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
+
+  // Once this window is attached, the transport is the authority on the turn
+  // and the probe's snapshot stops deciding Stop (SHO-287).
+  useEffect(() => {
+    if (isTransportStreaming) setLiveTurnActive(false)
+  }, [isTransportStreaming])
 
   const reloadAndAttachLiveTurnRef = useRef<
     (opts?: { settle?: boolean }) => void
@@ -4327,7 +4342,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           ? setTimeout(() => controller.abort(), opts.timeoutMs)
           : undefined
       try {
-        return await probeChatTurn({
+        const snapshot = await probeChatTurn({
           url: buildChatTurnUrl(
             API_URL!,
             projectId,
@@ -4341,6 +4356,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
           retryDelaysMs: opts.retryDelaysMs,
           signal: controller.signal,
         })
+        // The probe is the only thing that knows a turn is running before this
+        // window attaches to it, so it decides the Stop button for that gap
+        // (SHO-287). Scoped to the chat on screen: a probe for a chat the
+        // person has left says nothing about this one.
+        if (sessionId === currentSessionIdRef.current) {
+          setLiveTurnActive(
+            isLiveTurnOtherThan(snapshot, stoppedTurnIdRef.current),
+          )
+        }
+        return snapshot
       } finally {
         if (timer) clearTimeout(timer)
       }
@@ -5471,14 +5496,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
         if (seen.size < body.total) return false
       }
 
-      const byId = new Map(current.map((m) => [String(m.id), m]))
       for (const row of items) {
         if (!row?.id) continue
-        byId.set(String(row.id), messageRowToUIMessage(row))
         sessionMessages?.addItem(messageRowToSnapshot(row))
       }
-      const history = Array.from(byId.values()).sort(
-        (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
+      // Merge, do not re-sort: a message the SDK built here carries no
+      // `createdAt`, and sorting it to the top put the reply above the first
+      // prompt (SHO-287).
+      const history = mergeTranscriptRows(
+        current,
+        items.filter((row) => row?.id).map((row) => messageRowToUIMessage(row)),
       )
 
       const paint = resolveHistoryPaint({
@@ -5644,9 +5671,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             if (myGeneration !== loadGenerationRef.current) return
             if (isStreamingRef.current || isSendingMessageRef.current) return
 
-            const loaded = [...sessionMessages.all].sort(
-              (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
-            )
+            const loaded = sortTranscriptRows([...sessionMessages.all])
 
             if (loaded.length === 0) return
 
@@ -6076,9 +6101,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         { limit: MESSAGE_PAGE_SIZE, offset: currentCount },
       )
 
-      const allLoaded = [...sessionMessages.all].sort(
-        (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
-      )
+      const allLoaded = sortTranscriptRows([...sessionMessages.all])
 
       const aiMessages = allLoaded.map((msg: any) => {
         const baseMessage: any = {
@@ -7460,17 +7483,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       references?: ChatReference[],
     ) => {
       const trimmedContent = content.trim()
-      if (!(await ensureAiConsentForMessage())) return
-      let wireText = trimmedContent
-      if (enrichMessage) {
-        try {
-          wireText = await enrichMessage(trimmedContent)
-        } catch (error) {
-          console.warn(
-            "[ChatPanel] enrichMessage failed for queued message:",
-            error,
-          )
-        }
+      if (!(await ensureAiConsentForMessage())) {
+        // Nothing was queued, so the bubble the caller painted for this send
+        // must not stay in the transcript.
+        clearOptimisticEcho(trimmedContent)
+        return
       }
 
       const planToSend = confirmedPlanRef.current
@@ -7500,15 +7517,36 @@ const ChatPanelContent = observer(function ChatPanelContent({
             ? ideBridge.context
             : undefined,
         references,
-        extra: { text: wireText },
+        extra: { text: trimmedContent },
       })
 
+      // The dock row is the create's own optimistic insert, so it has to be
+      // the first thing that happens: the message is queued, not sent, and it
+      // must never be painted in the transcript while the row is on its way
+      // (SHO-286). Clearing the echo in the same tick as that insert is what
+      // keeps the probe path from showing the message in both places for a
+      // frame — or in neither.
+      clearOptimisticEcho(trimmedContent)
       await serverQueue.enqueue({
         content: trimmedContent,
         files,
         selectedModel: perMsgModel || selectedModel,
         references,
         body,
+        // Enrichment (git status / diagnostics on desktop) can take a second
+        // on a big repo. It runs alongside the create and is patched into the
+        // row's body before the server dispatches it, so it never holds the
+        // dock row back.
+        enrich: enrichMessage
+          ? () =>
+              enrichMessage(trimmedContent).catch((error) => {
+                console.warn(
+                  "[ChatPanel] enrichMessage failed for queued message:",
+                  error,
+                )
+                return trimmedContent
+              })
+          : undefined,
       })
       // The queued turn is the server's to run: until it takes the row there
       // is no user message in this session, so the message lives in the dock
@@ -7519,6 +7557,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       releaseStopSnapshot()
     },
     [
+      clearOptimisticEcho,
       currentSession,
       currentSessionId,
       enrichMessage,
@@ -7566,11 +7605,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // echo below still paints before any request goes out.
       if (!(await ensureAiConsentForMessage())) return
 
-      // Paint the user's own bubble before anything is awaited or sent: the
-      // composer is already empty, and the live-turn probe below can take its
-      // full budget before `sendMessageInternal` runs.
-      showOptimisticEcho(trimmedContent, files)
-
       const queueMessage = async () => {
         // Anything that lands in `displayedQueue` (the dock) must not also sit
         // in the transcript: a queued message is not a turn yet, and its bubble
@@ -7601,7 +7635,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
             perMsgModel,
             references,
           )
-          clearOptimisticEcho(trimmedContent)
         } catch (error) {
           console.warn(
             "[ChatPanel] Server queue unavailable; retaining a local queued message:",
@@ -7611,6 +7644,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
       }
 
+      // A send this window already knows is queued goes straight to the dock.
+      // Painting the echo first put the bubble in the transcript for the whole
+      // consent/enrich/enqueue round trip and then took it away again, which is
+      // the flash Russell saw (SHO-286). `enqueueServerMessage` drops any echo
+      // in the same render the dock row appears, so the probe path below never
+      // shows the message in both places.
       if (
         isStreaming ||
         isProcessingQueueRef.current ||
@@ -7619,6 +7658,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
         await queueMessage()
         return
       }
+
+      // Paint the user's own bubble before anything is awaited or sent: the
+      // composer is already empty, and the live-turn probe below can take its
+      // full budget before `sendMessageInternal` runs.
+      showOptimisticEcho(trimmedContent, files)
 
       // The chat can be busy without this window knowing: a turn started in
       // another window, by another member, or by a schedule. Sending now
@@ -9848,7 +9892,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                             : "Respond to the question below, or type a message..."
                           : "Ask Shogo..."
                     }
-                    isStreaming={isStreaming}
+                    isStreaming={isStreaming || liveTurnActive}
                     onStop={handleStop}
                     selectedModel={selectedModel}
                     onModelChange={handleModelChange}
