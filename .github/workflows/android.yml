@@ -330,11 +330,14 @@ jobs:
           [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
           # `--ext` is required because neither Hermes bytecode (`.hbc`) nor
           # RN's Android bundle extension (`.bundle`) is part of sentry-cli's
-          # default file filter — without it, inject/upload would silently
-          # skip the bundle and only ship the map (and Sentry would refuse to
-          # match).
-          $SENTRY_CLI sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" \
-            --ext hbc --ext bundle --ext js --ext map "$JS_DIR"
+          # default file filter — without it, upload would silently skip the
+          # bundle and only ship the map (and Sentry would refuse to match).
+          #
+          # No `sourcemaps inject` here: `expo export` already stamps a
+          # matching debug id into both halves, and sentry-cli treats the
+          # `.hbc` as JavaScript — injecting replaces the bytecode with a
+          # 358-byte stub and re-serialises the map with zero mappings, so the
+          # upload resolves nothing (SHO-290). Upload the pair untouched.
           $SENTRY_CLI sourcemaps upload \
             --release "$EXPO_PUBLIC_BUILD_HASH" \
             --dist android \
