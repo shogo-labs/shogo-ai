@@ -103,6 +103,13 @@ const { useServerMessageQueue } = await import("../useServerMessageQueue")
 const turns: Array<{ id: string; text: string } | undefined> = []
 let queueApi: ReturnType<typeof useServerMessageQueue> | null = null
 let pendingIds: string[] = []
+/**
+ * Every render's two halves of the queue, in order. The invariant SHO-286
+ * follow-up is about is per render — a claimed message must be in the dock or
+ * the transcript on each one, and never in both — so the tests read this
+ * instead of only the settled value.
+ */
+const samples: Array<{ dock: string[]; pending: string[] }> = []
 
 const Probe = observer(function Probe({ isStreaming = true }: { isStreaming?: boolean }) {
   const queue = useServerMessageQueue({
@@ -114,6 +121,7 @@ const Probe = observer(function Probe({ isStreaming = true }: { isStreaming?: bo
   })
   queueApi = queue
   pendingIds = queue.pendingUserMessages.map((m) => m.id)
+  samples.push({ dock: queue.queuedMessages.map((m) => m.id), pending: pendingIds })
   return <ul>{queue.queuedMessages.map((m) => <li key={m.id}>{m.content}</li>)}</ul>
 })
 
@@ -124,6 +132,7 @@ function row(id: string, position: number, content: string, sessionId = "s1"): R
 function reset() {
   turns.length = 0
   pendingIds = []
+  samples.length = 0
   dispatchedBeforeObserved = false
   serverSeq = 0
   postResponse = { data: { ok: true } }
@@ -510,6 +519,70 @@ describe("useServerMessageQueue", () => {
     expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["q1"])
     view.unmount()
   }, 15_000)
+
+  /**
+   * SHO-286 follow-up (Russell, 2026-11-02): "when a queued message is actually
+   * sent it doesn't go away from the message queue UI". A row the server has
+   * claimed is a turn, not a queued message, so it has to leave the dock in the
+   * same render its bubble enters the transcript. Nothing reloads the queue
+   * while a turn streams, so the row can sit in the collection for the whole
+   * reply — the claim itself has to move it.
+   */
+  test("a row the server claims leaves the dock in the render its bubble enters the transcript", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    await act(async () => {
+      await queueApi!.enqueue({ content: "queued", body: { text: "queued" } })
+    })
+    expect(dockText(view)).toEqual(["queued"])
+    expect(pendingIds).toEqual([])
+
+    act(() => runInAction(() => { collection.all[0]!.status = "dispatching" }))
+
+    expect(dockText(view)).toEqual([])
+    expect(pendingIds).toEqual(["srv-1"])
+
+    const fromDock = samples.slice(samples.findIndex((s) => s.dock.includes("srv-1")))
+    expect(fromDock.filter((s) => s.dock.includes("srv-1") && s.pending.includes("srv-1"))).toEqual([])
+    expect(fromDock.filter((s) => !s.dock.includes("srv-1") && !s.pending.includes("srv-1"))).toEqual([])
+  })
+
+  test("a row this window did not enqueue leaves the dock when the server claims it", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    await act(async () => {})
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first")) }))
+    expect(dockText(view)).toEqual(["first"])
+    expect(pendingIds).toEqual([])
+
+    // Nothing tracks this row — a reload, or another window queued it — so no
+    // poll runs while the turn streams.
+    act(() => runInAction(() => { collection.all[0]!.status = "dispatching" }))
+    expect(dockText(view)).toEqual([])
+    expect(pendingIds).toEqual(["q1"])
+
+    const fromDock = samples.slice(samples.findIndex((s) => s.dock.includes("q1")))
+    expect(fromDock.filter((s) => s.dock.includes("q1") && s.pending.includes("q1"))).toEqual([])
+    expect(fromDock.filter((s) => !s.dock.includes("q1") && !s.pending.includes("q1"))).toEqual([])
+  })
+
+  test("a dispatch that fails after being claimed goes back to the dock", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    await act(async () => {})
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first")) }))
+    act(() => runInAction(() => { collection.all[0]!.status = "dispatching" }))
+    expect(dockText(view)).toEqual([])
+    expect(pendingIds).toEqual(["q1"])
+
+    act(() => runInAction(() => {
+      collection.all[0]!.status = "failed"
+      collection.all[0]!.error = "Model refused"
+    }))
+    expect(dockText(view)).toEqual(["first"])
+    expect(pendingIds).toEqual([])
+    expect(queueApi!.queuedMessages.find((m) => m.id === "q1")?.error).toBe("Model refused")
+  })
 })
 
 /**

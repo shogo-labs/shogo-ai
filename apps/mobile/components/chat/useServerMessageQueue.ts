@@ -222,6 +222,18 @@ export function useServerMessageQueue({
     UIMessage | undefined
   >(undefined)
   /**
+   * Rows the server has claimed and this window has already handed to the
+   * transcript. A claimed row is a turn now, not a queued message, so the dock
+   * drops it — but only in the render its bubble enters the transcript, so the
+   * message is never in both places and never in neither. The row outlives the
+   * hand-over in the collection (nothing reloads the queue while a turn
+   * streams), so the ids are remembered rather than read back off the rows.
+   */
+  const [handedOverIds, setHandedOverIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  )
+  const handedOverIdsRef = useRef<ReadonlySet<string>>(handedOverIds)
+  /**
    * Rows a person clicked "Send now" on. The POST stops the turn and kicks off
    * the dispatch without awaiting it, so it returns the row still `pending`:
    * the reload that follows the click still reads it on the queue and the dock
@@ -261,14 +273,26 @@ export function useServerMessageQueue({
   const rows = useMemo(() => liveRows, [rowsSignature])
   const queuedMessages = useMemo(
     () => [
-      ...rows.filter((row) => !sentIds.has(row.id)).map(toQueuedMessage),
+      ...rows
+        .filter((row) => !sentIds.has(row.id))
+        // A row the server has claimed is a turn now, not a queued message: it
+        // leaves the dock in the same render its bubble enters the transcript.
+        // A failed dispatch is the exception — it is back on the queue with its
+        // error, waiting to be retried.
+        .filter(
+          (row) =>
+            row.status === "pending" ||
+            row.status === "failed" ||
+            !handedOverIds.has(row.id),
+        )
+        .map(toQueuedMessage),
       // A team-chat wake sits after the session's own queued rows: those were
       // typed here, this one arrived in a channel.
       ...wakes
         .filter((wake) => !sentIds.has(wake.id))
         .map(wakeToQueuedMessage),
     ],
-    [rows, sentIds, wakes],
+    [rows, sentIds, handedOverIds, wakes],
   )
   /**
    * What the transcript should paint that the server has not saved as a
@@ -291,6 +315,14 @@ export function useServerMessageQueue({
   isStreamingRef.current = isStreaming
   onTurnAvailableRef.current = onTurnAvailable
   sentIdsRef.current = sentIds
+  handedOverIdsRef.current = handedOverIds
+
+  /** The row's bubble is in the transcript now, so it is no longer queued. */
+  const handOver = useCallback((id: string) => {
+    setHandedOverIds((current) =>
+      current.has(id) ? current : new Set(current).add(id),
+    )
+  }, [])
 
   const hideSent = useCallback((id: string) => {
     setSentIds((current) =>
@@ -335,6 +367,7 @@ export function useServerMessageQueue({
     for (const timer of sentTimersRef.current.values()) clearTimeout(timer)
     sentTimersRef.current.clear()
     setSentIds(new Set())
+    setHandedOverIds(new Set())
     setTrackedCount(0)
     setPendingUserMessage(undefined)
     setWakes([])
@@ -470,6 +503,7 @@ export function useServerMessageQueue({
       // A failed dispatch stays on the queue with its error for the user to
       // retry; it is not a turn starting.
       if (row?.status === "failed") continue
+      handOver(id)
       dispatched ??= userMessage
     }
     if (dropped > 0) setTrackedCount((count) => Math.max(0, count - dropped))
@@ -477,7 +511,7 @@ export function useServerMessageQueue({
     pendingTurnRef.current = { userMessage: dispatched }
     setPendingUserMessage(dispatched)
     flushPendingTurn()
-  }, [flushPendingTurn, readQueueNow])
+  }, [flushPendingTurn, handOver, readQueueNow])
 
   useEffect(() => {
     void load().catch((error) => {
@@ -564,8 +598,47 @@ export function useServerMessageQueue({
       setPendingUserMessage(userMessage)
     }
     drainEnqueued()
+    // A row the server has claimed is a turn now, whether or not this window
+    // enqueued it: after a reload nothing tracks it, and no poll runs while a
+    // turn streams, so the dock would otherwise keep it for the whole reply.
+    if (!pendingTurnRef.current) {
+      const claimed = snapshots.find(
+        (row) =>
+          row.status !== "pending" &&
+          row.status !== "failed" &&
+          !row.isTaskWake &&
+          !handedOverIdsRef.current.has(row.id),
+      )
+      if (claimed) {
+        pendingTurnRef.current = { userMessage: claimed.userMessage }
+        setPendingUserMessage(claimed.userMessage)
+        handOver(claimed.id)
+      }
+    }
+    // A row that is back on the queue — a failed dispatch, or one recovered
+    // after an interrupted one — is not a turn: it returns to the dock and its
+    // bubble leaves the transcript.
+    const requeued = snapshots.filter(
+      (row) => row.status === "pending" || row.status === "failed",
+    )
+    if (requeued.length > 0) {
+      setHandedOverIds((current) => {
+        let next: Set<string> | undefined
+        for (const row of requeued) {
+          if (!current.has(row.id)) continue
+          next ??= new Set(current)
+          next.delete(row.id)
+        }
+        return next ?? current
+      })
+      const pending = pendingTurnRef.current?.userMessage
+      if (pending && requeued.some((row) => row.id === pending.id)) {
+        pendingTurnRef.current = null
+        setPendingUserMessage(undefined)
+      }
+    }
     flushPendingTurn()
-  }, [rows, drainEnqueued, flushPendingTurn])
+  }, [rows, drainEnqueued, flushPendingTurn, handOver])
 
   // Attaching while the previous turn's stream is still open (the server
   // stops it for "send now") would resume on top of a live stream.
