@@ -382,6 +382,9 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       CCACHE_DIR: /Users/runner/Library/Caches/ccache
       CCACHE_MAXSIZE: 2G
+      # The one bundle id this pipeline ships. Job-level so the archive step and
+      # the IPA assertion below cannot drift apart (SHO-282).
+      BUNDLE_ID: ai.shogo.app
 
     outputs:
       should_submit: ${{ steps.submit-decision.outputs.should_submit }}
@@ -643,7 +646,6 @@ jobs:
       - name: Build archive
         working-directory: apps/mobile/ios
         env:
-          BUNDLE_ID: ai.shogo.app
           # JS bundling runs inside xcodebuild's "Bundle React Native code
           # and images" build phase, which calls Metro. Metro reads
           # EXPO_PUBLIC_* from process.env at bundle time and bakes them
@@ -912,21 +914,21 @@ jobs:
           unzip -o -q "$IPA_PATH" "$PLIST_ENTRY" -d "$RUNNER_TEMP/ipa-plist"
           INFO_PLIST="$RUNNER_TEMP/ipa-plist/$PLIST_ENTRY"
 
-          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")
+          IPA_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")
           SHORT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")
           BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIST")
           EXPECTED_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100))
 
-          echo "bundle_id=$BUNDLE_ID" >> "$GITHUB_OUTPUT"
+          echo "bundle_id=$IPA_BUNDLE_ID" >> "$GITHUB_OUTPUT"
           echo "short_version=$SHORT_VERSION" >> "$GITHUB_OUTPUT"
           echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
 
-          echo "IPA identity: bundle=$BUNDLE_ID version=$SHORT_VERSION build=$BUILD_NUMBER (expected build $EXPECTED_BUILD_NUMBER)"
+          echo "IPA identity: bundle=$IPA_BUNDLE_ID version=$SHORT_VERSION build=$BUILD_NUMBER (expected build $EXPECTED_BUILD_NUMBER)"
           if [ "$BUILD_NUMBER" != "$EXPECTED_BUILD_NUMBER" ]; then
             echo "::warning::The IPA's CFBundleVersion is $BUILD_NUMBER but github.run_number + 100 is $EXPECTED_BUILD_NUMBER. The workflow bump in apps/mobile/app.json did not reach the binary; TestFlight will poll the IPA's value."
           fi
-          if [ "$BUNDLE_ID" != "ai.shogo.app" ]; then
-            echo "::error::The IPA's CFBundleIdentifier is $BUNDLE_ID, not ai.shogo.app. App Store Connect lookups will target the wrong app."
+          if [ "$IPA_BUNDLE_ID" != "$BUNDLE_ID" ]; then
+            echo "::error::The IPA's CFBundleIdentifier is $IPA_BUNDLE_ID, not $BUNDLE_ID. App Store Connect lookups will target the wrong app."
             exit 1
           fi
 
@@ -1098,6 +1100,15 @@ jobs:
       (github.ref_type == 'tag' || inputs.release_tag != '') &&
       vars.IOS_SUBMIT_FOR_REVIEW != 'false'
     steps:
+      - name: Require a built IPA
+        # Without this the job dies on "Missing required environment variable
+        # APP_STORE_BUILD_NUMBER", which says nothing about the real problem
+        # (SHO-282).
+        if: needs.build.result != 'success' || needs.build.outputs.build_number == ''
+        run: |
+          echo "::error::The build job produced no IPA (result: ${{ needs.build.result }}), so there is nothing to submit for App Store review."
+          exit 1
+
       - name: Checkout release scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

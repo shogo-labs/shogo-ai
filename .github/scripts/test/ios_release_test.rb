@@ -8,11 +8,15 @@
 
 require "minitest/autorun"
 require "fileutils"
+require "yaml"
 require "open3"
 require "tmpdir"
 
 require_relative "../lib/app-store-connect"
 require_relative "../lib/ios-app"
+
+SCRIPTS = File.expand_path("..", __dir__)
+REPO = File.expand_path("../..", SCRIPTS)
 
 class FakeClient
   attr_reader :paths
@@ -152,9 +156,6 @@ class AppResolutionTest < Minitest::Test
 end
 
 class DistributeScriptTest < Minitest::Test
-  SCRIPTS = File.expand_path("..", __dir__)
-  REPO = File.expand_path("../..", SCRIPTS)
-
   # End to end: a real .ipa, a stub App Store Connect, and a workflow that
   # guessed the wrong build number. The IPA must win and both groups must end up
   # assigned — the whole release path, not just the helpers.
@@ -238,6 +239,65 @@ class DistributeScriptTest < Minitest::Test
       load #{File.join(SCRIPTS, 'testflight-distribute.rb').inspect}
       abort "expected both groups to be assigned" unless POSTED.length == 2
     RUBY
+  end
+end
+
+class SparseCheckoutTest < Minitest::Test
+  WORKFLOWS = File.expand_path("../workflows", SCRIPTS)
+
+  # A job that checks out a file list and then runs a script whose
+  # `require_relative` reaches outside that list dies with LoadError before it
+  # ever talks to Apple — and only on a tag push, which is how four releases
+  # were lost (SHO-282). Every sparse-checkout block must cover its scripts'
+  # requires.
+  def test_every_sparse_checkout_covers_its_scripts_requires
+    blocks = sparse_checkout_blocks
+    refute_empty blocks, "no sparse-checkout blocks found in #{WORKFLOWS}"
+
+    blocks.each do |workflow, job, entries|
+      entries.select { |entry| entry.end_with?(".rb") }.each do |entry|
+        script = File.join(REPO, entry)
+        assert File.file?(script), "#{workflow} #{job}: sparse-checkout lists #{entry}, which does not exist"
+
+        require_targets(script).each do |target|
+          assert covered?(entries, target),
+                 "#{workflow} #{job}: #{entry} requires #{target}, which its sparse-checkout does not include " \
+                 "(#{entries.join(', ')})"
+        end
+      end
+    end
+  end
+
+  private
+
+  def sparse_checkout_blocks
+    Dir[File.join(WORKFLOWS, "*.yml")].sort.flat_map do |workflow|
+      document = YAML.safe_load(File.read(workflow, encoding: "UTF-8"), aliases: true) || {}
+      (document["jobs"] || {}).flat_map do |job_name, job|
+        steps = (job || {})["steps"] || []
+        steps.map do |step|
+          entries = step.dig("with", "sparse-checkout")
+          next if entries.nil?
+
+          [File.basename(workflow), job_name, entries.lines.map(&:strip).reject(&:empty?)]
+        end.compact
+      end
+    end
+  end
+
+  # Repo-relative paths of everything a script pulls in with require_relative.
+  def require_targets(script)
+    File.read(script, encoding: "UTF-8").scan(/require_relative\s+["']([^"']+)["']/).flatten.map do |target|
+      path = File.expand_path(target, File.dirname(script))
+      path += ".rb" unless path.end_with?(".rb")
+      path.delete_prefix("#{REPO}/")
+    end
+  end
+
+  def covered?(entries, target)
+    entries.any? do |entry|
+      entry == target || (entry.end_with?("/") ? target.start_with?(entry) : target.start_with?("#{entry}/"))
+    end
   end
 end
 
