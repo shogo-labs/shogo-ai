@@ -51,6 +51,7 @@ import { PlansPanel } from "../project/panels/PlansPanel"
 import { ShareFileProvider, type ShareFileTarget } from "../chat/share-file-context"
 import { ShareFileView } from "../chat/ShareFileViewer"
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
+import { useFileLinkArrival } from "./use-file-link-arrival"
 import { filePaneTarget } from "../chat/remote-project-paths"
 import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
@@ -120,12 +121,22 @@ export interface WorkspaceAgentChatScreenProps {
   startNewSession?: boolean
   /** Sent as the first message when the opened session is still empty. */
   initialMessage?: string
+  /**
+   * The file a shared link opened (`?file=`), already a workspace-relative
+   * path. Opened in the file pane once, then dropped from the URL (SHO-284).
+   */
+  initialFilePath?: string | null
+  /**
+   * The workspace that link named (`?workspace=`). Adopted when this account is
+   * a member of it; a non-member keeps the workspace they are in.
+   */
+  linkWorkspaceId?: string | null
   /** Rendered above the chat, e.g. the breadcrumb back to the conversation it was opened from. */
   header?: ReactNode
 }
 
 export const WorkspaceAgentChatScreen = observer(
-  function WorkspaceAgentChatScreen({ initialSessionId, startNewSession, initialMessage, header }: WorkspaceAgentChatScreenProps = {}) {
+  function WorkspaceAgentChatScreen({ initialSessionId, startNewSession, initialMessage, initialFilePath, linkWorkspaceId, header }: WorkspaceAgentChatScreenProps = {}) {
     const [capturedInitialMessage] = useState(() => initialMessage)
     const router = useRouter()
     const { user } = useAuth()
@@ -360,7 +371,37 @@ export const WorkspaceAgentChatScreen = observer(
       setPlanPane(null)
       setFilePane({ kind: "share", target, nonce: Date.now() })
     }, [])
-    const closeFilePane = useCallback(() => setFilePane(null), [])
+
+    // A shared file link (`/agent?workspace=&file=`, SHO-284) names the
+    // workspace and the file. The workspace list decides whether this account
+    // may be moved into that workspace; an empty list that is still loading is
+    // "unknown", not "no".
+    const memberWorkspaceIds =
+      workspaces.all.length > 0 && !workspaces.isLoading
+        ? (workspaces.all as Array<{ id: string }>).map((candidate) => candidate.id)
+        : null
+    const adoptLinkWorkspace = useCallback(
+      (id: string) => {
+        // A refused write is a switch the person made a moment ago, which
+        // outranks this link; their choice stands and nothing opens.
+        if (workspace?.id) adoptChatWorkspace(id, workspace.id, projects)
+      },
+      [projects, workspace?.id],
+    )
+    const { error: linkError, dismissError, dropLinkParams } = useFileLinkArrival({
+      initialFilePath: initialFilePath ?? null,
+      linkWorkspaceId: linkWorkspaceId ?? null,
+      workspaceId: workspace?.id ?? null,
+      memberWorkspaceIds,
+      openFilePane,
+      adoptWorkspace: adoptLinkWorkspace,
+      setParams: (params) => router.setParams(params as any),
+    })
+
+    const closeFilePane = useCallback(() => {
+      setFilePane(null)
+      dropLinkParams()
+    }, [dropLinkParams])
     const handleBuildPlan = useCallback(
       (plan: PlanData, modelId: string) => {
         setBuildPlanRequest({ plan, modelId, nonce: Date.now() })
@@ -729,6 +770,7 @@ export const WorkspaceAgentChatScreen = observer(
             filePane.projectId ? projectName(filePane.projectId) : null
           }
           relayBase={machineRoute?.relayBase ?? null}
+          workspaceId={workspace.id}
           nonce={filePane.nonce}
           onClose={closeFilePane}
         />
@@ -770,6 +812,22 @@ export const WorkspaceAgentChatScreen = observer(
           // clearance to avoid starting underneath the avatar/name
           // cluster (and the shell's floating menu/bell buttons).
           <View style={{ height: insets.top + 112 }} />
+        ) : null}
+        {linkError ? (
+          <View
+            className="mx-auto mt-3 w-full max-w-2xl flex-row items-start gap-2 px-4"
+            testID="workspace-file-link-denied"
+          >
+            <Text className="min-w-0 flex-1 text-sm text-destructive">{linkError}</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss"
+              onPress={() => dismissError()}
+              className="h-7 w-7 items-center justify-center rounded-full active:bg-muted"
+            >
+              <X size={15} className="text-muted-foreground" />
+            </Pressable>
+          </View>
         ) : null}
         {isPersonalWorkspace && showWelcome ? (
           <View className="mx-auto mt-3 w-full max-w-2xl px-4">
