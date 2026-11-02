@@ -386,6 +386,9 @@ jobs:
     outputs:
       should_submit: ${{ steps.submit-decision.outputs.should_submit }}
       ipa_artifact: Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa
+      build_number: ${{ steps.ipa-identity.outputs.build_number }}
+      short_version: ${{ steps.ipa-identity.outputs.short_version }}
+      bundle_id: ${{ steps.ipa-identity.outputs.bundle_id }}
 
     steps:
       - name: Checkout
@@ -891,6 +894,42 @@ jobs:
           echo "IPA_PATH=$IPA_PATH" >> $GITHUB_ENV
           echo "Built IPA: $IPA_PATH"
 
+      - name: Read IPA identity
+        # The build number and bundle id inside the IPA are the only facts App
+        # Store Connect will agree with. Deriving them from github.run_number
+        # made every TestFlight poll ask for a build that was never uploaded
+        # (SHO-282), so read them here once and hand them to the later jobs.
+        id: ipa-identity
+        run: |
+          set -euo pipefail
+          PLIST_ENTRY=$(unzip -Z1 "$IPA_PATH" | grep -E '^Payload/[^/]+\.app/Info\.plist$' | head -1)
+          if [ -z "$PLIST_ENTRY" ]; then
+            echo "::error::No Payload/*.app/Info.plist in $IPA_PATH"
+            exit 1
+          fi
+          rm -rf "$RUNNER_TEMP/ipa-plist"
+          mkdir -p "$RUNNER_TEMP/ipa-plist"
+          unzip -o -q "$IPA_PATH" "$PLIST_ENTRY" -d "$RUNNER_TEMP/ipa-plist"
+          INFO_PLIST="$RUNNER_TEMP/ipa-plist/$PLIST_ENTRY"
+
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")
+          SHORT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")
+          BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIST")
+          EXPECTED_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100))
+
+          echo "bundle_id=$BUNDLE_ID" >> "$GITHUB_OUTPUT"
+          echo "short_version=$SHORT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+
+          echo "IPA identity: bundle=$BUNDLE_ID version=$SHORT_VERSION build=$BUILD_NUMBER (expected build $EXPECTED_BUILD_NUMBER)"
+          if [ "$BUILD_NUMBER" != "$EXPECTED_BUILD_NUMBER" ]; then
+            echo "::warning::The IPA's CFBundleVersion is $BUILD_NUMBER but github.run_number + 100 is $EXPECTED_BUILD_NUMBER. The workflow bump in apps/mobile/app.json did not reach the binary; TestFlight will poll the IPA's value."
+          fi
+          if [ "$BUNDLE_ID" != "ai.shogo.app" ]; then
+            echo "::error::The IPA's CFBundleIdentifier is $BUNDLE_ID, not ai.shogo.app. App Store Connect lookups will target the wrong app."
+            exit 1
+          fi
+
       - name: Save fingerprint to cache
         run: |
           RUNTIME_VERSION="${{ needs.check-fingerprint.outputs.runtime_version }}"
@@ -939,7 +978,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ needs.check-fingerprint.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **buildNumber:** $((${{ github.run_number }} + 100))" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleShortVersionString (IPA):** \`${{ steps.ipa-identity.outputs.short_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleVersion (IPA):** \`${{ steps.ipa-identity.outputs.build_number }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleIdentifier (IPA):** \`${{ steps.ipa-identity.outputs.bundle_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **buildNumber (run_number + 100):** $(( ${{ github.run_number }} + 100 ))" >> $GITHUB_STEP_SUMMARY
           echo "- **Profile:** $PROFILE_NAME" >> $GITHUB_STEP_SUMMARY
           echo "- **IPA artifact:** Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ needs.check-fingerprint.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
@@ -1010,21 +1052,30 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          # The IPA's own values, read in the build job. Polling a build number
+          # derived from github.run_number hid the real problem for four
+          # releases (SHO-282).
+          TESTFLIGHT_BUILD_NUMBER: ${{ needs.build.outputs.build_number }}
+          TESTFLIGHT_BUNDLE_ID: ${{ needs.build.outputs.bundle_id }}
           TESTFLIGHT_GROUP_IDS: 56865043-fc4a-40f8-ab20-ec2a8ebdd76c,98287cb2-a201-484d-9371-4619b9858daa
           # Apple accepted recent uploads but did not expose their builds in
           # the API within the default 30-minute processing window.
           TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS: 7200
         run: |
           set -euo pipefail
-          TESTFLIGHT_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100)) \
+          IPA_PATH=$(find /tmp/ipa -name '*.ipa' | head -1)
+          TESTFLIGHT_IPA_PATH="$IPA_PATH" \
             ruby "$GITHUB_WORKSPACE/.github/scripts/testflight-distribute.rb"
 
       - name: Summary
+        if: always()
         run: |
           echo "## TestFlight upload" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **IPA:** \`${{ needs.build.outputs.ipa_artifact }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ needs.check-fingerprint.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleShortVersionString (IPA):** \`${{ needs.build.outputs.short_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleVersion (IPA):** \`${{ needs.build.outputs.build_number }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ needs.check-fingerprint.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
 
@@ -1059,12 +1110,13 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          APP_BUNDLE_ID: ${{ needs.build.outputs.bundle_id }}
           APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
+          APP_STORE_BUILD_NUMBER: ${{ needs.build.outputs.build_number }}
           APP_STORE_WHATS_NEW: ${{ vars.IOS_WHATS_NEW }}
         run: |
           set -euo pipefail
-          APP_STORE_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100)) \
-            ruby "$GITHUB_WORKSPACE/.github/scripts/app-store-submit-review.rb"
+          ruby "$GITHUB_WORKSPACE/.github/scripts/app-store-submit-review.rb"
 
 
 # Manual triggers:

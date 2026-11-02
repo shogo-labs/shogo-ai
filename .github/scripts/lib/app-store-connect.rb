@@ -111,3 +111,168 @@ class AppStoreConnectClient
     raise AppStoreConnectError.new(response.code.to_i, JSON.generate(parsed_body))
   end
 end
+
+# Raised when the release configuration cannot possibly succeed (wrong app
+# record, a build number that was never uploaded, ...). The message is written
+# to be the whole story a human needs in the job log — no "not found" dead ends.
+class ReleaseConfigError < StandardError; end
+
+AppStoreApp = Struct.new(:id, :bundle_id, :name)
+
+# Appends a section to the GitHub job summary when running in Actions.
+def write_summary(lines, heading)
+  path = ENV["GITHUB_STEP_SUMMARY"].to_s
+  return if path.empty?
+
+  File.open(path, "a") do |file|
+    file.puts "## #{heading}"
+    file.puts
+    lines.each { |line| file.puts "- #{line}" }
+  end
+end
+
+# Resolves the app record that owns +bundle_id+, treating the bundle id — not
+# the ASC_APP_ID secret — as the source of truth. A stale or mistyped
+# ASC_APP_ID filters every build query to zero rows, which is invisible at the
+# call site: the upload succeeds, the poll never matches, and the job dies two
+# hours later claiming the build "was not found" (SHO-282). Returns the app plus
+# human-readable warnings about a disagreeing ASC_APP_ID.
+def resolve_app_for_bundle(client, bundle_id, configured_id = nil)
+  warnings = []
+  matches = client
+    .get("/v1/apps?#{URI.encode_www_form([["filter[bundleId]", bundle_id], ["limit", "10"]])}")
+    .fetch("data", [])
+
+  configured = configured_id.to_s.strip
+  described_configured = nil
+  unless configured.empty?
+    begin
+      item = client.get("/v1/apps/#{configured}").fetch("data", nil)
+      described_configured = describe_app(item) if item
+    rescue AppStoreConnectError => error
+      warnings << "ASC_APP_ID #{configured} could not be read by this API key (HTTP #{error.status}): #{error.body}"
+    end
+  end
+
+  if matches.empty?
+    detail = described_configured ? " ASC_APP_ID #{configured} is #{described_configured}." : ""
+    raise ReleaseConfigError,
+          "No App Store Connect app record has bundle id #{bundle_id} for this API key.#{detail} " \
+          "Check that the app exists in the API key's team and that the IPA was built with the right bundle id."
+  end
+
+  app = app_from_api(matches.first)
+  if !configured.empty? && configured != app.id
+    warnings << "ASC_APP_ID is #{configured}#{described_configured ? " (#{described_configured})" : ''} but bundle id " \
+                "#{bundle_id} belongs to #{app.name} (#{app.id}). Using #{app.id}."
+  end
+  return app, warnings
+end
+
+def describe_app(item)
+  return nil if item.nil?
+
+  attributes = item.fetch("attributes", {})
+  "#{attributes['name']} (#{attributes['bundleId']}, id #{item['id']})"
+end
+
+def app_from_api(item)
+  attributes = item.fetch("attributes", {})
+  AppStoreApp.new(item.fetch("id"), attributes["bundleId"].to_s, attributes["name"].to_s)
+end
+
+def find_build(client, app_id, build_number)
+  query = URI.encode_www_form(
+    [["filter[app]", app_id], ["filter[version]", build_number.to_s], ["limit", "10"]],
+  )
+  client.get("/v1/builds?#{query}").fetch("data", []).first
+end
+
+# Newest builds of one app record. Used only for diagnostics, so it asks for the
+# fewest fields App Store Connect will return.
+def recent_builds(client, app_id, limit = 10)
+  query = URI.encode_www_form(
+    [
+      ["filter[app]", app_id],
+      ["sort", "-uploadedDate"],
+      ["limit", limit.to_s],
+      ["fields[builds]", "version,processingState,uploadedDate"],
+    ],
+  )
+  client.get("/v1/builds?#{query}").fetch("data", [])
+end
+
+def describe_build(build)
+  attributes = build.fetch("attributes", {})
+  "build #{attributes['version']} — #{attributes['processingState'] || 'unknown state'} " \
+    "(uploaded #{attributes['uploadedDate'] || 'unknown'})"
+end
+
+def describe_builds(builds)
+  return "  (none — this app record has no builds)" if builds.empty?
+
+  builds.map { |build| "  #{describe_build(build)}" }.join("\n")
+end
+
+# Waits until +build_number+ exists on +app+ and has finished processing.
+# Fails with the actual state of App Store Connect instead of a bare "not
+# found": the app it queried, and the builds that do exist there.
+def wait_for_build(client, app, build_number, options = {})
+  poll_interval = options.fetch(:poll_interval, 30)
+  timeout_seconds = options.fetch(:timeout_seconds, 1800)
+  grace_seconds = options.fetch(:grace_seconds, 900)
+  started_at = Time.now
+  deadline = started_at + timeout_seconds
+  announced_missing = false
+
+  loop do
+    build = find_build(client, app.id, build_number)
+    if build
+      state = build.dig("attributes", "processingState").to_s
+      puts "Build #{build_number} processing state: #{state.empty? ? 'unknown' : state}"
+      return build if state == "VALID"
+      if %w[FAILED INVALID].include?(state)
+        raise ReleaseConfigError,
+              "App Store Connect rejected build #{build_number} of #{app.name} with processing state #{state}. " \
+              "Apple's reason is in the account's email and in App Store Connect."
+      end
+      if Time.now >= deadline
+        raise ReleaseConfigError,
+              "Timed out after #{timeout_seconds}s waiting for build #{build_number} to finish processing " \
+              "(state #{state})."
+      end
+    else
+      elapsed = Time.now - started_at
+      if Time.now >= deadline
+        raise ReleaseConfigError,
+              "Timed out after #{timeout_seconds}s: App Store Connect has no build #{build_number} for " \
+              "#{app.name} (#{app.bundle_id}, id #{app.id}). Builds that do exist:\n#{describe_builds(recent_builds(client, app.id))}"
+      end
+
+      if elapsed >= grace_seconds
+        builds = recent_builds(client, app.id)
+        unless announced_missing
+          announced_missing = true
+          puts "App Store Connect has no build #{build_number} for #{app.name} (#{app.bundle_id}, id #{app.id}) " \
+               "after #{(elapsed / 60).round} min. Existing builds:"
+          puts describe_builds(builds)
+        end
+        if builds.empty?
+          raise ReleaseConfigError,
+                "#{app.name} (#{app.bundle_id}, id #{app.id}) has no builds at all after #{(elapsed / 60).round} min, " \
+                "so the upload did not land in this app record. Either the ASC API key's team is not the team the " \
+                "IPA was uploaded to, or ASC_APP_ID points at the wrong app."
+        end
+        newest = builds.map { |item| item.dig("attributes", "version") }.compact.map(&:to_i).max
+        if newest && newest < build_number.to_i
+          raise ReleaseConfigError,
+                "#{app.name} (#{app.bundle_id}, id #{app.id}) newest build is #{newest}, but this run uploaded " \
+                "#{build_number}. The binary went to a different app record or team than the API key can see — " \
+                "ASC_APP_ID / the ASC API key and the altool account must belong to the same team."
+        end
+      end
+    end
+
+    sleep poll_interval
+  end
+end
