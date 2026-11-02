@@ -10,7 +10,7 @@ import type { ImageContent, Message, TextContent } from '@mariozechner/pi-ai'
 import { closeSync, openSync, readSync, statSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 import { isBinaryBuffer } from '@shogo/shared-runtime'
-import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guard'
+import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES, MAX_VIDEO_INLINE_BYTES } from './image-size-guard'
 import { userMessage } from './pi-adapter'
 
 const TEXT_MEDIA_TYPES = new Set([
@@ -104,8 +104,11 @@ export interface ParseFileAttachmentsOptions {
   supportsVideo?: boolean
 }
 
-/** Cap on a video attachment sent to a video-native model. */
-export const MAX_VIDEO_ATTACHMENT_BYTES = 20 * 1024 * 1024
+/**
+ * A video attachment travels inline, so it is capped at the largest clip whose
+ * base64 form fits `MAX_VIDEO_INLINE_BASE64_BYTES` in the request.
+ */
+export const MAX_VIDEO_ATTACHMENT_BYTES = MAX_VIDEO_INLINE_BYTES
 
 type PartSource =
   | { kind: 'data'; bytes: Buffer; base64: string }
@@ -260,7 +263,7 @@ export function parseFileAttachments(
       if (byteLength > MAX_VIDEO_ATTACHMENT_BYTES) {
         sections.push(
           `[Attached Video (${label})]: Too large to send to the model (${byteLength} bytes, max ${MAX_VIDEO_ATTACHMENT_BYTES}). ` +
-            `Downscale it first, e.g. \`ffmpeg -i <input> -vf scale=-2:480 -an <output>.mp4\`.${savedSuffix}`,
+            `Video travels inline in the request, so trim or downscale it first, e.g. \`ffmpeg -i <input> -t 20 -vf scale=-2:480 -an <output>.mp4\`.${savedSuffix}`,
         )
         continue
       }

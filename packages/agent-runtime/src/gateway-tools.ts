@@ -208,7 +208,7 @@ import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runti
 import { isMemoryFilePath, memoryShrinkGuard, snapshotMemoryFile } from './memory-history'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
 import { FileStateCache } from './file-state-cache'
-import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guard'
+import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES, MAX_VIDEO_INLINE_BYTES } from './image-size-guard'
 import { injectCommitTrailer } from './git-attribution'
 import type { TeamManager } from './team-manager'
 import type { TeammateLoopHandle } from './teammate-loop'
@@ -2818,7 +2818,11 @@ const VIDEO_READ_MIME: Record<string, string> = {
   '.webm': 'video/webm',
   '.mov': 'video/quicktime',
 }
-const MAX_VIDEO_READ_BYTES = 20 * 1024 * 1024
+/**
+ * Largest clip whose base64 form fits the inline video budget. Checked on the
+ * raw size so an oversized file is rejected before it is read.
+ */
+const MAX_VIDEO_READ_BYTES = MAX_VIDEO_INLINE_BYTES
 
 const BINARY_EXTENSION_LABELS: Record<string, { label: string; mediaType: string }> = {
   '.zip': { label: 'ZIP archive', mediaType: 'application/zip' },
@@ -3119,8 +3123,9 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           if (vidStat.size > MAX_VIDEO_READ_BYTES) {
             return textResult({
               error:
-                `Video too large to read: ${filePath} (${vidStat.size} bytes, max ${MAX_VIDEO_READ_BYTES}). ` +
-                'Downscale it first, e.g. `ffmpeg -i <input> -vf scale=-2:480 -an <output>.mp4`.',
+                `Video too large to send: ${filePath} (${vidStat.size} bytes, max ${MAX_VIDEO_READ_BYTES}). ` +
+                'Video travels inline in the request, so it has to fit alongside the conversation. ' +
+                'Trim or downscale it first, e.g. `ffmpeg -i <input> -t 20 -vf scale=-2:480 -an <output>.mp4`.',
             })
           }
           const buf = readFileSync(resolved)

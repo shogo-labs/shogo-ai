@@ -57,6 +57,26 @@ import type { ImageContent, Message, TextContent } from '@mariozechner/pi-ai'
 export const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024 - 4096
 
 /**
+ * Maximum base64 string length for one video block on the wire.
+ *
+ * Video only travels inline — there is no per-block cap, the binding limit is
+ * the *whole request*. OpenRouter documents none, so this is anchored to the
+ * tightest number a provider actually publishes: past 20 MB of inline data
+ * Gemini's API insists on the File API instead. A request also carries the
+ * system prompt, tools and the rest of the conversation, so the video budget
+ * stops short of the full 20 MB.
+ */
+export const MAX_VIDEO_INLINE_BASE64_BYTES = 15 * 1024 * 1024
+
+/**
+ * The same budget as a raw file size: base64 inflates bytes by ~4/3, so this
+ * is the largest clip whose encoded form still fits. Callers check raw size
+ * (cheap, before reading) against this; it is the equivalent of the base64
+ * budget above, not a second, independent limit.
+ */
+export const MAX_VIDEO_INLINE_BYTES = Math.floor((MAX_VIDEO_INLINE_BASE64_BYTES * 3) / 4)
+
+/**
  * Image MIME types every provider we route to (Anthropic, DeepSeek, and
  * OpenAI-compatible custom providers) documents support for. Deliberately
  * conservative — anything outside this set has been observed to produce a

@@ -17,7 +17,7 @@ import { createTools, type ToolContext } from '../gateway-tools'
 import { FileStateCache } from '../file-state-cache'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 import { clearDynamicModels, registerDynamicModels } from '@shogo/model-catalog'
-import { enforceImageSizeLimit, scrubInvalidImages } from '../image-size-guard'
+import { enforceImageSizeLimit, scrubInvalidImages, MAX_VIDEO_INLINE_BYTES, MAX_VIDEO_INLINE_BASE64_BYTES } from '../image-size-guard'
 import { parseFileAttachments } from '../file-attachment-utils'
 
 const TEST_DIR = '/tmp/test-gw-read-video'
@@ -92,15 +92,26 @@ describe('read_file on a video', () => {
     expect(content[0].text).toContain('GLM 5.3 Flash')
   })
 
-  test('rejects a video over the 20 MB cap with an ffmpeg hint', async () => {
-    writeFileSync(join(TEST_DIR, 'big.mp4'), Buffer.alloc(21 * 1024 * 1024))
+  test('rejects a clip over the inline budget with an ffmpeg hint', async () => {
+    writeFileSync(join(TEST_DIR, 'big.mp4'), Buffer.alloc(MAX_VIDEO_INLINE_BYTES + 1))
     const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR), effectiveModel: VIDEO_MODEL })
 
     const r = await run(ctx, 'read_file', { path: 'big.mp4' })
     const content = r.content as any[]
     expect(content[0].type).toBe('text')
     expect(content[0].text).toContain('Video too large')
+    expect(content[0].text).toContain('inline')
     expect(content[0].text).toContain('ffmpeg')
+  })
+
+  test('accepts a clip at the inline budget, whose base64 still fits the request', async () => {
+    writeFileSync(join(TEST_DIR, 'edge.mp4'), Buffer.alloc(MAX_VIDEO_INLINE_BYTES))
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR), effectiveModel: VIDEO_MODEL })
+
+    const r = await run(ctx, 'read_file', { path: 'edge.mp4' })
+    const blocks = r.content as any[]
+    expect(blocks[0].type).toBe('image')
+    expect(blocks[0].data.length).toBeLessThanOrEqual(MAX_VIDEO_INLINE_BASE64_BYTES)
   })
 })
 
