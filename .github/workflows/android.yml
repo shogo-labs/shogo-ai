@@ -285,7 +285,9 @@ jobs:
         # the shipped bundle is not), which is why OTA events came back
         # `js_no_source` (SHO-290). dist=`android` keeps it disjoint from the
         # iOS upload at the same SHA, and matches the `dist` `Sentry.init`
-        # reports.
+        # reports. `--source-maps true` is required for the same reason as the
+        # iOS step: `expo export` writes no map unless asked, and `eas update`
+        # passes the flag to its own export.
         #
         # Non-fatal: a Sentry misconfiguration must not block an OTA roll-out.
         working-directory: apps/mobile
@@ -310,6 +312,7 @@ jobs:
           bunx expo export \
             --platform android \
             --output-dir "$BUNDLE_DIR" \
+            --source-maps true \
             --clear
           EXPORT_RC=$?
           if [ "$EXPORT_RC" -ne 0 ]; then

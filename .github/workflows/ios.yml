@@ -306,6 +306,11 @@ jobs:
         # dist matches the `dist` `Sentry.init` reports, so events from
         # devices that pulled this update resolve to symbolicated frames.
         #
+        # `--source-maps true` is not optional: `expo export` writes only the
+        # `.hbc` unless asked, so without it the upload ships a bundle with no
+        # map and OTA events stay `js_no_source`. `eas update` passes the same
+        # flag to its own export, so this matches what the device downloads.
+        #
         # Non-fatal: a Sentry misconfiguration must not block an OTA roll-out.
         working-directory: apps/mobile
         env:
@@ -329,6 +334,7 @@ jobs:
           bunx expo export \
             --platform ios \
             --output-dir "$BUNDLE_DIR" \
+            --source-maps true \
             --clear
           EXPORT_RC=$?
           if [ "$EXPORT_RC" -ne 0 ]; then
