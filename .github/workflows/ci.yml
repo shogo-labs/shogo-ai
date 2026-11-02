@@ -575,7 +575,8 @@ jobs:
     # docs-only PR cannot change local-mode behaviour either. Do not add it to
     # the aggregator.
     if: github.event_name == 'pull_request' && needs.prelude.outputs.app == 'true'
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    # Playwright 1.58 has no ubuntu26.04 deps; unpin when @playwright/test supports it
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1046,7 +1047,8 @@ jobs:
     name: RBAC (Postgres)
     needs: prelude
     if: needs.prelude.outputs.verified != 'true'
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    # Playwright 1.58 has no ubuntu26.04 deps; unpin when @playwright/test supports it
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     permissions:
       contents: read
     # ~10 min since SHO-257 added the machine parity suite and its web build.
