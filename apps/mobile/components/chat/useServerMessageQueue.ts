@@ -209,6 +209,14 @@ export function useServerMessageQueue({
    * what catches that case.
    */
   const enqueuedRef = useRef(new Map<string, UIMessage>())
+  /**
+   * Creates in flight. A row only exists on the server once its POST resolves,
+   * and `loadAll` prunes every row of the session the server does not return —
+   * the optimistic `temp-` row included. A poll that landed inside a slow POST
+   * would therefore delete the queued message from the dock until the POST came
+   * back, so no load may run while a create is unconfirmed.
+   */
+  const creatingRef = useRef(0)
   /** Polls a sent-now *wake* has spent still `pending` — see `WAKE_SENT_NOW_WAIT_POLLS`. */
   const waitedRef = useRef(new Map<string, number>())
   const [trackedCount, setTrackedCount] = useState(0)
@@ -551,6 +559,7 @@ export function useServerMessageQueue({
   useEffect(() => {
     if (!enabled || !sessionId || rows.length === 0) return
     const timer = setInterval(() => {
+      if (creatingRef.current > 0) return
       void load().then(() => drainEnqueued(), () => {})
     }, 1500)
     return () => clearInterval(timer)
@@ -563,6 +572,7 @@ export function useServerMessageQueue({
   useEffect(() => {
     if (!enabled || !sessionId || trackedCount === 0) return
     const timer = setInterval(() => {
+      if (creatingRef.current > 0) return
       void load().then(() => drainEnqueued(), () => {})
     }, 1500)
     return () => clearInterval(timer)
@@ -696,13 +706,19 @@ export function useServerMessageQueue({
       // meantime is sent with the text the person typed, which is what an
       // enrichment failure already falls back to.
       const enriching = input.enrich?.()
-      const created = (await collection.create({
-        sessionId,
-        userId: "",
-        content: input.content.trim(),
-        parts: JSON.stringify(parts),
-        body: JSON.stringify(body),
-      } as any)) as IChatQueuedMessage | undefined
+      let created: IChatQueuedMessage | undefined
+      creatingRef.current += 1
+      try {
+        created = (await collection.create({
+          sessionId,
+          userId: "",
+          content: input.content.trim(),
+          parts: JSON.stringify(parts),
+          body: JSON.stringify(body),
+        } as any)) as IChatQueuedMessage | undefined
+      } finally {
+        creatingRef.current -= 1
+      }
       if (created && !created.id.startsWith(OPTIMISTIC_ID_PREFIX)) {
         enqueuedRef.current.set(created.id, queuedRowToUserMessage(created))
         setTrackedCount((count) => count + 1)

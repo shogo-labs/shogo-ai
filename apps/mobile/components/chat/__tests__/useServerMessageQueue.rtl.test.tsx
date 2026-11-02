@@ -32,6 +32,11 @@ let dispatchedBeforeObserved = false
  * derivation but not that the knowledge arrives — set this to model the server.
  */
 let loadAllImpl: (() => Promise<void>) | null = null
+/**
+ * When set, `create` inserts its optimistic `temp-` row and then waits here,
+ * the way a slow enqueue POST leaves an unconfirmed row in the dock.
+ */
+let createHold: Promise<void> | null = null
 
 const collection = observable({
   all: [] as Row[],
@@ -51,17 +56,31 @@ const collection = observable({
     })
   },
   create: async (input: Partial<Row>) => {
-    const created: Row = {
-      id: `srv-${++serverSeq}`,
+    const base = {
       sessionId: String(input.sessionId),
       position: collection.all.length,
-      status: "pending",
+      status: "pending" as const,
       content: String(input.content ?? ""),
       parts: input.parts,
       body: input.body,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
+    // With `createHold` set the row lives under a `temp-` id until the POST
+    // resolves, exactly as the real collection behaves.
+    if (createHold) {
+      const temp: Row = { id: `temp-${++serverSeq}`, ...base }
+      runInAction(() => { collection.all.push(temp) })
+      await createHold
+      const confirmed: Row = { id: `srv-${++serverSeq}`, ...base }
+      runInAction(() => {
+        const index = collection.all.findIndex((r) => r.id === temp.id)
+        if (index !== -1) collection.all[index] = confirmed
+        else if (!dispatchedBeforeObserved) collection.all.push(confirmed)
+      })
+      return confirmed
+    }
+    const created: Row = { id: `srv-${++serverSeq}`, ...base }
     // `dispatchedBeforeObserved` models the row the server takes and deletes
     // before any render ever carried it.
     if (!dispatchedBeforeObserved) {
@@ -150,6 +169,7 @@ function reset() {
   sendWakeFailure = null
   sendWakeHold = null
   loadAllImpl = null
+  createHold = null
   act(() => runInAction(() => { collection.all.splice(0, collection.all.length) }))
 }
 
@@ -586,6 +606,37 @@ describe("useServerMessageQueue", () => {
     expect(fromDock.filter((s) => !s.dock.includes("q1") && !s.pending.includes("q1"))).toEqual([])
     view.unmount()
   }, 10_000)
+
+  test("a poll never lands inside an unconfirmed create", async () => {
+    reset()
+    // The server has nothing yet: the row is still only the optimistic `temp-`
+    // one, and `loadAll` prunes every row of the session the server does not
+    // return. A poll during the POST would therefore delete it from the dock.
+    const serverRows: Row[] = []
+    loadAllImpl = async () => {
+      runInAction(() => {
+        collection.all.splice(0, collection.all.length, ...serverRows.map((r) => ({ ...r })))
+      })
+    }
+    let release: () => void = () => {}
+    createHold = new Promise<void>((resolve) => { release = resolve })
+
+    const view = render(<Probe isStreaming />)
+    await act(async () => {})
+    act(() => { void queueApi!.enqueue({ content: "slow send", body: { text: "slow send" } }) })
+    expect(dockText(view)).toEqual(["slow send"])
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    const dockWhilePosting = dockText(view)
+
+    // The POST resolves and the row becomes a real one.
+    serverRows.push(row("q1", 0, "slow send"))
+    await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    expect(dockWhilePosting).toEqual(["slow send"])
+    expect(dockText(view)).toEqual(["slow send"])
+    view.unmount()
+  }, 15_000)
 
   test("a dispatch that fails after being claimed goes back to the dock", async () => {
     reset()
