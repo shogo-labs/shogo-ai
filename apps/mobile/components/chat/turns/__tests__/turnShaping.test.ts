@@ -10,6 +10,7 @@ import {
   groupWorkParts,
   partitionTurn,
   extractTurnTiming,
+  isTurnInProgress,
   formatWorkedDuration,
   formatRelativeTime,
   shouldShowPlanningStatus,
@@ -400,6 +401,88 @@ describe("extractTurnTiming", () => {
     const timing = extractTurnTiming(message);
     expect(timing.startedAt).toBeUndefined();
     expect(timing.completedAt).toBeUndefined();
+  });
+
+  // SHO-287: a row persisted mid-turn carries `data-turn-timing` with a start
+  // and no completion. Falling back to `createdAt` there turned a reply nine
+  // commands deep into "Worked for 2s".
+  test("an unfinished persisted row has no completedAt, so no 'Worked for N'", () => {
+    const message = msg(
+      [
+        { type: "data-turn-timing", data: { startedAt: 2000 } },
+        { type: "tool-invocation", toolInvocation: { state: "result" } },
+      ],
+      new Date(2100),
+    );
+    const timing = extractTurnTiming(message);
+    expect(timing.startedAt).toBe(2000);
+    expect(timing.completedAt).toBeUndefined();
+  });
+
+  test("an unfinished live row (turn-start, no complete) has no completedAt", () => {
+    const message = msg(
+      [{ type: "data-turn-start", data: { startedAt: 2000 } }, { type: "text", text: "…" }],
+      2200,
+    );
+    expect(extractTurnTiming(message).completedAt).toBeUndefined();
+  });
+
+  test("a legacy row with no turn timing at all still falls back to createdAt", () => {
+    const message = msg([{ type: "text", text: "hi" }], 777);
+    expect(extractTurnTiming(message).completedAt).toBe(777);
+  });
+});
+
+describe("isTurnInProgress / readTurnProgress (SHO-287)", () => {
+  function msg(parts: unknown[], role: "assistant" | "user" = "assistant"): UIMessage {
+    return { id: "m1", role, parts } as unknown as UIMessage;
+  }
+
+  test("a turn the runtime opened and has not closed is in progress", () => {
+    expect(isTurnInProgress(msg([{ type: "data-turn-start", data: { startedAt: 1 } }]))).toBe(true);
+    expect(isTurnInProgress(msg([{ type: "data-turn-timing", data: { startedAt: 1 } }]))).toBe(true);
+  });
+
+  test("every completion marker closes it", () => {
+    expect(
+      isTurnInProgress(
+        msg([
+          { type: "data-turn-start", data: { startedAt: 1 } },
+          { type: "data-turn-complete", data: { completedAt: 2 } },
+        ]),
+      ),
+    ).toBe(false);
+    expect(
+      isTurnInProgress(
+        msg([{ type: "data-turn-timing", data: { startedAt: 1, completedAt: 2 } }]),
+      ),
+    ).toBe(false);
+    expect(
+      isTurnInProgress(
+        msg([
+          { type: "data-turn-start", data: { startedAt: 1 } },
+          { type: "data-turn-stopped", data: { turnId: "t1" } },
+        ]),
+      ),
+    ).toBe(false);
+    expect(
+      isTurnInProgress(
+        msg([
+          { type: "data-turn-start", data: { startedAt: 1 } },
+          { type: "data-turn-interrupted", data: {} },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
+  test("a row with no turn timing at all is finished history, not in progress", () => {
+    expect(isTurnInProgress(msg([{ type: "text", text: "hi" }]))).toBe(false);
+  });
+
+  test("a user message is never an in-progress turn", () => {
+    expect(isTurnInProgress(msg([{ type: "data-turn-start", data: { startedAt: 1 } }], "user"))).toBe(
+      false,
+    );
   });
 });
 

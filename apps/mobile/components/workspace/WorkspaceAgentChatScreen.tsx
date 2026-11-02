@@ -7,7 +7,7 @@
  * recent personal chat, creating one when they have none.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
-import { ActivityIndicator, AppState, Pressable, Text, View, useWindowDimensions } from "react-native"
+import { ActivityIndicator, AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
@@ -308,6 +308,25 @@ export const WorkspaceAgentChatScreen = observer(
     useEffect(() => {
       void loadWorkspaceChat()
     }, [loadWorkspaceChat])
+
+    /**
+     * The chat on screen belongs in the URL (SHO-287): reloading mid-turn, or
+     * coming Back to this screen, must reopen the chat that is running rather
+     * than mint an empty one.
+     *
+     * `replaceState`, not a router navigation: this is a label for the screen
+     * already on display, and router params here would change the route key and
+     * remount the panel — mid-turn, that is the bug, not the fix. A reload then
+     * sees `?chatSessionId=` and the landing/agent route opens it.
+     */
+    useEffect(() => {
+      if (Platform.OS !== "web" || !sessionId) return
+      if (typeof window === "undefined" || !window.history?.replaceState) return
+      const url = new URL(window.location.href)
+      if (url.searchParams.get("chatSessionId") === sessionId) return
+      url.searchParams.set("chatSessionId", sessionId)
+      window.history.replaceState(window.history.state, "", url.toString())
+    }, [sessionId])
 
     const hasSidePane = width >= PROJECT_SIDE_PANE_MIN_WIDTH && !usesMobileWorkspaceChrome
     // Plan, project, and file panes share one slot: opening any of them closes the others.

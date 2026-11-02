@@ -21,6 +21,7 @@ import type { UIMessage } from "@ai-sdk/react"
 import type { AnsweredQuestion, ConversationTurn, MessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
 import { extractTextContent } from "@shogo/shared-app/chat"
+import { isTurnInProgress } from "./turnShaping"
 import {
   findAskUserPart,
   parseAskUserAnswerMessage,
@@ -204,7 +205,7 @@ export function groupMessagesIntoTurns(
         }
       }
       current.assistantMessage = message
-      if (i === messages.length - 1 && isStreaming) {
+      if (i === messages.length - 1 && (isStreaming || isTurnInProgress(message))) {
         current.isStreaming = true
       }
     }
