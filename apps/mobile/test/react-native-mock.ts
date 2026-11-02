@@ -309,3 +309,105 @@ export function createReactNativeMock(overrides: Partial<typeof reactNativeMockB
     Animated: { ...reactNativeMockBase.Animated, ...(overrides.Animated as object | undefined) },
   }
 }
+
+/**
+ * An `Animated` shim that keeps the one rule the inert mock above drops: a
+ * value a `useNativeDriver: true` animation has moved to the native side
+ * throws if a later JS-driven animation starts on it (RN 0.86
+ * `Libraries/Animated/animations/Animation.js:66`).
+ *
+ * `@legendapp/motion` picks the driver on every render from the keys it
+ * animates and keeps one `Animated.Value` per key for the life of the
+ * component, so a component that adds a JS-only key (height, width, margin,
+ * colour) to a value it already animated natively crashes on device and
+ * passes silently under the inert mock. Pass this in as
+ * `createReactNativeMock({ Animated: createStrictAnimated().Animated })` to
+ * make that class of bug fail a test.
+ *
+ * Violations are recorded, not thrown: the throw happens inside a
+ * `requestAnimationFrame` callback, where a test cannot catch it. Assert
+ * `violations` is empty.
+ */
+export function createStrictAnimated() {
+  const violations: string[] = []
+
+  class StrictValue {
+    __isNative = false
+    __value: number
+    constructor(value: number) {
+      this.__value = value
+    }
+    setValue(value: number) {
+      this.__value = value
+    }
+    __getValue() {
+      return this.__value
+    }
+    addListener() {
+      return 'id'
+    }
+    removeListener() {}
+    removeAllListeners() {}
+    interpolate() {
+      return this
+    }
+  }
+
+  const animation = (value: StrictValue, config: { useNativeDriver?: boolean; toValue?: number }) => ({
+    start(cb?: () => void) {
+      if (config.useNativeDriver) {
+        value.__isNative = true
+      } else if (value.__isNative) {
+        violations.push(
+          'Attempting to run JS driven animation on animated node that has been moved to "native" earlier by starting an animation with `useNativeDriver: true`',
+        )
+      }
+      if (typeof config.toValue === 'number') value.__value = config.toValue
+      cb?.()
+    },
+    stop() {},
+    reset() {},
+  })
+
+  const resolveStyle = (style: unknown): Record<string, unknown> | undefined => {
+    const flat = flattenStyle(style)
+    if (!flat) return undefined
+    const out: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(flat)) {
+      out[key] =
+        value && typeof value === 'object' && '__getValue' in (value as object)
+          ? (value as StrictValue).__getValue()
+          : value
+    }
+    return out
+  }
+
+  const AnimatedView = forwardRef(function AnimatedViewShim(
+    props: Record<string, unknown>,
+    ref: React.Ref<HTMLDivElement>,
+  ) {
+    const { children, style, ...rest } = props as { children?: React.ReactNode; style?: unknown }
+    return createElement('div', { ...rest, ref, style: resolveStyle(style) }, children)
+  })
+
+  return {
+    violations,
+    Animated: {
+      View: AnimatedView,
+      Text: AnimatedView,
+      Image: AnimatedView,
+      ScrollView: AnimatedView,
+      FlatList: AnimatedView,
+      SectionList: AnimatedView,
+      Value: StrictValue,
+      timing: (value: StrictValue, config: { useNativeDriver?: boolean; toValue?: number }) =>
+        animation(value, config),
+      spring: (value: StrictValue, config: { useNativeDriver?: boolean; toValue?: number }) =>
+        animation(value, config),
+      sequence: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+      parallel: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+      loop: () => ({ start: () => {}, stop: () => {}, reset: () => {} }),
+      createAnimatedComponent: <T,>(c: T) => c,
+    },
+  }
+}
