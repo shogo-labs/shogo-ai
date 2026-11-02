@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import React, { memo, useMemo, type AnchorHTMLAttributes, type KeyboardEvent, type MouseEvent, type ReactNode } from "react"
+import React, {
+  createContext,
+  memo,
+  useContext,
+  useMemo,
+  type AnchorHTMLAttributes,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react"
 import { useWindowDimensions } from "react-native"
 import { Streamdown, defaultUrlTransform } from "streamdown"
 import "streamdown/styles.css"
@@ -51,6 +60,17 @@ export interface MarkdownTextProps {
 
 const linkSafetyOff = { enabled: false as const }
 
+/**
+ * The file index reaches the links through context, not through the
+ * `components` map: streamdown@2.7.0's outer `memo` compares `children`,
+ * `mode` and `isAnimating` but not `components`, so a new `fileExists` handed
+ * to `FileAwareLink` as a prop would never reach a link whose text had not
+ * changed — the chip state would freeze at the last text or mode change
+ * (SHO-280). Context propagates through a memo boundary, so the links
+ * re-render on their own and the markdown is not re-parsed.
+ */
+const FileExistsContext = createContext<((path: string) => boolean) | undefined>(undefined)
+
 // Streamdown re-parses the full markdown body on every render. String
 // comparison in JS is value-equal, so `prev.children === next.children` does
 // already bail out when the rendered text is character-identical between two
@@ -74,18 +94,17 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
 function FileAwareLink({
   href,
   onFilePress,
-  fileExists,
   onLinkPress,
   children,
   node: _node,
   ...rest
 }: AnchorHTMLAttributes<HTMLAnchorElement> & {
   onFilePress?: (path: string) => void
-  fileExists?: (path: string) => boolean
   onLinkPress?: (href: string) => boolean
   node?: unknown
 }) {
   const openShareFile = useShareFileOpener()
+  const fileExists = useContext(FileExistsContext)
   // A link to a file the app serves is a chip, never an <a href> that leaves
   // the app: clicking it opens the file in the side pane (or the modal).
   const servedFile = typeof href === "string" ? parseInAppFileHref(href) : null
@@ -246,30 +265,32 @@ export const MarkdownText = memo(
               {props.children}
             </MentionHighlight>
           ) : (
-            <FileAwareLink {...props} onFilePress={onFilePress} fileExists={fileExists} onLinkPress={onLinkPress} />
+            <FileAwareLink {...props} onFilePress={onFilePress} onLinkPress={onLinkPress} />
           ),
         img: ({ src, alt }: { src?: string | Blob; alt?: string; node?: unknown }) => (
           <MarkdownMedia src={typeof src === "string" ? src : null} alt={alt} />
         ),
       }),
-      [onFilePress, fileExists, onLinkPress, onMentionPress],
+      [onFilePress, onLinkPress, onMentionPress],
     )
     return (
-      <Streamdown
-        className={cls}
-        mode={isStreaming === false ? "static" : "streaming"}
-        isAnimating={isStreaming}
-        linkSafety={linkSafetyOff}
-        controls={false}
-        components={components}
-        urlTransform={(url, key, node) =>
-          url.startsWith(FILE_HREF_PREFIX) || url.startsWith(IMAGE_SRC_PREFIX) || isMentionHref(url)
-            ? url
-            : defaultUrlTransform(url, key, node)
-        }
-      >
-        {body}
-      </Streamdown>
+      <FileExistsContext.Provider value={fileExists}>
+        <Streamdown
+          className={cls}
+          mode={isStreaming === false ? "static" : "streaming"}
+          isAnimating={isStreaming}
+          linkSafety={linkSafetyOff}
+          controls={false}
+          components={components}
+          urlTransform={(url, key, node) =>
+            url.startsWith(FILE_HREF_PREFIX) || url.startsWith(IMAGE_SRC_PREFIX) || isMentionHref(url)
+              ? url
+              : defaultUrlTransform(url, key, node)
+          }
+        >
+          {body}
+        </Streamdown>
+      </FileExistsContext.Provider>
     )
   },
   markdownPropsEqual,

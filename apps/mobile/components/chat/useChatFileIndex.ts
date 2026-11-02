@@ -37,9 +37,21 @@ export function useChatFileIndex(
   const [refreshKey, setRefreshKey] = useState(0)
   const wasStreamingRef = useRef(isStreaming)
   const projectAgentUrl = options.projectAgentUrl
-  // Projects whose list is already being fetched, so a chip check that runs on
-  // every render asks each project at most once.
+  // Projects whose list has been asked for, so a chip check that runs on every
+  // render asks each project at most once. Never blanked: the lists are
+  // refreshed in place, so a path that chips now must not un-chip because a
+  // turn ended before the new list arrived (SHO-280).
   const requestedRef = useRef<Set<string>>(new Set())
+  // A project read that has not settled yet, so a refresh does not stack a
+  // second read on top of it.
+  const inFlightRef = useRef<Set<string>>(new Set())
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   // A finished turn may have created the files its reply mentions.
   useEffect(() => {
@@ -67,25 +79,22 @@ export function useChatFileIndex(
     }
   }, [agentUrl, refreshKey])
 
-  // A finished turn may have created the files its reply mentions, in this
-  // runtime or in another project, so both lists are read again.
-  useEffect(() => {
-    if (refreshKey === 0) return
-    requestedRef.current.clear()
-    setProjectFiles(EMPTY_BY_PROJECT)
-  }, [refreshKey])
-
   const loadProjectFiles = useCallback(
-    (ownerId: string) => {
-      if (!projectAgentUrl) return
+    (ownerId: string): boolean => {
+      if (!projectAgentUrl) return false
       const base = projectAgentUrl(ownerId)
       if (!base) return false
+      if (inFlightRef.current.has(ownerId)) return true
       const client = new AgentClient({ baseUrl: base.replace(/\/$/, ""), fetch: agentFetch })
       if (typeof client.listWorkspaceFiles !== "function") return false
+      inFlightRef.current.add(ownerId)
       client
         .listWorkspaceFiles()
         .then((res) => {
+          if (!mountedRef.current) return
           const next = new Set(res.files)
+          // Replaced in place: the list that is already cached stays readable
+          // until the new one arrives.
           setProjectFiles((current) => {
             const merged = new Map(current)
             merged.set(ownerId, next)
@@ -93,12 +102,24 @@ export function useChatFileIndex(
           })
         })
         .catch(() => {
-          // Leave the project uncached: the file simply does not chip here.
+          // Leave the project's cached list as it was: the file simply does not
+          // chip here until a later read succeeds.
+        })
+        .finally(() => {
+          inFlightRef.current.delete(ownerId)
         })
       return true
     },
     [projectAgentUrl],
   )
+
+  // A finished turn may have created files in any project already read, so
+  // every one of them is read again — in place. Serially blanking the cache
+  // instead made whether a chip appears depend on which of two requests won.
+  useEffect(() => {
+    if (refreshKey === 0) return
+    for (const ownerId of Array.from(requestedRef.current)) loadProjectFiles(ownerId)
+  }, [refreshKey, loadProjectFiles])
 
   return useCallback(
     (path: string) => {

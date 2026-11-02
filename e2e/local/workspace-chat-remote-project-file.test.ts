@@ -286,12 +286,11 @@ test.describe("A file the workspace agent wrote in another project", () => {
   })
 
   test("the path chips when that project's file list is already known", async () => {
-    // The first turn above fetched the other project's list, so this reply
-    // renders with it in hand. On a cold cache the list arrives after the text
-    // has rendered and the chip only appears on the next re-render of that
-    // message (a real streaming turn gets one when the stream ends; a
-    // single-chunk reply does not), which is why the assertion is here and not
-    // on the first turn.
+    // The first turn above fetched the other project's list, and a turn ending
+    // now refreshes it in place rather than blanking it — so this reply starts
+    // with the list in hand. The chip also no longer depends on that: the links
+    // read the index through context, so they re-render when it arrives even
+    // though the reply's text never changes (SHO-280).
     await remoteWriteTurn("Write the plan again")
 
     await expect(

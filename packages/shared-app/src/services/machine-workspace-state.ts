@@ -192,6 +192,27 @@ function clampRetry(ms: number): number {
   return Math.min(ms, MACHINE_RETRY_CAP_MS)
 }
 
+/**
+ * Feed the banner from a response a *plain* `fetch` got — the chat stream, which
+ * does not go through the SDK interceptor that reports for every record call
+ * (SHO-274). Since the client stopped writing its own user row, the chat POST is
+ * the only request a send makes, so the refusal has to be read from here or the
+ * workspace never learns the machine is asleep. Never throws, never consumes the
+ * response the caller is streaming, and says nothing about a response that
+ * carries no machine code (a cloud workspace's failure is not the machine's).
+ */
+export async function reportMachineStateFromResponse(response: Response): Promise<void> {
+  if (response.ok) return
+  let body: unknown
+  try {
+    body = await response.clone().json()
+  } catch {
+    return
+  }
+  if (!body || typeof body !== 'object') return
+  machineWorkspaceState.report({ status: response.status, body, headers: response.headers })
+}
+
 /** True when the failure is one of the machine's three states, not a real error. */
 export function isMachineConditionError(error: unknown): boolean {
   const status = errorStatus(error)

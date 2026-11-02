@@ -28,7 +28,9 @@ import {
   describeMachineWorkspace,
   errorLastSyncedAt,
   isMachineConditionError,
+  machineWorkspaceState,
   parseRetryAfter,
+  reportMachineStateFromResponse,
 } from '../machine-workspace-state'
 
 /** The 409 the cloud answers a write to a sleeping machine with. */
@@ -258,6 +260,63 @@ describe('the store a screen subscribes to', () => {
       retryAfterMs: MACHINE_RETRY_BASE_MS,
       attempt: 1,
     })
+  })
+})
+
+/**
+ * The chat turn posts through a plain `fetch` (the AI SDK transport), not the
+ * SDK client the interceptor wraps — so a send to a sleeping machine's
+ * workspace was refused with nothing on screen saying so once the client
+ * stopped writing its own user row (SHO-274). These pin the reading of that
+ * response.
+ */
+describe('a machine refusal read off a plain fetch response', () => {
+  function jsonResponse(status: number, body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  it('reports the offline state from the 409 the relay answers with', async () => {
+    machineWorkspaceState.reset()
+    const iso = new Date(NOW - 600_000).toISOString()
+
+    await reportMachineStateFromResponse(
+      jsonResponse(409, {
+        error: {
+          code: 'machine_offline_readonly',
+          message: "Russell's MacBook is offline — this workspace is read-only until it is back",
+          lastSyncedAt: iso,
+        },
+      }),
+    )
+
+    expect(machineWorkspaceState.get()).toEqual({ kind: 'offline', lastSyncedAt: iso })
+    machineWorkspaceState.reset()
+  })
+
+  it('reads the waking state, and its wait, off a 503', async () => {
+    machineWorkspaceState.reset()
+
+    await reportMachineStateFromResponse(
+      jsonResponse(503, {
+        error: { code: 'waking', message: "Russell's MacBook is waking up", retryAfterSeconds: 3 },
+      }),
+    )
+
+    expect(machineWorkspaceState.get()).toMatchObject({ kind: 'waking', retryAfterMs: 3000 })
+    machineWorkspaceState.reset()
+  })
+
+  it('leaves a cloud workspace’s own failure alone, and never throws', async () => {
+    machineWorkspaceState.reset()
+
+    await reportMachineStateFromResponse(jsonResponse(500, { error: { code: 'internal' } }))
+    await reportMachineStateFromResponse(new Response('not json', { status: 409 }))
+    await reportMachineStateFromResponse(jsonResponse(200, { ok: true }))
+
+    expect(machineWorkspaceState.get().kind).toBe('ok')
   })
 })
 

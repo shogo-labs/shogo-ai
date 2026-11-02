@@ -73,7 +73,8 @@ jobs:
     name: 'E2E (phone: iPhone 15 Pro WebKit + Pixel 7)'
     needs: changes
     if: needs.changes.outputs.app == 'true'
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    # Playwright 1.58 has no ubuntu26.04 deps; unpin when @playwright/test supports it
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     permissions:
       contents: read
     # 60, not 40 (SHO-234). Setup is normally ~1m and green runs finish in
