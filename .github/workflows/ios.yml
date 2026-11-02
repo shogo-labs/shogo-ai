@@ -1003,12 +1003,14 @@ jobs:
       APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
 
     steps:
-      - name: Checkout TestFlight distribution script
+      - name: Checkout release scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          # The whole scripts directory, not a file list: the scripts grow lib
+          # dependencies, and a sparse list that misses one kills the job with a
+          # LoadError before it ever talks to Apple (SHO-282).
           sparse-checkout: |
-            .github/scripts/testflight-distribute.rb
-            .github/scripts/lib/app-store-connect.rb
+            .github/scripts
           sparse-checkout-cone-mode: false
 
       - name: Download IPA
@@ -1096,12 +1098,12 @@ jobs:
       (github.ref_type == 'tag' || inputs.release_tag != '') &&
       vars.IOS_SUBMIT_FOR_REVIEW != 'false'
     steps:
-      - name: Checkout App Store review script
+      - name: Checkout release scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          # Same directory-level checkout as the TestFlight job (SHO-282).
           sparse-checkout: |
-            .github/scripts/app-store-submit-review.rb
-            .github/scripts/lib/app-store-connect.rb
+            .github/scripts
           sparse-checkout-cone-mode: false
 
       - name: Submit for review
