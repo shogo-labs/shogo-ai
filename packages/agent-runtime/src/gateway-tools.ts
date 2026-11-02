@@ -2824,6 +2824,9 @@ const VIDEO_READ_MIME: Record<string, string> = {
  */
 const MAX_VIDEO_READ_BYTES = MAX_VIDEO_INLINE_BYTES
 
+/** Whole megabytes, rounded down, for human-readable caps in tool text. */
+const mb = (bytes: number) => `${Math.floor(bytes / (1024 * 1024))} MB`
+
 const BINARY_EXTENSION_LABELS: Record<string, { label: string; mediaType: string }> = {
   '.zip': { label: 'ZIP archive', mediaType: 'application/zip' },
   '.gz': { label: 'gzip archive', mediaType: 'application/gzip' },
@@ -2926,7 +2929,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
     description:
-      `Read a file from the agent workspace. Prefer this over \`exec\` with \`cat\`/\`head\`/\`tail\`. Supports partial reads via offset and limit to handle large files without consuming the full context window. \`offset\` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); \`limit\` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or ${isSearchEnabled() ? 'use the `search` tool' : 'run `rg -n` via `exec`'} to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected. When called on a video file (.mp4, .m4v, .webm, .mov) and the current model can watch video (e.g. GLM 5.3 Flash), the clip is returned as video content so you can describe what happens in it; other models get a text error instead, and videos larger than 20 MB are rejected.`,
+      `Read a file from the agent workspace. Prefer this over \`exec\` with \`cat\`/\`head\`/\`tail\`. Supports partial reads via offset and limit to handle large files without consuming the full context window. \`offset\` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); \`limit\` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or ${isSearchEnabled() ? 'use the `search` tool' : 'run `rg -n` via `exec`'} to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than ${mb(MAX_IMAGE_READ_BYTES)} are rejected. When called on a video file (.mp4, .m4v, .webm, .mov) and the current model can watch video (e.g. GLM 5.3 Flash), the clip is returned as video content so you can describe what happens in it; other models get a text error instead, and videos larger than ${mb(MAX_VIDEO_READ_BYTES)} are rejected.`,
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),

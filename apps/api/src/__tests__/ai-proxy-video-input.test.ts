@@ -19,7 +19,7 @@ process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-
  * Run: bun test apps/api/src/__tests__/ai-proxy-video-input.test.ts
  */
 
-import { describe, test, expect, beforeAll, beforeEach, mock } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll, beforeEach, mock } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 process.env.SHOGO_LOCAL_MODE = 'true'
@@ -75,6 +75,13 @@ beforeAll(() => {
       })
     )
   }) as any
+})
+
+// The stub above is process-global: without this, any other test file that runs
+// in the same process (e.g. video-pipeline.test.ts, which drives an agent loop
+// through real fetch) gets its calls swallowed.
+afterAll(() => {
+  globalThis.fetch = originalFetch
 })
 
 const { Hono } = await import('hono')

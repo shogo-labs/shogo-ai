@@ -165,3 +165,15 @@ describe('parseFileAttachments with a video attachment', () => {
     expect(parsed.textContext).toContain('GLM 5.3 Flash')
   })
 })
+
+describe('read_file tool description', () => {
+  // The description is what the model reads before deciding to call the tool, so
+  // a cap quoted there that disagrees with the enforced one makes a rejected
+  // read look like a bug ("you told me 20 MB was fine"). Pin it to the constant.
+  test('quotes the enforced caps, not a stale literal', () => {
+    const readFile = createTools(makeCtx()).find((t) => t.name === 'read_file')!
+    const expectedMb = Math.floor(MAX_VIDEO_INLINE_BYTES / (1024 * 1024))
+    expect(readFile.description).toContain(`videos larger than ${expectedMb} MB are rejected`)
+    expect(readFile.description).not.toContain('videos larger than 20 MB')
+  })
+})
