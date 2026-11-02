@@ -69,6 +69,11 @@ interface SpendTimeseriesPayload {
     totalSpendUsd: number;
     totalIncludedUsd: number;
     totalOnDemandUsd: number;
+    /** The provider price and the Shogo fee the Spend card breaks the total into. */
+    modelCostUsd?: number;
+    shogoFeeUsd?: number;
+    unitemizedUsd?: number;
+    shogoFeePercent?: number;
     uniqueModels: number;
   };
   models: string[];
