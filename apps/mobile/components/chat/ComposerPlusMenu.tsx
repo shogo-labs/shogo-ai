@@ -92,6 +92,7 @@ export function compactNativeModelLabel(modelId: string): string {
 export function ComposerPlusSheet({
   visible,
   onClose,
+  onDismiss,
   expandedId,
   onToggleSection,
   maxHeight,
@@ -101,6 +102,11 @@ export function ComposerPlusSheet({
 }: {
   visible: boolean
   onClose: () => void
+  /**
+   * Fires once the modal has actually gone. iOS-only; the attach flow uses it
+   * to launch a picker after the sheet is gone (SHO-283).
+   */
+  onDismiss?: () => void
   expandedId: string | null
   onToggleSection: (id: string) => void
   maxHeight: number
@@ -110,60 +116,64 @@ export function ComposerPlusSheet({
 }) {
   const sheet = useNativePhoneSheetChrome()
   const iconChrome = useNativePhoneIconChrome()
-  if (!visible) return null
 
+  // The Modal stays mounted while closed so its `onDismiss` can fire; the
+  // content is dropped instead, so a closed sheet renders nothing.
   return (
     <Modal
-      visible
+      visible={visible}
       transparent
       animationType="fade"
       statusBarTranslucent
       onRequestClose={onClose}
+      onDismiss={onDismiss}
     >
-      <View className="flex-1 justify-end">
-        <Pressable
-          className="absolute left-0 right-0 top-0 bottom-0"
-          style={sheet.backdrop}
-          onPress={onClose}
-          accessibilityLabel="Dismiss menu"
-        />
-        <View
-          className="z-10 mx-3 mb-3 overflow-hidden rounded-2xl border border-border bg-card"
-          style={[{ maxHeight }, sheet.panel]}
-        >
-          <ComposerPlusCloseContext.Provider value={onClose}>
-            <PlusAccordionContext.Provider
-              value={{ expandedId, toggle: onToggleSection }}
-            >
-              <ScrollView
-                bounces={false}
-                keyboardShouldPersistTaps="handled"
-                style={{ maxHeight }}
+      {visible ? (
+        <View className="flex-1 justify-end">
+          <Pressable
+            className="absolute left-0 right-0 top-0 bottom-0"
+            style={sheet.backdrop}
+            onPress={onClose}
+            accessibilityLabel="Dismiss menu"
+          />
+          <View
+            className="z-10 mx-3 mb-3 overflow-hidden rounded-2xl border border-border bg-card"
+            style={[{ maxHeight }, sheet.panel]}
+          >
+            <ComposerPlusCloseContext.Provider value={onClose}>
+              <PlusAccordionContext.Provider
+                value={{ expandedId, toggle: onToggleSection }}
               >
-                {children}
-                <View className="border-t border-border/50 pt-1 pb-1">
-                  {PLUS_ATTACH_ROWS.map(({ action, label, hint, Icon }) => (
-                    <Pressable
-                      key={action}
-                      onPress={() => onAttach(action)}
-                      disabled={attachDisabled}
-                      className="flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
-                    >
-                      <View className="h-10 w-10 items-center justify-center rounded-lg bg-muted/40">
-                        <Icon size={PHONE_DENSITY.icon.sm} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
-                      </View>
-                      <View className="min-w-0 flex-1">
-                        <Text className={cn(PHONE_DENSITY.text.label, "font-medium text-foreground")}>{label}</Text>
-                        <Text className={cn(PHONE_DENSITY.text.caption, "text-muted-foreground")}>{hint}</Text>
-                      </View>
-                    </Pressable>
-                  ))}
-                </View>
-              </ScrollView>
-            </PlusAccordionContext.Provider>
-          </ComposerPlusCloseContext.Provider>
+                <ScrollView
+                  bounces={false}
+                  keyboardShouldPersistTaps="handled"
+                  style={{ maxHeight }}
+                >
+                  {children}
+                  <View className="border-t border-border/50 pt-1 pb-1">
+                    {PLUS_ATTACH_ROWS.map(({ action, label, hint, Icon }) => (
+                      <Pressable
+                        key={action}
+                        onPress={() => onAttach(action)}
+                        disabled={attachDisabled}
+                        className="flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
+                      >
+                        <View className="h-10 w-10 items-center justify-center rounded-lg bg-muted/40">
+                          <Icon size={PHONE_DENSITY.icon.sm} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
+                        </View>
+                        <View className="min-w-0 flex-1">
+                          <Text className={cn(PHONE_DENSITY.text.label, "font-medium text-foreground")}>{label}</Text>
+                          <Text className={cn(PHONE_DENSITY.text.caption, "text-muted-foreground")}>{hint}</Text>
+                        </View>
+                      </Pressable>
+                    ))}
+                  </View>
+                </ScrollView>
+              </PlusAccordionContext.Provider>
+            </ComposerPlusCloseContext.Provider>
+          </View>
         </View>
-      </View>
+      ) : null}
     </Modal>
   )
 }
