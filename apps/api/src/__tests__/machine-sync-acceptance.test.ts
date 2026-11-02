@@ -38,7 +38,7 @@ const { resolveInstanceIdentity } = await import('../lib/instance-identity')
 const { reattachStaleTurns } = await import('../jobs/chat-turn-reattach')
 const resume = await import('../services/chat-resume.service')
 const dispatcher = await import('../services/chat-queue-dispatcher.service')
-const machineWorkspace = await import('../lib/machine-workspace')
+const hostedWorkspace = await import('../lib/hosted-workspace')
 
 const db = prisma as any
 const suffix = crypto.randomUUID().slice(0, 8)
@@ -336,7 +336,7 @@ describeIfPg('AC4 — the cloud does not run a turn on the copy', () => {
   test('a stale turn in a machine workspace is never claimed or announced', async () => {
     const { ws, session } = await seedDesktop(`ac4-${suffix}`)
     await db.workspace.update({ where: { id: ws.id }, data: { machineInstanceId: INSTANCE } })
-    machineWorkspace.invalidateMachineWorkspaceIds()
+    hostedWorkspace.invalidateHostedWorkspaceIds()
 
     const messagesBefore = await db.chatMessage.count({ where: { sessionId: session.id } })
     const queuedBefore = await db.chatQueuedMessage.count({ where: { sessionId: session.id } })

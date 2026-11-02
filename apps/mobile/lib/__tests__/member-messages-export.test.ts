@@ -13,10 +13,6 @@ mock.module("../api-url", () => ({ API_URL: "https://app.test" }))
 const { exportMemberMessages, memberMessagesSince } = await import("../member-messages-export")
 
 const NOW = new Date("2026-07-08T12:00:00.000Z")
-const MACHINE = {
-  relayBaseUrl: "https://app.test/api/machines/inst-odin/w/lw-main",
-  localWorkspaceId: "lw-main",
-}
 
 describe("memberMessagesSince", () => {
   test("rolling periods become an ISO start, all time omits it", () => {
@@ -55,17 +51,4 @@ describe("exportMemberMessages", () => {
     expect(url).toBe("https://app.test/api/workspaces/ws-1/member-activity/messages.csv?user=user-1")
   })
 
-  test("a paired computer's workspace exports from that machine", () => {
-    const url = exportMemberMessages({
-      workspaceId: "ws-cloud",
-      userId: "user-1",
-      period: "all",
-      machine: MACHINE,
-      now: NOW,
-      open: () => {},
-    })
-    expect(url).toBe(
-      "https://app.test/api/machines/inst-odin/w/lw-main/api/workspaces/lw-main/member-activity/messages.csv?user=user-1",
-    )
-  })
 })

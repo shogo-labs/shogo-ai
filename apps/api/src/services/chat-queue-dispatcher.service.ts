@@ -66,7 +66,7 @@ async function cloudSessionIds(sessionIds: string[]): Promise<Set<string>> {
   }
   if (!workspaceIds.size) return new Set(sessionIds)
   const copies = await (prisma as any).workspace.findMany({
-    where: { id: { in: [...workspaceIds] }, machineInstanceId: { not: null } },
+    where: { id: { in: [...workspaceIds] }, hostInstanceId: { not: null } },
     select: { id: true },
   })
   if (!copies.length) return new Set(sessionIds)

@@ -38,8 +38,6 @@ export interface WorkspaceFileViewerProps {
   projectId?: string | null
   /** That project's name, for the not-found message. */
   projectName?: string | null
-  /** A paired desktop's relay prefix, when the workspace lives on that machine. */
-  relayBase?: string | null
   /** Changes when the same path is opened again, so the file reloads. */
   nonce: number
   onClose: () => void
@@ -103,7 +101,6 @@ export function WorkspaceFileViewer({
   path,
   projectId,
   projectName,
-  relayBase,
   nonce,
   onClose,
 }: WorkspaceFileViewerProps) {
@@ -118,13 +115,13 @@ export function WorkspaceFileViewer({
       list.push({ baseUrl: agentUrl, path: projectId ? `${projectId}/${path}` : path })
     }
     const projectBase = projectId
-      ? projectAgentProxyBase({ projectId, relayBase, apiUrl: API_URL })
+      ? projectAgentProxyBase({ projectId, apiUrl: API_URL })
       : null
     if (projectBase && projectBase !== agentUrl) {
       list.push({ baseUrl: projectBase, path })
     }
     return list
-  }, [agentUrl, path, projectId, relayBase])
+  }, [agentUrl, path, projectId])
   // The source the file was actually read from; until a read answers, the last
   // one is assumed — an owning project's runtime always has the file, the
   // workspace's may not.

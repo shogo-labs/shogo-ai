@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * SHO-130: the machine workspace must be in view on the *first* paint of the
- * reload a switch ends in, and a transient failure to reach the machine must
- * not silently drop the user back into the cloud workspace.
- *
- * Both were the reason "select a machine workspace from the cloud" flashed and
- * then stayed in the cloud workspace while the sidebar said "Connected to …".
+ * SHO-285: a paired desktop's workspace is a normal cloud workspace now, so a
+ * selection an older build stored as `source: 'machine'` (SHO-130/185) must be
+ * dropped on restore — never painted, never validated, removed from storage.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { act, cleanup, render } from '@testing-library/react'
@@ -22,7 +19,8 @@ import {
 installHappyDom()
 
 const STORAGE_KEY = 'shogo:activeInstance'
-const MACHINE: ActiveInstance = {
+/** What a pre-SHO-285 build stored when a machine workspace was open. */
+const RETIRED_SELECTION = JSON.stringify({
   instanceId: 'machine-1',
   name: 'Studio Mac',
   hostname: 'studio-mac',
@@ -30,19 +28,20 @@ const MACHINE: ActiveInstance = {
   kind: 'desktop',
   source: 'machine',
   localWorkspaceId: 'machine-team',
-  localWorkspaceName: 'Studio Mac Team',
-  localWorkspaceKind: 'team',
+})
+
+const REMOTE: ActiveInstance = {
+  instanceId: 'inst-remote',
+  name: 'Office Mac',
+  hostname: 'office-mac',
+  workspaceId: 'cloud-personal',
+  kind: 'desktop',
 }
 
 /** Renders the selected instance, so a test can read what is in view. */
 function Probe() {
-  const { instance, instanceStatus } = useActiveInstance()
-  return (
-    <div>
-      <span data-testid="id">{instance?.localWorkspaceId ?? 'none'}</span>
-      <span data-testid="status">{instanceStatus}</span>
-    </div>
-  )
+  const { instance } = useActiveInstance()
+  return <span data-testid="id">{instance?.instanceId ?? 'none'}</span>
 }
 
 function memoryStorage(initial: string | null, opts: { sync?: boolean } = {}): InstanceStorageAdapter {
@@ -62,19 +61,9 @@ function memoryStorage(initial: string | null, opts: { sync?: boolean } = {}): I
   return adapter
 }
 
-/** A `/api/machines` answer that still lists the machine. */
-function machinesOk() {
+function instancesOk() {
   return new Response(
-    JSON.stringify({
-      machines: [
-        {
-          id: MACHINE.instanceId,
-          name: MACHINE.name,
-          status: 'online',
-          snapshot: { workspaces: [{ id: 'machine-team', name: 'Studio Mac Team', kind: 'team' }] },
-        },
-      ],
-    }),
+    JSON.stringify({ instances: [{ id: REMOTE.instanceId, name: REMOTE.name, status: 'online', kind: 'desktop' }] }),
     { status: 200, headers: { 'content-type': 'application/json' } },
   )
 }
@@ -106,56 +95,32 @@ afterAll(() => {
   restoreHappyDom()
 })
 
-describe('ActiveInstanceProvider — restoring a machine workspace', () => {
-  it('paints the stored machine workspace before the server has answered', async () => {
-    let release: (() => void) | null = null
-    const gate = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const fetchFn = (async () => {
-      await gate
-      return machinesOk()
-    }) as unknown as typeof fetch
-
-    const view = renderProvider(memoryStorage(JSON.stringify(MACHINE), { sync: true }), fetchFn)
-
-    // First render, before `/api/machines` resolves: already the machine.
-    expect(view.getByTestId('id').textContent).toBe('machine-team')
-
-    await act(async () => {
-      release?.()
-      await gate
-    })
-    await settle()
-    expect(view.getByTestId('id').textContent).toBe('machine-team')
-  })
-
-  it('keeps the machine when the machine list cannot be reached', async () => {
-    const fetchFn = (async () => {
-      throw new Error('offline')
-    }) as unknown as typeof fetch
-
-    const view = renderProvider(memoryStorage(JSON.stringify(MACHINE)), fetchFn)
-    await settle()
-
-    // Not "unpaired" — just unreachable. Dropping to the cloud here is the
-    // "flashes and stays in whatever workspace" half of the bug; the machine
-    // stays in view and the status poll reports it as offline.
-    expect(view.getByTestId('id').textContent).toBe('machine-team')
-    expect(view.getByTestId('status').textContent).toBe('offline')
-  })
-
-  it('clears the selection when the machine is genuinely gone', async () => {
-    const fetchFn = (async () =>
-      new Response(JSON.stringify({ machines: [] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      })) as unknown as typeof fetch
-
-    const view = renderProvider(memoryStorage(JSON.stringify(MACHINE)), fetchFn)
-    await settle()
-
+describe('ActiveInstanceProvider — a retired machine selection (SHO-285)', () => {
+  it('does not paint a stored machine selection on the first render', async () => {
+    const storage = memoryStorage(RETIRED_SELECTION, { sync: true })
+    let fetched = 0
+    const view = renderProvider(storage, (async () => {
+      fetched += 1
+      return instancesOk()
+    }) as unknown as typeof fetch)
     expect(view.getByTestId('id').textContent).toBe('none')
+    await settle()
+    expect(view.getByTestId('id').textContent).toBe('none')
+    expect(fetched).toBe(0)
+  })
+
+  it('removes the stored machine selection', async () => {
+    const storage = memoryStorage(RETIRED_SELECTION)
+    renderProvider(storage, (async () => instancesOk()) as unknown as typeof fetch)
+    await settle()
+    expect(await storage.getItem(STORAGE_KEY)).toBeNull()
+  })
+
+  it('still restores an ordinary Remote Control selection', async () => {
+    const storage = memoryStorage(JSON.stringify(REMOTE), { sync: true })
+    const view = renderProvider(storage, (async () => instancesOk()) as unknown as typeof fetch)
+    expect(view.getByTestId('id').textContent).toBe(REMOTE.instanceId)
+    await settle()
   })
 })
 

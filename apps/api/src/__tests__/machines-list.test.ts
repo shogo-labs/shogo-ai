@@ -37,6 +37,8 @@ type SyncState = { instanceId: string; enabled: boolean; cursor: number; lastIng
 
 const rows: Instance[] = []
 const workspaceNames = new Map<string, string>()
+/** Instances that host a workspace (`Workspace.hostInstanceId`, SHO-285). */
+const hostingIds = new Set<string>()
 const syncStates: SyncState[] = []
 
 const mockPrisma = {
@@ -59,6 +61,8 @@ const mockPrisma = {
   },
   workspace: {
     findMany: async (args: any) => {
+      const hosts: string[] | undefined = args?.where?.hostInstanceId?.in
+      if (hosts) return hosts.filter((id) => hostingIds.has(id)).map((id) => ({ hostInstanceId: id }))
       const ids: string[] = args?.where?.id?.in ?? []
       return ids.filter((id) => workspaceNames.has(id)).map((id) => ({ id, name: workspaceNames.get(id) as string }))
     },
@@ -121,6 +125,7 @@ function seed(overrides: Partial<Instance> = {}): Instance {
 beforeEach(() => {
   rows.length = 0
   workspaceNames.clear()
+  hostingIds.clear()
   syncStates.length = 0
   _testing.resetWakeDeadlineMs()
   _testing.setWakeDeadlineMs(120)
@@ -175,9 +180,10 @@ describe('GET /api/machines', () => {
     expect([...seen]).toEqual(['i-a'])
   })
 
-  test('the row that owns the copy represents the machine', async () => {
+  test('the row that hosts the workspaces represents the machine', async () => {
     seed({ id: 'i-a', createdAt: new Date('2026-10-01T00:00:00.000Z') })
     seed({ id: 'i-b', createdAt: new Date('2026-10-02T00:00:00.000Z') })
+    hostingIds.add('i-b')
     syncStates.push({
       instanceId: 'i-b',
       enabled: true,

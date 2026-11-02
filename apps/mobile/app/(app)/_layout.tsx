@@ -45,7 +45,6 @@ import { trackSignUp, trackLogin } from "../../lib/tracking";
 import { usePostHogIdentify, usePostHogSafe } from "../../contexts/posthog";
 import { DomainProvider, useWorkspaceCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
-import { useActiveInstance } from "../../contexts/active-instance";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import {
   homePathForWorkspaceKind,
@@ -206,7 +205,6 @@ function AppLayoutInner() {
   // known.
   const experience = useWorkspaceExperience();
   const activeWorkspace = useActiveWorkspace();
-  const { instance } = useActiveInstance();
   const workspaces = useWorkspaceCollection();
   const router = useRouter();
   const pathname = usePathname();
@@ -645,13 +643,7 @@ function AppLayoutInner() {
   return (
     <TeamChatSidebarProvider
       workspaceId={
-        experience.kind === "team"
-          ? // A machine workspace's team chat lives on the machine: its own
-            // workspace id, not the cloud workspace that happens to be selected
-            // (SHO-185). Asking the cloud id resolved the chat mode of a
-            // different workspace, so the machine's channels never appeared.
-            (instance?.source === "machine" ? instance.localWorkspaceId : null) ?? activeWorkspace?.id ?? null
-          : null
+        experience.kind === "team" ? (activeWorkspace?.id ?? null) : null
       }
     >
     <NativeSheetDrawerShell

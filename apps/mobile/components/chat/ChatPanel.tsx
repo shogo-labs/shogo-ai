@@ -75,7 +75,6 @@ import {
 } from "./optimistic-echo"
 import { usePersistedMessageIds } from "./use-persisted-message-ids"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
-import { useMachineWorkspace } from "../instance/MachineWorkspaceBanner"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
@@ -1132,12 +1131,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   arrivedFromLifecycle,
   continueProjectName,
 }: ChatPanelProps) {
-  // A machine workspace cannot take a write while its Mac is asleep, so the
-  // composer is refused from the same state the banner renders (SHO-185 AC4).
-  // The banner's own line is the reason, so the input says why it is off.
-  const { instance: machineInstance } = useActiveInstance()
-  const machineView = useMachineWorkspace({ machineName: machineInstance?.name })
-  const machineStop = machineView.composeDisabled ? machineView.banner ?? undefined : undefined
+  const { instance: activeInstance } = useActiveInstance()
   const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
   const chatDockStore = useChatDockStore()
   const {
@@ -1175,8 +1169,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // app-wide; we loadAll() defensively in case the panel mounts first.
   const projectCollection = useProjectCollection()
   // Routing insert point: a workspace-scoped request goes through the domain
-  // client, so a paired desktop's own workspace gets its history from that
-  // machine (the SDK interceptor rewrites the path and the workspace id).
+  // client (the SDK interceptor handles Remote Control).
   const domainHttp = useSDKHttpOptional()
   useEffect(() => {
     projectCollection
@@ -4358,9 +4351,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const query = persistedTailQuery(sessionId)
       try {
         // Same insert point as the transcript itself (`/api/chat-messages` is
-        // routed by the SDK interceptor): read the row from the same places the
-        // messages come from, or a machine workspace would compare its
-        // transcript against a cloud chat and think history moved.
+        // routed by the SDK interceptor): read the row from the same place the
+        // messages come from, or a remote transcript would be compared against
+        // a cloud chat and look as if history moved.
         const body = domainHttp
           ? (await domainHttp.get<{ items?: any[] }>("/api/chat-messages", query)).data
           : await (expoFetch ?? globalThis.fetch)(
@@ -5286,7 +5279,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // downloaded only for a chat with no saved slice, or when the server says
   // the delta cannot be applied (`reset`, or a row count that does not add up
   // because something was deleted).
-  const historyOrigin = String(machineInstance?.instanceId ?? API_URL ?? "local")
+  const historyOrigin = String(activeInstance?.instanceId ?? API_URL ?? "local")
   const activeSessionIdRef = useRef(currentSessionId)
   activeSessionIdRef.current = currentSessionId
   const historyKeyFor = useCallback(
@@ -9832,10 +9825,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   <ChatInput
                     onSubmit={handleInputSubmit}
                     uploadStatus={uploadStatus}
-                    disabled={!currentSessionId || !!readOnlyReason || machineView.composeDisabled}
+                    disabled={!currentSessionId || !!readOnlyReason}
                     placeholder={
-                      readOnlyReason ?? machineStop
-                        ? (readOnlyReason ?? machineStop)!
+                      readOnlyReason
+                        ? readOnlyReason
                         : !featureId
                         ? "Message"
                         : hasPendingQuestion

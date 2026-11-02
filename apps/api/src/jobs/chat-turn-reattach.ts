@@ -20,7 +20,7 @@
 import { randomUUID } from 'node:crypto'
 import type { TrackedStreamResult } from '../routes/project-chat'
 import { TURN_REATTACH_AFTER_MS } from '../services/chat-turn-state.service'
-import { machineSessionExclusion } from '../lib/machine-workspace'
+import { hostedSessionExclusion } from '../lib/hosted-workspace'
 
 const TICK_MS = 30_000
 const LEASE_KEY = 'chat-turn-reattach:leader'
@@ -43,7 +43,7 @@ const reattaching = new Set<string>()
 async function machineWorkspaceIdsFrom(db: any): Promise<string[]> {
   try {
     const rows: Array<{ id: string }> = await db.workspace.findMany({
-      where: { machineInstanceId: { not: null } },
+      where: { hostInstanceId: { not: null } },
       select: { id: true },
     })
     return rows.map((row) => row.id)
@@ -199,7 +199,7 @@ export async function reattachStaleTurns(depsArg?: ReattachDeps): Promise<string
   // there, and the cloud has no runtime buffer for it. Claiming it wrote an
   // "I was interrupted" note into the copy and queued a resume that then ran on
   // the cloud (SHO-276).
-  const machine = machineSessionExclusion(await machineWorkspaceIdsFrom(deps.db))
+  const machine = hostedSessionExclusion(await machineWorkspaceIdsFrom(deps.db))
   const candidates: StaleTurn[] = await deps.db.chatSession.findMany({
     where: {
       activeTurnId: { not: null },

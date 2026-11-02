@@ -27,7 +27,6 @@ import {
 import { pickTeamWorkspace } from "../../lib/team-workspace"
 import { useWorkspaceInView } from "../../hooks/useWorkspaceInView"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
-import { useWorkspaceAgentBase } from "../../hooks/useWorkspaceAgentBase"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
 import {
@@ -137,10 +136,6 @@ export const WorkspaceAgentChatScreen = observer(
     const workspace = useWorkspaceInView()
     const projects = useProjectCollection()
     const experience = useWorkspaceExperience()
-    // Set only while a paired desktop's own workspace is open: its agent,
-    // sessions and team chat live on that machine, not in the cloud workspace
-    // that happens to be selected.
-    const machineRoute = useWorkspaceAgentBase()
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const insets = useSafeAreaInsets()
     const { width, height } = useWindowDimensions()
@@ -508,10 +503,9 @@ export const WorkspaceAgentChatScreen = observer(
       (projectId: string) =>
         projectAgentProxyBase({
           projectId,
-          relayBase: machineRoute?.relayBase ?? null,
           apiUrl: API_URL,
         }),
-      [machineRoute?.relayBase],
+      [],
     )
 
     if (!workspace?.id || !sessionId || !profile) {
@@ -682,8 +676,7 @@ export const WorkspaceAgentChatScreen = observer(
     }
 
     const activePane = hasSidePane ? projectPane : null
-    const workspaceAgentUrl =
-      machineRoute?.agentBase ?? `${API_URL}/api/workspaces/${workspace.id}/agent-proxy`
+    const workspaceAgentUrl = `${API_URL}/api/workspaces/${workspace.id}/agent-proxy`
     const plansPanel = planPane ? (
       <PlansPanel
         visible
@@ -709,7 +702,6 @@ export const WorkspaceAgentChatScreen = observer(
           projectName={
             filePane.projectId ? projectName(filePane.projectId) : null
           }
-          relayBase={machineRoute?.relayBase ?? null}
           nonce={filePane.nonce}
           onClose={closeFilePane}
         />
@@ -828,7 +820,6 @@ export const WorkspaceAgentChatScreen = observer(
             featureName={profile.name}
             phase={null}
             workspaceId={workspace.id}
-            localAgentUrl={machineRoute?.agentBase ?? null}
             userId={user?.id}
             focusedProjectId={focusedProjectId}
             chatScope="workspace"

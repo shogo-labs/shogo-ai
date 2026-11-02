@@ -10,7 +10,6 @@
 import { useMemo } from 'react'
 import { createAutoResumingFetch } from './auto-resuming-fetch'
 import { trimLegacyInlineAttachments } from './trim-history-attachments'
-import { reportMachineStateFromResponse } from '../services/machine-workspace-state'
 
 export interface ChatTransportOptions {
   /** API base URL (e.g., "http://localhost:8002" or "" for same-origin) */
@@ -192,19 +191,9 @@ export function useChatTransportConfig({
     if (!projectId && !workspaceId && !localAgentUrl) return undefined
 
     const baseFetch = customFetch ?? globalThis.fetch
-    // The chat turn is the only request a send makes (the client no longer
-    // writes its own user row — SHO-274), and it goes through this fetch, not
-    // the SDK interceptor that reports the machine's state for every record
-    // call. Report the refusal from here, or a send to a sleeping machine's
-    // workspace is refused with nothing on screen saying so.
-    const stateReportingFetch: typeof globalThis.fetch = async (...args) => {
-      const response = await baseFetch(...(args as Parameters<typeof globalThis.fetch>))
-      void reportMachineStateFromResponse(response)
-      return response
-    }
     const fetch = durableResume
-      ? createAutoResumingFetch(stateReportingFetch.bind(globalThis), { onChunk })
-      : stateReportingFetch
+      ? createAutoResumingFetch(baseFetch.bind(globalThis), { onChunk })
+      : baseFetch
 
     // Compose `headers` so the caller-provided headers (cookies, auth), the
     // chat-session header, and the per-send turn idempotency header are all

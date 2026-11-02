@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { prisma } from '../lib/prisma'
-import { isMachineWorkspace } from '../lib/machine-workspace'
+import { isHostedWorkspace } from '../lib/hosted-workspace'
 import { listActiveChatTurns } from './chat-turn-state.service'
 
 export const GOAL_STATUSES = ['active', 'paused', 'done'] as const
@@ -28,12 +28,12 @@ const DEFAULT_AGENT_PROFILE = {
 /**
  * A workspace's companion profile, created on first read.
  *
- * On a machine workspace the read must not create: the cloud's copy is
- * written only by ingest, and a row minted here would carry a *cloud* id for a
- * `workspaceId` the desktop also pushes (`WorkspaceAgentProfile.workspaceId` is
- * unique), so the desktop's own row would hit P2002 and the whole ingest batch
- * would fail. The desktop owns that row; a read that finds none is answered with
- * the defaults and changes nothing.
+ * On a hosted workspace (SHO-285) the read must not create: the desktop seeds
+ * that row, and one minted here would carry a second id for a `workspaceId`
+ * the desktop also has (`WorkspaceAgentProfile.workspaceId` is unique), so the
+ * two sides could never agree on it. A read that finds none answers with the
+ * defaults; once the desktop's row has synced up, it is read and edited here
+ * like any other row.
  */
 export async function getOrCreateAgentProfile(workspaceId: string) {
   if (await isWritableHere(workspaceId)) {
@@ -55,24 +55,22 @@ export async function getOrCreateAgentProfile(workspaceId: string) {
  * row to point at, so Postgres answers a foreign-key violation and the panel
  * 500s instead of showing the agent.
  *
- *   • **A machine workspace** — the desktop is the writer (see above).
- *   • **A workspace with no row at all** — a machine workspace whose copy has
- *     not landed yet, read through the cloud before ingest caught up. Asking
- *     `MACHINE_WORKSPACE_ONLY` alone answered "not a machine copy" for it and
- *     fell through to the insert.
+ *   • **A hosted workspace** — the desktop seeds the row (see above).
+ *   • **A workspace with no row at all** — a hosted workspace whose first sync
+ *     has not landed yet.
  */
 async function isWritableHere(workspaceId: string): Promise<boolean> {
   const workspace = await prisma.workspace.findUnique({
     where: { id: workspaceId },
-    select: { machineInstanceId: true },
+    select: { hostInstanceId: true },
   })
-  return Boolean(workspace) && !isMachineWorkspace(workspace)
+  return Boolean(workspace) && !isHostedWorkspace(workspace)
 }
 
 /** Shaped like the row a cloud workspace would get, so a client cannot tell. */
 function unpersistedAgentProfile(workspaceId: string) {
   return {
-    id: `machine-copy-${workspaceId}`,
+    id: `unseeded-${workspaceId}`,
     workspaceId,
     name: DEFAULT_AGENT_PROFILE.name,
     avatarUrl: null,
@@ -100,13 +98,14 @@ export async function updateAgentProfile(
     ...(changes.statusText !== undefined ? { statusUpdatedAt: new Date() } : {}),
   }
 
-  // The same two cases as the read: a machine workspace is written by its
-  // desktop (a cloud PATCH to one is already refused with 409 upstream), and a
-  // workspace with no row here has nothing to attach a row to. Answer with the
-  // profile the read would give rather than 500 on the foreign key.
+  // The same two cases as the read. An existing row is edited wherever it
+  // lives (a hosted workspace's edit syncs down to its desktop); only the
+  // *create* is refused, and answered with the profile the read would give
+  // rather than 500 on the foreign key.
   if (!(await isWritableHere(workspaceId))) {
     const existing = await prisma.workspaceAgentProfile.findUnique({ where: { workspaceId } })
-    return { ...(existing ?? unpersistedAgentProfile(workspaceId)), ...data }
+    if (existing) return prisma.workspaceAgentProfile.update({ where: { workspaceId }, data })
+    return { ...unpersistedAgentProfile(workspaceId), ...data }
   }
 
   return prisma.workspaceAgentProfile.upsert({

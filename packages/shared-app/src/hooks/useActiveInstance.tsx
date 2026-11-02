@@ -71,35 +71,6 @@ export interface ActiveInstance {
    * workspace switches.
    */
   origin?: string
-  /**
-   * What is being looked at:
-   *  - `'machine'` this is one of a paired desktop's *own* workspaces
-   *    (listed with the cloud workspaces in the workspace switcher), reached through
-   *    `/api/machines/<id>/w/<localWorkspaceId>`. It is deliberately not
-   *    tied to the cloud workspace the UI happens to have selected, so it
-   *    survives a cloud workspace switch.
-   *  - undefined — the older meaning: a device selected inside a cloud
-   *    workspace (Remote Control), routed through `/api/instances/<id>/p`.
-   */
-  source?: 'machine'
-  /**
-   * The desktop's own workspace id, for `source: 'machine'`. Cloud ids and
-   * machine ids live in different databases; every relayed call carries this
-   * so the desktop knows which of its workspaces the user opened.
-   */
-  localWorkspaceId?: string
-  /**
-   * The machine workspace's own name, for `source: 'machine'`. The cloud
-   * workspace on screen has a different one, and while the machine's workspace
-   * is open it is the one the user is looking at.
-   */
-  localWorkspaceName?: string
-  /**
-   * The machine workspace's own kind. The shell (companion vs builder chrome)
-   * follows the open workspace's kind, and a personal cloud workspace must not
-   * dress a team workspace from the machine up as a companion — nor the reverse.
-   */
-  localWorkspaceKind?: 'personal' | 'team'
 }
 
 export type InstanceStatus = 'online' | 'heartbeat' | 'offline' | 'unknown'
@@ -135,12 +106,9 @@ export interface InstanceStorageAdapter {
    * The stored value, read synchronously — optional, and only implemented where
    * the storage can do it (web / desktop `localStorage`).
    *
-   * Selecting one of a paired computer's own workspaces ends in a full document
-   * reload (`reloadAfterWorkspaceSwitch`). Without this, the reloaded page
-   * paints before the async read and the network validation have answered, so
-   * the first paint is the *cloud* workspace and the machine's workspace
-   * replaces it a beat later — the "flash" in SHO-130. With it, the machine is
-   * in view from the first render.
+   * Without this, a reloaded page paints before the async read and the network
+   * validation have answered, and the selection appears a beat later — the
+   * "flash" in SHO-130. With it, the selection is in view from the first render.
    */
   peekItem?(key: string): string | null
 }
@@ -198,11 +166,14 @@ export function ActiveInstanceProvider({
           validatedRef.current = true
           return
         }
-        // Paint the stored selection before asking the server about it: the
-        // reload that a machine-workspace switch ends in must land on that
-        // machine, not on the cloud workspace for a frame or two. On web the
-        // synchronous `peekItem` above has already done this; this covers the
-        // async-storage platforms and the case where the peek was unavailable.
+        if (isRetiredMachineSelection(restored)) {
+          storage.removeItem(STORAGE_KEY).catch(() => {})
+          validatedRef.current = true
+          return
+        }
+        // Paint the stored selection before asking the server about it. On web
+        // the synchronous `peekItem` above has already done this; this covers
+        // the async-storage platforms and the case where the peek was unavailable.
         setInstanceState((current) => current ?? restored)
         const validation = validationRef.current
         const result = await validateInstance(
@@ -250,7 +221,7 @@ export function ActiveInstanceProvider({
   // instance object. Depending on the object here re-ran the effect, which ran a
   // fresh tick, which rewrote the id again — 612,000 requests in one test run
   // when the server named the two rows alternately (SHO-241 §D). The identity of
-  // the machine is its pairing (workspace + source + machine workspace), not the
+  // the machine is its pairing (its workspace), not the
   // row id, so that is what this depends on; `instanceRef` keeps the tick reading
   // the freshest object without re-subscribing.
   const instanceRef = useRef(instance)
@@ -307,7 +278,7 @@ export function ActiveInstanceProvider({
       clearInterval(id)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- see the comment above
-  }, [instance?.workspaceId, instance?.source, instance?.localWorkspaceId, apiUrl, storage])
+  }, [instance?.workspaceId, apiUrl, storage])
 
   const setInstance = useCallback(
     (inst: ActiveInstance) => {
@@ -326,10 +297,6 @@ export function ActiveInstanceProvider({
 
   const remoteAgentBaseUrl = useMemo(() => {
     if (!instance || !apiUrl) return null
-    if (instance.source === 'machine') {
-      if (!instance.localWorkspaceId) return null
-      return `${apiUrl}/api/machines/${instance.instanceId}/w/${instance.localWorkspaceId}`
-    }
     return `${apiUrl}/api/instances/${instance.instanceId}/p`
   }, [instance, apiUrl])
 
@@ -358,12 +325,24 @@ export function useActiveInstance() {
  * A corrupt value is treated as "nothing selected"; it is not the place to
  * clean up storage.
  */
+/**
+ * A selection stored by a build that opened a paired desktop's workspaces as a
+ * "machine" (SHO-185). Those workspaces are normal workspaces now, listed by
+ * `GET /workspaces` (SHO-285), so the old selection is dropped.
+ */
+const RETIRED_MACHINE_SOURCE = 'machine'
+
+function isRetiredMachineSelection(value: unknown): boolean {
+  return Boolean(value && typeof value === 'object' && (value as { source?: unknown }).source === RETIRED_MACHINE_SOURCE)
+}
+
 function readStoredInstance(storage: InstanceStorageAdapter): ActiveInstance | null {
   try {
     const raw = storage.peekItem?.(STORAGE_KEY)
     if (!raw) return null
-    const parsed = JSON.parse(raw) as ActiveInstance
-    return parsed && typeof parsed === 'object' && parsed.instanceId ? parsed : null
+    const parsed = JSON.parse(raw) as ActiveInstance & { source?: string }
+    if (!parsed || typeof parsed !== 'object' || !parsed.instanceId) return null
+    return isRetiredMachineSelection(parsed) ? null : parsed
   } catch {
     return null
   }
@@ -387,9 +366,6 @@ type ValidationResult = {
    * of the others would keep missing it (SHO-241).
    */
   instanceId?: string
-  /** Machine workspaces only: the machine's own name and kind for the workspace. */
-  localWorkspaceName?: string
-  localWorkspaceKind?: 'personal' | 'team'
 }
 
 /**
@@ -399,17 +375,11 @@ type ValidationResult = {
 function applyValidation(inst: ActiveInstance, result: ValidationResult): ActiveInstance {
   const kindChanged = !!result.kind && result.kind !== inst.kind
   const idChanged = !!result.instanceId && result.instanceId !== inst.instanceId
-  const nameChanged =
-    !!result.localWorkspaceName && result.localWorkspaceName !== inst.localWorkspaceName
-  const workspaceKindChanged =
-    !!result.localWorkspaceKind && result.localWorkspaceKind !== inst.localWorkspaceKind
-  if (!kindChanged && !idChanged && !nameChanged && !workspaceKindChanged) return inst
+  if (!kindChanged && !idChanged) return inst
   return {
     ...inst,
     ...(kindChanged ? { kind: result.kind } : {}),
     ...(idChanged ? { instanceId: result.instanceId } : {}),
-    ...(nameChanged ? { localWorkspaceName: result.localWorkspaceName } : {}),
-    ...(workspaceKindChanged ? { localWorkspaceKind: result.localWorkspaceKind } : {}),
   }
 }
 
@@ -420,7 +390,6 @@ async function validateInstance(
   fetchOptions?: RequestInit,
 ): Promise<ValidationResult> {
   if (!apiUrl) return { valid: false }
-  if (inst.source === 'machine') return validateMachine(inst, apiUrl, fetchFn, fetchOptions)
   let res: Response
   try {
     res = await fetchFn(`${apiUrl}/api/instances/${inst.instanceId}`, {
@@ -444,64 +413,6 @@ async function validateInstance(
       data.kind === 'desktop' || data.kind === 'cli-worker' ? data.kind : undefined
     return { valid: true, status, kind }
   } catch {
-    return { valid: false, unreachable: true }
-  }
-}
-
-/**
- * A machine workspace is validated against `/api/machines`, not
- * `/api/instances/:id`: the list is already owner-scoped, so a machine that
- * disappears from it means the device key was revoked or the machine was
- * unpaired — the stored context is no longer usable and gets cleared.
- */
-async function validateMachine(
-  inst: ActiveInstance,
-  apiUrl: string,
-  fetchFn: typeof fetch,
-  fetchOptions?: RequestInit,
-): Promise<ValidationResult> {
-  let res: Response
-  try {
-    res = await fetchFn(`${apiUrl}/api/machines`, { ...fetchOptions })
-  } catch {
-    // Could not ask. Not the same as "the machine is gone".
-    return { valid: false, unreachable: true }
-  }
-  if (res.status >= 500) return { valid: false, unreachable: true }
-  if (!res.ok) return { valid: false }
-  try {
-    const data = await res.json()
-    const machines: any[] = data?.machines ?? []
-    // A machine is one entry with one `id` and every instance row it has in
-    // `instanceIds`. The stored id may be any of those rows (older builds stored
-    // whichever row heartbeated last), so match on either and then keep the
-    // representative id: that is what the relay route and every later poll use
-    // (SHO-241).
-    const found =
-      machines.find((m: any) => m.id === inst.instanceId) ??
-      machines.find((m: any) => Array.isArray(m.instanceIds) && m.instanceIds.includes(inst.instanceId))
-    if (!found) return { valid: false }
-    const status: InstanceStatus =
-      found.status === 'online' || found.status === 'heartbeat' || found.status === 'offline'
-        ? found.status
-        : 'unknown'
-    // The heartbeat snapshot is the machine's own workspace list: it keeps the
-    // stored name and kind current (a rename, a machine that was offline at
-    // restore) instead of replaying whatever was persisted months ago.
-    const row = (found.snapshot?.workspaces ?? []).find(
-      (w: any) => w?.id && w.id === inst.localWorkspaceId,
-    )
-    return {
-      valid: true,
-      status,
-      kind: 'desktop',
-      instanceId: typeof found.id === 'string' ? found.id : undefined,
-      localWorkspaceName: typeof row?.name === 'string' ? row.name : undefined,
-      localWorkspaceKind:
-        row?.kind === 'personal' || row?.kind === 'team' ? row.kind : undefined,
-    }
-  } catch {
-    // A body we could not read is not proof the machine was unpaired.
     return { valid: false, unreachable: true }
   }
 }
@@ -549,14 +460,9 @@ export function computeRemoteProxyBaseUrl(
   remoteAgentBaseUrl: string | null,
 ): string | null {
   if (!instance || !remoteAgentBaseUrl) return null
-  // A cli-worker is never a machine: a `shogo worker` VM serves `/agent/*` and
-  // no data API, so its relay would 502 every stateful call (SHO-120). Checked
-  // before the machine branch, which used to return here first.
+  // A `shogo worker` VM serves `/agent/*` and no data API, so its relay would
+  // 502 every stateful call (SHO-120).
   if (instance.kind === 'cli-worker') return null
-  // A machine workspace always tunnels: the desktop owns the projects, chats
-  // and tool-call logs of its own workspace, and `remoteAgentBaseUrl` already
-  // points at that machine's relay (`/api/machines/<id>/w/<localWorkspaceId>`).
-  if (instance.source === 'machine') return remoteAgentBaseUrl
   if (instance.kind === 'desktop') return remoteAgentBaseUrl
   return null
 }
@@ -578,8 +484,7 @@ export const localStorageAdapter: InstanceStorageAdapter = {
   },
   /**
    * Same read as `getItem`, without the promise — so a provider mounting after
-   * the reload that a machine-workspace switch triggers can paint that machine
-   * on its first render (see `readStoredInstance`).
+   * a reload paints the selection on its first render (see `readStoredInstance`).
    */
   peekItem(key) {
     if (typeof window === 'undefined') return null

@@ -102,7 +102,7 @@ export async function runDigestPass(now = new Date()): Promise<number> {
   const machineWorkspaceIds = new Set(
     (
       await db.workspace.findMany({
-        where: { machineInstanceId: { not: null } },
+        where: { hostInstanceId: { not: null } },
         select: { id: true },
       })
     ).map((w: { id: string }) => w.id),

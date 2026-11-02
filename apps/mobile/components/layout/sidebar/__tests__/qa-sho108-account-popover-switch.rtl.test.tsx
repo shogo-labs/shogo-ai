@@ -165,20 +165,15 @@ mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({
 }))
 
 const { AccountMenu } = await import("../AccountMenu")
-const { buildWorkspaceEntries, machineWorkspaceKey } = await import("../../../../lib/workspace-entries")
+const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")
 
-const odin = {
-  id: "inst-odin",
-  name: "odin",
-  status: "online" as const,
-  stale: false,
-  lastSeenAt: "2026-10-21T05:00:00.000Z",
-  workspaces: [{ id: "lw-main", name: "Samsara", kind: "team" }],
-}
-
+// SHO-285: the hosted workspace is a cloud row like any other, with a host badge.
 const entries = buildWorkspaceEntries({
-  workspaces: [{ id: "ws-acme", name: "Acme", kind: "team" }],
-  machines: [odin],
+  workspaces: [
+    { id: "ws-acme", name: "Acme", kind: "team" },
+    { id: "ws-samsara", name: "Samsara", kind: "team", hostInstanceId: "inst-odin" },
+  ],
+  hosts: [{ instanceId: "inst-odin", hostname: "odin", presence: "online", lastSeenAt: null }],
 })
 
 const picked: string[] = []
@@ -189,7 +184,7 @@ function props(overrides: Record<string, unknown> = {}) {
     onSignOut: () => {},
     isSuperAdmin: false,
     entries,
-    currentKey: machineWorkspaceKey("inst-odin", "lw-main"),
+    currentKey: cloudWorkspaceKey("ws-samsara"),
     onSelectEntry: (entry: any) => picked.push(entry.key),
     currentWorkspace: { id: "ws-acme", name: "Acme" },
     billingData: {},
@@ -208,28 +203,28 @@ beforeEach(() => {
 })
 
 describe("SHO-108 QA — the account popover switches like the rest of the switcher", () => {
-  test("both rows are listed in the popover, machine row included", () => {
+  test("both rows are listed in the popover, the hosted one included", () => {
     const { container } = render(<AccountMenu {...(props() as any)} tile={false} isWide />)
 
     expect(container.querySelector('[data-rn-shim="workspace-row:cloud:ws-acme"]')).toBeTruthy()
-    expect(container.querySelector('[data-rn-shim="workspace-row:machine:inst-odin:lw-main"]')).toBeTruthy()
+    expect(container.querySelector('[data-rn-shim="workspace-row:cloud:ws-samsara"]')).toBeTruthy()
     expect(
-      container.querySelector('[data-rn-shim="workspace-row:machine:inst-odin:lw-main"]')?.getAttribute("data-selected"),
+      container.querySelector('[data-rn-shim="workspace-row:cloud:ws-samsara"]')?.getAttribute("data-selected"),
     ).toBe("true")
     expect(
       container.querySelector('[data-rn-shim="workspace-row:cloud:ws-acme"]')?.getAttribute("data-selected"),
     ).toBeNull()
   })
 
-  test("pressing the machine row opens that machine's workspace", () => {
+  test("pressing the hosted row opens it like any workspace", () => {
     const { container } = render(<AccountMenu {...(props() as any)} tile={false} isWide />)
-    const row = container.querySelector('[data-rn-shim="workspace-row:machine:inst-odin:lw-main"]')!
+    const row = container.querySelector('[data-rn-shim="workspace-row:cloud:ws-samsara"]')!
 
     // Throws "onSelect is not a function" when the popover body is handed the
     // callback under the wrong prop name.
     fireEvent.click(row)
 
-    expect(picked).toEqual([machineWorkspaceKey("inst-odin", "lw-main")])
+    expect(picked).toEqual(["cloud:ws-samsara"])
   })
 
   test("pressing the cloud row switches back to it", () => {

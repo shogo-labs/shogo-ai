@@ -5,14 +5,12 @@
  *
  * `workBoardsApi()` used to build a bare `createHttpClient()`, which carries no
  * remote interceptor: every board, card, move, comment and thread read Shogo
- * Cloud even while one of a paired computer's own workspaces was open. It now
- * resolves the domain client — the interceptor's one insert point — so the same
- * calls answer from that machine.
+ * Cloud even under Remote Control. It now resolves the domain client — the
+ * interceptor's one insert point.
  */
 
 import { resolve } from "node:path"
 import { beforeEach, describe, expect, mock, test } from "bun:test"
-import { shouldRouteToRemote } from "../../../../packages/shared-app/src/services/remote-http-interceptor"
 
 const calls: string[] = []
 
@@ -91,20 +89,4 @@ describe("SHO-108 — work boards read the workspace in view", () => {
     expect(paths()).toEqual(["/api/conversation-messages/m1/card"])
   })
 
-  test("every one of those paths is machine-owned while a machine workspace is open", () => {
-    const machine = { machineWorkspaceId: "lw-main" }
-    for (const path of [
-      "/api/boards/b1",
-      "/api/boards/b1/items",
-      "/api/work-items/i1",
-      "/api/work-items/i1/move",
-      "/api/work-items/i1/comments",
-      "/api/work-items/i1/history",
-      "/api/work-items/i1/follow",
-      "/api/conversation-messages/m1/card",
-      "/api/workspaces/ws-cloud/boards",
-    ]) {
-      expect(shouldRouteToRemote(path, machine)).toBe(true)
-    }
-  })
 })

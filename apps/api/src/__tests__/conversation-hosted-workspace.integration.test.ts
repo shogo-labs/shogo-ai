@@ -1,18 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Reading a machine copy's channels writes nothing (SHO-185).
+ * Reading a hosted workspace's channels writes nothing (SHO-185, SHO-285).
  *
- * The cloud serves a paired desktop's workspace from a copy of its rows, under
- * the desktop's ids. Listing a normal workspace's conversations seeds
- * #general, #activity and the reader's note-to-self when they are missing; on
- * a copy that minted cloud-only rows the desktop never wrote — opening the
- * laptop's workspace in production did exactly that.
- *
- * A copy with no #general is a desktop that has never listed its channels
- * (the desktop seeds them on its first read). The cloud says so with
- * `409 machine_copy_pending`, and the client reads them through the relay
- * instead of showing a workspace with no channels (SHO-257).
+ * A workspace hosted on a paired desktop has the same rows, under the same ids,
+ * on both sides. Its #general/#activity are seeded by the desktop and come up
+ * with the sync; seeding them in the cloud too would mint a second set under
+ * other ids that the two sides could never reconcile.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -38,25 +32,23 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-describe("listing a machine copy's conversations", () => {
-  test('a copy with no #general is pending, and seeds nothing', async () => {
-    const copy = await db.workspace.create({
-      data: { name: 'Laptop', slug: `laptop-${crypto.randomUUID().slice(0, 8)}`, kind: 'team', machineInstanceId: 'inst-laptop' },
+describe("listing a hosted workspace's conversations", () => {
+  test('a hosted workspace whose channels have not synced yet seeds nothing', async () => {
+    const hosted = await db.workspace.create({
+      data: { name: 'Laptop', slug: `laptop-${crypto.randomUUID().slice(0, 8)}`, kind: 'team', hostInstanceId: 'inst-laptop' },
     })
-    await db.member.create({ data: { userId: seed.owner, workspaceId: copy.id, role: 'owner' } })
+    await db.member.create({ data: { userId: seed.owner, workspaceId: hosted.id, role: 'owner' } })
 
-    const err: any = await service.listConversationsForUser(copy.id, seed.owner).catch((e: unknown) => e)
+    const list = await service.listConversationsForUser(hosted.id, seed.owner)
 
-    expect(err).toBeInstanceOf(service.ConversationError)
-    expect(err.status).toBe(409)
-    expect(err.code).toBe('machine_copy_pending')
-    expect(await db.conversation.count({ where: { workspaceId: copy.id } })).toBe(0)
-    expect(await db.conversationMember.count({ where: { conversation: { workspaceId: copy.id } } })).toBe(0)
+    expect(list).toEqual([])
+    expect(await db.conversation.count({ where: { workspaceId: hosted.id } })).toBe(0)
+    expect(await db.conversationMember.count({ where: { conversation: { workspaceId: hosted.id } } })).toBe(0)
   })
 
-  test("lists the desktop's own channels as copied", async () => {
+  test("lists the desktop's own channels as synced", async () => {
     const copy = await db.workspace.create({
-      data: { name: 'Studio', slug: `studio-${crypto.randomUUID().slice(0, 8)}`, kind: 'team', machineInstanceId: 'inst-studio' },
+      data: { name: 'Studio', slug: `studio-${crypto.randomUUID().slice(0, 8)}`, kind: 'team', hostInstanceId: 'inst-studio' },
     })
     await db.member.create({ data: { userId: seed.owner, workspaceId: copy.id, role: 'owner' } })
     await db.conversation.create({

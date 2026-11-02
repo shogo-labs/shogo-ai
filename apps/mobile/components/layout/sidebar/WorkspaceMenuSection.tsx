@@ -20,7 +20,6 @@ import type { WorkspaceEntry } from "../../../lib/workspace-entries";
 import { isCloudWorkspace, useCloudWorkspaces } from "../../../lib/workspace-route";
 import { workspaceColor } from "../../../lib/workspace-color";
 import { useCloudSession } from "../../../hooks/useCloudSession";
-import { useActiveInstance } from "../../../contexts/active-instance";
 import { getDomainHttpClient, useDomainHttpOptional } from "../../../contexts/domain";
 import { isPhoneLayout } from "../../../lib/native-phone-layout";
 import { isInvitationExpired } from "../../../lib/api";
@@ -30,20 +29,15 @@ type PendingInvitations = ReturnType<typeof usePendingInvitations>;
 
 export interface WorkspaceMenuSectionProps {
   /**
-   * Every workspace the switcher lists, whatever hosts it: cloud workspaces and
-   * a paired computer's own workspaces, in one list (SHO-108). Built once by
-   * `buildWorkspaceEntries`, so this section never decides a host.
+   * Every workspace the switcher lists, whatever hosts it (SHO-108, SHO-285).
+   * Built once by `buildWorkspaceEntries`, so this section never decides a host.
    */
   entries: WorkspaceEntry[];
   /** `WorkspaceEntry.key` of the workspace in view — the row that is checked. */
   currentKey: string | null;
   /** One switch path: the caller decides what opening an entry means. */
   onSelect: (entry: WorkspaceEntry) => void;
-  /**
-   * The cloud workspace behind the identity header, billing and settings. A
-   * machine workspace has no billing account, so those stay the cloud
-   * workspace's while its rows and the checkmark follow the machine.
-   */
+  /** The workspace behind the identity header, billing and settings. */
   currentWorkspace: any;
   billingData: any;
   workspacePlan: { planId: string; status: string | null } | null;
@@ -299,14 +293,11 @@ export function WorkspaceMenuSection({
     };
   }, [http, localMode, currentWorkspace?.id]);
 
-  // While one of a paired desktop's own workspaces is open, the identity header
-  // names *that* workspace. Ids, billing and settings stay the cloud
-  // workspace's — only the label follows what the user is looking at.
-  const { instance: activeInstance } = useActiveInstance()
-  const machineHost = activeInstance?.source === "machine" ? activeInstance : null
-  const workspaceLabel =
-    (machineHost ? machineHost.localWorkspaceName : undefined) ??
-    currentWorkspace?.name
+  // A workspace whose agent runs on a paired desktop names that host under its
+  // title (SHO-285); it is otherwise a cloud workspace like any other.
+  const currentEntry = entries.find((entry) => entry.key === currentKey)
+  const machineHost = currentEntry?.host.kind === "machine" ? currentEntry.host : null
+  const workspaceLabel = currentWorkspace?.name
   const wsInitial = workspaceLabel?.[0]?.toUpperCase() ?? "W";
   const resolvedPlanId =
     (billingData.hasActiveSubscription && billingData.subscription?.planId) ||
@@ -363,9 +354,11 @@ export function WorkspaceMenuSection({
           {machineHost ? (
             <View className="mt-0.5 flex-row items-center gap-1">
               <Text className={cn("text-muted-foreground", density.text.label)} numberOfLines={1}>
-                {machineHost.localWorkspaceKind === "personal" ? "Personal" : "Team"}
+                {currentWorkspace?.kind === "personal" ? "Personal" : "Team"}
+                {" \u00B7 Host: "}
+                {machineHost.hostname}
                 {" \u00B7 "}
-                {machineHost.hostname ?? "your computer"}
+                {machineHost.presence === "offline" ? "offline" : "online"}
               </Text>
             </View>
           ) : currentIsCloud ? (

@@ -6,10 +6,6 @@
  * interceptor). No Bun APIs, so the Playwright staging variant can use them too.
  */
 import { HttpClient } from '@shogo-ai/sdk'
-import {
-  createRemoteAwareHttpClient,
-  type RemoteInterceptorConfig,
-} from '../../../../../packages/shared-app/src/services/remote-http-interceptor'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -45,18 +41,14 @@ export function httpClient(base: string, cookie: string): HttpClient {
 }
 
 /**
- * The client the cloud app uses while a paired machine's workspace is open:
- * the production interceptor (`createRemoteAwareHttpClient`) wrapping the SDK
- * client, configured exactly as `useActiveInstance` configures it. Every read
- * and write the suite makes through it is routed by the product's own rules —
- * copy for reads, the relay for writes and live reads.
+ * The client the cloud app uses for a workspace hosted on a paired machine.
+ * Since SHO-285 that is the plain cloud client: the hosted workspace has the
+ * same id in the cloud, every read and write goes to the cloud API, and its
+ * agent turns are sent to the machine by the server. The parameters stay so
+ * the suites read the same; they no longer change the routing.
  */
-export function machineViewClient(cloud: Session, machineId: string, localWorkspaceId: string): HttpClient {
-  const config: RemoteInterceptorConfig = {
-    remoteProxyBaseUrl: `${cloud.base}/api/machines/${machineId}/w/${localWorkspaceId}`,
-    machineWorkspaceId: localWorkspaceId,
-  }
-  return createRemoteAwareHttpClient(httpClient(cloud.base, cloud.cookie), () => config)
+export function machineViewClient(cloud: Session, _machineId: string, _workspaceId: string): HttpClient {
+  return httpClient(cloud.base, cloud.cookie)
 }
 
 /** GET and return `{ status, data }` without throwing, so a failure names its surface. */

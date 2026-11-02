@@ -230,9 +230,9 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
   const now = new Date()
   const staleBefore = new Date(now.getTime() - SCHEDULE_STALE_AFTER_MS)
   const homeFilter = homeRegionWorkspaceWhere()
-  // Schedules of a machine workspace run on that desktop (SHO-185); firing them
-  // here too would double every run the copy was never meant to hold.
-  const cloudOnly = { machineInstanceId: null } as const
+  // Schedules of a hosted workspace run on its desktop (SHO-285); firing them
+  // here too would double every run.
+  const cloudOnly = { hostInstanceId: null } as const
   const workspaceFilter = {
     workspace: homeFilter ? { AND: [homeFilter, cloudOnly] } : cloudOnly,
   }

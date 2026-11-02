@@ -120,7 +120,6 @@ function open(path: string, onClose = () => {}) {
 function openInProject(
   path: string,
   project: { id: string; name?: string },
-  relayBase?: string | null,
 ) {
   return render(
     <WorkspaceFileViewer
@@ -128,7 +127,6 @@ function openInProject(
       path={path}
       projectId={project.id}
       projectName={project.name ?? null}
-      relayBase={relayBase ?? null}
       nonce={1}
       onClose={() => {}}
     />,
@@ -270,22 +268,6 @@ describe("WorkspaceFileViewer", () => {
     expect(clientBases).toEqual(["https://agent.example"])
   })
 
-  test("a paired desktop's project is read through the machine relay", async () => {
-    readFile.mockImplementation(async (path: string) => {
-      if (path.startsWith("proj-1/")) throw new Error("Agent readFile 404: not found")
-      return "# Sealed marketplace"
-    })
-    openInProject(
-      "plans/sealed.md",
-      { id: "proj-1" },
-      "https://api.example/api/machines/inst-1/w/lw-1",
-    )
-
-    await screen.findByTestId("markdown-body")
-    expect(clientBases.at(-1)).toBe(
-      "https://api.example/api/machines/inst-1/w/lw-1/api/projects/proj-1/agent-proxy",
-    )
-  })
 
   test("the not-found message names the project it looked in", async () => {
     readFile.mockImplementation(async () => {
