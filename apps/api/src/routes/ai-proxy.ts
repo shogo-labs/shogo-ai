@@ -2085,6 +2085,53 @@ export function createGoogleSseRewriter(): (line: string) => string {
   }
 }
 
+/**
+ * OpenRouter accepts at most two categories per request. From
+ * https://openrouter.ai/docs/app-attribution, section
+ * **X-OpenRouter-Categories**: "Pass a comma-separated list of up to 2
+ * categories per request. … Categories are merged with any existing ones (up
+ * to 10 total)." Anything past the second value is dropped without an error,
+ * so a longer configured list would only ever get its head recorded.
+ */
+export const OPENROUTER_MAX_CATEGORIES_PER_REQUEST = 2
+
+/**
+ * Pick the attribution categories to send on one request.
+ *
+ * Categories are merged across requests on OpenRouter's side (up to 10), so
+ * rather than sending the whole configured list and losing its tail we send a
+ * rotating window of `OPENROUTER_MAX_CATEGORIES_PER_REQUEST` and let the union
+ * of consecutive requests record every category. A list that already fits is
+ * sent as-is.
+ *
+ * `configured` is the raw env value: split on `,`, trimmed, lowercased,
+ * de-duplicated, empties dropped.
+ */
+export function openRouterCategoriesForRequest(configured: string, slot: number): string {
+  const seen = new Set<string>()
+  const categories = configured
+    .split(',')
+    .map((category) => category.trim().toLowerCase())
+    .filter((category) => {
+      if (!category || seen.has(category)) return false
+      seen.add(category)
+      return true
+    })
+  const perRequest = OPENROUTER_MAX_CATEGORIES_PER_REQUEST
+  if (categories.length <= perRequest) return categories.join(',')
+  // The last window may wrap around to the head of the list (5 items →
+  // [a,b], [c,d], [e,a]) so every category is covered.
+  const windows = Math.ceil(categories.length / perRequest)
+  const window = ((Math.trunc(slot) % windows) + windows) % windows
+  const picked: string[] = []
+  for (let i = 0; i < perRequest; i++) {
+    picked.push(categories[(window * perRequest + i) % categories.length])
+  }
+  return picked.join(',')
+}
+
+let openRouterCategorySlot = 0
+
 function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   // Custom providers can authenticate via `api-key` header instead of a
@@ -2102,6 +2149,9 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
     // compatibility; `X-OpenRouter-Title` is the current one.
     // Categories are lowercase, hyphenated and comma-separated; OpenRouter
     // drops unknown values silently and merges categories across requests.
+    // It also takes at most 2 per request (see
+    // `OPENROUTER_MAX_CATEGORIES_PER_REQUEST`), so with the 3-category default
+    // we rotate a window of two and rely on the merge to record all three.
     // `X-OpenRouter-App-Visibility` is deliberately NOT sent: Shogo's app
     // page stays public. All three values are env-overridable. Custom
     // providers whose base URL is OpenRouter (Hoshi 2.0) need these too;
@@ -2110,8 +2160,11 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
     headers['HTTP-Referer'] = process.env.OPENROUTER_HTTP_REFERER || 'https://shogo.ai'
     headers['X-Title'] = title
     headers['X-OpenRouter-Title'] = title
-    headers['X-OpenRouter-Categories'] =
-      process.env.OPENROUTER_CATEGORIES || 'cloud-agent,native-app-builder,personal-agent'
+    const categories = openRouterCategoriesForRequest(
+      process.env.OPENROUTER_CATEGORIES || 'cloud-agent,native-app-builder,personal-agent',
+      openRouterCategorySlot++,
+    )
+    if (categories) headers['X-OpenRouter-Categories'] = categories
   }
   return headers
 }
