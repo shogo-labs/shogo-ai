@@ -32,7 +32,9 @@ import {
   applyMessageSnapshot,
   dropUnfinishedAssistantTail,
   foldSnapshotContinuation,
+  replayTurnMessage,
   withResumeReplayReset,
+  type ReplayTurnStart,
 } from "../chat/resume-replay-transport"
 import { derivePendingQuestion, type PendingQuestion } from "../chat/turns/pendingQuestion"
 import { buildAskUserAnswerMessage } from "../chat/turns/askUserAnswers"
@@ -268,7 +270,7 @@ export function useOwnedIslandSession(
     getClientTurnId,
     resumeSnapshot: true,
   })
-  const beforeReplayRef = useRef<() => void>(() => {})
+  const beforeReplayRef = useRef<(start?: ReplayTurnStart) => void>(() => {})
   const applySnapshotRef = useRef<(message: UIMessage) => void>(() => {})
   const snapshotIdRef = useRef<string | null>(null)
   const transport = useMemo(
@@ -276,7 +278,7 @@ export function useOwnedIslandSession(
       transportConfig
         ? withResumeReplayReset(
             new DefaultChatTransport(transportConfig),
-            () => beforeReplayRef.current(),
+            (start) => beforeReplayRef.current(start),
             (message) => applySnapshotRef.current(message),
           )
         : undefined,
@@ -308,7 +310,10 @@ export function useOwnedIslandSession(
     onError: (err) => setError(err.message || "Connection interrupted"),
     onFinish: () => setPermission(null),
   })
-  beforeReplayRef.current = () => setMessages((prev) => dropUnfinishedAssistantTail(prev))
+  beforeReplayRef.current = (start) =>
+    setMessages((prev) =>
+      dropUnfinishedAssistantTail(prev, start ? (replayTurnMessage(start) as UIMessage) : null),
+    )
   applySnapshotRef.current = (message) => {
     snapshotIdRef.current = message.id
     setMessages((prev) => applyMessageSnapshot(prev, message))

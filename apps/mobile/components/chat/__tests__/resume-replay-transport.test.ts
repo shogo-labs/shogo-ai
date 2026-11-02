@@ -7,6 +7,9 @@ import {
   dropUnfinishedAssistantTail,
   foldSnapshotContinuation,
   isUnfinishedAssistant,
+  messageTurnKey,
+  replayTurnMessage,
+  turnStartOf,
   withResumeReplayReset,
   withSnapshotId,
 } from "../resume-replay-transport"
@@ -436,5 +439,118 @@ describe("withResumeReplayReset message snapshot", () => {
     )
     expect(await readAll(await transport.reconnectToStream(request))).toEqual([snapshotChunk])
     expect(calls).toEqual(["reset"])
+  })
+})
+
+// Coming back to a chat mid-turn loads the part of the reply saved so far, then
+// replays the turn from seq 0. The replay has to say which turn it rebuilds, or
+// the saved partial is kept and the full replay is appended after it — the
+// reply shows twice, and a reload repeats it (SHO-278).
+describe("withResumeReplayReset tells the drop which turn the replay rebuilds", () => {
+  const request = { chatId: "c1" }
+  const TURN = "turn-278"
+
+  const persistedPartial = {
+    id: "msg_persisted",
+    role: "assistant",
+    parts: [
+      { type: "text", text: "Reading the migration files" },
+      { type: "data-turn-timing", data: { startedAt: 1, turnId: TURN } },
+    ],
+  } as unknown as UIMessage
+
+  const replayOf = (turnId: string) => [
+    { type: "start" },
+    { type: "data-turn-start", data: { turnId, chatSessionId: "s1", startedAt: 1 } },
+    { type: "start-step" },
+    { type: "text-start", id: "0" },
+    { type: "text-delta", id: "0", delta: "Reading the migration files" },
+  ]
+
+  function transportOf(chunks: unknown[], onReplay: (start?: any) => void) {
+    return withResumeReplayReset(
+      {
+        sendMessages: async () => chunkStream([]),
+        reconnectToStream: async () => chunkStream(chunks),
+      },
+      onReplay,
+      () => {},
+    )
+  }
+
+  test("the replay's own turn replaces the persisted partial, leaving one reply", async () => {
+    const starts: any[] = []
+    const transport = transportOf(replayOf(TURN), (start) => starts.push(start))
+
+    const out = await readAll(await transport.reconnectToStream(request))
+
+    expect(starts).toEqual([{ turnId: TURN, startedAt: 1 }])
+    expect(out).toEqual(replayOf(TURN))
+
+    // What the caller drops with: the replay's turn, nothing else.
+    const replayMessage = {
+      id: "replay",
+      role: "assistant",
+      parts: [{ type: "data-turn-start", data: starts[0] }],
+    } as unknown as UIMessage
+    const history = [message("user"), persistedPartial]
+    const afterDrop = dropUnfinishedAssistantTail(history, replayMessage)
+    expect(afterDrop).toEqual([history[0]])
+    expect(messageTurnKey(persistedPartial)).toBe(`turn:${TURN}`)
+  })
+
+  test("replayTurnMessage carries the turn the drop compares against", () => {
+    const start = { turnId: TURN, startedAt: 1 }
+    expect(messageTurnKey(replayTurnMessage(start))).toBe(`turn:${TURN}`)
+    expect(messageTurnKey(replayTurnMessage({ startedAt: 7 }))).toBe("at:7")
+  })
+
+  test("a replay of another turn keeps the persisted partial (SHO-274 C1)", async () => {
+    const starts: any[] = []
+    const transport = transportOf(replayOf("turn-other"), (start) => starts.push(start))
+
+    await readAll(await transport.reconnectToStream(request))
+
+    expect(starts).toEqual([{ turnId: "turn-other", startedAt: 1 }])
+    const history = [message("user"), persistedPartial]
+    expect(dropUnfinishedAssistantTail(history, replayTurnMessage(starts[0]))).toBe(history)
+  })
+
+  test("the look-ahead loses no chunk and keeps the order", async () => {
+    const chunks = replayOf(TURN)
+    const transport = transportOf(chunks, () => {})
+    expect(await readAll(await transport.reconnectToStream(request))).toEqual(chunks)
+  })
+
+  test("a replay with no data-turn-start behaves as before: no turn, partial kept", async () => {
+    const starts: any[] = []
+    const chunks = [{ type: "start" }, { type: "text-start", id: "0" }]
+    const transport = transportOf(chunks, (start) => starts.push(start))
+
+    expect(await readAll(await transport.reconnectToStream(request))).toEqual(chunks)
+    expect(starts).toEqual([undefined])
+
+    const history = [message("user"), persistedPartial]
+    expect(dropUnfinishedAssistantTail(history, null)).toBe(history)
+  })
+
+  test("a turn start that is the first chunk is read without a look-ahead", async () => {
+    const starts: any[] = []
+    const chunks = [{ type: "data-turn-start", data: { turnId: TURN } }, { type: "start-step" }]
+    const transport = transportOf(chunks, (start) => starts.push(start))
+
+    expect(await readAll(await transport.reconnectToStream(request))).toEqual(chunks)
+    expect(starts).toEqual([{ turnId: TURN }])
+  })
+
+  test("turnStartOf reads the runtime's frame and ignores everything else", () => {
+    expect(turnStartOf({ type: "data-turn-start", data: { turnId: "t", startedAt: 5 } })).toEqual({
+      turnId: "t",
+      startedAt: 5,
+    })
+    expect(turnStartOf({ type: "data-turn-start", data: { startedAt: 5 } })).toEqual({ startedAt: 5 })
+    expect(turnStartOf({ type: "data-turn-start", data: {} })).toBeUndefined()
+    expect(turnStartOf({ type: "data-turn-seq", data: { turnId: "t" } })).toBeUndefined()
+    expect(turnStartOf(undefined)).toBeUndefined()
   })
 })

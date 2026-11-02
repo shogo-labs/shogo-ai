@@ -176,7 +176,9 @@ import {
   applyMessageSnapshot,
   dropUnfinishedAssistantTail,
   foldSnapshotContinuation,
+  replayTurnMessage,
   withResumeReplayReset,
+  type ReplayTurnStart,
 } from "./resume-replay-transport"
 import { markStoppedTail, mergeStoppedSnapshot } from "./stopped-turn"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -2379,7 +2381,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     resumeSnapshot: true,
   })
   // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
-  const beforeResumeReplayRef = useRef<() => void>(() => {})
+  const beforeResumeReplayRef = useRef<(start?: ReplayTurnStart) => void>(() => {})
   const applyResumeSnapshotRef = useRef<(message: UIMessage) => void>(() => {})
   // The installed snapshot's id; `displayMessages` folds the SDK's
   // continuation message into it (see `foldSnapshotContinuation`).
@@ -2389,7 +2391,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       transportConfig
         ? withResumeReplayReset(
             new DefaultChatTransport(transportConfig),
-            () => beforeResumeReplayRef.current(),
+            (start) => beforeResumeReplayRef.current(start),
             (message) => applyResumeSnapshotRef.current(message),
           )
         : undefined,
@@ -3522,8 +3524,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     },
   })
-  beforeResumeReplayRef.current = () =>
-    setMessages((prev) => dropUnfinishedAssistantTail(prev))
+  beforeResumeReplayRef.current = (start) =>
+    setMessages((prev) =>
+      dropUnfinishedAssistantTail(prev, start ? (replayTurnMessage(start) as UIMessage) : null),
+    )
   applyResumeSnapshotRef.current = (message) => {
     resumeSnapshotIdRef.current = message.id
     setMessages((prev) => applyMessageSnapshot(prev, message))
