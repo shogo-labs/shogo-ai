@@ -353,3 +353,32 @@ describe("groupMessagesIntoTurns — performance (character streaming simulation
     expect(refs.size).toBe(full.length)
   })
 })
+
+describe("a turn still running when the chat is reopened (SHO-287)", () => {
+  test("renders as in progress even though this window is not streaming it", () => {
+    const u = userMsg("u1", "run the steps")
+    const a = assistantMsg("a1", "step 10 done", [
+      { type: "data-turn-start", data: { turnId: "turn-1", startedAt: 1000 } },
+      { type: "tool-invocation", toolInvocation: { toolCallId: "t1", toolName: "Bash", state: "result" } },
+    ])
+    // `isStreaming` is false: nothing is attached to this window yet.
+    const turns = groupMessagesIntoTurns([u, a], false, undefined, undefined)
+    expect(turns).toHaveLength(1)
+    expect(turns[0].isStreaming).toBe(true)
+  })
+
+  test("a finished turn stays finished", () => {
+    const u = userMsg("u1", "run the steps")
+    const a = assistantMsg("a1", "all done", [
+      { type: "data-turn-start", data: { turnId: "turn-1", startedAt: 1000 } },
+      { type: "data-turn-complete", data: { completedAt: 2000 } },
+    ])
+    expect(groupMessagesIntoTurns([u, a], false, undefined, undefined)[0].isStreaming).toBe(false)
+  })
+
+  test("a legacy reply with no turn timing stays finished", () => {
+    const u = userMsg("u1", "hi")
+    const a = assistantMsg("a1", "hello")
+    expect(groupMessagesIntoTurns([u, a], false, undefined, undefined)[0].isStreaming).toBe(false)
+  })
+})

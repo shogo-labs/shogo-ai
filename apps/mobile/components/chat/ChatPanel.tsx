@@ -111,6 +111,7 @@ import {
 } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
 import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
+import { mergeTranscriptRows, sortTranscriptRows } from "./transcript-merge"
 import {
   patchSessionFeedbackCache,
   readSessionFeedbackCache,
@@ -3689,16 +3690,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!snapshot) return
     setMessages((prev) => mergeStoppedSnapshot(prev, snapshot))
   }, [setMessages])
+  // Keep the stop control visible while the transport is recovering a turn
+  // whose server-side agent may still be running.
+  const [streamAutoRecovering, setStreamAutoRecovering] = useState(false)
+  /**
+   * A probe found this chat's turn still running in the runtime, and this
+   * window has not attached to it yet. Stop must be here for that whole gap:
+   * the turn is live, even though nothing is streaming into this window
+   * (SHO-287).
+   */
+  const [liveTurnActive, setLiveTurnActive] = useState(false)
   // Stop state belongs to one chat: carrying a snapshot (or a cancelled turn
   // id) into another one would hold that chat's transcript still.
   useEffect(() => {
     stoppedMessagesRef.current = null
     stoppedTurnIdRef.current = null
     setStoppedMessages(null)
+    setLiveTurnActive(false)
   }, [currentSessionId])
-  // Keep the stop control visible while the transport is recovering a turn
-  // whose server-side agent may still be running.
-  const [streamAutoRecovering, setStreamAutoRecovering] = useState(false)
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
@@ -3750,6 +3759,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     stoppedMessages === null
   const isStreaming =
     (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
+
+  // Once this window is attached, the transport is the authority on the turn
+  // and the probe's snapshot stops deciding Stop (SHO-287).
+  useEffect(() => {
+    if (isTransportStreaming) setLiveTurnActive(false)
+  }, [isTransportStreaming])
 
   const reloadAndAttachLiveTurnRef = useRef<
     (opts?: { settle?: boolean }) => void
@@ -4323,7 +4338,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           ? setTimeout(() => controller.abort(), opts.timeoutMs)
           : undefined
       try {
-        return await probeChatTurn({
+        const snapshot = await probeChatTurn({
           url: buildChatTurnUrl(
             API_URL!,
             projectId,
@@ -4337,6 +4352,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
           retryDelaysMs: opts.retryDelaysMs,
           signal: controller.signal,
         })
+        // The probe is the only thing that knows a turn is running before this
+        // window attaches to it, so it decides the Stop button for that gap
+        // (SHO-287). Scoped to the chat on screen: a probe for a chat the
+        // person has left says nothing about this one.
+        if (sessionId === currentSessionIdRef.current) {
+          setLiveTurnActive(
+            isLiveTurnOtherThan(snapshot, stoppedTurnIdRef.current),
+          )
+        }
+        return snapshot
       } finally {
         if (timer) clearTimeout(timer)
       }
@@ -5467,14 +5492,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
         if (seen.size < body.total) return false
       }
 
-      const byId = new Map(current.map((m) => [String(m.id), m]))
       for (const row of items) {
         if (!row?.id) continue
-        byId.set(String(row.id), messageRowToUIMessage(row))
         sessionMessages?.addItem(messageRowToSnapshot(row))
       }
-      const history = Array.from(byId.values()).sort(
-        (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
+      // Merge, do not re-sort: a message the SDK built here carries no
+      // `createdAt`, and sorting it to the top put the reply above the first
+      // prompt (SHO-287).
+      const history = mergeTranscriptRows(
+        current,
+        items.filter((row) => row?.id).map((row) => messageRowToUIMessage(row)),
       )
 
       const paint = resolveHistoryPaint({
@@ -5640,9 +5667,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             if (myGeneration !== loadGenerationRef.current) return
             if (isStreamingRef.current || isSendingMessageRef.current) return
 
-            const loaded = [...sessionMessages.all].sort(
-              (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
-            )
+            const loaded = sortTranscriptRows([...sessionMessages.all])
 
             if (loaded.length === 0) return
 
@@ -6072,9 +6097,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         { limit: MESSAGE_PAGE_SIZE, offset: currentCount },
       )
 
-      const allLoaded = [...sessionMessages.all].sort(
-        (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
-      )
+      const allLoaded = sortTranscriptRows([...sessionMessages.all])
 
       const aiMessages = allLoaded.map((msg: any) => {
         const baseMessage: any = {
@@ -9844,7 +9867,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                             : "Respond to the question below, or type a message..."
                           : "Ask Shogo..."
                     }
-                    isStreaming={isStreaming}
+                    isStreaming={isStreaming || liveTurnActive}
                     onStop={handleStop}
                     selectedModel={selectedModel}
                     onModelChange={handleModelChange}
