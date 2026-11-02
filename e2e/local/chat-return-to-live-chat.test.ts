@@ -17,7 +17,7 @@
  * the ordinary e2e/local shards and needs no model.
  */
 import { expect, test, type Page, type Route } from "@playwright/test"
-import { startProjectWithBootstrapTurn } from "./helpers"
+import { openTeamHome, startProjectWithBootstrapTurn } from "./helpers"
 
 test.setTimeout(180_000)
 
@@ -307,6 +307,9 @@ test.describe("coming back to a live chat", () => {
     // is something the person can see, and so the panel reads its history.
     state.rows = [savedRow("m-landing", "", "user", RETURN_PROMPT, Date.now() - 60_000)]
 
+    // Sign in and pick the team workspace first: `/` is the workspace agent
+    // chat, and a cold context would otherwise land on onboarding.
+    await openTeamHome(page)
     await page.goto("/")
     await expect(page.getByText(RETURN_PROMPT, { exact: false }).first()).toBeVisible({
       timeout: 60_000,
