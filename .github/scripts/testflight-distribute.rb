@@ -96,8 +96,8 @@ begin
 rescue ReleaseConfigError => error
   puts "::error::#{error.message}"
   summary_lines << "**Result:** failed — #{error.message.lines.first.strip}"
-  write_summary(summary_lines)
+  write_summary(summary_lines, "TestFlight distribution")
   exit 1
 end
 
-write_summary(summary_lines)
+write_summary(summary_lines, "TestFlight distribution")

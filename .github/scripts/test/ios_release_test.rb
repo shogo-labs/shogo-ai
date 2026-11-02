@@ -7,6 +7,9 @@
 # App Store Connect for, and what it reports when that identity is missing.
 
 require "minitest/autorun"
+require "fileutils"
+require "open3"
+require "tmpdir"
 
 require_relative "../lib/app-store-connect"
 require_relative "../lib/ios-app"
@@ -145,6 +148,96 @@ class AppResolutionTest < Minitest::Test
     end
     assert_includes error.message, "No App Store Connect app record has bundle id ai.shogo.app"
     assert_includes error.message, "other (com.other, id 999)"
+  end
+end
+
+class DistributeScriptTest < Minitest::Test
+  SCRIPTS = File.expand_path("..", __dir__)
+  REPO = File.expand_path("../..", SCRIPTS)
+
+  # End to end: a real .ipa, a stub App Store Connect, and a workflow that
+  # guessed the wrong build number. The IPA must win and both groups must end up
+  # assigned — the whole release path, not just the helpers.
+  def test_assigns_the_ipas_build_to_the_configured_groups
+    skip "needs plutil (macOS runner)" unless system("command -v plutil > /dev/null 2>&1")
+
+    Dir.mktmpdir("distribute-e2e") do |dir|
+      ipa = File.join(dir, "Shogo-test.ipa")
+      app_dir = File.join(dir, "Payload", "Shogo.app")
+      FileUtils.mkdir_p(app_dir)
+      File.write(File.join(app_dir, "Info.plist"), <<~PLIST)
+        <?xml version="1.0" encoding="UTF-8"?>
+        <plist version="1.0">
+        <dict>
+        <key>CFBundleIdentifier</key><string>ai.shogo.app</string>
+        <key>CFBundleVersion</key><string>983</string>
+        <key>CFBundleShortVersionString</key><string>2.4.9</string>
+        </dict>
+        </plist>
+      PLIST
+      _out, error, status = Open3.capture3("zip", "-qr", ipa, "Payload", chdir: dir)
+      assert status.success?, "zip failed: #{error}"
+
+      summary = File.join(dir, "summary.md")
+      File.write(summary, "")
+      harness = File.join(dir, "harness.rb")
+      File.write(harness, distribute_harness(ipa, summary))
+
+      output, error_output, run = Open3.capture3(ENV.to_h, "ruby", harness)
+      assert run.success?, "script failed:\n#{output}\n#{error_output}"
+
+      assert_includes output, "CFBundleVersion:             983"
+      assert_includes output, "The IPA's CFBundleVersion is 983 but the workflow expected 982"
+      assert_includes output, "Assigned build 983 to TestFlight group group-a."
+      assert_includes output, "Assigned build 983 to TestFlight group group-b."
+      assert_includes File.read(summary), "**Build (from the IPA):** `983`"
+    end
+  end
+
+  private
+
+  def distribute_harness(ipa, summary)
+    <<~RUBY
+      require #{File.join(SCRIPTS, 'lib/app-store-connect').inspect}
+      require #{File.join(SCRIPTS, 'lib/ios-app').inspect}
+
+      POSTED = []
+
+      class AppStoreConnectClient
+        def request(request_class, path, body = nil)
+          case path
+          when %r{\\A/v1/apps\\?}
+            { "data" => [{ "id" => "222", "attributes" => { "name" => "shogo", "bundleId" => "ai.shogo.app" } }] }
+          when %r{\\A/v1/apps/999\\z}
+            { "data" => { "id" => "999", "attributes" => { "name" => "shogo mac", "bundleId" => "ai.shogo.mac" } } }
+          when %r{\\A/v1/builds\\?.*filter%5Bversion%5D=983}
+            { "data" => [{ "id" => "build-983", "attributes" => { "version" => "983", "processingState" => "VALID" } }] }
+          when %r{\\A/v1/builds/}
+            { "data" => [] }
+          when %r{\\A/v1/betaGroups/}
+            POSTED << path
+            {}
+          else
+            raise "unexpected request \#{path}"
+          end
+        end
+      end
+
+      ENV["ASC_KEY_ID"] = "key"
+      ENV["ASC_ISSUER_ID"] = "issuer"
+      ENV["ASC_PRIVATE_KEY"] = "unused-because-http-is-stubbed"
+      ENV["ASC_APP_ID"] = "999"
+      ENV["TESTFLIGHT_BUILD_NUMBER"] = "982"
+      ENV["TESTFLIGHT_GROUP_IDS"] = "group-a,group-b"
+      ENV["TESTFLIGHT_POLL_INTERVAL_SECONDS"] = "0"
+      ENV["TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS"] = "10"
+      ENV["TESTFLIGHT_GRACE_SECONDS"] = "0"
+      ENV["TESTFLIGHT_IPA_PATH"] = #{ipa.inspect}
+      ENV["GITHUB_STEP_SUMMARY"] = #{summary.inspect}
+
+      load #{File.join(SCRIPTS, 'testflight-distribute.rb').inspect}
+      abort "expected both groups to be assigned" unless POSTED.length == 2
+    RUBY
   end
 end
 
