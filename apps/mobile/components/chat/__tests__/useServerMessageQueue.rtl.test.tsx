@@ -50,6 +50,7 @@ const collection = observable({
       status: "pending",
       content: String(input.content ?? ""),
       parts: input.parts,
+      body: input.body,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
@@ -245,6 +246,43 @@ describe("useServerMessageQueue", () => {
     // And it must not be reported later by the poll either.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
     expect(turns).toEqual([])
+  })
+
+  /**
+   * SHO-286: the dock row is the create's own optimistic insert, so it is on
+   * screen before the enqueue POST is answered. Enrichment (git status /
+   * diagnostics on desktop) therefore runs alongside the create and is patched
+   * into the row's body afterwards — the server reads `body.text` when it
+   * dispatches the row.
+   */
+  test("the dock row is created before the message is enriched, and the enriched text is patched in", async () => {
+    reset()
+    render(<Probe isStreaming />)
+    let releaseEnrich: (text: string) => void = () => {}
+    const enriching = new Promise<string>((resolve) => {
+      releaseEnrich = resolve
+    })
+
+    let created: { id: string } | undefined
+    await act(async () => {
+      created = await queueApi!.enqueue({
+        content: "queued",
+        body: { text: "queued" },
+        enrich: () => enriching,
+      })
+    })
+
+    // The row is on the dock while enrichment is still running, and it carries
+    // the text the person typed.
+    expect(collection.all.map((row) => row.id)).toEqual([created!.id])
+    expect(JSON.parse(collection.all[0]!.body!).text).toBe("queued")
+
+    await act(async () => {
+      releaseEnrich("queued\n\n<terminal-context/>")
+      await enriching
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(JSON.parse(collection.all[0]!.body!).text).toBe("queued\n\n<terminal-context/>")
   })
 
   test("a turn taken while the previous stream is still open is reported once it closes", () => {

@@ -179,6 +179,13 @@ export type ServerQueueEnqueueInput = {
   selectedModel?: string
   references?: ChatReference[]
   body: QueueBody
+  /**
+   * Text to send instead of `content` once it is ready — the git/terminal
+   * context `enrichMessage` adds on desktop. The row is created first so the
+   * dock shows the message at once, and the enriched text is patched into the
+   * row's body afterwards, before the server dispatches it.
+   */
+  enrich?: () => Promise<string>
 }
 
 export function useServerMessageQueue({
@@ -601,6 +608,13 @@ export function useServerMessageQueue({
         text: input.body.text ?? input.content.trim(),
         references: input.references ?? input.body.references,
       }
+      // Enrichment runs alongside the create, not before it: the row has to be
+      // on the dock at once, and the enriched text is patched into the row's
+      // body afterwards. The server reads `body.text` when it dispatches the
+      // row, so the patch has to land before that: a row dispatched in the
+      // meantime is sent with the text the person typed, which is what an
+      // enrichment failure already falls back to.
+      const enriching = input.enrich?.()
       const created = (await collection.create({
         sessionId,
         userId: "",
@@ -611,6 +625,26 @@ export function useServerMessageQueue({
       if (created && !created.id.startsWith(OPTIMISTIC_ID_PREFIX)) {
         enqueuedRef.current.set(created.id, queuedRowToUserMessage(created))
         setTrackedCount((count) => count + 1)
+      }
+      if (created && enriching) {
+        void enriching
+          .then(async (text) => {
+            const enriched = text?.trim()
+            if (!enriched || enriched === input.content.trim()) return
+            try {
+              await collection.update(created.id, {
+                body: JSON.stringify({ ...body, text: enriched }),
+              })
+            } catch (error) {
+              console.warn(
+                "[ChatQueue] Could not attach the enriched text to the queued message:",
+                error,
+              )
+            }
+          })
+          .catch((error) => {
+            console.warn("[ChatQueue] Enrichment failed for a queued message:", error)
+          })
       }
       return created
     },
