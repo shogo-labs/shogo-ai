@@ -185,6 +185,33 @@ describe("WorkspaceFileViewer", () => {
     await waitFor(() => expect(byAccessibilityLabel("Link copied")).not.toBeNull())
   })
 
+  test("a project's file links to its workspace-relative path", async () => {
+    readFile.mockImplementation(async () => "# Hi")
+    render(
+      <WorkspaceFileViewer
+        agentUrl="https://agent.example"
+        path="notes/plan.md"
+        projectId="proj 7"
+        workspaceId="ws 1"
+        nonce={1}
+        onClose={() => {}}
+      />,
+    )
+    await screen.findByTestId("markdown-body")
+
+    fireEvent.click(byAccessibilityLabel("Copy link to file")!)
+
+    await waitFor(() => expect(clipboard.length).toBe(1))
+    const link = clipboard[0]!
+    const host = new URL(link).host
+    // `path` is project-relative here; the link has to name the file the way
+    // the workspace runtime does, or it opens a root file that doesn't exist.
+    expect(parseWorkspaceFileLink(link, new Set([host]))).toEqual({
+      workspaceId: "ws 1",
+      path: "proj 7/notes/plan.md",
+    })
+  })
+
   test("offers no link when the workspace is unknown", async () => {
     readFile.mockImplementation(async () => "# Hi")
     open("notes/plan.md")

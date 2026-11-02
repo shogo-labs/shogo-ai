@@ -25,7 +25,6 @@ import {
   shouldAdoptChatWorkspace,
 } from "../../lib/switch-workspace"
 import { pickTeamWorkspace } from "../../lib/team-workspace"
-import { planFileLinkArrival } from "../../lib/file-link-arrival"
 import { useWorkspaceInView } from "../../hooks/useWorkspaceInView"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { useWorkspaceAgentBase } from "../../hooks/useWorkspaceAgentBase"
@@ -52,6 +51,7 @@ import { PlansPanel } from "../project/panels/PlansPanel"
 import { ShareFileProvider, type ShareFileTarget } from "../chat/share-file-context"
 import { ShareFileView } from "../chat/ShareFileViewer"
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
+import { useFileLinkArrival } from "./use-file-link-arrival"
 import { filePaneTarget } from "../chat/remote-project-paths"
 import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
@@ -352,56 +352,37 @@ export const WorkspaceAgentChatScreen = observer(
       setPlanPane(null)
       setFilePane({ kind: "share", target, nonce: Date.now() })
     }, [])
-    const closeFilePane = useCallback(() => setFilePane(null), [])
 
     // A shared file link (`/agent?workspace=&file=`, SHO-284) names the
     // workspace and the file. The workspace list decides whether this account
     // may be moved into that workspace; an empty list that is still loading is
     // "unknown", not "no".
-    const [linkError, setLinkError] = useState<string | null>(null)
-    const linkHandled = useRef(false)
     const memberWorkspaceIds =
       workspaces.all.length > 0 && !workspaces.isLoading
         ? (workspaces.all as Array<{ id: string }>).map((candidate) => candidate.id)
         : null
-    const fileLinkStep = planFileLinkArrival({
-      path: initialFilePath ?? null,
+    const adoptLinkWorkspace = useCallback(
+      (id: string) => {
+        // A refused write is a switch the person made a moment ago, which
+        // outranks this link; their choice stands and nothing opens.
+        if (workspace?.id) adoptChatWorkspace(id, workspace.id, projects)
+      },
+      [projects, workspace?.id],
+    )
+    const { error: linkError, dismissError, dropLinkParams } = useFileLinkArrival({
+      initialFilePath: initialFilePath ?? null,
       linkWorkspaceId: linkWorkspaceId ?? null,
       workspaceId: workspace?.id ?? null,
       memberWorkspaceIds,
-      handled: linkHandled.current,
+      openFilePane,
+      adoptWorkspace: adoptLinkWorkspace,
+      setParams: (params) => router.setParams(params as any),
     })
 
-    useEffect(() => {
-      if (!workspace?.id || !initialFilePath) return
-      if (fileLinkStep === "open") {
-        linkHandled.current = true
-        openFilePane(initialFilePath)
-        // Arrival-only: reloading, or re-rendering after the pane is closed,
-        // must not reopen it.
-        router.setParams({ file: undefined, workspace: undefined } as any)
-        return
-      }
-      if (fileLinkStep === "adopt" && linkWorkspaceId) {
-        linkHandled.current = true
-        // A refused write is a switch the person made a moment ago, which
-        // outranks this link; their choice stands and nothing opens.
-        adoptChatWorkspace(linkWorkspaceId, workspace.id, projects)
-        return
-      }
-      if (fileLinkStep === "denied") {
-        linkHandled.current = true
-        setLinkError("You don't have access to this workspace.")
-      }
-    }, [
-      fileLinkStep,
-      initialFilePath,
-      linkWorkspaceId,
-      openFilePane,
-      projects,
-      router,
-      workspace?.id,
-    ])
+    const closeFilePane = useCallback(() => {
+      setFilePane(null)
+      dropLinkParams()
+    }, [dropLinkParams])
     const handleBuildPlan = useCallback(
       (plan: PlanData, modelId: string) => {
         setBuildPlanRequest({ plan, modelId, nonce: Date.now() })
@@ -822,7 +803,7 @@ export const WorkspaceAgentChatScreen = observer(
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Dismiss"
-              onPress={() => setLinkError(null)}
+              onPress={() => dismissError()}
               className="h-7 w-7 items-center justify-center rounded-full active:bg-muted"
             >
               <X size={15} className="text-muted-foreground" />

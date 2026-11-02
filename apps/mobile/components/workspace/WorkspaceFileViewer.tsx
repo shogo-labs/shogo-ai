@@ -139,6 +139,11 @@ export function WorkspaceFileViewer({
   const source = readSource ?? sources[sources.length - 1] ?? null
   const isDark = useResolvedTheme() === "dark"
   const name = basename(path)
+  // The path the workspace runtime addresses this file by: a mounted project's
+  // file lives at `<projectId>/<path>` under its merged root, a bare path is
+  // the root's own. `path` is project-relative whenever `projectId` is set, so
+  // the link — and only the link — has to put the project back (SHO-284).
+  const workspacePath = projectId ? `${projectId}/${path}` : path
   const [state, setState] = useState<ViewState>({ status: "loading" })
   const [copied, setCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -203,11 +208,12 @@ export function WorkspaceFileViewer({
   }
 
   // Who can open the link: workspace membership decides, so the link carries
-  // the workspace id and the path it already shows — no token, no secret.
+  // the workspace id and the file's workspace-relative path — no token, no
+  // secret.
   const copyLink = async () => {
     if (!workspaceId) return
     try {
-      await Clipboard.setStringAsync(workspaceFileLink({ workspaceId, path }))
+      await Clipboard.setStringAsync(workspaceFileLink({ workspaceId, path: workspacePath }))
       setLinkCopied(true)
       setTimeout(() => setLinkCopied(false), 1500)
     } catch {
