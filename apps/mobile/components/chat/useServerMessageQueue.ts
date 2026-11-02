@@ -526,11 +526,12 @@ export function useServerMessageQueue({
   }, [loadWakes])
 
   // A team-chat wake can arrive, and drain, while this session's own turn is
-  // streaming — the one case the queue poll below deliberately skips — so it
-  // has a poll of its own. It only runs while there is something to watch: a
-  // wake exists only while a reply is running in the thread and is gone when
-  // that reply ends, so an idle session must not ask at all. The mount load
-  // above still runs once, which is how a dock opened mid-run finds its rows.
+  // streaming — a case the queue poll below only covers when a row of this
+  // session is queued — so it has a poll of its own. It only runs while there
+  // is something to watch: a wake exists only while a reply is running in the
+  // thread and is gone when that reply ends, so an idle session must not ask at
+  // all. The mount load above still runs once, which is how a dock opened
+  // mid-run finds its rows.
   useEffect(() => {
     if (!enabled || !sessionId) return
     if (!isStreaming && wakes.length === 0) return
@@ -540,13 +541,20 @@ export function useServerMessageQueue({
     return () => clearInterval(timer)
   }, [enabled, sessionId, isStreaming, wakes.length, loadWakes])
 
+  // The rows poll must not stop while a turn streams. A row the server has
+  // claimed only learns that from a load, and after a reload nothing tracks it
+  // (`trackedCount` is 0), so this poll is the only thing that would ever see
+  // the `dispatching` status and hand the bubble to the transcript — otherwise
+  // the row sits in the dock beside its own bubble for the whole reply. It runs
+  // only while something is queued, so it is bounded by the row it is watching
+  // and stops as soon as the server's delete is seen.
   useEffect(() => {
-    if (!enabled || !sessionId || rows.length === 0 || isStreaming) return
+    if (!enabled || !sessionId || rows.length === 0) return
     const timer = setInterval(() => {
       void load().then(() => drainEnqueued(), () => {})
     }, 1500)
     return () => clearInterval(timer)
-  }, [enabled, sessionId, rows.length, isStreaming, load, drainEnqueued])
+  }, [enabled, sessionId, rows.length, load, drainEnqueued])
 
   // A row this window enqueued that never appeared in `rows` never changes it
   // either, so the poll above (which only runs while something is queued)

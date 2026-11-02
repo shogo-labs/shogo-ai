@@ -26,10 +26,18 @@ type Row = {
 
 let serverSeq = 0
 let dispatchedBeforeObserved = false
+/**
+ * What `loadAll` fetches. A real collection only ever learns a row's status
+ * from this call, so a test that pokes `collection.all` directly proves the
+ * derivation but not that the knowledge arrives — set this to model the server.
+ */
+let loadAllImpl: (() => Promise<void>) | null = null
 
 const collection = observable({
   all: [] as Row[],
-  loadAll: async () => {},
+  loadAll: async () => {
+    if (loadAllImpl) await loadAllImpl()
+  },
   delete: async (id: string) => {
     runInAction(() => {
       const index = collection.all.findIndex((r) => r.id === id)
@@ -141,6 +149,7 @@ function reset() {
   wakeDeletes.length = 0
   sendWakeFailure = null
   sendWakeHold = null
+  loadAllImpl = null
   act(() => runInAction(() => { collection.all.splice(0, collection.all.length) }))
 }
 
@@ -547,24 +556,36 @@ describe("useServerMessageQueue", () => {
     expect(fromDock.filter((s) => !s.dock.includes("srv-1") && !s.pending.includes("srv-1"))).toEqual([])
   })
 
-  test("a row this window did not enqueue leaves the dock when the server claims it", async () => {
+  test("a row this window did not enqueue leaves the dock when a poll carries the claim", async () => {
     reset()
+    // The collection only learns a row's status from `loadAll` — nothing here
+    // pokes `all` directly after mount, so the claim has to arrive by a load.
+    const serverRows: Row[] = [row("q1", 0, "first")]
+    loadAllImpl = async () => {
+      runInAction(() => {
+        collection.all.splice(0, collection.all.length, ...serverRows.map((r) => ({ ...r })))
+      })
+    }
     const view = render(<Probe isStreaming />)
     await act(async () => {})
-    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first")) }))
     expect(dockText(view)).toEqual(["first"])
     expect(pendingIds).toEqual([])
 
-    // Nothing tracks this row — a reload, or another window queued it — so no
-    // poll runs while the turn streams.
-    act(() => runInAction(() => { collection.all[0]!.status = "dispatching" }))
-    expect(dockText(view)).toEqual([])
+    // The turn ahead ends, the server claims the row and starts its own turn.
+    // Nothing tracks this row (a reload mid-reply, or a second window queued
+    // it), so `trackedCount` is 0 and the session is still streaming: the rows
+    // poll is the only thing that can ever carry the `dispatching` status.
+    serverRows[0]!.status = "dispatching"
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+
     expect(pendingIds).toEqual(["q1"])
+    expect(dockText(view)).toEqual([])
 
     const fromDock = samples.slice(samples.findIndex((s) => s.dock.includes("q1")))
     expect(fromDock.filter((s) => s.dock.includes("q1") && s.pending.includes("q1"))).toEqual([])
     expect(fromDock.filter((s) => !s.dock.includes("q1") && !s.pending.includes("q1"))).toEqual([])
-  })
+    view.unmount()
+  }, 10_000)
 
   test("a dispatch that fails after being claimed goes back to the dock", async () => {
     reset()
