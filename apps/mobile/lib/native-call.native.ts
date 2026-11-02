@@ -387,6 +387,9 @@ function applyStorefrontPolicy(allowed: boolean): void {
     }
     callKeep?.endAllCalls()
   }
+  // The native module can restore a saved CXProvider before JS starts. Keep its
+  // own policy in sync so China/unknown storefronts cannot leave one active.
+  NativeModules.RNCallKeep?.setCallKitAllowed?.(allowed)
   callKitAllowedForStorefront = allowed
 
   if (allowed) {
@@ -394,6 +397,9 @@ function applyStorefrontPolicy(allowed: boolean): void {
     startVoip()
     return
   }
+
+  // A later switch back to an allowed storefront must configure a fresh provider.
+  callKitSetup = false
 
   // Clearing this server-side routes incoming calls through ordinary alerts
   // instead of PushKit, which must be reported to CallKit.

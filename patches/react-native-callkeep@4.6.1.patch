@@ -1,0 +1,112 @@
+diff --git a/ios/RNCallKeep/RNCallKeep.h b/ios/RNCallKeep/RNCallKeep.h
+index b3f9f1571c626b76d33cafa7ceb16528302e80fb..4923be9b813de065af578e84ff9c016c49506df0 100644
+--- a/ios/RNCallKeep/RNCallKeep.h
++++ b/ios/RNCallKeep/RNCallKeep.h
+@@ -52,4 +52,8 @@ continueUserActivity:(NSUserActivity *)userActivity
+ 
+ + (void)setup:(NSDictionary *)options;
+ 
++// The host app must explicitly allow CallKit for the current App Store storefront.
++// Defaults to disabled on every process launch, including before React Native starts.
+++ (void)setCallKitAllowed:(BOOL)allowed;
++
+ @end
+diff --git a/ios/RNCallKeep/RNCallKeep.m b/ios/RNCallKeep/RNCallKeep.m
+index c2996d540a541114a525ad3af648f6453049b98f..860ef181e7681e10159cccbc65bc943fb41aaee0 100644
+--- a/ios/RNCallKeep/RNCallKeep.m
++++ b/ios/RNCallKeep/RNCallKeep.m
+@@ -16,6 +16,7 @@
+ 
+ #import <AVFoundation/AVAudioSession.h>
+ #import <CallKit/CallKit.h>
++#import <stdatomic.h>
+ 
+ #ifdef DEBUG
+ static int const OUTGOING_CALL_WAKEUP_DELAY = 10;
+@@ -50,6 +51,9 @@ @implementation RNCallKeep
+ 
+ static bool isSetupNatively;
+ static CXProvider* sharedProvider;
++// A saved RNCallKeepSettings value must never activate CallKit before the host
++// app has checked the current App Store storefront in this process.
++static atomic_int shogoCallKitAllowed = 0;
+ 
+ // should initialise in AppDelegate.m
+ RCT_EXPORT_MODULE()
+@@ -193,11 +197,31 @@ + (NSDictionary *) getSettings {
+     return [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"RNCallKeepSettings"];
+ }
+ 
+++ (void)setCallKitAllowed:(BOOL)allowed {
++    @synchronized (self) {
++        atomic_store(&shogoCallKitAllowed, allowed ? 1 : 0);
++        if (!allowed) {
++            [sharedProvider invalidate];
++            sharedProvider = nil;
++            RNCallKeep *callKeep = [RNCallKeep allocWithZone:nil];
++            callKeep.callKeepProvider = nil;
++        }
++    }
++}
++
++RCT_EXPORT_METHOD(setCallKitAllowed:(BOOL)allowed)
++{
++    [RNCallKeep setCallKitAllowed:allowed];
++}
++
+ + (void)initCallKitProvider {
+-    if (sharedProvider == nil) {
+-        NSDictionary *settings = [self getSettings];
+-        if (settings != nil) {
+-            sharedProvider = [[CXProvider alloc] initWithConfiguration:[RNCallKeep getProviderConfiguration:settings]];
++    @synchronized (self) {
++        if (!atomic_load(&shogoCallKitAllowed)) return;
++        if (sharedProvider == nil) {
++            NSDictionary *settings = [self getSettings];
++            if (settings != nil) {
++                sharedProvider = [[CXProvider alloc] initWithConfiguration:[RNCallKeep getProviderConfiguration:settings]];
++            }
+         }
+     }
+ }
+@@ -205,6 +229,7 @@ + (void)initCallKitProvider {
+ // Applies the stored settings to the CallKit provider. The provider may exist already: created when the
+ // module loaded, from the settings stored during the previous launch, or by an earlier setup().
+ + (void)configureCallKitProvider {
++    if (!atomic_load(&shogoCallKitAllowed)) return;
+     if (sharedProvider == nil) {
+         [self initCallKitProvider];
+     } else {
+@@ -246,6 +271,7 @@ + (void)setup:(NSDictionary *)options {
+ 
+ - (void)setupWithOptions:(NSDictionary *)options
+ {
++    if (!atomic_load(&shogoCallKitAllowed)) return;
+ #ifdef DEBUG
+     NSLog(@"[RNCallKeep][setup] options = %@", options);
+ #endif
+@@ -817,6 +843,10 @@ + (void)reportNewIncomingCall:(NSString *)uuidString
+                       payload:(NSDictionary * _Nullable)payload
+         withCompletionHandler:(void (^_Nullable)(void))completion
+ {
++    if (!atomic_load(&shogoCallKitAllowed)) {
++        if (completion != nil) completion();
++        return;
++    }
+ #ifdef DEBUG
+     NSLog(@"[RNCallKeep][reportNewIncomingCall] uuidString = %@", uuidString);
+ #endif
+@@ -832,7 +862,12 @@ + (void)reportNewIncomingCall:(NSString *)uuidString
+     callUpdate.localizedCallerName = localizedCallerName;
+ 
+     [RNCallKeep initCallKitProvider];
+-    [sharedProvider reportNewIncomingCallWithUUID:uuid update:callUpdate completion:^(NSError * _Nullable error) {
++    CXProvider *provider = sharedProvider;
++    if (provider == nil) {
++        if (completion != nil) completion();
++        return;
++    }
++    [provider reportNewIncomingCallWithUUID:uuid update:callUpdate completion:^(NSError * _Nullable error) {
+         RNCallKeep *callKeep = [RNCallKeep allocWithZone: nil];
+         [callKeep sendEventWithNameWrapper:RNCallKeepDidDisplayIncomingCall body:@{
+             @"error": error && error.localizedDescription ? error.localizedDescription : @"",

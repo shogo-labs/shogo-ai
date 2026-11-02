@@ -5,7 +5,8 @@
 //
 // - iOS: CallKit and the `voip` background mode, so a VoIP push can ring the
 //   call screen while the app is closed. JS registers PushKit only for allowed
-//   storefronts, and the native callback rechecks StoreKit before showing CallKit.
+//   storefronts. A native StoreKit watcher authorizes the CallKit provider only
+//   outside China, and the PushKit callback rechecks StoreKit before each call.
 //   react-native-callkeep's own plugin adds CallKit; this links PushKit and
 //   forwards its AppDelegate callbacks to react-native-voip-push-notification.
 // - Android: the permissions a self-managed calling app needs to show a
@@ -62,9 +63,37 @@ function withPushKitAppDelegate(config) {
       contents = contents.replace(/^import RNCallKeep\s*$/m, (line) => `${line}\nimport StoreKit`)
     }
 
+    // Resolve the storefront in native code before React Native loads CallKeep.
+    // The native provider defaults to disabled until that check finishes.
+    const launchMarker = '    reactNativeFactory = factory'
+    if (!contents.includes('    startHuddleCallKitStorefrontWatch()')) {
+      if (!contents.includes(launchMarker)) {
+        throw new Error('withHuddleCalls could not start the CallKit storefront watcher')
+      }
+      contents = contents.replace(launchMarker, `${launchMarker}\n\n    startHuddleCallKitStorefrontWatch()`)
+    }
+
     const marker = '// shogo: PushKit delegate callbacks'
     const callbacks = `${marker}
 extension AppDelegate: PKPushRegistryDelegate {
+  private func startHuddleCallKitStorefrontWatch() {
+    if #available(iOS 15.0, *) {
+      Task {
+        let current = await Storefront.current
+        let code = current?.countryCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        RNCallKeep.setCallKitAllowed(code != nil && code != "" && code != "CHN")
+
+        // A user can change their App Store region without relaunching the app.
+        for await storefront in Storefront.updates {
+          let updatedCode = storefront.countryCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+          RNCallKeep.setCallKitAllowed(!updatedCode.isEmpty && updatedCode != "CHN")
+        }
+      }
+    } else {
+      RNCallKeep.setCallKitAllowed(false)
+    }
+  }
+
   // Swift shortens the Objective-C manager selectors when importing them:
   // didUpdatePushCredentials:forType: becomes didUpdate(_:forType:), and
   // didReceiveIncomingPushWithPayload:forType: becomes didReceiveIncomingPush(with:forType:).
@@ -93,18 +122,22 @@ extension AppDelegate: PKPushRegistryDelegate {
     if #available(iOS 15.0, *) {
       Task {
         guard let storefront = await Storefront.current else {
+          RNCallKeep.setCallKitAllowed(false)
           completion()
           return
         }
         let countryCode = storefront.countryCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if countryCode.isEmpty || countryCode == "CHN" {
+          RNCallKeep.setCallKitAllowed(false)
           completion()
           return
         }
+        RNCallKeep.setCallKitAllowed(true)
         reportHuddleCallFromPush(payload, type: type, completion: completion)
       }
     } else {
       // Without StoreKit storefront data, CallKit remains disabled.
+      RNCallKeep.setCallKitAllowed(false)
       completion()
     }
   }
