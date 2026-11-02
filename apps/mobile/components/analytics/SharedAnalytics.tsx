@@ -230,7 +230,8 @@ export interface CostSplitFields {
 /**
  * The total a row shows: model cost + Shogo fee + anything billed before
  * itemized billing existed. Falls back to the legacy billed/raw pair when the
- * server did not send the split (an older API or a partial fixture).
+ * server did not send the split (an older API or a partial fixture), using the
+ * same rule the server uses for `costUsd`: billed when it is positive, else raw.
  */
 export function splitTotalUsd(
   entry: CostSplitFields & {
@@ -239,13 +240,11 @@ export function splitTotalUsd(
     billedUsd?: number
     rawUsd?: number
   },
-  isLocalMode?: boolean,
 ): number {
   if (entry.modelCostUsd == null && entry.shogoFeeUsd == null && entry.unitemizedUsd == null) {
-    const legacy = isLocalMode
-      ? (entry.totalRawUsd ?? entry.rawUsd)
-      : (entry.totalBilledUsd ?? entry.billedUsd)
-    return legacy ?? 0
+    const billed = entry.totalBilledUsd ?? entry.billedUsd
+    const raw = entry.totalRawUsd ?? entry.rawUsd
+    return billed && billed > 0 ? billed : raw ?? 0
   }
   return (entry.modelCostUsd ?? 0) + (entry.shogoFeeUsd ?? 0) + (entry.unitemizedUsd ?? 0)
 }
@@ -514,12 +513,10 @@ type SortKey =
 
 export function UsageSummaryView({
   data,
-  isLocalMode,
   onPageChange,
   currentPage,
 }: {
   data: UsageSummaryData
-  isLocalMode?: boolean
   onPageChange?: (p: number) => void
   currentPage?: number
 }) {
@@ -615,7 +612,7 @@ export function UsageSummaryView({
           <View className="min-w-[46%] flex-1 rounded-xl border border-border/50 bg-muted/40 p-3">
             <Text className="mb-1 text-sm text-muted-foreground">Total spend</Text>
             <Text className="text-xl font-bold text-foreground" numberOfLines={1}>
-              {formatPartialCost(splitTotalUsd(data.totals ?? {}, isLocalMode), data.totals?.unpricedRequests, data.totals?.totalRequests)}
+              {formatPartialCost(splitTotalUsd(data.totals ?? {}), data.totals?.unpricedRequests, data.totals?.totalRequests)}
             </Text>
             <CostSplitLines entry={data.totals ?? {}} className="mt-1" textClassName="text-xs" />
           </View>
@@ -690,7 +687,7 @@ export function UsageSummaryView({
                   </Text>
                   <View className="shrink-0 items-end">
                     <Text className="font-mono text-base font-medium text-foreground" numberOfLines={1}>
-                      {formatPartialCost(splitTotalUsd(entry, isLocalMode), entry.unpricedRequests, entry.requestCount)}
+                      {formatPartialCost(splitTotalUsd(entry), entry.unpricedRequests, entry.requestCount)}
                     </Text>
                     <CostSplitLines entry={entry} className="items-end" textClassName="text-xs" />
                   </View>
@@ -729,7 +726,7 @@ export function UsageSummaryView({
         <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
           <Text className="text-[10px] text-muted-foreground mb-0.5">Total spend</Text>
           <Text className="text-base font-bold text-foreground">
-            {formatPartialCost(splitTotalUsd(data.totals ?? {}, isLocalMode), data.totals?.unpricedRequests, data.totals?.totalRequests)}
+            {formatPartialCost(splitTotalUsd(data.totals ?? {}), data.totals?.unpricedRequests, data.totals?.totalRequests)}
           </Text>
           <CostSplitLines entry={data.totals ?? {}} className="mt-0.5" />
         </View>
@@ -804,7 +801,7 @@ export function UsageSummaryView({
               </Text>
               <View className="w-14 items-end">
                 <Text className="text-right text-[10px] font-mono text-foreground">
-                  {formatPartialCost(splitTotalUsd(entry, isLocalMode), entry.unpricedRequests, entry.requestCount)}
+                  {formatPartialCost(splitTotalUsd(entry), entry.unpricedRequests, entry.requestCount)}
                 </Text>
                 <CostSplitLines entry={entry} className="items-end" />
               </View>
@@ -822,12 +819,10 @@ export function UsageEventLogView({
   data,
   onPageChange,
   currentPage,
-  isLocalMode,
 }: {
   data: UsageLogData
   onPageChange?: (p: number) => void
   currentPage: number
-  isLocalMode?: boolean
 }) {
   const { comfortable, density } = useAnalyticsDensity()
   const { ChevronLeft, ChevronRight, Clock } = useSharedAnalyticsIcons()
@@ -920,7 +915,7 @@ export function UsageEventLogView({
                   </Text>
                   <View className="shrink-0 items-end">
                     <Text className="font-mono text-base font-medium text-foreground" numberOfLines={1}>
-                      {formatDollarCost(splitTotalUsd(entry, isLocalMode))}
+                      {formatDollarCost(splitTotalUsd(entry))}
                     </Text>
                     <CostSplitLines entry={entry} className="items-end" textClassName="text-xs" />
                   </View>
@@ -997,7 +992,7 @@ export function UsageEventLogView({
               </Text>
               <View className="w-12 items-end">
                 <Text className="text-right text-[10px] font-mono text-foreground">
-                  {formatDollarCost(splitTotalUsd(entry, isLocalMode))}
+                  {formatDollarCost(splitTotalUsd(entry))}
                 </Text>
                 <CostSplitLines entry={entry} className="items-end" />
               </View>
@@ -1024,7 +1019,6 @@ export function UsageTableSection({
   onSummaryPageChange,
   summaryPage,
   title,
-  isLocalMode,
 }: {
   summaryData: UsageSummaryData | null
   logData: UsageLogData | null
@@ -1035,7 +1029,6 @@ export function UsageTableSection({
   onSummaryPageChange?: (p: number) => void
   summaryPage?: number
   title?: string
-  isLocalMode?: boolean
 }) {
   const { comfortable, density } = useAnalyticsDensity()
   const [view, setView] = useState<'summary' | 'detail'>('summary')
@@ -1097,7 +1090,6 @@ export function UsageTableSection({
         ) : summaryData ? (
           <UsageSummaryView
             data={summaryData}
-            isLocalMode={isLocalMode}
             onPageChange={onSummaryPageChange}
             currentPage={summaryPage}
           />
@@ -1109,7 +1101,7 @@ export function UsageTableSection({
       ) : logLoading ? (
         <View className="items-center py-8"><ActivityIndicator /></View>
       ) : logData ? (
-        <UsageEventLogView data={logData} onPageChange={onLogPageChange} currentPage={logPage} isLocalMode={isLocalMode} />
+        <UsageEventLogView data={logData} onPageChange={onLogPageChange} currentPage={logPage} />
       ) : (
         <View className="py-8 items-center">
           <Text className="text-sm text-muted-foreground">No usage events available</Text>
@@ -1853,7 +1845,6 @@ export function UsageTimeseriesChart({
   metric: SpendMetric
   onGroupByChange: (v: SpendGroupBy) => void
   onMetricChange: (v: SpendMetric) => void
-  isLocalMode?: boolean
   title?: string
   subtitle?: string
   groupByOptions?: readonly SpendGroupBy[]

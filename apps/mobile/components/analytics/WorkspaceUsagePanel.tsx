@@ -41,6 +41,7 @@ import {
   type SpendGroupBy,
   type SpendMetric,
   StatCard,
+  CostSplitLines,
   UsageTableSection,
   ChatAnalyticsSection,
   UsageBreakdownSection,
@@ -394,7 +395,16 @@ export function WorkspaceUsagePanel() {
         testID="usage-section-spend"
       >
         <View className="flex-row flex-wrap gap-2">
-          <StatCard label="Total spend" value={fmtUsd(totalSpend)} icon={Coins} />
+          <StatCard
+            label="Total spend"
+            value={fmtUsd(totalSpend)}
+            icon={Coins}
+            footer={
+              spend.data?.totals ? (
+                <CostSplitLines entry={spend.data.totals} className="mt-0.5" />
+              ) : undefined
+            }
+          />
           <StatCard
             label="Included"
             value={fmtUsd(includedSpend)}
@@ -410,7 +420,6 @@ export function WorkspaceUsagePanel() {
           metric={metric}
           onGroupByChange={setGroupBy}
           onMetricChange={setMetric}
-          isLocalMode={localMode}
           title="Team Usage"
           subtitle="Team usage per day across this billing period"
           groupByOptions={["model", "user", "source"]}
@@ -444,7 +453,6 @@ export function WorkspaceUsagePanel() {
             logPage={logPage}
             onSummaryPageChange={setSummaryPage}
             summaryPage={summaryPage}
-            isLocalMode={localMode}
           />
         </View>
 

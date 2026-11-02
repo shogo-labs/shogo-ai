@@ -123,7 +123,7 @@ describe('spend is shown as model cost + Shogo fee', () => {
       summaries: [{ ...summaryData.summaries[0], totalBilledUsd: 0, modelCostUsd: 1, shogoFeeUsd: 0 }],
       totals: { ...summaryData.totals, totalBilledUsd: 0, modelCostUsd: 1, shogoFeeUsd: 0 },
     }
-    render(createElement(UsageSummaryView, { data: desktop, isLocalMode: true }))
+    render(createElement(UsageSummaryView, { data: desktop }))
 
     expect(screen.getAllByText(/Model \$1\.00 · Shogo fee \$0\.00/).length).toBeGreaterThan(0)
   })
@@ -141,7 +141,8 @@ describe('spend is shown as model cost + Shogo fee', () => {
 
   test('splitTotalUsd falls back to the legacy pair when the server sends no split', () => {
     expect(splitTotalUsd({ totalBilledUsd: 1.2, totalRawUsd: 1 })).toBe(1.2)
-    expect(splitTotalUsd({ totalBilledUsd: 0, totalRawUsd: 1 }, true)).toBe(1)
+    // Same rule the server uses for costUsd: billed when positive, else raw.
+    expect(splitTotalUsd({ totalBilledUsd: 0, totalRawUsd: 1 })).toBe(1)
     expect(splitTotalUsd({ modelCostUsd: 1, shogoFeeUsd: 0.2, unitemizedUsd: 0 })).toBeCloseTo(1.2, 10)
   })
 })
