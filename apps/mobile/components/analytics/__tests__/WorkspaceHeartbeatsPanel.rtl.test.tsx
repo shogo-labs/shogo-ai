@@ -46,6 +46,11 @@ mock.module('../SharedAnalytics', () => ({
   formatDollarCost: (n: number | null | undefined) =>
     n == null ? '—' : `$${Number(n).toFixed(2)}`,
   getModelDisplayName: (id: string) => id.replace(/^claude-/, 'Claude '),
+  CostSplitLines: ({ entry }: any) =>
+    createElement('span', { 'data-testid': 'cost-split' }, [
+      createElement('span', { key: 'm' }, `Model $${Number(entry.modelCostUsd ?? 0).toFixed(2)}`),
+      createElement('span', { key: 'f' }, ` · Shogo fee $${Number(entry.shogoFeeUsd ?? 0).toFixed(2)}`),
+    ]),
 }))
 mock.module('@/components/ui/alert-dialog', () => ({
   AlertDialog: ({ isOpen, children }: any) => (isOpen ? createElement('div', null, children) : null),
@@ -297,6 +302,40 @@ describe('WorkspaceHeartbeatsPanel', () => {
     await screen.findByText('ran on Claude haiku-4')
     expect(rnTestId('heartbeat-model-mismatch-proj_1')).toBeTruthy()
     expect(screen.getByText('ran on Claude haiku-4')).toBeTruthy()
+  })
+
+  // SHO-288: spend is shown as two lines — the provider's model cost and the
+  // Shogo fee on top of it — and they add up to the total.
+  test('shows the model cost and the Shogo fee, and they add up to the total', async () => {
+    getWorkspaceAnalytics.mockImplementation(async () =>
+      report({
+        totals: {
+          agentsEnabled: 1,
+          agentsWithSpend: 1,
+          ticks: 40,
+          billedUsd: 1.2,
+          rawUsd: 1,
+          modelCostUsd: 1,
+          shogoFeeUsd: 0.2,
+          unitemizedUsd: 0,
+          shogoFeePercent: 20,
+          totalTokens: 120_000,
+          workspaceBilledUsd: 4.4,
+        },
+        agents: [agent({ billedUsd: 1.2, rawUsd: 1, modelCostUsd: 1, shogoFeeUsd: 0.2, unitemizedUsd: 0 })],
+      }),
+    )
+    render(<WorkspaceHeartbeatsPanel />)
+    await screen.findByText('Support triage')
+
+    const splits = screen.getAllByTestId('cost-split')
+    expect(splits.length).toBeGreaterThan(0)
+    for (const split of splits) {
+      expect(split.textContent).toContain('Model $1.00')
+      expect(split.textContent).toContain('Shogo fee $0.20')
+    }
+    // The total the card shows is the sum of the two lines.
+    expect(screen.getByTestId('value-Heartbeat spend').textContent).toBe('$1.20')
   })
 
   test('tapping a row opens that project', async () => {

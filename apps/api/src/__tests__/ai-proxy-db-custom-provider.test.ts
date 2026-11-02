@@ -816,6 +816,20 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(metadata.reasoningTokens).toBe(18)
   })
 
+  // SHO-288: Hoshi is a DB-priced model with family `other` and tier
+  // `standard`, so `deriveBillingModel` collapsed it to `haiku` and every
+  // per-model spend line labelled it Haiku. The recorded `billingModel` must be
+  // the model the cost was actually priced as.
+  test('records the real model id as billingModel for a DB-priced model', async () => {
+    nextOpenAIUsage = { prompt_tokens: 100, completion_tokens: 30 }
+    const res = await postChat(buildApp(), DEEPSEEK_UUID)
+    expect(res.status).toBe(200)
+    const metadata = consumedUsageCalls.at(-1)?.actionMetadata
+    expect(metadata.model).toBe(DEEPSEEK_UUID)
+    expect(metadata.billingModel).toBe(DEEPSEEK_UUID)
+    expect(metadata.billingModel).not.toBe('haiku')
+  })
+
   test('routes a native DB-defined model to Anthropic', async () => {
     const res = await postChat(buildApp(), 'claude-opus-4-8')
     expect(res.status).toBe(200)
