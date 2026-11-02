@@ -26,10 +26,23 @@ type Row = {
 
 let serverSeq = 0
 let dispatchedBeforeObserved = false
+/**
+ * What `loadAll` fetches. A real collection only ever learns a row's status
+ * from this call, so a test that pokes `collection.all` directly proves the
+ * derivation but not that the knowledge arrives — set this to model the server.
+ */
+let loadAllImpl: (() => Promise<void>) | null = null
+/**
+ * When set, `create` inserts its optimistic `temp-` row and then waits here,
+ * the way a slow enqueue POST leaves an unconfirmed row in the dock.
+ */
+let createHold: Promise<void> | null = null
 
 const collection = observable({
   all: [] as Row[],
-  loadAll: async () => {},
+  loadAll: async () => {
+    if (loadAllImpl) await loadAllImpl()
+  },
   delete: async (id: string) => {
     runInAction(() => {
       const index = collection.all.findIndex((r) => r.id === id)
@@ -43,16 +56,31 @@ const collection = observable({
     })
   },
   create: async (input: Partial<Row>) => {
-    const created: Row = {
-      id: `srv-${++serverSeq}`,
+    const base = {
       sessionId: String(input.sessionId),
       position: collection.all.length,
-      status: "pending",
+      status: "pending" as const,
       content: String(input.content ?? ""),
       parts: input.parts,
+      body: input.body,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
+    // With `createHold` set the row lives under a `temp-` id until the POST
+    // resolves, exactly as the real collection behaves.
+    if (createHold) {
+      const temp: Row = { id: `temp-${++serverSeq}`, ...base }
+      runInAction(() => { collection.all.push(temp) })
+      await createHold
+      const confirmed: Row = { id: `srv-${++serverSeq}`, ...base }
+      runInAction(() => {
+        const index = collection.all.findIndex((r) => r.id === temp.id)
+        if (index !== -1) collection.all[index] = confirmed
+        else if (!dispatchedBeforeObserved) collection.all.push(confirmed)
+      })
+      return confirmed
+    }
+    const created: Row = { id: `srv-${++serverSeq}`, ...base }
     // `dispatchedBeforeObserved` models the row the server takes and deletes
     // before any render ever carried it.
     if (!dispatchedBeforeObserved) {
@@ -102,6 +130,13 @@ const { useServerMessageQueue } = await import("../useServerMessageQueue")
 const turns: Array<{ id: string; text: string } | undefined> = []
 let queueApi: ReturnType<typeof useServerMessageQueue> | null = null
 let pendingIds: string[] = []
+/**
+ * Every render's two halves of the queue, in order. The invariant SHO-286
+ * follow-up is about is per render — a claimed message must be in the dock or
+ * the transcript on each one, and never in both — so the tests read this
+ * instead of only the settled value.
+ */
+const samples: Array<{ dock: string[]; pending: string[] }> = []
 
 const Probe = observer(function Probe({ isStreaming = true }: { isStreaming?: boolean }) {
   const queue = useServerMessageQueue({
@@ -113,6 +148,7 @@ const Probe = observer(function Probe({ isStreaming = true }: { isStreaming?: bo
   })
   queueApi = queue
   pendingIds = queue.pendingUserMessages.map((m) => m.id)
+  samples.push({ dock: queue.queuedMessages.map((m) => m.id), pending: pendingIds })
   return <ul>{queue.queuedMessages.map((m) => <li key={m.id}>{m.content}</li>)}</ul>
 })
 
@@ -123,6 +159,7 @@ function row(id: string, position: number, content: string, sessionId = "s1"): R
 function reset() {
   turns.length = 0
   pendingIds = []
+  samples.length = 0
   dispatchedBeforeObserved = false
   serverSeq = 0
   postResponse = { data: { ok: true } }
@@ -131,6 +168,8 @@ function reset() {
   wakeDeletes.length = 0
   sendWakeFailure = null
   sendWakeHold = null
+  loadAllImpl = null
+  createHold = null
   act(() => runInAction(() => { collection.all.splice(0, collection.all.length) }))
 }
 
@@ -245,6 +284,43 @@ describe("useServerMessageQueue", () => {
     // And it must not be reported later by the poll either.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
     expect(turns).toEqual([])
+  })
+
+  /**
+   * SHO-286: the dock row is the create's own optimistic insert, so it is on
+   * screen before the enqueue POST is answered. Enrichment (git status /
+   * diagnostics on desktop) therefore runs alongside the create and is patched
+   * into the row's body afterwards — the server reads `body.text` when it
+   * dispatches the row.
+   */
+  test("the dock row is created before the message is enriched, and the enriched text is patched in", async () => {
+    reset()
+    render(<Probe isStreaming />)
+    let releaseEnrich: (text: string) => void = () => {}
+    const enriching = new Promise<string>((resolve) => {
+      releaseEnrich = resolve
+    })
+
+    let created: { id: string } | undefined
+    await act(async () => {
+      created = await queueApi!.enqueue({
+        content: "queued",
+        body: { text: "queued" },
+        enrich: () => enriching,
+      })
+    })
+
+    // The row is on the dock while enrichment is still running, and it carries
+    // the text the person typed.
+    expect(collection.all.map((row) => row.id)).toEqual([created!.id])
+    expect(JSON.parse(collection.all[0]!.body!).text).toBe("queued")
+
+    await act(async () => {
+      releaseEnrich("queued\n\n<terminal-context/>")
+      await enriching
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(JSON.parse(collection.all[0]!.body!).text).toBe("queued\n\n<terminal-context/>")
   })
 
   test("a turn taken while the previous stream is still open is reported once it closes", () => {
@@ -472,6 +548,113 @@ describe("useServerMessageQueue", () => {
     expect(queueApi!.queuedMessages.map((m) => m.id)).toEqual(["q1"])
     view.unmount()
   }, 15_000)
+
+  /**
+   * SHO-286 follow-up (Russell, 2026-11-02): "when a queued message is actually
+   * sent it doesn't go away from the message queue UI". A row the server has
+   * claimed is a turn, not a queued message, so it has to leave the dock in the
+   * same render its bubble enters the transcript. Nothing reloads the queue
+   * while a turn streams, so the row can sit in the collection for the whole
+   * reply — the claim itself has to move it.
+   */
+  test("a row the server claims leaves the dock in the render its bubble enters the transcript", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    await act(async () => {
+      await queueApi!.enqueue({ content: "queued", body: { text: "queued" } })
+    })
+    expect(dockText(view)).toEqual(["queued"])
+    expect(pendingIds).toEqual([])
+
+    act(() => runInAction(() => { collection.all[0]!.status = "dispatching" }))
+
+    expect(dockText(view)).toEqual([])
+    expect(pendingIds).toEqual(["srv-1"])
+
+    const fromDock = samples.slice(samples.findIndex((s) => s.dock.includes("srv-1")))
+    expect(fromDock.filter((s) => s.dock.includes("srv-1") && s.pending.includes("srv-1"))).toEqual([])
+    expect(fromDock.filter((s) => !s.dock.includes("srv-1") && !s.pending.includes("srv-1"))).toEqual([])
+  })
+
+  test("a row this window did not enqueue leaves the dock when a poll carries the claim", async () => {
+    reset()
+    // The collection only learns a row's status from `loadAll` — nothing here
+    // pokes `all` directly after mount, so the claim has to arrive by a load.
+    const serverRows: Row[] = [row("q1", 0, "first")]
+    loadAllImpl = async () => {
+      runInAction(() => {
+        collection.all.splice(0, collection.all.length, ...serverRows.map((r) => ({ ...r })))
+      })
+    }
+    const view = render(<Probe isStreaming />)
+    await act(async () => {})
+    expect(dockText(view)).toEqual(["first"])
+    expect(pendingIds).toEqual([])
+
+    // The turn ahead ends, the server claims the row and starts its own turn.
+    // Nothing tracks this row (a reload mid-reply, or a second window queued
+    // it), so `trackedCount` is 0 and the session is still streaming: the rows
+    // poll is the only thing that can ever carry the `dispatching` status.
+    serverRows[0]!.status = "dispatching"
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+
+    expect(pendingIds).toEqual(["q1"])
+    expect(dockText(view)).toEqual([])
+
+    const fromDock = samples.slice(samples.findIndex((s) => s.dock.includes("q1")))
+    expect(fromDock.filter((s) => s.dock.includes("q1") && s.pending.includes("q1"))).toEqual([])
+    expect(fromDock.filter((s) => !s.dock.includes("q1") && !s.pending.includes("q1"))).toEqual([])
+    view.unmount()
+  }, 10_000)
+
+  test("a poll never lands inside an unconfirmed create", async () => {
+    reset()
+    // The server has nothing yet: the row is still only the optimistic `temp-`
+    // one, and `loadAll` prunes every row of the session the server does not
+    // return. A poll during the POST would therefore delete it from the dock.
+    const serverRows: Row[] = []
+    loadAllImpl = async () => {
+      runInAction(() => {
+        collection.all.splice(0, collection.all.length, ...serverRows.map((r) => ({ ...r })))
+      })
+    }
+    let release: () => void = () => {}
+    createHold = new Promise<void>((resolve) => { release = resolve })
+
+    const view = render(<Probe isStreaming />)
+    await act(async () => {})
+    act(() => { void queueApi!.enqueue({ content: "slow send", body: { text: "slow send" } }) })
+    expect(dockText(view)).toEqual(["slow send"])
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)) })
+    const dockWhilePosting = dockText(view)
+
+    // The POST resolves and the row becomes a real one.
+    serverRows.push(row("q1", 0, "slow send"))
+    await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    expect(dockWhilePosting).toEqual(["slow send"])
+    expect(dockText(view)).toEqual(["slow send"])
+    view.unmount()
+  }, 15_000)
+
+  test("a dispatch that fails after being claimed goes back to the dock", async () => {
+    reset()
+    const view = render(<Probe isStreaming />)
+    await act(async () => {})
+    act(() => runInAction(() => { collection.all.push(row("q1", 0, "first")) }))
+    act(() => runInAction(() => { collection.all[0]!.status = "dispatching" }))
+    expect(dockText(view)).toEqual([])
+    expect(pendingIds).toEqual(["q1"])
+
+    act(() => runInAction(() => {
+      collection.all[0]!.status = "failed"
+      collection.all[0]!.error = "Model refused"
+    }))
+    expect(dockText(view)).toEqual(["first"])
+    expect(pendingIds).toEqual([])
+    expect(queueApi!.queuedMessages.find((m) => m.id === "q1")?.error).toBe("Model refused")
+  })
 })
 
 /**
