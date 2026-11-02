@@ -507,7 +507,7 @@ export function machineRoutes() {
   // its device key. Deliberately *not* through the tunnel: bulk data must never
   // queue behind a live request or a relay PUBLISH. The rows land in the normal
   // cloud tables with the desktop's ids and the workspace tagged with
-  // `machineInstanceId`, so every read panel is served by the normal routes.
+  // `hostInstanceId` (SHO-285), so every route reads and writes it normally.
   router.post('/machines/:id/sync', async (c) => {
     const device = await authenticateDevice(c)
     if ('response' in device) return device.response

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * QA acceptance for the machine copy (SHO-276, AC1-AC4).
+ * QA acceptance for desktop → cloud sync (SHO-276 AC1-AC4, revised for the
+ * SHO-285 hosted-workspace model: AC4 skips hosted workspaces, AC5 no longer prunes).
  *
  * The unit suites pin each rule against fakes. These run the real join: the
  * desktop's `MachineSyncPusher` posts through the real `/api/machines/:id/sync`
@@ -98,9 +99,13 @@ function cloud(seen: Seen, opts: { failFirstChatPage?: boolean } = {}) {
  * interrupted; the cloud holds those rows and `applyBatch` refuses a row that
  * exists and belongs to someone else. Ownership is per machine, so declaring the
  * fixture's rows the machine's is what makes a second snapshot (or a re-sent
- * page) legal — the ownership rule itself is SHO-241's suite.
+ * page) legal — the ownership rule itself is SHO-241's suite. Since SHO-285 a
+ * desktop may only write workspaces it hosts, so the fixture's workspaces are
+ * claimed as hosted on this machine too.
  */
 async function ownEverything() {
+  await db.workspace.updateMany({ where: { hostInstanceId: null }, data: { hostInstanceId: INSTANCE } })
+  hostedWorkspace.invalidateHostedWorkspaceIds()
   const { delegateName, MIRROR_MODELS } = await import('../lib/machine-sync/models')
   for (const model of MIRROR_MODELS) {
     const delegate = db[delegateName(model)]
@@ -224,9 +229,9 @@ describeIfPg('AC1 — the first snapshot finishes', () => {
     const { ws, session, conversation } = await seedDesktop(`ac1-${suffix}`)
     await ownEverything()
 
-    // What the cloud wrote into the copy that the desktop never sent — the 37
-    // "I was interrupted" notes in prod. It must not survive the completed
-    // snapshot, while the owner's own membership row must (RBAC lane, round 3).
+    // A row the cloud wrote that the desktop never sent. A hosted workspace is
+    // writable from the cloud (SHO-285), so the completed snapshot keeps it, and
+    // keeps the owner's own membership row (RBAC lane, round 3).
     const frozen = await freezeDesktop()
     const stray = await db.chatMessage.create({
       data: {
@@ -261,9 +266,7 @@ describeIfPg('AC1 — the first snapshot finishes', () => {
     expect(await db.chatMessage.count({ where: { content: { startsWith: `ac1-${suffix}:0:` } } })).toBe(1)
     expect(seen.statuses.every((status) => status === 200)).toBe(true)
 
-    // The prune did its job on the cloud-only row…
-    expect(await db.chatMessage.count({ where: { id: stray.id } })).toBe(0)
-    // …and kept the membership row that lets the owner read their own copy.
+    expect(await db.chatMessage.count({ where: { id: stray.id } })).toBe(1)
     expect(
       await db.member.count({ where: { workspaceId: ws.id, userId: OWNER, projectId: null } }),
     ).toBe(1)
@@ -332,10 +335,10 @@ describeIfPg('AC3 — a renamed Mac is the same machine', () => {
   })
 })
 
-describeIfPg('AC4 — the cloud does not run a turn on the copy', () => {
-  test('a stale turn in a machine workspace is never claimed or announced', async () => {
+describeIfPg('AC4 — the cloud does not run a turn for a desktop-hosted workspace', () => {
+  test('a stale turn in a hosted workspace is never claimed or announced', async () => {
     const { ws, session } = await seedDesktop(`ac4-${suffix}`)
-    await db.workspace.update({ where: { id: ws.id }, data: { machineInstanceId: INSTANCE } })
+    await db.workspace.update({ where: { id: ws.id }, data: { hostInstanceId: INSTANCE } })
     hostedWorkspace.invalidateHostedWorkspaceIds()
 
     const messagesBefore = await db.chatMessage.count({ where: { sessionId: session.id } })
@@ -384,20 +387,19 @@ describeIfPg('AC4 — the cloud does not run a turn on the copy', () => {
   })
 })
 
-describeIfPg('AC5 — a completed snapshot removes what the cloud wrote into the copy', () => {
-  test('the interrupted note and the queued resume do not survive it', async () => {
+describeIfPg('AC5 — a completed snapshot keeps what the cloud wrote (SHO-285)', () => {
+  test('rows written in the cloud survive the snapshot; the desktop pulls them instead', async () => {
     const { ws, session, conversation, user } = await seedDesktop(`ac5-${suffix}`)
     // A finished run from an earlier case would make `drain` a delta, and rows
     // written straight into this database are not in the desktop's change log.
     await db.machineSyncState.updateMany({ where: { instanceId: INSTANCE }, data: { lastIngestAt: null } })
-    await db.workspace.update({ where: { id: ws.id }, data: { machineInstanceId: INSTANCE } })
+    await db.workspace.update({ where: { id: ws.id }, data: { hostInstanceId: INSTANCE } })
     await ownEverything()
 
     const seen: Seen = { sizes: [], batches: [], statuses: [] }
     expect(await drain(pusherFor(cloud(seen), await freezeDesktop()))).toBe(true)
 
-    // What `postInterruptedResume` and the cloud's own seeding put in the copy:
-    // rows in tables that carry only `sessionId`/`workspaceId`, not a machine id.
+    // Rows written in the cloud, e.g. a message sent from the web.
     const note = await db.chatMessage.create({
       data: { sessionId: session.id, role: 'assistant', content: 'I was interrupted while working…' },
     })
@@ -434,11 +436,11 @@ describeIfPg('AC5 — a completed snapshot removes what the cloud wrote into the
     )
     expect(res.status).toBe(200)
 
-    // Gone: the note under a chat the desktop owns, the resume queued in it, and
-    // a channel the cloud seeded. Kept: everything the desktop actually sent.
-    expect(await db.chatMessage.findUnique({ where: { id: note.id } })).toBeNull()
-    expect(await db.chatQueuedMessage.findUnique({ where: { id: resumeRow.id } })).toBeNull()
-    expect(await db.conversation.findUnique({ where: { id: seeded.id } })).toBeNull()
+    // A hosted workspace is writable from the cloud, so a snapshot no longer
+    // prunes: the cloud's rows stay and reach the desktop through the change feed.
+    expect(await db.chatMessage.findUnique({ where: { id: note.id } })).not.toBeNull()
+    expect(await db.chatQueuedMessage.findUnique({ where: { id: resumeRow.id } })).not.toBeNull()
+    expect(await db.conversation.findUnique({ where: { id: seeded.id } })).not.toBeNull()
     expect(await db.chatMessage.findUnique({ where: { id: desktopMessage!.id } })).not.toBeNull()
     expect(await db.conversation.findUnique({ where: { id: conversation.id } })).not.toBeNull()
   }, 180_000)

@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * SHO-257 — a paired machine's workspace, opened from the cloud, works like a
- * cloud workspace.
+ * SHO-257 / SHO-285 — a paired machine's workspace, opened from the cloud, is a
+ * cloud workspace hosted on the desktop.
  *
  * Real processes on both sides: the cloud API (`entry.ts` on Postgres + Redis)
  * and a desktop (`entry.ts` in local mode on its own data dir) paired to it the
  * way the desktop app pairs. The same content is seeded into a cloud workspace
  * (the VM baseline) and into the machine's workspace through the desktop's own
  * API. Then every surface a screen reads is asked three ways — cloud, desktop,
- * and the cloud app's machine view (the production interceptor routing to the
- * mirrored copy or the relay) — and the machine view must show what the desktop
- * shows. Last, a full agent turn is started from the cloud on the machine's
- * workspace: it has to run on the machine, against the machine's files.
+ * and the cloud API on the hosted workspace's own id (same id on both sides) —
+ * and the cloud must show what the desktop shows. An agent turn started from the
+ * cloud has to run on the machine, against the machine's files (through the
+ * host tunnel), and a send while the machine is off is queued and runs when it
+ * is back.
  *
  * Needs `CHANNELS_TEST_PG_URL` (a server URL; a database is created per run)
  * and `TEST_REDIS_URL`/`REDIS_URL`. Skipped without them.
@@ -146,7 +147,9 @@ describeIfInfra('machine workspace opened from the cloud (SHO-257)', () => {
   }
 
   test('an agent turn started from the cloud runs on the machine, against its files', async () => {
-    const relay = `${cloud.base}/api/machines/${machine.machineId}/w/${machine.machineWorkspaceId}`
+    // The plain cloud API: the server sends a hosted workspace's runtime calls
+    // to its desktop through the host tunnel (SHO-285). No relay URL.
+    const relay = cloud.base
     const ws = machine.machineWorkspaceId
     const headers = { cookie: machine.cookies, 'content-type': 'application/json', origin: cloud.base }
     const canary = `SHO257-CANARY-${Date.now()}`
@@ -200,14 +203,14 @@ describeIfInfra('machine workspace opened from the cloud (SHO-257)', () => {
     const { desktop, view } = clients()
     const channelId = seeds.machine.channelId
 
-    // From the cloud: the interceptor sends the write through the relay, so it
-    // lands in the desktop's own database.
+    // From the cloud: written into the cloud's row, it reaches the desktop's own
+    // database through the host change feed.
     const fromCloud = `from the cloud ${Date.now()}`
     const posted = await send(view, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: fromCloud })
     expect(posted.status, JSON.stringify(posted.data)).toBeLessThan(300)
-    expect(await channelTexts(desktop, channelId)).toContain(fromCloud)
-    await waitFor('the cloud write to read back through the machine view', async () =>
-      (await channelTexts(view, channelId)).includes(fromCloud), 60_000, 1_000)
+    expect(await channelTexts(view, channelId)).toContain(fromCloud)
+    await waitFor('the cloud write to reach the desktop', async () =>
+      (await channelTexts(desktop, channelId)).includes(fromCloud), 60_000, 1_000)
 
     // From the machine: written on the desktop, it reaches the cloud's view.
     const fromMachine = `from the machine ${Date.now()}`
@@ -231,10 +234,13 @@ describeIfInfra('machine workspace opened from the cloud (SHO-257)', () => {
 
     const machineRow = await read(strangerCloud, `/api/machines/${machine.machineId}`)
     expect([403, 404]).toContain(machineRow.status)
-    const relayed = await fetch(`${cloud.base}/api/machines/${machine.machineId}/w/${machine.machineWorkspaceId}/api/projects`, {
-      headers: { cookie: stranger.cookie, origin: cloud.base },
-    })
-    expect([403, 404]).toContain(relayed.status)
+    const hosted = await read(strangerCloud, `/api/workspaces/${encodeURIComponent(machine.machineWorkspaceId)}`)
+    expect([403, 404]).toContain(hosted.status)
+    const runtime = await fetch(
+      `${cloud.base}/api/workspaces/${machine.machineWorkspaceId}/agent-proxy/agent/workspace/files/.tmp/sho257-canary.txt`,
+      { headers: { cookie: stranger.cookie, origin: cloud.base } },
+    )
+    expect([401, 403, 404]).toContain(runtime.status)
 
     for (const surface of SURFACES) {
       const res = await read(strangerView, surface.path(seeds.machine))
@@ -275,30 +281,44 @@ describeIfInfra('machine workspace opened from the cloud (SHO-257)', () => {
   }, 60_000)
 
   // Last: it switches the machine off.
-  test('machine off: the copy stays readable and writes are refused; back on: writes land again', async () => {
+  test('machine off: the workspace stays readable and writable, a send is queued; back on: both reach the desktop', async () => {
     const { desktop, view } = clients()
     const channelId = seeds.machine.channelId
+    const ws = machine.machineWorkspaceId
     await machine.kill()
 
-    const projects = await read(view, `/api/projects?workspaceId=${encodeURIComponent(machine.machineWorkspaceId)}`)
+    const projects = await read(view, `/api/projects?workspaceId=${encodeURIComponent(ws)}`)
     expect(projects.status).toBe(200)
     seeds.machine.projectNames.forEach((n) => expect(JSON.stringify(projects.data)).toContain(n))
     expect(await channelTexts(view, channelId)).toEqual(expect.arrayContaining(seeds.machine.messageTexts))
 
+    // A hosted workspace is a cloud workspace: a write lands while its host is off…
     const offlineText = `while off ${Date.now()}`
-    const refused = await send(view, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: offlineText })
-    expect([409, 503], JSON.stringify(refused.data)).toContain(refused.status)
-    const code = (refused.data as any)?.error?.code
-    expect(['machine_offline_readonly', 'machine_waking', 'waking', 'offline']).toContain(code)
+    const written = await send(view, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: offlineText })
+    expect(written.status, JSON.stringify(written.data)).toBeLessThan(300)
+    expect(await channelTexts(view, channelId)).toContain(offlineText)
+
+    // …and an agent turn is queued for the desktop rather than run in the cloud.
+    const tag = `off${Date.now() % 100_000}`
+    const sessionId = seeds.machine.workspaceChatId
+    const turn = await fetch(`${cloud.base}/api/workspaces/${ws}/chat`, {
+      method: 'POST',
+      headers: { cookie: machine.cookies, 'content-type': 'application/json', origin: cloud.base, 'X-Chat-Session-Id': sessionId },
+      body: JSON.stringify({
+        id: sessionId,
+        chatSessionId: sessionId,
+        messages: [{ id: `u-${tag}`, role: 'user', parts: [{ type: 'text', text: `Queued ${marker('long', tag, 3, { ms: 5 })}` }] }],
+        trigger: 'submit-message',
+      }),
+    })
+    const turnBody: any = await turn.json().catch(() => null)
+    expect(turn.status, JSON.stringify(turnBody)).toBe(202)
+    expect(turnBody?.error?.code).toBe('host_offline')
+    expect(llm.requestsFor(tag).length).toBe(0)
 
     await machine.restart()
-    const backText = `back on ${Date.now()}`
-    await waitFor('a write through the machine view after the machine is back', async () => {
-      const res = await send(view, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: backText })
-      return res.status < 300
-    }, 180_000, 2_000)
-    const texts = await channelTexts(desktop, channelId)
-    expect(texts).toContain(backText)
-    expect(texts).not.toContain(offlineText)
-  }, 360_000)
+    await waitFor('the offline write to reach the desktop', async () =>
+      (await channelTexts(desktop, channelId)).includes(offlineText), 180_000, 2_000)
+    await waitFor('the queued turn to run on the desktop', async () => llm.requestsFor(tag).length > 0, 180_000, 2_000)
+  }, 420_000)
 })
