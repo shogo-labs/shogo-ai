@@ -183,7 +183,9 @@ import { decide, getAccess, loadAccess } from './lib/authz'
 import {
   apiAuthGate,
   isAllowedUnauthWebchatProxyPath,
+  isPublicPreviewRenderPath,
   isTokenGatedThumbnailPath,
+  isUserAppProxyPath,
 } from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
 import { tracingMiddleware } from './middleware/tracing'
@@ -730,6 +732,11 @@ app.use('/*', cors({
     if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(reqPath)) {
       return origin || '*'
     }
+    // A public preview is the user's app, called from its own preview host or
+    // from any site that posts to it (e.g. a signup form on the user's domain).
+    if (isPublicPreviewRenderPath(reqPath)) {
+      return origin || '*'
+    }
     // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
     if (!origin) return `http://localhost:${VITE_PORT}`
     const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
@@ -787,6 +794,11 @@ app.use('/api/*', async (c, next) => {
     path === '/api/voice/elevenlabs/webhook' ||
     path.startsWith('/api/voice/twilio/status/')
   ) {
+    return next()
+  }
+  // A user's app behind the preview / published proxy owns its own CSRF
+  // policy; the Studio origin allow-list would reject the app's own forms.
+  if (isUserAppProxyPath(path)) {
     return next()
   }
   // Requests with no Origin AND no Referer cannot have been triggered by a

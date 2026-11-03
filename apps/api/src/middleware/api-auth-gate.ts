@@ -64,6 +64,27 @@ export function isAllowedUnauthWebchatProxyPath(path: string): boolean {
     relative.startsWith('/agent/channels/webchat/events/')
 }
 
+// Proxies onto a user's own app server: the public preview
+// (`{id}.preview.<base>` and `{port}--{id}.preview.<base>`, routed here by the
+// preview-router Worker) and a metal published site's `/api/*`. The browser's
+// Origin is the app's own host (or a site that embeds the app's form), never
+// Studio, so the API's Studio-only CSRF/CORS allow-list must not apply: the app
+// owns its own CSRF and CORS policy. Shogo session cookies are host-only on the
+// API/Studio host, so they never reach these hosts.
+export function isUserAppProxyPath(path: string): boolean {
+  return /^\/api\/preview\/[^/]+\/(?:ports\/[^/]+\/)?render(?:\/|$)/.test(path) ||
+    /^\/api\/published\/[^/]+\/api(?:\/|$)/.test(path)
+}
+
+// The root preview proxy only. It forwards none of the visitor's cookies or
+// credentials and strips Set-Cookie (previewRenderHandler), so any origin may
+// call it, which is what lets a form on another site POST to a preview
+// backend. Per-port previews and published sites forward cookies, so they keep
+// the default CORS answer and only skip CSRF.
+export function isPublicPreviewRenderPath(path: string): boolean {
+  return /^\/api\/preview\/[^/]+\/render(?:\/|$)/.test(path)
+}
+
 // Thumbnail image bytes, served to an <img> / RN <Image> that can present no
 // ambient credentials. The per-project token in `?t=` is the credential and is
 // verified in-route, so session gating must not run. See deriveThumbnailToken.
