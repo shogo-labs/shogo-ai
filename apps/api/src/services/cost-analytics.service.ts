@@ -27,6 +27,7 @@ import {
   type ModelName,
 } from '../lib/usage-cost'
 import { resolveModelId } from '@shogo/model-catalog'
+import { getDbModelPricing } from '../lib/db-model-pricing'
 import { resolveModelLabelSync } from './model-registry.service'
 
 // ============================================================================
@@ -207,6 +208,11 @@ function normalizeExperimentModel(model: string): string {
 }
 
 function getModelCostPerMillionOutput(model: string): number {
+  // A DB-priced model (e.g. `hoshi-2-0`) has its own output rate; pricing it by
+  // its bucket compared Hoshi at Haiku's rate. Prefer the DB rate, then the
+  // static catalog bucket.
+  const dbPricing = getDbModelPricing(model)
+  if (dbPricing) return dbPricing.outputPerMillion
   const billingModel = proxyModelToBillingModel(model)
   const costs = MODEL_DOLLAR_COSTS[billingModel as ModelName]
   return costs?.outputPerMillion ?? MODEL_DOLLAR_COSTS.sonnet.outputPerMillion

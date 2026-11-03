@@ -41,7 +41,8 @@ mock.module("@shogo-ai/sdk/agent", () => ({
 mock.module("../../../lib/api-url", () => ({ API_URL: "https://api.example" }))
 mock.module("../../../lib/agent-fetch", () => ({ agentFetch: () => Promise.reject(new Error("unused")) }))
 mock.module("../../../contexts/theme", () => ({ useResolvedTheme: () => "dark" }))
-mock.module("expo-clipboard", () => ({ setStringAsync: async () => {} }))
+const clipboard: string[] = []
+mock.module("expo-clipboard", () => ({ setStringAsync: async (value: string) => { clipboard.push(value) } }))
 mock.module("../../chat/FileTypeIcon", () => ({ FileTypeIcon: () => null }))
 mock.module("../../chat/MarkdownMediaNative", () => ({
   MarkdownMediaNative: ({ src }: { src: string }) => <div data-testid="native-image" data-src={src} />,
@@ -50,9 +51,12 @@ mock.module("../../chat/MarkdownText", () => ({
   MarkdownText: ({ children }: { children: string }) => <div data-testid="markdown-body">{children}</div>,
 }))
 mock.module("../../chat/turns/DownloadChip", () => ({
-  DownloadChip: ({ path }: { path: string }) => (
-    <button data-testid="download-chip" data-path={path}>
-      Download
+  DownloadChip: ({ path, variant }: { path: string; variant?: "chip" | "icon" }) => (
+    <button
+      data-testid={variant === "icon" ? "download-icon" : "download-chip"}
+      data-path={path}
+    >
+      {variant === "icon" ? null : "Download"}
     </button>
   ),
 }))
@@ -76,6 +80,7 @@ mock.module("../../project/panels/ide/FilePreview", () => ({
 
 const { cleanup, fireEvent, render, screen, waitFor } = await import("@testing-library/react")
 const { WorkspaceFileViewer } = await import("../WorkspaceFileViewer")
+const { parseWorkspaceFileLink } = await import("../../../lib/team-chat-links")
 
 const revoked: string[] = []
 
@@ -100,6 +105,7 @@ beforeEach(() => {
   readFile.mockImplementation(async () => "")
   readFileBlob.mockImplementation(async () => new Blob(["x"]))
   revoked.length = 0
+  clipboard.length = 0
   URL.createObjectURL = mock(() => "blob:preview-1") as unknown as typeof URL.createObjectURL
   URL.revokeObjectURL = mock((url: string) => {
     revoked.push(url)
@@ -139,6 +145,77 @@ describe("WorkspaceFileViewer", () => {
     open("notes/plan.md")
     expect(screen.getAllByText("notes/plan.md").length).toBeGreaterThan(0)
     await findByTestId("workspace-file-markdown")
+  })
+
+  test("the header's download is an icon button, beside Copy and Close", async () => {
+    open("archive/bundle.zip")
+
+    await findByTestId("workspace-file-unavailable")
+    // Header action, not the wide chip the body falls back to.
+    expect(byTestId("download-icon")).not.toBeNull()
+    expect(byAccessibilityLabel("Copy path")).not.toBeNull()
+    expect(byAccessibilityLabel("Close file")).not.toBeNull()
+  })
+
+  test("copies a link that reopens this file in this workspace", async () => {
+    readFile.mockImplementation(async () => "# Hi")
+    render(
+      <WorkspaceFileViewer
+        agentUrl="https://agent.example"
+        path="notes/my plan.md"
+        workspaceId="ws 1"
+        nonce={1}
+        onClose={() => {}}
+      />,
+    )
+    await screen.findByTestId("markdown-body")
+
+    fireEvent.click(byAccessibilityLabel("Copy link to file")!)
+
+    await waitFor(() => expect(clipboard.length).toBe(1))
+    const link = clipboard[0]!
+    const host = new URL(link).host
+    expect(parseWorkspaceFileLink(link, new Set([host]))).toEqual({
+      workspaceId: "ws 1",
+      path: "notes/my plan.md",
+    })
+    // And it says so, for 1.5 s.
+    await waitFor(() => expect(byAccessibilityLabel("Link copied")).not.toBeNull())
+  })
+
+  test("a project's file links to its workspace-relative path", async () => {
+    readFile.mockImplementation(async () => "# Hi")
+    render(
+      <WorkspaceFileViewer
+        agentUrl="https://agent.example"
+        path="notes/plan.md"
+        projectId="proj 7"
+        workspaceId="ws 1"
+        nonce={1}
+        onClose={() => {}}
+      />,
+    )
+    await screen.findByTestId("markdown-body")
+
+    fireEvent.click(byAccessibilityLabel("Copy link to file")!)
+
+    await waitFor(() => expect(clipboard.length).toBe(1))
+    const link = clipboard[0]!
+    const host = new URL(link).host
+    // `path` is project-relative here; the link has to name the file the way
+    // the workspace runtime does, or it opens a root file that doesn't exist.
+    expect(parseWorkspaceFileLink(link, new Set([host]))).toEqual({
+      workspaceId: "ws 1",
+      path: "proj 7/notes/plan.md",
+    })
+  })
+
+  test("offers no link when the workspace is unknown", async () => {
+    readFile.mockImplementation(async () => "# Hi")
+    open("notes/plan.md")
+    await screen.findByTestId("markdown-body")
+
+    expect(byAccessibilityLabel("Copy link to file")).toBeNull()
   })
 
   test("renders Markdown files as Markdown", async () => {
@@ -218,10 +295,11 @@ describe("WorkspaceFileViewer", () => {
 
     await findByTestId("workspace-file-unavailable")
     expect(screen.getByText("Preview not available for this file type.")).toBeTruthy()
-    // The header and the fallback body each render a download chip for the file.
+    // The header's download is the same action as the fallback body's chip.
     const chips = screen.getAllByTestId("download-chip")
-    expect(chips.length).toBe(2)
-    for (const chip of chips) expect(chip.getAttribute("data-path")).toBe("archive/bundle.zip")
+    expect(chips.length).toBe(1)
+    expect(chips[0]!.getAttribute("data-path")).toBe("archive/bundle.zip")
+    expect(byTestId("download-icon")!.getAttribute("data-path")).toBe("archive/bundle.zip")
     expect(readFile).not.toHaveBeenCalled()
     expect(readFileBlob).not.toHaveBeenCalled()
   })

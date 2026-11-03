@@ -106,6 +106,13 @@ async function expectCommandInDock(page: Page, command: string, timeout = 90_000
  * Follow one dock row's DOM until it leaves and report the height/opacity of
  * its ancestors, so a test can tell an animated exit from a pop: a pop goes
  * from full size to gone with nothing in between.
+ *
+ * The row is remounted as it starts to leave — the shown row animates opacity
+ * only (native driver) and the exit adds height (JS driver), so the row gets a
+ * fresh key and, with it, fresh animated values (SHO-290). That remount
+ * replaces the DOM nodes the chain points at, so a stale chain means "the same
+ * row, rebuilt", not "the row is gone": re-find it by its text and keep
+ * sampling. The row only counts as gone once no such node is on screen at all.
  */
 async function sampleRowExit(page: Page, text: string) {
   return page.evaluate(async (label) => {
@@ -116,13 +123,18 @@ async function sampleRowExit(page: Page, text: string) {
       )
     const deadline = Date.now() + 25_000
     let chain: HTMLElement[] | null = null
+    let absentSince: number | null = null
     while (Date.now() < deadline) {
+      if (chain && !chain[0].isConnected) chain = null
       if (!chain) {
         const row = findRow()
         if (!row) {
+          if (absentSince === null) absentSince = Date.now()
+          if (Date.now() - absentSince > 1_000) break
           await new Promise((r) => setTimeout(r, 20))
           continue
         }
+        absentSince = null
         chain = []
         for (let node: HTMLElement | null = row; node && chain.length < 6; node = node.parentElement) {
           chain.push(node)
@@ -137,7 +149,6 @@ async function sampleRowExit(page: Page, text: string) {
           t: Date.now(),
         })
       })
-      if (chain[0] && !chain[0].isConnected) break
       await new Promise((r) => setTimeout(r, 40))
     }
     return samples

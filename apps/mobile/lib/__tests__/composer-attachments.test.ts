@@ -44,6 +44,37 @@ describe("composer attachments", () => {
     expect(result.current.fileError).toBe(`Maximum ${MAX_FILES} files allowed`);
   });
 
+  test("accepts a 50 MB non-archive file that stays off the base64 path", () => {
+    const created: File[] = [];
+    const originalCreate = (URL as any).createObjectURL;
+    ;(URL as any).createObjectURL = (file: File) => {
+      created.push(file);
+      return `blob:preview-${created.length}`;
+    };
+
+    try {
+      const { result } = renderHook(() =>
+        useComposerAttachments({ enableDomEvents: false }),
+      );
+      const big = {
+        name: "large.bin",
+        type: "application/octet-stream",
+        size: 50 * 1024 * 1024,
+      } as File;
+
+      act(() => {
+        result.current.processFiles([big]);
+      });
+
+      expect(result.current.fileError).toBeNull();
+      expect(result.current.pendingFiles).toHaveLength(1);
+      expect(result.current.pendingFiles[0].file).toBe(big);
+      expect(result.current.pendingFiles[0].dataUrl).toBe("");
+    } finally {
+      ;(URL as any).createObjectURL = originalCreate;
+    }
+  });
+
   test("rejects oversized non-archive files", () => {
     const { result } = renderHook(() =>
       useComposerAttachments({ enableDomEvents: false }),
@@ -71,6 +102,7 @@ describe("composer attachments", () => {
 
     expect(result.current.pendingFiles).toHaveLength(0);
     expect(result.current.fileError).toContain("large.txt");
+    expect(result.current.fileError).toContain("100MB");
     globalThis.FileReader = originalReader;
   });
 

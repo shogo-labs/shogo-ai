@@ -2586,8 +2586,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       return new Response(null, { status: 204 })
     } catch (err: any) {
+      // Not "nothing buffered": a 204 tells the client the turn is over, so a
+      // dropped request leaves the window idle over a turn that is still
+      // running. 502 makes the probe retry (SHO-287).
       console.warn(`[ProjectChat] resume proxy error for ${projectId}/${chatSessionId}:`, err?.message || err)
-      return new Response(null, { status: 204 })
+      return new Response(null, { status: 502 })
     }
   })
 
@@ -2624,8 +2627,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const data = await response.json()
       return c.json(data, response.status as any)
     } catch (err: any) {
+      // A 404 is the client's "no buffer, stop looking" answer and it never
+      // retries it. A proxy failure is not that: the runtime may hold a live
+      // turn (SHO-287).
       console.warn(`[ProjectChat] turn snapshot proxy error for ${projectId}/${chatSessionId}:`, err?.message || err)
-      return c.json({ status: "unknown" as const }, 404)
+      return c.json(
+        { error: { code: "proxy_error", message: "Failed to reach the workspace runtime" } },
+        502,
+      )
     }
   })
 

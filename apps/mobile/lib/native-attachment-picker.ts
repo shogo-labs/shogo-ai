@@ -14,6 +14,7 @@
 import { buildDataUrlFromBase64 } from "@shogo-ai/sdk"
 import { EncodingType, readAsStringAsync } from "expo-file-system/legacy"
 import * as ImagePicker from "expo-image-picker";
+import { Platform } from "react-native"
 import { isComposerArchive } from "./composer-attachments"
 
 export interface NativePickedAttachment {
@@ -82,11 +83,25 @@ async function uriToDataUrl(uri: string, mime: string): Promise<string> {
   return buildDataUrlFromBase64(mime, base64)
 }
 
-/** Runs one attach flow (library, camera, or document picker). */
+/**
+ * Runs one attach flow (library, camera, or document picker).
+ *
+ * **Native only.** On web both pickers go through a shim that clicks a
+ * detached `<input>` from inside an async chain, which iOS Safari ignores —
+ * the chooser only opens from a click inside the tap's own task (SHO-283).
+ * Web callers must click the composer's own hidden `<input type="file">`
+ * synchronously instead (see `openWebAttachPicker` in `ChatInput`).
+ */
 export function executeNativeAttachAction(
   action: NativeAttachAction,
   opts: NativeAttachPickerOptions
 ): void {
+  if (Platform.OS === "web") {
+    console.warn(
+      "[NativeAttachPicker] executeNativeAttachAction is native-only; web opens the composer file input instead.",
+    )
+    return
+  }
   const { currentCount, maxFiles, maxFileSizeBytes, onFiles, onError } = opts
   const remaining = maxFiles - currentCount
   if (remaining <= 0) return

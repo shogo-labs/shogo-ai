@@ -293,7 +293,7 @@ describe('usage-log.csv', () => {
     )
     const body = await res.text()
     expect(body.split('\n')[0]).toBe(
-      'Date,User,Email,Type,Model,Provider,Tokens,Billed USD',
+      'Date,User,Email,Type,Model,Provider,Tokens,Billed USD,Model USD,Shogo fee USD',
     )
     expect(body).toContain('Alice')
     expect(body).toContain('0.0123')

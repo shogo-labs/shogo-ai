@@ -70,6 +70,7 @@ mock.module('../../components/branding/ShogoLogoMark', () => ({
 
 mock.module('expo-router', () => ({
   useRouter: () => ({ push() {}, replace() {}, navigate() {}, back() {} }),
+  useLocalSearchParams: () => ({}),
 }))
 mock.module('expo-linear-gradient', () => ({ LinearGradient: View }))
 mock.module('react-native-safe-area-context', () => ({

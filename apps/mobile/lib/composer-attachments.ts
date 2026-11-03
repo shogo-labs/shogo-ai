@@ -34,7 +34,7 @@ import {
 import type { ChatReferenceInput } from "./chat-references";
 
 export const MAX_FILES = 10;
-export const MAX_FILE_SIZE = 10 * 1024 * 1024;
+export const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
 /**
  * Above this size a picked file keeps its `File`/`uri` and is uploaded at send

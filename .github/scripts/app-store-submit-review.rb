@@ -26,7 +26,12 @@ WHATS_NEW_LIMIT = 4000
 key_id = required_env("ASC_KEY_ID")
 issuer_id = required_env("ASC_ISSUER_ID")
 private_key = required_env("ASC_PRIVATE_KEY")
-app_id = required_env("ASC_APP_ID")
+# ASC_APP_ID is only an assertion: the app record is resolved from the bundle id
+# so a stale secret cannot silently filter every build query to zero rows
+# (SHO-282).
+configured_app_id = ENV["ASC_APP_ID"].to_s
+bundle_id = ENV["APP_BUNDLE_ID"].to_s
+bundle_id = "ai.shogo.app" if bundle_id.empty?
 build_number = required_env("APP_STORE_BUILD_NUMBER")
 version_string = required_env("APP_VERSION")
 whats_new = ENV.fetch("APP_STORE_WHATS_NEW", "").strip
@@ -56,21 +61,19 @@ end
 
 begin
   # 1. Build ------------------------------------------------------------------
-  deadline = Time.now + timeout_seconds
-  build = nil
-  loop do
-    query = URI.encode_www_form(
-      [["filter[app]", app_id], ["filter[version]", build_number], ["limit", "10"]],
-    )
-    build = client.get("/v1/builds?#{query}").fetch("data", []).first
-    state = build&.dig("attributes", "processingState").to_s
-    puts "Build #{build_number} processing state: #{state.empty? ? "not found yet" : state}"
-    break if state == "VALID"
-    abort "::error::Build #{build_number} has processing state #{state}; it cannot be submitted." if %w[FAILED INVALID].include?(state)
-    abort "::error::Timed out waiting for build #{build_number} to become VALID." if Time.now >= deadline
+  app, warnings = resolve_app_for_bundle(client, bundle_id, configured_app_id)
+  warnings.each { |warning| puts "::warning::#{warning}" }
+  puts "Submitting #{app.name} (#{app.bundle_id}, id #{app.id}) version #{version_string} build #{build_number}."
 
-    sleep poll_interval
-  end
+  build = wait_for_build(
+    client,
+    app,
+    build_number,
+    poll_interval: poll_interval,
+    timeout_seconds: timeout_seconds,
+    grace_seconds: Integer(ENV.fetch("APP_STORE_GRACE_SECONDS", "900")),
+  )
+  app_id = app.id
   build_id = build.fetch("id")
 
   # 2. App Store version ------------------------------------------------------
@@ -198,5 +201,7 @@ rescue AppStoreConnectError => e
     abort "::error::App Store Connect refused the request (HTTP 403). The ASC_KEY_ID API key needs the " \
           "App Manager or Admin role to submit for review. #{e.body}"
   end
+  abort "::error::#{e.message}"
+rescue ReleaseConfigError => e
   abort "::error::#{e.message}"
 end

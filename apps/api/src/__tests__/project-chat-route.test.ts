@@ -637,11 +637,11 @@ describe('GET /projects/:projectId/chat/:chatSessionId/stream', () => {
     expect(lastFetchUrl).not.toContain('snapshot')
   })
 
-  test('returns 204 (best-effort) when runtime resolution throws', async () => {
+  test('returns 502 (not 204) when runtime resolution throws, so the client retries', async () => {
     resolvePodUrlResult = new Error('runtime down')
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat/s-1/stream'))
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(502)
   })
 })
 
@@ -677,11 +677,13 @@ describe('GET /projects/:projectId/chat/:chatSessionId/turn', () => {
     expect(body.status).toBe('unknown')
   })
 
-  test('returns { status: "unknown" } when runtime resolution throws', async () => {
+  test('returns 502 (not 404) when runtime resolution throws, so the probe retries', async () => {
     resolvePodUrlResult = new Error('down')
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat/s-1/turn'))
-    expect(res.status).toBe(404)
+    expect(res.status).toBe(502)
+    const body = await res.json() as any
+    expect(body.error.code).toBe('proxy_error')
   })
 })
 
