@@ -33,10 +33,10 @@
  */
 import { type ChildProcess, spawn, spawnSync } from './child-process.ts';
 import { createHmac, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, rmSync, unwatchFile, watchFile } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, unwatchFile, watch, watchFile } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
 import {
   RssWatchdog,
@@ -694,6 +694,10 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   /** `host-limits.json` this manager watches for live limit changes (SHO-203). */
   private hostLimitsFile: string | null = null;
+  /** Directory watcher catches the atomic rename used to publish host limits. */
+  private hostLimitsWatcher: ReturnType<typeof watch> | null = null;
+  /** Polling fallback for filesystems that cannot watch the containing directory. */
+  private hostLimitsPolling = false;
 
   constructor(opts: WorkerRuntimeManagerOptions = {}) {
     this.opts = opts;
@@ -1628,6 +1632,32 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     const file = (this.opts.env ?? process.env).SHOGO_HOST_LIMITS_FILE;
     if (!file || this.hostLimitsFile) return;
     this.hostLimitsFile = file;
+
+    // The desktop publishes this file via temp-file + rename. Watching the
+    // directory observes that replacement directly; watching the file itself
+    // can miss it on filesystems/runtimes that keep watching the old inode.
+    try {
+      const targetName = basename(file);
+      const watcher = watch(dirname(file), { persistent: false }, (_event, filename) => {
+        if (!filename || filename.toString() === targetName) this.applyHostLimitsChange();
+      });
+      this.hostLimitsWatcher = watcher;
+      watcher.on('error', (err) => {
+        this.log.warn(`[WorkerRuntimeManager] host limits directory watch failed: ${err.message}`);
+        if (this.hostLimitsWatcher !== watcher) return;
+        watcher.close();
+        this.hostLimitsWatcher = null;
+        this.watchHostLimitsByPolling(file);
+      });
+    } catch (err: any) {
+      this.log.warn(`[WorkerRuntimeManager] host limits directory watch failed: ${err?.message ?? err}`);
+      this.watchHostLimitsByPolling(file);
+    }
+  }
+
+  private watchHostLimitsByPolling(file: string): void {
+    if (this.hostLimitsPolling) return;
+    this.hostLimitsPolling = true;
     watchFile(file, { interval: 2000 }, () => this.applyHostLimitsChange());
   }
 
@@ -1668,7 +1698,10 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   private unwatchHostLimits(): void {
     if (!this.hostLimitsFile) return;
+    this.hostLimitsWatcher?.close();
+    this.hostLimitsWatcher = null;
     unwatchFile(this.hostLimitsFile);
+    this.hostLimitsPolling = false;
     this.hostLimitsFile = null;
   }
 

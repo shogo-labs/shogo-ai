@@ -89,7 +89,11 @@ describe('SHO-203 live apply — the worker watches the file Settings writes', (
       // changes; the env is the one baked in at spawn and cannot.
       writeHostLimits(dir, buildHostLimits(32 * GB, TOTAL_MB));
 
-      await until(() => changedLines(lines).length > 0, 'the manager to notice the new budget');
+      const expectedCap = `memory cap now ${8 * GB + 32 * GB}M`;
+      await until(
+        () => changedLines(lines).some((line) => line.includes(expectedCap)),
+        'the manager to notice the new budget',
+      );
 
       expect(changedLines(lines).join('\n')).toContain(`memory cap now ${8 * GB + 32 * GB}M`);
       expect(changedLines(lines).join('\n')).toContain(`${8 * GB}M runtime + ${32 * GB}M commands`);
