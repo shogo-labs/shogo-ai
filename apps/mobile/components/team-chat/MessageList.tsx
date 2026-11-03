@@ -36,6 +36,8 @@ export interface MessageListProps extends RowHandlers {
   unreadUpToSeq?: number
   /** The first unread message is older than what's loaded. */
   unreadNotLoaded?: boolean
+  /** The conversation's real unread count when it opened — not the loaded subset. */
+  unreadCount?: number | null
   /** Load back to the first unread message. */
   onRevealUnread?: () => void
   /** Scroll to and emphasize this message once it's loaded. */
@@ -52,14 +54,12 @@ type Row = TimelineItem & {
 
 const JUMP_OFFSET = 800
 const AT_LATEST_OFFSET = 40
-/** Open at the "New" line instead of the latest message when more than this many rows are unread. */
-const OPEN_AT_UNREAD_ROWS = 8
 const NO_INSETS = { top: 0, bottom: 0 }
 
 /** Newest-at-bottom list (an inverted FlatList, so it stays pinned to the latest message). */
 export function MessageList({
   state, loading, me, names, mentionables, channelMemberIds, canManage, inThread, emptyText, header, onLoadOlder, onTrim, trimThreshold = Infinity,
-  unreadAfterSeq = null, unreadUpToSeq = Infinity, unreadNotLoaded = false, onRevealUnread, highlightId = null, insets = NO_INSETS, ...handlers
+  unreadAfterSeq = null, unreadUpToSeq = Infinity, unreadNotLoaded = false, unreadCount = null, onRevealUnread, highlightId = null, insets = NO_INSETS, ...handlers
 }: MessageListProps) {
   const rows = useMemo(() => {
     const items = foldStatusRuns(state.messages)
@@ -85,10 +85,7 @@ export function MessageList({
   const unreadRow = unreadMessageId
     ? rows.findIndex((r) => r.message.id === unreadMessageId || r.folded.some((m) => m.id === unreadMessageId))
     : -1
-  const firstUnreadId = unreadRow >= 0 ? rows[unreadRow]!.message.id : null
-  const unreadCount = unreadIdx >= 0
-    ? state.messages.slice(unreadIdx).filter((m) => !m.pending && m.authorUserId !== me).length
-    : 0
+  const firstUnreadId = !unreadNotLoaded && unreadRow >= 0 ? rows[unreadRow]!.message.id : null
 
   const listRef = useRef<FlatList<Row>>(null)
   const rootRef = useRef<View | null>(null)
@@ -123,14 +120,9 @@ export function MessageList({
     setTimeout(() => listRef.current?.scrollToIndex({ index: info.index, viewPosition: 0.5, animated: false }), 80)
   }, [])
 
-  // In an inverted list, viewPosition 1 puts a row at the top of the screen.
-  const openedAtUnread = useRef(false)
-  useEffect(() => {
-    if (openedAtUnread.current || loading || !rows.length) return
-    openedAtUnread.current = true
-    if (!highlightId && unreadRow >= OPEN_AT_UNREAD_ROWS) requestAnimationFrame(() => scrollToRow(unreadRow, 0.9))
-  }, [loading, rows.length, highlightId, unreadRow, scrollToRow])
-
+  // The list opens at the latest message on every surface: a channel with a lot
+  // of unread catch-up used to jump into the middle of a wall of old messages and
+  // page in more. The unread pill is the way back to it instead.
   const highlightRow = highlightId ? rows.findIndex((r) => r.message.id === highlightId || r.folded.some((m) => m.id === highlightId)) : -1
   const scrolledToHighlight = useRef<string | null>(null)
   useEffect(() => {
@@ -285,7 +277,7 @@ export function MessageList({
           >
             <ArrowUp size={12} color="#fff" />
             <Text className="text-xs font-medium text-white">
-              {unreadNotLoaded || unreadCount === 0 ? 'Jump to first unread' : `${unreadCount} new ${unreadCount === 1 ? 'message' : 'messages'}`}
+              {unreadCount && unreadCount > 0 ? `${unreadCount} new ${unreadCount === 1 ? 'message' : 'messages'}` : 'Jump to first unread'}
             </Text>
           </Pressable>
           <Pressable accessibilityLabel="Dismiss" onPress={() => setUnreadPillDismissed(true)} className="py-1.5 pl-1 pr-2.5 active:opacity-80">
