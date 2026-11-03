@@ -643,13 +643,17 @@ test.describe("rejoining a turn that is still running", () => {
       savedRow("m-prompt", "", "user", RETURN_PROMPT, base),
       {
         ...savedRow("m-stopped", "", "assistant", "stopped-words", base + 1_000),
-        parts: [
+        // `handleStop` stamps the tail so a reopen knows the person already
+        // read it; `/chat-messages` hands `parts` over as JSON.
+        parts: JSON.stringify([
           { type: "text", text: "stopped-words" },
-          { type: "data-turn-stopped", data: { at: base + 1_000 } },
-        ],
+          { type: "data-turn-stopped", data: { turnId: TURN_ID } },
+        ]),
       },
     ]
-    state.turnStatus = "active"
+    // The turn the person stopped is over, and the runtime has no live turn for
+    // this chat.
+    state.turnStatus = "unknown"
     await page.reload()
 
     await expect(
