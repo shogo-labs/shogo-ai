@@ -15,11 +15,32 @@ import React from "react"
 import { createReactNativeMock } from "../../../test/react-native-mock"
 import * as lucideStub from "../../../test/stubs/lucide-react-native"
 
+const { createElement } = React
+
 mock.module("react-native", () =>
   createReactNativeMock({
     Platform: { OS: "web", select: (options: Record<string, unknown>) => options.web },
     useWindowDimensions: () => ({ width: 900, height: 700, scale: 1, fontScale: 1 }),
-  }),
+    // The viewer's header actions are Pressables; the passthrough mock drops
+    // `onPress`, so wire it to a real DOM click to exercise Show in Finder.
+    Pressable: ({
+      accessibilityLabel,
+      children,
+      onPress,
+      disabled,
+      testID,
+    }: Record<string, unknown>) =>
+      createElement(
+        "button",
+        {
+          "aria-label": accessibilityLabel as string,
+          "data-rn-shim": testID as string,
+          disabled: !!disabled,
+          onClick: disabled ? undefined : (onPress as () => void),
+        },
+        children as React.ReactNode,
+      ),
+  } as never),
 )
 mock.module("lucide-react-native", () => lucideStub)
 const Icon = () => null
@@ -43,8 +64,21 @@ const originalFetch = globalThis.fetch
 const originalCreate = URL.createObjectURL
 const originalRevoke = URL.revokeObjectURL
 
+function installDesktopBridge(overrides: Record<string, unknown> = {}) {
+  const bridge = {
+    isDesktop: true,
+    platform: "darwin",
+    revealPath: mock(async () => ({ ok: true })),
+    openPath: mock(async () => ({ ok: true })),
+    ...overrides,
+  }
+  ;(globalThis as any).window.shogoDesktop = bridge
+  return bridge
+}
+
 afterEach(() => {
   cleanup()
+  delete (globalThis as any).window.shogoDesktop
   globalThis.fetch = originalFetch
   URL.createObjectURL = originalCreate
   URL.revokeObjectURL = originalRevoke
@@ -165,5 +199,86 @@ describe("a file the API serves", () => {
     const editor = document.querySelector<HTMLElement>('[data-testid="code-editor"]')
     expect(editor!.textContent).toContain("Ship it.")
     expect(editor!.getAttribute("data-readonly")).toBe("true")
+  })
+})
+
+/**
+ * A local desktop `share_file` hands out a `file://` URL to a file on this
+ * machine (SHO-302). A browser page cannot fetch that, so the viewer reads the
+ * bytes from the session-guarded `/api/local-files` route by absolute path, and
+ * the desktop gets Show in Finder / Open for the real file.
+ */
+describe("a file that is on this machine (local desktop share)", () => {
+  const localTarget = {
+    kind: "local" as const,
+    href: "/api/local-files?path=%2FUsers%2Fme%2Fout%2Freport.pdf",
+    name: "report.pdf",
+    path: "/Users/me/out/report.pdf",
+  }
+
+  test("reads the file through the local route, never through file://", async () => {
+    const calls: string[] = []
+    globalThis.fetch = mock(async (input: any) => {
+      calls.push(typeof input === "string" ? input : String(input?.url ?? input))
+      return new Response("# Notes\n\nOn this disk.", {
+        status: 200,
+        headers: { "content-type": "text/markdown" },
+      })
+    }) as unknown as typeof fetch
+
+    render(<ShareFileView target={{ ...localTarget, name: "notes.md" }} />)
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-testid="markdown-body"]')!.textContent).toContain("On this disk."),
+    )
+    expect(calls[0]).toContain("/api/local-files?path=%2FUsers%2Fme%2Fout%2Freport.pdf")
+    expect(calls[0]).not.toContain("file:")
+  })
+
+  test("Show in Finder and Open give the desktop shell the absolute path", async () => {
+    const bridge = installDesktopBridge()
+    respondWith("on this disk", { status: 200, headers: { "content-type": "text/plain" } })
+
+    render(<ShareFileView target={{ ...localTarget, name: "notes.txt" }} />)
+
+    const reveal = await waitFor(() => {
+      const node = document.querySelector('[data-rn-shim="share-file-reveal"]')
+      expect(node).toBeTruthy()
+      return node as HTMLElement
+    })
+    fireEvent.click(reveal)
+    await waitFor(() => expect(bridge.revealPath).toHaveBeenCalledWith("/Users/me/out/report.pdf"))
+
+    const open = document.querySelector('[data-rn-shim="share-file-open-external"]') as HTMLElement
+    expect(open).toBeTruthy()
+    fireEvent.click(open)
+    await waitFor(() => expect(bridge.openPath).toHaveBeenCalledWith("/Users/me/out/report.pdf"))
+  })
+
+  test("a path the desktop refuses says so instead of opening anything", async () => {
+    installDesktopBridge({ revealPath: mock(async () => ({ ok: false, error: "path_not_allowed" })) })
+    respondWith("on this disk", { status: 200, headers: { "content-type": "text/plain" } })
+
+    render(<ShareFileView target={{ ...localTarget, name: "notes.txt" }} />)
+
+    const reveal = await waitFor(() => {
+      const node = document.querySelector('[data-rn-shim="share-file-reveal"]')
+      expect(node).toBeTruthy()
+      return node as HTMLElement
+    })
+    fireEvent.click(reveal)
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("That file is outside your Shogo folders"),
+    )
+  })
+
+  test("offers no Finder button on the web build, where there is no shell", async () => {
+    respondWith("on this disk", { status: 200, headers: { "content-type": "text/plain" } })
+
+    render(<ShareFileView target={{ ...localTarget, name: "notes.txt" }} />)
+
+    await waitFor(() => expect(document.body.textContent).toContain("notes.txt"))
+    expect(document.querySelector('[data-rn-shim="share-file-reveal"]')).toBeNull()
+    expect(document.querySelector('[data-rn-shim="share-file-open-external"]')).toBeNull()
   })
 })
