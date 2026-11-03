@@ -21,22 +21,12 @@ export function agentProxyBase(opts: {
   projectId?: string | null
   /** Workspace-scoped chat (`chatScope === "workspace"`). */
   workspaceId?: string | null
-  /**
-   * A paired desktop's own workspace. The desktop owns that workspace's agent,
-   * so the base goes through the machine relay with the *machine's* workspace
-   * id — the cloud id in `workspaceId` means nothing there.
-   */
-  machine?: { instanceId: string; localWorkspaceId: string } | null
   /** API origin, e.g. `https://shogo.example` or `http://localhost:8002`. */
   apiUrl: string
 }): string | null {
   if (opts.localAgentUrl) return opts.localAgentUrl.replace(/\/+$/, "")
   const apiUrl = opts.apiUrl.replace(/\/+$/, "")
   if (opts.projectId) return `${apiUrl}/api/projects/${opts.projectId}/agent-proxy`
-  if (opts.machine?.localWorkspaceId) {
-    const { instanceId, localWorkspaceId } = opts.machine
-    return `${apiUrl}/api/machines/${instanceId}/w/${localWorkspaceId}/api/workspaces/${localWorkspaceId}/agent-proxy`
-  }
   if (opts.workspaceId) return `${apiUrl}/api/workspaces/${opts.workspaceId}/agent-proxy`
   return null
 }
@@ -44,20 +34,16 @@ export function agentProxyBase(opts: {
 /**
  * Another project's runtime, reached from a chat that belongs to the workspace
  * rather than to that project — a file the workspace agent wrote there with
- * `project: "<name>"`, for one (SHO-247).
- *
- * `relayBase` is a paired desktop's relay prefix when the workspace lives on
- * that machine, so the call lands on the runtime that owns the files.
+ * `project: "<name>"`, for one (SHO-247). A workspace hosted on a paired
+ * desktop uses the same route; the cloud sends it to the host (SHO-285).
  */
 export function projectAgentProxyBase(opts: {
   projectId: string | null | undefined
-  /** `${apiUrl}/api/machines/<id>/w/<localId>` when a machine owns the workspace. */
-  relayBase?: string | null
   apiUrl: string
 }): string | null {
   const projectId = opts.projectId?.trim()
   if (!projectId) return null
-  const origin = (opts.relayBase ?? opts.apiUrl).replace(/\/+$/, "")
+  const origin = opts.apiUrl.replace(/\/+$/, "")
   if (!origin) return null
   return `${origin}/api/projects/${projectId}/agent-proxy`
 }

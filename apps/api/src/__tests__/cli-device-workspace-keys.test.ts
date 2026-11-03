@@ -33,7 +33,7 @@ const workspaces = new Map([
   ['ws-new', { id: 'ws-new', name: 'New Team', slug: 'new', kind: 'team' }],
   [
     'ws-machine-copy',
-    { id: 'ws-machine-copy', name: 'Local Personal', slug: 'personal-m-inst1234', kind: 'personal', machineInstanceId: 'inst-1' },
+    { id: 'ws-machine-copy', name: 'Local Personal', slug: 'personal-m-inst1234', kind: 'personal', hostInstanceId: 'inst-1' },
   ],
 ])
 let n = 0
@@ -183,7 +183,7 @@ describe('POST /api/cli/device-keys/sync', () => {
     expect(primaries[0]!.revokedAt).toBeNull()
   })
 
-  it('never hands out a machine copy, and leaves a key already minted for one alone', async () => {
+  it('never hands out a workspace hosted on a desktop, and leaves a key already minted for one alone', async () => {
     const poll = await signIn(true)
     // The sync ingest makes the machine's owner a member of its copy.
     members.push({ id: 'm5', userId: 'user-1', workspaceId: 'ws-machine-copy', createdAt: new Date('2026-05-01') })

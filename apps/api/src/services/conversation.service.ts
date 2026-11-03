@@ -10,7 +10,6 @@
 import { prisma } from '../lib/prisma'
 import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
-import { MACHINE_COPY_PENDING } from '../lib/machine-copy-pending'
 import { deleteConversationFile, previewForAttachments } from '../lib/conversation-files'
 import { flattenMarkdownBlocks, loadNamesForTexts, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { addedMembersNoticeText, membershipChannelLabel } from './conversation-membership-notice'
@@ -68,31 +67,17 @@ export async function getWorkspaceRole(workspaceId: string, userId: string): Pro
   return (member?.role as WorkspaceRole) ?? null
 }
 
-async function isMachineCopy(workspaceId: string): Promise<boolean> {
-  const workspace = await db.workspace.findUnique({
-    where: { id: workspaceId },
-    select: { machineInstanceId: true },
-  })
-  return !!workspace?.machineInstanceId
-}
-
 /**
- * On a machine copy, the cloud account the copy was opened to
- * (`ensureOwnerMember` in machine-sync ingest). That membership is an access
- * grant, not a person on the machine: its owner is already one of the
- * machine's own members, and a copy is read as that member
- * (`lib/machine-identity`). Listing both showed the owner twice (SHO-257).
+ * Whether this workspace is hosted on a paired desktop (SHO-285). Its default
+ * channels are seeded by the desktop and arrive with the sync; seeding them here
+ * too would mint a second #general under another id.
  */
-async function machineCopyGrantUserId(workspaceId: string): Promise<string | null> {
+async function isHostedWorkspace(workspaceId: string): Promise<boolean> {
   const workspace = await db.workspace.findUnique({
     where: { id: workspaceId },
-    select: { machineInstanceId: true },
+    select: { hostInstanceId: true },
   })
-  if (!workspace?.machineInstanceId) return null
-  const instance = await db.instance
-    .findUnique({ where: { id: workspace.machineInstanceId }, select: { userId: true } })
-    .catch(() => null)
-  return instance?.userId ?? null
+  return !!workspace?.hostInstanceId
 }
 
 export interface ConversationAccess {
@@ -524,20 +509,10 @@ export async function listConversationsForUser(
     !conversations.some((c: any) => c.kind === 'activity') ||
     !conversations.some((c: any) => c.dmKey === `u:${userId}`) ||
     !memberships.some((m: any) => m.conversationId === general.id)
-  // A machine copy (SHO-185) mirrors a desktop's rows under the desktop's ids;
-  // its channels are whatever the desktop has. Seeding them here would mint
-  // cloud-only #general/#activity rows the desktop never wrote, and a copy's
-  // reader (the owner's cloud account) is not one of its members anyway.
-  const machineCopy = needsSetup && (await isMachineCopy(workspaceId))
-  // …but a copy with no #general is a desktop that has never listed its
-  // channels: they are seeded on first read, on the machine. Say so, and the
-  // client reads them through the relay, which seeds them there and lets the
-  // next sync bring them here (SHO-257). Answering `[]` showed a workspace with
-  // no channels at all.
-  if (machineCopy && !general) {
-    throw new ConversationError(409, MACHINE_COPY_PENDING, 'This machine has not set up its channels yet')
-  }
-  if (needsSetup && !machineCopy) {
+  // A hosted workspace's #general/#activity are the desktop's (SHO-285): they
+  // come down with the sync, and a cloud-seeded pair would be a second set.
+  const hosted = needsSetup && (await isHostedWorkspace(workspaceId))
+  if (needsSetup && !hosted) {
     const [createdGeneral] = await ensureDefaultConversations(workspaceId)
     // Gives every existing member their note-to-self, so the workspace creator
     // and older accounts need no separate backfill.
@@ -1423,6 +1398,15 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     data: { lastSeq: { increment: 1 }, lastMessageAt: now },
     select: { lastSeq: true },
   })
+  // A hosted workspace's channel is written from two databases (SHO-285): a
+  // message that syncs in from the other side does not advance this copy's
+  // `lastSeq`, so it can fall behind the rows already here and mint a `seq`
+  // that collides. Take the higher of the counter and the messages that exist.
+  const highest = await db.conversationMessage.aggregate({ where: { conversationId: conversation.id }, _max: { seq: true } })
+  const seq = Math.max(bumped.lastSeq, (highest?._max?.seq ?? 0) + 1)
+  if (seq !== bumped.lastSeq) {
+    await db.conversation.update({ where: { id: conversation.id }, data: { lastSeq: seq } })
+  }
   const resolved = await resolveForInsert(input, conversation, text)
   const storedText = resolved.text
   const mentions = input.authorType === 'system' && !input.systemMentions
@@ -1435,7 +1419,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
       id,
       conversationId: conversation.id,
       workspaceId: conversation.workspaceId,
-      seq: bumped.lastSeq,
+      seq,
       threadRootId: root?.id ?? null,
       alsoSentToChannel: !!(root && input.alsoSentToChannel),
       authorType: input.authorType ?? 'user',
@@ -1482,8 +1466,8 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
 
   if (input.authorUserId && input.authorType !== 'system') {
     await db.conversationMember.updateMany({
-      where: { conversationId: conversation.id, userId: input.authorUserId, lastReadSeq: { lt: bumped.lastSeq } },
-      data: { lastReadSeq: bumped.lastSeq, lastReadAt: now },
+      where: { conversationId: conversation.id, userId: input.authorUserId, lastReadSeq: { lt: seq } },
+      data: { lastReadSeq: seq, lastReadAt: now },
     })
   }
 
@@ -1852,11 +1836,10 @@ export async function listMentionables(workspaceId: string, userId: string) {
     }),
     db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true, avatarUrl: true, buddyLook: true } }).catch(() => null),
   ])
-  const grantUserId = members.length > 1 ? await machineCopyGrantUserId(workspaceId) : null
   const seen = new Set<string>()
   const people = []
   for (const m of members) {
-    if (!m.user || seen.has(m.user.id) || m.user.id === grantUserId) continue
+    if (!m.user || seen.has(m.user.id)) continue
     seen.add(m.user.id)
     people.push({ id: m.user.id, name: m.user.name || m.user.email, email: m.user.email, image: m.user.image ?? null, role: m.role })
   }

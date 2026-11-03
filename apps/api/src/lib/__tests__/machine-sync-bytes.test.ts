@@ -18,7 +18,7 @@
 import { describe, expect, test } from 'bun:test'
 import { MachineSyncPusher, type SyncBatchRequest } from '../machine-sync/pusher.ts'
 import { resolveInstanceIdentity } from '../instance-identity.ts'
-import { machineSessionExclusion } from '../machine-workspace.ts'
+import { hostedSessionExclusion } from '../hosted-workspace.ts'
 
 const BIG = 'x'.repeat(200_000)
 
@@ -256,15 +256,15 @@ describe('one machine, one instance row', () => {
   })
 })
 
-// ─── The cloud never claims a mirrored chat (SHO-276 §C) ───────────────────
+// ─── The cloud never claims a hosted workspace's chat (SHO-276 §C, SHO-285) ───────────────────
 
-describe('the reattach sweep skips a paired machine', () => {
+describe('the reattach sweep skips a hosted workspace (the desktop runs its turns)', () => {
   test('the candidate filter excludes workspace chats and project chats alike', () => {
-    const where = machineSessionExclusion(['w-machine']) as any
+    const where = hostedSessionExclusion(['w-machine']) as any
     const clauses = JSON.stringify(where)
     expect(clauses).toContain('"workspaceId":{"notIn":["w-machine"]}')
     expect(clauses).toContain('"project":{"workspaceId":{"notIn":["w-machine"]}}')
-    // No machine paired: the filter is empty, so the query plan is unchanged.
-    expect(machineSessionExclusion([])).toEqual({})
+    // Nothing hosted: the filter is empty, so the query plan is unchanged.
+    expect(hostedSessionExclusion([])).toEqual({})
   })
 })

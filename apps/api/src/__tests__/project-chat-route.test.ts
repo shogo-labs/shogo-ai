@@ -55,14 +55,23 @@ mock.module('../lib/prisma', () => ({
       },
       update: async () => ({}),
     },
-    chatMessage: { create: async (args: any) => ({ id: 'm-1', ...args.data }) },
-    chatSession: { findUnique: async () => ({ id: 's-1' }) },
+    chatMessage: {
+      create: async (args: any) => ({ id: 'm-1', ...args.data }),
+      findMany: async () => [],
+    },
+    chatSession: {
+      findUnique: async () => ({ id: 's-1' }),
+      update: async () => ({ id: 's-1' }),
+    },
     toolCallLog: { createMany: async () => ({ count: 0 }) },
     member: {
       findFirst: async () => memberFixture,
       findMany: async () => (memberFixture ? [{ role: 'member', projectId: null, isBillingAdmin: false }] : []),
     },
     user: { findUnique: async () => ({ role: 'user' }) },
+    // The runtime resolver asks which desktop hosts a workspace (SHO-285);
+    // this fixture's workspaces are all cloud compute.
+    workspace: { findUnique: async () => null },
   },
 }))
 
@@ -72,7 +81,7 @@ let hasAdvancedModelAccessResult = true
 // generic code; flipped per-test to cover the entitlement-expired path
 // (on-demand usage was on, but the paid entitlement backing it lapsed).
 let balanceBlockReason: 'usage_limit_reached' | 'entitlement_expired' | 'overage_cap_reached' = 'usage_limit_reached'
-mock.module('../services/billing.service', () => ({
+const billingMock = {
   consumeUsage: async () => ({ success: true, remainingIncludedUsd: 99 }),
   hasBalance: async () => hasBalanceResult,
   checkUsageBalance: async () => (hasBalanceResult ? { ok: true } : { ok: false, reason: balanceBlockReason }),
@@ -99,7 +108,14 @@ mock.module('../services/billing.service', () => ({
     fiveHour: { kind: 'fiveHour', limitUsd: 10, utilization: 1, resetsAt: new Date('2099-01-01T00:00:00.000Z') },
     weekly: { kind: 'weekly', limitUsd: 50, utilization: 0.4, resetsAt: new Date('2099-01-05T00:00:00.000Z') },
   }),
-}))
+  getEffectivePlanId: async () => 'pro',
+  canPublishSubdomain: async () => true,
+  SYSTEM_WORKSPACE_ID: 'system-workspace',
+}
+mock.module('../services/billing.service', () => billingMock)
+// The router reaches billing through the runtime seam (`services/billing-runtime`),
+// which resolves the real service unless the seam itself is mocked.
+mock.module('../services/billing-runtime', () => billingMock)
 
 // Model registry: a UUID-addressed DB model resolves to its native provider.
 // stampModelProvider (the real helper) reads this to stamp `modelProvider`
@@ -108,6 +124,16 @@ const OPUS_UUID = '11111111-2222-3333-4444-555555555555'
 // An admin-managed economy model (Hoshi 2.0 on staging): unknown to the static
 // catalog, so only its DB tier marks it as available on every plan.
 const HOSHI_UUID = 'a6f55a2b-2ef6-4543-8b78-9745af477ba2'
+// The tier guard asks the model-access helper, not the billing seam. Economy
+// and admin-managed models are open to every plan; everything else follows the
+// workspace's advanced-model entitlement.
+mock.module('../lib/model-access', () => ({
+  isModelAccessibleForWorkspace: async (_workspaceId: string, modelId: string) =>
+    modelId === HOSHI_UUID || modelId === 'hoshi-2-0' || modelId === 'auto'
+      ? true
+      : hasAdvancedModelAccessResult,
+}))
+
 mock.module('../services/model-registry.service', () => ({
   getMergedModelEntrySync: (id: string) =>
     id === OPUS_UUID
@@ -234,7 +260,7 @@ describe('POST /projects/:projectId/chat', () => {
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
       method: 'POST',
-      body: '{}',
+      body: JSON.stringify({ chatSessionId: 's-1' }),
     }))
     expect(res.status).toBe(402)
     const body = (await res.json()) as any
@@ -254,7 +280,7 @@ describe('POST /projects/:projectId/chat', () => {
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
       method: 'POST',
-      body: '{}',
+      body: JSON.stringify({ chatSessionId: 's-1' }),
     }))
     expect(res.status).toBe(402)
     const body = (await res.json()) as any
@@ -268,7 +294,7 @@ describe('POST /projects/:projectId/chat', () => {
     const app = buildApp()
     const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
       method: 'POST',
-      body: '{}',
+      body: JSON.stringify({ chatSessionId: 's-1' }),
     }))
 
     expect(res.status).toBe(503)

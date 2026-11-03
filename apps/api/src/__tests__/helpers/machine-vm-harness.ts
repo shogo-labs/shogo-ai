@@ -7,9 +7,9 @@
  * database and a real Redis. The desktop is the same entrypoint in local mode on
  * its own SQLite file and data dir, paired through `cli/login` exactly like
  * `e2e/staging/machine-pairing.ts` pairs one to staging (that helper is reused
- * as-is, so a change to pairing breaks both). Nothing in the relay path is
- * stubbed: the heartbeat, the WebSocket tunnel, the machine-sync snapshot and
- * `/api/machines/:id/w/:ws/*` all run.
+ * as-is, so a change to pairing breaks both). Nothing in the host path is
+ * stubbed: the heartbeat, the WebSocket tunnel and the machine-sync snapshot
+ * all run.
  *
  * The only stand-in is the model: a scripted OpenAI-compatible server, so an
  * agent turn is deterministic and costs nothing.

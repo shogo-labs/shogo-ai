@@ -361,13 +361,16 @@ describe('authMiddleware — tunnel path', () => {
       process.env.SHOGO_LOCAL_MODE = 'true'
     })
 
-    it("acts as the machine's local owner for a cloud account it has no user for, and says so", async () => {
+    // One user (SHO-285): pairing rewrote the desktop's local user row to the
+    // cloud account's id, so the id the cloud stamps is the desktop's own user.
+    // There is no translation and no local-user header any more.
+    it('acts as the cloud account id the tunnel stamps, with no translation', async () => {
       const c = makeContext({ headers: { 'x-tunnel-auth-user-id': 'cloud-owner-a' } })
       c.res = new Response('{}', { headers: { 'content-type': 'application/json' } })
       await authMiddleware(c, next)
-      expect(c.get('auth').userId).toBe('local-owner')
+      expect(c.get('auth').userId).toBe('cloud-owner-a')
       expect(c.get('auth').via).toBe('tunnel')
-      expect(c.res.headers.get('x-shogo-local-user-id')).toBe('local-owner')
+      expect(c.res.headers.get('x-shogo-local-user-id')).toBeNull()
     })
 
     it('keeps an id the desktop has a user for', async () => {

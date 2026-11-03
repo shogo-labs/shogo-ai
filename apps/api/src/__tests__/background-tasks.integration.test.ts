@@ -680,18 +680,23 @@ describe('card hand-off: the watcher hears once the thread goes quiet', () => {
     const item = await db.workItem.findUnique({ where: { id: card.json.item.id } })
     const session = await db.chatSession.create({ data: { inferredName: 'Workspace', contextType: 'workspace', workspaceId: seed.workspaceId, createdByUserId: seed.owner } })
     const watch = await tasks.createTask({ id: tasks.newTaskId(), chatSessionId: session.id, source: 'work_item', targetRef: item.id, title: card.json.item.key, until })
+    // Fixture rows pick their own `seq`, and `postMessage` now mints
+    // `max(seq) + 1` in this conversation (SHO-285: a hosted workspace's rows
+    // also arrive from the other database). Jump the fixture counter far enough
+    // that a minted seq always lands in a gap instead of on the next fixture.
     let seq = 1_000 * n
+    const nextSeq = () => (seq += 10_000)
     const startedAt = new Date(Date.now() - 1_000)
     /** An agent reply in the card thread; `running` until `finish` settles it. */
     const reply = async (projectId: string | null, text = '') => db.conversationMessage.create({
       data: {
-        conversationId: item.conversationId, workspaceId: seed.workspaceId, seq: ++seq, threadRootId: item.threadRootMessageId,
+        conversationId: item.conversationId, workspaceId: seed.workspaceId, seq: nextSeq(), threadRootId: item.threadRootMessageId,
         authorType: 'agent', authorAgentRef: { projectId, name: projectId ? 'Agent' : 'Shogo' }, agentStatus: 'running', text,
       },
     })
     const { noteCardRunEnded } = await import('../services/work-boards.service')
     const finish = async (row: any, text: string, projectId: string | null = seed.projectId) => {
-      await db.conversationMessage.update({ where: { id: row.id }, data: { text, agentStatus: 'done', seq: ++seq } })
+      await db.conversationMessage.update({ where: { id: row.id }, data: { text, agentStatus: 'done', seq: nextSeq() } })
       await noteCardRunEnded({ threadRootId: item.threadRootMessageId, projectId, messageId: row.id, agentStatus: 'done', startedAt })
     }
     const move = (column: string) => agent('POST', `/agent-work-items/${card.json.item.key}/move`, { column })

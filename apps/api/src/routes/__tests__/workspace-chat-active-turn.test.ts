@@ -95,6 +95,9 @@ mock.module('../../lib/prisma', () => ({
       findUnique: async () => ({ id: 'p-1', name: 'Project', workspaceId: 'ws-1', settings: null }),
       update: async () => ({}),
     },
+    // The runtime resolver asks which desktop hosts a workspace (SHO-285);
+    // this fixture's workspace is cloud compute.
+    workspace: { findUnique: async () => null },
     projectFolder: { findMany: async () => [] },
     chatMessage: {
       create: async (args: any) => ({ id: 'msg-1', ...args.data }),

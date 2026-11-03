@@ -80,15 +80,6 @@ mock.module(resolve(import.meta.dir, "../../../../hooks/useCloudSession"), () =>
   useCloudSession: () => ({ cloud, pending: null, error: null, signIn, signOut }),
 }))
 
-// The header names the open machine workspace, so the section reads the active
-// instance. No machine is selected here — the cloud workspace's name is used.
-let activeMachine: { localWorkspaceName?: string } | null = null
-mock.module(resolve(import.meta.dir, "../../../../contexts/active-instance"), () => ({
-  useActiveInstance: () => ({
-    instance: activeMachine ? { source: "machine", ...activeMachine } : null,
-  }),
-}))
-
 const { WorkspaceMenuSection, workspaceKindBadge } = await import("../WorkspaceMenuSection")
 const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")
 
@@ -99,10 +90,10 @@ const localWorkspaces = [
 
 const createWorkspace = mock(() => {})
 
-function renderSection(workspaces: any[]) {
+function renderSection(workspaces: any[], hosts: any[] = []) {
   return render(
     <WorkspaceMenuSection
-      entries={buildWorkspaceEntries({ workspaces })}
+      entries={buildWorkspaceEntries({ workspaces, hosts })}
       currentKey={cloudWorkspaceKey(workspaces[0]?.id)}
       onSelect={() => {}}
       currentWorkspace={workspaces[0]}
@@ -120,7 +111,6 @@ function renderSection(workspaces: any[]) {
 }
 
 beforeEach(() => {
-  activeMachine = null
   cloud = { signedIn: false, cloudUrl: null, reachable: true, user: null, workspaces: [] }
   signIn.mockClear()
   signOut.mockClear()
@@ -151,14 +141,14 @@ describe("WorkspaceMenuSection in local mode", () => {
     expect(signIn).toHaveBeenCalledTimes(1)
   })
 
-  test("names the machine workspace that is open, not the cloud one behind it", () => {
-    activeMachine = { localWorkspaceName: "Samsara" }
-    renderSection(localWorkspaces)
-    // The identity header names the machine workspace; the list below still
-    // lists the local ones.
-    expect(screen.getAllByText("Samsara")).toHaveLength(1)
-    expect(screen.getAllByText("Personal").length).toBeGreaterThan(0)
+  test("a hosted workspace names its desktop under the title (SHO-285)", () => {
+    renderSection(
+      [{ id: "ws-samsara", name: "Samsara", kind: "team", hostInstanceId: "inst-odin" }, ...localWorkspaces],
+      [{ instanceId: "inst-odin", hostname: "odin", presence: "online" }],
+    )
+    expect(screen.getAllByText(/Host: odin/).length).toBeGreaterThan(0)
   })
+
 
   test("signed in: local and cloud side by side, with the account and Sign out", () => {
     cloud = {

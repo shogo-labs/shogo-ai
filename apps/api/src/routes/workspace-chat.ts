@@ -893,7 +893,21 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // The person's message must be durable before the turn starts (SHO-274), on
     // the same contract as project-chat: awaited after every gate (a rejected
     // send writes nothing) and before the first proxy attempt.
-    await persistUserMessageForTurn(sessionId, parsedBody as Record<string, unknown>)
+    const persistedUserMessage = await persistUserMessageForTurn(sessionId, parsedBody as Record<string, unknown>)
+
+    // A hosted workspace whose desktop is offline queues the turn instead of
+    // failing it; the desktop runs it when it is back (SHO-285).
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+      const { queueTurnIfHostOffline } = await import('../lib/host-tunnel')
+      const queued = await queueTurnIfHostOffline({
+        workspaceId,
+        sessionId,
+        userId: auth.userId,
+        userMessageId: persistedUserMessage.id,
+        body: parsedBody as Record<string, unknown>,
+      })
+      if (queued) return c.json(queued, 202)
+    }
 
     // Serialise once, after every mutation above. Each of those steps used to
     // re-`JSON.stringify` the whole body, which was fine until attachments rode

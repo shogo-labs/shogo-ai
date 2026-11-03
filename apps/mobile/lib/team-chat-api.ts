@@ -865,12 +865,10 @@ export function isSelfDm(c: Pick<ConversationSummary, 'kind' | 'participants'>):
 /**
  * A lazily-resolved client, so team chat is routed like the rest of the app.
  *
- * The domain client is the SDK interceptor's insert point: it sends a
- * workspace's conversations to a paired desktop when one of that desktop's own
- * workspaces is open (and rewrites the workspace id on the way), and to this
- * app's API otherwise. Resolving it per call rather than once matters — many
- * callers build an api at module scope, before the domain provider has mounted,
- * and a client captured then would never see a machine.
+ * The domain client is the SDK interceptor's insert point (Remote Control).
+ * Resolving it per call rather than once matters — many callers build an api at
+ * module scope, before the domain provider has mounted, and a client captured
+ * then would never see the interceptor.
  */
 function teamChatHttp() {
   return getSDKHttpClient() ?? createHttpClient()
@@ -1519,25 +1517,8 @@ async function postNotesChunk(
   throw new HuddleNotesError(body?.error?.message ?? `Live notes failed (${res.status})`, res.status)
 }
 
-/**
- * Where this workspace's live team-chat traffic comes from.
- *
- * A paired desktop's own workspace is served by that desktop: its events come
- * from the machine relay, and there is no socket URL — the tunnel carries HTTP,
- * not a WebSocket upgrade — so the connection goes straight to the SSE stream,
- * which the relay forwards chunk by chunk.
- */
-export function realtimeUrls(
-  workspaceId: string,
-  machine?: { instanceId: string; localWorkspaceId: string } | null,
-): { ws: string; sse: string } {
-  if (machine?.instanceId && machine.localWorkspaceId) {
-    const localId = encodeURIComponent(machine.localWorkspaceId)
-    return {
-      ws: '',
-      sse: `${API_URL}/api/machines/${encodeURIComponent(machine.instanceId)}/w/${localId}/api/workspaces/${localId}/conversations/events`,
-    }
-  }
+/** Where this workspace's live team-chat traffic comes from. */
+export function realtimeUrls(workspaceId: string): { ws: string; sse: string } {
   const base = `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}`
   return {
     // WebSockets bypass the fetch router; the desktop API relays this one.
