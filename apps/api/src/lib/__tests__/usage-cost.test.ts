@@ -28,7 +28,9 @@ const {
   calculateUsageCost,
   calculateImageUsageCost,
   getModelTier,
+  splitUsageCost,
 } = await import('../usage-cost')
+const { setDbModelPricingProvider } = await import('../db-model-pricing')
 
 describe('constants', () => {
   it('MARKUP_MULTIPLIER is 1.20', () => {
@@ -67,7 +69,7 @@ describe('proxyModelToBillingModel', () => {
 
 describe('calculateUsageCost', () => {
   it('returns zero for zero tokens', () => {
-    expect(calculateUsageCost(0, 0)).toEqual({ rawUsd: 0, billedUsd: 0 })
+    expect(calculateUsageCost(0, 0)).toEqual({ rawUsd: 0, billedUsd: 0, pricedAs: 'sonnet' })
   })
 
   it('applies MARKUP_MULTIPLIER to a non-zero raw cost', () => {
@@ -104,6 +106,7 @@ describe('calculateUsageCost', () => {
         rawUsd: 0,
         billedUsd: 0,
         pricingUnknown: true,
+        pricedAs: 'sonnet',
       })
       expect(calculateUsageCost(1_000_000, 1_000_000, 'sonnet').pricingUnknown).toBeUndefined()
       expect(calculateUsageCost(1_000_000, 1_000_000, 'advanced').pricingUnknown).toBeUndefined()
@@ -241,5 +244,89 @@ describe('calculateImageUsageCost — OpenAI ladder', () => {
 describe('getModelTier re-export', () => {
   it('is callable', () => {
     expect(typeof getModelTier).toBe('function')
+  })
+})
+
+describe('splitUsageCost', () => {
+  it('splits a cloud row into model cost and the Shogo fee', () => {
+    const split = splitUsageCost({ billedUsd: 1.2, rawUsd: 1 })
+    expect(split.modelCostUsd).toBe(1)
+    expect(split.shogoFeeUsd).toBeCloseTo(0.2, 10)
+    expect(split.unitemizedUsd).toBe(0)
+  })
+
+  it('reports a desktop row as model cost only, with no fee', () => {
+    expect(splitUsageCost({ billedUsd: 0, rawUsd: 1 })).toEqual({
+      modelCostUsd: 1,
+      shogoFeeUsd: 0,
+      unitemizedUsd: 0,
+    })
+  })
+
+  it('leaves a billed row with no recorded provider cost unitemized', () => {
+    expect(splitUsageCost({ billedUsd: 1, rawUsd: null })).toEqual({
+      modelCostUsd: 0,
+      shogoFeeUsd: 0,
+      unitemizedUsd: 1,
+    })
+  })
+
+  it('splits from actionMetadata when the column is empty', () => {
+    for (const actionMetadata of [{ rawUsd: 1 }, { dollarCost: 1 }]) {
+      const split = splitUsageCost({ billedUsd: 1.2, rawUsd: null, actionMetadata })
+      expect(split.modelCostUsd).toBe(1)
+      expect(split.shogoFeeUsd).toBeCloseTo(0.2, 10)
+      expect(split.unitemizedUsd).toBe(0)
+    }
+  })
+
+  it('clamps the fee at zero when the provider cost exceeds the billed amount', () => {
+    expect(splitUsageCost({ billedUsd: 1, rawUsd: 1.5 })).toEqual({
+      modelCostUsd: 1,
+      shogoFeeUsd: 0,
+      unitemizedUsd: 0,
+    })
+  })
+
+  it('always adds up to the row cost the UI already shows', () => {
+    const rows = [
+      { billedUsd: 1.2, rawUsd: 1 },
+      { billedUsd: 0, rawUsd: 1 },
+      { billedUsd: 1, rawUsd: null },
+      { billedUsd: 1, rawUsd: 1.5 },
+      { billedUsd: 0, rawUsd: null, actionMetadata: { dollarCost: 0.4 } },
+    ]
+    for (const row of rows) {
+      const split = splitUsageCost(row)
+      const costUsd = (row.billedUsd ?? 0) > 0
+        ? row.billedUsd
+        : (row.rawUsd ?? 0) > 0
+          ? row.rawUsd
+          : ((row.actionMetadata as any)?.dollarCost ?? 0)
+      expect(split.modelCostUsd + split.shogoFeeUsd + split.unitemizedUsd).toBeCloseTo(costUsd as number, 10)
+    }
+  })
+})
+
+describe('calculateUsageCost pricedAs', () => {
+  it('records a DB-priced model as itself, not its bucket', () => {
+    setDbModelPricingProvider((id) => (id === 'hoshi-2-0'
+      ? { inputPerMillion: 1, cachedInputPerMillion: 0.1, cacheWritePerMillion: 1.25, outputPerMillion: 5 }
+      : undefined))
+    try {
+      const r = calculateUsageCost(1_000_000, 1_000_000, 'hoshi-2-0')
+      expect(r.pricedAs).toBe('hoshi-2-0')
+      expect(r.rawUsd).toBeGreaterThan(0)
+    } finally {
+      setDbModelPricingProvider(() => undefined)
+    }
+  })
+
+  it('records a static-catalog model as itself', () => {
+    expect(calculateUsageCost(1_000_000, 1_000_000, 'sonnet').pricedAs).toBe('sonnet')
+  })
+
+  it('records an unknown model as the bucket it was priced at', () => {
+    expect(calculateUsageCost(1_000_000, 1_000_000, 'made-up-model').pricedAs).toBe('sonnet')
   })
 })

@@ -232,7 +232,7 @@ export async function createPrismaClient(): Promise<PrismaClient> {
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 15_000,
   })
-  return new PgClient({
+  const client = new PgClient({
     adapter,
     log: [...logConfig],
     transactionOptions: {
@@ -240,4 +240,9 @@ export async function createPrismaClient(): Promise<PrismaClient> {
       timeout: 30_000,
     },
   })
+  // Writes to a workspace hosted on a paired desktop feed that desktop's pull
+  // (SHO-285). Off only for tools that must not touch the feed.
+  if (process.env.SHOGO_HOST_CHANGE_LOG === 'off') return client
+  const { withHostChangeLog } = await import('./machine-sync/host-change-log')
+  return withHostChangeLog(client) as unknown as PrismaClient
 }

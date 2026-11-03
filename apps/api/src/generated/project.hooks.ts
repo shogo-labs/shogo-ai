@@ -18,7 +18,6 @@ import { accessibleProjects, projectScopeWhere, type Principal } from '../lib/au
 import { withProjectPermissions } from '../lib/authz/project-permissions'
 import { setProjectVisibility } from '../lib/authz/project-access'
 import { hookAccess, hookAuthorize, hookPrincipal, hookRequire } from '../lib/authz/hooks'
-import { resolveTunnelWorkspaceId } from '../lib/tunnel-workspace'
 import {
   projectTaskStateDir,
   removeAppOwnedTree,
@@ -111,13 +110,7 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    let workspaceId = ctx.query.workspaceId
-
-    // Remap a cloud workspaceId to a local one for tunnel-authenticated
-    // requests, keeping a machine workspace id this desktop already knows.
-    if (ctx.tunnelAuthenticated && workspaceId) {
-      workspaceId = await resolveTunnelWorkspaceId(ctx.prisma, workspaceId)
-    }
+    const workspaceId = ctx.query.workspaceId
 
     // Workspace members see open projects, owners/admins see all, guests see
     // only the projects they were added to; restricted projects stay hidden.
@@ -168,13 +161,6 @@ export const projectHooks: ProjectHooks = {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
-    }
-
-    // Tunnel-authenticated requests may carry the cloud workspaceId, which
-    // doesn't exist in the local SQLite DB — remap it so the FK constraint is
-    // satisfied, but keep a machine workspace id this desktop knows.
-    if (ctx.tunnelAuthenticated) {
-      input.workspaceId = await resolveTunnelWorkspaceId(ctx.prisma, input.workspaceId)
     }
 
     const workspaceId = input.workspaceId

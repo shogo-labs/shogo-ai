@@ -1,47 +1,20 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * One row for a workspace, whoever hosts it (SHO-108).
+ * One row for a workspace, whoever hosts it (SHO-108, SHO-285).
  *
- * A machine workspace is not a special kind of row: it is a workspace whose
- * host is a computer, so it draws the same colour tile, the same name, the same
- * `Personal`/`Team` badge and the same checkmark as a cloud workspace. It adds
- * exactly two things — a `Local` chip and its host as the subtitle.
- *
- * Offline hosts stay pressable. Opening one mounts the workspace and shows the
- * app's existing "can't reach <host>" state, which explains itself and recovers
- * on its own; a disabled row explains nothing.
+ * A workspace hosted on a paired desktop is a normal workspace: same tile, name,
+ * badge and checkmark. It adds its host as the subtitle ("Host: odin · online").
+ * Offline hosts stay pressable: the workspace's rows are in the cloud either way.
  */
 
 import { Pressable, Text, View } from 'react-native'
 import { Check, CloudOff } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { workspaceColor, workspaceInitial } from '../../../lib/workspace-color'
-import type { WorkspaceEntry, WorkspaceHost } from '../../../lib/workspace-entries'
+import { hostSubtitle, relativeWhen, type WorkspaceEntry } from '../../../lib/workspace-entries'
 
-/** "just now" / "4 min ago" / "2 h ago" / "3 d ago" — the switcher's one-liner. */
-export function relativeWhen(iso: string | null | undefined, now: number = Date.now()): string {
-  if (!iso) return 'no activity yet'
-  const then = Date.parse(iso)
-  if (Number.isNaN(then)) return 'no activity yet'
-  const seconds = Math.max(0, Math.round((now - then) / 1000))
-  if (seconds < 60) return 'just now'
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes} min ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours} h ago`
-  const days = Math.round(hours / 24)
-  return `${days} d ago`
-}
-
-/** `odin` when the host is live, `odin · Offline · last seen 4 min ago` when not. */
-export function hostSubtitle(host: WorkspaceHost, now: number = Date.now()): string | null {
-  if (host.kind !== 'machine') return null
-  if (host.presence === 'online') return host.hostname
-  const state = host.presence === 'heartbeat' ? 'Reconnecting' : 'Offline'
-  const seen = host.lastSeenAt ? ` · last seen ${relativeWhen(host.lastSeenAt, now)}` : ''
-  return `${host.hostname} · ${state}${seen}`
-}
+export { hostSubtitle, relativeWhen }
 
 export interface WorkspaceRowProps {
   entry: WorkspaceEntry

@@ -21,23 +21,28 @@
  *      once the turn is done; the final segment always stays visible.
  *   3. `extractTurnTiming` — read `data-turn-start` / `data-turn-complete`
  *      (live, from the AI SDK stream) or a persisted `data-turn-timing`
- *      part (see `apps/api/src/routes/project-chat.ts`) off the raw
- *      `UIMessage.parts`, falling back to `message.createdAt`.
- *   4. `formatWorkedDuration` — `8s` / `1m 05s` / `1h 2m`.
- *   5. `shouldShowPlanningStatus` — whether the muted "Planning next
+ *      part (see `apps/api/src/routes/project-chat.ts`), falling back to
+ *      `message.createdAt` only for rows that carry no turn timing at all.
+ *   4. `readTurnProgress` / `isTurnInProgress` — did the runtime open this
+ *      turn and not close it? A reply persisted mid-turn must not render as
+ *      finished (SHO-287).
+ *   5. `formatWorkedDuration` — `8s` / `1m 05s` / `1h 2m`.
+ *   6. `shouldShowPlanningStatus` — whether the muted "Planning next
  *      moves" status line should render at the bottom of a streaming
  *      turn (covers the gap between a finished tool and the next one,
  *      and a streaming reasoning burst — both render as this status
  *      line instead of a live tool widget / ThinkingWidget).
  *
  * Kept dependency-free (only imports `tools/summary.ts` for verb
- * classification) so every branch here is unit-testable without
- * mounting any component.
+ * classification, plus the two wire-tag constants) so every branch here is
+ * unit-testable without mounting any component.
  */
 
 import type { UIMessage } from "@ai-sdk/react";
 import type { MessagePart, GroupedMessagePart } from "./types";
 import { type ToolCallData, isIntegrationTool } from "../tools/types";
+import { TURN_STOPPED_PART_TYPE } from "../stopped-turn";
+import { TURN_INTERRUPTED_PART_TYPE } from "../resume-replay-transport";
 import { getToolSummary, LOOKUP_TOOL_NAMES } from "../tools/summary";
 import { isPublishPlanGate } from "./publish-plan-gate";
 
@@ -344,14 +349,63 @@ export interface TurnTiming {
 }
 
 /**
+ * Whether the runtime opened this turn and whether it closed it.
+ *
+ * Only a row the runtime stamped (`data-turn-start` live, `data-turn-timing`
+ * persisted) counts as opened: a reply written before turn timing existed
+ * carries neither, and must keep rendering as finished history.
+ */
+export interface TurnProgress {
+  /** The runtime opened this turn. */
+  started: boolean;
+  /** The runtime closed it — complete, stopped, or declared interrupted. */
+  closed: boolean;
+}
+
+export function readTurnProgress(message: UIMessage): TurnProgress {
+  const parts = (message as { parts?: unknown }).parts;
+  let started = false;
+  let closed = false;
+  if (!Array.isArray(parts)) return { started, closed };
+
+  for (const part of parts as Array<Record<string, any>>) {
+    const type = part?.type;
+    if (type === "data-turn-start") started = true;
+    if (type === "data-turn-timing") {
+      if (typeof part?.data?.startedAt === "number") started = true;
+      if (typeof part?.data?.completedAt === "number") closed = true;
+    }
+    if (type === "data-turn-complete") closed = true;
+    if (type === TURN_STOPPED_PART_TYPE) closed = true;
+    if (type === TURN_INTERRUPTED_PART_TYPE) closed = true;
+  }
+  return { started, closed };
+}
+
+/**
+ * A turn the runtime opened and has not closed — the row of a turn that is
+ * still running, opened from history. It renders as in progress: work log
+ * expanded, no "Worked for X" header, Stop available (SHO-287).
+ */
+export function isTurnInProgress(message: UIMessage | undefined): boolean {
+  if (!message || message.role !== "assistant") return false;
+  const progress = readTurnProgress(message);
+  return progress.started && !progress.closed;
+}
+
+/**
  * Read turn-level timing off a `UIMessage`. Prefers the live
  * `data-turn-start` / `data-turn-complete` SSE frames (which AI SDK
  * v6 appends to `message.parts` since they're non-transient `data-*`
  * chunks), then the persisted `data-turn-timing` part written by
- * `apps/api/src/routes/project-chat.ts` for historical messages,
- * falling back to `message.createdAt` for `completedAt` when no turn
- * timing was ever recorded (e.g. messages persisted before that
- * change shipped).
+ * `apps/api/src/routes/project-chat.ts`, falling back to
+ * `message.createdAt` for `completedAt` when no turn timing was ever
+ * recorded (e.g. messages persisted before that change shipped).
+ *
+ * The fallback is deliberately narrow: a row that *does* carry a turn start
+ * but no completion is a turn still in flight, and stamping it with its own
+ * `createdAt` made "Worked for 2s" out of a reply nine commands deep
+ * (SHO-287).
  */
 export function extractTurnTiming(message: UIMessage): TurnTiming {
   const parts = (message as { parts?: unknown }).parts;
@@ -377,7 +431,8 @@ export function extractTurnTiming(message: UIMessage): TurnTiming {
     }
   }
 
-  if (completedAt === undefined) {
+  const { started } = readTurnProgress(message);
+  if (completedAt === undefined && !started) {
     const createdAt = (message as { createdAt?: unknown }).createdAt;
     if (createdAt instanceof Date) {
       completedAt = createdAt.getTime();

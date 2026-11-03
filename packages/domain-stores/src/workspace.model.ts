@@ -43,6 +43,8 @@ export const WorkspaceModel = types
     chatProvider: types.optional(types.string, ""),
     agentReplyConcurrency: types.optional(types.number, 0),
     machineInstanceId: types.optional(types.string, ""),
+    /** The paired desktop this workspace runs on (SHO-285); "" for cloud compute. */
+    hostInstanceId: types.optional(types.string, ""),
     /** Set on the copy a move left behind: the workspace that took over. */
     movedToWorkspaceId: types.optional(types.string, ""),
     /** When the switch-over happened, so the banner can say how long ago. */

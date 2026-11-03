@@ -169,6 +169,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   LiveSessionMeter: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   LocalConfig: { decision: 'exclude', reason: 'Desktop-only machine-local configuration (paths, ports); never leaves the machine.' },
   MachineMirrorRow: { decision: 'exclude', reason: 'Machine sync bookkeeping: which paired desktop owns each copied row. Derived from ingest, so a restore rebuilds it by re-syncing.' },
+  HostSyncChange: { decision: 'exclude', reason: 'Hosted-workspace sync bookkeeping: the cloud change feed a paired desktop pulls by cursor. Derived from writes, pruned on its own.' },
   MachineSyncChange: { decision: 'exclude', reason: 'Machine sync bookkeeping: the desktop-side trigger-written change log, read and pruned by the pusher on the machine that wrote it. It never leaves that machine.' },
   MachineSyncState: { decision: 'exclude', reason: 'Machine sync bookkeeping: epoch and acked cursor of one machine copy. Derived from the desktop change log, so a restore rebuilds it.' },
   MarketplaceInstall: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },

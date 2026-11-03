@@ -13,7 +13,7 @@ const HOME = { OR: [{ homeRegion: 'us-ashburn-1' }, { homeRegion: null }] }
 const state = {
   home: HOME as any,
   homeIds: new Set<string>(['ws-home']),
-  /** Workspace ids the cloud holds as a machine copy (`machineInstanceId` set). */
+  /** Workspace ids hosted on a paired desktop (`hostInstanceId` set, SHO-285). */
   machineWorkspaces: [] as string[],
   calls: [] as Array<{ model: string; op: string; args: any }>,
   reminderWorkspaces: ['ws-home', 'ws-peer'],
@@ -33,7 +33,7 @@ const calls = (model: string, op: string) => state.calls.filter((c) => c.model =
  * The slice of Prisma `where` these workers build, enough to answer the only
  * question the copy guard is about: would this query return that row?
  *
- * The workers exclude a machine copy either by `workspaceId: { notIn: … }` or by
+ * The workers exclude a hosted workspace either by `workspaceId: { notIn: … }` or by
  * narrowing to `{ in: […home ids minus the copies…] }`, so both are read here.
  */
 function wouldReturn(where: any, row: { workspaceId: string }): boolean {
@@ -79,9 +79,9 @@ const mockPrisma = {
   },
   workspace: {
     findUnique: async () => ({ kind: 'team', chatMode: null, chatProvider: null, name: 'Team' }),
-    // Both the shared `machineWorkspaceIds()` and the digest's own scan ask for
-    // the copies; the real query filters on `machineInstanceId: { not: null }`,
-    // so answering with the paired set is what the client would return.
+    // Both the shared `hostedWorkspaceIds()` and the digest's own scan ask for
+    // the hosted set; the real query filters on `hostInstanceId: { not: null }`,
+    // so answering with that set is what the client would return.
     findMany: async (args: any) => {
       record('workspace', 'findMany', args)
       return state.machineWorkspaces.map((id) => ({ id }))
@@ -109,10 +109,10 @@ const { sendDueScheduledMessages, fireDueReminders } = await import('../chat-ite
 const { runDigestPass, _setDigestSenderForTests } = await import('../chat-digest')
 const { indexPendingMessages, _setEmbeddingProviderForTests } = await import('../conversation-semantic')
 const { settleOrphanedAgentReplies, sweepDeadAgentReplies } = await import('../conversation-agent-dispatcher')
-const { invalidateMachineWorkspaceIds } = await import('../../lib/machine-workspace')
+const { invalidateHostedWorkspaceIds } = await import('../../lib/hosted-workspace')
 
 beforeEach(() => {
-  invalidateMachineWorkspaceIds()
+  invalidateHostedWorkspaceIds()
   state.calls = []
   state.home = HOME
   state.homeIds = new Set(['ws-home'])
@@ -135,7 +135,7 @@ describe('scheduled messages', () => {
     expect(calls('scheduledMessage', 'findMany')[0].args.where.conversation).toBeUndefined()
   })
 
-  it('never picks up a queued message whose workspace is a machine copy', async () => {
+  it('never picks up a queued message whose workspace is hosted on a desktop', async () => {
     state.machineWorkspaces = ['ws-machine']
     await sendDueScheduledMessages()
     const { where } = calls('scheduledMessage', 'findMany')[0].args
@@ -162,7 +162,7 @@ describe('reminders', () => {
     expect(finds[0].args.where.workspaceId).toBeUndefined()
   })
 
-  it('leaves a machine copy out of both narrowings', async () => {
+  it('leaves a hosted workspace out of both narrowings', async () => {
     state.machineWorkspaces = ['ws-machine']
     // The copy's workspace is homed here too, so the region pass alone would
     // keep it: the machine filter has to remove it a second time.
@@ -222,7 +222,7 @@ describe('email digest', () => {
     expect(finds[0].args.where.workspaceId).toBeUndefined()
   })
 
-  it('emails the plain workspace and skips the one that is a machine copy', async () => {
+  it('emails the plain workspace and skips the one hosted on a desktop', async () => {
     // Single-region, so the copy filter is the only thing narrowing the pass.
     state.home = null
     state.machineWorkspaces = ['ws-machine']

@@ -9,10 +9,11 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native"
 import * as Clipboard from "expo-clipboard"
 import { AgentClient } from "@shogo-ai/sdk/agent"
-import { Copy, Check, X } from "lucide-react-native"
+import { Copy, Check, X, Link2 } from "lucide-react-native"
 import { agentFetch } from "../../lib/agent-fetch"
 import { API_URL } from "../../lib/api-url"
 import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
+import { workspaceFileLink } from "../../lib/team-chat-links"
 import { useResolvedTheme } from "../../contexts/theme"
 import { FileTypeIcon } from "../chat/FileTypeIcon"
 import { MarkdownMediaNative } from "../chat/MarkdownMediaNative"
@@ -38,8 +39,11 @@ export interface WorkspaceFileViewerProps {
   projectId?: string | null
   /** That project's name, for the not-found message. */
   projectName?: string | null
-  /** A paired desktop's relay prefix, when the workspace lives on that machine. */
-  relayBase?: string | null
+  /**
+   * The workspace the file belongs to, so the header can copy a link that
+   * reopens it for anyone in the workspace (SHO-284).
+   */
+  workspaceId?: string | null
   /** Changes when the same path is opened again, so the file reloads. */
   nonce: number
   onClose: () => void
@@ -103,7 +107,7 @@ export function WorkspaceFileViewer({
   path,
   projectId,
   projectName,
-  relayBase,
+  workspaceId,
   nonce,
   onClose,
 }: WorkspaceFileViewerProps) {
@@ -118,13 +122,13 @@ export function WorkspaceFileViewer({
       list.push({ baseUrl: agentUrl, path: projectId ? `${projectId}/${path}` : path })
     }
     const projectBase = projectId
-      ? projectAgentProxyBase({ projectId, relayBase, apiUrl: API_URL })
+      ? projectAgentProxyBase({ projectId, apiUrl: API_URL })
       : null
     if (projectBase && projectBase !== agentUrl) {
       list.push({ baseUrl: projectBase, path })
     }
     return list
-  }, [agentUrl, path, projectId, relayBase])
+  }, [agentUrl, path, projectId])
   // The source the file was actually read from; until a read answers, the last
   // one is assumed — an owning project's runtime always has the file, the
   // workspace's may not.
@@ -132,8 +136,14 @@ export function WorkspaceFileViewer({
   const source = readSource ?? sources[sources.length - 1] ?? null
   const isDark = useResolvedTheme() === "dark"
   const name = basename(path)
+  // The path the workspace runtime addresses this file by: a mounted project's
+  // file lives at `<projectId>/<path>` under its merged root, a bare path is
+  // the root's own. `path` is project-relative whenever `projectId` is set, so
+  // the link — and only the link — has to put the project back (SHO-284).
+  const workspacePath = projectId ? `${projectId}/${path}` : path
   const [state, setState] = useState<ViewState>({ status: "loading" })
   const [copied, setCopied] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
 
   useEffect(() => {
     if (sources.length === 0) {
@@ -194,6 +204,20 @@ export function WorkspaceFileViewer({
     }
   }
 
+  // Who can open the link: workspace membership decides, so the link carries
+  // the workspace id and the file's workspace-relative path — no token, no
+  // secret.
+  const copyLink = async () => {
+    if (!workspaceId) return
+    try {
+      await Clipboard.setStringAsync(workspaceFileLink({ workspaceId, path: workspacePath }))
+      setLinkCopied(true)
+      setTimeout(() => setLinkCopied(false), 1500)
+    } catch {
+      // Clipboard is best-effort.
+    }
+  }
+
   return (
     <View className="min-h-0 flex-1 bg-background" testID="workspace-file-viewer">
       <View className="flex-row items-center gap-2 border-b border-border px-3 py-2">
@@ -201,7 +225,25 @@ export function WorkspaceFileViewer({
         <Text className="min-w-0 flex-1 text-sm font-medium text-foreground" numberOfLines={1}>
           {path}
         </Text>
-        <DownloadChip path={source?.path ?? path} agentUrl={source?.baseUrl ?? null} />
+        <DownloadChip
+          variant="icon"
+          path={source?.path ?? path}
+          agentUrl={source?.baseUrl ?? null}
+        />
+        {workspaceId ? (
+          <Pressable
+            onPress={copyLink}
+            accessibilityRole="button"
+            accessibilityLabel={linkCopied ? "Link copied" : "Copy link to file"}
+            className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+          >
+            {linkCopied ? (
+              <Check size={15} className="text-muted-foreground" />
+            ) : (
+              <Link2 size={15} className="text-muted-foreground" />
+            )}
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={copyPath}
           accessibilityRole="button"

@@ -129,7 +129,7 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
         WHERE ac."heartbeatEnabled" = true
           -- A workspace whose rows live on a paired desktop already heartbeats
           -- there (SHO-185); the cloud copy is for reading, not for running.
-          AND w."machineInstanceId" IS NULL
+          AND w."hostInstanceId" IS NULL
           AND (ac."nextHeartbeatAt" IS NULL OR ac."nextHeartbeatAt" <= NOW())
           AND (
             EXISTS (

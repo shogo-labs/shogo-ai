@@ -167,6 +167,34 @@ async function serverTurn(sessionId: string): Promise<string> {
   return body.status ?? "unknown"
 }
 
+/**
+ * The token numbers of turn `tag` in the chat's **saved** assistant rows, read
+ * back through the API. The window rebuilds a resumed reply from the runtime's
+ * replay, so a reply that shows twice could also mean the row itself holds the
+ * turn twice — and then every reload shows it twice again (SHO-278).
+ */
+async function savedTokenSeq(sessionId: string, tag: string): Promise<number[]> {
+  const query = new URLSearchParams({
+    sessionId,
+    agent: "technical",
+    limit: "200",
+    offset: "0",
+    orderBy: "createdAt:asc",
+  })
+  const res = await apiJson<any>("GET", `/api/chat-messages?${query.toString()}`)
+  const items: any[] = res?.items ?? res?.data ?? []
+  const re = new RegExp(`t${tag}w(\\d{4})`, "g")
+  const out: number[] = []
+  for (const row of items) {
+    if (row?.role !== "assistant") continue
+    const text = String(row.content ?? "")
+    let m: RegExpExecArray | null
+    while ((m = re.exec(text))) out.push(Number(m[1]))
+    re.lastIndex = 0
+  }
+  return out
+}
+
 // ── Window helpers ──────────────────────────────────────────────────────────
 
 const composer = (page: Page) => page.getByTestId("project-composer-input").filter({ visible: true }).first()
@@ -416,6 +444,13 @@ async function expectQueuedBehindLiveTurn(page: Page, sessionId: string, lead: s
   await expect(composer(page)).toBeVisible({ timeout: 120_000 })
   await expectComplete(page, lead, leadN, `${label}, after reload`)
   await expectComplete(page, follow, followN, `${label}, after reload`)
+  // The reply on screen after the reload was rebuilt from the replay; the saved
+  // row has to hold the turn once, or every reload shows it twice (SHO-278).
+  const saved = await savedTokenSeq(sessionId, lead)
+  soft(
+    saved.length === leadN && saved.every((v, i) => v === i + 1),
+    `${label}: the saved reply holds "${lead}" once (want 1..${leadN}; the row has ${saved.length} tokens, ${new Set(saved).size} distinct)`,
+  ).toBe(true)
   soft(await serverTurn(sessionId), `${label}: server turn at the end`).not.toBe("active")
 }
 

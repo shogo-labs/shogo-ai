@@ -23,11 +23,10 @@
 import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
-import { machineCopyOwnerIds } from '../lib/machine-workspace'
-import { retireMachineSiblings } from '../lib/machine-siblings'
+import { hostingInstanceIds } from '../lib/hosted-workspace'
 import { resolveInstanceIdentity, findIdentityRow, deviceIdFrom } from '../lib/instance-identity'
 import { can } from '../lib/authz'
-import { deleteMachineCopy } from '../lib/machine-sync/ingest'
+import { releaseHostedWorkspaces } from '../lib/machine-sync/ingest'
 import { resolveApiKey } from './api-keys'
 import { logRemoteAction, classifyAction } from './remote-audit'
 import {
@@ -765,28 +764,6 @@ export function instanceRoutes() {
     const nextPollIn = await computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
     const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id, { retry: false })
 
-    // One machine, one row (SHO-241 §C). Older desktops opened a tunnel per
-    // stored device key and so hold a row per workspace; this is the only place
-    // the cloud learns those are one machine. A `cli_worker` row is a workspace's
-    // dev box, not the person's machine, so it is left alone.
-    if (kind !== InstanceKind.cli_worker) {
-      try {
-        await retireMachineSiblings({
-          instanceId: instance.id,
-          workspaceId: resolved.workspaceId,
-          userId: resolved.userId,
-          hostname: body.hostname,
-          kind,
-          deviceId,
-          metadata: body.metadata,
-        })
-      } catch (err) {
-        // Never fail a heartbeat over cleanup: the machine stays reachable and
-        // the next heartbeat tries again.
-        console.warn('[Instances] sibling cleanup failed:', (err as Error)?.message ?? err)
-      }
-    }
-
     // Where the desktop should open its on-demand WebSocket. In staging
     // / production this points at a non-DomainMapping host
     // (`tunnel.staging.shogo.ai` / `tunnel.shogo.ai`) that bypasses the
@@ -930,7 +907,7 @@ export function instanceRoutes() {
     const grouped = groupMachinesByHostname(instances, {
       preferWorkspaceId: ownerScoped ? null : workspaceId,
       nameFor: (id) => workspaceNames.get(id),
-      copyOwners: await machineCopyOwnerIds(instances.map((inst) => inst.id)),
+      copyOwners: await hostingInstanceIds(instances.map((inst) => inst.id)),
     })
 
     const withLiveStatus = await Promise.all(grouped.map(async ({ row: inst, workspaces, rows: machineRows }) => ({
@@ -1133,10 +1110,10 @@ export function instanceRoutes() {
       conn.ws.close(4000, 'Instance removed')
     }
 
-    // Unpairing takes the cloud copy with it (SHO-185): a machine that is gone
-    // must not leave its records readable in the workspace it was copied into.
-    await deleteMachineCopy(prisma, instance.id).catch((err: any) => {
-      console.warn(`[Instances] could not remove the copy for ${instance.id}: ${err?.message ?? err}`)
+    // Unpairing hands the machine's hosted workspaces back to cloud compute
+    // (SHO-285). Their rows stay: they are the person's workspaces.
+    await releaseHostedWorkspaces(prisma, instance.id).catch((err: any) => {
+      console.warn(`[Instances] could not release hosted workspaces of ${instance.id}: ${err?.message ?? err}`)
     })
 
     await prisma.instance.delete({ where: { id: instance.id } })

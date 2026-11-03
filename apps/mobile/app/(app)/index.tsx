@@ -14,7 +14,7 @@ import {
   TouchableWithoutFeedback,
   useWindowDimensions,
 } from 'react-native'
-import { useRouter } from 'expo-router'
+import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import { LinearGradient } from 'expo-linear-gradient'
@@ -33,12 +33,6 @@ import {
 } from '../../contexts/domain'
 import { ComposerPlusSection } from '../../components/chat/ComposerPlusMenu'
 import { WorkspaceMovedBanner } from '../../components/settings/WorkspaceMovedBanner'
-import {
-  MachineWorkspaceBanner,
-  useMachineWorkspace,
-} from '../../components/instance/MachineWorkspaceBanner'
-import { isMachineConditionError } from '@shogo/shared-app/services'
-import { useActiveInstance } from '../../contexts/active-instance'
 import {
   ChatInput,
   DEFAULT_MODEL,
@@ -336,12 +330,6 @@ export const HomeScreen = observer(function HomeScreen({
   const draftRef = useRef<HomeDraft | null>(null)
   const draftPromiseRef = useRef<Promise<HomeDraft | null> | null>(null)
   const draftPrewarmedRef = useRef<Set<string>>(new Set())
-  // The last submission the machine refused, kept only long enough for the
-  // banner's Try again (and the waking auto-retry) to re-run it.
-  const lastRefusedRef = useRef<{
-    text: string
-    files?: FileAttachment[]
-  } | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   // APP_MODE_DISABLED: homeAppTemplates state removed
 
@@ -388,6 +376,12 @@ export const HomeScreen = observer(function HomeScreen({
   // what the agent screen, its projects and its composer belong to (SHO-130).
   const workspaceInView = useWorkspaceInView()
   const currentExperience = useWorkspaceExperience()
+  // A reload of `/` must land back on the chat that was open, so the agent
+  // chat puts its session in the URL and the landing honours it (SHO-287).
+  const homeParams = useLocalSearchParams<{ chatSessionId?: string | string[] }>()
+  const homeChatSessionId = Array.isArray(homeParams.chatSessionId)
+    ? homeParams.chatSessionId[0]
+    : homeParams.chatSessionId
   // `/` lands on the workspace agent on an empty chat for every workspace
   // kind and width; `/(app)/home` keeps the pre-landing layout (phone feed /
   // wide builder) and `/(app)/new-project` pins the builder.
@@ -689,13 +683,6 @@ export const HomeScreen = observer(function HomeScreen({
             prewarmHomeDraft(draft, currentWorkspace.id)
           }
         } catch (err: any) {
-          if (isMachineConditionError(err)) {
-            // The machine is asleep or still waking: the banner says so and
-            // offers Try again, so keep the submission to re-run rather than
-            // showing a second, worse explanation in an alert.
-            lastRefusedRef.current = { text, files }
-            return
-          }
           const detail = err?.message || err?.details?.error?.message || String(err)
           console.error('[Home] Failed to create project:', detail, err)
           Alert.alert('Error', `Failed to create project: ${detail}`)
@@ -922,26 +909,6 @@ export const HomeScreen = observer(function HomeScreen({
     }
   }, [isAuthenticated, localMode, router])
 
-  // A machine workspace cannot take a write while its Mac is asleep, so the
-  // composer is disabled from the same state the banner renders — and the banner
-  // says which of the two things is true, waking or offline.
-  //
-  // These three hooks stay above every early return below: `homeSurface` and
-  // `rendersAgentChat` both flip while the workspace loads, and a hook that only
-  // runs on the second render throws "Rendered more hooks than during the
-  // previous render" — which blanks the whole app behind the error boundary.
-  const { instance: machineInstance } = useActiveInstance()
-  const retryMachineRequest = useCallback(() => {
-    const refused = lastRefusedRef.current
-    if (!refused) return
-    lastRefusedRef.current = null
-    return createProjectFromPrompt(refused.text, refused.files)
-  }, [createProjectFromPrompt])
-  const machineView = useMachineWorkspace({
-    machineName: machineInstance?.name,
-    onRetry: retryMachineRequest,
-  })
-
   if (!isAuthenticated) {
     if (localMode) {
       return null
@@ -986,6 +953,7 @@ export const HomeScreen = observer(function HomeScreen({
     return (
       <WorkspaceAgentChatScreen
         key={workspaceInView?.id ?? 'workspace-loading'}
+        initialSessionId={homeChatSessionId}
         startNewSession
       />
     )
@@ -1043,7 +1011,7 @@ export const HomeScreen = observer(function HomeScreen({
   const composer = usesMobileWorkspaceChrome ? (
     <ChatInput
       onSubmit={(text, files) => handlePromptSubmit(text, files)}
-      disabled={isCreating || machineView.composeDisabled}
+      disabled={isCreating}
       placeholder="Describe the project you want to build..."
       composer={currentExperience.composer}
       presentation="agent"
@@ -1057,7 +1025,6 @@ export const HomeScreen = observer(function HomeScreen({
       <ChatInput
         onSubmit={(text, files) => handlePromptSubmit(text, files)}
         submitting={isCreating}
-        disabled={machineView.composeDisabled}
         typingPlaceholder
         composer={currentExperience.composer}
         selectedModel={selectedModel}
@@ -1163,10 +1130,6 @@ export const HomeScreen = observer(function HomeScreen({
             }}
           >
             <WorkspaceMovedBanner />
-            <MachineWorkspaceBanner
-              machineName={machineInstance?.name}
-              onRetry={retryMachineRequest}
-            />
             {composer}
           </Animated.View>
         </View>

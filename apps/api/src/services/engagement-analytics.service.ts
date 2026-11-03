@@ -47,6 +47,7 @@ import {
   type WorkTotals,
 } from '../lib/engagement-compute'
 import { periodToWindow, type AnalyticsPeriod } from './analytics.service'
+import { splitUsageCost } from '../lib/usage-cost'
 
 export type EngagementPeriod = AnalyticsPeriod | 'all'
 
@@ -385,6 +386,7 @@ export async function collectActivity(
         tokens: Number(meta.totalTokens) || 0,
         model: String(meta.model || meta.modelUsed || 'unknown'),
         costUsd: usageCostUsd(e, meta),
+        ...splitUsageCost({ billedUsd: e.billedUsd, rawUsd: e.rawUsd, actionMetadata: meta }),
       }
     }),
     tools: toolCalls.map((t) => ({

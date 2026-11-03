@@ -99,6 +99,12 @@ export interface UsageSummaryEntry {
   totalTokens: number
   totalBilledUsd: number
   totalRawUsd: number
+  /** Provider price for this user × model (the "Model cost" line). */
+  modelCostUsd?: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd?: number
+  /** Billed rows with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd?: number
   avgDurationMs: number
   /** Desktop requests recorded without rates for their model (cost 0, not a guess). */
   unpricedRequests?: number
@@ -113,6 +119,11 @@ export interface UsageSummaryData {
     totalTokens: number
     totalBilledUsd: number
     totalRawUsd: number
+    modelCostUsd?: number
+    shogoFeeUsd?: number
+    unitemizedUsd?: number
+    /** The fee as a percentage of model cost, derived from the server's markup. */
+    shogoFeePercent?: number
     unpricedRequests?: number
     totalToolCalls: number
     uniqueUsers: number
@@ -137,6 +148,12 @@ export interface UsageLogEntry {
   totalTokens: number
   billedUsd: number
   rawUsd: number
+  /** Provider price for this request (the "Model cost" line). */
+  modelCostUsd?: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd?: number
+  /** Billed with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd?: number
   durationMs: number
   success: boolean
   createdAt: string
@@ -196,6 +213,69 @@ export function formatDollarCost(cost: number | null | undefined): string {
 export function formatPartialCost(cost: number | null | undefined, unpriced = 0, requests = 0): string {
   if (unpriced > 0 && unpriced >= requests) return 'Unknown'
   return unpriced > 0 ? `${formatDollarCost(cost)}+` : formatDollarCost(cost)
+}
+
+/**
+ * The two lines every spend figure shows: the provider's model cost, then the
+ * Shogo fee on top of it. The server computes the split per row (so the clamp
+ * is applied before summing); the client only renders it.
+ */
+export interface CostSplitFields {
+  modelCostUsd?: number
+  shogoFeeUsd?: number
+  unitemizedUsd?: number
+  shogoFeePercent?: number
+}
+
+/**
+ * The total a row shows: model cost + Shogo fee + anything billed before
+ * itemized billing existed. Falls back to the legacy billed/raw pair when the
+ * server did not send the split (an older API or a partial fixture), using the
+ * same rule the server uses for `costUsd`: billed when it is positive, else raw.
+ */
+export function splitTotalUsd(
+  entry: CostSplitFields & {
+    totalBilledUsd?: number
+    totalRawUsd?: number
+    billedUsd?: number
+    rawUsd?: number
+  },
+): number {
+  if (entry.modelCostUsd == null && entry.shogoFeeUsd == null && entry.unitemizedUsd == null) {
+    const billed = entry.totalBilledUsd ?? entry.billedUsd
+    const raw = entry.totalRawUsd ?? entry.rawUsd
+    return billed && billed > 0 ? billed : raw ?? 0
+  }
+  return (entry.modelCostUsd ?? 0) + (entry.shogoFeeUsd ?? 0) + (entry.unitemizedUsd ?? 0)
+}
+
+/** "Model $X · Shogo fee $Y (20%)", plus the pre-itemized note when it applies. */
+export function CostSplitLines({
+  entry,
+  className,
+  textClassName,
+}: {
+  entry: CostSplitFields
+  className?: string
+  textClassName?: string
+}) {
+  const model = entry.modelCostUsd ?? 0
+  const fee = entry.shogoFeeUsd ?? 0
+  const unitemized = entry.unitemizedUsd ?? 0
+  const percent = entry.shogoFeePercent
+  return (
+    <View className={className}>
+      <Text className={cn('text-[10px] text-muted-foreground', textClassName)} numberOfLines={1}>
+        Model {formatDollarCost(model)} · Shogo fee {formatDollarCost(fee)}
+        {percent != null ? ` (${percent}%)` : ''}
+      </Text>
+      {unitemized > 0 ? (
+        <Text className={cn('text-[10px] text-muted-foreground', textClassName)} numberOfLines={1}>
+          · {formatDollarCost(unitemized)} before itemized billing (Apr 24 2026)
+        </Text>
+      ) : null}
+    </View>
+  )
 }
 
 type AnalyticsModelFamily = ModelFamily | 'o-series'
@@ -296,12 +376,15 @@ export function StatCard({
   value,
   icon: Icon,
   subtitle,
+  footer,
   comfortable = false,
 }: {
   label: string
   value: number | string | undefined
   icon: React.ComponentType<{ size?: number; className?: string }>
   subtitle?: string
+  /** Extra line under the value (e.g. the model-cost / Shogo-fee split). */
+  footer?: React.ReactNode
   comfortable?: boolean
 }) {
   const { density } = useAnalyticsDensity(comfortable)
@@ -320,6 +403,7 @@ export function StatCard({
       {subtitle && (
         <Text className={cn("text-muted-foreground mt-0.5", density.text.caption)}>{subtitle}</Text>
       )}
+      {footer}
     </View>
   )
 }
@@ -425,16 +509,14 @@ export function ChatAnalyticsSection({ data, loading }: { data: ChatAnalyticsDat
 // =============================================================================
 
 type SortKey =
-  | 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'totalBilledUsd' | 'totalRawUsd'
+  | 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'modelCostUsd' | 'shogoFeeUsd'
 
 export function UsageSummaryView({
   data,
-  isLocalMode,
   onPageChange,
   currentPage,
 }: {
   data: UsageSummaryData
-  isLocalMode?: boolean
   onPageChange?: (p: number) => void
   currentPage?: number
 }) {
@@ -465,8 +547,8 @@ export function UsageSummaryView({
     else { setSortKey(key); setSortDir('desc') }
   }
 
-  const costKey: SortKey = isLocalMode ? 'totalRawUsd' : 'totalBilledUsd'
-  const costLabel = isLocalMode ? 'Raw $' : 'Billed $'
+  const costKey: SortKey = 'modelCostUsd'
+  const costLabel = 'Model $'
 
   const pagination = onPageChange && data.total != null && data.limit != null && data.total > data.limit ? (() => {
     const page = currentPage ?? data.page ?? 1
@@ -503,6 +585,7 @@ export function UsageSummaryView({
       { key: 'requestCount', label: 'Reqs' },
       { key: 'totalTokens', label: 'Tokens' },
       { key: costKey, label: costLabel },
+      { key: 'shogoFeeUsd', label: 'Fee $' },
     ]
 
     return (
@@ -527,10 +610,11 @@ export function UsageSummaryView({
             <Text className="text-xl font-bold text-foreground">{formatNumber(data.totals?.totalRequests)}</Text>
           </View>
           <View className="min-w-[46%] flex-1 rounded-xl border border-border/50 bg-muted/40 p-3">
-            <Text className="mb-1 text-sm text-muted-foreground">{costLabel}</Text>
+            <Text className="mb-1 text-sm text-muted-foreground">Total spend</Text>
             <Text className="text-xl font-bold text-foreground" numberOfLines={1}>
-              {formatPartialCost(isLocalMode ? data.totals?.totalRawUsd : data.totals?.totalBilledUsd, data.totals?.unpricedRequests, data.totals?.totalRequests)}
+              {formatPartialCost(splitTotalUsd(data.totals ?? {}), data.totals?.unpricedRequests, data.totals?.totalRequests)}
             </Text>
+            <CostSplitLines entry={data.totals ?? {}} className="mt-1" textClassName="text-xs" />
           </View>
         </View>
 
@@ -601,9 +685,12 @@ export function UsageSummaryView({
                   <Text className="text-sm text-muted-foreground">
                     {formatNumber(entry.totalTokens)} tokens
                   </Text>
-                  <Text className="shrink-0 font-mono text-base font-medium text-foreground" numberOfLines={1}>
-                    {formatPartialCost(isLocalMode ? entry.totalRawUsd : entry.totalBilledUsd, entry.unpricedRequests, entry.requestCount)}
-                  </Text>
+                  <View className="shrink-0 items-end">
+                    <Text className="font-mono text-base font-medium text-foreground" numberOfLines={1}>
+                      {formatPartialCost(splitTotalUsd(entry), entry.unpricedRequests, entry.requestCount)}
+                    </Text>
+                    <CostSplitLines entry={entry} className="items-end" textClassName="text-xs" />
+                  </View>
                 </View>
               </View>
             ))}
@@ -637,10 +724,11 @@ export function UsageSummaryView({
           <Text className="text-base font-bold text-foreground">{formatNumber(data.totals?.totalRequests)}</Text>
         </View>
         <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
-          <Text className="text-[10px] text-muted-foreground mb-0.5">{isLocalMode ? 'Raw $' : 'Billed $'}</Text>
+          <Text className="text-[10px] text-muted-foreground mb-0.5">Total spend</Text>
           <Text className="text-base font-bold text-foreground">
-            {formatPartialCost(isLocalMode ? data.totals?.totalRawUsd : data.totals?.totalBilledUsd, data.totals?.unpricedRequests, data.totals?.totalRequests)}
+            {formatPartialCost(splitTotalUsd(data.totals ?? {}), data.totals?.unpricedRequests, data.totals?.totalRequests)}
           </Text>
+          <CostSplitLines entry={data.totals ?? {}} className="mt-0.5" />
         </View>
       </View>
 
@@ -664,8 +752,8 @@ export function UsageSummaryView({
         <Pressable onPress={() => toggleSort('totalTokens')} className="w-16 flex-row items-center justify-end gap-1">
           <Text className="text-[10px] font-medium text-muted-foreground">Tokens</Text>
         </Pressable>
-        <Pressable onPress={() => toggleSort(isLocalMode ? 'totalRawUsd' : 'totalBilledUsd')} className="w-14 flex-row items-center justify-end gap-1">
-          <Text className="text-[10px] font-medium text-muted-foreground">{isLocalMode ? 'Raw $' : 'Billed $'}</Text>
+        <Pressable onPress={() => toggleSort(costKey)} className="w-14 flex-row items-center justify-end gap-1">
+          <Text className="text-[10px] font-medium text-muted-foreground">Total</Text>
         </Pressable>
       </View>
 
@@ -711,9 +799,12 @@ export function UsageSummaryView({
               <Text className="w-16 text-right text-[10px] font-mono text-foreground">
                 {formatNumber(entry.totalTokens)}
               </Text>
-              <Text className="w-14 text-right text-[10px] font-mono text-foreground">
-                {formatPartialCost(isLocalMode ? entry.totalRawUsd : entry.totalBilledUsd, entry.unpricedRequests, entry.requestCount)}
-              </Text>
+              <View className="w-14 items-end">
+                <Text className="text-right text-[10px] font-mono text-foreground">
+                  {formatPartialCost(splitTotalUsd(entry), entry.unpricedRequests, entry.requestCount)}
+                </Text>
+                <CostSplitLines entry={entry} className="items-end" />
+              </View>
             </View>
           ))}
         </View>
@@ -728,12 +819,10 @@ export function UsageEventLogView({
   data,
   onPageChange,
   currentPage,
-  isLocalMode,
 }: {
   data: UsageLogData
   onPageChange?: (p: number) => void
   currentPage: number
-  isLocalMode?: boolean
 }) {
   const { comfortable, density } = useAnalyticsDensity()
   const { ChevronLeft, ChevronRight, Clock } = useSharedAnalyticsIcons()
@@ -824,9 +913,12 @@ export function UsageEventLogView({
                   <Text className="text-sm text-muted-foreground">
                     Tokens {formatNumber(entry.totalTokens)}
                   </Text>
-                  <Text className="shrink-0 font-mono text-base font-medium text-foreground" numberOfLines={1}>
-                    {formatDollarCost(isLocalMode ? entry.rawUsd : entry.billedUsd)}
-                  </Text>
+                  <View className="shrink-0 items-end">
+                    <Text className="font-mono text-base font-medium text-foreground" numberOfLines={1}>
+                      {formatDollarCost(splitTotalUsd(entry))}
+                    </Text>
+                    <CostSplitLines entry={entry} className="items-end" textClassName="text-xs" />
+                  </View>
                 </View>
               </View>
             ))}
@@ -849,7 +941,7 @@ export function UsageEventLogView({
         <Text className="flex-1 text-[10px] font-medium text-muted-foreground">User</Text>
         <Text className="w-20 text-[10px] font-medium text-muted-foreground">Model</Text>
         <Text className="w-14 text-right text-[10px] font-medium text-muted-foreground">Tokens</Text>
-        <Text className="w-12 text-right text-[10px] font-medium text-muted-foreground">{isLocalMode ? 'Raw $' : '$'}</Text>
+        <Text className="w-12 text-right text-[10px] font-medium text-muted-foreground">Total</Text>
         <View className="w-10 items-end">
           <Clock size={10} className="text-muted-foreground" />
         </View>
@@ -898,9 +990,12 @@ export function UsageEventLogView({
               <Text className="w-14 text-right text-[10px] font-mono text-muted-foreground">
                 {formatNumber(entry.totalTokens)}
               </Text>
-              <Text className="w-12 text-right text-[10px] font-mono text-foreground">
-                {formatDollarCost(isLocalMode ? entry.rawUsd : entry.billedUsd)}
-              </Text>
+              <View className="w-12 items-end">
+                <Text className="text-right text-[10px] font-mono text-foreground">
+                  {formatDollarCost(splitTotalUsd(entry))}
+                </Text>
+                <CostSplitLines entry={entry} className="items-end" />
+              </View>
               <Text className="w-10 text-right text-[9px] text-muted-foreground">
                 {formatDuration(entry.durationMs)}
               </Text>
@@ -924,7 +1019,6 @@ export function UsageTableSection({
   onSummaryPageChange,
   summaryPage,
   title,
-  isLocalMode,
 }: {
   summaryData: UsageSummaryData | null
   logData: UsageLogData | null
@@ -935,7 +1029,6 @@ export function UsageTableSection({
   onSummaryPageChange?: (p: number) => void
   summaryPage?: number
   title?: string
-  isLocalMode?: boolean
 }) {
   const { comfortable, density } = useAnalyticsDensity()
   const [view, setView] = useState<'summary' | 'detail'>('summary')
@@ -997,7 +1090,6 @@ export function UsageTableSection({
         ) : summaryData ? (
           <UsageSummaryView
             data={summaryData}
-            isLocalMode={isLocalMode}
             onPageChange={onSummaryPageChange}
             currentPage={summaryPage}
           />
@@ -1009,7 +1101,7 @@ export function UsageTableSection({
       ) : logLoading ? (
         <View className="items-center py-8"><ActivityIndicator /></View>
       ) : logData ? (
-        <UsageEventLogView data={logData} onPageChange={onLogPageChange} currentPage={logPage} isLocalMode={isLocalMode} />
+        <UsageEventLogView data={logData} onPageChange={onLogPageChange} currentPage={logPage} />
       ) : (
         <View className="py-8 items-center">
           <Text className="text-sm text-muted-foreground">No usage events available</Text>
@@ -1520,6 +1612,14 @@ export interface SpendTimeseriesData {
     totalSpendUsd: number
     totalIncludedUsd: number
     totalOnDemandUsd: number
+    /** Provider price across the window (the "Model cost" line). */
+    modelCostUsd?: number
+    /** What we add on top of the provider price (the "Shogo fee" line). */
+    shogoFeeUsd?: number
+    /** Billed rows with no recorded provider cost (pre-2026-04-24). */
+    unitemizedUsd?: number
+    /** The fee as a percentage of model cost, derived from the server's markup. */
+    shogoFeePercent?: number
     uniqueModels: number
   }
   models: string[]
@@ -1732,7 +1832,6 @@ export function UsageTimeseriesChart({
   metric,
   onGroupByChange,
   onMetricChange,
-  isLocalMode,
   title = 'Usage Over Time',
   subtitle = 'Daily usage grouped by series',
   groupByOptions,
@@ -1746,7 +1845,6 @@ export function UsageTimeseriesChart({
   metric: SpendMetric
   onGroupByChange: (v: SpendGroupBy) => void
   onMetricChange: (v: SpendMetric) => void
-  isLocalMode?: boolean
   title?: string
   subtitle?: string
   groupByOptions?: readonly SpendGroupBy[]
@@ -1798,8 +1896,9 @@ export function UsageTimeseriesChart({
       {showTotals && metric === 'spend' && data && (
         <View className="flex-row flex-wrap gap-2">
           <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
-            <Text className="text-[10px] text-muted-foreground mb-0.5">Total {isLocalMode ? 'cost' : 'spend'}</Text>
+            <Text className="text-[10px] text-muted-foreground mb-0.5">Total spend</Text>
             <Text className="text-base font-bold text-foreground">{chartUsd(data.totals.totalSpendUsd)}</Text>
+            <CostSplitLines entry={data.totals} className="mt-0.5" />
           </View>
           <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
             <Text className="text-[10px] text-muted-foreground mb-0.5">Included</Text>

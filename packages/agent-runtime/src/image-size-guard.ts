@@ -57,6 +57,26 @@ import type { ImageContent, Message, TextContent } from '@mariozechner/pi-ai'
 export const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024 - 4096
 
 /**
+ * Maximum base64 string length for one video block on the wire.
+ *
+ * Video only travels inline — there is no per-block cap, the binding limit is
+ * the *whole request*. OpenRouter documents none, so this is anchored to the
+ * tightest number a provider actually publishes: past 20 MB of inline data
+ * Gemini's API insists on the File API instead. A request also carries the
+ * system prompt, tools and the rest of the conversation, so the video budget
+ * stops short of the full 20 MB.
+ */
+export const MAX_VIDEO_INLINE_BASE64_BYTES = 15 * 1024 * 1024
+
+/**
+ * The same budget as a raw file size: base64 inflates bytes by ~4/3, so this
+ * is the largest clip whose encoded form still fits. Callers check raw size
+ * (cheap, before reading) against this; it is the equivalent of the base64
+ * budget above, not a second, independent limit.
+ */
+export const MAX_VIDEO_INLINE_BYTES = Math.floor((MAX_VIDEO_INLINE_BASE64_BYTES * 3) / 4)
+
+/**
  * Image MIME types every provider we route to (Anthropic, DeepSeek, and
  * OpenAI-compatible custom providers) documents support for. Deliberately
  * conservative — anything outside this set has been observed to produce a
@@ -502,6 +522,26 @@ export function buildInvalidImagePlaceholder(opts: InvalidImagePlaceholderOption
   return { type: 'text', text: lines.join(' ') }
 }
 
+/**
+ * Build a TextContent block that replaces a video block sent to a model that
+ * cannot watch video. Names the problem and a model that can, since there is
+ * no local conversion that would help.
+ */
+export function buildUnsupportedVideoPlaceholder(opts: {
+  label: string
+  mimeType?: string
+  pathHint?: string
+}): TextContent {
+  const { label, mimeType, pathHint } = opts
+  const lines: string[] = [
+    `[Video omitted — ${label}]`,
+    `Reason: this model cannot watch video${mimeType ? ` (${mimeType})` : ''}. ` +
+      "Use a video-native model (e.g. 'GLM 5.3 Flash') to send video input.",
+  ]
+  if (pathHint) lines.push(`The file is still on disk at "${pathHint}".`)
+  return { type: 'text', text: lines.join(' ') }
+}
+
 /** Per-image pixel cap a provider enforces (see `ImageGuardOptions`). */
 export interface ImageGuardOptions {
   /**
@@ -512,6 +552,14 @@ export interface ImageGuardOptions {
    * stable for every session that never hit the cap.
    */
   maxDimension?: number
+  /**
+   * The current model accepts video input (`capabilities.supportsVideoInput`).
+   * When true, `video/*` blocks pass through untouched — they are not images,
+   * so the image format/size/decode rules do not apply, and there is no video
+   * decoder here to validate them. When false, a `video/*` block is replaced
+   * with a placeholder so the bytes never reach a provider that would 400.
+   */
+  allowVideo?: boolean
 }
 
 /**
@@ -538,6 +586,22 @@ export function enforceImageSizeLimit(
       continue
     }
     const normalizedMime = block.mimeType?.toLowerCase().trim()
+    // Video is not an image: the image format/size/decode rules below would
+    // throw every video away. Pass it through only when the model can watch
+    // it; otherwise the bytes must not reach the provider.
+    if (normalizedMime?.startsWith('video/')) {
+      if (opts.allowVideo) {
+        next.push(block)
+      } else {
+        next.push(buildUnsupportedVideoPlaceholder({
+          label: opts.label,
+          mimeType: block.mimeType,
+          pathHint: opts.pathHint,
+        }))
+        mutated = true
+      }
+      continue
+    }
     const sniffedMime = sniffImageMimeType(block.data)
     const effectiveMime = sniffedMime ?? normalizedMime
     if (effectiveMime && !SUPPORTED_IMAGE_MIME_TYPES.has(effectiveMime)) {
@@ -620,7 +684,11 @@ export function scrubInvalidImages(
   const next: Message[] = []
   for (const msg of messages) {
     if (msg.role === 'user' && Array.isArray(msg.content)) {
-      const cleaned = enforceImageSizeLimit(msg.content, { label: 'user_input', maxDimension: opts.maxDimension })
+      const cleaned = enforceImageSizeLimit(msg.content, {
+        label: 'user_input',
+        maxDimension: opts.maxDimension,
+        allowVideo: opts.allowVideo,
+      })
       if (cleaned !== msg.content) {
         next.push({ ...msg, content: cleaned })
         mutated = true
@@ -630,6 +698,7 @@ export function scrubInvalidImages(
       const cleaned = enforceImageSizeLimit(msg.content, {
         label: `tool:${msg.toolName}`,
         maxDimension: opts.maxDimension,
+        allowVideo: opts.allowVideo,
       })
       if (cleaned !== msg.content) {
         next.push({ ...msg, content: cleaned })

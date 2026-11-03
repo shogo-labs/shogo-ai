@@ -4,10 +4,10 @@
  * Swapping one person's two account ids in a request or a reply.
  *
  * The same person has a cloud account and a local account on each desktop,
- * with different ids. Wherever one side reads or writes the other's rows — the
- * desktop as a client of a cloud workspace (`routes/local-cloud-proxy`), the
- * cloud serving a paired machine's workspace (`lib/machine-identity`) — exact
- * matches are swapped so each side only ever sees its own id for "me".
+ * with different ids. Where the desktop acts as a client of a cloud workspace
+ * (`routes/local-cloud-proxy`), exact matches are swapped so each side only
+ * ever sees its own id for "me". A paired desktop's *own* workspaces need none
+ * of this: pairing makes its local user the cloud account (SHO-285).
  */
 
 /** `from id → to id`. Exact string matches only: never a substring. */

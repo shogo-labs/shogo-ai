@@ -35,16 +35,10 @@ import { isMachineTimeoutError } from '../lib/tunnel-errors'
 import { isTunnelConnectedAnywhere } from '../lib/tunnel-redis'
 import { classifyAction, logRemoteAction } from './remote-audit'
 import { groupMachinesByHostname, workspaceNamesById } from '../lib/machine-list'
-import { applyBatch, deleteMachineCopy, ownershipFailure } from '../lib/machine-sync/ingest'
-import { invalidateMachineWorkspaceIds, machineCopyOwnerIds } from '../lib/machine-workspace'
-import {
-  LOCAL_USER_HEADER,
-  machineIdentityOf,
-  machineLocalUserId,
-  rememberMachineLocalUser,
-  translateJsonBody,
-} from '../lib/machine-identity'
-import { translateEventStream, translateJsonText, translatePathAndSearch } from '../lib/identity-translate'
+import { applyBatch, ownershipFailure, releaseHostedWorkspaces } from '../lib/machine-sync/ingest'
+import { withoutHostChangeLog } from '../lib/machine-sync/host-change-log'
+import { pruneHostFeed, readHostFeed } from '../lib/machine-sync/feed'
+import { hostingInstanceIds, invalidateHostedWorkspaceIds } from '../lib/hosted-workspace'
 import { PRIMARY_REGION, RAW_REGION_ID } from '../lib/region'
 import { resolveApiKey } from './api-keys'
 
@@ -306,6 +300,41 @@ async function findRelayTarget(instance: MachineRow): Promise<MachineRow | null>
   return null
 }
 
+/**
+ * The paired desktop calling one of its own sync routes, by device key. A
+ * device key resolves to a principal scoped to the workspace it was issued in;
+ * only that machine may push or pull, and only for itself.
+ */
+async function authenticateDevice(
+  c: any,
+): Promise<{ auth: { userId: string; workspaceId: string }; instanceId: string; instance: MachineRow } | { response: Response }> {
+  let auth = c.get('auth') as any
+  // Desktops up to the PERF-9 fix send the key as `x-api-key`, which the auth
+  // middleware does not read. Accept it here so those builds sync unchanged.
+  if (auth?.via !== 'apiKey') {
+    const legacyKey = c.req.header('x-api-key')
+    if (legacyKey?.startsWith('shogo_sk_')) {
+      const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
+      const resolved = await resolveApiKey(legacyKey, deviceAppVersion ? { deviceAppVersion } : undefined).catch(() => null)
+      if (resolved) {
+        auth = { userId: resolved.userId, workspaceId: resolved.workspaceId, isAuthenticated: true, via: 'apiKey' }
+      }
+    }
+  }
+  const instanceId = c.req.param('id')
+  if (!auth?.userId || !auth?.workspaceId || !auth?.via || auth.via !== 'apiKey') {
+    logSyncRefusal(instanceId, 401, 'unauthorized', 'a device key is required')
+    return { response: c.json({ error: { code: 'unauthorized', message: 'A device key is required' } }, 401) }
+  }
+  const instance = (await prisma.instance.findUnique({ where: { id: instanceId } })) as MachineRow | null
+  if (!instance || instance.userId !== auth.userId || instance.workspaceId !== auth.workspaceId) {
+    logSyncRefusal(instanceId, 403, 'forbidden', 'not this machine')
+    return { response: c.json({ error: { code: 'forbidden', message: 'Not this machine' } }, 403) }
+  }
+  if (isCliWorker(instance.kind)) return { response: c.json(notAMachine(), 409) }
+  return { auth, instanceId, instance }
+}
+
 export function machineRoutes() {
   const router = new Hono()
 
@@ -336,7 +365,7 @@ export function machineRoutes() {
     // machine's `id` can be the row that owns the copy instead of whichever row
     // happened to heartbeat last (SHO-185, SHO-241).
     const syncByInstance = await readMachineSyncStates(rows.map((row) => row.id))
-    const copyOwners = await machineCopyOwnerIds(rows.map((row) => row.id))
+    const copyOwners = await hostingInstanceIds(rows.map((row) => row.id))
     const grouped = groupMachinesByHostname(rows, {
       nameFor: (id) => names.get(id),
       copyOwners,
@@ -472,243 +501,17 @@ export function machineRoutes() {
     return c.json(offline(), 503)
   })
 
-  // ALL /machines/:id/w/:localWorkspaceId/* — relay into that desktop's own
-  // `/api/*`, scoped to one of its workspaces. Identity is translated
-  // cloud → local by stamping `x-tunnel-auth-*`, and every call is written to
-  // the remote audit trail with the local workspace id so the machine's owner
-  // can see what was driven from the cloud.
-  router.all('/machines/:id/w/:localWorkspaceId/:rest{.+}', async (c) => {
-    const resolved = await loadOwnedMachine(c)
-    if ('response' in resolved) return resolved.response
-    const { instance } = resolved
-    if (isCliWorker(instance.kind)) return c.json(notAMachine(), 409)
-    const auth = c.get('auth') as any
-
-    const localWorkspaceId = c.req.param('localWorkspaceId')
-    const rest = c.req.param('rest') || ''
-    const search = new URL(c.req.url).search
-    // `rest` is the client's full path behind the relay prefix
-    // (`/api/projects`, `/api/workspaces/<ws>/agent-proxy/agent/chat`), so the
-    // tunnel path is `/<rest>` — never `/api/<rest>`, which double-prefixed
-    // every machine call as `/api/api/...` (SHO-120). Same join as
-    // `/instances/:id/p/*`.
-    const path = rest ? `/${rest}${search}` : `/api${search}`
-    const method = c.req.method
-
-    // This machine's workspace is open in Studio: keep its heartbeat at 5 s
-    // (POLL_INTERVAL_VIEWER_S) so it stays reachable in seconds (SHO-185).
-    // Throttled inside markViewerActive.
-    void markViewerActive(instance.workspaceId).catch(() => {})
-
-    const target = await findRelayTarget(instance)
-    if (!target) {
-      // Recently heartbeated means "not connected right now, but alive": say so
-      // and let the client retry instead of claiming the machine is offline.
-      if (isRecentlySeenViaHeartbeat(instance.lastSeenAt)) {
-        c.header('Retry-After', '3')
-        return c.json(waking(instance), 503)
-      }
-      // Offline for real. A write has nowhere to land — the rows are on the
-      // desktop — so the workspace is read-only, with no queue behind it
-      // (SHO-185). A live read (preview, agent stream) just says offline.
-      if (MUTATING_METHODS.has(method)) {
-        // `lastSyncedAt` is what the read-only banner shows, so this read has to
-        // answer even when the copy state is unavailable — the machine being
-        // offline is the fact the client needs, not the timestamp's absence.
-        const state = await readMachineSyncState(instance.id)
-        return c.json(offlineReadOnly(instance, state?.lastIngestAt?.toISOString() ?? null), 409)
-      }
-      return c.json(offline(), 503)
-    }
-
-    const forwardHeaders: Record<string, string> = {
-      'x-tunnel-auth-user-id': auth.userId,
-    }
-    if (auth.email) forwardHeaders['x-tunnel-auth-email'] = auth.email
-    if (auth.name) forwardHeaders['x-tunnel-auth-name'] = auth.name
-    const contentType = c.req.header('content-type')
-    if (contentType) forwardHeaders['content-type'] = contentType
-    const accept = c.req.header('accept')
-    if (accept) forwardHeaders['accept'] = accept
-    const chatSessionId = c.req.header('x-chat-session-id')
-    if (chatSessionId) forwardHeaders['x-chat-session-id'] = chatSessionId
-
-    // The machine knows you by its own user id: what you send names that one,
-    // and what comes back names your cloud account (`lib/machine-identity`).
-    const knownIdentity = machineIdentityOf(await machineLocalUserId(instance.id), auth.userId)
-    const toMachine = knownIdentity?.toMachine ?? new Map<string, string>()
-    const queryAt = path.indexOf('?')
-    const translatedUrl = queryAt < 0
-      ? translatePathAndSearch(path, '', toMachine)
-      : translatePathAndSearch(path.slice(0, queryAt), path.slice(queryAt), toMachine)
-    const relayPath = `${translatedUrl.path}${translatedUrl.search}`
-
-    const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH'
-    const rawBody = hasBody ? await c.req.text() : undefined
-    const body = contentType?.includes('application/json') ? translateJsonBody(rawBody, toMachine) : rawBody
-    const auditPath = `${localWorkspaceId}:${path}`
-
-    const streaming = isStreamingRequest(method, normalizeTransparentProxyPath(path.split('?')[0] || path))
-    if (streaming) {
-      void logRemoteAction({
-        instanceId: target.id,
-        userId: auth.userId,
-        action: classifyAction(method, path),
-        path: auditPath,
-        method,
-        summary: 'streaming',
-      })
-
-      const requestId = generateRequestId()
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          const { cancel } = sendTunnelStreamRequest(
-            target.id,
-            { type: 'request', requestId, method, path: relayPath, headers: forwardHeaders, body },
-            (chunk) => {
-              if (chunk.type === 'stream-chunk' && chunk.data) {
-                controller.enqueue(new TextEncoder().encode(chunk.data))
-              } else if (chunk.type === 'stream-end') {
-                try { controller.close() } catch { /* already closed */ }
-              } else if (chunk.type === 'stream-error') {
-                controller.error(new Error(chunk.error || 'Stream error'))
-              }
-            },
-          )
-          const signal = c.req.raw.signal
-          signal?.addEventListener(
-            'abort',
-            () => {
-              cancel()
-              try { controller.close() } catch { /* already closed */ }
-            },
-            { once: true },
-          )
-        },
-      })
-
-      return new Response(knownIdentity ? translateEventStream(stream, knownIdentity.toCloud) : stream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        },
-      })
-    }
-
-    try {
-      const resp = await sendTunnelRequest(target.id, {
-        type: 'request',
-        requestId: generateRequestId(),
-        method,
-        path: relayPath,
-        headers: forwardHeaders,
-        body,
-      })
-
-      void logRemoteAction({
-        instanceId: target.id,
-        userId: auth.userId,
-        action: classifyAction(method, path),
-        path: auditPath,
-        method,
-        result: `HTTP ${resp.status}`,
-      })
-
-      const responseHeaders: Record<string, string> = {}
-      for (const [key, value] of Object.entries(resp.headers ?? {})) {
-        if (!value) continue
-        const lower = key.toLowerCase()
-        if (HOP_BY_HOP.has(lower)) continue
-        responseHeaders[lower] = value
-      }
-      if (!responseHeaders['content-type']) responseHeaders['content-type'] = 'application/json'
-
-      // Read-your-writes: the desktop stamps the change-log position it reached
-      // with this write, so wait for the copy to catch up before answering.
-      const syncSeq = Number(resp.headers?.['x-shogo-sync-seq'] ?? 0)
-      if (syncSeq > 0) await awaitSyncCatchUp(target.id, syncSeq).catch(() => {})
-
-      // A cold runtime on the desktop is a "retry in a moment", not an error:
-      // the desktop starts it in the background and answers RUNTIME_STARTING.
-      if (resp.status === 502 && resp.body && resp.body.includes('RUNTIME_STARTING')) {
-        c.header('Retry-After', '3')
-        return c.json({ error: { code: 'runtime_starting', message: 'Starting the machine runtime', retryAfterSeconds: 3 } }, 503)
-      }
-
-      const announcedLocalUser = responseHeaders[LOCAL_USER_HEADER]
-      delete responseHeaders[LOCAL_USER_HEADER]
-      rememberMachineLocalUser(instance.id, announcedLocalUser)
-      const identity = machineIdentityOf(announcedLocalUser, auth.userId) ?? knownIdentity
-      let responseBody = resp.body || ''
-      if (identity && responseHeaders['content-type'].includes('application/json')) {
-        responseBody = translateJsonText(responseBody, identity.toCloud)
-        delete responseHeaders['content-length']
-      }
-
-      return new Response(responseBody, {
-        status: resp.status,
-        headers: responseHeaders,
-      })
-    } catch (err: any) {
-      void logRemoteAction({
-        instanceId: target.id,
-        userId: auth.userId,
-        action: classifyAction(method, path),
-        path: auditPath,
-        method,
-        result: `error: ${err?.message ?? err}`,
-      })
-      // A machine that answered our probe but not the request is slow, not
-      // offline: say which, and keep its tunnel ownership intact (SHO-185).
-      if (isMachineTimeoutError(err)) {
-        return c.json(machineTimeout(instance, err), 504)
-      }
-      // A dead tunnel is an offline machine, not a bad gateway: the client's
-      // "connected to <machine>" banner keys off this code.
-      if (isRecentlySeenViaHeartbeat(instance.lastSeenAt)) {
-        c.header('Retry-After', '3')
-        return c.json(waking(instance), 503)
-      }
-      return c.json(offline(), 503)
-    }
-  })
-
   // ─── The machine copy (SHO-185) ─────────────────────────────────────────
   //
   // POST /machines/:id/sync — the desktop pushes its rows here over HTTPS, with
   // its device key. Deliberately *not* through the tunnel: bulk data must never
   // queue behind a live request or a relay PUBLISH. The rows land in the normal
   // cloud tables with the desktop's ids and the workspace tagged with
-  // `machineInstanceId`, so every read panel is served by the normal routes.
+  // `hostInstanceId` (SHO-285), so every route reads and writes it normally.
   router.post('/machines/:id/sync', async (c) => {
-    let auth = c.get('auth') as any
-    // Desktops up to the PERF-9 fix send the key as `x-api-key`, which the auth
-    // middleware does not read, so every push was refused. Accept it here, for
-    // this route only, so those builds sync without an update.
-    if (auth?.via !== 'apiKey') {
-      const legacyKey = c.req.header('x-api-key')
-      if (legacyKey?.startsWith('shogo_sk_')) {
-        const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
-        const resolved = await resolveApiKey(legacyKey, deviceAppVersion ? { deviceAppVersion } : undefined).catch(() => null)
-        if (resolved) {
-          auth = { userId: resolved.userId, workspaceId: resolved.workspaceId, isAuthenticated: true, via: 'apiKey' }
-        }
-      }
-    }
-    // A device key resolves to a principal scoped to the workspace its key was
-    // issued in. Only that machine may push, and only for itself.
-    const instanceId = c.req.param('id')
-    if (!auth?.userId || !auth?.workspaceId || !auth?.via || auth.via !== 'apiKey') {
-      logSyncRefusal(instanceId, 401, 'unauthorized', 'a device key is required')
-      return c.json({ error: { code: 'unauthorized', message: 'A device key is required' } }, 401)
-    }
-    const instance = (await prisma.instance.findUnique({ where: { id: instanceId } })) as MachineRow | null
-    if (!instance || instance.userId !== auth.userId || instance.workspaceId !== auth.workspaceId) {
-      logSyncRefusal(instanceId, 403, 'forbidden', 'not this machine')
-      return c.json({ error: { code: 'forbidden', message: 'Not this machine' } }, 403)
-    }
-    if (isCliWorker(instance.kind)) return c.json(notAMachine(), 409)
+    const device = await authenticateDevice(c)
+    if ('response' in device) return device.response
+    const { auth, instanceId } = device
 
     // Sync off is answered as a normal ack with `disabled: true`: the desktop
     // stops pushing, and nothing it was about to send recreates the copy the
@@ -729,14 +532,17 @@ export function machineRoutes() {
     try {
       const pageBytes = Math.max(0, Number(c.req.header('content-length') ?? 0) || 0)
       const startedApply = Date.now()
-      const result = await applyBatch(
-        {
-          prisma,
-          instanceId,
-          ownerUserId: auth.userId,
-          homeRegion: RAW_REGION_ID ?? PRIMARY_REGION,
-        },
-        body,
+      // Rows that came from the desktop are not fed back to it.
+      const result = await withoutHostChangeLog(() =>
+        applyBatch(
+          {
+            prisma,
+            instanceId,
+            ownerUserId: auth.userId,
+            homeRegion: RAW_REGION_ID ?? PRIMARY_REGION,
+          },
+          body,
+        ),
       )
       // A page's size and the time it took to apply are the two numbers that
       // explain a copy that never finishes (SHO-276): a 21 MB page against a
@@ -759,8 +565,8 @@ export function machineRoutes() {
       }
       // A batch can tag a new machine workspace; background workers on this pod
       // must skip it from the next tick, not after the id cache expires.
-      if (!result.disabled && result.applied > 0) {
-        invalidateMachineWorkspaceIds()
+      if (!result.disabled && result.newWorkspaces) {
+        invalidateHostedWorkspaceIds()
       }
       return c.json(result)
     } catch (err: any) {
@@ -772,6 +578,45 @@ export function machineRoutes() {
       logSyncRefusal(instanceId, 500, 'ingest_failed', err?.message ?? 'sync failed')
       console.warn(`[Machines] sync ingest failed for ${instanceId}: ${err?.message ?? err}`)
       return c.json({ error: { code: 'ingest_failed', message: err?.message ?? 'sync failed' } }, 500)
+    }
+  })
+
+  // GET /machines/:id/identity — who the desktop's user is (SHO-285). Pairing
+  // makes the desktop's single local user this cloud account: the desktop
+  // rewrites its local user id to this one before its first push, so both
+  // databases name the same person by the same id and nothing translates ids.
+  router.get('/machines/:id/identity', async (c) => {
+    const device = await authenticateDevice(c)
+    if ('response' in device) return device.response
+    const user = await prisma.user.findUnique({
+      where: { id: device.auth.userId },
+      select: { id: true, name: true, email: true, image: true },
+    })
+    if (!user) return c.json({ error: { code: 'not_found', message: 'Account not found' } }, 404)
+    return c.json({ user, instanceId: device.instanceId })
+  })
+
+  // GET /machines/:id/changes?cursor=N — the cloud → desktop half of a hosted
+  // workspace's sync (SHO-285): what the cloud wrote to the workspaces this
+  // machine hosts since `cursor`, rows in their current state. The desktop
+  // applies them last-writer-wins and asks again with the returned cursor.
+  router.get('/machines/:id/changes', async (c) => {
+    const device = await authenticateDevice(c)
+    if ('response' in device) return device.response
+    const cursor = Math.max(0, Number(c.req.query('cursor') ?? 0) || 0)
+    const limit = Number(c.req.query('limit') ?? 0) || undefined
+    try {
+      const page = await readHostFeed(prisma, {
+        instanceId: device.instanceId,
+        ownerUserId: device.auth.userId,
+        cursor,
+        limit,
+      })
+      if (Math.random() < 0.01) void pruneHostFeed(prisma).catch(() => {})
+      return c.json(page)
+    } catch (err: any) {
+      console.warn(`[Machines] change feed failed for ${device.instanceId}: ${err?.message ?? err}`)
+      return c.json({ error: { code: 'feed_failed', message: err?.message ?? 'feed failed' } }, 500)
     }
   })
 
@@ -799,18 +644,18 @@ export function machineRoutes() {
       return c.json({ ok: true, enabled: true, lastSyncedAt: state.lastIngestAt?.toISOString() ?? null })
     }
 
-    // Off: stop accepting pushes first, so a batch in flight cannot recreate
-    // rows under the copy we are about to delete.
+    // Off: stop accepting pushes, and hand the machine's workspaces back to
+    // cloud compute. Nothing is deleted — a hosted workspace is a real
+    // workspace, and what either side wrote to it is the person's (SHO-285).
     await prisma.machineSyncState.upsert({
       where: { instanceId: instance.id },
       create: { instanceId: instance.id, enabled: false },
       update: { enabled: false },
     })
-    const removed = await deleteMachineCopy(prisma, instance.id)
-    console.log(
-      `[Machines] Sync off for ${instance.id}: deleted ${removed.rows} row(s) across ${removed.workspaces} workspace(s)`,
-    )
-    return c.json({ ok: true, enabled: false, deleted: removed })
+    const removed = await releaseHostedWorkspaces(prisma, instance.id)
+    invalidateHostedWorkspaceIds()
+    console.log(`[Machines] Sync off for ${instance.id}: released ${removed.workspaces} hosted workspace(s)`)
+    return c.json({ ok: true, enabled: false, released: removed })
   })
 
   return router

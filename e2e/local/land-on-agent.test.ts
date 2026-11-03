@@ -104,6 +104,20 @@ async function emptyLandingChat(page: Page, workspaceId: string): Promise<string
   return empty?.id ?? null
 }
 
+/**
+ * The empty landing chat, once the landing has opened it. The composer paints
+ * before the session resolves, so a cold start's chat can appear a beat later.
+ */
+async function waitForEmptyLandingChat(page: Page, workspaceId: string): Promise<string> {
+  const deadline = Date.now() + 30_000
+  for (;;) {
+    const id = await emptyLandingChat(page, workspaceId)
+    if (id) return id
+    if (Date.now() > deadline) throw new Error("a cold start opened no empty landing chat")
+    await page.waitForTimeout(250)
+  }
+}
+
 async function personalWorkspaceId(page: Page): Promise<string> {
   const res = await page.request.get(`${LOCAL_API_BASE}/api/workspaces`)
   const json = await res.json()
@@ -122,24 +136,38 @@ test.describe("Landing on the workspace agent (local)", () => {
 
     const before = await sessionIds(page, workspaceId)
 
-    // Ten cold starts (a reload is what a reopen does) must leave one chat.
+    // Ten cold starts (a reload is what a reopen does) must leave one chat —
+    // the same one every time. Another spec in this shard may already have
+    // landed on this workspace and left its empty chat behind, so the property
+    // is "one empty chat, reused", not "this test minted it".
+    let landing: string | null = null
     for (let load = 0; load < 10; load += 1) {
       await page.goto("/")
       await expect(composer(page)).toBeVisible({ timeout: 90_000 })
       expect(new URL(page.url()).pathname).toBe("/")
       await expect(page.getByText("What are we building", { exact: false })).toHaveCount(0)
+
+      const empty = await waitForEmptyLandingChat(page, workspaceId)
+      if (landing === null) landing = empty
+      else expect(empty, "every cold start must reuse the same empty chat").toBe(landing)
     }
 
     const afterTen = await sessionIds(page, workspaceId)
     const minted = afterTen.filter((id) => !before.includes(id))
-    expect(minted, "ten cold starts must leave exactly one empty landing chat").toHaveLength(1)
-    const landing = minted[0]
+    expect(minted.length, "a cold start must not mint a chat on every reload").toBeLessThanOrEqual(1)
 
-    const landingRow = (await sessions(page, workspaceId)).find((row) => row.id === landing)
+    const emptyNow = (await sessions(page, workspaceId)).filter(
+      (row) => row.inferredName === "Chat" && (row.messageCount ?? 1) === 0,
+    )
+    expect(emptyNow, "ten cold starts must leave exactly one empty landing chat").toHaveLength(1)
+    const landingId = emptyNow[0].id
+    expect(landingId, "the empty chat is the one the cold starts reused").toBe(landing)
+
+    const landingRow = (await sessions(page, workspaceId)).find((row) => row.id === landingId)
     expect(landingRow?.messageCount, "the reused chat should still be empty").toBe(0)
 
     // The first message stays in that chat: nothing new is minted around it.
-    await sendFirstMessage(page, landing)
+    await sendFirstMessage(page, landingId)
     expect((await sessionIds(page, workspaceId)).sort()).toEqual([...afterTen].sort())
 
     // A cold start on a chat that now has a conversation opens a fresh one.
@@ -148,12 +176,12 @@ test.describe("Landing on the workspace agent (local)", () => {
     const afterNext = await sessionIds(page, workspaceId)
     const mintedNext = afterNext.filter((id) => !afterTen.includes(id))
     expect(mintedNext, "the landing reopened the previous conversation").toHaveLength(1)
-    expect(mintedNext[0]).not.toBe(landing)
+    expect(mintedNext[0]).not.toBe(landingId)
 
     // An explicit session in the URL still wins and mints nothing.
-    await page.goto(`/agent?chatSessionId=${landing}`)
+    await page.goto(`/agent?chatSessionId=${landingId}`)
     await expect(composer(page)).toBeVisible({ timeout: 90_000 })
-    expect(new URL(page.url()).searchParams.get("chatSessionId")).toBe(landing)
+    expect(new URL(page.url()).searchParams.get("chatSessionId")).toBe(landingId)
     expect((await sessionIds(page, workspaceId)).sort()).toEqual([...afterNext].sort())
 
     // The pre-landing team home is one route away, and the TeamDock points there.

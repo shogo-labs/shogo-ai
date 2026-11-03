@@ -32,11 +32,13 @@ const spawnLeaseWait = metrics.getMeter('shogo-metal-pool').createHistogram('met
   unit: 'ms',
 })
 
-export type WorkspacePodMode = 'k8s' | 'metal' | 'host'
+export type WorkspacePodMode = 'k8s' | 'metal' | 'host' | 'host-tunnel'
 
 export type ResolvedWorkspacePod =
   | { mode: 'k8s'; url: string }
   | { mode: 'metal'; url: string }
+  /** A workspace hosted on a paired desktop (SHO-285): its runtime is there. */
+  | { mode: 'host-tunnel'; url: string; instanceId: string }
   | { mode: 'host'; url: string; runtime: IProjectRuntime }
 
 /**
@@ -147,6 +149,8 @@ export interface ResolveWorkspaceRuntimeOpts {
 
   /** Test-only override for the cloud-branch home-region guard. */
   _assertHomeRegion?: (workspaceId: string) => Promise<void>
+  /** Test-only override for "which desktop hosts this workspace". */
+  _hostOf?: (workspaceId: string) => Promise<string | null>
 }
 
 function defaultIsKubernetes(): boolean {
@@ -255,6 +259,28 @@ export async function resolveWorkspaceRuntimeUrl(
       (await import('./runtime-home-region-guard')).assertRuntimeInHomeRegion
     await assertHomeRegion(workspaceId)
   }
+  // A workspace hosted on a paired desktop runs there (SHO-285). Chosen at the
+  // same seam as metal, so every caller of this resolver — chat, files,
+  // terminal, previews, agent calls — reaches the desktop runtime unchanged,
+  // through the instance tunnel (`lib/host-tunnel`). Offline is answered by
+  // the tunnel route (`503 host_offline`), not here, so a resolve stays cheap.
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    const { hostedWorkspacesResolveHere } = await import('./cloud-topology')
+    const hostOf = opts._hostOf ?? (hostedWorkspacesResolveHere() ? (await import('./host-tunnel')).hostOfWorkspace : null)
+    const hostInstanceId = hostOf ? await hostOf(workspaceId) : null
+    if (hostInstanceId) {
+      const { hostTunnelRuntimeUrl } = await import('./host-tunnel')
+      return {
+        mode: 'host-tunnel',
+        instanceId: hostInstanceId,
+        url: hostTunnelRuntimeUrl(hostInstanceId, {
+          workspaceId,
+          anchorProjectId: opts.anchorProjectId,
+        }),
+      }
+    }
+  }
+
   // Metal takes precedence over the k8s (Knative) branch: in metal regions the
   // API pod runs IN Kubernetes, so a workspace runtime must resolve to a
   // merged-root microVM rather than creating a Knative Service.

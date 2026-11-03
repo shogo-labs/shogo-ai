@@ -32,6 +32,12 @@ export { MODEL_DOLLAR_COSTS, calculateDollarCost }
 /** Flat markup applied to all raw provider costs (LLM, voice, images). */
 export const MARKUP_MULTIPLIER = 1.20
 
+/**
+ * The Shogo fee as a percentage of the model cost, derived from the markup so
+ * the UI never hard-codes "20%". `1.20` → `20`.
+ */
+export const SHOGO_FEE_PERCENT = Math.round((MARKUP_MULTIPLIER - 1) * 100)
+
 export type ModelName = BillingModel
 
 /** Re-export from the shared catalog for backward compatibility. */
@@ -88,6 +94,71 @@ export interface UsageCostResult {
    * `repriceLocalUsage` can fix it once rates arrive.
    */
   pricingUnknown?: true
+  /**
+   * The model the cost was actually priced as: the canonical model id when a
+   * DB or static-catalog entry supplied the rates, otherwise the static billing
+   * bucket (`opus`/`sonnet`/`haiku`). Recorded as `actionMetadata.billingModel`
+   * so a DB-priced model (e.g. `hoshi-2-0`) is not labelled by its bucket.
+   */
+  pricedAs?: string
+}
+
+/**
+ * Split one usage row into the two lines the UI shows: the provider's model
+ * cost and the Shogo fee on top of it.
+ *
+ * `modelCostUsd + shogoFeeUsd + unitemizedUsd` always equals the row's
+ * effective cost (`billedUsd` when set, else the recorded provider cost), so
+ * the totals a user already sees do not change.
+ *
+ * - `billed > 0` and a provider cost is known → model = min(raw, billed),
+ *   fee = billed − model (clamped at 0 when raw > billed).
+ * - `billed > 0` and no provider cost anywhere → the whole amount is
+ *   `unitemizedUsd` (rows from before the credits→USD migration, 2026-04-24).
+ *   No guessing, no backfill.
+ * - `billed == 0` → model = the recorded provider cost, fee = 0 (desktop,
+ *   internal and free rows).
+ */
+export interface UsageCostSplit {
+  modelCostUsd: number
+  shogoFeeUsd: number
+  unitemizedUsd: number
+}
+
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+export function splitUsageCost(row: {
+  billedUsd?: number | null
+  rawUsd?: number | null
+  actionMetadata?: unknown
+}): UsageCostSplit {
+  const billed = finiteOrNull(row.billedUsd) ?? 0
+  const meta = (() => {
+    const raw = row.actionMetadata
+    if (!raw) return {} as Record<string, unknown>
+    if (typeof raw === 'object') return raw as Record<string, unknown>
+    if (typeof raw === 'string') {
+      try { return JSON.parse(raw) as Record<string, unknown> } catch { return {} as Record<string, unknown> }
+    }
+    return {} as Record<string, unknown>
+  })()
+  const metaRaw = finiteOrNull(meta.rawUsd) ?? finiteOrNull(meta.dollarCost)
+  // `??`, not `||`: a recorded 0 is a real provider cost, not "unknown".
+  const raw = finiteOrNull(row.rawUsd) ?? metaRaw
+
+  if (billed > 0) {
+    if (raw === null) return { modelCostUsd: 0, shogoFeeUsd: 0, unitemizedUsd: billed }
+    const modelCostUsd = Math.min(raw, billed)
+    return { modelCostUsd, shogoFeeUsd: billed - modelCostUsd, unitemizedUsd: 0 }
+  }
+
+  // No billed amount: the row's cost is the provider cost, and there is no fee.
+  // Mirrors the effective-cost rule (`raw > 0 ? raw : metaRaw`) so the split
+  // still adds up to the total when `rawUsd` is a recorded 0 but meta has money.
+  const modelCostUsd = (raw ?? 0) > 0 ? (raw as number) : (metaRaw ?? 0)
+  return { modelCostUsd, shogoFeeUsd: 0, unitemizedUsd: 0 }
 }
 
 /**
@@ -127,11 +198,13 @@ export function calculateUsageCost(
         (cacheWriteTokens * dbPricing.cacheWritePerMillion / 1_000_000) +
         (cachedInputTokens * dbPricing.cachedInputPerMillion / 1_000_000) +
         (outputTokens * dbPricing.outputPerMillion / 1_000_000)
-      if (dbRawUsd === 0) return { rawUsd: 0, billedUsd: 0 }
-      return { rawUsd: dbRawUsd, billedUsd: dbRawUsd * MARKUP_MULTIPLIER }
+      if (dbRawUsd === 0) return { rawUsd: 0, billedUsd: 0, pricedAs: modelOrAgentMode }
+      return { rawUsd: dbRawUsd, billedUsd: dbRawUsd * MARKUP_MULTIPLIER, pricedAs: modelOrAgentMode }
     }
   }
-  if (!hasKnownUsagePricing(modelOrAgentMode)) return { rawUsd: 0, billedUsd: 0, pricingUnknown: true }
+  if (!hasKnownUsagePricing(modelOrAgentMode)) {
+    return { rawUsd: 0, billedUsd: 0, pricingUnknown: true, pricedAs: resolveModel(modelOrAgentMode) }
+  }
 
   const model = resolveModel(modelOrAgentMode)
   const costs = MODEL_DOLLAR_COSTS[model]
@@ -141,8 +214,14 @@ export function calculateUsageCost(
     (cachedInputTokens * costs.cachedInputPerMillion / 1_000_000) +
     (outputTokens * costs.outputPerMillion / 1_000_000)
 
-  if (rawUsd === 0) return { rawUsd: 0, billedUsd: 0 }
-  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+  // A static-catalog model is priced as itself; an agent-mode alias or an
+  // unknown id is priced as its bucket, so that is what gets recorded.
+  const pricedAs = modelOrAgentMode && getModelEntry(modelOrAgentMode)
+    ? modelOrAgentMode
+    : model
+
+  if (rawUsd === 0) return { rawUsd: 0, billedUsd: 0, pricedAs }
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER, pricedAs }
 }
 
 // =============================================================================

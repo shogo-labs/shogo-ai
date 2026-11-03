@@ -893,7 +893,21 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // The person's message must be durable before the turn starts (SHO-274), on
     // the same contract as project-chat: awaited after every gate (a rejected
     // send writes nothing) and before the first proxy attempt.
-    await persistUserMessageForTurn(sessionId, parsedBody as Record<string, unknown>)
+    const persistedUserMessage = await persistUserMessageForTurn(sessionId, parsedBody as Record<string, unknown>)
+
+    // A hosted workspace whose desktop is offline queues the turn instead of
+    // failing it; the desktop runs it when it is back (SHO-285).
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+      const { queueTurnIfHostOffline } = await import('../lib/host-tunnel')
+      const queued = await queueTurnIfHostOffline({
+        workspaceId,
+        sessionId,
+        userId: auth.userId,
+        userMessageId: persistedUserMessage.id,
+        body: parsedBody as Record<string, unknown>,
+      })
+      if (queued) return c.json(queued, 202)
+    }
 
     // Serialise once, after every mutation above. Each of those steps used to
     // re-`JSON.stringify` the whole body, which was fine until attachments rode
@@ -1428,11 +1442,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       responseHeaders.set('X-Accel-Buffering', 'no')
       return new Response(response.body, { status: response.status, headers: responseHeaders })
     } catch (err: any) {
+      // A proxy failure is not "nothing buffered": a 204 here tells the client
+      // the turn is over (or never started), so a flaky link strands the window
+      // idle over a turn that is still running. 502 makes the probe retry, and
+      // the stream's own reconnect path treat it as a failure (SHO-287).
       console.warn(
         `[WorkspaceChat] resume proxy error for ${workspaceId}/${sessionId}:`,
         err?.message || err,
       )
-      return new Response(null, { status: 204 })
+      return new Response(null, { status: 502 })
     }
   })
 
@@ -1466,11 +1484,18 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       const data = await response.json()
       return c.json(data, response.status as any)
     } catch (err: any) {
+      // Not a 404: the runtime may well be holding a live turn, and a 404 is
+      // the client's "no buffer, stop looking" answer — its retry budget never
+      // runs, so a dropped request on open leaves the window idle over a turn
+      // that is still running (SHO-287).
       console.warn(
         `[WorkspaceChat] turn snapshot proxy error for ${workspaceId}/${sessionId}:`,
         err?.message || err,
       )
-      return c.json({ status: 'unknown' as const }, 404)
+      return c.json(
+        { error: { code: 'proxy_error', message: 'Failed to reach the workspace runtime' } },
+        502,
+      )
     }
   })
 

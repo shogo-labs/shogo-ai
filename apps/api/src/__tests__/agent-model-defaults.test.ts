@@ -20,6 +20,8 @@ mock.module('../services/public-models.service', () => ({
 
 const OPUS_UUID = '8947628a-1415-4b3a-90c3-63f8a85c16b7'
 const HOSHI_2_UUID = 'a6f55a2b-2ef6-4543-8b78-9745af477ba2'
+/** The seeded GLM 5.3 Flash row: a DB id, not a catalog alias (SHO-291). */
+const GLM_UUID = '0f0f0f0f-2910-4a11-9c3a-6d1e6dc2a5b1'
 
 // Like the real registry on the local/desktop entry point: empty until the
 // first load completes.
@@ -38,6 +40,12 @@ mock.module('../services/model-registry.service', () => ({
   getDbModelEntriesSync: () => registryLoaded ? [
     { id: OPUS_UUID, provider: 'anthropic', apiModel: 'claude-opus-5-5', contextWindow: 1_000_000, maxOutputTokens: 128_000 },
     { id: 'gpt-live-uuid', provider: 'openai', apiModel: 'gpt-live-1', kind: 'live' },
+    {
+      id: GLM_UUID,
+      provider: 'openrouter',
+      apiModel: 'z-ai/glm-5.3-flash',
+      capabilities: { supportsVideoInput: true, openrouterProvider: { sort: 'price' } },
+    },
   ] : [],
   getCloudModelEntriesSync: () => registryLoaded ? [
     { id: OPUS_UUID, provider: 'anthropic', apiModel: 'claude-opus-5-5' },
@@ -161,6 +169,7 @@ describe('agent model defaults', () => {
     const env = await resolveAgentModelEnv('ws-free')
     expect(JSON.parse(env.AGENT_MODEL_REGISTRY!)).toEqual([
       { id: OPUS_UUID, provider: 'anthropic', apiModel: 'claude-opus-5-5', contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+      { id: GLM_UUID, provider: 'openrouter', apiModel: 'z-ai/glm-5.3-flash', supportsVideoInput: true },
       { id: 'mimo-v2.5', provider: 'custom', apiModel: 'mimo-v2.5' },
     ])
   })
@@ -170,5 +179,22 @@ describe('agent model defaults', () => {
     expect(serializeModelEntryEnv({ id: 'gpt-5.4-nano' })).toBe(JSON.stringify({ id: 'gpt-5.4-nano' }))
     expect(serializeModelEntryEnv({ id: 'mimo-v2.5', provider: 'custom', upstream: 'openrouter' }))
       .toBe(JSON.stringify({ id: 'mimo-v2.5', provider: 'custom', upstream: 'openrouter' }))
+  })
+
+  test("carries a DB model's video capability to the runtime, so a replayed clip survives", async () => {
+    // The runtime cannot classify a UUID id on its own: without this flag the
+    // seeded GLM row looks video-blind and a replayed clip becomes a placeholder.
+    const env = await resolveAgentModelEnv('ws-free')
+    const glm = JSON.parse(env.AGENT_MODEL_REGISTRY!).find((m: { id: string }) => m.id === GLM_UUID)
+    expect(glm).toEqual({
+      id: GLM_UUID,
+      provider: 'openrouter',
+      apiModel: 'z-ai/glm-5.3-flash',
+      supportsVideoInput: true,
+    })
+    // A model without the capability must not carry the key at all, so the
+    // runtime treats it as video-blind rather than guessing.
+    const opus = JSON.parse(env.AGENT_MODEL_REGISTRY!).find((m: { id: string }) => m.id === OPUS_UUID)
+    expect(opus).not.toHaveProperty('supportsVideoInput')
   })
 })

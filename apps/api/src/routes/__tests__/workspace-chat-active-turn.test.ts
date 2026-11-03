@@ -95,6 +95,9 @@ mock.module('../../lib/prisma', () => ({
       findUnique: async () => ({ id: 'p-1', name: 'Project', workspaceId: 'ws-1', settings: null }),
       update: async () => ({}),
     },
+    // The runtime resolver asks which desktop hosts a workspace (SHO-285);
+    // this fixture's workspace is cloud compute.
+    workspace: { findUnique: async () => null },
     projectFolder: { findMany: async () => [] },
     chatMessage: {
       create: async (args: any) => ({ id: 'msg-1', ...args.data }),
@@ -462,5 +465,60 @@ describe('workspace chat active turn', () => {
 
     await sendStop(buildApp(), 'ws-1', 's-1')
     expect(sessions.get('s-1')!.activeTurnId).toBe('turn-1')
+  })
+})
+
+/**
+ * SHO-287: a runtime proxy failure is not "nothing buffered".
+ *
+ * The probe treats 404/204 as an answer and never retries, so mapping a
+ * dropped request to those statuses left the window idle over a turn that was
+ * still running.
+ */
+describe('turn probe proxy failures (SHO-287)', () => {
+  test('a proxy error on /turn answers 5xx, not 404', async () => {
+    seedSession('s-1')
+    fetchResponder = () => {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:1')
+    }
+
+    const res = await buildApp().fetch(
+      new Request('http://x/api/workspaces/ws-1/chat/s-1/turn'),
+    )
+    expect(res.status).toBe(502)
+    const body = await res.json()
+    expect(body.error.code).toBe('proxy_error')
+  })
+
+  test('no buffer still answers 404, so the client stops looking', async () => {
+    seedSession('s-1')
+    fetchResponder = () => Response.json({ status: 'unknown' }, { status: 404 })
+
+    const res = await buildApp().fetch(
+      new Request('http://x/api/workspaces/ws-1/chat/s-1/turn'),
+    )
+    expect(res.status).toBe(404)
+  })
+
+  test('a proxy error on /stream answers 5xx, not 204', async () => {
+    seedSession('s-1')
+    fetchResponder = () => {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:1')
+    }
+
+    const res = await buildApp().fetch(
+      new Request('http://x/api/workspaces/ws-1/chat/s-1/stream'),
+    )
+    expect(res.status).toBe(502)
+  })
+
+  test('an empty buffer still answers 204 on /stream', async () => {
+    seedSession('s-1')
+    fetchResponder = () => new Response(null, { status: 204 })
+
+    const res = await buildApp().fetch(
+      new Request('http://x/api/workspaces/ws-1/chat/s-1/stream'),
+    )
+    expect(res.status).toBe(204)
   })
 })

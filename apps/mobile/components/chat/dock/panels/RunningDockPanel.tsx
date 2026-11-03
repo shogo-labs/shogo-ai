@@ -365,9 +365,20 @@ function RunningBody({
           const isExiting = exiting.has(key)
           const isRestored = !isExiting && restored.has(key)
           const shownHeight = restoredHeights[key] ?? heights.current.get(key) ?? 0
+          // legendapp/motion picks the driver from the keys being animated and
+          // keeps one Animated.Value per key for the life of the component. A
+          // shown row animates opacity only, which is native; its exit adds
+          // height, which is JS. Starting a JS animation on a value a native one
+          // already moved to the native side throws "Attempting to run JS driven
+          // animation on animated node that has been moved to native" and kills
+          // the app (SHO-290). The `:js` key remounts the row as it leaves the
+          // shown state, so the JS-driven exit starts from fresh values. Exiting
+          // and restored share that key, so pinning a row back open keeps its
+          // animation and its open output viewer.
+          const driverKey = isExiting || isRestored ? `${key}:js` : key
           return (
             <Motion.View
-              key={key}
+              key={driverKey}
               animate={
                 isExiting ? ROW_EXIT : isRestored ? { opacity: 1, height: shownHeight } : ROW_SHOWN
               }

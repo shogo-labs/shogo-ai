@@ -16,7 +16,7 @@ import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { installSyncTriggers, triggerStatements } from '../machine-sync/triggers.ts'
 import { MachineSyncPusher, type SyncBatchRequest } from '../machine-sync/pusher.ts'
-import { applyBatch, deleteMachineCopy, normaliseRow } from '../machine-sync/ingest.ts'
+import { applyBatch, normaliseRow, releaseHostedWorkspaces } from '../machine-sync/ingest.ts'
 import { applyRewrites } from '../machine-sync/models.ts'
 
 // ─── Triggers, on a real SQLite database ────────────────────────────────────
@@ -963,15 +963,23 @@ describe('the ingest', () => {
     expect(normaliseRow('Workspace', { name: 'x' }, meta)).toBeNull()
   })
 
-  test('rewrites the two globals and tags the workspace', () => {
+  test('rewrites the two globals and makes the desktop the workspace host', () => {
     const workspace = applyRewrites(
       'Workspace',
-      { id: 'w1', slug: 'personal', homeRegion: null },
+      { id: 'w1', slug: 'personal', homeRegion: null, machineInstanceId: 'stale' },
       { instanceId: 'inst-abcdef123456', homeRegion: 'eu-frankfurt-1' },
     )
     expect(workspace.slug).toBe('personal-m-inst-abc')
-    expect(workspace.machineInstanceId).toBe('inst-abcdef123456')
+    expect(workspace.hostInstanceId).toBe('inst-abcdef123456')
+    expect(workspace.machineInstanceId).toBeNull()
     expect(workspace.homeRegion).toBe('eu-frankfurt-1')
+
+    // Rows round-trip (SHO-285): a slug that came down suffixed is not suffixed twice.
+    const again = applyRewrites('Workspace', { id: 'w1', slug: workspace.slug }, {
+      instanceId: 'inst-abcdef123456',
+      homeRegion: 'eu-frankfurt-1',
+    })
+    expect(again.slug).toBe('personal-m-inst-abc')
 
     const user = applyRewrites('User', { id: 'u1', email: 'local@shogo.local' }, {
       instanceId: 'inst-1',
@@ -997,7 +1005,7 @@ describe('the ingest', () => {
     expect('ok' in result && result.ok).toBe(true)
     expect(tables.get('workspace')?.get('w1')).toMatchObject({
       id: 'w1',
-      machineInstanceId: 'inst-1',
+      hostInstanceId: 'inst-1',
       homeRegion: 'us-ashburn-1',
     })
     expect(members).toEqual([
@@ -1005,24 +1013,26 @@ describe('the ingest', () => {
     ])
   })
 
-  test('a row owned by another machine rejects the whole batch', async () => {
-    const { db } = fakeCloudDb({ owned: { 'Workspace|w1': 'inst-OTHER' } })
+  test('a workspace hosted by another machine rejects the whole batch', async () => {
+    const { db, tables } = fakeCloudDb()
+    tables.set('workspace', new Map([['w1', { id: 'w1', name: 'Theirs', hostInstanceId: 'inst-OTHER' }]]))
     const result = await applyBatch(ingestCtx(db), {
       epoch: 'epoch-1',
       mode: 'changes',
       models: [{ model: 'Workspace', rows: [{ id: 'w1', name: 'Stolen', slug: 'stolen' }] }],
     })
-    expect('code' in result && result.code).toBe('mirror_ownership')
+    expect('code' in result && result.code).toBe('workspace_ownership')
+    expect(tables.get('workspace')?.get('w1')).toMatchObject({ name: 'Theirs' })
   })
 
-  test('a row that already exists in the cloud and is not this machine rejects the batch', async () => {
+  test('a cloud workspace that no desktop hosts cannot be taken over by a push', async () => {
     const { db } = fakeCloudDb({ cloudRows: { workspace: ['w1'] } })
     const result = await applyBatch(ingestCtx(db), {
       epoch: 'epoch-1',
       mode: 'changes',
       models: [{ model: 'Workspace', rows: [{ id: 'w1', name: 'Mine now', slug: 'mine' }] }],
     })
-    expect('code' in result && result.code).toBe('mirror_ownership')
+    expect('code' in result && result.code).toBe('workspace_ownership')
   })
 
   test('a delta under a stale epoch asks for a snapshot', async () => {
@@ -1076,7 +1086,7 @@ describe('the ingest', () => {
     })
     expect('ok' in done && done.ok).toBe(true)
     expect(syncState.lastIngestAt).toBeInstanceOf(Date)
-    expect(tables.get('workspace')?.get('w1')).toMatchObject({ machineInstanceId: 'inst-1' })
+    expect(tables.get('workspace')?.get('w1')).toMatchObject({ hostInstanceId: 'inst-1' })
 
     const delta = await applyBatch(ingestCtx(db), {
       epoch: 'epoch-2',
@@ -1127,7 +1137,7 @@ describe('the ingest', () => {
     // recorded when it accepted it, the desktop kept the epoch the cloud holds.
     expect(cloud.tables.get('workspace')?.get('w1')).toMatchObject({
       id: 'w1',
-      machineInstanceId: 'inst-1',
+      hostInstanceId: 'inst-1',
     })
     expect(cloud.syncState.lastIngestAt).toBeInstanceOf(Date)
     expect(desktop.state.epoch).toBe(cloud.syncState.epoch)
@@ -1144,11 +1154,20 @@ describe('the ingest', () => {
     expect('code' in result && result.code).toBe('workspace_ownership')
   })
 
-  test('a delete only removes a row this machine owns', async () => {
-    const { db, tables } = fakeCloudDb({ owned: { 'ChatMessage|mine': 'inst-1' } })
-    const workspaceTable = tables.get('chatMessage') ?? new Map()
-    workspaceTable.set('mine', { id: 'mine' })
-    workspaceTable.set('theirs', { id: 'theirs' })
+  test('a delete only removes a row of a workspace this machine hosts', async () => {
+    const { db, tables } = fakeCloudDb()
+    tables.set('workspace', new Map([
+      ['w1', { id: 'w1', hostInstanceId: 'inst-1' }],
+      ['w2', { id: 'w2', hostInstanceId: null }],
+    ]))
+    tables.set('chatSession', new Map<string, FakeRow>([
+      ['s-mine', { id: 's-mine', workspaceId: 'w1' }],
+      ['s-theirs', { id: 's-theirs', workspaceId: 'w2' }],
+    ]))
+    const workspaceTable = new Map<string, FakeRow>([
+      ['mine', { id: 'mine', sessionId: 's-mine' }],
+      ['theirs', { id: 'theirs', sessionId: 's-theirs' }],
+    ])
     tables.set('chatMessage', workspaceTable)
 
     const result = await applyBatch(ingestCtx(db), {
@@ -1200,7 +1219,7 @@ describe('the ingest', () => {
     // Desktops up to 2.4.5 send StarredProject before Project, one model per
     // request: the parent cannot be there yet.
     const { db, tables } = fakeCloudDb()
-    tables.set('workspace', new Map([['w1', { id: 'w1', machineInstanceId: 'inst-1' }]]))
+    tables.set('workspace', new Map([['w1', { id: 'w1', hostInstanceId: 'inst-1' }]]))
     tables.set('user', new Map([['u1', { id: 'u1' }]]))
     tables.set('project', new Map([['p-here', { id: 'p-here' }]]))
 
@@ -1222,11 +1241,12 @@ describe('the ingest', () => {
     expect(tables.get('starredProject')?.has('s-orphan')).toBe(false)
   })
 
-  test('a completed snapshot drops rows from the previous epoch', async () => {
-    const { db, mirror, tables } = fakeCloudDb({ owned: { 'ChatMessage|old-1': 'inst-1' } })
-    const chat = new Map<string, FakeRow>([['old-1', { id: 'old-1' }]])
-    tables.set('chatMessage', chat)
 
+
+  test('a completed snapshot never deletes what the cloud wrote into a hosted workspace (SHO-285)', async () => {
+    const { db, tables } = fakeCloudDb()
+    tables.set('workspace', new Map([['w1', { id: 'w1', hostInstanceId: 'inst-1' }]]))
+    tables.set('workItem', new Map<string, FakeRow>([['card-from-cloud', { id: 'card-from-cloud', workspaceId: 'w1' }]]))
     const result = await applyBatch(ingestCtx(db), {
       epoch: 'epoch-2',
       mode: 'snapshot',
@@ -1234,86 +1254,47 @@ describe('the ingest', () => {
       models: [],
       snapshot: { complete: true },
     })
-
-    expect('ok' in result && result.ok).toBe(true)
-    expect(chat.has('old-1')).toBe(false)
-    expect([...mirror.keys()]).toEqual([])
+    expect('ok' in result && result.deleted).toBe(0)
+    expect(tables.get('workItem')?.has('card-from-cloud')).toBe(true)
   })
 
-  test('a completed snapshot deletes the copy’s cloud-only rows, a page at a time (AC5)', async () => {
-    // What the cloud wrote into the copy itself: a conversation it seeded on
-    // 10-28, and work items nobody's desktop ever sent. 620 of them, so the prune
-    // has to page past its first read and still keep the owned row.
-    const { db, mirror, members, tables } = fakeCloudDb({
-      owned: {
-        'Conversation|c-1': 'inst-1',
-        'WorkItem|keep-1': 'inst-1',
-        'ChatSession|s-1': 'inst-1',
-        'ChatMessage|m-keep': 'inst-1',
+  test('the same row edited on both sides: the later edit wins (SHO-285 AC4)', async () => {
+    const { db, tables } = fakeCloudDb()
+    tables.set('workspace', new Map([['w1', { id: 'w1', hostInstanceId: 'inst-1' }]]))
+    const cards = new Map<string, FakeRow>([
+      ['card-1', { id: 'card-1', workspaceId: 'w1', title: 'cloud edit', updatedAt: new Date('2026-11-02T10:00:05Z') }],
+    ])
+    tables.set('workItem', cards)
+
+    const older = await applyBatch(ingestCtx(db), {
+      epoch: 'epoch-1',
+      mode: 'changes',
+      cursor: 2,
+      models: [{ model: 'WorkItem', rows: [{ id: 'card-1', workspaceId: 'w1', title: 'desktop edit', updatedAt: '2026-11-02T10:00:01Z' }] }],
+    })
+    expect(older).toMatchObject({ ok: true, applied: 0 })
+    expect(cards.get('card-1')?.title).toBe('cloud edit')
+
+    const newer = await applyBatch(ingestCtx(db), {
+      epoch: 'epoch-1',
+      mode: 'changes',
+      cursor: 3,
+      models: [{ model: 'WorkItem', rows: [{ id: 'card-1', workspaceId: 'w1', title: 'later desktop edit', updatedAt: '2026-11-02T10:00:09Z' }] }],
+    })
+    expect(newer).toMatchObject({ ok: true, applied: 1 })
+    expect(cards.get('card-1')?.title).toBe('later desktop edit')
+  })
+
+  test('unpairing hands a hosted workspace back to cloud compute and deletes nothing (SHO-285)', async () => {
+    const updates: any[] = []
+    const db: any = {
+      workspace: {
+        updateMany: async (args: any) => (updates.push(args), { count: 2 }),
       },
-    })
-    // Owned by this run, so the previous-epoch sweep leaves them alone.
-    for (const row of mirror.values()) row.epoch = 'epoch-2'
-    tables.set('workspace', new Map([['w1', { id: 'w1', machineInstanceId: 'inst-1' }]]))
-    // The owner's membership is a cloud write that belongs to the copy: without
-    // it the owner cannot read their own workspace (RBAC lane, SHO-276).
-    members.push({ id: 'm-owner', workspaceId: 'w1', userId: 'cloud-user-1', projectId: null })
-    tables.set('conversation', new Map<string, FakeRow>([
-      ['c-1', { id: 'c-1', workspaceId: 'w1' }],
-      ['c-cloud', { id: 'c-cloud', workspaceId: 'w1' }],
-    ]))
-    // A chat the desktop owns, with what the cloud wrote into it: an interrupted
-    // note and a queued resume. They carry only `sessionId`, which is why
-    // pruning by workspace alone never reached them (SHO-276 AC5).
-    tables.set('chatSession', new Map<string, FakeRow>([['s-1', { id: 's-1', workspaceId: 'w1' }]]))
-    tables.set('chatMessage', new Map<string, FakeRow>([
-      ['m-keep', { id: 'm-keep', sessionId: 's-1' }],
-      ['m-note', { id: 'm-note', sessionId: 's-1' }],
-    ]))
-    tables.set('chatQueuedMessage', new Map<string, FakeRow>([
-      ['q-resume', { id: 'q-resume', sessionId: 's-1' }],
-    ]))
-
-    const items = new Map<string, FakeRow>([['keep-1', { id: 'keep-1', workspaceId: 'w1' }]])
-    for (let i = 0; i < 620; i++) {
-      const id = `cloud-${String(i).padStart(4, '0')}`
-      items.set(id, { id, workspaceId: 'w1' })
     }
-    tables.set('workItem', items)
-
-    const result = await applyBatch(ingestCtx(db), {
-      epoch: 'epoch-2',
-      mode: 'snapshot',
-      cursor: 0,
-      models: [],
-      snapshot: { complete: true },
-    })
-
-    expect('ok' in result && result.ok).toBe(true)
-    expect([...items.keys()]).toEqual(['keep-1'])
-    expect(tables.get('conversation')?.has('c-1')).toBe(true)
-    expect(tables.get('conversation')?.has('c-cloud')).toBe(false)
-    expect([...(tables.get('chatMessage') ?? new Map()).keys()]).toEqual(['m-keep'])
-    expect([...(tables.get('chatQueuedMessage') ?? new Map()).keys()]).toEqual([])
-    expect(members.map((row) => row.id)).toEqual(['m-owner'])
-    expect('ok' in result && result.deleted).toBe(623)
+    const released = await releaseHostedWorkspaces(db, 'inst-1')
+    expect(released).toEqual({ workspaces: 2 })
+    expect(updates).toEqual([{ where: { hostInstanceId: 'inst-1' }, data: { hostInstanceId: null } }])
   })
 
-  test('deleting a copy leaves the sync switch off, and clears the epoch', async () => {
-    const { db, mirror, tables, syncState } = fakeCloudDb({ owned: { 'Workspace|w1': 'inst-1' } })
-    tables.set('workspace', new Map([['w1', { id: 'w1', name: 'Samsara' }]]))
-    syncState.enabled = false
-    syncState.cursor = 41
-    syncState.epoch = 'epoch-1'
-
-    const removed = await deleteMachineCopy(db, 'inst-1')
-
-    expect(removed).toEqual({ rows: 1, workspaces: 1 })
-    expect([...mirror.keys()]).toEqual([])
-    // The state row survives on purpose: deleting it would let a desktop that is
-    // still running recreate the copy a person just switched off.
-    expect(syncState.enabled).toBe(false)
-    expect(syncState.cursor).toBe(0)
-    expect(syncState.epoch).toBe('')
-  })
 })

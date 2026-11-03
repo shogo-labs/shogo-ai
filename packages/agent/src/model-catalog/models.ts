@@ -73,6 +73,13 @@ export interface ModelCapabilities {
    * back to Whisper transcription (see `transcribeAudioParts`).
    */
   supportsAudioInput?: boolean
+  /**
+   * Whether this model accepts `video_url` content blocks natively over the
+   * OpenAI-compatible chat/completions wire format (OpenRouter's video-input
+   * shape). Absent/`undefined` means "no native video input" — callers must
+   * not send video bytes to it.
+   */
+  supportsVideoInput?: boolean
 }
 
 /**

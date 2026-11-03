@@ -1090,16 +1090,13 @@ export const api = {
    * Filters mirror `analytics/usage-log` (period, userId, model). The route
    * sets `content-disposition: attachment` so the browser downloads it.
    *
-   * The base is not `${API_URL}`: a download is a raw URL, so it has to learn
-   * the same host the JSON analytics call gets (`lib/usage-log-csv`). Prefer
-   * `useUsageLogCsvUrl()` in components — it knows which workspace is in view.
+   * Prefer `useUsageLogCsvUrl()` in components (`lib/usage-log-csv`).
    */
   getUsageLogCsvUrl(
     workspaceId: string,
     params: { period?: string; userId?: string; model?: string; limit?: number } = {},
-    opts: { machine?: { relayBaseUrl: string; localWorkspaceId: string } | null } = {},
   ): string {
-    return usageLogCsvUrl({ workspaceId, params, machine: opts.machine })
+    return usageLogCsvUrl({ workspaceId, params })
   },
 
   async getMyAnalytics<T>(

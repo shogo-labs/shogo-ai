@@ -5,6 +5,8 @@
  * `?chatSessionId=<id>` opens that workspace session instead of the primary one (a team chat DM
  * reply opens the session it ran in), with the trail back to the conversation it came from.
  * `?initialMessage=<text>` sends that message once the session loads, if it has no messages yet.
+ * `?workspace=<id>&file=<path>` is a shared file link: it opens that workspace's chat with
+ * the file pane on that file, and both params are dropped once the pane opens.
  */
 import { useLocalSearchParams } from 'expo-router'
 import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
@@ -27,6 +29,9 @@ export default function AgentChatRoute() {
     fromThread?: string | string[]
     fromAgent?: string | string[]
     initialMessage?: string | string[]
+    /** A shared file link (`/agent?workspace=&file=`, SHO-284). */
+    workspace?: string | string[]
+    file?: string | string[]
   }>()
   const chatSessionId = firstParam(params.chatSessionId)
   const header = firstParam(params.fromConversation) ? <SessionBreadcrumb params={params} /> : undefined
@@ -35,6 +40,8 @@ export default function AgentChatRoute() {
       key={`${workspace?.id ?? 'workspace-loading'}:${chatSessionId ?? ''}`}
       initialSessionId={chatSessionId}
       initialMessage={firstParam(params.initialMessage)}
+      initialFilePath={firstParam(params.file) ?? null}
+      linkWorkspaceId={firstParam(params.workspace) ?? null}
       header={header}
     />
   )

@@ -20,7 +20,7 @@ import {
   resumeMaxAgeMinutes,
 } from '@shogo/shared-runtime/interrupted-turn'
 import { prisma } from '../lib/prisma'
-import { isMachineWorkspaceSession } from '../lib/machine-workspace'
+import { isHostedWorkspaceSession } from '../lib/hosted-workspace'
 import { dispatchNext } from './chat-queue-dispatcher.service'
 import { isAutonomousUserMessage } from './background-tasks.service'
 
@@ -224,7 +224,7 @@ export async function postInterruptedResume(
   // mirrored chat that looks interrupted here was cut off in the cloud's view
   // only: writing a note into the copy and queueing a resume is what made the
   // cloud run a turn on the desktop's chat.
-  if (await isMachineWorkspaceSession(session)) {
+  if (await isHostedWorkspaceSession(session)) {
     return { noted: false, queued: false }
   }
 

@@ -56,7 +56,7 @@ const AUTH_RETRY_MS = 10 * 60_000
 
 /**
  * Wait after the cloud refuses a batch for a reason a retry cannot fix
- * (`mirror_ownership`, `unknown_model`). Retrying every 30 s does not repair it
+ * (a snapshot naming another machine's workspace, `unknown_model`). Retrying every 30 s does not repair it
  * and hides it in a log nobody reads; ten minutes keeps the error visible in
  * `status` without the noise (SHO-241).
  */
@@ -528,6 +528,15 @@ export class MachineSyncPusher {
       this.copyReady = false
       return false
     }
+    if (code === 'workspace_ownership' && body.mode === 'snapshot') {
+      // Even a full snapshot names a workspace another machine hosts (SHO-285):
+      // a retry cannot repair that, so stall instead of re-sending it forever.
+      this.failureCount++
+      this.lastError = `${code}: ${result.error?.message ?? code}`
+      this.stalledUntil = Date.now() + STALLED_RETRY_MS
+      this.log(`[MachineSync] Sync stalled: ${this.lastError} (retrying in ${STALLED_RETRY_MS / 60_000} min)`)
+      return false
+    }
     if (code === 'workspace_ownership') {
       // The cloud is missing the workspace these rows belong to: the copy was
       // never completed, or it was deleted. A snapshot re-tags it, so do that
@@ -540,8 +549,8 @@ export class MachineSyncPusher {
       return false
     }
     if (code === 'mirror_ownership' || code === 'unknown_model') {
-      // Not something a retry repairs (a row id the cloud believes belongs to
-      // someone else, or a model it does not know). Keep the error, surface it,
+      // Not something a retry repairs (a model the cloud does not know, or
+      // `mirror_ownership` from a cloud that predates SHO-285). Keep the error, surface it,
       // and stop hammering the cloud: 10 minutes, not 30 seconds.
       this.failureCount++
       this.lastError = `${code}: ${result.error?.message ?? code}`

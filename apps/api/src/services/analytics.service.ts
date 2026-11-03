@@ -21,6 +21,7 @@ import {
   internalEmailClauses,
 } from '../lib/internal-accounts'
 import { resolveModelLabels } from './model-registry.service'
+import { SHOGO_FEE_PERCENT, splitUsageCost } from '../lib/usage-cost'
 import { countLineChanges } from '../lib/tool-line-stats'
 import {
   ANALYTICS_CACHE_DEFAULT_TTL_MS,
@@ -178,6 +179,12 @@ interface UsageModelAggregate {
   totalTokens: number
   totalBilledUsd: number
   totalRawUsd: number
+  /** Provider price (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed rows with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
   totalDurationMs: number
   /** Prompt tokens served from the provider's cache (per model, per user). */
   totalCachedInputTokens: number
@@ -239,6 +246,11 @@ function aggregateUsageByModel(
         inputTokens + outputTokens + Number(meta.cachedInputTokens || 0) + Number(meta.cacheWriteTokens || 0),
     )
     const rawForEvent = event.rawUsd ?? Number(meta.rawUsd ?? meta.dollarCost ?? 0)
+    const split = splitUsageCost({
+      billedUsd: event.billedUsd,
+      rawUsd: event.rawUsd,
+      actionMetadata: meta,
+    })
     const unpriced = meta.pricingUnknown === true ? 1 : 0
     const existing = aggregateMap.get(key)
 
@@ -249,6 +261,9 @@ function aggregateUsageByModel(
       existing.totalTokens += totalTokens
       existing.totalBilledUsd += Number(event.billedUsd || 0)
       existing.totalRawUsd += Number(rawForEvent || 0)
+      existing.modelCostUsd += split.modelCostUsd
+      existing.shogoFeeUsd += split.shogoFeeUsd
+      existing.unitemizedUsd += split.unitemizedUsd
       existing.totalDurationMs += Number(meta.durationMs || 0)
       existing.totalCachedInputTokens += cachedInputTokens
       existing.totalCacheWriteTokens += cacheWriteTokens
@@ -268,6 +283,9 @@ function aggregateUsageByModel(
         totalTokens,
         totalBilledUsd: Number(event.billedUsd || 0),
         totalRawUsd: Number(rawForEvent || 0),
+        modelCostUsd: split.modelCostUsd,
+        shogoFeeUsd: split.shogoFeeUsd,
+        unitemizedUsd: split.unitemizedUsd,
         totalDurationMs: Number(meta.durationMs || 0),
         totalCachedInputTokens: cachedInputTokens,
         totalCacheWriteTokens: cacheWriteTokens,
@@ -754,6 +772,12 @@ export interface MemberModelInsight {
   outputTokens: number
   totalTokens: number
   spendUsd: number
+  /** Provider price (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed rows with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
 }
 
 export interface MemberDailyInsight {
@@ -779,6 +803,12 @@ export interface MemberInsight {
   outputTokens: number
   totalTokens: number
   spendUsd: number
+  /** Provider price across the member's usage (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed rows with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
   lastActiveAt: string | null
   models: MemberModelInsight[]
   daily: MemberDailyInsight[]
@@ -811,6 +841,7 @@ export async function getMemberInsights(
       select: {
         memberId: true,
         billedUsd: true,
+        rawUsd: true,
         actionType: true,
         actionMetadata: true,
         createdAt: true,
@@ -880,6 +911,9 @@ export async function getMemberInsights(
         outputTokens: 0,
         totalTokens: 0,
         spendUsd: 0,
+        modelCostUsd: 0,
+        shogoFeeUsd: 0,
+        unitemizedUsd: 0,
         lastActiveAt: null,
         models: new Map(),
         daily: new Map(),
@@ -928,12 +962,20 @@ export async function getMemberInsights(
     const outputTokens = Number(meta.outputTokens || 0)
     const totalTokens = Number(meta.totalTokens || inputTokens + outputTokens)
     const spendUsd = Number(event.billedUsd || 0)
+    const split = splitUsageCost({
+      billedUsd: event.billedUsd,
+      rawUsd: event.rawUsd,
+      actionMetadata: meta,
+    })
 
     member.requests += 1
     member.inputTokens += inputTokens
     member.outputTokens += outputTokens
     member.totalTokens += totalTokens
     member.spendUsd += spendUsd
+    member.modelCostUsd += split.modelCostUsd
+    member.shogoFeeUsd += split.shogoFeeUsd
+    member.unitemizedUsd += split.unitemizedUsd
     const date = isoDay(event.createdAt)
     const daily = touchDaily(member, date)
     daily.requests += 1
@@ -955,6 +997,9 @@ export async function getMemberInsights(
       outputTokens: aggregate.totalOutputTokens,
       totalTokens: aggregate.totalTokens,
       spendUsd: aggregate.totalBilledUsd,
+      modelCostUsd: aggregate.modelCostUsd,
+      shogoFeeUsd: aggregate.shogoFeeUsd,
+      unitemizedUsd: aggregate.unitemizedUsd,
     })
   }
 
@@ -1009,6 +1054,9 @@ export async function getMemberInsights(
       outputTokens: member.outputTokens,
       totalTokens: member.totalTokens,
       spendUsd: member.spendUsd,
+      modelCostUsd: member.modelCostUsd,
+      shogoFeeUsd: member.shogoFeeUsd,
+      unitemizedUsd: member.unitemizedUsd,
       lastActiveAt: member.lastActiveAt,
       models: [...member.models.values()]
         .map(({ rawModel, ...model }) => ({
@@ -1113,6 +1161,14 @@ export interface SpendTimeseriesData {
     totalSpendUsd: number
     totalIncludedUsd: number
     totalOnDemandUsd: number
+    /** Provider price across the window (the "Model cost" line). */
+    modelCostUsd?: number
+    /** What we add on top of the provider price (the "Shogo fee" line). */
+    shogoFeeUsd?: number
+    /** Billed rows with no recorded provider cost (pre-2026-04-24). */
+    unitemizedUsd?: number
+    /** The fee as a percentage of model cost, derived from MARKUP_MULTIPLIER. */
+    shogoFeePercent?: number
     uniqueModels: number
   }
   models: string[]
@@ -1207,6 +1263,9 @@ export async function getSpendTimeseries(
   let totalSpendUsd = 0
   let totalIncludedUsd = 0
   let totalOnDemandUsd = 0
+  let modelCostUsd = 0
+  let shogoFeeUsd = 0
+  let unitemizedUsd = 0
 
   // For "spend" metric we want the *actual cost incurred* — `billedUsd` is 0
   // for events covered by included plan quota or running in local mode, so we
@@ -1248,6 +1307,14 @@ export async function getSpendTimeseries(
     seriesTotals.set(series, (seriesTotals.get(series) ?? 0) + value)
 
     totalSpendUsd += costUsd
+    const split = splitUsageCost({
+      billedUsd: event.billedUsd,
+      rawUsd: event.rawUsd,
+      actionMetadata: meta,
+    })
+    modelCostUsd += split.modelCostUsd
+    shogoFeeUsd += split.shogoFeeUsd
+    unitemizedUsd += split.unitemizedUsd
     if (event.source === 'overage') totalOnDemandUsd += costUsd
     else totalIncludedUsd += costUsd
   }
@@ -1287,6 +1354,10 @@ export async function getSpendTimeseries(
       totalSpendUsd,
       totalIncludedUsd,
       totalOnDemandUsd,
+      modelCostUsd,
+      shogoFeeUsd,
+      unitemizedUsd,
+      shogoFeePercent: SHOGO_FEE_PERCENT,
       uniqueModels: seriesTotals.size,
     },
     models,
@@ -2392,6 +2463,12 @@ export interface UsageLogEntry {
   totalTokens: number
   billedUsd: number
   rawUsd: number
+  /** Provider price for this request (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
   durationMs: number
   success: boolean
   createdAt: string
@@ -2421,6 +2498,12 @@ export interface UsageSummaryEntry {
   totalTokens: number
   totalBilledUsd: number
   totalRawUsd: number
+  /** Provider price for this user × model (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed rows with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
   avgDurationMs: number
   /** Prompt tokens served from the provider's cache. */
   totalCachedInputTokens: number
@@ -2496,6 +2579,11 @@ export async function getUsageLog(
     const isVoice = typeof event.actionType === 'string' &&
       event.actionType.startsWith('voice_')
     const rawModel = meta.model || meta.modelUsed || 'unknown'
+    const split = splitUsageCost({
+      billedUsd: event.billedUsd,
+      rawUsd: event.rawUsd,
+      actionMetadata: meta,
+    })
     return {
       id: event.id,
       userId: event.memberId,
@@ -2510,7 +2598,12 @@ export async function getUsageLog(
       outputTokens: meta.outputTokens || 0,
       totalTokens: meta.totalTokens || 0,
       billedUsd: event.billedUsd,
-      rawUsd: (meta.rawUsd as number | undefined) ?? (meta.dollarCost as number | undefined) ?? 0,
+      // The row's own `rawUsd` first: some writers (desktop, live-session
+      // minutes) only put the cost in metadata, but a recorded column wins.
+      rawUsd: event.rawUsd ?? (meta.rawUsd as number | undefined) ?? (meta.dollarCost as number | undefined) ?? 0,
+      modelCostUsd: split.modelCostUsd,
+      shogoFeeUsd: split.shogoFeeUsd,
+      unitemizedUsd: split.unitemizedUsd,
       durationMs: (meta.durationSeconds ?? 0) * 1000 || meta.durationMs || 0,
       success: meta.success !== false,
       createdAt: event.createdAt.toISOString(),
@@ -2601,6 +2694,9 @@ export async function getUsageSummary(
         totalTokens: agg.totalTokens,
         totalBilledUsd: agg.totalBilledUsd,
         totalRawUsd: agg.totalRawUsd,
+        modelCostUsd: agg.modelCostUsd,
+        shogoFeeUsd: agg.shogoFeeUsd,
+        unitemizedUsd: agg.unitemizedUsd,
         avgDurationMs: agg.requestCount > 0 ? Math.round(agg.totalDurationMs / agg.requestCount) : 0,
         totalCachedInputTokens: agg.totalCachedInputTokens,
         cacheHitRatio: promptCacheHitRatio(
@@ -2621,6 +2717,10 @@ export async function getUsageSummary(
     totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
     totalBilledUsd: summaries.reduce((s, e) => s + e.totalBilledUsd, 0),
     totalRawUsd: summaries.reduce((s, e) => s + e.totalRawUsd, 0),
+    modelCostUsd: summaries.reduce((s, e) => s + e.modelCostUsd, 0),
+    shogoFeeUsd: summaries.reduce((s, e) => s + e.shogoFeeUsd, 0),
+    unitemizedUsd: summaries.reduce((s, e) => s + e.unitemizedUsd, 0),
+    shogoFeePercent: SHOGO_FEE_PERCENT,
     unpricedRequests: summaries.reduce((s, e) => s + e.unpricedRequests, 0),
     totalToolCalls,
     uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
@@ -2681,6 +2781,12 @@ interface UsageGroupRow {
   rawUsd: number
   metaRawUsd: number
   costUsd: number
+  /** Provider price for the rows in this group (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed rows with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
   inputTokens: number
   outputTokens: number
   /**
@@ -2859,6 +2965,13 @@ async function scanUsageGroupsInNode(
     // `ai_live_session_minutes` shape) must still contribute its money.
     const rawUsd = event.rawUsd ?? metaRaw
     const costUsd = billedUsd > 0 ? billedUsd : rawUsd > 0 ? rawUsd : metaRaw
+    // Split per row, before summing: the clamp (`min(raw, billed)`) is not
+    // distributive, so a group total must be the sum of its rows' splits.
+    const split = splitUsageCost({
+      billedUsd: event.billedUsd,
+      rawUsd: event.rawUsd,
+      actionMetadata: event.actionMetadata,
+    })
     const inputTokens = num('inputTokens')
     const outputTokens = num('outputTokens')
     const cachedInputTokens = num('cachedInputTokens')
@@ -2887,6 +3000,9 @@ async function scanUsageGroupsInNode(
         rawUsd: 0,
         metaRawUsd: 0,
         costUsd: 0,
+        modelCostUsd: 0,
+        shogoFeeUsd: 0,
+        unitemizedUsd: 0,
         inputTokens: 0,
         outputTokens: 0,
         totalTokensField: 0,
@@ -2904,6 +3020,9 @@ async function scanUsageGroupsInNode(
     group.rawUsd += rawUsd
     group.metaRawUsd += metaRaw
     group.costUsd += costUsd
+    group.modelCostUsd += split.modelCostUsd
+    group.shogoFeeUsd += split.shogoFeeUsd
+    group.unitemizedUsd += split.unitemizedUsd
     group.inputTokens += inputTokens
     group.outputTokens += outputTokens
     group.totalTokensField += totalTokensField
@@ -2966,6 +3085,25 @@ async function scanUsageGroupsInSql(
   // Same per-event fallback as `eventCostUsd` in `getSpendTimeseries`: the
   // billed amount when it exists, else the recorded provider cost.
   const metaRaw = `COALESCE(${numOrNull('rawUsd')}, ${numOrNull('dollarCost')}, 0)`
+  // The provider cost when one is recorded anywhere, NULL when it is not — the
+  // difference between "free" and "we don't know" that `splitUsageCost` keeps.
+  const rawKnown = `COALESCE("rawUsd", ${numOrNull('rawUsd')}, ${numOrNull('dollarCost')})`
+  // Same split as `splitUsageCost`, per row, so the clamp is applied before the
+  // SUM. `model + fee + unitemized` equals the `costUsd` CASE below.
+  const modelCost = `CASE
+          WHEN "billedUsd" > 0 THEN LEAST(COALESCE(${rawKnown}, 0), "billedUsd")
+          WHEN COALESCE("rawUsd", 0) > 0 THEN "rawUsd"
+          ELSE ${metaRaw}
+        END`
+  const shogoFee = `CASE
+          WHEN "billedUsd" > 0 AND ${rawKnown} IS NOT NULL
+            THEN "billedUsd" - LEAST(${rawKnown}, "billedUsd")
+          ELSE 0
+        END`
+  const unitemized = `CASE
+          WHEN "billedUsd" > 0 AND ${rawKnown} IS NULL THEN "billedUsd"
+          ELSE 0
+        END`
 
   const sql = `SELECT
       ${day}                          AS "day",
@@ -2985,6 +3123,9 @@ async function scanUsageGroupsInSql(
           ELSE ${metaRaw}
         END
       ), 0)                           AS "costUsd",
+      COALESCE(SUM(${modelCost}), 0)  AS "modelCostUsd",
+      COALESCE(SUM(${shogoFee}), 0)   AS "shogoFeeUsd",
+      COALESCE(SUM(${unitemized}), 0) AS "unitemizedUsd",
       COALESCE(SUM(${input}), 0)      AS "inputTokens",
       COALESCE(SUM(${output}), 0)     AS "outputTokens",
       COALESCE(SUM(${totalTokens}), 0) AS "totalTokensField",
@@ -3017,6 +3158,9 @@ async function scanUsageGroupsInSql(
     rawUsd: Number(r.rawUsd),
     metaRawUsd: Number(r.metaRawUsd),
     costUsd: Number(r.costUsd),
+    modelCostUsd: Number(r.modelCostUsd),
+    shogoFeeUsd: Number(r.shogoFeeUsd),
+    unitemizedUsd: Number(r.unitemizedUsd),
     inputTokens: Number(r.inputTokens),
     outputTokens: Number(r.outputTokens),
     totalTokensField: Number(r.totalTokensField),
@@ -3051,6 +3195,9 @@ function buildUsageDashboardSummary(
     totalTokens: number
     billedUsd: number
     rawUsd: number
+    modelCostUsd: number
+    shogoFeeUsd: number
+    unitemizedUsd: number
     durationMs: number
     cachedInputTokens: number
     cacheWriteTokens: number
@@ -3067,6 +3214,9 @@ function buildUsageDashboardSummary(
       agg.totalTokens += g.totalTokens
       agg.billedUsd += g.billedUsd
       agg.rawUsd += g.rawUsd
+      agg.modelCostUsd += g.modelCostUsd
+      agg.shogoFeeUsd += g.shogoFeeUsd
+      agg.unitemizedUsd += g.unitemizedUsd
       agg.durationMs += g.durationMs
       agg.cachedInputTokens += g.cachedInputTokens
       agg.cacheWriteTokens += g.cacheWriteTokens
@@ -3082,6 +3232,9 @@ function buildUsageDashboardSummary(
         totalTokens: g.totalTokens,
         billedUsd: g.billedUsd,
         rawUsd: g.rawUsd,
+        modelCostUsd: g.modelCostUsd,
+        shogoFeeUsd: g.shogoFeeUsd,
+        unitemizedUsd: g.unitemizedUsd,
         durationMs: g.durationMs,
         cachedInputTokens: g.cachedInputTokens,
         cacheWriteTokens: g.cacheWriteTokens,
@@ -3106,6 +3259,9 @@ function buildUsageDashboardSummary(
         totalTokens: agg.totalTokens,
         totalBilledUsd: agg.billedUsd,
         totalRawUsd: agg.rawUsd,
+        modelCostUsd: agg.modelCostUsd,
+        shogoFeeUsd: agg.shogoFeeUsd,
+        unitemizedUsd: agg.unitemizedUsd,
         avgDurationMs: agg.requests > 0 ? Math.round(agg.durationMs / agg.requests) : 0,
         totalCachedInputTokens: agg.cachedInputTokens,
         cacheHitRatio: promptCacheHitRatio(
@@ -3125,6 +3281,10 @@ function buildUsageDashboardSummary(
     totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
     totalBilledUsd: summaries.reduce((s, e) => s + e.totalBilledUsd, 0),
     totalRawUsd: summaries.reduce((s, e) => s + e.totalRawUsd, 0),
+    modelCostUsd: summaries.reduce((s, e) => s + e.modelCostUsd, 0),
+    shogoFeeUsd: summaries.reduce((s, e) => s + e.shogoFeeUsd, 0),
+    unitemizedUsd: summaries.reduce((s, e) => s + e.unitemizedUsd, 0),
+    shogoFeePercent: SHOGO_FEE_PERCENT,
     unpricedRequests: summaries.reduce((s, e) => s + e.unpricedRequests, 0),
     totalToolCalls,
     uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
@@ -3166,6 +3326,9 @@ function buildUsageDashboardTimeseries(
   let totalSpendUsd = 0
   let totalIncludedUsd = 0
   let totalOnDemandUsd = 0
+  let modelCostUsd = 0
+  let shogoFeeUsd = 0
+  let unitemizedUsd = 0
 
   for (const g of groups) {
     if (!METERED_ACTION_TYPE_SET.has(g.actionType)) continue
@@ -3190,6 +3353,9 @@ function buildUsageDashboardTimeseries(
     seriesTotals.set(series, (seriesTotals.get(series) ?? 0) + value)
 
     totalSpendUsd += g.costUsd
+    modelCostUsd += g.modelCostUsd
+    shogoFeeUsd += g.shogoFeeUsd
+    unitemizedUsd += g.unitemizedUsd
     if (g.source === 'overage') totalOnDemandUsd += g.costUsd
     else totalIncludedUsd += g.costUsd
   }
@@ -3221,6 +3387,10 @@ function buildUsageDashboardTimeseries(
       totalSpendUsd,
       totalIncludedUsd,
       totalOnDemandUsd,
+      modelCostUsd,
+      shogoFeeUsd,
+      unitemizedUsd,
+      shogoFeePercent: SHOGO_FEE_PERCENT,
       uniqueModels: seriesTotals.size,
     },
     models,
@@ -4987,10 +5157,22 @@ export interface WorkspaceHeartbeatsAgent {
   /** Display label for `configuredModel` (a catalog id is a UUID post-migration). */
   configuredModelLabel: string | null
   /** What the charges actually ran on, so a config/actual mismatch is visible. */
-  modelsUsed: Array<{ model: string; billedUsd: number }>
+  modelsUsed: Array<{
+    model: string
+    billedUsd: number
+    modelCostUsd: number
+    shogoFeeUsd: number
+    unitemizedUsd: number
+  }>
   ticks: number
   billedUsd: number
   rawUsd: number
+  /** Provider price (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
   totalTokens: number
   avgUsdPerTick: number | null
   /** Filled by the route: whether the caller may PATCH this project's heartbeat. */
@@ -5008,6 +5190,14 @@ export interface WorkspaceHeartbeats {
     ticks: number
     billedUsd: number
     rawUsd: number
+    /** Provider price (the "Model cost" line). */
+    modelCostUsd: number
+    /** What we add on top of the provider price (the "Shogo fee" line). */
+    shogoFeeUsd: number
+    /** Billed with no recorded provider cost (pre-2026-04-24). */
+    unitemizedUsd: number
+    /** The fee as a percentage of model cost, derived from MARKUP_MULTIPLIER. */
+    shogoFeePercent: number
     totalTokens: number
     /** Every metered charge in the window, so the UI can show "x% of spend". */
     workspaceBilledUsd: number
@@ -5029,6 +5219,12 @@ interface HeartbeatChargeGroup {
   charges: number
   billedUsd: number
   rawUsd: number
+  /** Provider price (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
   totalTokens: number
 }
 
@@ -5124,15 +5320,23 @@ async function scanHeartbeatChargesInNode(
     const day = isoDay(event.createdAt)
     const model = String(meta.model ?? meta.modelUsed ?? 'unknown')
     const key = `${day}::${projectId}::${heartbeat ? 1 : 0}::${model}`
+    const split = splitUsageCost({
+      billedUsd: event.billedUsd,
+      rawUsd: event.rawUsd,
+      actionMetadata: meta,
+    })
 
     let group = groups.get(key)
     if (!group) {
-      group = { day, projectId, heartbeat, model, charges: 0, billedUsd: 0, rawUsd: 0, totalTokens: 0 }
+      group = { day, projectId, heartbeat, model, charges: 0, billedUsd: 0, rawUsd: 0, modelCostUsd: 0, shogoFeeUsd: 0, unitemizedUsd: 0, totalTokens: 0 }
       groups.set(key, group)
     }
     group.charges += 1
     group.billedUsd += effectiveCost(billedUsd, rawUsd, metaRaw)
     group.rawUsd += rawUsd
+    group.modelCostUsd += split.modelCostUsd
+    group.shogoFeeUsd += split.shogoFeeUsd
+    group.unitemizedUsd += split.unitemizedUsd
     group.totalTokens += totalTokens
   }
 
@@ -5167,6 +5371,21 @@ async function scanHeartbeatChargesInSql(
   const cacheWrite = num('cacheWriteTokens')
   const totalTokens = num('totalTokens')
   const metaRaw = `COALESCE(${numOrNull('rawUsd')}, ${numOrNull('dollarCost')}, 0)`
+  const rawKnown = `COALESCE("rawUsd", ${numOrNull('rawUsd')}, ${numOrNull('dollarCost')})`
+  const modelCost = `CASE
+          WHEN "billedUsd" > 0 THEN LEAST(COALESCE(${rawKnown}, 0), "billedUsd")
+          WHEN COALESCE("rawUsd", 0) > 0 THEN "rawUsd"
+          ELSE ${metaRaw}
+        END`
+  const shogoFee = `CASE
+          WHEN "billedUsd" > 0 AND ${rawKnown} IS NOT NULL
+            THEN "billedUsd" - LEAST(${rawKnown}, "billedUsd")
+          ELSE 0
+        END`
+  const unitemized = `CASE
+          WHEN "billedUsd" > 0 AND ${rawKnown} IS NULL THEN "billedUsd"
+          ELSE 0
+        END`
 
   const actionTypes = USAGE_METERED_ACTION_TYPES.map((t) => bind(t)).join(', ')
 
@@ -5184,6 +5403,9 @@ async function scanHeartbeatChargesInSql(
         END
       ), 0)                            AS "billedUsd",
       COALESCE(SUM(COALESCE("rawUsd", ${metaRaw})), 0) AS "rawUsd",
+      COALESCE(SUM(${modelCost}), 0)   AS "modelCostUsd",
+      COALESCE(SUM(${shogoFee}), 0)    AS "shogoFeeUsd",
+      COALESCE(SUM(${unitemized}), 0)  AS "unitemizedUsd",
       COALESCE(SUM(
         CASE WHEN ${totalTokens} <> 0 THEN ${totalTokens}
              ELSE ${input} + ${output} + ${cached} + ${cacheWrite} END
@@ -5205,6 +5427,9 @@ async function scanHeartbeatChargesInSql(
     charges: Number(r.charges),
     billedUsd: Number(r.billedUsd),
     rawUsd: Number(r.rawUsd),
+    modelCostUsd: Number(r.modelCostUsd),
+    shogoFeeUsd: Number(r.shogoFeeUsd),
+    unitemizedUsd: Number(r.unitemizedUsd),
     totalTokens: Number(r.totalTokens),
   }))
 }
@@ -5284,8 +5509,11 @@ export async function getWorkspaceHeartbeats(
     ticks: number
     billedUsd: number
     rawUsd: number
+    modelCostUsd: number
+    shogoFeeUsd: number
+    unitemizedUsd: number
     totalTokens: number
-    models: Map<string, number>
+    models: Map<string, { billedUsd: number; modelCostUsd: number; shogoFeeUsd: number; unitemizedUsd: number }>
   }>()
   const daily = new Map<string, { heartbeatUsd: number; otherUsd: number }>()
   const totals = {
@@ -5294,6 +5522,10 @@ export async function getWorkspaceHeartbeats(
     ticks: 0,
     billedUsd: 0,
     rawUsd: 0,
+    modelCostUsd: 0,
+    shogoFeeUsd: 0,
+    unitemizedUsd: 0,
+    shogoFeePercent: SHOGO_FEE_PERCENT,
     totalTokens: 0,
     workspaceBilledUsd: 0,
   }
@@ -5305,18 +5537,38 @@ export async function getWorkspaceHeartbeats(
       totals.ticks += group.charges
       totals.billedUsd += group.billedUsd
       totals.rawUsd += group.rawUsd
+      totals.modelCostUsd += group.modelCostUsd
+      totals.shogoFeeUsd += group.shogoFeeUsd
+      totals.unitemizedUsd += group.unitemizedUsd
       totals.totalTokens += group.totalTokens
 
       const usage = perProject.get(group.projectId) ?? (() => {
-        const fresh = { ticks: 0, billedUsd: 0, rawUsd: 0, totalTokens: 0, models: new Map<string, number>() }
+        const fresh = {
+          ticks: 0,
+          billedUsd: 0,
+          rawUsd: 0,
+          modelCostUsd: 0,
+          shogoFeeUsd: 0,
+          unitemizedUsd: 0,
+          totalTokens: 0,
+          models: new Map<string, { billedUsd: number; modelCostUsd: number; shogoFeeUsd: number; unitemizedUsd: number }>(),
+        }
         perProject.set(group.projectId, fresh)
         return fresh
       })()
       usage.ticks += group.charges
       usage.billedUsd += group.billedUsd
       usage.rawUsd += group.rawUsd
+      usage.modelCostUsd += group.modelCostUsd
+      usage.shogoFeeUsd += group.shogoFeeUsd
+      usage.unitemizedUsd += group.unitemizedUsd
       usage.totalTokens += group.totalTokens
-      usage.models.set(group.model, (usage.models.get(group.model) ?? 0) + group.billedUsd)
+      const model = usage.models.get(group.model) ?? { billedUsd: 0, modelCostUsd: 0, shogoFeeUsd: 0, unitemizedUsd: 0 }
+      model.billedUsd += group.billedUsd
+      model.modelCostUsd += group.modelCostUsd
+      model.shogoFeeUsd += group.shogoFeeUsd
+      model.unitemizedUsd += group.unitemizedUsd
+      usage.models.set(group.model, model)
     } else {
       bucket.otherUsd += group.billedUsd
     }
@@ -5359,12 +5611,21 @@ export async function getWorkspaceHeartbeats(
       configuredModelLabel: configuredModel ? (modelLabels.get(configuredModel) ?? configuredModel) : null,
       modelsUsed: usage
         ? [...usage.models.entries()]
-          .map(([model, billedUsd]) => ({ model, billedUsd }))
+          .map(([model, cost]) => ({
+            model,
+            billedUsd: cost.billedUsd,
+            modelCostUsd: cost.modelCostUsd,
+            shogoFeeUsd: cost.shogoFeeUsd,
+            unitemizedUsd: cost.unitemizedUsd,
+          }))
           .sort((a, b) => b.billedUsd - a.billedUsd)
         : [],
       ticks: usage?.ticks ?? 0,
       billedUsd: usage?.billedUsd ?? 0,
       rawUsd: usage?.rawUsd ?? 0,
+      modelCostUsd: usage?.modelCostUsd ?? 0,
+      shogoFeeUsd: usage?.shogoFeeUsd ?? 0,
+      unitemizedUsd: usage?.unitemizedUsd ?? 0,
       totalTokens: usage?.totalTokens ?? 0,
       avgUsdPerTick: usage && usage.ticks > 0 ? usage.billedUsd / usage.ticks : null,
       canEdit: false,

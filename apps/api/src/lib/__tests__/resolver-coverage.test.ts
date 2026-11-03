@@ -60,6 +60,7 @@ const EXEMPT: Record<string, string> = {
   eventDelivery: 'Created by the event emitter alongside its workspaceEvent and advanced only by the delivery worker (a job, not REST); redeliver is /api/workspaces/:workspaceId/triggers/... — resolved by path workspaceId.',
   eventSubscription: 'Mutated via /api/workspaces/:workspaceId/triggers (routes/workspace-agent.ts, mounted publicly and internally) — resolved by path workspaceId; app-owned rows are written with their appInstallGrant.',
   workItemEvent: 'Append-only history written as a side effect of the work item mutation that raised it (same request, same region); read via /api/work-items/:itemId/history — never mutated via REST.',
+  hostSyncChange: 'Written only by the host change-log prisma extension (lib/machine-sync/host-change-log.ts) as a side effect of the cloud write it records — same request, same region; read and acked by the paired desktop through the instance tunnel. Never mutated via REST.',
   workItemLink: 'Created via /api/work-items/:itemId/links (and by the work item service); cascades with its work item (onDelete: Cascade) — resolved by the work item lookup.',
   problemOccurrence: 'Written by problem intake (/api/internal/workspaces/:workspaceId/agent-boards/:board/problems) as a side effect of the work item it attaches to; read via /api/work-items/:itemId/occurrences.',
   workspaceEvent: 'Append-only outbox written as a side effect of the workspace mutation that raised it (same request, same region) or by the signed Composio webhook; never mutated via REST.',

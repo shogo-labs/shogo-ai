@@ -14,7 +14,7 @@ import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
 import type { KnativeStatusProbe } from './metal-drain'
 import type { ResolveWorkspaceRuntimeOpts } from './resolve-workspace-runtime-url'
 
-export type PodMode = 'k8s' | 'host' | 'metal'
+export type PodMode = 'k8s' | 'host' | 'metal' | 'host-tunnel'
 
 export type AnchoredProjectRuntimeArgs = {
   workspaceId: string
@@ -26,6 +26,7 @@ export type AnchoredProjectRuntimeArgs = {
 export type ResolvedPod =
   | { mode: 'k8s'; url: string }
   | { mode: 'metal'; url: string }
+  | { mode: 'host-tunnel'; url: string; instanceId?: string }
   | { mode: 'host'; url: string; runtime: IProjectRuntime }
 
 export interface ResolvePodUrlOpts {
@@ -55,6 +56,7 @@ export interface ResolvePodUrlOpts {
   _workspaceK8sResolver?: ResolveWorkspaceRuntimeOpts['_k8sResolver']
   _workspaceMetalResolver?: ResolveWorkspaceRuntimeOpts['_metalResolver']
   _hostStartProject?: ResolveWorkspaceRuntimeOpts['_hostStartProject']
+  _hostOf?: ResolveWorkspaceRuntimeOpts['_hostOf']
 }
 
 async function defaultLoadAnchoredProjectRuntimeArgs(
@@ -102,6 +104,7 @@ async function resolveAnchoredProject(
     _k8sResolver: opts._workspaceK8sResolver,
     _metalResolver: opts._workspaceMetalResolver,
     _hostStartProject: opts._hostStartProject,
+    _hostOf: opts._hostOf,
     openAttemptId: opts.openAttemptId,
     background: opts.background,
     rootfs: opts.rootfs,
@@ -110,6 +113,9 @@ async function resolveAnchoredProject(
 
   if (resolved.mode === 'host') {
     return { mode: 'host', url: resolved.url, runtime: resolved.runtime }
+  }
+  if (resolved.mode === 'host-tunnel') {
+    return { mode: 'host-tunnel', url: resolved.url, instanceId: resolved.instanceId }
   }
   return { mode: resolved.mode, url: resolved.url }
 }

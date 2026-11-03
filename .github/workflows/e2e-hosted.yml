@@ -189,7 +189,8 @@ jobs:
   playwright:
     name: Playwright (${{ inputs.target || 'staging' }}, ${{ inputs.suite || 'full' }})
     needs: [preflight]
-    runs-on: ubuntu-latest
+    # Playwright 1.58 has no ubuntu26.04 deps; unpin when @playwright/test supports it
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read

@@ -296,12 +296,20 @@ jobs:
             --non-interactive
 
       - name: Upload OTA sourcemaps to Sentry (optional, non-fatal)
-        # Re-bundles the iOS JS app with `expo export:embed` (same Metro
-        # invocation EAS uses internally) so we get an `.jsbundle` + `.map`
-        # pair on disk, then uploads them via sentry-cli with debug-id
-        # injection. The release tag matches `EXPO_PUBLIC_BUILD_HASH`
-        # baked into the OTA bundle above so events from devices that pulled
-        # this update will resolve to symbolicated frames.
+        # `eas update` publishes what `expo export` produces — a Hermes
+        # bytecode bundle plus its composed map — so the upload has to come
+        # from that same command. A separate `expo export:embed` re-bundle is
+        # a different artifact (plain JS + packager map, and minified where
+        # the shipped bundle is not), which is why every OTA event came back
+        # `js_no_source` (SHO-290). The release tag matches
+        # `EXPO_PUBLIC_BUILD_HASH` baked into the OTA bundle above, and the
+        # dist matches the `dist` `Sentry.init` reports, so events from
+        # devices that pulled this update resolve to symbolicated frames.
+        #
+        # `--source-maps true` is not optional: `expo export` writes only the
+        # `.hbc` unless asked, so without it the upload ships a bundle with no
+        # map and OTA events stay `js_no_source`. `eas update` passes the same
+        # flag to its own export, so this matches what the device downloads.
         #
         # Non-fatal: a Sentry misconfiguration must not block an OTA roll-out.
         working-directory: apps/mobile
@@ -321,35 +329,43 @@ jobs:
             echo "::notice title=Sentry sourcemap upload (iOS OTA)::SENTRY_AUTH_TOKEN secret not configured — skipping."
             exit 0
           fi
-          BUNDLE_DIR="$RUNNER_TEMP/ota-ios-bundle"
-          mkdir -p "$BUNDLE_DIR"
-          bunx expo export:embed \
+          BUNDLE_DIR="$RUNNER_TEMP/ota-ios-export"
+          rm -rf "$BUNDLE_DIR"
+          bunx expo export \
             --platform ios \
-            --dev false \
-            --reset-cache \
-            --bundle-output "$BUNDLE_DIR/main.jsbundle" \
-            --sourcemap-output "$BUNDLE_DIR/main.jsbundle.map" \
-            --assets-dest "$BUNDLE_DIR/assets" \
-            --entry-file index.js
+            --output-dir "$BUNDLE_DIR" \
+            --source-maps true \
+            --clear
           EXPORT_RC=$?
           if [ "$EXPORT_RC" -ne 0 ]; then
-            echo "::warning title=Sentry sourcemap upload (iOS OTA)::expo export:embed exited $EXPORT_RC — skipping upload."
+            echo "::warning title=Sentry sourcemap upload (iOS OTA)::expo export exited $EXPORT_RC — skipping upload."
+            exit 0
+          fi
+          # `expo export` names the bundle after a content hash, so find the
+          # directory it wrote rather than guessing the file name.
+          JS_DIR=$(find "$BUNDLE_DIR" -type d -path '*_expo/static/js/ios' | head -1)
+          if [ -z "$JS_DIR" ]; then
+            echo "::warning title=Sentry sourcemap upload (iOS OTA)::no exported JS bundle under $BUNDLE_DIR — skipping upload."
             exit 0
           fi
           SENTRY_CLI="./node_modules/.bin/sentry-cli"
           [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
-          # `--ext jsbundle --ext map` is required because RN's iOS bundle
-          # extension (`.jsbundle`) isn't part of sentry-cli's default file
-          # filter — without it, inject/upload would silently skip the
+          # `--ext` is required because neither Hermes bytecode (`.hbc`) nor
+          # RN's iOS bundle extension (`.jsbundle`) is part of sentry-cli's
+          # default file filter — without it, upload would silently skip the
           # bundle and only ship the map (and Sentry would refuse to match).
-          $SENTRY_CLI sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" \
-            --ext jsbundle --ext map "$BUNDLE_DIR"
+          #
+          # No `sourcemaps inject` here: `expo export` already stamps a
+          # matching debug id into both halves, and sentry-cli treats the
+          # `.hbc` as JavaScript — injecting replaces the 26 MB bytecode with
+          # a 358-byte stub and re-serialises the map with zero mappings, so
+          # the upload resolves nothing (SHO-290). Upload the pair untouched.
           $SENTRY_CLI sourcemaps upload \
             --release "$EXPO_PUBLIC_BUILD_HASH" \
             --dist ios \
-            --ext jsbundle --ext map \
+            --ext hbc --ext jsbundle --ext js --ext map \
             --strip-prefix "$GITHUB_WORKSPACE" \
-            "$BUNDLE_DIR"
+            "$JS_DIR"
           UPLOAD_RC=$?
           if [ "$UPLOAD_RC" -ne 0 ]; then
             echo "::warning title=Sentry sourcemap upload (iOS OTA)::sentry-cli exited $UPLOAD_RC — release continuing without symbolication."
@@ -382,10 +398,16 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       CCACHE_DIR: /Users/runner/Library/Caches/ccache
       CCACHE_MAXSIZE: 2G
+      # The one bundle id this pipeline ships. Job-level so the archive step and
+      # the IPA assertion below cannot drift apart (SHO-282).
+      BUNDLE_ID: ai.shogo.app
 
     outputs:
       should_submit: ${{ steps.submit-decision.outputs.should_submit }}
       ipa_artifact: Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa
+      build_number: ${{ steps.ipa-identity.outputs.build_number }}
+      short_version: ${{ steps.ipa-identity.outputs.short_version }}
+      bundle_id: ${{ steps.ipa-identity.outputs.bundle_id }}
 
     steps:
       - name: Checkout
@@ -640,7 +662,6 @@ jobs:
       - name: Build archive
         working-directory: apps/mobile/ios
         env:
-          BUNDLE_ID: ai.shogo.app
           # JS bundling runs inside xcodebuild's "Bundle React Native code
           # and images" build phase, which calls Metro. Metro reads
           # EXPO_PUBLIC_* from process.env at bundle time and bakes them
@@ -773,7 +794,15 @@ jobs:
         # Metro config that produced the bundle in the IPA) and upload the
         # resulting bundle + map to Sentry under the same release tag baked
         # into the binary via EXPO_PUBLIC_BUILD_HASH. dist=`ios` keeps it
-        # disjoint from the Android upload at the same SHA.
+        # disjoint from the Android upload at the same SHA, and matches the
+        # `dist` `Sentry.init` reports.
+        #
+        # `--minify false` is not optional: Xcode's "Bundle React Native code
+        # and images" phase passes it whenever Hermes is on
+        # (`react-native-xcode.sh`), so the shipped bundle is unminified. A
+        # minified re-bundle produces a map whose positions are off by
+        # hundreds of thousands of lines, which is why events stayed
+        # `js_no_source` (SHO-290).
         #
         # Non-fatal for the same reason as the dSYM step.
         working-directory: apps/mobile
@@ -797,6 +826,7 @@ jobs:
           bunx expo export:embed \
             --platform ios \
             --dev false \
+            --minify false \
             --reset-cache \
             --bundle-output "$BUNDLE_DIR/main.jsbundle" \
             --sourcemap-output "$BUNDLE_DIR/main.jsbundle.map" \
@@ -891,6 +921,42 @@ jobs:
           echo "IPA_PATH=$IPA_PATH" >> $GITHUB_ENV
           echo "Built IPA: $IPA_PATH"
 
+      - name: Read IPA identity
+        # The build number and bundle id inside the IPA are the only facts App
+        # Store Connect will agree with. Deriving them from github.run_number
+        # made every TestFlight poll ask for a build that was never uploaded
+        # (SHO-282), so read them here once and hand them to the later jobs.
+        id: ipa-identity
+        run: |
+          set -euo pipefail
+          PLIST_ENTRY=$(unzip -Z1 "$IPA_PATH" | grep -E '^Payload/[^/]+\.app/Info\.plist$' | head -1)
+          if [ -z "$PLIST_ENTRY" ]; then
+            echo "::error::No Payload/*.app/Info.plist in $IPA_PATH"
+            exit 1
+          fi
+          rm -rf "$RUNNER_TEMP/ipa-plist"
+          mkdir -p "$RUNNER_TEMP/ipa-plist"
+          unzip -o -q "$IPA_PATH" "$PLIST_ENTRY" -d "$RUNNER_TEMP/ipa-plist"
+          INFO_PLIST="$RUNNER_TEMP/ipa-plist/$PLIST_ENTRY"
+
+          IPA_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")
+          SHORT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")
+          BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIST")
+          EXPECTED_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100))
+
+          echo "bundle_id=$IPA_BUNDLE_ID" >> "$GITHUB_OUTPUT"
+          echo "short_version=$SHORT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+
+          echo "IPA identity: bundle=$IPA_BUNDLE_ID version=$SHORT_VERSION build=$BUILD_NUMBER (expected build $EXPECTED_BUILD_NUMBER)"
+          if [ "$BUILD_NUMBER" != "$EXPECTED_BUILD_NUMBER" ]; then
+            echo "::warning::The IPA's CFBundleVersion is $BUILD_NUMBER but github.run_number + 100 is $EXPECTED_BUILD_NUMBER. The workflow bump in apps/mobile/app.json did not reach the binary; TestFlight will poll the IPA's value."
+          fi
+          if [ "$IPA_BUNDLE_ID" != "$BUNDLE_ID" ]; then
+            echo "::error::The IPA's CFBundleIdentifier is $IPA_BUNDLE_ID, not $BUNDLE_ID. App Store Connect lookups will target the wrong app."
+            exit 1
+          fi
+
       - name: Save fingerprint to cache
         run: |
           RUNTIME_VERSION="${{ needs.check-fingerprint.outputs.runtime_version }}"
@@ -939,7 +1005,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ needs.check-fingerprint.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **buildNumber:** $((${{ github.run_number }} + 100))" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleShortVersionString (IPA):** \`${{ steps.ipa-identity.outputs.short_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleVersion (IPA):** \`${{ steps.ipa-identity.outputs.build_number }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleIdentifier (IPA):** \`${{ steps.ipa-identity.outputs.bundle_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **buildNumber (run_number + 100):** $(( ${{ github.run_number }} + 100 ))" >> $GITHUB_STEP_SUMMARY
           echo "- **Profile:** $PROFILE_NAME" >> $GITHUB_STEP_SUMMARY
           echo "- **IPA artifact:** Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ needs.check-fingerprint.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
@@ -961,12 +1030,14 @@ jobs:
       APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
 
     steps:
-      - name: Checkout TestFlight distribution script
+      - name: Checkout release scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          # The whole scripts directory, not a file list: the scripts grow lib
+          # dependencies, and a sparse list that misses one kills the job with a
+          # LoadError before it ever talks to Apple (SHO-282).
           sparse-checkout: |
-            .github/scripts/testflight-distribute.rb
-            .github/scripts/lib/app-store-connect.rb
+            .github/scripts
           sparse-checkout-cone-mode: false
 
       - name: Download IPA
@@ -1010,21 +1081,30 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          # The IPA's own values, read in the build job. Polling a build number
+          # derived from github.run_number hid the real problem for four
+          # releases (SHO-282).
+          TESTFLIGHT_BUILD_NUMBER: ${{ needs.build.outputs.build_number }}
+          TESTFLIGHT_BUNDLE_ID: ${{ needs.build.outputs.bundle_id }}
           TESTFLIGHT_GROUP_IDS: 56865043-fc4a-40f8-ab20-ec2a8ebdd76c,98287cb2-a201-484d-9371-4619b9858daa
           # Apple accepted recent uploads but did not expose their builds in
           # the API within the default 30-minute processing window.
           TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS: 7200
         run: |
           set -euo pipefail
-          TESTFLIGHT_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100)) \
+          IPA_PATH=$(find /tmp/ipa -name '*.ipa' | head -1)
+          TESTFLIGHT_IPA_PATH="$IPA_PATH" \
             ruby "$GITHUB_WORKSPACE/.github/scripts/testflight-distribute.rb"
 
       - name: Summary
+        if: always()
         run: |
           echo "## TestFlight upload" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **IPA:** \`${{ needs.build.outputs.ipa_artifact }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ needs.check-fingerprint.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleShortVersionString (IPA):** \`${{ needs.build.outputs.short_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **CFBundleVersion (IPA):** \`${{ needs.build.outputs.build_number }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ needs.check-fingerprint.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
 
@@ -1045,12 +1125,21 @@ jobs:
       (github.ref_type == 'tag' || inputs.release_tag != '') &&
       vars.IOS_SUBMIT_FOR_REVIEW != 'false'
     steps:
-      - name: Checkout App Store review script
+      - name: Require a built IPA
+        # Without this the job dies on "Missing required environment variable
+        # APP_STORE_BUILD_NUMBER", which says nothing about the real problem
+        # (SHO-282).
+        if: needs.build.result != 'success' || needs.build.outputs.build_number == ''
+        run: |
+          echo "::error::The build job produced no IPA (result: ${{ needs.build.result }}), so there is nothing to submit for App Store review."
+          exit 1
+
+      - name: Checkout release scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          # Same directory-level checkout as the TestFlight job (SHO-282).
           sparse-checkout: |
-            .github/scripts/app-store-submit-review.rb
-            .github/scripts/lib/app-store-connect.rb
+            .github/scripts
           sparse-checkout-cone-mode: false
 
       - name: Submit for review
@@ -1059,12 +1148,13 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          APP_BUNDLE_ID: ${{ needs.build.outputs.bundle_id }}
           APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
+          APP_STORE_BUILD_NUMBER: ${{ needs.build.outputs.build_number }}
           APP_STORE_WHATS_NEW: ${{ vars.IOS_WHATS_NEW }}
         run: |
           set -euo pipefail
-          APP_STORE_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100)) \
-            ruby "$GITHUB_WORKSPACE/.github/scripts/app-store-submit-review.rb"
+          ruby "$GITHUB_WORKSPACE/.github/scripts/app-store-submit-review.rb"
 
 
 # Manual triggers:

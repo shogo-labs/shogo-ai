@@ -12,6 +12,7 @@ import {
 import { ComposerPlusCloseContext } from "./ComposerPlusMenu"
 import { useNativePhoneSheetChrome } from "../../lib/native-phone-layout";
 import { PLUS_ATTACH_ROWS } from "../../lib/composer-phone"
+import { useLaunchAfterSheetCloses } from "../../lib/use-launch-after-sheet-closes"
 
 export interface AttachSourceSheetProps extends NativeAttachPickerOptions {
   open: boolean
@@ -29,9 +30,14 @@ export function AttachSourceSheet({
   const { height } = useWindowDimensions()
   const sheet = useNativePhoneSheetChrome()
   const close = () => onOpenChange(false)
+  // iOS drops a picker presented while the modal is still dismissing, so the
+  // action waits for `onDismiss` (with a fallback timer for Android).
+  const { launchAfterClose, onSheetDismiss } = useLaunchAfterSheetCloses<NativeAttachAction>(
+    (action) => executeNativeAttachAction(action, opts),
+  )
   const handleSelect = (action: NativeAttachAction) => {
     onOpenChange(false)
-    executeNativeAttachAction(action, opts)
+    launchAfterClose(action)
   }
   const hasExtras = children != null
   const maxBodyHeight = Math.round(height * 0.72)
@@ -43,6 +49,7 @@ export function AttachSourceSheet({
       animationType="fade"
       statusBarTranslucent
       onRequestClose={close}
+      onDismiss={onSheetDismiss}
     >
       <ComposerPlusCloseContext.Provider value={close}>
         <View className="flex-1 justify-end">

@@ -189,48 +189,122 @@ export function withSnapshotId<T extends UIMessage>(snapshot: T | undefined): T 
 const SNAPSHOT_PEEK_MS = 1500
 
 /**
- * Reads ahead at most one chunk without losing it: `stream()` yields the
- * original chunks, optionally minus the first one. `endedWithoutFrames` says
- * the peek ended because the stream closed, not because it went quiet: a held
- * open stream with nothing to send yet is a live turn, a closed one is a
- * runtime with nothing buffered.
+ * How far the peek reads past the first chunk while looking for the replay's
+ * `data-turn-start`. The runtime writes it as the second frame of a turn
+ * (`buffered-turn.ts`), so the bound only bites on a runtime too old to send it.
  */
-function peekFirstChunk<T>(source: ReadableStream<T>, timeoutMs: number) {
-  const reader = source.getReader()
-  let firstRead: Promise<ReadableStreamReadResult<T>> | null = reader.read()
-  let skipFirst = false
-  let endedWithoutFrames = false
-  const peeked = new Promise<T | undefined>((resolve, reject) => {
-    const timer = setTimeout(() => resolve(undefined), timeoutMs)
-    firstRead!.then(
-      (result) => {
-        clearTimeout(timer)
-        endedWithoutFrames = result.done === true
-        resolve(result.done ? undefined : result.value)
-      },
-      (error) => {
-        clearTimeout(timer)
-        reject(error)
-      },
-    )
-  })
+const REPLAY_LOOKAHEAD_CHUNKS = 24
+
+/** The runtime's frame naming the turn the following frames rebuild. */
+export const TURN_START_PART_TYPE = "data-turn-start"
+
+/** Which turn a replay stream is rebuilding, as far as it said so up front. */
+export interface ReplayTurnStart {
+  turnId?: string
+  startedAt?: number
+}
+
+/**
+ * The turn a chunk announces, if it is a `data-turn-start` frame. The runtime
+ * writes `{ turnId, chatSessionId, startedAt }`; an older one carries no turn
+ * id, so `startedAt` is the fallback `messageTurnKey` already understands.
+ */
+export function turnStartOf(chunk: unknown): ReplayTurnStart | undefined {
+  const frame = chunk as { type?: unknown; data?: Record<string, unknown> } | undefined
+  if (frame?.type !== TURN_START_PART_TYPE) return undefined
+  const turnId = frame.data?.turnId
+  const startedAt = frame.data?.startedAt
+  const start: ReplayTurnStart = {}
+  if (typeof turnId === "string" && turnId) start.turnId = turnId
+  if (typeof startedAt === "number") start.startedAt = startedAt
+  return Object.keys(start).length > 0 ? start : undefined
+}
+
+/**
+ * A message carrying only the turn the replay is rebuilding, so the tail drop
+ * can tell "the copy on screen is this turn" from "this is another turn's row"
+ * (`dropUnfinishedAssistantTail`). Same shape the snapshot path compares with.
+ */
+export function replayTurnMessage(start: ReplayTurnStart): UIMessage {
   return {
-    peeked,
+    id: `replay-${start.turnId ?? start.startedAt ?? "turn"}`,
+    role: "assistant",
+    parts: [{ type: TURN_START_PART_TYPE, data: { ...start } }],
+  } as UIMessage
+}
+
+/**
+ * Reads ahead a bounded number of chunks without losing any: `stream()` yields
+ * the peeked chunks in order, optionally minus the first one, then continues
+ * with the rest of the source. `endedWithoutFrames` says the source closed
+ * before a single frame arrived — a runtime with nothing buffered — as opposed
+ * to a held-open stream that has nothing to send yet.
+ *
+ * `readMore` can be called again to look further; a read still in flight when
+ * the deadline passes is handed to `stream()`.
+ */
+function peekChunks<T>(source: ReadableStream<T>) {
+  const reader = source.getReader()
+  const buffered: T[] = []
+  let pending: Promise<ReadableStreamReadResult<T>> | null = null
+  let ended = false
+  const nextRead = () => (pending ??= reader.read())
+
+  const readMore = async (opts: {
+    timeoutMs: number
+    upTo: number
+    stopOn?: (chunk: T) => boolean
+  }): Promise<void> => {
+    const deadline = Date.now() + opts.timeoutMs
+    while (buffered.length < opts.upTo) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const timeout = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), remaining)
+      })
+      const read = nextRead().then(
+        (result) => ({ result }) as const,
+        (error) => ({ error }) as const,
+      )
+      const outcome = await Promise.race([read, timeout])
+      clearTimeout(timer)
+      if (outcome === "timeout") return
+      if ("error" in outcome) throw outcome.error
+      pending = null
+      const result = outcome.result
+      if (result.done) {
+        ended = true
+        return
+      }
+      buffered.push(result.value)
+      if (opts.stopOn?.(result.value)) return
+    }
+  }
+
+  return {
+    readMore,
+    get buffered() {
+      return buffered
+    },
     get endedWithoutFrames() {
-      return endedWithoutFrames
+      return ended && buffered.length === 0
     },
     stream(opts: { skipFirst: boolean }): ReadableStream<T> {
-      skipFirst = opts.skipFirst
+      let cursor = opts.skipFirst ? 1 : 0
       return new ReadableStream<T>(
         {
           async pull(controller) {
             for (;;) {
-              const read = firstRead ?? reader.read()
-              const wasFirst = firstRead !== null
-              firstRead = null
+              if (cursor < buffered.length) return controller.enqueue(buffered[cursor++])
+              if (ended) return controller.close()
+              const read = pending ?? reader.read()
+              pending = null
               const result = await read
-              if (result.done) return controller.close()
-              if (wasFirst && skipFirst) continue
+              if (result.done) {
+                ended = true
+                return controller.close()
+              }
               return controller.enqueue(result.value)
             }
           },
@@ -272,10 +346,17 @@ export function replayRebuildsMessage(args: {
  * happens once this resolves) and `beforeReplay` is not called. Otherwise the
  * older replay path applies, and only when the replay is really going to
  * rebuild the message (see `replayRebuildsMessage`).
+ *
+ * `beforeReplay` is told which turn the replay rebuilds, read from its
+ * `data-turn-start` frame: without it the tail drop cannot tell the persisted
+ * partial of *this* turn (which the replay is about to rebuild) from another
+ * turn's row (which must survive), and the reply shows twice (SHO-278). A
+ * runtime that never sends the frame leaves it undefined, and the drop keeps
+ * its old, conservative behaviour.
  */
 export function withResumeReplayReset<T extends UIMessage>(
   transport: ChatTransport<T>,
-  beforeReplay: () => void,
+  beforeReplay: (start?: ReplayTurnStart) => void,
   onSnapshot?: (message: T) => void,
 ): ChatTransport<T> {
   return {
@@ -284,23 +365,42 @@ export function withResumeReplayReset<T extends UIMessage>(
     reconnectToStream: async (options) => {
       const stream = await transport.reconnectToStream(options)
       if (!stream) return stream
-      const peek = peekFirstChunk(stream, SNAPSHOT_PEEK_MS)
-      const first = await peek.peeked
+      const deadline = Date.now() + SNAPSHOT_PEEK_MS
+      // One chunk tells a snapshot apart from a replay. A replay then has to be
+      // read on (bounded) to its `data-turn-start`: the tail drop can only
+      // replace the copy on screen when it knows which turn is being rebuilt.
+      const peek = peekChunks(stream)
+      await peek.readMore({ timeoutMs: SNAPSHOT_PEEK_MS, upTo: 1 })
+      const first = peek.buffered[0]
       const isSnapshotChunk = first?.type === MESSAGE_SNAPSHOT_CHUNK_TYPE
       const snapshot = isSnapshotChunk
         ? withSnapshotId((first as any).data?.message as T | undefined)
         : undefined
-      if (snapshot && onSnapshot) onSnapshot(snapshot)
-      else if (
+      if (snapshot && onSnapshot) {
+        onSnapshot(snapshot)
+        return coalesceChunkBursts(peek.stream({ skipFirst: true }))
+      } else if (
         replayRebuildsMessage({
           first: first as { type?: unknown; transient?: unknown } | undefined,
           endedWithoutFrames: peek.endedWithoutFrames,
           appliesSnapshot: Boolean(onSnapshot),
         })
       ) {
-        beforeReplay()
+        if (!turnStartOf(first)) {
+          await peek.readMore({
+            timeoutMs: Math.max(0, deadline - Date.now()),
+            upTo: REPLAY_LOOKAHEAD_CHUNKS,
+            stopOn: (chunk) => turnStartOf(chunk) !== undefined,
+          })
+        }
+        let start: ReplayTurnStart | undefined
+        for (const chunk of peek.buffered) {
+          start = turnStartOf(chunk)
+          if (start) break
+        }
+        beforeReplay(start)
       }
-      return coalesceChunkBursts(peek.stream({ skipFirst: Boolean(snapshot && onSnapshot) }))
+      return coalesceChunkBursts(peek.stream({ skipFirst: false }))
     },
   }
 }

@@ -7,7 +7,7 @@
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { homeRegionWorkspaceWhere, homeWorkspaceIds } from '../lib/region'
-import { machineWorkspaceIds, notMachineWorkspaceWhere } from '../lib/machine-workspace'
+import { hostedWorkspaceIds, notHostedWorkspaceWhere } from '../lib/hosted-workspace'
 import { sendPushToUser } from '../lib/push-notifications'
 import {
   ConversationError,
@@ -268,7 +268,7 @@ export async function sendDueScheduledMessages(now = new Date()): Promise<number
       status: 'pending',
       sendAt: { lte: now },
       // A queued message in a machine workspace is the desktop's to send.
-      ...(await notMachineWorkspaceWhere()),
+      ...(await notHostedWorkspaceWhere()),
       ...(home ? { conversation: { workspace: home } } : {}),
     },
     orderBy: { sendAt: 'asc' },
@@ -412,7 +412,7 @@ export async function fireDueReminders(now = new Date()): Promise<number> {
   // Reminders fire (inbox rows, pushes) in the workspace's home region only.
   // A reminder for a machine workspace fires on the desktop, which is where that
   // person's inbox lives — so the copy never gets here.
-  const machineIds = new Set(await machineWorkspaceIds())
+  const machineIds = new Set(await hostedWorkspaceIds())
   const dueWhere: Record<string, unknown> = {
     status: 'pending',
     remindAt: { lte: now },

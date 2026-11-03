@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Cloud half of the machine copy: apply a batch a paired desktop pushed
- * (SHO-185).
+ * Cloud half of a hosted workspace's sync: apply a batch its desktop pushed
+ * (SHO-185, reworked for the metal model in SHO-285).
  *
  * Design rules, in the order they matter:
  *
- * 1. **The desktop keeps its ids.** A row is written with the id the desktop
- *    uses, so a Studio URL is the same URL on both sides and no mapping table is
- *    needed anywhere.
- * 2. **A desktop can only ever write rows it owns.** Every row is checked
- *    against `machine_mirror_rows`; a row owned by the cloud or by another
- *    machine rejects the whole batch with `409 mirror_ownership`, so guessing an
- *    id cannot overwrite anything.
+ * 1. **One id, one user.** A row is written with the id it has on both sides,
+ *    and the desktop's user is the cloud account, so no mapping is needed.
+ * 2. **A desktop can only write rows of the workspaces it hosts.** Each row's
+ *    workspace is resolved through the schema's foreign keys; a row of any other
+ *    workspace rejects the batch with `409 workspace_ownership`, so guessing an
+ *    id cannot overwrite anything. Conflicts with cloud writes to the same row
+ *    resolve last-writer-wins by `updatedAt`.
  * 3. **Version skew is expected.** Unknown columns are dropped and missing
  *    required ones are filled, so a desktop one version behind or ahead still
  *    syncs. Never fail a batch for a field.
@@ -24,6 +24,9 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { PrismaClient } from '../../generated/prisma-pg/client'
 import { applyRewrites, delegateName, isMirroredModel, MIRROR_MODELS } from './models'
+import { incomingWins } from './ingest-lww'
+
+export { incomingWins }
 import {
   columnFields,
   foreignKeys,
@@ -33,11 +36,6 @@ import {
   type ParsedModel,
   type ScalarType,
 } from './schema-model'
-
-/** Candidate rows read per page while pruning cloud-only rows from the copy. */
-const PRUNE_PAGE_ROWS = 500
-/** Ids per `deleteMany` — keeps each statement well under Postgres' parameter cap. */
-const PRUNE_DELETE_ROWS = 500
 
 export interface IngestRequest {
   epoch?: string
@@ -49,7 +47,6 @@ export interface IngestRequest {
 }
 
 export type IngestFailure =
-  | { code: 'mirror_ownership'; message: string; detail?: Record<string, unknown> }
   | { code: 'epoch_mismatch'; message: string; epoch: string }
   | { code: 'unknown_model'; message: string }
   | { code: 'workspace_ownership'; message: string; detail?: Record<string, unknown> }
@@ -65,6 +62,8 @@ export interface IngestSuccess {
   syncedAt: string
   /** Sync is switched off for this machine: the desktop should stop pushing. */
   disabled?: boolean
+  /** Workspaces this batch created in the cloud — now hosted by the machine. */
+  newWorkspaces?: number
 }
 
 export interface IngestContext {
@@ -78,7 +77,7 @@ export interface IngestContext {
 
 // ─── Schema metadata (read once) ────────────────────────────────────────────
 
-interface ModelMeta {
+export interface ModelMeta {
   model: ParsedModel
   /** Scalar/enum column names, for dropping unknown columns. */
   columns: Set<string>
@@ -96,7 +95,7 @@ interface ModelMeta {
 
 let metadata: Map<string, ModelMeta> | null = null
 
-function loadMetadata(): Map<string, ModelMeta> {
+export function loadMetadata(): Map<string, ModelMeta> {
   if (metadata) return metadata
   const candidates = [
     process.env.SHOGO_PRISMA_SCHEMA,
@@ -248,6 +247,61 @@ export function normaliseRow(
   return out
 }
 
+// ─── Which workspace a row belongs to ───────────────────────────────────────
+
+/**
+ * Resolves the workspace of a row of any mirrored model, through the schema's
+ * own foreign keys (`ModelMeta.scope`), memoised per instance. Used by ingest
+ * (a desktop may only write rows of the workspaces it hosts) and by the cloud
+ * change log (only rows of hosted workspaces are fed back down).
+ */
+export class WorkspaceResolver {
+  private readonly memo = new Map<string, string | null>()
+  constructor(private readonly db: any) {}
+
+  /** Remember an answer the caller already knows (a row it just wrote). */
+  remember(model: string, id: string, workspaceId: string | null): void {
+    this.memo.set(`${model}\u0000${id}`, workspaceId)
+  }
+
+  async ofRow(model: string, row: Record<string, unknown>, depth = 0): Promise<string | null> {
+    if (model === 'Workspace') return typeof row.id === 'string' ? row.id : null
+    const meta = loadMetadata().get(model)
+    if (!meta || depth > 5) return null
+    if (meta.hasWorkspaceId && typeof row.workspaceId === 'string' && row.workspaceId) return row.workspaceId
+    for (const { column, target } of meta.scope) {
+      const parentId = row[column]
+      if (typeof parentId !== 'string' || !parentId) continue
+      const found = await this.ofId(target, parentId, depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+
+  async ofId(model: string, id: string, depth = 0): Promise<string | null> {
+    if (model === 'Workspace') return id
+    const key = `${model}\u0000${id}`
+    if (this.memo.has(key)) return this.memo.get(key) ?? null
+    const meta = loadMetadata().get(model)
+    const delegate = this.db[delegateName(model)]
+    if (!meta || !delegate) return null
+    const select: Record<string, true> = { id: true }
+    if (meta.hasWorkspaceId) select.workspaceId = true
+    for (const { column } of meta.scope) select[column] = true
+    const row = await delegate.findUnique({ where: { id }, select }).catch(() => null)
+    const workspaceId = row ? await this.ofRow(model, row, depth) : null
+    this.memo.set(key, workspaceId)
+    return workspaceId
+  }
+
+  /** Columns a row must carry for `ofRow` to answer without a lookup of itself. */
+  static scopeColumns(model: string): string[] {
+    const meta = loadMetadata().get(model)
+    if (!meta) return []
+    return [...(meta.hasWorkspaceId ? ['workspaceId'] : []), ...meta.scope.map((s) => s.column)]
+  }
+}
+
 /**
  * Snapshot rows that point at a mirrored parent row the cloud does not have.
  *
@@ -300,8 +354,14 @@ function error(code: IngestFailure['code'], message: string, extra?: Record<stri
 /**
  * Apply one pushed batch.
  *
+ * A paired desktop hosts its workspaces (SHO-285): the rows are the same rows
+ * on both sides and either side may write them. So the only rule about *which*
+ * rows a desktop may write is the workspace rule — every row must belong to a
+ * workspace this machine hosts (or be a new workspace, which it then hosts).
+ * Guessing the id of somebody else's row is refused as `workspace_ownership`.
+ * Conflicts between the two sides resolve last-writer-wins per row.
+ *
  * Returns the failure to send back, or what the desktop should record as acked.
- * The caller (the route) owns the HTTP shape.
  */
 export async function applyBatch(
   ctx: IngestContext,
@@ -314,7 +374,6 @@ export async function applyBatch(
 
   const state = await prisma.machineSyncState.findUnique({ where: { instanceId } })
   if (state && state.enabled === false) {
-    // Sync was switched off while the desktop kept pushing: tell it to stop.
     return {
       ok: true,
       disabled: true,
@@ -326,27 +385,16 @@ export async function applyBatch(
     }
   }
 
-  // A delta batch is only meaningful once a snapshot has been accepted: every
-  // row it names points at a copy the cloud already has. Without that it is
-  // applied against a workspace that was never tagged and refused as
-  // `workspace_ownership` — which is exactly how a desktop whose *first*
-  // snapshot ever failed (a refused device key, a crash mid-snapshot) stayed
-  // broken for days, retrying deltas every 30 s (SHO-241). Answering
-  // `epoch_mismatch` instead is the code every shipped pusher already handles by
-  // sending a full snapshot, so this one deploy repairs those desktops.
+  // A delta batch only makes sense after an accepted snapshot (SHO-241):
+  // `epoch_mismatch` is the code every shipped pusher answers with a snapshot.
   const snapshotAccepted = Boolean(state?.lastIngestAt)
   if (mode === 'changes' && (!state || !snapshotAccepted)) {
     return error('epoch_mismatch', 'No accepted snapshot for this machine — send a full one', {
       epoch: state?.epoch ?? '',
     })
   }
-
-  // A delta batch under an epoch the cloud does not hold means the desktop's
-  // database was recreated; it has to send a snapshot before anything else.
   if (mode === 'changes' && state?.epoch && requestedEpoch && state.epoch !== requestedEpoch) {
-    return error('epoch_mismatch', 'Send a full snapshot under a new epoch', {
-      epoch: state.epoch,
-    })
+    return error('epoch_mismatch', 'Send a full snapshot under a new epoch', { epoch: state.epoch })
   }
 
   const epoch = mode === 'snapshot' ? requestedEpoch || state?.epoch || crypto.randomUUID() : state?.epoch ?? requestedEpoch
@@ -364,178 +412,160 @@ export async function applyBatch(
     (a, b) => (meta.get(a.model)?.order ?? 0) - (meta.get(b.model)?.order ?? 0),
   )
 
-  const allIds = ordered.flatMap((entry) => entry.rows.map((row) => String(row.id)))
-  const deleteIds = (body.deletes ?? []).map((entry) => entry.recordId)
-  const ownedRows = allIds.length || deleteIds.length
-    ? await prisma.machineMirrorRow.findMany({
-        where: {
-          recordId: { in: [...new Set([...allIds, ...deleteIds])] },
-          model: { in: [...new Set([...ordered.map((entry) => entry.model), ...(body.deletes ?? []).map((d) => d.model)])] },
-        },
-      })
-    : []
-  const ownerByKey = new Map(ownedRows.map((row) => [`${row.model}\u0000${row.recordId}`, row.instanceId]))
-
   let applied = 0
   let deleted = 0
   let skipped = 0
-  const taggedWorkspaces = new Set<string>()
+  let newWorkspaces = 0
 
   try {
     await prisma.$transaction(async (tx) => {
-    for (const entry of ordered) {
-      const modelMeta = meta.get(entry.model)
-      if (!modelMeta) return
-      const delegate = (tx as any)[delegateName(entry.model)]
-      if (!delegate) throw new Error(`machine sync: no Prisma delegate for ${entry.model}`)
+      const hosted = new Set<string>(
+        (
+          (await (tx as any).workspace.findMany({
+            where: { hostInstanceId: instanceId },
+            select: { id: true },
+          })) as Array<{ id: string }>
+        ).map((row) => row.id),
+      )
+      const resolver = new WorkspaceResolver(tx)
+      const mayWrite = (workspaceId: string | null) => Boolean(workspaceId && hosted.has(workspaceId))
 
-      const orphans = mode === 'snapshot'
-        ? await findOrphans(tx, entry.model, entry.rows, modelMeta)
-        : new Set<string>()
-      if (orphans.size) {
-        skipped += orphans.size
-        console.warn(
-          `[MachineSync] ${instanceId}: skipped ${orphans.size} ${entry.model} snapshot row(s) whose parent row is not in the copy yet`,
-        )
-      }
+      for (const entry of ordered) {
+        const modelMeta = meta.get(entry.model)
+        if (!modelMeta) continue
+        const delegate = (tx as any)[delegateName(entry.model)]
+        if (!delegate) throw new Error(`machine sync: no Prisma delegate for ${entry.model}`)
 
-      // "Does the cloud already have this id?" — one `findMany` per model, not
-      // one `findUnique` per row (SHO-276). A 4 MB ChatMessage page is hundreds
-      // of rows, and a round trip each is what made applying a page take longer
-      // than uploading it.
-      const unownedIds = entry.rows
-        .map((raw) => String(raw.id))
-        .filter((id) => !ownerByKey.has(`${entry.model}\u0000${id}`))
-      const presentInCloud = unownedIds.length
-        ? new Set(
-            (
-              (await delegate.findMany({
-                where: { id: { in: unownedIds } },
-                select: { id: true },
-              })) as Array<{ id: string }>
-            ).map((row) => row.id),
+        const ids = entry.rows.map((raw) => String(raw.id)).filter(Boolean)
+        const existingRows = ids.length
+          ? ((await delegate.findMany({ where: { id: { in: ids } } })) as Array<Record<string, unknown>>)
+          : []
+        const existingById = new Map(existingRows.map((row) => [String(row.id), row]))
+        const orphans = mode === 'snapshot'
+          ? await findOrphans(tx, entry.model, entry.rows, modelMeta)
+          : new Set<string>()
+        if (orphans.size) {
+          console.warn(
+            `[MachineSync] ${instanceId}: skipped ${orphans.size} ${entry.model} snapshot row(s) whose parent row is not in the cloud yet`,
           )
-        : new Set<string>()
-
-      for (const raw of entry.rows) {
-        if (orphans.has(String(raw.id))) continue
-        const row = normaliseRow(entry.model, raw, modelMeta)
-        if (!row) continue
-        const recordId = String(row.id)
-        const key = `${entry.model}\u0000${recordId}`
-        const owner = ownerByKey.get(key)
-
-        // Ownership: new id, or already this machine's. Anything else is a
-        // desktop trying to write a row that is not its own.
-        if (owner && owner !== instanceId) {
-          throw new OwnershipError(`${entry.model}/${recordId} belongs to ${owner}`)
         }
 
-        const rewritten = applyRewrites(entry.model, row, { instanceId, homeRegion })
+        for (const raw of entry.rows) {
+          const row = normaliseRow(entry.model, raw, modelMeta)
+          if (!row) continue
+          const recordId = String(row.id)
+          if (orphans.has(recordId)) {
+            skipped++
+            continue
+          }
+          const existing = existingById.get(recordId)
 
-        if (modelMeta.hasWorkspaceId) {
-          const workspaceId = rewritten.workspaceId
-          if (typeof workspaceId === 'string') {
-            const tagged = taggedWorkspaces.has(workspaceId)
-              ? true
-              : await isTaggedWorkspace(tx, workspaceId, instanceId)
-            if (!tagged) {
+          // One user (SHO-285): the desktop's user *is* the cloud account, and a
+          // cloud `User` row is never overwritten from a device.
+          if (entry.model === 'User') {
+            if (existing) continue
+            await delegate.create({ data: applyRewrites(entry.model, row, { instanceId, homeRegion }) })
+            applied++
+            continue
+          }
+
+          const rewritten = applyRewrites(entry.model, row, { instanceId, homeRegion })
+
+          if (entry.model === 'Workspace') {
+            if (existing && existing.hostInstanceId !== instanceId) {
+              throw new WorkspaceOwnershipError(`Workspace/${recordId} is not hosted on this machine`)
+            }
+            if (!existing) newWorkspaces++
+            hosted.add(recordId)
+          } else {
+            const target = await resolver.ofRow(entry.model, rewritten)
+            const current = existing ? await resolver.ofRow(entry.model, existing) : target
+            if (!target || !current) {
+              // The parent is not here (yet). A snapshot page may legally name a
+              // parent the next page brings (PERF-14); the row comes across the
+              // next time it changes.
+              skipped++
+              continue
+            }
+            if (!mayWrite(target) || !mayWrite(current)) {
               throw new WorkspaceOwnershipError(
-                `${entry.model}/${recordId} points at workspace ${workspaceId}, which this machine does not own`,
+                `${entry.model}/${recordId} belongs to a workspace this machine does not host`,
               )
             }
+            resolver.remember(entry.model, recordId, target)
           }
-        }
 
-        if (!owner) {
-          // The id could still be a cloud row of the same model that the mirror
-          // table does not track (a row created before this machine existed).
-          if (presentInCloud.has(recordId)) {
-            throw new OwnershipError(`${entry.model}/${recordId} already exists in the cloud`)
+          if (!incomingWins(existing, rewritten)) {
+            skipped++
+            continue
           }
+
+          if (entry.model === 'Member') {
+            // The cloud may hold the same membership under another id (the
+            // owner row ingest grants before the desktop's own arrives).
+            await (tx as any).member.deleteMany({
+              where: {
+                id: { not: recordId },
+                userId: rewritten.userId,
+                workspaceId: rewritten.workspaceId ?? null,
+                projectId: rewritten.projectId ?? null,
+              },
+            })
+          }
+
+          await delegate.upsert({
+            where: { id: recordId },
+            create: rewritten,
+            update: rewritten,
+          })
+          applied++
         }
-
-        await delegate.upsert({
-          where: { id: recordId },
-          create: rewritten,
-          update: rewritten,
-        })
-        await tx.machineMirrorRow.upsert({
-          where: { model_recordId: { model: entry.model, recordId } },
-          create: { model: entry.model, recordId, instanceId, epoch },
-          update: { instanceId, epoch },
-        })
-        if (entry.model === 'Workspace') taggedWorkspaces.add(recordId)
-        applied++
       }
-    }
 
-    for (const entry of ordered) {
-      if (entry.model !== 'Workspace') continue
-      for (const row of entry.rows) {
-        await ensureOwnerMember(tx, String(row.id), ownerUserId)
+      for (const workspaceId of hosted) {
+        if (ordered.some((entry) => entry.model === 'Workspace' && entry.rows.some((row) => row.id === workspaceId))) {
+          await ensureOwnerMember(tx, workspaceId, ownerUserId)
+        }
       }
-    }
 
-    for (const entry of body.deletes ?? []) {
-      if (!isMirroredModel(entry.model)) continue
-      const owner = ownerByKey.get(`${entry.model}\u0000${entry.recordId}`)
-      // A delete for a row this machine does not own is ignored: the row was
-      // never here, or a later batch from the owner will speak for it.
-      if (owner !== instanceId) continue
-      const delegate = (tx as any)[delegateName(entry.model)]
-      await delegate.deleteMany({ where: { id: entry.recordId } })
-      await tx.machineMirrorRow.deleteMany({ where: { model: entry.model, recordId: entry.recordId } })
-      deleted++
-    }
-
-    const snapshotComplete = mode === 'snapshot' && body.snapshot?.complete === true
-    if (snapshotComplete) {
-      const removed = await dropOtherEpochs(tx, instanceId, epoch)
-      deleted += removed
-      // The desktop is the only writer of a machine workspace (SHO-276). A
-      // completed snapshot is the moment to prove it: anything in the copy that
-      // this machine never sent — cloud-written interrupted notes, queued
-      // resumes, a `#general` the cloud seeded — is not part of the copy.
-      const unowned = await dropUnownedRows(tx, instanceId, ownerUserId)
-      if (unowned) {
-        deleted += unowned
-        console.log(`[MachineSync] ${instanceId}: removed ${unowned} cloud-only row(s) from the copy`)
+      for (const entry of body.deletes ?? []) {
+        if (!isMirroredModel(entry.model) || entry.model === 'User') continue
+        const workspaceId = entry.model === 'Workspace' ? entry.recordId : await resolver.ofId(entry.model, entry.recordId)
+        // A delete for a row that is not here, or not in a hosted workspace, is
+        // ignored: the row was never here, or is not this machine's to delete.
+        if (!mayWrite(workspaceId)) continue
+        const delegate = (tx as any)[delegateName(entry.model)]
+        const result = await delegate.deleteMany({ where: { id: entry.recordId } })
+        deleted += result.count ?? 0
       }
-    }
 
-    // `lastIngestAt` is the cloud's record of an *accepted* copy, and the desktop
-    // and `GET /machines` both read it as "the copy is ready". So only a
-    // completed snapshot — or a delta, which can only arrive after one — sets
-    // it: a snapshot page that lands and is never completed must not look like a
-    // finished copy (SHO-241).
-    const ingestedAt = mode === 'changes' || snapshotComplete ? new Date() : null
+      const snapshotComplete = mode === 'snapshot' && body.snapshot?.complete === true
+      // `lastIngestAt` means "an accepted copy exists" (SHO-241): only a
+      // completed snapshot, or a delta (which can only follow one), sets it.
+      const ingestedAt = mode === 'changes' || snapshotComplete ? new Date() : null
 
-    await tx.machineSyncState.upsert({
-      where: { instanceId },
-      create: {
-        instanceId,
-        epoch,
-        cursor: typeof body.cursor === 'number' ? body.cursor : 0,
-        lastIngestAt: ingestedAt,
-        enabled: true,
-      },
-      update: {
-        epoch,
-        ...(typeof body.cursor === 'number' ? { cursor: body.cursor } : {}),
-        ...(ingestedAt ? { lastIngestAt: ingestedAt } : {}),
+      await tx.machineSyncState.upsert({
+        where: { instanceId },
+        create: {
+          instanceId,
+          epoch,
+          cursor: typeof body.cursor === 'number' ? body.cursor : 0,
+          lastIngestAt: ingestedAt,
+          enabled: true,
+        },
+        update: {
+          epoch,
+          ...(typeof body.cursor === 'number' ? { cursor: body.cursor } : {}),
+          ...(ingestedAt ? { lastIngestAt: ingestedAt } : {}),
         },
       })
-    })
+    }, { timeout: 60_000, maxWait: 10_000 })
   } catch (err) {
-    // Ownership violations are a decision, not a fault: report them as a failure
-    // the route turns into a 409, and let the transaction roll back.
     const failure = ownershipFailure(err)
     if (failure) return failure
     throw err
   }
 
-  const syncedAt = new Date().toISOString()
   return {
     ok: true,
     epoch,
@@ -543,40 +573,25 @@ export async function applyBatch(
     applied,
     deleted,
     ...(skipped ? { skipped } : {}),
-    syncedAt,
+    ...(newWorkspaces ? { newWorkspaces } : {}),
+    syncedAt: new Date().toISOString(),
   }
 }
 
-class OwnershipError extends Error {}
 class WorkspaceOwnershipError extends Error {}
 
 /** Rejected rows carry the code the desktop acts on. */
 export function ownershipFailure(err: unknown): IngestFailure | null {
-  if (err instanceof OwnershipError) {
-    return error('mirror_ownership', err.message, {})
-  }
   if (err instanceof WorkspaceOwnershipError) {
     return error('workspace_ownership', err.message, {})
   }
   return null
 }
 
-async function isTaggedWorkspace(
-  tx: any,
-  workspaceId: string,
-  instanceId: string,
-): Promise<boolean> {
-  const workspace = await tx.workspace.findUnique({
-    where: { id: workspaceId },
-    select: { machineInstanceId: true },
-  })
-  return workspace?.machineInstanceId === instanceId
-}
-
 /**
- * The machine's owner reads its copy through the normal cloud routes, so they
- * need a `Member` row on the tagged workspace. Idempotent: the desktop's own
- * member rows use local user ids and never match this one.
+ * The machine's owner needs a workspace `Member` row to reach a hosted
+ * workspace through the normal routes. After the one-user rewrite the desktop's
+ * own member row already is that row; this covers the first batch.
  */
 async function ensureOwnerMember(tx: any, workspaceId: string, ownerUserId: string): Promise<void> {
   const existing = await tx.member.findFirst({
@@ -590,272 +605,19 @@ async function ensureOwnerMember(tx: any, workspaceId: string, ownerUserId: stri
 }
 
 /**
- * After a completed snapshot, everything this machine sent under an earlier
- * epoch is gone from the desktop database: delete those rows, children first.
+ * Unpairing a machine (or switching its sync off) hands its workspaces back to
+ * cloud compute. Nothing is deleted: a hosted workspace is a real workspace,
+ * and what was written to it from either side is the person's data.
  */
-async function dropOtherEpochs(tx: any, instanceId: string, epoch: string): Promise<number> {
-  const stale = await tx.machineMirrorRow.findMany({
-    where: { instanceId, epoch: { not: epoch } },
-    select: { model: true, recordId: true },
-  })
-  if (!stale.length) return 0
-  const order = loadMetadata()
-  const byModel = new Map<string, string[]>()
-  for (const row of stale) {
-    const ids = byModel.get(row.model) ?? []
-    ids.push(row.recordId)
-    byModel.set(row.model, ids)
-  }
-  const models = [...byModel.keys()].sort(
-    (a, b) => (order.get(b)?.order ?? 0) - (order.get(a)?.order ?? 0),
-  )
-  let removed = 0
-  for (const model of models) {
-    const delegate = tx[delegateName(model)]
-    if (!delegate) continue
-    const ids = byModel.get(model)!
-    // `deleteMany` on a parent with children still present throws; the model
-    // order above makes sure children go first.
-    const result = await delegate.deleteMany({ where: { id: { in: ids } } })
-    removed += result.count ?? 0
-  }
-  await tx.machineMirrorRow.deleteMany({ where: { instanceId, epoch: { not: epoch } } })
-  return removed
-}
-
-/**
- * Delete rows of the copy that this machine never sent.
- *
- * Only meaningful right after a completed snapshot, when `machine_mirror_rows`
- * says exactly which rows the desktop has. Children go first, and the
- * session/message tables cascade from their parents (`ChatSession`,
- * `Conversation`), so removing the parent removes the notes written under it.
- *
- * Best-effort per model: a model whose children live outside this set would
- * fail its foreign key, and one unremovable table must not fail a snapshot that
- * is otherwise complete.
- *
- * One cloud-written row is part of the copy on purpose: the machine owner's
- * `Member` row on each tagged workspace, which `ensureOwnerMember` creates so
- * the owner can read their copy through the normal routes. The desktop's own
- * member rows use local user ids, so that row is never in `machine_mirror_rows`
- * — pruning it would lock the owner out of their own workspace (RBAC lane).
- *
- * Two kinds of model are walked: those that carry a `workspaceId`, and those
- * that hang off a session/project/conversation (`ChatMessage`,
- * `ChatQueuedMessage`, …) — the interrupted notes the cloud wrote into a chat
- * the desktop owns are exactly the second kind.
- */
-async function dropUnownedRows(
-  tx: any,
-  instanceId: string,
-  ownerUserId: string | null,
-): Promise<number> {
-  const meta = loadMetadata()
-  const tagged: Array<{ id: string }> = await tx.workspace.findMany({
-    where: { machineInstanceId: instanceId },
-    select: { id: true },
-  })
-  const workspaceIds = tagged.map((row) => row.id)
-  if (!workspaceIds.length) return 0
-
-  const owned = await tx.machineMirrorRow.findMany({
-    where: { instanceId },
-    select: { model: true, recordId: true },
-  })
-  const ownedByModel = new Map<string, Set<string>>()
-  for (const row of owned) {
-    const set = ownedByModel.get(row.model) ?? new Set<string>()
-    set.add(row.recordId)
-    ownedByModel.set(row.model, set)
-  }
-
-  if (ownerUserId) {
-    const ownerRows: Array<{ id: string }> = await tx.member.findMany({
-      where: { workspaceId: { in: workspaceIds }, userId: ownerUserId },
-      select: { id: true },
-    })
-    const members = ownedByModel.get('Member') ?? new Set<string>()
-    for (const row of ownerRows) members.add(row.id)
-    ownedByModel.set('Member', members)
-  }
-
-  const models = MIRROR_MODELS.filter((model) => meta.get(model)).sort(
-    (a, b) => (meta.get(b)?.order ?? 0) - (meta.get(a)?.order ?? 0),
-  )
-
-  /**
-   * The ids of the rows of `model` that belong to this copy.
-   *
-   * `ChatMessage`, `ChatQueuedMessage` and the rest of the session/project-time
-   * tables carry no `workspaceId` — only a foreign key — so pruning by workspace
-   * never reached the interrupted notes the cloud wrote into a session the
-   * desktop owns (SHO-276 AC5). Each model resolves through the foreign keys the
-   * schema declares (`ModelMeta.scope`), memoised per run.
-   */
-  const scopedIds = new Map<string, string[]>()
-  const idsOf = async (model: string, stack: Set<string> = new Set()): Promise<string[]> => {
-    const cached = scopedIds.get(model)
-    if (cached) return cached
-    if (stack.has(model)) return []
-    const seen = new Set(stack)
-    seen.add(model)
-
-    const found = new Set<string>()
-    if (model === 'Workspace') {
-      for (const id of workspaceIds) found.add(id)
-      scopedIds.set(model, [...found])
-      return [...found]
-    }
-    const modelMeta = meta.get(model)
-    const delegate = tx[delegateName(model)]
-    if (modelMeta && delegate) {
-      if (modelMeta.hasWorkspaceId) {
-        for (const row of (await delegate.findMany({
-          where: { workspaceId: { in: workspaceIds } },
-          select: { id: true },
-        })) as Array<{ id: string }>) {
-          found.add(row.id)
-        }
-      }
-      for (const { column, target } of modelMeta.scope) {
-        const parentList = await idsOf(target, seen)
-        // A parent page at a time: the session list alone runs to thousands.
-        for (let offset = 0; offset < parentList.length; offset += PRUNE_DELETE_ROWS) {
-          const chunk = parentList.slice(offset, offset + PRUNE_DELETE_ROWS)
-          for (const row of (await delegate.findMany({
-            where: { [column]: { in: chunk } },
-            select: { id: true },
-          })) as Array<{ id: string }>) {
-            found.add(row.id)
-          }
-        }
-      }
-    }
-    scopedIds.set(model, [...found])
-    return [...found]
-  }
-
-  let removed = 0
-  for (const model of models) {
-    const delegate = tx[delegateName(model)]
-    if (!delegate) continue
-    const ids = [...(ownedByModel.get(model) ?? new Set<string>())]
-    try {
-      const modelMeta = meta.get(model)!
-      if (modelMeta.hasWorkspaceId) {
-        removed += await pruneUnowned(delegate, { workspaceId: { in: workspaceIds } }, ids)
-      }
-      if (!modelMeta.hasWorkspaceId && !modelMeta.scope.length) continue
-      for (const { column, target } of modelMeta.scope) {
-        const parentList = await idsOf(target)
-        for (let offset = 0; offset < parentList.length; offset += PRUNE_DELETE_ROWS) {
-          const chunk = parentList.slice(offset, offset + PRUNE_DELETE_ROWS)
-          removed += await pruneUnowned(delegate, { [column]: { in: chunk } }, ids)
-        }
-      }
-    } catch (err) {
-      console.warn(
-        `[MachineSync] ${instanceId}: could not prune unowned ${model} rows (${
-          (err as Error)?.message ?? err
-        })`,
-      )
-    }
-  }
-
-  return removed
-}
-
-/**
- * Delete the rows matching `where` whose ids are not owned — a page at a time.
- *
- * `id: { notIn: ownedIds }` puts every owned id into one statement; on a model
- * with thousands of rows (3.5k chat messages, and Russell's copy is far bigger)
- * that is past Postgres' bind-parameter limit. The error was swallowed, so the
- * prune "succeeded" without deleting anything. Paging the candidates keeps each
- * statement small whatever the copy's size, and deleting while walking upwards
- * on `id` never skips a row (every delete is behind the cursor).
- */
-async function pruneUnowned(
-  delegate: any,
-  where: Record<string, unknown>,
-  ownedIds: string[],
-): Promise<number> {
-  if (!ownedIds.length) {
-    const result = await delegate.deleteMany({ where })
-    return result.count ?? 0
-  }
-
-  const owned = new Set(ownedIds)
-  let removed = 0
-  let cursor: string | null = null
-  for (;;) {
-    const rows: Array<{ id: string }> = await delegate.findMany({
-      where: { ...where, ...(cursor ? { id: { gt: cursor } } : {}) },
-      select: { id: true },
-      orderBy: { id: 'asc' },
-      take: PRUNE_PAGE_ROWS,
-    })
-    if (!rows.length) break
-    cursor = rows[rows.length - 1].id
-
-    const unowned = rows.filter((row) => !owned.has(row.id)).map((row) => row.id)
-    for (let offset = 0; offset < unowned.length; offset += PRUNE_DELETE_ROWS) {
-      const chunk = unowned.slice(offset, offset + PRUNE_DELETE_ROWS)
-      const result = await delegate.deleteMany({ where: { id: { in: chunk } } })
-      removed += result.count ?? 0
-    }
-    if (rows.length < PRUNE_PAGE_ROWS) break
-  }
-  return removed
-}
-
-/**
- * Remove every row of a machine's copy — used when sync is switched off or the
- * machine is unpaired. Children before parents, then the workspace rows, the
- * copied user, and the bookkeeping.
- */
-export async function deleteMachineCopy(
+export async function releaseHostedWorkspaces(
   prisma: PrismaClient,
   instanceId: string,
-): Promise<{ rows: number; workspaces: number }> {
-  const meta = loadMetadata()
-  const mirrorRows = await prisma.machineMirrorRow.findMany({
-    where: { instanceId },
-    select: { model: true, recordId: true },
+): Promise<{ workspaces: number }> {
+  const result = await (prisma as any).workspace.updateMany({
+    where: { hostInstanceId: instanceId },
+    data: { hostInstanceId: null },
   })
-  const byModel = new Map<string, string[]>()
-  for (const row of mirrorRows) {
-    const ids = byModel.get(row.model) ?? []
-    ids.push(row.recordId)
-    byModel.set(row.model, ids)
-  }
-  const models = [...byModel.keys()].sort(
-    (a, b) => (meta.get(b)?.order ?? 0) - (meta.get(a)?.order ?? 0),
-  )
-
-  let rows = 0
-  for (const model of models) {
-    const delegate = (prisma as any)[delegateName(model)]
-    if (!delegate) continue
-    const ids = byModel.get(model)!
-    for (let offset = 0; offset < ids.length; offset += 500) {
-      const slice = ids.slice(offset, offset + 500)
-      const result = await delegate.deleteMany({ where: { id: { in: slice } } })
-      rows += result.count ?? 0
-    }
-  }
-
-  const workspaces = byModel.get('Workspace') ?? []
-  await prisma.machineMirrorRow.deleteMany({ where: { instanceId } })
-  // The switch outlives the copy. Deleting the state row instead would let a
-  // desktop that is still running recreate the copy a person just switched off.
-  await prisma.machineSyncState.upsert({
-    where: { instanceId },
-    create: { instanceId, enabled: false, cursor: 0, epoch: '' },
-    update: { enabled: false, cursor: 0, epoch: '' },
-  })
-  return { rows, workspaces: workspaces.length }
+  return { workspaces: result.count ?? 0 }
 }
 
 /** The mirror set, in write order — used by tests and by the snapshot guard. */
