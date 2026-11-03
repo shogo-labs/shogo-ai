@@ -623,19 +623,14 @@ jobs:
           # E2E_FAKE_LLM_STACK these skip, which is how a spec that never runs
           # hides in the shard jobs (SHO-122).
           - { name: 'E2E (chat task dock)', spec: 'chat-background-tasks chat-task-thread-pane turn-boundary-context' }
-          # machine-workspace-agent-turn-live is not a chat spec, but it needs
-          # the same fake-model stack and nothing else: its SHO-130 AC 5
-          # assertion reads the continuation request's tool-result text, and its
-          # cloud control depends on the API *not* having the machine's canary.
-          # It cannot ride a shard (a shard sets E2E_LOCAL_START_STACK only, so
-          # the spec skipped itself and ran nowhere), and it must not trail
-          # another job's spec list either: with `workers: 1` Playwright runs
-          # files in filesystem order, so whatever sits in that list runs after
-          # the flaky ones — and their retries starve the tail of the job
-          # (#1621 was cancelled at the cap, SHO-133; the chat-resume job was
-          # cancelled on every run until it was split, SHO-251). Its own entry
-          # gets its own stack and its own timeout.
-          - { name: 'E2E (machine agent turn)', spec: 'machine-workspace-agent-turn-live' }
+          # The machine agent-turn entry is gone with its spec (SHO-285): a
+          # hosted workspace runs on the desktop through the host tunnel, so the
+          # relay spec that drove it here had nothing left to drive. The same
+          # assertion — a turn started in the cloud runs on the host's runtime
+          # and reads a file that exists only there — now runs in the Postgres
+          # job as `sho285-hosted-workspace.e2e.test.ts` (AC2) and
+          # `machine-vm-parity.acceptance.test.ts`, both against a real cloud
+          # process and a real desktop.
           # chat-context-survives-idle (SHO-137) drives a wake turn into a
           # runtime that has never seen the chat. It gets its own entry rather
           # than joining a chat job: those run 1 worker at a time, and a spec
