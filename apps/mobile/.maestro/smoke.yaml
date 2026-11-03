@@ -11,6 +11,13 @@ name: native-smoke
 ---
 - launchApp:
     clearState: true
+# A fresh Android install can show CallKeep's phone-account prompt before the
+# login screen. Dismiss it so this smoke flow can continue to test auth UI.
+- runFlow:
+    when:
+      visible: "Allow Shogo to manage calls"
+    commands:
+      - tapOn: "NOT NOW"
 - extendedWaitUntil:
     visible: "Log in or sign up with email"
     timeout: 120000
