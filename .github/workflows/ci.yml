@@ -1163,6 +1163,16 @@ jobs:
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/machine-vm-parity.acceptance.test.ts --timeout 300000
 
+      # SHO-285: the metal model end to end — a cloud API and a paired desktop
+      # as two real processes. A message sent from the cloud runs on the desktop
+      # against a file only the desktop has, a desktop message reaches the cloud,
+      # a card syncs both ways with last-writer-wins, and an offline desktop
+      # queues the send and catches up. Skips itself without Postgres + Redis,
+      # which is why it has to run here and not in the `test` job.
+      - name: Hosted workspace on a paired desktop (two processes, Postgres + Redis)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/sho285-hosted-workspace.e2e.test.ts --timeout 300000
+
       # …and the same, in the cloud studio UI: the web build served in front of
       # the cloud process, driven by Playwright (e2e/machine-vm).
       - name: Cloud web build (for the machine workspace UI suite)
