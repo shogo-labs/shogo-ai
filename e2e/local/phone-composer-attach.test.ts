@@ -22,7 +22,7 @@
  *   E2E_LOCAL_START_STACK=1 npx playwright test --config e2e/local/playwright.config.ts phone-composer-attach
  */
 import { expect, test, type Page } from "@playwright/test"
-import { signIn } from "./team-nav-seed"
+import { activateTeamWorkspace, signInByApi } from "./team-nav-seed"
 import { ignoreDevErrorToast } from "./helpers"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
@@ -99,7 +99,7 @@ test.describe("SHO-283 — phone composer attach rows open a real chooser", () =
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(300_000)
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
-    await signIn(page)
+    await signInByApi(page)
 
     const suffix = Date.now().toString(36)
     const workspace = await apiJson(page, "POST", "/api/workspaces", {
@@ -152,11 +152,8 @@ test.describe("SHO-283 — phone composer attach rows open a real chooser", () =
   }) => {
     await ignoreDevErrorToast(page)
     await stubProjectRuntime(page)
-    await signIn(page)
-    await page.evaluate((id) => {
-      localStorage.setItem("shogo:active-workspace-id", id)
-      localStorage.setItem("shogo:active-workspace-kind", "team")
-    }, workspaceId)
+    await signInByApi(page)
+    await activateTeamWorkspace(page, workspaceId)
 
     await page.goto(`/projects/${projectId}`)
     await composer(page).waitFor({ state: "visible", timeout: 120_000 })

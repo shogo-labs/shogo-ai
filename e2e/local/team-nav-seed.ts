@@ -161,6 +161,28 @@ export async function activateTeamWorkspace(page: Page, workspaceId: string): Pr
 }
 
 /**
+ * Sign in without loading the app: the same `/api/local/auto-sign-in` the app
+ * calls on boot, made through `page.request`, so the session cookie is in this
+ * page's context before its first navigation.
+ *
+ * Phone specs use this instead of `signIn`. `signIn` boots the app at `/` and
+ * returns once the *session* exists, not once the page has finished booting, so
+ * the spec's own `page.goto` lands while that first page is still loading: a
+ * second hard navigation mid-boot, the SHO-273 WebKit hang (a document request
+ * Metro never answers inside the 120s budget, run 41625226724). It also paid
+ * for a full app boot per test that the test immediately threw away.
+ */
+export async function signInByApi(page: Page): Promise<void> {
+  const res = await page.request.post(`${LOCAL_API_BASE}/api/local/auto-sign-in`)
+  expect(res.ok(), `local auto-sign-in failed (${res.status()})`).toBe(true)
+  await expect
+    .poll(async () => (await (await page.request.get(`${LOCAL_API_BASE}/api/auth/get-session`)).json().catch(() => null))?.user?.id ?? null, {
+      timeout: 60_000,
+    })
+    .not.toBeNull()
+}
+
+/**
  * Local mode signs the user in on first load. Wait for the session so the
  * API calls the seed makes (through `page.request`) are authenticated.
  */
