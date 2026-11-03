@@ -47,6 +47,17 @@ export interface MachineSyncStatus {
   lastError: string | null
   pendingChanges: number
   copyReady: boolean
+  /** Epoch ms the pusher is parked until after the cloud refused the device key (0 = not parked). */
+  authBlockedUntil: number
+  /** Epoch ms the pusher is parked until after a refusal a retry cannot fix (0 = not parked). */
+  stalledUntil: number
+  /** Consecutive 401/403 answers the pusher has had since its last accepted push. */
+  authRefusals: number
+  /** Status and code of the pusher's last failed POST. */
+  lastPostStatus: number
+  lastPostCode: string | null
+  /** The cloud → desktop half: why the feed is not moving, and until when. */
+  puller: { lastError: string | null; blockedUntil: number; authRefusals: number; lastPulledAt: string | null } | null
 }
 
 export async function readMachineSyncStatus(): Promise<MachineSyncStatus | null> {
@@ -73,6 +84,12 @@ export async function readMachineSyncStatus(): Promise<MachineSyncStatus | null>
     lastError: status.lastError,
     pendingChanges,
     copyReady,
+    authBlockedUntil: status.authBlockedUntil,
+    stalledUntil: status.stalledUntil,
+    authRefusals: status.authRefusals,
+    lastPostStatus: status.lastPostStatus,
+    lastPostCode: status.lastPostCode,
+    puller: puller?.status ?? null,
   }
 }
 

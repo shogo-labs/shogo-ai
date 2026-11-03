@@ -76,7 +76,13 @@ export function installHappyDom(): void {
     ['Element', win.Element],
     ['Node', win.Node],
     ['Event', (globalThis as any).Event ?? win.Event],
-    ['CustomEvent', win.CustomEvent],
+    // Native first, exactly like `Event` above. `window` is `globalThis`, whose
+    // `dispatchEvent` is Bun's native EventTarget, and it refuses an event that
+    // is not an instance of the *native* `Event` — so binding happy-dom's
+    // `CustomEvent` here made every `dispatchEvent(new CustomEvent(…))` throw
+    // `ERR_INVALID_ARG_TYPE` wherever a happy-dom file had run earlier in the
+    // process (SHO-301).
+    ['CustomEvent', (globalThis as any).CustomEvent ?? win.CustomEvent],
     ['getComputedStyle', win.getComputedStyle.bind(win)],
     ['requestAnimationFrame', win.requestAnimationFrame.bind(win)],
     ['cancelAnimationFrame', win.cancelAnimationFrame.bind(win)],

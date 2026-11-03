@@ -23,6 +23,17 @@ const DEFAULT_INTERVAL_MS = 2_000
 const IDLE_INTERVAL_MS = 2_000
 const ERROR_BACKOFF_MS = 15_000
 const AUTH_BACKOFF_MS = 10 * 60_000
+/**
+ * Refusals of the device key tolerated before the puller parks for
+ * `AUTH_BACKOFF_MS`, and the short wait between them.
+ *
+ * A single 401/403 is not evidence the key is dead: right after a restart the
+ * cloud can refuse a request while the desktop is still adopting its identity,
+ * and parking for ten minutes then left the desktop with no cloud → desktop
+ * sync at all (SHO-301, AC5). The park is only armed once the refusal repeats.
+ */
+const AUTH_REFUSALS_BEFORE_BLOCK = 3
+const AUTH_SETTLE_RETRY_MS = 2_000
 const REQUEST_TIMEOUT_MS = 30_000
 
 export interface HostFeedPageWire {
@@ -175,10 +186,22 @@ export class HostSyncPuller {
   private cursorKey: string | null = null
   private cursor = 0
   private blockedUntil = 0
+  /** Consecutive 401/403 answers since the last successful pull. */
+  private authRefusals = 0
   lastError: string | null = null
   lastPulledAt: number | null = null
 
   constructor(private readonly opts: HostSyncPullerOptions) {}
+
+  /** What Settings and a support handoff read: why the feed is not moving. */
+  get status(): { lastError: string | null; blockedUntil: number; authRefusals: number; lastPulledAt: string | null } {
+    return {
+      lastError: this.lastError,
+      blockedUntil: this.blockedUntil,
+      authRefusals: this.authRefusals,
+      lastPulledAt: this.lastPulledAt ? new Date(this.lastPulledAt).toISOString() : null,
+    }
+  }
 
   private get log(): (line: string) => void {
     return this.opts.log ?? (() => {})
@@ -244,9 +267,17 @@ export class HostSyncPuller {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       if (response.status === 401 || response.status === 403) {
-        this.blockedUntil = Date.now() + AUTH_BACKOFF_MS
+        this.authRefusals++
         this.lastError = `feed refused (${response.status})`
-        return AUTH_BACKOFF_MS
+        if (this.authRefusals >= AUTH_REFUSALS_BEFORE_BLOCK) {
+          this.blockedUntil = Date.now() + AUTH_BACKOFF_MS
+          this.log(
+            `[HostSync] feed refused the device key ${this.authRefusals} times; retrying in ${AUTH_BACKOFF_MS / 60_000} min`,
+          )
+          return AUTH_BACKOFF_MS
+        }
+        this.log(`[HostSync] feed refused the device key (${response.status}); retrying in ${AUTH_SETTLE_RETRY_MS / 1000}s`)
+        return AUTH_SETTLE_RETRY_MS
       }
       if (!response.ok) {
         this.lastError = `feed ${response.status}`
@@ -261,6 +292,7 @@ export class HostSyncPuller {
         if (result.queuedSessions.length) await this.opts.onQueuedTurns?.(result.queuedSessions)
       }
       if (typeof page.cursor === 'number' && page.cursor > cursor) await this.saveCursor(instanceId, page.cursor)
+      this.authRefusals = 0
       this.lastError = null
       this.lastPulledAt = Date.now()
       return page.more ? 0 : IDLE_INTERVAL_MS
