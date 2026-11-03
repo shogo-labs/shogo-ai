@@ -33,10 +33,10 @@
  */
 import { type ChildProcess, spawn, spawnSync } from './child-process.ts';
 import { createHmac, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, rmSync, unwatchFile, watchFile } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, unwatchFile, watch, watchFile } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { resolveRuntime, type ResolvedRuntime } from './runtime-resolver.ts';
 import {
   RssWatchdog,
@@ -694,6 +694,10 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   /** `host-limits.json` this manager watches for live limit changes (SHO-203). */
   private hostLimitsFile: string | null = null;
+  /** Directory watcher catches the atomic rename used to publish host limits. */
+  private hostLimitsWatcher: ReturnType<typeof watch> | null = null;
+  /** Polling fallback for filesystems that cannot watch the containing directory. */
+  private hostLimitsPolling = false;
 
   constructor(opts: WorkerRuntimeManagerOptions = {}) {
     this.opts = opts;
@@ -1621,13 +1625,42 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   /**
    * Watch `host-limits.json` so a Settings change to the agent-command budget
    * lands on the app that is already running (SHO-203). An env var can only
-   * change at spawn; a file can change now. `fs.watchFile` polls, which is why
-   * it also picks the file up on a fresh install — no IPC plumbing needed.
+   * change at spawn; a file can change now. A directory watcher catches the
+   * desktop's atomic rename, with `fs.watchFile` polling as a backstop for
+   * filesystems that silently drop watcher events or do not support watching.
    */
   private watchHostLimits(): void {
     const file = (this.opts.env ?? process.env).SHOGO_HOST_LIMITS_FILE;
     if (!file || this.hostLimitsFile) return;
     this.hostLimitsFile = file;
+    this.resolveLimits();
+
+    // The desktop publishes this file via temp-file + rename. Watching the
+    // directory observes that replacement directly. Keep polling as a
+    // backstop because some filesystems accept watches but silently drop events.
+    try {
+      const targetName = basename(file);
+      const watcher = watch(dirname(file), { persistent: false }, (_event, filename) => {
+        if (!filename || filename.toString() === targetName) this.applyHostLimitsChange();
+      });
+      this.hostLimitsWatcher = watcher;
+      watcher.on('error', (err) => {
+        this.log.warn(`[WorkerRuntimeManager] host limits directory watch failed: ${err.message}`);
+        if (this.hostLimitsWatcher !== watcher) return;
+        watcher.close();
+        this.hostLimitsWatcher = null;
+        this.watchHostLimitsByPolling(file);
+      });
+    } catch (err: any) {
+      this.log.warn(`[WorkerRuntimeManager] host limits directory watch failed: ${err?.message ?? err}`);
+    }
+
+    this.watchHostLimitsByPolling(file);
+  }
+
+  private watchHostLimitsByPolling(file: string): void {
+    if (this.hostLimitsPolling) return;
+    this.hostLimitsPolling = true;
     watchFile(file, { interval: 2000 }, () => this.applyHostLimitsChange());
   }
 
@@ -1641,9 +1674,20 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       this.log.warn(`[WorkerRuntimeManager] host limits re-read failed: ${err?.message ?? err}`);
       return;
     }
-    // Future spawns read the memo, so keep it in step with the file.
+    // Future spawns read the memo, so keep it in step with the file. Directory
+    // and polling notifications can both report the same replacement; only
+    // reapply the OS cap when the resolved limits actually changed.
+    const previousLimits = this.resolvedLimits;
+    const unchanged = previousLimits === limits || (
+      !!previousLimits &&
+      !!limits &&
+      previousLimits.memoryMB === limits.memoryMB &&
+      previousLimits.osMemoryMB === limits.osMemoryMB &&
+      previousLimits.cpuPercent === limits.cpuPercent &&
+      previousLimits.tasksMax === limits.tasksMax
+    );
     this.resolvedLimits = limits;
-    if (!limits) return;
+    if (!limits || unchanged) return;
     const live = [...this.runtimes.values()].filter((slot) => slot.pid && slot.status !== 'stopped');
     if (live.length === 0) return;
     this.log.log(
@@ -1668,7 +1712,10 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
   private unwatchHostLimits(): void {
     if (!this.hostLimitsFile) return;
+    this.hostLimitsWatcher?.close();
+    this.hostLimitsWatcher = null;
     unwatchFile(this.hostLimitsFile);
+    this.hostLimitsPolling = false;
     this.hostLimitsFile = null;
   }
 

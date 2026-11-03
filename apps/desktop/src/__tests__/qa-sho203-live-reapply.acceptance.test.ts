@@ -89,10 +89,18 @@ describe('SHO-203 live apply — the worker watches the file Settings writes', (
       // changes; the env is the one baked in at spawn and cannot.
       writeHostLimits(dir, buildHostLimits(32 * GB, TOTAL_MB));
 
-      await until(() => changedLines(lines).length > 0, 'the manager to notice the new budget');
+      const expectedCap = `memory cap now ${8 * GB + 32 * GB}M`;
+      await until(
+        () => changedLines(lines).some((line) => line.includes(expectedCap)),
+        'the manager to notice the new budget',
+      );
+      // Let both the directory watcher and polling backstop report the rename;
+      // duplicate notifications must not reapply or log the same limits twice.
+      await new Promise((resolve) => setTimeout(resolve, 2_200));
 
       expect(changedLines(lines).join('\n')).toContain(`memory cap now ${8 * GB + 32 * GB}M`);
       expect(changedLines(lines).join('\n')).toContain(`${8 * GB}M runtime + ${32 * GB}M commands`);
+      expect(changedLines(lines)).toHaveLength(1);
 
       // Future spawns read the re-resolved limits (the memo the manager keeps),
       // so the cgroup/Job Object cap on a restart matches the file too.
@@ -114,6 +122,48 @@ describe('SHO-203 live apply — the worker watches the file Settings writes', (
     writeHostLimits(dir, buildHostLimits(16 * GB, TOTAL_MB));
     await new Promise((resolve) => setTimeout(resolve, 3_000));
     expect(changedLines(lines)).toEqual([]);
+  }, 30_000);
+
+  it('uses polling when the limits directory cannot be watched and stops polling on shutdown', async () => {
+    const missingDir = join(dir, `missing-watch-dir-${Date.now()}`);
+    const file = join(missingDir, 'host-limits.json');
+    const { lines, logger } = capture();
+    const mgr = new WorkerRuntimeManager({ env: desktopEnv(file), logger });
+    const runtimes = (mgr as unknown as { runtimes: Map<string, unknown> }).runtimes;
+    runtimes.set('proj-poll-fallback', {
+      projectId: 'proj-poll-fallback',
+      pid: 999_999,
+      status: 'running',
+      cgroupScope: null,
+    });
+
+    try {
+      // Creating the directory after manager startup forces the directory
+      // watcher to fail while the path poller continues watching the target.
+      writeHostLimits(missingDir, buildHostLimits('auto', TOTAL_MB));
+      const initialCap = `memory cap now ${8 * GB + 120 * GB}M`;
+      await until(
+        () => changedLines(lines).some((line) => line.includes(initialCap)),
+        'the polling fallback to notice the new limits file',
+      );
+
+      writeHostLimits(missingDir, buildHostLimits(32 * GB, TOTAL_MB));
+      const expectedCap = `memory cap now ${8 * GB + 32 * GB}M`;
+      await until(
+        () => changedLines(lines).some((line) => line.includes(expectedCap)),
+        'the polling fallback to notice the updated budget',
+      );
+
+      const countBeforeShutdown = changedLines(lines).length;
+      runtimes.clear();
+      await mgr.stopAll();
+      writeHostLimits(missingDir, buildHostLimits(16 * GB, TOTAL_MB));
+      await new Promise((resolve) => setTimeout(resolve, 2_200));
+      expect(changedLines(lines)).toHaveLength(countBeforeShutdown);
+    } finally {
+      runtimes.clear();
+      await mgr.stopAll();
+    }
   }, 30_000);
 
   it('a headless worker with no limits file keeps the runtime ceiling for commands', () => {
