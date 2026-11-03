@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * SHO-285 end to end: a workspace hosted on a paired desktop syncs both ways.
+ * SHO-285 — the two-way sync protocol, in memory.
  *
- * The real halves are wired together — the cloud's ingest (`applyBatch`) and
- * change feed (`readHostFeed`), and the desktop's puller (`applyHostFeedPage`) —
- * over two in-memory databases, so this checks that the two sides agree on the
- * protocol, not only that each half behaves on its own:
+ * This is a *protocol* test, not the end-to-end one: the real halves are wired
+ * together — the cloud's ingest (`applyBatch`) and change feed (`readHostFeed`),
+ * and the desktop's puller (`applyHostFeedPage`) — over two in-memory databases,
+ * so it checks that the two sides agree on the wire format, not only that each
+ * half behaves on its own. The end-to-end proof (a real cloud process, a real
+ * paired desktop, a cloud message running on the desktop against a
+ * desktop-only canary) is `sho285-hosted-workspace.e2e.test.ts`.
  *
  *   AC1  a write made in the cloud reaches the desktop (same id, no mapping)
  *   AC2  a write made on the desktop reaches the cloud

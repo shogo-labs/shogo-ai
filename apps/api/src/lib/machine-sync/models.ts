@@ -60,6 +60,10 @@ export const MIRROR_MODELS: readonly string[] = [
   'Goal',
   'GoalEvent',
   'AgentSchedule',
+  // Triggers are workspace agent config like a schedule: the cloud's event bus
+  // dispatches them (WorkspaceEvent/EventDelivery stay cloud-only), so it can
+  // only fire what its own database holds (SHO-285).
+  'EventSubscription',
   'AgentTask',
 
   // ── Team chat ──
@@ -186,7 +190,6 @@ const NEVER_CLOUD_PLATFORM = [
   'Instance', // the cloud's machine registry
   'SignupRiskAssessment', // the cloud's signup anti-abuse record
   'RemoteAction', // the cloud's audit trail
-  'EventSubscription', // cloud event bus
   'EventDelivery',
   'WorkspaceEvent',
   'CustomDomain', // DNS is issued by the cloud
@@ -337,6 +340,11 @@ export const REWRITES: Readonly<
   'User.email': (row) => `${String(row.id)}@machines.shogo.invalid`,
   /** Machine projects are not published by the cloud; keep the unique column empty. */
   'Project.publishedSubdomain': () => null,
+  /**
+   * A Composio trigger is registered against the cloud's Composio account, so
+   * only the cloud may hold its id — a desktop copy would collide with it.
+   */
+  'EventSubscription.composioTriggerId': () => null,
   /**
    * The huddle's guest join secret. The call runs on the machine that started
    * it, so a copy on the cloud could only ever admit somebody to a call that is

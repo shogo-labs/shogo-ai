@@ -265,14 +265,15 @@ export async function resolveWorkspaceRuntimeUrl(
   // through the instance tunnel (`lib/host-tunnel`). Offline is answered by
   // the tunnel route (`503 host_offline`), not here, so a resolve stays cheap.
   if (process.env.SHOGO_LOCAL_MODE !== 'true') {
-    const hostTunnel = await import('./host-tunnel')
-    const hostOf = opts._hostOf ?? hostTunnel.hostOfWorkspace
-    const hostInstanceId = await hostOf(workspaceId)
+    const { hostedWorkspacesResolveHere } = await import('./cloud-topology')
+    const hostOf = opts._hostOf ?? (hostedWorkspacesResolveHere() ? (await import('./host-tunnel')).hostOfWorkspace : null)
+    const hostInstanceId = hostOf ? await hostOf(workspaceId) : null
     if (hostInstanceId) {
+      const { hostTunnelRuntimeUrl } = await import('./host-tunnel')
       return {
         mode: 'host-tunnel',
         instanceId: hostInstanceId,
-        url: hostTunnel.hostTunnelRuntimeUrl(hostInstanceId, {
+        url: hostTunnelRuntimeUrl(hostInstanceId, {
           workspaceId,
           anchorProjectId: opts.anchorProjectId,
         }),

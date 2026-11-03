@@ -22,6 +22,7 @@
 import type { Context } from 'hono'
 import { randomBytes } from 'node:crypto'
 import { prisma } from './prisma'
+import { hostedWorkspacesResolveHere } from './cloud-topology'
 
 export const HOST_TUNNEL_PREFIX = '/api/internal/host-tunnel'
 
@@ -35,6 +36,11 @@ const HOST_TTL_MS = 10_000
 const hostCache = new Map<string, { hostInstanceId: string | null; at: number }>()
 
 export async function hostOfWorkspace(workspaceId: string): Promise<string | null> {
+  // Only a cloud runtime topology can host a workspace (see
+  // `hostedWorkspacesResolveHere`): the desktop's own API and a unit-test
+  // process have no cluster and no app database, and must not pay a database
+  // read on every runtime resolve.
+  if (!hostedWorkspacesResolveHere()) return null
   const cached = hostCache.get(workspaceId)
   if (cached && Date.now() - cached.at < HOST_TTL_MS) return cached.hostInstanceId
   const row = await prisma.workspace.findUnique({
@@ -214,8 +220,11 @@ export async function queueTurnIfHostOffline(params: {
   userMessageId: string | null | undefined
   body: Record<string, unknown>
   _isOnline?: (instanceId: string) => Promise<boolean>
+  /** Test-only override for "which desktop hosts this workspace". */
+  _hostOf?: (workspaceId: string) => Promise<string | null>
 }): Promise<OfflineQueueResult | null> {
-  const hostInstanceId = await hostOfWorkspace(params.workspaceId)
+  const hostOf = params._hostOf ?? hostOfWorkspace
+  const hostInstanceId = await hostOf(params.workspaceId)
   if (!hostInstanceId || !params.sessionId || !params.userId) return null
   const isOnline =
     params._isOnline ??

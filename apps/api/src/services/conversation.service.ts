@@ -1398,6 +1398,15 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     data: { lastSeq: { increment: 1 }, lastMessageAt: now },
     select: { lastSeq: true },
   })
+  // A hosted workspace's channel is written from two databases (SHO-285): a
+  // message that syncs in from the other side does not advance this copy's
+  // `lastSeq`, so it can fall behind the rows already here and mint a `seq`
+  // that collides. Take the higher of the counter and the messages that exist.
+  const highest = await db.conversationMessage.aggregate({ where: { conversationId: conversation.id }, _max: { seq: true } })
+  const seq = Math.max(bumped.lastSeq, (highest?._max?.seq ?? 0) + 1)
+  if (seq !== bumped.lastSeq) {
+    await db.conversation.update({ where: { id: conversation.id }, data: { lastSeq: seq } })
+  }
   const resolved = await resolveForInsert(input, conversation, text)
   const storedText = resolved.text
   const mentions = input.authorType === 'system' && !input.systemMentions
@@ -1410,7 +1419,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
       id,
       conversationId: conversation.id,
       workspaceId: conversation.workspaceId,
-      seq: bumped.lastSeq,
+      seq,
       threadRootId: root?.id ?? null,
       alsoSentToChannel: !!(root && input.alsoSentToChannel),
       authorType: input.authorType ?? 'user',
@@ -1457,8 +1466,8 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
 
   if (input.authorUserId && input.authorType !== 'system') {
     await db.conversationMember.updateMany({
-      where: { conversationId: conversation.id, userId: input.authorUserId, lastReadSeq: { lt: bumped.lastSeq } },
-      data: { lastReadSeq: bumped.lastSeq, lastReadAt: now },
+      where: { conversationId: conversation.id, userId: input.authorUserId, lastReadSeq: { lt: seq } },
+      data: { lastReadSeq: seq, lastReadAt: now },
     })
   }
 

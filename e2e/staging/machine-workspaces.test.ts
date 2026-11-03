@@ -12,21 +12,13 @@
  * through `cli/login`, and an isolated local API on *this* machine (own data
  * dir + DB, so this Mac's production pairing is untouched) which the staging
  * cloud lists at `/api/machines`. The spec then signs the browser into that
- * staging account, opens the machine's workspace, and asks its agent — over the
- * relay — to read a canary from this machine's disk.
- *
- * Red now, green after merge (Russell's call): staging serves `main`, so on
- * today's deploy the flash-back this card fixes is still there and this spec is
- * expected to fail at the identity assertion. That failure is the evidence; it
- * goes green once PR #1620 is on `main` and staging redeploys.
+ * staging account, opens the machine's workspace — a normal cloud workspace
+ * whose host is this machine (SHO-285) — and asks its agent to read a canary
+ * from this machine's disk.
  *
  * Run:
  *   E2E_STAGING_MACHINE=1 STAGING_URL=https://studio.staging.shogo.ai \
  *     npx playwright test --config e2e/playwright.config.ts machine-workspaces --project chromium
- *
- * Measured on 2026-10-21 against staging v2.3.8 (= `main`, pre-fix): the
- * machine row is listed and clicked, and the page goes **blank** — the hard
- * reload the switch ends in never restores the machine workspace.
  */
 import { expect, test, type BrowserContext, type Page } from "./fixtures"
 import { pairMachine, writeMachineCanary, type PairedMachine } from "./machine-pairing"
@@ -87,10 +79,15 @@ test.describe("SHO-130 · a paired machine's workspace, from staging", () => {
     await page.goto("/", { waitUntil: "domcontentloaded" })
     await expect(page.getByRole("button", { name: /— open account/ }).first()).toBeVisible({ timeout: 120_000 })
 
-    // Its workspace is offered in the switcher.
+    // Its workspace is offered in the switcher — as a normal cloud row, with a
+    // host badge naming this machine (SHO-285: one id, one row, no machine list).
     await page.getByRole("button", { name: /— open account/ }).first().click()
-    const machineRow = page.getByTestId(`workspace-row:machine:${machine.machineId}:${machine.machineWorkspaceId}`)
+    const machineRow = page.getByTestId(`workspace-row:cloud:${machine.machineWorkspaceId}`)
     await expect(machineRow, "the machine's workspace should be in the switcher").toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId(`workspace-row-host:cloud:${machine.machineWorkspaceId}`)).toContainText(
+      `Host: ${INSTANCE}`,
+      { timeout: 60_000 },
+    )
     await machineRow.click()
 
     // ── AC 1 — it is the workspace in view, and it stays ───────────────────
