@@ -31,12 +31,17 @@ const UPDATE_INTERVAL_MS = 200
 export function createVoicePlaybackEngine(handlers: VoicePlaybackHandlers): VoicePlaybackEngine {
   let player: AudioPlayer | null = null
   let subscription: { remove: () => void } | null = null
-  let sessionReady = false
+  let sessionPromise: Promise<void> | null = null
+  let playRequest = 0
 
   const ensurePlayer = (url: string): AudioPlayer => {
     if (!player) {
       player = createAudioPlayer(url, { updateInterval: UPDATE_INTERVAL_MS })
       subscription = player.addListener("playbackStatusUpdate", (status) => {
+        if (status.error) {
+          handlers.onError(new Error(status.error))
+          return
+        }
         handlers.onProgress(status.currentTime * 1000, (status.duration ?? 0) * 1000)
         if (status.didJustFinish) handlers.onEnded()
       })
@@ -47,14 +52,20 @@ export function createVoicePlaybackEngine(handlers: VoicePlaybackHandlers): Voic
   }
 
   // iOS plays nothing through the silent switch until the session allows it.
-  const readySession = async () => {
-    if (sessionReady) return
-    sessionReady = true
-    await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => {})
+  const readySession = (): Promise<void> => {
+    if (!sessionPromise) {
+      sessionPromise = setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true })
+        .catch((error: unknown) => {
+          sessionPromise = null
+          throw error
+        })
+    }
+    return sessionPromise
   }
 
   return {
     load(url) {
+      playRequest += 1
       try {
         ensurePlayer(url)
       } catch (error) {
@@ -64,15 +75,18 @@ export function createVoicePlaybackEngine(handlers: VoicePlaybackHandlers): Voic
     play() {
       const current = player
       if (!current) return
-      void readySession().then(() => {
-        try {
+      const request = ++playRequest
+      void readySession()
+        .then(() => {
+          if (request !== playRequest || current !== player) return
           current.play()
-        } catch (error) {
-          handlers.onError(error)
-        }
-      })
+        })
+        .catch((error: unknown) => {
+          if (request === playRequest && current === player) handlers.onError(error)
+        })
     },
     pause() {
+      playRequest += 1
       try {
         player?.pause()
       } catch (error) {
@@ -91,6 +105,7 @@ export function createVoicePlaybackEngine(handlers: VoicePlaybackHandlers): Voic
       }
     },
     release() {
+      playRequest += 1
       try {
         subscription?.remove()
         player?.remove()

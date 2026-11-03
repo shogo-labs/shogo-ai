@@ -1194,6 +1194,7 @@ function MessageRowImpl(props: MessageRowProps) {
         props.highlighted && 'bg-amber-400/20',
       )}
       testID={props.highlighted ? 'message-highlighted' : undefined}
+      accessible={deleted || !message.attachments.some(isVoiceNote)}
       accessibilityLabel={`${authorName(message)}: ${markdownToPlainText(renderMentions(message.text, names))}`}
     >
       <View className="w-8">
@@ -1380,6 +1381,7 @@ function MessageRowImpl(props: MessageRowProps) {
                   key={a.id}
                   attachmentId={a.id}
                   url={absoluteApiUrl(a.url)}
+                  mimeType={a.mimeType}
                   durationMs={a.durationMs}
                   peaks={a.peaks}
                   name={a.name}

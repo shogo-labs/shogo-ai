@@ -25,7 +25,7 @@ import { ChevronDown } from "lucide-react-native"
 import { MarkdownText } from "../MarkdownText"
 import { formatThoughtLabel } from "./workSummary"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
-import { NativeActivitySheet, useInsideActivitySheet } from "../NativeActivitySheet"
+import { NativeActivitySheet, NATIVE_ACTIVITY_HIT_SLOP, NATIVE_ACTIVITY_LABEL, NATIVE_ACTIVITY_ROW, useInsideActivitySheet } from "../NativeActivitySheet"
 
 const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
@@ -257,14 +257,15 @@ function ThinkingWidgetImpl({
   if (nativePhone && !insideSheet) {
     const chatLabel = isStreaming ? "Thinking…" : "Thought"
     return (
-      <View className={cn("py-0.5", className)}>
+      <View className={cn(NATIVE_ACTIVITY_ROW, className)}>
         <Pressable
           onPress={() => setSheetOpen(true)}
-          className="self-start py-1"
+          className="self-start"
+          hitSlop={NATIVE_ACTIVITY_HIT_SLOP}
           role="button"
           accessibilityLabel={label}
         >
-          <Text className="text-[15px] text-muted-foreground">{chatLabel}</Text>
+          <Text className={NATIVE_ACTIVITY_LABEL}>{chatLabel}</Text>
         </Pressable>
         <NativeActivitySheet
           visible={sheetOpen}

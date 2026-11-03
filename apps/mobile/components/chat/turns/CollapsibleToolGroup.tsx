@@ -39,7 +39,7 @@ import {
   usePhoneLayout,
 } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
-import { NativeActivitySheet, useInsideActivitySheet } from "../NativeActivitySheet"
+import { NativeActivitySheet, NATIVE_ACTIVITY_HIT_SLOP, NATIVE_ACTIVITY_LABEL, NATIVE_ACTIVITY_ROW, useInsideActivitySheet } from "../NativeActivitySheet"
 import { NativeWorkedSessionExtras } from "../NativeWorkedSessionExtras"
 
 const ANIM_DURATION = 500
@@ -302,9 +302,11 @@ function CollapsibleToolGroupImpl({
       <View className={cn("flex-row items-center gap-1.5", className)}>
         <Text
           className={cn(
-            isPhoneLayout || usesMobileWorkspaceChrome
-              ? "text-xs"
-              : "text-[11px]",
+            nativePhone
+              ? NATIVE_ACTIVITY_LABEL
+              : isPhoneLayout || usesMobileWorkspaceChrome
+                ? "text-xs"
+                : "text-[11px]",
             "text-muted-foreground",
           )}
         >
@@ -318,14 +320,15 @@ function CollapsibleToolGroupImpl({
   if (nativePhone && !insideSheet) {
     const chatLabel = isStreaming ? "Working…" : label
     return (
-      <View className={cn("py-0.5", className)}>
+      <View className={cn(NATIVE_ACTIVITY_ROW, className)}>
         <Pressable
           onPress={() => setSheetOpen(true)}
-          className="min-h-11 flex-row items-center gap-1.5 self-start rounded-md px-1 py-1 active:bg-muted/60"
+          className="flex-row items-center gap-1.5 self-start rounded-md active:bg-muted/60"
+          hitSlop={NATIVE_ACTIVITY_HIT_SLOP}
           role="button"
           accessibilityLabel={label}
         >
-          <Text className="text-xs text-muted-foreground">{chatLabel}</Text>
+          <Text className={NATIVE_ACTIVITY_LABEL}>{chatLabel}</Text>
           {badge}
           <ChevronRight size={15} className="text-muted-foreground" />
         </Pressable>

@@ -23,7 +23,7 @@
  *   E2E_LOCAL_START_STACK=1 npx playwright test --config e2e/local/playwright.config.ts phone-continue-chip
  */
 import { expect, test, type Page } from "@playwright/test"
-import { signIn } from "./team-nav-seed"
+import { activateTeamWorkspace, signInByApi } from "./team-nav-seed"
 import { ignoreDevErrorToast } from "./helpers"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
@@ -130,11 +130,8 @@ async function prepare(page: Page) {
   // taps (SHO-222); the production bundle does not have it.
   await ignoreDevErrorToast(page)
   await stubProjectRuntime(page)
-  await signIn(page)
-  await page.evaluate((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
-  }, workspaceId)
+  await signInByApi(page)
+  await activateTeamWorkspace(page, workspaceId)
 }
 
 function composer(page: Page) {
@@ -201,7 +198,7 @@ test.describe("Continue <project> chip on a lifecycle arrival", () => {
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(300_000)
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
-    await signIn(page)
+    await signInByApi(page)
 
     const users = await apiJson(page, "GET", "/api/users")
     const list = users.json?.items ?? users.json?.data ?? users.json

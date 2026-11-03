@@ -79,6 +79,7 @@ import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawe
 import { MobileBottomNav } from "../../components/layout/MobileBottomNav";
 import { TeamChatSidebarProvider } from "../../components/team-chat/TeamChatSidebarProvider";
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
+import { useWorkspaceRemountKey } from "../../hooks/useWorkspaceRemountKey";
 import { sidebarOpenEvents } from "../../lib/sidebar-open-events";
 import { getCloudWorkspacesState, refreshCloudWorkspaces, subscribeCloudWorkspaces } from "../../lib/workspace-route";
 import { isConversationPath } from "../../lib/sidebar-tab";
@@ -205,6 +206,7 @@ function AppLayoutInner() {
   // known.
   const experience = useWorkspaceExperience();
   const activeWorkspace = useActiveWorkspace();
+  const workspaceMountKey = useWorkspaceRemountKey(activeWorkspace?.id);
   const workspaces = useWorkspaceCollection();
   const router = useRouter();
   const pathname = usePathname();
@@ -673,7 +675,7 @@ function AppLayoutInner() {
       }
       bottomNav={
         !isWide && !isIdeEmbed && !isAIModelsPage ? (
-          <MobileBottomNav key={activeWorkspace?.id ?? "workspace-loading"} />
+          <MobileBottomNav key={workspaceMountKey} />
         ) : null
       }
       overlayBottomNav={isFloatingConversation}
@@ -694,7 +696,7 @@ function AppLayoutInner() {
           Home; desktop and wide web keep the flat Slot. */}
       {phoneShellMounted ? (
         <MobileWorkspaceShell
-          key={activeWorkspace?.id ?? "workspace-loading"}
+          key={workspaceMountKey}
           enabled={useMobileWorkspaceShell}
         >
           {phoneStack ? <Stack screenOptions={stackScreenOptions} /> : <Slot />}

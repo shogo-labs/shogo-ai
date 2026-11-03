@@ -10,7 +10,7 @@
  */
 import { expect, test, type Page } from "@playwright/test"
 import { ignoreDevErrorToast } from "./helpers"
-import { activateTeamWorkspace, cleanupTeamNav, seedTeamNav, signIn, type TeamNavSeed } from "./team-nav-seed"
+import { activateTeamWorkspace, cleanupTeamNav, seedTeamNav, signInByApi, type TeamNavSeed } from "./team-nav-seed"
 
 const dock = (page: Page) => page.getByTestId("team-dock")
 const tab = (page: Page, name: string) => dock(page).getByRole("tab", { name: new RegExp(`^${name}`) })
@@ -26,7 +26,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     // Seeding only needs an authenticated API client; the tests use the project's phone page.
     const context = await browser.newContext()
     seeder = await context.newPage()
-    await signIn(seeder)
+    await signInByApi(seeder)
     seed = await seedTeamNav(seeder)
   })
 
@@ -37,7 +37,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
 
   test.beforeEach(async ({ page }) => {
     await ignoreDevErrorToast(page)
-    await signIn(page)
+    await signInByApi(page)
     await activateTeamWorkspace(page, seed.workspaceId)
     await page.goto("/")
     await expect(dock(page)).toBeVisible({ timeout: 60_000 })
@@ -237,7 +237,7 @@ test.describe("Personal workspace: phone bottom bar and page titles", () => {
 
   test.beforeEach(async ({ page }) => {
     await ignoreDevErrorToast(page)
-    await signIn(page)
+    await signInByApi(page)
     await page.goto("/")
     await expect(bar(page).first()).toBeVisible({ timeout: 60_000 })
   })
