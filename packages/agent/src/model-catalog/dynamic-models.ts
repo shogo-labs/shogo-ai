@@ -18,6 +18,8 @@ export interface DynamicModelEntry {
   apiModel?: string
   contextWindow?: number
   maxOutputTokens?: number
+  /** Model accepts `video_url` content blocks (see `ModelCapabilities`). */
+  supportsVideoInput?: boolean
 }
 
 const REGISTRY_KEY = Symbol.for('shogo.model-catalog.dynamic-models')
@@ -55,6 +57,8 @@ export function registerDynamicModels(entries: ReadonlyArray<Partial<DynamicMode
       apiModel: str(raw.apiModel) ?? prev?.apiModel,
       contextWindow: positiveInt(raw.contextWindow) ?? prev?.contextWindow,
       maxOutputTokens: positiveInt(raw.maxOutputTokens) ?? prev?.maxOutputTokens,
+      supportsVideoInput:
+        typeof raw.supportsVideoInput === 'boolean' ? raw.supportsVideoInput : prev?.supportsVideoInput,
     })
   }
 }
@@ -105,6 +109,7 @@ export function parseDynamicModelsEnv(raw: string | undefined): DynamicModelEntr
       apiModel: str(e.apiModel),
       contextWindow: positiveInt(e.contextWindow),
       maxOutputTokens: positiveInt(e.maxOutputTokens),
+      ...(typeof e.supportsVideoInput === 'boolean' ? { supportsVideoInput: e.supportsVideoInput } : {}),
     })
   }
   return out

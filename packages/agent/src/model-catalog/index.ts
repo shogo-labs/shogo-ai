@@ -73,6 +73,7 @@ export {
   getMaxOutputTokens,
   getContextWindowTokens,
   modelSupportsAudioInput,
+  modelSupportsVideoInput,
   getModelKind,
   isLiveModel,
   calculateLiveSessionCost,

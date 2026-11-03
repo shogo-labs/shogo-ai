@@ -112,7 +112,7 @@ import {
   type RepoManifest,
   type RepoSnapshotFields,
 } from '@shogo/shared-runtime/repo-bundles'
-import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
+import { getModelTier, resolveModelId, calculateDollarCost, modelSupportsVideoInput } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
   seedWorkspaceRuntimeDefaults,
@@ -2060,11 +2060,22 @@ app.post('/agent/chat', async (c) => {
   // as real image blocks (guarded like the live turn guards them) instead of
   // `[N image(s) were attached]` notes — see seedEmptyChatSession.
   if (allMessages.length > 1) {
+    // A replayed video attachment is only kept when this turn's model can
+    // watch it; otherwise the guard swaps it for a placeholder. The model is
+    // the one the turn will send (request alias → session pin → workspace
+    // default), resolved from the loaded session rather than by creating it.
+    const seedModelAlias =
+      (typeof body.agentMode === 'string' && body.agentMode) ||
+      agentGateway!.turnModelAliasFor(chatSessionKey)
     const seeded = seedEmptyChatSession(
       sessionManager,
       chatSessionKey,
       allMessages.slice(0, -1),
-      { label: 'chat_history', workspaceDir: WORKSPACE_DIR },
+      {
+        label: 'chat_history',
+        workspaceDir: WORKSPACE_DIR,
+        supportsVideo: seedModelAlias ? modelSupportsVideoInput(resolveModelId(seedModelAlias)) : false,
+      },
     )
     if (seeded > 0) {
       console.log(`[AgentRuntime][chat] seeded ${seeded} history message(s) for session ${chatSessionKey}`)
