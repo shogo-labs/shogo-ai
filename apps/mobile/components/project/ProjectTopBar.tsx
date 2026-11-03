@@ -146,6 +146,7 @@ export function ProjectTopBar({
   onCanvasOpenInNewTab,
   onCanvasPrewarm,
   onOpenCodeWorkbench,
+  onOpenSettingsItem,
   onBack,
   idePrimarySideBarPosition = 'left',
   onIdePrimarySideBarPositionChange,
@@ -873,6 +874,7 @@ export function ProjectTopBar({
             <PublishDropdown
               projectId={projectId}
               projectName={projectName}
+              onOpenSettingsItem={onOpenSettingsItem}
               onViewHistory={
                 Platform.OS === 'web'
                   ? () => {

@@ -777,6 +777,112 @@ export async function publishProject(
   }, publishRequestTimeoutMs())
 }
 
+// ---------------------------------------------------------------------------
+// Custom domain wrappers — back the `publish` tool's `domain_action`
+// (SHO-304). Same internal routes the publish panel's session routes serve,
+// so the agent reads/writes exactly what Settings → Custom domain shows.
+// ---------------------------------------------------------------------------
+
+/** One DNS record the user must create for a custom domain. */
+export interface CustomDomainInstruction {
+  type: 'CNAME' | 'TXT'
+  name: string
+  value: string
+  purpose: 'routing' | 'ssl-validation' | 'ownership-verification'
+}
+
+export interface CustomDomainDnsCheck {
+  cname: 'ok' | 'wrong' | 'missing'
+  txt: 'ok' | 'partial' | 'missing'
+  ok: boolean
+  cnameTarget?: string
+  txtFound: number
+  txtExpected: number
+}
+
+export interface CustomDomain {
+  id: string
+  hostname: string
+  status: 'pending' | 'verifying' | 'active' | 'failed'
+  stage?: 'awaiting_dns' | 'validating' | 'issuing' | 'active' | 'failed' | 'stalled'
+  message?: string
+  error?: string
+  instructions?: CustomDomainInstruction[]
+  groupId?: string
+  primary?: boolean
+  canonicalHostname?: string
+  validation?: { name: string; value: string; status: string }[]
+  dns?: CustomDomainDnsCheck
+  canRetrigger?: boolean
+  retriggerCooldownMs?: number
+}
+
+export interface CustomDomainsList {
+  enabled: boolean
+  fallbackOrigin?: string
+  domains: CustomDomain[]
+}
+
+export async function listProjectCustomDomains(
+  projectId: string,
+): Promise<CheckpointCallResult<CustomDomainsList>> {
+  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/domains`, {
+    method: 'GET',
+    parse: (j) => j as CustomDomainsList,
+  })
+}
+
+export async function addProjectCustomDomain(
+  projectId: string,
+  hostname: string,
+): Promise<CheckpointCallResult<{ domains: CustomDomain[] }>> {
+  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/domains`, {
+    method: 'POST',
+    body: JSON.stringify({ hostname }),
+    parse: (j) => j as { domains: CustomDomain[] },
+  })
+}
+
+export async function verifyProjectCustomDomain(
+  projectId: string,
+  domainId: string,
+): Promise<CheckpointCallResult<{ domains: CustomDomain[] }>> {
+  return publishFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/domains/${encodeURIComponent(domainId)}/verify`,
+    { method: 'POST', parse: (j) => j as { domains: CustomDomain[] } },
+  )
+}
+
+export async function retriggerProjectCustomDomain(
+  projectId: string,
+  domainId: string,
+): Promise<CheckpointCallResult<{ domains: CustomDomain[] }>> {
+  return publishFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/domains/${encodeURIComponent(domainId)}/retrigger`,
+    { method: 'POST', parse: (j) => j as { domains: CustomDomain[] } },
+  )
+}
+
+export async function setPrimaryProjectCustomDomain(
+  projectId: string,
+  domainId: string,
+): Promise<CheckpointCallResult<{ domains: CustomDomain[] }>> {
+  return publishFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/domains/${encodeURIComponent(domainId)}/primary`,
+    { method: 'PATCH', parse: (j) => j as { domains: CustomDomain[] } },
+  )
+}
+
+export async function removeProjectCustomDomain(
+  projectId: string,
+  domainId: string,
+): Promise<CheckpointCallResult<{ success: boolean; removedIds: string[] }>> {
+  return publishFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/domains/${encodeURIComponent(domainId)}`,
+    { method: 'DELETE', parse: (j) => j as { success: boolean; removedIds: string[] } },
+  )
+}
+
 export interface SharedFileResult {
   url: string
   expiresAt: string

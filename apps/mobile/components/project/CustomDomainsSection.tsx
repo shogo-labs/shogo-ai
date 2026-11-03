@@ -4,7 +4,10 @@
  * CustomDomainsSection - bring-your-own custom domain management for a
  * published project (Cloudflare for SaaS custom hostnames).
  *
- * Rendered inside PublishDropdown once an app is published. Lets the user:
+ * Rendered as the standalone Settings → Publishing → Custom domain page. The
+ * Publish dropdown no longer embeds it — it shows a one-line status row that
+ * links here instead (SHO-304), so the popover never renders DNS records.
+ * Lets the user:
  *  - add a domain (e.g. acme.com) — we auto-create the apex/www companion
  *    and link them as a group so the user doesn't have to reason about
  *    subdomains vs. www,
@@ -40,17 +43,14 @@ const AUTO_POLL_MS = 30_000
 interface CustomDomainsSectionProps {
   projectId: string
   /**
-   * HTTP client supplied by the caller. This section is rendered inside the
-   * publish Popover, whose gluestack overlay teleports content to a root host
-   * *outside* the SDKDomainProvider — so calling useDomainHttp() here throws
-   * "must be used within SDKDomainProvider" (RootErrorBoundary crash). Callers
-   * live in the provider tree and pass their resolved client down instead.
+   * HTTP client supplied by the caller. The Settings pane lives inside the
+   * SDKDomainProvider, but the prop is kept so the caller keeps owning the
+   * client (and so a future embed doesn't have to resolve it itself).
    */
   http: HttpClient
   /**
-   * Compact variant for the publish dropdown (default). When false, renders a
-   * standalone, scrollable settings pane with a visible empty/disabled state
-   * instead of collapsing to null.
+   * Compact variant. Only the standalone Settings pane renders this section, and
+   * it passes `embedded={false}`; the flag is kept for a future compact embed.
    */
   embedded?: boolean
 }

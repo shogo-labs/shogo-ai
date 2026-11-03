@@ -29,12 +29,45 @@ let publishCalls: Array<{ projectId: string; opts: any }> = []
 let sharedFileCalls: Array<{ projectId: string; opts: any }> = []
 let workspaceSharedFileCalls: Array<{ workspaceId: string; opts: any }> = []
 
+// Custom-domain wrappers (SHO-304) — mocked so no Cloudflare request is made.
+let listCustomDomainsImpl: (projectId: string) => Promise<any>
+let addCustomDomainImpl: (projectId: string, hostname: string) => Promise<any>
+let verifyCustomDomainImpl: (projectId: string, domainId: string) => Promise<any>
+let retriggerCustomDomainImpl: (projectId: string, domainId: string) => Promise<any>
+let setPrimaryCustomDomainImpl: (projectId: string, domainId: string) => Promise<any>
+let removeCustomDomainImpl: (projectId: string, domainId: string) => Promise<any>
+let domainCalls: Array<{ fn: string; projectId: string; arg?: string }> = []
+
 mock.module('../internal-api', () => ({
   ...realInternalApi,
   getPublishState: (projectId: string) => getPublishStateImpl(projectId),
   publishProject: (projectId: string, opts: any) => {
     publishCalls.push({ projectId, opts })
     return publishProjectImpl(projectId, opts)
+  },
+  listProjectCustomDomains: (projectId: string) => {
+    domainCalls.push({ fn: 'list', projectId })
+    return listCustomDomainsImpl(projectId)
+  },
+  addProjectCustomDomain: (projectId: string, hostname: string) => {
+    domainCalls.push({ fn: 'add', projectId, arg: hostname })
+    return addCustomDomainImpl(projectId, hostname)
+  },
+  verifyProjectCustomDomain: (projectId: string, domainId: string) => {
+    domainCalls.push({ fn: 'verify', projectId, arg: domainId })
+    return verifyCustomDomainImpl(projectId, domainId)
+  },
+  retriggerProjectCustomDomain: (projectId: string, domainId: string) => {
+    domainCalls.push({ fn: 'retrigger', projectId, arg: domainId })
+    return retriggerCustomDomainImpl(projectId, domainId)
+  },
+  setPrimaryProjectCustomDomain: (projectId: string, domainId: string) => {
+    domainCalls.push({ fn: 'make_primary', projectId, arg: domainId })
+    return setPrimaryCustomDomainImpl(projectId, domainId)
+  },
+  removeProjectCustomDomain: (projectId: string, domainId: string) => {
+    domainCalls.push({ fn: 'remove', projectId, arg: domainId })
+    return removeCustomDomainImpl(projectId, domainId)
   },
   createSharedFileLink: (projectId: string, opts: any) => {
     sharedFileCalls.push({ projectId, opts })
@@ -107,6 +140,28 @@ let fetchStatus = 200
 let fetchThrows = false
 const origFetch = globalThis.fetch
 
+/** A serialized custom-domain row, shaped like the API's response. */
+function SAMPLE_DOMAIN(hostname: string, over: Record<string, any> = {}) {
+  return {
+    id: 'd1',
+    hostname,
+    status: 'pending',
+    stage: 'awaiting_dns',
+    message: 'Add the DNS records shown to finish setup.',
+    primary: true,
+    canonicalHostname: hostname,
+    groupId: undefined,
+    canRetrigger: false,
+    dns: { cname: 'missing', txt: 'missing', ok: false, txtFound: 0, txtExpected: 2 },
+    instructions: [
+      { type: 'CNAME', name: hostname, value: 'fallback.shogo.one', purpose: 'routing' },
+      { type: 'TXT', name: `_acme-challenge.${hostname}`, value: 'dcv-token-1', purpose: 'ssl-validation' },
+      { type: 'TXT', name: `_cf-custom-hostname.${hostname}`, value: 'own-token-1', purpose: 'ownership-verification' },
+    ],
+    ...over,
+  }
+}
+
 beforeEach(() => {
   // These are unit tests: pin the runtime mode per test instead of inheriting
   // it, because a dev/QA agent checkout is itself a workspace runtime
@@ -119,7 +174,30 @@ beforeEach(() => {
   publishCalls = []
   sharedFileCalls = []
   workspaceSharedFileCalls = []
+  domainCalls = []
   getPublishStateImpl = async () => STATE_UNPUBLISHED
+  listCustomDomainsImpl = async () => ({ ok: true, status: 200, data: { enabled: true, fallbackOrigin: 'fallback.shogo.one', domains: [] } })
+  addCustomDomainImpl = async (_p, hostname) => ({
+    ok: true,
+    status: 201,
+    data: { domains: [SAMPLE_DOMAIN(hostname)] },
+  })
+  verifyCustomDomainImpl = async () => ({
+    ok: true,
+    status: 200,
+    data: { domains: [SAMPLE_DOMAIN('example.com', { status: 'active', stage: 'active' })] },
+  })
+  retriggerCustomDomainImpl = async () => ({
+    ok: true,
+    status: 200,
+    data: { domains: [SAMPLE_DOMAIN('example.com')] },
+  })
+  setPrimaryCustomDomainImpl = async () => ({
+    ok: true,
+    status: 200,
+    data: { domains: [SAMPLE_DOMAIN('example.com')] },
+  })
+  removeCustomDomainImpl = async () => ({ ok: true, status: 200, data: { success: true, removedIds: ['d1'] } })
   createSharedFileLinkImpl = async (_projectId, _opts) => ({
     ok: true,
     status: 200,
@@ -504,4 +582,219 @@ describe('publish tool copy (Pro-plan disclosure + no hard-refresh advice)', () 
     const note = String(details.note ?? '')
     expect(note).not.toMatch(/hard refresh|ctrl\+shift\+r|cmd\+shift\+r|clear (your )?cache|refresh once|refresh after/i)
   }, 15000)
+})
+
+// ---------------------------------------------------------------------------
+// Custom domains (SHO-304): the `publish` tool's `domain_action`.
+//
+// Production: an agent asked to point playsamsara.com at a Shogo app stood up a
+// Cloudflare Pages project, because nothing told it Shogo serves custom domains
+// and it had no way to read the DNS records. These cover every action, that a
+// domain action NEVER publishes, and the error mapping the agent acts on.
+// ---------------------------------------------------------------------------
+describe('publish domain_action — custom domains', () => {
+  test('list returns every record with a found flag and does NOT publish', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: true,
+      status: 200,
+      data: { enabled: true, fallbackOrigin: 'fallback.shogo.one', domains: [SAMPLE_DOMAIN('example.com')] },
+    })
+    const details = await run(baseCtx(), { domain_action: 'list' })
+
+    expect(details.ok).toBe(true)
+    expect(details.action).toBe('list')
+    expect(details.fallbackOrigin).toBe('fallback.shogo.one')
+    const domain = details.domains[0]
+    expect(domain.hostname).toBe('example.com')
+    expect(domain.status).toBe('pending')
+    expect(domain.records).toHaveLength(3)
+    expect(domain.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'CNAME', name: 'example.com', value: 'fallback.shogo.one', purpose: 'routing', found: false }),
+        expect.objectContaining({ type: 'TXT', name: '_acme-challenge.example.com', value: 'dcv-token-1', purpose: 'ssl-validation' }),
+        expect.objectContaining({ type: 'TXT', name: '_cf-custom-hostname.example.com', value: 'own-token-1', purpose: 'ownership-verification' }),
+      ]),
+    )
+    expect(details.settings).toMatch(/Settings/)
+    expect(details.docs).toBe('https://docs.shogo.ai/features/custom-domains')
+    // The whole point: managing a domain must never trigger a deploy.
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('add registers the apex + www group and returns records verbatim, never publishing', async () => {
+    let seenHostname = ''
+    addCustomDomainImpl = async (_p, hostname) => {
+      seenHostname = hostname
+      return {
+        ok: true,
+        status: 201,
+        data: {
+          domains: [
+            SAMPLE_DOMAIN('example.com', { groupId: 'g1', primary: false, canonicalHostname: 'www.example.com' }),
+            SAMPLE_DOMAIN('www.example.com', { id: 'd2', groupId: 'g1', primary: true }),
+          ],
+        },
+      }
+    }
+    const details = await run(baseCtx(), { domain_action: 'add', domain: 'Example.COM' })
+
+    expect(seenHostname).toBe('example.com')
+    expect(details.ok).toBe(true)
+    expect(details.domains).toHaveLength(2)
+    expect(details.domains[0].records[0]).toMatchObject({ type: 'CNAME', value: 'fallback.shogo.one' })
+    expect(details.domains[0].redirectsTo).toBe('www.example.com')
+    expect(details.apexNote).toMatch(/CNAME flattening/)
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('add without a domain asks for one and calls nothing', async () => {
+    const details = await run(baseCtx(), { domain_action: 'add' })
+    expect(details.ok).toBe(false)
+    expect(details.error).toMatch(/Pass `domain`/)
+    expect(domainCalls).toHaveLength(0)
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('verify returns active and says the domain serves immediately', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: true, status: 200,
+      data: { enabled: true, domains: [SAMPLE_DOMAIN('example.com')] },
+    })
+    const details = await run(baseCtx(), { domain_action: 'verify', domain: 'example.com' })
+    expect(domainCalls.map((c) => c.fn)).toEqual(['list', 'verify'])
+    expect(domainCalls[1].arg).toBe('d1')
+    expect(details.verified).toBe(true)
+    expect(details.retriggered).toBe(false)
+    expect(details.domains[0].status).toBe('active')
+    expect(details.note).toMatch(/live and serving/i)
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('verify retriggers a stalled domain the gate allows, and says so', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: true, status: 200,
+      data: { enabled: true, domains: [SAMPLE_DOMAIN('example.com', { status: 'verifying', stage: 'stalled' })] },
+    })
+    verifyCustomDomainImpl = async () => ({
+      ok: true, status: 200,
+      data: { domains: [SAMPLE_DOMAIN('example.com', { status: 'verifying', stage: 'stalled', canRetrigger: true })] },
+    })
+    const details = await run(baseCtx(), { domain_action: 'verify', domain: 'example.com' })
+    expect(domainCalls.map((c) => c.fn)).toEqual(['list', 'verify', 'retrigger'])
+    expect(details.retriggered).toBe(true)
+    expect(details.note).toMatch(/re-triggered/i)
+  })
+
+  test('verify passes the gate message through instead of a generic error', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: true, status: 200,
+      data: { enabled: true, domains: [SAMPLE_DOMAIN('example.com')] },
+    })
+    verifyCustomDomainImpl = async () => ({
+      ok: false, status: 409, code: 'dns_not_ready',
+      error: "Your DNS records aren't all in place yet.",
+    })
+    const details = await run(baseCtx(), { domain_action: 'verify', domain: 'example.com' })
+    expect(details.ok).toBe(false)
+    expect(details.code).toBe('dns_not_ready')
+    expect(details.error).toMatch(/not all in place/i)
+  })
+
+  test('make_primary switches the canonical hostname', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: true, status: 200,
+      data: { enabled: true, domains: [SAMPLE_DOMAIN('example.com', { groupId: 'g1', primary: false })] },
+    })
+    const details = await run(baseCtx(), { domain_action: 'make_primary', domain: 'example.com' })
+    expect(domainCalls.map((c) => c.fn)).toEqual(['list', 'make_primary'])
+    expect(details.ok).toBe(true)
+    expect(details.note).toMatch(/canonical address/)
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('remove detaches the domain when it is asked for', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: true, status: 200,
+      data: { enabled: true, domains: [SAMPLE_DOMAIN('example.com')] },
+    })
+    const details = await run(baseCtx(), { domain_action: 'remove', domain: 'example.com' })
+    expect(domainCalls.map((c) => c.fn)).toEqual(['list', 'remove'])
+    expect(details.ok).toBe(true)
+    expect(details.removed).toEqual(['d1'])
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('not_published tells the agent to publish first', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: false, status: 404, code: 'not_published', error: 'This project has not been published yet.',
+    })
+    const details = await run(baseCtx(), { domain_action: 'list' })
+    expect(details.ok).toBe(false)
+    expect(details.code).toBe('not_published')
+    expect(details.error).toMatch(/publish it to a subdomain first/i)
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('not_enabled is reported as such', async () => {
+    listCustomDomainsImpl = async () => ({ ok: true, status: 200, data: { enabled: false, domains: [] } })
+    const details = await run(baseCtx(), { domain_action: 'list' })
+    expect(details.ok).toBe(false)
+    expect(details.code).toBe('not_enabled')
+  })
+
+  test('maps invalid_hostname / hostname_taken / cloud_signin_required', async () => {
+    addCustomDomainImpl = async () => ({ ok: false, status: 400, code: 'invalid_hostname', error: 'Enter a valid domain.' })
+    let details = await run(baseCtx(), { domain_action: 'add', domain: 'not a domain' })
+    expect(details.code).toBe('invalid_hostname')
+    expect(details.error).toMatch(/example\.com or app\.example\.com/)
+
+    addCustomDomainImpl = async () => ({ ok: false, status: 409, code: 'hostname_taken', error: 'This domain is already in use' })
+    details = await run(baseCtx(), { domain_action: 'add', domain: 'taken.com' })
+    expect(details.code).toBe('hostname_taken')
+    expect(details.error).toMatch(/do not retry/i)
+
+    addCustomDomainImpl = async () => ({ ok: false, status: 401, code: 'cloud_signin_required', error: 'Sign in to Shogo Cloud.' })
+    details = await run(baseCtx(), { domain_action: 'add', domain: 'example.com' })
+    expect(details.code).toBe('cloud_signin_required')
+    expect(details.error).toMatch(/connect Shogo Cloud/i)
+  })
+
+  test('an unknown hostname for verify reports domain_not_found with the current list', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: true, status: 200,
+      data: { enabled: true, domains: [SAMPLE_DOMAIN('example.com')] },
+    })
+    const details = await run(baseCtx(), { domain_action: 'verify', domain: 'nope.test' })
+    expect(details.code).toBe('domain_not_found')
+    expect(details.domains[0].hostname).toBe('example.com')
+    expect(domainCalls.map((c) => c.fn)).toEqual(['list'])
+  })
+
+  test('a successful publish reports existing custom domains', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: true, status: 200,
+      data: {
+        enabled: true,
+        domains: [SAMPLE_DOMAIN('example.com', { status: 'active', stage: 'active' })],
+      },
+    })
+    const details = await run(baseCtx(), { subdomain: 'my-site' })
+    expect(details.ok).toBe(true)
+    expect(details.customDomains).toEqual([
+      { hostname: 'example.com', status: 'active', primary: true, redirectsTo: null },
+    ])
+    expect(details.customDomainHint).toBeNull()
+  })
+
+  test('a publish with no custom domains hints at domain_action: "add"', async () => {
+    const details = await run(baseCtx(), { subdomain: 'my-site' })
+    expect(details.customDomains).toEqual([])
+    expect(details.customDomainHint).toMatch(/domain_action: "add"/)
+  })
+
+  test('the description tells the agent never to stand up another host', () => {
+    const description = publishTool(baseCtx()).description
+    expect(description).toMatch(/Custom domain/i)
+    expect(description).toMatch(/NEVER stand up another host/i)
+  })
 })
