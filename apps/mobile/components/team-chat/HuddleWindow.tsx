@@ -53,6 +53,7 @@ import { HuddleStageView, PersonTile, type TileActions } from './HuddleStageView
 import { HuddleVideo } from './HuddleVideo'
 import { closePictureInPicture, HuddlePip, useAutoPictureInPicture, usePictureInPicture } from './HuddlePip'
 import { UserAvatar } from './UserAvatar'
+import { openConversationTarget } from '../../lib/team-chat-nav'
 
 export const MINI_WIDTH = 320
 export const MINI_HEIGHT = 200
@@ -283,7 +284,7 @@ export function HuddlePanel() {
             onPress={() =>
               host
                 ? host.showApp(`/c/${chatConversationId}`)
-                : router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: chatConversationId } } as any)
+                : openConversationTarget(router, { conversationId: chatConversationId })
             }
           >
             <MessageSquare size={15} className="text-foreground" />

@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { resolve } from 'node:path'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
+import { createReactNativeMock } from '../../../../test/react-native-mock'
 import * as lucideStub from '../../../../test/stubs/lucide-react-native'
 
 const mobile = resolve(import.meta.dir, '../../../..')
@@ -23,6 +24,43 @@ const mobile = resolve(import.meta.dir, '../../../..')
 let params: Record<string, string | undefined> = {}
 const pushes: Array<{ pathname: string; params: Record<string, unknown> }> = []
 const setParamsCalls: Array<Record<string, unknown>> = []
+
+// The shared mock forwards props to the DOM, but `onPress` is not a DOM
+// handler — a shim that wires it to onClick is what makes a tap testable.
+mock.module('react-native', () =>
+  createReactNativeMock({
+    Pressable: (({
+      accessibilityLabel,
+      accessibilityRole,
+      children,
+      onPress,
+      disabled,
+      testID,
+      ...props
+    }: {
+      accessibilityLabel?: string
+      accessibilityRole?: string
+      children?: unknown
+      onPress?: () => void
+      disabled?: boolean
+      testID?: string
+    }) =>
+      createElement(
+        'button',
+        {
+          ...props,
+          role: accessibilityRole,
+          'aria-label': accessibilityLabel,
+          'data-testid': testID,
+          disabled,
+          onClick: () => {
+            if (!disabled) onPress?.()
+          },
+        },
+        children as never,
+      )) as never,
+  }),
+)
 
 const conversation = {
   id: 'c1',
@@ -165,18 +203,24 @@ mock.module(resolve(mobile, 'components/layout/PhoneChromeOverlay'), () => ({
   usePhoneChromeOverlay: () => ({ overlay: false, bottom: 0 }),
 }))
 
-mock.module(resolve(mobile, 'components/team-chat/TimelinePane'), () => ({
-  // The timeline offers the reply that opens B; the thread pane stands in for
-  // whichever thread is open.
-  TimelinePane: (props: { threadRootId?: string | null; onOpenThread?: (message: unknown) => void }) =>
-    createElement(
-      'div',
-      { 'data-testid': props.threadRootId ? 'thread-pane' : 'main-pane', 'data-thread': props.threadRootId ?? '' },
-      props.onOpenThread
-        ? createElement('button', { onClick: () => props.onOpenThread!({ id: 'B', threadRootId: null }) }, 'reply-in-thread')
-        : null,
-    ),
-}))
+mock.module(resolve(mobile, 'components/team-chat/TimelinePane'), () => {
+  const { MessageQuoteCard } = require(resolve(mobile, 'components/team-chat/MessageQuoteCard')) as typeof import('../../../../components/team-chat/MessageQuoteCard')
+  return {
+    // The timeline offers the reply that opens B; the open thread shows a quote
+    // card pointing at B, which is the click that stacked the screens.
+    TimelinePane: (props: { threadRootId?: string | null; onOpenThread?: (message: unknown) => void }) =>
+      createElement(
+        'div',
+        { 'data-testid': props.threadRootId ? 'thread-pane' : 'main-pane', 'data-thread': props.threadRootId ?? '' },
+        props.onOpenThread
+          ? createElement('button', { onClick: () => props.onOpenThread!({ id: 'B', threadRootId: null }) }, 'reply-in-thread')
+          : createElement(MessageQuoteCard, {
+              names: {},
+              quote: { href: 'https://studio.shogo.ai/c/c1?msg=m-1&thread=B', target: { conversationId: 'c1', messageId: 'm-1', threadRootId: 'B' } },
+            }),
+      ),
+  }
+})
 
 const { default: ConversationScreen } = await import('../[conversationId]')
 
@@ -190,6 +234,21 @@ describe('one thread at a time', () => {
     setParamsCalls.length = 0
   })
   afterEach(() => cleanup())
+
+  test('a quote card inside the open thread swaps it out: no new screen, B on screen', async () => {
+    const { rerender } = render(createElement(ConversationScreen))
+    await screen.findByText('Ana Lopez')
+    expect(threadShown()).toEqual(['A'])
+
+    fireEvent.click(screen.getByTestId('message-quote'))
+    rerender(createElement(ConversationScreen))
+
+    // Nothing pushed — the nav stack did not grow — and the pane is B.
+    expect(pushes).toEqual([])
+    expect(setParamsCalls.at(-1)).toMatchObject({ thread: 'B' })
+    expect(threadPanes()).toHaveLength(1)
+    expect(threadShown()).toEqual(['B'])
+  })
 
   test('a reply in the open thread swaps that thread out instead of stacking', async () => {
     render(createElement(ConversationScreen))
