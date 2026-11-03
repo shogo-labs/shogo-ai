@@ -83,11 +83,10 @@ mock.module('@shogo-ai/sdk/ai-client', () => ({
 // exercise the real catalog (and chat-usage-tracker.test.ts which only
 // needed a non-empty cost row to not crash inside closeSession).
 
-// The real subpath is imported and spread into the mocks that mirror an SDK
-// module: a hand-listed subset breaks every consumer the moment the module
-// grows a symbol (`encodeTurnCompleteFrame`, SHO-291). Spreading is safe here —
-// `conditions = ["development"]` resolves these to source, not the unbuilt dist.
-const realStreamBuffer = await import('@shogo-ai/sdk/stream-buffer')
+// Do NOT eagerly import a module and then spread it into its own mock: the
+// eager import makes bun's mock shadow deeper paths than the one you named (it
+// swallowed `packages/shared-runtime/src/*` and `packages/core/src/*` for other
+// tests — SHO-291 round 6). Add the symbols a bigger import graph needs instead.
 mock.module('@shogo-ai/sdk/stream-buffer', () => {
   class StreamBufferWriter { write() {} close() {} }
   class StreamBufferStore {
@@ -98,18 +97,20 @@ mock.module('@shogo-ai/sdk/stream-buffer', () => {
     getSnapshot() { return null }
   }
   return {
-    ...realStreamBuffer,
     StreamBufferStore,
     StreamBufferWriter,
     createBufferingTransform: () => ({}),
     TurnStatus: { Active: 'active', Complete: 'complete', Error: 'error' },
     TurnTerminal: { Normal: 'normal' },
+    // Re-exported by `packages/shared-runtime/src/stream-buffer.ts`, so anything
+    // that pulls in the shared-runtime barrel names it (SHO-291).
+    TURN_COMPLETE_EVENT_TYPE: 'turn_complete',
+    encodeTurnCompleteFrame: (payload: any) =>
+      `data: ${JSON.stringify({ type: 'turn_complete', ...payload })}\n\n`,
   }
 })
 
-const realTechStacks = await import('@shogo-ai/sdk/tech-stack-registry')
 mock.module('@shogo-ai/sdk/tech-stack-registry', () => ({
-  ...realTechStacks,
   TechStackRegistry: class { detect() { return null } },
   TECH_STACK_REGISTRY: {},
   getTechStack: (_dir?: string) => null,
@@ -118,6 +119,12 @@ mock.module('@shogo-ai/sdk/tech-stack-registry', () => ({
   isMobileTechStack: (_stack?: any) => false,
   usesMetroBundler: (_stack?: any) => false,
   stackSeedsItself: (_stack?: any) => false,
+  // Re-exported by `packages/shared-runtime/src/tech-stack-registry.ts`. Kept
+  // out of the shared-runtime barrel mock on purpose: `instance-sizes.test.ts`
+  // imports this module directly and needs the real registry values.
+  isDockerTechStack: (stack?: any) => stack === 'docker-compose',
+  getMinimumInstanceSize: (stack?: any) => (stack === 'docker-compose' ? 'large' : null),
+  getDeclaredPorts: (_stack?: any) => [],
 }))
 
 mock.module('@shogo-ai/sdk/cli/pkg', () => ({
@@ -161,14 +168,12 @@ mock.module('@shogo-ai/sdk/email/server', () => ({
 //
 // A hand-maintained mirror of that export union always drifts (SHO-291: the
 // agent-loop import graph needed TECH_STACK_REGISTRY, and adding it only moved
-// the failure to createLogger). So the real barrel is loaded first and spread
-// into the mock below: every real export exists, and only the deliberate
-// overrides win. Importing it here is safe — the `@shogo-ai/sdk/*` subpaths it
-// re-exports are mocked above, and `conditions = ["development"]` resolves them
-// to source rather than the unbuilt dist/.
-const realSharedRuntime = await import('@shogo/shared-runtime')
+// the failure to createLogger). Do NOT spread the real barrel here instead:
+// eagerly importing it makes bun's mock cover the deep
+// `packages/shared-runtime/src/*` imports that several tests use deliberately as
+// the escape hatch (qa-sho212 loads s3-sync "by path (a specifier the preload
+// does not mock)"). The agent-loop symbols it needs are added explicitly below.
 mock.module('@shogo/shared-runtime', () => ({
-  ...realSharedRuntime,
   RUNTIME_CONFIG: {
     apiPort: 4000,
     runtimePort: 5000,
@@ -228,6 +233,32 @@ mock.module('@shogo/shared-runtime', () => ({
     listProjectArchives: async () => [],
   }),
   isMacOSJunkName: (_name: string) => false,
+  // Symbols the `@shogo/agent-runtime/src/agent-loop` graph names on the barrel.
+  // apps/api routes never needed them, so the mirror above never had them — a
+  // missing name is a hard SyntaxError at module load, not a runtime no-op
+  // (SHO-291). Keep this list to what an import actually names.
+  TECH_STACK_REGISTRY: {},
+  createLogger: (_opts?: any) => {
+    const noop = () => {}
+    const logger: any = { debug: noop, info: noop, warn: noop, error: noop, trace: noop, fatal: noop, child: () => logger }
+    return logger
+  },
+  isBinaryFilePath: (filePath: string) => {
+    const ext = (filePath.split('.').pop() || '').toLowerCase()
+    return [
+      'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif',
+      'pdf', 'zip', 'gz', 'tar', 'mp4', 'mov', 'webm', 'm4v', 'mp3', 'wav',
+      'woff', 'woff2', 'ttf', 'otf', 'eot',
+    ].includes(ext)
+  },
+  StreamBufferStore: class { write(_chunk: any) {} read() { return '' } clear() {} get length() { return 0 } getTurns() { return [] } },
+  TURN_COMPLETE_EVENT_TYPE: 'turn_complete',
+  encodeTurnCompleteFrame: (payload: any) =>
+    `data: ${JSON.stringify({ type: 'turn_complete', ...payload })}\n\n`,
+  wrapSseStreamWithKeepalive: (stream: any) => stream,
+  traceOperation: (_name: any, fn?: any) => (typeof fn === 'function' ? fn() : undefined),
+  sendMessageJSON: (_msg?: any) => {},
+  createRuntimeApp: () => ({ routes: [] }),
   // publish.ts uses these for static asset response headers (added by the
   // titles/uploads/cache-headers change). Mirror the real, trivial
   // implementations in packages/shared-runtime/src/{static-asset-cache,file-types}.ts
