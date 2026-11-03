@@ -20,7 +20,7 @@ FROM oven/bun:1.4.4-alpine
 WORKDIR /app
 
 # Install system dependencies
-RUN apk add --no-cache curl bash git
+RUN apk add --no-cache curl bash git ffmpeg
 
 # Copy workspace root files
 COPY package.json bun.lock ./
