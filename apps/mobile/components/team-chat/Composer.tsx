@@ -26,7 +26,7 @@ import { PHONE_DENSITY } from '../../lib/phone-density'
 import type { Mentionables } from '../../lib/team-chat-api'
 import { teamChatApi } from '../../lib/team-chat-api'
 import { sendTyping } from '../../lib/team-chat-connection'
-import { bytesPart, localFilePart, type UploadPart } from '../../lib/upload-part'
+import { composerUploadSource } from '../../lib/composer-upload-source'
 import { useVoiceNoteRecorder } from '../../lib/use-voice-note'
 import { RecordingBar } from './RecordingBar'
 import {
@@ -262,7 +262,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           try {
             const uploaded = await Promise.all(
               files.map(async (f) =>
-                api.upload(conversationId, await uploadable(f), {
+                api.upload(conversationId, await composerUploadSource(f, Platform.OS === 'web'), {
                   durationMs: f.durationMs ?? null,
                   peaks: f.peaks ?? null,
                 }),
@@ -492,19 +492,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     </View>
   )
 })
-
-/** Composer attachments are data URLs; the upload endpoint takes a file. */
-async function uploadable(file: FileAttachment): Promise<File | UploadPart> {
-  const type = file.type || 'application/octet-stream'
-  // A voice note recorded on a phone is already a file on disk; streaming it
-  // avoids base64ing a few megabytes through the JS thread.
-  if (file.uri && Platform.OS !== 'web') return localFilePart(file.uri, file.name, type)
-  const base64 = file.dataUrl.slice(file.dataUrl.indexOf(',') + 1)
-  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
-  if (Platform.OS === 'web') return new File([bytes], file.name, { type })
-  // Native fetch (expo/fetch) can't encode RN's `{ uri }` parts; hand it the bytes.
-  return bytesPart(bytes, file.name, type)
-}
 
 function formatWhen(iso: string): string {
   const d = new Date(iso)
