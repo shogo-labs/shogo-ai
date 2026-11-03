@@ -317,6 +317,52 @@ Slack-backed team chat. For the first day, also watch for `WATCHDOG_SKIP`
 lines and disabled subscriptions on `conversation_*` / `chat_*` tables in both
 regions.
 
+## Migration fails with P1002 (advisory lock timeout)
+
+**Signature** — `Run Prisma migrations` on a region (EU today) fails with:
+
+```
+Error: P1002
+Context: Timed out trying to acquire a postgres advisory lock
+(SELECT pg_advisory_lock(72707369)). Timeout: 10000ms.
+```
+
+**What it is** — two migrators on the *same regional database*, not a US/EU
+race: each region has its own platform-pg (DDL does not replicate), and
+`deploy-eu` already waits for `deploy-us`. In a region deploy,
+`Apply Kubernetes manifests` boots the new api revision, whose entrypoint runs
+`prisma migrate deploy` (`SKIP_MIGRATIONS=false`); seconds later
+`run-prisma-migrations.sh` submits its Job. Prisma serialises migrators with
+an advisory lock and the loser gives up after 10 s. The winner applies every
+migration, so nothing is wrong with the schema (v2.4.7, 2026-10-31: the EU
+Job lost to the api pods; run 41180569722).
+
+**Handled automatically since SHO-275** — the Job runs
+[`.github/scripts/lib/prisma-migrate-retry.sh`](../../.github/scripts/lib/prisma-migrate-retry.sh),
+which retries P1002 with backoff (5 → 60 s, 8 attempts, ~5 min, inside the
+Job's 900 s deadline) and fails immediately on any other error. You should see
+`[migrate] another migrator holds the advisory lock (P1002); retry …` and then
+success in the step log.
+
+**If it still fails** (lock held for 5+ minutes — a migration genuinely
+running that long, or a stuck session):
+
+```bash
+# who holds Prisma's lock on the region's primary
+kubectl exec -n shogo-production-system <pg-primary> -c postgres -- \
+  psql -U postgres -d shogo -c "SELECT l.pid, a.state, a.query_start, a.query
+    FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+    WHERE l.locktype = 'advisory' AND l.objid = 72707369;"
+# confirm migrations are applied (no row with finished_at NULL)
+kubectl exec -n shogo-production-system <pg-primary> -c postgres -- \
+  psql -U postgres -d shogo -c "SELECT migration_name, finished_at
+    FROM _prisma_migrations ORDER BY started_at DESC LIMIT 5;"
+```
+
+Once the holder has finished, re-run only the failed region:
+`gh run rerun <run-id> --failed -R shogo-labs/shogo-ai`. Do not
+`migrate resolve` anything for a P1002 — no migration was recorded as failed.
+
 ## Scale back
 
 Only needed if you temporarily raised the floor above its declared value.
