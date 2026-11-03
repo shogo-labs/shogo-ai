@@ -68,6 +68,23 @@ interface LiveChat {
 }
 
 /**
+ * Count `POST …/sessions` on one page. A full load must open the chat in the
+ * URL, so any of these after the first load means the landing minted a new
+ * empty chat instead. It has to be attached per page: a second tab is a
+ * different `Page`, and a counter on tab 1 can never see its requests.
+ */
+function countSessionPosts(page: Page): () => number {
+  let posts = 0
+  page.on("request", (req) => {
+    if (req.method() !== "POST") return
+    if (/\/api\/(workspaces|projects)\/[^/]+\/sessions(\?|$)/.test(new URL(req.url()).pathname)) {
+      posts++
+    }
+  })
+  return () => posts
+}
+
+/**
  * Sign in, land on `/`, send a real ~45 s turn and wait until its first line is
  * on screen (the turn is running and the chat has a session in the URL).
  */
@@ -89,14 +106,11 @@ async function startLiveTurn(page: Page, testName: string): Promise<LiveChat> {
     .toBeTruthy()
   const sessionId = new URL(page.url()).searchParams.get("chatSessionId")!
 
-  let sessionPosts = 0
   const consoleLines: string[] = []
-  page.on("request", (req) => {
-    if (req.method() !== "POST") return
-    if (/\/api\/(workspaces|projects)\/[^/]+\/sessions(\?|$)/.test(new URL(req.url()).pathname)) {
-      sessionPosts++
-    }
-  })
+  // Attached before the send: the landing's own `POST …/sessions` happens
+  // earlier, when the chat first opens (§ above), so what this sees is a
+  // *second* session being created.
+  const postsAfterSend = countSessionPosts(page)
   page.on("console", (msg) => {
     const text = msg.text()
     if (/\[AutoResume\]|\[ChatPanel\]/.test(text)) consoleLines.push(text.slice(0, 400))
@@ -120,7 +134,7 @@ async function startLiveTurn(page: Page, testName: string): Promise<LiveChat> {
     })
     .toBeGreaterThanOrEqual(1)
 
-  return { sessionId, run, sessionPosts: () => sessionPosts, consoleLines: () => consoleLines }
+  return { sessionId, run, sessionPosts: postsAfterSend, consoleLines: () => consoleLines }
 }
 
 /**
@@ -175,11 +189,14 @@ test.describe("a running workspace chat across a full page load", () => {
     const chat = await startLiveTurn(page, "tab")
 
     const other = await page.context().newPage()
+    // Counted on the new tab's own page — a counter on tab 1 cannot see it.
+    const otherSessionPosts = countSessionPosts(other)
     await other.goto(`/?chatSessionId=${chat.sessionId}`)
     await expectRunningChatReopened(other, chat)
 
     // A full load must open the chat in the URL, not mint a new empty one.
-    expect(chat.sessionPosts(), "a second tab created a chat session").toBe(0)
+    expect(otherSessionPosts(), "a second tab created a chat session").toBe(0)
+    expect(chat.sessionPosts(), "the first tab created a chat session").toBe(0)
     expectQuietTurn(chat)
     await other.close()
   })

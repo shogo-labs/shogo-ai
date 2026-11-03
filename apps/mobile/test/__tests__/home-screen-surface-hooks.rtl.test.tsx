@@ -17,7 +17,7 @@
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { render, screen } from '@testing-library/react'
-import { createElement } from 'react'
+import { createElement, useEffect } from 'react'
 import { createReactNativeMock } from '../react-native-mock'
 
 const state = {
@@ -25,6 +25,9 @@ const state = {
   kind: 'team' as string | null,
   resolved: true,
 }
+
+/** Mounts of the mocked agent chat — see the mock below. */
+const chatMounts = { count: 0 }
 
 const View = 'div'
 const passthrough = (testID?: string) =>
@@ -137,7 +140,15 @@ mock.module('../../components/chat/ChatInput', () => ({
   ChatInput: ({ inputTestID }: { inputTestID?: string }) => passthrough(inputTestID ?? 'chat-input')(),
 }))
 mock.module('../../components/workspace/WorkspaceAgentChatScreen', () => ({
-  WorkspaceAgentChatScreen: passthrough('workspace-agent-chat'),
+  // Counts real mounts (one effect run per mount), not renders: the screen is
+  // keyed by workspace, so a key change tears it down and mounts it again —
+  // which aborts whatever turn it was streaming (SHO-300).
+  WorkspaceAgentChatScreen: () => {
+    useEffect(() => {
+      chatMounts.count += 1
+    }, [])
+    return createElement('div', { 'data-testid': 'workspace-agent-chat' })
+  },
 }))
 mock.module('../../components/home/MobileHomeFeed', () => ({
   MobileHomeFeed: passthrough('mobile-home-feed'),
@@ -244,5 +255,20 @@ describe('the home screen across surfaces', () => {
 
     render(createElement(HomeScreen, { explicitHome: true }))
     expect(shim('home-chrome-skeleton')).toBeTruthy()
+  })
+
+  // SHO-300: the agent chat is keyed by its workspace, so a key that changes
+  // after the first commit tears the screen down and mounts it again — which
+  // aborts the turn it was streaming (`BodyStreamBuffer was aborted`). The key
+  // is filled by an effect, so a first load must not mount on the placeholder
+  // and re-key a tick later. This is the no-cached-workspace-kind case: the
+  // collection is already loaded (`isLoading` false) in the same commit that
+  // first reports the workspace.
+  test('a first load mounts the agent chat once, never on a placeholder key', () => {
+    chatMounts.count = 0
+    render(createElement(HomeScreen, {}))
+
+    expect(screen.getByTestId('workspace-agent-chat')).toBeTruthy()
+    expect(chatMounts.count).toBe(1)
   })
 })

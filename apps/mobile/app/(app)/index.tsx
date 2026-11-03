@@ -968,9 +968,14 @@ export const HomeScreen = observer(function HomeScreen({
     // The screen is keyed by workspace so a switch starts a fresh one, but the
     // key must not change from a placeholder to the real id: mounting with the
     // placeholder and re-keying a frame later is what aborted a running turn
-    // (SHO-300). Wait for a workspace while the collection is still loading,
-    // and once it has loaded with none, mount on a stable "none" key.
-    if (!chatScreenWorkspaceId && workspaces?.isLoading) {
+    // (SHO-300). Wait while the collection is still loading, and also while a
+    // workspace is already in view but the key has not caught up yet — that
+    // second case is a first load on a profile with no cached workspace kind,
+    // where the collection lands in the same commit that first reports the
+    // workspace, so `isLoading` is already false and the effect below has not
+    // run. Once the collection has loaded with no workspace at all, mount on a
+    // stable "none" key.
+    if (!chatScreenWorkspaceId && (workspaces?.isLoading || workspaceInViewId)) {
       return (
         <View className="flex-1 bg-background px-4 pt-16" testID="home-chrome-skeleton">
           <WorkspaceChromeSkeletonRows count={4} />
