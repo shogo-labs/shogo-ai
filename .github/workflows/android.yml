@@ -278,10 +278,16 @@ jobs:
             --non-interactive
 
       - name: Upload OTA sourcemaps to Sentry (optional, non-fatal)
-        # Re-bundles the Android JS app with `expo export:embed` (same Metro
-        # invocation EAS uses internally) and uploads the bundle + map to
-        # Sentry under the SHA we baked in above. dist=`android` keeps it
-        # disjoint from the iOS upload at the same SHA.
+        # `eas update` publishes what `expo export` produces — a Hermes
+        # bytecode bundle plus its composed map — so the upload has to come
+        # from that same command. A separate `expo export:embed` re-bundle is
+        # a different artifact (plain JS + packager map, and minified where
+        # the shipped bundle is not), which is why OTA events came back
+        # `js_no_source` (SHO-290). dist=`android` keeps it disjoint from the
+        # iOS upload at the same SHA, and matches the `dist` `Sentry.init`
+        # reports. `--source-maps true` is required for the same reason as the
+        # iOS step: `expo export` writes no map unless asked, and `eas update`
+        # passes the flag to its own export.
         #
         # Non-fatal: a Sentry misconfiguration must not block an OTA roll-out.
         working-directory: apps/mobile
@@ -301,35 +307,43 @@ jobs:
             echo "::notice title=Sentry sourcemap upload (Android OTA)::SENTRY_AUTH_TOKEN secret not configured — skipping."
             exit 0
           fi
-          BUNDLE_DIR="$RUNNER_TEMP/ota-android-bundle"
-          mkdir -p "$BUNDLE_DIR"
-          bunx expo export:embed \
+          BUNDLE_DIR="$RUNNER_TEMP/ota-android-export"
+          rm -rf "$BUNDLE_DIR"
+          bunx expo export \
             --platform android \
-            --dev false \
-            --reset-cache \
-            --bundle-output "$BUNDLE_DIR/index.android.bundle" \
-            --sourcemap-output "$BUNDLE_DIR/index.android.bundle.map" \
-            --assets-dest "$BUNDLE_DIR/assets" \
-            --entry-file index.js
+            --output-dir "$BUNDLE_DIR" \
+            --source-maps true \
+            --clear
           EXPORT_RC=$?
           if [ "$EXPORT_RC" -ne 0 ]; then
-            echo "::warning title=Sentry sourcemap upload (Android OTA)::expo export:embed exited $EXPORT_RC — skipping upload."
+            echo "::warning title=Sentry sourcemap upload (Android OTA)::expo export exited $EXPORT_RC — skipping upload."
+            exit 0
+          fi
+          # `expo export` names the bundle after a content hash, so find the
+          # directory it wrote rather than guessing the file name.
+          JS_DIR=$(find "$BUNDLE_DIR" -type d -path '*_expo/static/js/android' | head -1)
+          if [ -z "$JS_DIR" ]; then
+            echo "::warning title=Sentry sourcemap upload (Android OTA)::no exported JS bundle under $BUNDLE_DIR — skipping upload."
             exit 0
           fi
           SENTRY_CLI="./node_modules/.bin/sentry-cli"
           [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
-          # `--ext bundle --ext map` is required because RN's Android bundle
-          # extension (`.bundle`) isn't part of sentry-cli's default file
-          # filter — without it, inject/upload would silently skip the
+          # `--ext` is required because neither Hermes bytecode (`.hbc`) nor
+          # RN's Android bundle extension (`.bundle`) is part of sentry-cli's
+          # default file filter — without it, upload would silently skip the
           # bundle and only ship the map (and Sentry would refuse to match).
-          $SENTRY_CLI sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" \
-            --ext bundle --ext map "$BUNDLE_DIR"
+          #
+          # No `sourcemaps inject` here: `expo export` already stamps a
+          # matching debug id into both halves, and sentry-cli treats the
+          # `.hbc` as JavaScript — injecting replaces the bytecode with a
+          # 358-byte stub and re-serialises the map with zero mappings, so the
+          # upload resolves nothing (SHO-290). Upload the pair untouched.
           $SENTRY_CLI sourcemaps upload \
             --release "$EXPO_PUBLIC_BUILD_HASH" \
             --dist android \
-            --ext bundle --ext map \
+            --ext hbc --ext bundle --ext js --ext map \
             --strip-prefix "$GITHUB_WORKSPACE" \
-            "$BUNDLE_DIR"
+            "$JS_DIR"
           UPLOAD_RC=$?
           if [ "$UPLOAD_RC" -ne 0 ]; then
             echo "::warning title=Sentry sourcemap upload (Android OTA)::sentry-cli exited $UPLOAD_RC — release continuing without symbolication."
@@ -553,6 +567,11 @@ jobs:
         # in events — see Sentry JAVASCRIPT-REACT-K (Worklets initialization
         # fatal) for an example we couldn't symbolicate without it.
         #
+        # `--minify false` is not optional: the Gradle bundle task sets
+        # `minifyEnabled = !hermesEnabled` (RN 0.86 `TaskConfiguration.kt`),
+        # so with Hermes on the shipped bundle is unminified. A minified
+        # re-bundle produces a map whose positions don't match it (SHO-290).
+        #
         # Non-fatal: same rationale as the iOS dSYM step.
         working-directory: apps/mobile
         env:
@@ -585,6 +604,7 @@ jobs:
           bunx expo export:embed \
             --platform android \
             --dev false \
+            --minify false \
             --reset-cache \
             --bundle-output "$BUNDLE_DIR/index.android.bundle" \
             --sourcemap-output "$BUNDLE_DIR/index.android.bundle.packager.map" \

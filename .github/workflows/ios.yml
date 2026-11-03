@@ -296,12 +296,20 @@ jobs:
             --non-interactive
 
       - name: Upload OTA sourcemaps to Sentry (optional, non-fatal)
-        # Re-bundles the iOS JS app with `expo export:embed` (same Metro
-        # invocation EAS uses internally) so we get an `.jsbundle` + `.map`
-        # pair on disk, then uploads them via sentry-cli with debug-id
-        # injection. The release tag matches `EXPO_PUBLIC_BUILD_HASH`
-        # baked into the OTA bundle above so events from devices that pulled
-        # this update will resolve to symbolicated frames.
+        # `eas update` publishes what `expo export` produces — a Hermes
+        # bytecode bundle plus its composed map — so the upload has to come
+        # from that same command. A separate `expo export:embed` re-bundle is
+        # a different artifact (plain JS + packager map, and minified where
+        # the shipped bundle is not), which is why every OTA event came back
+        # `js_no_source` (SHO-290). The release tag matches
+        # `EXPO_PUBLIC_BUILD_HASH` baked into the OTA bundle above, and the
+        # dist matches the `dist` `Sentry.init` reports, so events from
+        # devices that pulled this update resolve to symbolicated frames.
+        #
+        # `--source-maps true` is not optional: `expo export` writes only the
+        # `.hbc` unless asked, so without it the upload ships a bundle with no
+        # map and OTA events stay `js_no_source`. `eas update` passes the same
+        # flag to its own export, so this matches what the device downloads.
         #
         # Non-fatal: a Sentry misconfiguration must not block an OTA roll-out.
         working-directory: apps/mobile
@@ -321,35 +329,43 @@ jobs:
             echo "::notice title=Sentry sourcemap upload (iOS OTA)::SENTRY_AUTH_TOKEN secret not configured — skipping."
             exit 0
           fi
-          BUNDLE_DIR="$RUNNER_TEMP/ota-ios-bundle"
-          mkdir -p "$BUNDLE_DIR"
-          bunx expo export:embed \
+          BUNDLE_DIR="$RUNNER_TEMP/ota-ios-export"
+          rm -rf "$BUNDLE_DIR"
+          bunx expo export \
             --platform ios \
-            --dev false \
-            --reset-cache \
-            --bundle-output "$BUNDLE_DIR/main.jsbundle" \
-            --sourcemap-output "$BUNDLE_DIR/main.jsbundle.map" \
-            --assets-dest "$BUNDLE_DIR/assets" \
-            --entry-file index.js
+            --output-dir "$BUNDLE_DIR" \
+            --source-maps true \
+            --clear
           EXPORT_RC=$?
           if [ "$EXPORT_RC" -ne 0 ]; then
-            echo "::warning title=Sentry sourcemap upload (iOS OTA)::expo export:embed exited $EXPORT_RC — skipping upload."
+            echo "::warning title=Sentry sourcemap upload (iOS OTA)::expo export exited $EXPORT_RC — skipping upload."
+            exit 0
+          fi
+          # `expo export` names the bundle after a content hash, so find the
+          # directory it wrote rather than guessing the file name.
+          JS_DIR=$(find "$BUNDLE_DIR" -type d -path '*_expo/static/js/ios' | head -1)
+          if [ -z "$JS_DIR" ]; then
+            echo "::warning title=Sentry sourcemap upload (iOS OTA)::no exported JS bundle under $BUNDLE_DIR — skipping upload."
             exit 0
           fi
           SENTRY_CLI="./node_modules/.bin/sentry-cli"
           [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
-          # `--ext jsbundle --ext map` is required because RN's iOS bundle
-          # extension (`.jsbundle`) isn't part of sentry-cli's default file
-          # filter — without it, inject/upload would silently skip the
+          # `--ext` is required because neither Hermes bytecode (`.hbc`) nor
+          # RN's iOS bundle extension (`.jsbundle`) is part of sentry-cli's
+          # default file filter — without it, upload would silently skip the
           # bundle and only ship the map (and Sentry would refuse to match).
-          $SENTRY_CLI sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" \
-            --ext jsbundle --ext map "$BUNDLE_DIR"
+          #
+          # No `sourcemaps inject` here: `expo export` already stamps a
+          # matching debug id into both halves, and sentry-cli treats the
+          # `.hbc` as JavaScript — injecting replaces the 26 MB bytecode with
+          # a 358-byte stub and re-serialises the map with zero mappings, so
+          # the upload resolves nothing (SHO-290). Upload the pair untouched.
           $SENTRY_CLI sourcemaps upload \
             --release "$EXPO_PUBLIC_BUILD_HASH" \
             --dist ios \
-            --ext jsbundle --ext map \
+            --ext hbc --ext jsbundle --ext js --ext map \
             --strip-prefix "$GITHUB_WORKSPACE" \
-            "$BUNDLE_DIR"
+            "$JS_DIR"
           UPLOAD_RC=$?
           if [ "$UPLOAD_RC" -ne 0 ]; then
             echo "::warning title=Sentry sourcemap upload (iOS OTA)::sentry-cli exited $UPLOAD_RC — release continuing without symbolication."
@@ -778,7 +794,15 @@ jobs:
         # Metro config that produced the bundle in the IPA) and upload the
         # resulting bundle + map to Sentry under the same release tag baked
         # into the binary via EXPO_PUBLIC_BUILD_HASH. dist=`ios` keeps it
-        # disjoint from the Android upload at the same SHA.
+        # disjoint from the Android upload at the same SHA, and matches the
+        # `dist` `Sentry.init` reports.
+        #
+        # `--minify false` is not optional: Xcode's "Bundle React Native code
+        # and images" phase passes it whenever Hermes is on
+        # (`react-native-xcode.sh`), so the shipped bundle is unminified. A
+        # minified re-bundle produces a map whose positions are off by
+        # hundreds of thousands of lines, which is why events stayed
+        # `js_no_source` (SHO-290).
         #
         # Non-fatal for the same reason as the dSYM step.
         working-directory: apps/mobile
@@ -802,6 +826,7 @@ jobs:
           bunx expo export:embed \
             --platform ios \
             --dev false \
+            --minify false \
             --reset-cache \
             --bundle-output "$BUNDLE_DIR/main.jsbundle" \
             --sourcemap-output "$BUNDLE_DIR/main.jsbundle.map" \
