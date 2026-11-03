@@ -15,6 +15,10 @@
  * chooser. A unit test can assert `.click()` was called; only the browser can
  * say the chooser opened.
  *
+ * All three rows are checked in ONE test on ONE page load: the phone lane runs
+ * at ~26 of its 30 minutes, so a test per row (x2 projects) costs more than the
+ * lane can spare.
+ *
  *   E2E_LOCAL_START_STACK=1 npx playwright test --config e2e/local/playwright.config.ts phone-composer-attach
  */
 import { expect, test, type Page } from "@playwright/test"
@@ -66,28 +70,16 @@ async function stubProjectRuntime(page: Page) {
   )
 }
 
-async function prepare(page: Page) {
-  // Expo's web dev server paints an `#error-toast` above the app that swallows
-  // taps (SHO-222); the production bundle does not have it.
-  await ignoreDevErrorToast(page)
-  await stubProjectRuntime(page)
-  await signIn(page)
-  await page.evaluate((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
-  }, workspaceId)
-}
-
 function composer(page: Page) {
   return page.getByRole("textbox", { name: "Chat message input" }).first()
 }
 
-/** Open the phone "+" sheet and return the row for one attach action. */
+/** Open the phone "+" sheet and wait for its rows. */
 async function openPlusSheet(page: Page) {
-  await composer(page).waitFor({ state: "visible", timeout: 120_000 })
   await page.getByTestId("project-composer-plus").first().click()
-  const row = page.getByText("Photo library", { exact: true }).first()
-  await expect(row).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText("Photo library", { exact: true }).first()).toBeVisible({
+    timeout: 15_000,
+  })
 }
 
 /**
@@ -102,7 +94,6 @@ async function tapRow(page: Page, label: string) {
 }
 
 test.describe("SHO-283 — phone composer attach rows open a real chooser", () => {
-  test.describe.configure({ mode: "serial" })
   test.use({ viewport: { width: 390, height: 844 } })
 
   test.beforeAll(async ({ browser }) => {
@@ -156,17 +147,26 @@ test.describe("SHO-283 — phone composer attach rows open a real chooser", () =
     await page.close()
   })
 
-  test("Photo library opens an image chooser and the pick attaches", async ({ page }) => {
-    await prepare(page)
+  test("every attach row opens a chooser with the right accept/capture, and a pick attaches", async ({
+    page,
+  }) => {
+    await ignoreDevErrorToast(page)
+    await stubProjectRuntime(page)
+    await signIn(page)
+    await page.evaluate((id) => {
+      localStorage.setItem("shogo:active-workspace-id", id)
+      localStorage.setItem("shogo:active-workspace-kind", "team")
+    }, workspaceId)
+
     await page.goto(`/projects/${projectId}`)
+    await composer(page).waitFor({ state: "visible", timeout: 120_000 })
+
+    // Photo library — an image chooser, no camera capture, and the pick lands.
     await openPlusSheet(page)
-
-    const chooser = await tapRow(page, "Photo library")
-    const input = chooser.element()
-    expect(await input.getAttribute("accept")).toBe("image/*")
-    expect(await input.getAttribute("capture")).toBeNull()
-
-    await chooser.setFiles({
+    const library = await tapRow(page, "Photo library")
+    expect(await library.element().getAttribute("accept")).toBe("image/*")
+    expect(await library.element().getAttribute("capture")).toBeNull()
+    await library.setFiles({
       name: "qa-photo.png",
       mimeType: "image/png",
       buffer: Buffer.from(
@@ -174,41 +174,28 @@ test.describe("SHO-283 — phone composer attach rows open a real chooser", () =
         "base64",
       ),
     })
+    await expect(page.getByRole("button", { name: "Preview image qa-photo.png" })).toBeVisible({
+      timeout: 30_000,
+    })
 
-    await expect(
-      page.getByRole("button", { name: "Preview image qa-photo.png" }),
-    ).toBeVisible({ timeout: 30_000 })
-  })
-
-  test("Browse files opens a file chooser with no accept filter", async ({ page }) => {
-    await prepare(page)
-    await page.goto(`/projects/${projectId}`)
+    // Browse files — no accept filter, no capture, and the file lands.
     await openPlusSheet(page)
-
-    const chooser = await tapRow(page, "Browse files")
-    const input = chooser.element()
-    expect(await input.getAttribute("accept")).toBeNull()
-    expect(await input.getAttribute("capture")).toBeNull()
-
-    await chooser.setFiles({
+    const browse = await tapRow(page, "Browse files")
+    expect(await browse.element().getAttribute("accept")).toBeNull()
+    expect(await browse.element().getAttribute("capture")).toBeNull()
+    await browse.setFiles({
       name: "qa-notes.txt",
       mimeType: "text/plain",
       buffer: Buffer.from("SHO-283 attach proof\n"),
     })
-
     await expect(page.getByText("qa-notes.txt", { exact: true }).first()).toBeVisible({
       timeout: 30_000,
     })
-  })
 
-  test("Take photo asks for the camera", async ({ page }) => {
-    await prepare(page)
-    await page.goto(`/projects/${projectId}`)
+    // Take photo — the camera, not the library.
     await openPlusSheet(page)
-
-    const chooser = await tapRow(page, "Take photo")
-    const input = chooser.element()
-    expect(await input.getAttribute("accept")).toBe("image/*")
-    expect(await input.getAttribute("capture")).toBe("environment")
+    const camera = await tapRow(page, "Take photo")
+    expect(await camera.element().getAttribute("accept")).toBe("image/*")
+    expect(await camera.element().getAttribute("capture")).toBe("environment")
   })
 })
