@@ -2,15 +2,20 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { ActivityIndicator, Platform, View } from 'react-native'
-import { Redirect } from 'expo-router'
+import { Redirect, useLocalSearchParams } from 'expo-router'
 import { useAuth } from '../contexts/auth'
 import { usePlatformConfig } from '../lib/platform-config'
 import { API_URL } from '../lib/api'
 import { autoSignInLocally } from '../lib/auth-client'
+import { appRedirectHref } from '../lib/root-redirect'
 
 export default function RootIndex() {
   const { isAuthenticated, isLoading: authLoading, refreshSession } = useAuth()
   const platformConfig = usePlatformConfig()
+  // `/` is the front door for every full page load, and the query string is
+  // part of the destination: `?chatSessionId=X` is how the workspace agent chat
+  // makes a reload, a second tab or Back reopen the running chat (SHO-300).
+  const rootParams = useLocalSearchParams()
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean | null>(null)
   const [checkingOnboarding, setCheckingOnboarding] = useState(false)
   const [autoSigningIn, setAutoSigningIn] = useState(false)
@@ -75,7 +80,7 @@ export default function RootIndex() {
     if (!isIdeEmbed && platformConfig.localMode && platformConfig.needsSetup) {
       return <Redirect href="/(admin)" />
     }
-    return <Redirect href="/(app)" />
+    return <Redirect href={appRedirectHref(rootParams)} />
   }
 
   if (platformConfig.localMode) {
