@@ -64,6 +64,13 @@ async function openMachineWorkspace(page: Page): Promise<void> {
   await account.click()
   const row = page.getByTestId(`workspace-row:cloud:${state.machineWorkspaceId}`)
   await expect(row, "the machine's workspace is offered in the switcher").toBeVisible({ timeout: 60_000 })
+  // SHO-285: a hosted workspace is a normal cloud row, and its host is named on
+  // that row instead of in an in-chat "Running on …" banner (there is no active
+  // instance to connect to any more).
+  await expect(
+    page.getByTestId(`workspace-row-host:cloud:${state.machineWorkspaceId}`),
+    "the row names the desktop that hosts it",
+  ).toContainText(/Host: /, { timeout: 60_000 })
   await row.click()
   await expect(page.getByRole("button", { name: `${state.machineWorkspaceName}, workspace menu` })).toBeVisible({
     timeout: 60_000,
@@ -142,7 +149,6 @@ test("a chat turn from the cloud runs on the machine and reads the machine's dis
   // Tokens before the tool call fold into "Worked for …"; the reply after it is
   // the last segment, ending at token n.
   await expect(page.getByText(token(tag, 5), { exact: false }).first()).toBeVisible({ timeout: 120_000 })
-  await expect(page.getByText(/Running on /).first()).toBeVisible()
   const asked = await (await page.request.get(`/__stack/llm?tag=${tag}`)).json()
   expect(asked[0]?.toolCalled).toBe("read_file")
   expect(asked.some((r: { toolResults?: string }) => String(r.toolResults ?? "").includes(canary))).toBe(true)
