@@ -104,6 +104,13 @@ Sentry.init({
   dsn: sentryDsn,
   environment: telemetryEnvFor(getActiveEnvKey(), getRuntimeAppEnv()),
   release: process.env.EXPO_PUBLIC_BUILD_HASH || "dev",
+  // Sentry matches an event to its uploaded source maps by release + dist.
+  // Left unset, the native SDK reports the binary's build number
+  // (CFBundleVersion / versionCode), which never equals the `--dist ios` /
+  // `--dist android` the CI uploads with — so every JS event came back
+  // `js_no_source` with raw `main.jsbundle:<line>` frames (SHO-290). Pin it to
+  // the platform, the same value both the IPA and the OTA uploads use.
+  dist: Platform.OS === "web" ? undefined : Platform.OS,
   tracesSampleRate: 0.2,
   enabled: !!sentryDsn,
   // Web symbolication fix. `@sentry/react-native` installs a `RewriteFrames`
