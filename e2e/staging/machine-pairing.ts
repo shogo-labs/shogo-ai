@@ -267,22 +267,38 @@ export async function pairMachine(cloudBase: string, opts: PairMachineOptions): 
     throw new Error(`the cloud never listed machine "${instanceName}":\n${log.join("").slice(-2000)}`)
   }
 
-  // The machine's *team* workspace: its personal one is seeded with the same
-  // name as the cloud's ("Local User Personal"), so it cannot prove identity.
-  const offered: Array<{ id: string; name: string; kind?: string }> = machine.snapshot?.workspaces ?? []
-  const teamWorkspace = offered.find((w) => w.kind !== "personal")
-  if (!teamWorkspace) {
+  // The machine's *team* workspace. Since SHO-285 it is a normal cloud
+  // workspace whose `hostInstanceId` is this machine — the same id on both
+  // sides — so the cloud's own `GET /workspaces` names it. (The heartbeat
+  // snapshot on `/api/machines` is a minute stale and still lists the desktop's
+  // pre-pairing ids, which no longer exist.)
+  const machineWorkspaceName = `${instanceName} Workspace`
+  let machineWorkspace: { id: string; name: string } | null = null
+  const hostedDeadline = Date.now() + (opts.listTimeoutMs ?? 120_000)
+  while (Date.now() < hostedDeadline) {
+    const res = await call(cloudBase, state, "GET", "/api/workspaces")
+    const rows: Array<{ id: string; name: string; kind?: string; hostInstanceId?: string | null }> =
+      res.json?.items ?? res.json?.workspaces ?? []
+    const hosted = rows.find((w) => w.hostInstanceId === machine.id && w.kind !== "personal")
+    if (hosted) {
+      machineWorkspace = { id: hosted.id, name: hosted.name }
+      break
+    }
+    await sleep(1000)
+  }
+  if (!machineWorkspace) {
     await stop()
-    throw new Error(`machine "${instanceName}" offered no team workspace: ${JSON.stringify(offered)}`)
+    throw new Error(
+      `the cloud never listed a workspace hosted on "${instanceName}":\n${log.join("").slice(-2000)}`,
+    )
   }
 
   // Rename it to something no cloud workspace could be called. Without this the
   // fixture lies: a seeded workspace is named after the cloud account, so a
   // header assertion would pass against the *cloud* workspace of the same name
-  // (QA hit exactly this). The rename also proves a change made on the machine
-  // reaches the cloud's snapshot.
-  const machineWorkspaceName = `${instanceName} Workspace`
-  const renamed = await call(localApiBase, local, "PATCH", `/api/workspaces/${teamWorkspace.id}`, {
+  // (QA hit exactly this). The rename is a cloud write — the workspace is a
+  // cloud row whose compute is the desktop (SHO-285) — and it syncs down.
+  const renamed = await call(cloudBase, state, "PATCH", `/api/workspaces/${machineWorkspace.id}`, {
     name: machineWorkspaceName,
   })
   if (renamed.status >= 400) {
@@ -290,33 +306,54 @@ export async function pairMachine(cloudBase: string, opts: PairMachineOptions): 
     throw new Error(`could not rename the machine's workspace (${renamed.status}): ${renamed.text.slice(0, 300)}`)
   }
 
-  let machineWorkspace = { id: teamWorkspace.id, name: teamWorkspace.name }
+  let renamedTo = machineWorkspace.name
   for (let i = 0; i < 20; i++) {
-    // The switcher's own read: one relay of the machine's live list. The cached
-    // heartbeat snapshot on `/api/machines` only refreshes once a minute, so
-    // waiting on it measured the heartbeat, not the rename.
-    const res = await call(cloudBase, state, "GET", `/api/machines/${encodeURIComponent(machine.id)}/workspaces`)
-    const ws = (res.json?.workspaces ?? []).find((w: any) => w.id === teamWorkspace.id)
+    const res = await call(cloudBase, state, "GET", "/api/workspaces")
+    const rows: Array<{ id: string; name: string }> = res.json?.items ?? res.json?.workspaces ?? []
+    const ws = rows.find((w) => w.id === machineWorkspace!.id)
     if (ws?.name === machineWorkspaceName) {
-      machineWorkspace = { id: ws.id, name: ws.name }
+      renamedTo = ws.name
       break
     }
     await sleep(3000)
   }
-  if (machineWorkspace.name !== machineWorkspaceName) {
+  if (renamedTo !== machineWorkspaceName) {
     await stop()
     throw new Error(
-      `the cloud never showed the machine workspace rename "${machineWorkspaceName}" (still "${machineWorkspace.name}")`,
+      `the cloud never showed the machine workspace rename "${machineWorkspaceName}" (still "${renamedTo}")`,
     )
+  }
+
+  // A second, genuinely cloud workspace, for the negative control: a paired
+  // desktop's workspace *is* the account's team workspace, so the only other
+  // workspace the account has is its personal one (a free account cannot make a
+  // third).
+  const cloudOnly = await call(cloudBase, state, "GET", "/api/workspaces")
+  const cloudOnlyRows: Array<{ id: string; name: string; kind?: string }> =
+    cloudOnly.json?.items ?? cloudOnly.json?.workspaces ?? []
+  const personal = cloudOnlyRows.find((w) => w.kind === "personal")
+  if (!personal) {
+    await stop()
+    throw new Error(`the account has no personal workspace to compare against: ${cloudOnly.text.slice(0, 300)}`)
+  }
+  // Team chat defaults to off on a personal workspace (`defaultChatMode`), and
+  // the parity seed writes a channel into this one so the two workspaces can be
+  // told apart by their content. Turn it on; it is the control, not a subject.
+  const chatOn = await call(cloudBase, state, "PATCH", `/api/workspaces/${encodeURIComponent(personal.id)}/chat-mode`, {
+    mode: "native",
+  })
+  if (chatOn.status >= 400) {
+    await stop()
+    throw new Error(`could not enable team chat on the control workspace (${chatOn.status}): ${chatOn.text.slice(0, 300)}`)
   }
 
   return {
     machineId: machine.id,
     machineName: instanceName,
     machineWorkspaceId: machineWorkspace.id,
-    machineWorkspaceName: machineWorkspace.name,
-    cloudWorkspaceId: cloud.id,
-    cloudWorkspaceName: cloud.name,
+    machineWorkspaceName,
+    cloudWorkspaceId: personal.id,
+    cloudWorkspaceName: personal.name,
     localApiBase,
     email,
     password,

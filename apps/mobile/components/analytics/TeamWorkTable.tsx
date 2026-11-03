@@ -19,7 +19,6 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { api } from '../../lib/api'
-import { useUsageLogCsvMachine } from '../../lib/usage-log-csv'
 import { exportMemberMessages } from '../../lib/member-messages-export'
 import {
   compactNumber,
@@ -121,7 +120,6 @@ export function TeamWorkTable({
   onSelectMember?: (userId: string, label: string) => void
 }) {
   const http = useDomainHttp()
-  const machine = useUsageLogCsvMachine()
   const [period, setPeriod] = useState<EngagementPeriod>('7d')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'approvals', dir: 'desc' })
   const [state, setState] = useState<{ data: TeamWork | null; loading: boolean; error: string | null }>({
@@ -154,7 +152,7 @@ export function TeamWorkTable({
 
   // "What did this person send?" — the records behind their row, as a CSV.
   const exportMessages = (userId: string) =>
-    exportMemberMessages({ workspaceId, userId, period, machine })
+    exportMemberMessages({ workspaceId, userId, period })
 
   if (locked) {
     return (

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Which models leave the machine, and which never do.
+ * Which models are synced between a desktop and the cloud, and which never are.
  *
- * The desktop is the single writer of its own database; the cloud keeps a copy
- * of the rows a Studio panel can read (SHO-185). That copy is only acceptable
+ * A hosted workspace's rows live in both databases and sync both ways
+ * (SHO-185, SHO-285). That copy is only acceptable
  * because of this file: every model is classified here, `mirror` or `never`,
  * and `machine-sync.test.ts` fails when the schema grows a model nobody
  * classified. A new model therefore cannot silently leak to the cloud, and
@@ -20,7 +20,7 @@
  */
 
 /**
- * Models copied from the desktop to the cloud, and read by the cloud.
+ * Models synced both ways for a hosted workspace.
  *
  * Declared parents first: this list *is* the order a snapshot is sent in. A
  * packaged desktop has no `schema.prisma` to work an order out from, and a child
@@ -56,10 +56,14 @@ export const MIRROR_MODELS: readonly string[] = [
   'BackgroundTask',
   'Plan',
 
-  // ── Goals and schedules (the desktop runs them; the cloud only shows them) ──
+  // ── Goals and schedules (the desktop runs them; either side edits them) ──
   'Goal',
   'GoalEvent',
   'AgentSchedule',
+  // Triggers are workspace agent config like a schedule: the cloud's event bus
+  // dispatches them (WorkspaceEvent/EventDelivery stay cloud-only), so it can
+  // only fire what its own database holds (SHO-285).
+  'EventSubscription',
   'AgentTask',
 
   // ── Team chat ──
@@ -186,7 +190,6 @@ const NEVER_CLOUD_PLATFORM = [
   'Instance', // the cloud's machine registry
   'SignupRiskAssessment', // the cloud's signup anti-abuse record
   'RemoteAction', // the cloud's audit trail
-  'EventSubscription', // cloud event bus
   'EventDelivery',
   'WorkspaceEvent',
   'CustomDomain', // DNS is issued by the cloud
@@ -236,6 +239,7 @@ const NEVER_MACHINE_LOCAL = [
   'MachineSyncState',
   'MachineMirrorRow',
   'MachineSyncChange',
+  'HostSyncChange', // the cloud's change feed for hosted workspaces (SHO-285)
   // A move is a job on the machine that started it: its cursors and id map
   // describe bytes in flight between two instances, and mean nothing elsewhere.
   'WorkspaceMove',
@@ -321,10 +325,15 @@ export const REWRITES: Readonly<
    */
   'Workspace.slug': (row, ctx) => {
     const slug = typeof row.slug === 'string' && row.slug ? row.slug : 'workspace'
-    return `${slug}-m-${ctx.instanceId.slice(0, 8)}`
+    const suffix = `-m-${ctx.instanceId.slice(0, 8)}`
+    // Rows round-trip now (SHO-285): a slug that came down already suffixed
+    // keeps one suffix.
+    return slug.endsWith(suffix) ? slug : `${slug}${suffix}`
   },
-  /** The tag itself: what makes every guard on the cloud treat this as a copy. */
-  'Workspace.machineInstanceId': (_row, ctx) => ctx.instanceId,
+  /** The host (SHO-285): its compute is this desktop, and cloud workers skip it. */
+  'Workspace.hostInstanceId': (_row, ctx) => ctx.instanceId,
+  /** The retired read-only copy marker. */
+  'Workspace.machineInstanceId': () => null,
   /** The copy lives in the region that received it, not the desktop's idea of one. */
   'Workspace.homeRegion': (_row, ctx) => ctx.homeRegion,
   /** A local user must never be able to sign in with a cloud session. */
@@ -332,12 +341,27 @@ export const REWRITES: Readonly<
   /** Machine projects are not published by the cloud; keep the unique column empty. */
   'Project.publishedSubdomain': () => null,
   /**
+   * A Composio trigger is registered against the cloud's Composio account, so
+   * only the cloud may hold its id — a desktop copy would collide with it.
+   */
+  'EventSubscription.composioTriggerId': () => null,
+  /**
    * The huddle's guest join secret. The call runs on the machine that started
    * it, so a copy on the cloud could only ever admit somebody to a call that is
    * not there — and a join secret is not something the copy should hold. The
    * machine keeps minting the real link.
    */
   'Huddle.linkToken': () => null,
+}
+
+/**
+ * Fields the cloud rewrote on the way in. The change feed back down to the
+ * desktop leaves them out, so the desktop keeps its own values (SHO-285).
+ */
+export function rewrittenFields(model: string): string[] {
+  return Object.keys(REWRITES)
+    .filter((key) => key.split('.')[0] === model)
+    .map((key) => key.split('.')[1])
 }
 
 /** Apply the rewrites for one model to one row. */

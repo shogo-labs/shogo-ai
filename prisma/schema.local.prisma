@@ -165,12 +165,18 @@ model Workspace {
   // for the maximum the plan (or local mode) allows. An admin can lower it; the
   // plan value is the ceiling in the cloud (see `agent-reply-capacity.ts`).
   agentReplyConcurrency Int?
-  // Set when this workspace is a copy of a paired desktop's workspace: the
-  // machine's id. The cloud holds the records (copied into the normal tables
-  // with their desktop ids), serves reads from them, and refuses its own writes
-  // to them — see `lib/machine-workspace.ts`. Null means a normal cloud
-  // workspace. Added to both schemas; the desktop leaves it null.
+  // Deprecated (SHO-285): the read-only "machine copy" marker. Always null
+  // after the 20261102120000 migration; kept one release so pods still running
+  // the previous build can read the table during a rolling deploy.
   machineInstanceId String?
+  // The paired desktop that hosts this workspace (SHO-285, the metal model).
+  // A hosted workspace is a normal workspace: same id on both sides, rows in
+  // both databases synced both ways, every route reads and writes it. Only its
+  // compute is elsewhere: agent turns run on the desktop through the instance
+  // tunnel (`resolveWorkspaceRuntimeUrl`'s host-tunnel branch), and cloud
+  // background workers skip it (`CLOUD_HOSTED_WORKSPACE_ONLY`) because the
+  // desktop runs its schedules, heartbeats and triggers. Null = cloud compute.
+  hostInstanceId String?
   // Set when this workspace was moved to another one (desktop <-> cloud). The
   // source is kept, shows a "Moved to <target>" banner and has its schedules and
   // triggers disabled; `movedToWorkspaceId` points at the copy that took over.
@@ -236,6 +242,7 @@ model Workspace {
 
   @@index([parentWorkspaceId])
   @@index([machineInstanceId])
+  @@index([hostInstanceId])
   @@map("workspaces")
 }
 
@@ -2196,7 +2203,7 @@ model ModelDefinition {
   enabled          Boolean @default(true)
   sortOrder        Int?
   aliases          String? // JSON-encoded string[] of alias ids
-  capabilities     String? // JSON-encoded { subagentOrchestration?: ..., supportsAudioInput?: boolean }
+  capabilities     String? // JSON-encoded { subagentOrchestration?: ..., supportsAudioInput?: boolean, supportsVideoInput?: boolean }
 
   // User-facing picker metadata.
   description     String? // Short blurb shown in the model picker info panel.
@@ -4596,6 +4603,25 @@ model MachineMirrorRow {
 
 /// The desktop's own change log. SQLite triggers write here, the pusher reads
 /// it and advances `MachineSyncState.cursor` as the cloud acks.
+/// The cloud's change feed for hosted workspaces (SHO-285): one row per write
+/// the cloud made to a synced row of a workspace a desktop hosts. The desktop
+/// pulls it by cursor (`GET /api/machines/:id/changes`) and applies the rows
+/// last-writer-wins. The desktop never writes it (its own feed is
+/// `MachineSyncChange`); the model is in both schemas so they stay one model.
+model HostSyncChange {
+  id          Int      @id @default(autoincrement())
+  workspaceId String
+  model       String
+  recordId    String
+  /// "upsert" | "delete"
+  op          String
+  createdAt   DateTime @default(now())
+
+  @@index([workspaceId, id])
+  @@index([createdAt])
+  @@map("host_sync_changes")
+}
+
 model MachineSyncChange {
   seq       Int      @id @default(autoincrement())
   model     String

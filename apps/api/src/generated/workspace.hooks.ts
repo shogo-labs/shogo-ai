@@ -159,19 +159,16 @@ export const workspaceHooks: WorkspaceHooks = {
     // Workspace-scoped memberships only: project guests reach their projects
     // through "Shared with me", not the workspace list.
     //
-    // A machine copy is excluded too: the owner is a member of that workspace so
-    // the normal read routes serve it, but the switcher lists it once, under the
-    // machine it runs on (`GET /machines`), not as a cloud workspace (SHO-185).
-    // An explicit `?machineInstanceId=<id>` still lists that machine's copies,
-    // which is how Settings → Remote control shows what a machine has synced.
+    // A workspace hosted on a paired desktop is listed like any other
+    // (SHO-285): it is a normal workspace whose compute is the desktop, and the
+    // switcher badges it from `hostInstanceId`. `?hostInstanceId=<id>` narrows
+    // the list to one machine's workspaces (Settings → Remote control).
     return {
       ok: true,
       data: {
         where: {
           members: { some: { userId: requestedUserId || currentUserId, projectId: null } },
-          ...(ctx.query.machineInstanceId
-            ? { machineInstanceId: String(ctx.query.machineInstanceId) }
-            : { machineInstanceId: null }),
+          ...(ctx.query.hostInstanceId ? { hostInstanceId: String(ctx.query.hostInstanceId) } : {}),
         },
       },
     }

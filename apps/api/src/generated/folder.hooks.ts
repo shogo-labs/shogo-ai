@@ -9,7 +9,6 @@
 
 import type { Principal } from "../lib/authz"
 import { hookAuthorize, hookRequire } from "../lib/authz/hooks"
-import { resolveTunnelWorkspaceId } from "../lib/tunnel-workspace"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -72,13 +71,7 @@ export const folderHooks: FolderHooks = {
       }
     }
 
-    let workspaceId = ctx.query.workspaceId
-
-    // Remap a cloud workspaceId to a local one for tunnel-authenticated
-    // requests, keeping a machine workspace id this desktop already knows.
-    if (ctx.tunnelAuthenticated && workspaceId) {
-      workspaceId = await resolveTunnelWorkspaceId(ctx.prisma, workspaceId)
-    }
+    const workspaceId = ctx.query.workspaceId
 
     if (workspaceId) {
       if (!ctx.tunnelAuthenticated) {
@@ -164,12 +157,6 @@ export const folderHooks: FolderHooks = {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
-    }
-
-    // Remap a cloud workspaceId to a local one for tunnel-authenticated
-    // requests, keeping a machine workspace id this desktop already knows.
-    if (ctx.tunnelAuthenticated) {
-      input.workspaceId = await resolveTunnelWorkspaceId(ctx.prisma, input.workspaceId)
     }
 
     const workspaceId = input.workspaceId

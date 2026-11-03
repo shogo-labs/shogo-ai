@@ -28,24 +28,6 @@ import {
   createRemoteAwareHttpClient,
   type RemoteInterceptorConfig,
 } from '../services/remote-http-interceptor'
-import { machineWorkspaceState } from '../services/machine-workspace-state'
-
-/**
- * The interceptor reports every machine-workspace outcome here, and this is the
- * only place that decides what it means: a null report is a request that came
- * back (so the machine is up), anything else goes through the classifier, which
- * ignores ordinary errors.
- */
-function withMachineStateReporting(config: RemoteInterceptorConfig): RemoteInterceptorConfig {
-  return {
-    ...config,
-    onMachineState: (error) => {
-      if (error === null) machineWorkspaceState.markOk()
-      else machineWorkspaceState.report(error)
-    },
-  }
-}
-
 let moduleRawHttpClient: HttpClient | null = null
 let moduleProxiedHttpClient: HttpClient | null = null
 let moduleRemoteConfigRef: { current: RemoteInterceptorConfig } | null = null
@@ -121,7 +103,7 @@ function getOrCreateStore(
   // goes through the interceptor and routes to desktop when connected.
   moduleProxiedHttpClient = createRemoteAwareHttpClient(
     moduleRawHttpClient,
-    () => withMachineStateReporting(moduleRemoteConfigRef!.current),
+    () => moduleRemoteConfigRef!.current,
   )
 
   const env: ISDKEnvironment = {
@@ -196,13 +178,6 @@ export interface SDKDomainProviderProps {
    */
   remoteProxyBaseUrl?: string | null
   /**
-   * The desktop's own workspace id, when `remoteProxyBaseUrl` targets a
-   * machine workspace (`/api/machines/<id>/w/<localWorkspaceId>`). Lets the
-   * interceptor swap the cloud `workspaceId` on a request for the machine's
-   * id — the two live in different databases.
-   */
-  machineWorkspaceId?: string | null
-  /**
    * Called when a remote-routed request fails (e.g. desktop disconnected).
    * Can be used to show a toast or auto-disconnect.
    */
@@ -216,7 +191,6 @@ export function SDKDomainProvider({
   credentials,
   getAuthCookie,
   remoteProxyBaseUrl,
-  machineWorkspaceId,
   onRemoteError,
   children,
 }: SDKDomainProviderProps) {
@@ -234,7 +208,6 @@ export function SDKDomainProvider({
   // collection actions (getEnv(self).http).
   const remoteConfigRef = useRef<RemoteInterceptorConfig>({
     remoteProxyBaseUrl: remoteProxyBaseUrl ?? null,
-    machineWorkspaceId: machineWorkspaceId ?? null,
   })
 
   const handleRemoteError = useCallback(
@@ -250,7 +223,6 @@ export function SDKDomainProvider({
   // Update the ref whenever the remote config changes
   remoteConfigRef.current = {
     remoteProxyBaseUrl: remoteProxyBaseUrl ?? null,
-    machineWorkspaceId: machineWorkspaceId ?? null,
     protocolVersion: 3,     // matches TUNNEL_PROTOCOL_VERSION
     syncVersion: 1,         // sync event schema version
     clientVersion: '0.1.0',

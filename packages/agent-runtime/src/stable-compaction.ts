@@ -58,7 +58,7 @@ import { applyToolResultBudget, snipConsumedResults } from './session-manager.js
 import { microcompact } from './microcompact.js'
 import { protectedStart } from './turn-boundary.js'
 import { scrubOversizedImages } from './image-size-guard.js'
-import { getDynamicModel } from '@shogo/model-catalog'
+import { getDynamicModel, modelSupportsVideoInput } from '@shogo/model-catalog'
 
 // ---------------------------------------------------------------------------
 // State
@@ -374,8 +374,14 @@ export function createStableLoopTransform(model?: string): (messages: Message[])
   const window = (model && getDynamicModel(model)?.contextWindow) || DEFAULT_CONTEXT_WINDOW_TOKENS
   const budgetTokens = resolveInLoopContextBudgetTokens(window - CONTEXT_RESERVE_TOKENS)
   const state = createContentReplacementState()
+  // A video is only legitimate history when the model can watch it; otherwise
+  // the guard swaps it for a placeholder instead of re-sending dead bytes.
+  const allowVideo = model ? modelSupportsVideoInput(model) : false
   return (messages) =>
-    scrubOversizedImages(stableTransformContext(messages, state, budgetTokens * 4, { budgetTokens }).messages)
+    scrubOversizedImages(
+      stableTransformContext(messages, state, budgetTokens * 4, { budgetTokens }).messages,
+      { allowVideo },
+    )
 }
 
 // ---------------------------------------------------------------------------

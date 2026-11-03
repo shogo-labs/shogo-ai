@@ -186,9 +186,6 @@ import {
   isTokenGatedThumbnailPath,
 } from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
-import { machineWorkspaceWriteGuard } from './lib/machine-workspace'
-import { machineCopyIdentity } from './lib/machine-identity'
-import { machineCopyPendingGuard } from './lib/machine-copy-pending'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
 
@@ -851,22 +848,6 @@ app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion({ skip: isPro
 // HOME_REGION_ROUTING=shadow|enforce. Registered after requireProjectAccess so
 // project routes have already cached c.get('workspaceId').
 app.use('/api/*', homeRegionWriteProxy)
-
-// A workspace whose rows live on a paired desktop is read-only here: the desktop
-// is its only writer, so a cloud write that names one is refused with
-// `409 machine_workspace_write_via_tunnel` instead of silently diverging from
-// the machine the user is looking at (SHO-185).
-app.use('/api/*', machineWorkspaceWriteGuard())
-
-// A read of a machine workspace the cloud has no copy of yet answered "No access
-// to this workspace", which the client could not act on. It now answers
-// `409 machine_copy_pending` and the client retries through the relay (SHO-241).
-// Registered as a post-response hook, so a request that succeeds pays nothing.
-app.use('/api/*', machineCopyPendingGuard())
-
-// The copy's rows know the machine's owner by their id on the machine, not their
-// cloud account: read it as that account for them, and answer in their cloud id.
-app.use('/api/*', machineCopyIdentity())
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
@@ -9107,6 +9088,16 @@ app.route('/api', costAnalyticsRoutes())
 // Composio integration routes for managed OAuth (connect/disconnect/status)
 app.route('/api', integrationRoutes())
 
+// A hosted workspace's runtime (SHO-285): loopback-only, per-process secret.
+// `resolveWorkspaceRuntimeUrl` hands this URL out for a workspace a paired
+// desktop hosts, and requests to it ride the instance tunnel to that desktop.
+if (!LOCAL_MODE) {
+  app.all('/api/internal/host-tunnel/*', async (c) => {
+    const { handleHostTunnel } = await import('./lib/host-tunnel')
+    return handleHostTunnel(c)
+  })
+}
+
 // Internal routes for cluster-internal pod communication (not exposed externally)
 app.route('/api/internal', internalRoutes)
 
@@ -10174,7 +10165,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
       const workspaces = await prisma.workspace.findMany({
         // A machine workspace's runtime is on the desktop (SHO-185): warming it
         // here would spawn a runtime for a workspace this process cannot serve.
-        where: { machineInstanceId: null },
+        where: { hostInstanceId: null },
         orderBy: { updatedAt: 'desc' },
         take,
         select: { id: true },

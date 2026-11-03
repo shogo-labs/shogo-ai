@@ -291,8 +291,12 @@ export const auth = betterAuth({
       updatedAt: "updatedAt",
     },
     expiresIn: 60 * 60 * 24 * 30,
+    // Off on the desktop: pairing rewrites the local user's id to the cloud
+    // account's (SHO-285, `adoptCloudIdentity`), and a cached cookie would keep
+    // the old id — and 403 every membership check — for up to its maxAge. The
+    // lookup it saves is one local SQLite read.
     cookieCache: {
-      enabled: true,
+      enabled: !isLocalMode,
       maxAge: 120,
     },
   },

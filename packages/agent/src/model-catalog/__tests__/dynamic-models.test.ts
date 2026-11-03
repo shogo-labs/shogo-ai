@@ -6,6 +6,7 @@ import {
   getDynamicModel,
   getMaxOutputTokens,
   inferProviderFromModel,
+  modelSupportsVideoInput,
   parseDynamicModelsEnv,
   registerDynamicModels,
   rememberProviderHint,
@@ -79,5 +80,26 @@ describe('parseDynamicModelsEnv', () => {
     expect(parseDynamicModelsEnv(undefined)).toEqual([])
     expect(parseDynamicModelsEnv('{not json')).toEqual([])
     expect(parseDynamicModelsEnv('{"id":"x"}')).toEqual([])
+  })
+
+  it('carries supportsVideoInput through to the registry', () => {
+    const raw = JSON.stringify([
+      { id: 'glm-uuid', provider: 'custom', apiModel: 'z-ai/glm-5.3-flash', supportsVideoInput: true },
+      { id: 'text-uuid', provider: 'anthropic', apiModel: 'claude-sonnet-5' },
+    ])
+    const parsed = parseDynamicModelsEnv(raw)
+    expect(parsed[0].supportsVideoInput).toBe(true)
+    expect(parsed[1].supportsVideoInput).toBeUndefined()
+
+    registerDynamicModels(parsed)
+    expect(getDynamicModel('glm-uuid')?.supportsVideoInput).toBe(true)
+    expect(modelSupportsVideoInput('glm-uuid')).toBe(true)
+    expect(modelSupportsVideoInput('text-uuid')).toBe(false)
+  })
+
+  it('keeps a previously registered supportsVideoInput when a later hint omits it', () => {
+    registerDynamicModels([{ id: 'glm-uuid', provider: 'custom', supportsVideoInput: true }])
+    rememberProviderHint('glm-uuid', 'custom')
+    expect(getDynamicModel('glm-uuid')?.supportsVideoInput).toBe(true)
   })
 })

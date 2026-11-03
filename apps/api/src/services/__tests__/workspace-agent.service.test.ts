@@ -8,7 +8,7 @@ interface State {
   updateCalls: any[]
   scheduleUpdates: any[]
   /** `Workspace` rows this pod can see, by id — absent means "not copied here yet". */
-  workspaces: Record<string, { id: string; machineInstanceId: string | null }>
+  workspaces: Record<string, { id: string; hostInstanceId: string | null }>
   profiles: Record<string, { id: string; workspaceId: string; name: string }>
   profileUpserts: any[]
 }
@@ -91,7 +91,7 @@ beforeEach(() => {
   }
   s.updateCalls = []
   s.scheduleUpdates = []
-  s.workspaces = { 'workspace-1': { id: 'workspace-1', machineInstanceId: null } }
+  s.workspaces = { 'workspace-1': { id: 'workspace-1', hostInstanceId: null } }
   s.profiles = {}
   s.profileUpserts = []
 })
@@ -192,17 +192,17 @@ describe('getOrCreateAgentProfile', () => {
   it('answers the defaults without inserting when the workspace has no row here yet', async () => {
     const profile = await getOrCreateAgentProfile('ws-not-copied-yet')
     expect(profile).toMatchObject({
-      id: 'machine-copy-ws-not-copied-yet',
+      id: 'unseeded-ws-not-copied-yet',
       workspaceId: 'ws-not-copied-yet',
       name: 'Shogo',
     })
     expect(s.profileUpserts).toHaveLength(0)
   })
 
-  it('never inserts into a machine copy, and still answers the row ingest landed', async () => {
-    s.workspaces['ws-machine'] = { id: 'ws-machine', machineInstanceId: 'inst-1' }
+  it('never inserts into a hosted workspace, and still answers the row the sync landed', async () => {
+    s.workspaces['ws-machine'] = { id: 'ws-machine', hostInstanceId: 'inst-1' }
     const before = await getOrCreateAgentProfile('ws-machine')
-    expect(before).toMatchObject({ id: 'machine-copy-ws-machine', name: 'Shogo' })
+    expect(before).toMatchObject({ id: 'unseeded-ws-machine', name: 'Shogo' })
 
     s.profiles['ws-machine'] = { id: 'desktop-row', workspaceId: 'ws-machine', name: 'Shogo on the desktop' }
     const after = await getOrCreateAgentProfile('ws-machine')
@@ -224,8 +224,8 @@ describe('updateAgentProfile', () => {
     expect(s.profileUpserts).toHaveLength(0)
   })
 
-  it('leaves a machine copy to its desktop', async () => {
-    s.workspaces['ws-machine'] = { id: 'ws-machine', machineInstanceId: 'inst-1' }
+  it('creates nothing in a hosted workspace that has no row yet', async () => {
+    s.workspaces['ws-machine'] = { id: 'ws-machine', hostInstanceId: 'inst-1' }
     await updateAgentProfile('ws-machine', { name: 'Companion' })
     expect(s.profileUpserts).toHaveLength(0)
   })

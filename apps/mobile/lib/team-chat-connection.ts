@@ -10,17 +10,8 @@ import { AppState, Platform } from 'react-native'
 import { createAuthedEventSource } from './authed-event-source'
 import { nativeCookieHeader, realtimeUrls, type TeamChatEvent } from './team-chat-api'
 import { TeamChatConnection, type RealtimeState } from './team-chat-realtime'
-import { useActiveInstance } from '../contexts/active-instance'
-
-type MachineRoute = { instanceId: string; localWorkspaceId: string } | null
 
 const connections = new Map<string, { connection: TeamChatConnection; refs: number; stopPresence: () => void }>()
-
-/** One connection per workspace *and* machine: the same workspace id means two
- *  different event streams when one of them is a paired desktop's own. */
-function connectionKey(workspaceId: string, machine: MachineRoute): string {
-  return machine ? `${workspaceId}::${machine.instanceId}/${machine.localWorkspaceId}` : workspaceId
-}
 
 function createSocket(url: string) {
   if (Platform.OS === 'web') return new WebSocket(url) as any
@@ -59,13 +50,12 @@ function watchPresence(connection: TeamChatConnection): () => void {
 
 export function acquireTeamChatConnection(
   workspaceId: string,
-  machine: MachineRoute = null,
 ): { connection: TeamChatConnection; release: () => void } {
-  const key = connectionKey(workspaceId, machine)
+  const key = workspaceId
   let entry = connections.get(key)
   if (!entry) {
     const connection = new TeamChatConnection({
-      urls: realtimeUrls(workspaceId, machine),
+      urls: realtimeUrls(workspaceId),
       createSocket,
       createEventSource: (url) => createAuthedEventSource(url) as any,
     })
@@ -93,18 +83,11 @@ export function acquireTeamChatConnection(
 
 /** Subscribe to team chat events for a workspace while mounted. */
 export function useTeamChatEvents(workspaceId: string | null | undefined, onEvent: (event: TeamChatEvent) => void): RealtimeState {
-  const { instance } = useActiveInstance()
-  const machineInstanceId = instance?.source === 'machine' ? (instance.instanceId ?? null) : null
-  const machineLocalWorkspaceId = instance?.source === 'machine' ? (instance.localWorkspaceId ?? null) : null
   const [state, setState] = useState<RealtimeState>('closed')
   const onEventRef = useLatest(onEvent)
   useEffect(() => {
     if (!workspaceId) return
-    const machine: MachineRoute =
-      machineInstanceId && machineLocalWorkspaceId
-        ? { instanceId: machineInstanceId, localWorkspaceId: machineLocalWorkspaceId }
-        : null
-    const { connection, release } = acquireTeamChatConnection(workspaceId, machine)
+    const { connection, release } = acquireTeamChatConnection(workspaceId)
     setState(connection.state)
     const offState = connection.onState(setState)
     const offEvents = connection.on((event) => onEventRef.current(event))
@@ -113,7 +96,7 @@ export function useTeamChatEvents(workspaceId: string | null | undefined, onEven
       offState()
       release()
     }
-  }, [workspaceId, machineInstanceId, machineLocalWorkspaceId])
+  }, [workspaceId])
   return state
 }
 

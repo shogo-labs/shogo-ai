@@ -59,11 +59,10 @@ import type { PrimaryNavId, SidebarTabId } from "@shogo/shared-app";
 import { CommandPalette, useCommandPalette } from "../CommandPalette";
 import { useActiveInstance } from "../../../contexts/active-instance";
 import { useWorkspaceInView } from "../../../hooks/useWorkspaceInView";
-import { useMachineWorkspaces } from "../../../hooks/useMachineWorkspaces";
+import { useWorkspaceHosts } from "../../../hooks/useWorkspaceHosts";
 import {
   buildWorkspaceEntries,
   currentWorkspaceKey,
-  machineInstanceForEntry,
   type WorkspaceEntry,
 } from "../../../lib/workspace-entries";
 import { ShogoWordmark } from "../../branding/ShogoWordmark";
@@ -621,25 +620,10 @@ export const AppSidebar = observer(function AppSidebar({
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
   const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } =
     useCommandPalette();
-  const {
-    instance: activeRemoteInstance,
-    setInstance: setActiveInstance,
-    clearInstance,
-  } = useActiveInstance();
-  // The workspaces of every paired computer, listed with the cloud's own rows —
-  // one list, no group (SHO-108).
-  const { machines: machineWorkspaces } = useMachineWorkspaces();
-  // The machine workspace in view, if any — its name and live presence feed
-  // the "Connected to …" strip below. Undefined for a legacy remote-control
-  // instance, which keeps the plain "Controlling:" strip.
-  const activeMachine =
-    activeRemoteInstance?.source === "machine"
-      ? machineWorkspaces.find((m) => m.id === activeRemoteInstance.instanceId)
-      : undefined;
+  const { instance: activeRemoteInstance } = useActiveInstance();
+  // Paired desktops, for the host badge on the workspaces they run (SHO-285).
+  const { hosts: workspaceHosts } = useWorkspaceHosts();
   const workspaceInView = useWorkspaceInView()
-  const activeMachineWorkspace = activeMachine?.workspaces.find(
-    (w) => w.id === activeRemoteInstance?.localWorkspaceId,
-  );
 
   let allWorkspaces: any[];
   try {
@@ -720,19 +704,18 @@ export const AppSidebar = observer(function AppSidebar({
   }, [closeNativeDrawer, isNativeDrawer]);
 
   /**
-   * Every workspace the switcher lists, whoever hosts it (SHO-108): the cloud's
-   * rows in the server's order, then each paired computer's own rows. Built
+   * Every workspace the switcher lists, whoever hosts it (SHO-108, SHO-285):
+   * the cloud's rows in the server's order, hosted ones badged. Built
    * once here so the rail tile, the panel header, the account popover and the
    * phone sheet all read the same list and agree on which row is checked.
    */
   const workspaceEntries = useMemo(
-    () => buildWorkspaceEntries({ workspaces: allWorkspaces, machines: machineWorkspaces }),
-    [allWorkspaces, machineWorkspaces],
+    () => buildWorkspaceEntries({ workspaces: allWorkspaces, hosts: workspaceHosts }),
+    [allWorkspaces, workspaceHosts],
   );
   const activeWorkspaceKey = currentWorkspaceKey({
     entries: workspaceEntries,
     currentWorkspaceId: currentWorkspace?.id,
-    activeInstance: activeRemoteInstance,
   });
 
   /** Joining a workspace from a pending invitation. */
@@ -745,45 +728,16 @@ export const AppSidebar = observer(function AppSidebar({
     [projects, posthog],
   );
 
-  /**
-   * One switch path for both hosts.
-   *
-   * A cloud row switches the selected workspace. A machine row makes that
-   * computer's own workspace the one in view: the desktop is the source of
-   * truth for its projects, chats and tool-call logs, so the domain store is
-   * pointed at that machine's relay. Both then take the *same* landing path a
-   * workspace switch always takes — `reloadAfterWorkspaceSwitch` resets the
-   * route to the workspace agent and refreshes the collections — so a machine
-   * workspace lands exactly where a cloud one does instead of being special-
-   * cased into the projects view.
-   */
+  /** One switch path for every row, hosted or not (SHO-285). */
   const handleSelectWorkspaceEntry = useCallback(
     (entry: WorkspaceEntry) => {
-      const machine = machineInstanceForEntry(entry, currentWorkspace?.id);
-      if (machine) {
-        setActiveInstance(machine);
-        trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED);
-        reloadAfterWorkspaceSwitch();
-        return;
-      }
-
-      // Back to a cloud workspace: drop the machine overlay first, so the store
-      // is not left pointing at a host the user just left.
-      if (activeRemoteInstance?.source === "machine") clearInstance();
       if (entry.id === currentWorkspace?.id) {
         reloadAfterWorkspaceSwitch();
         return;
       }
       handleSwitchWorkspace(entry.id);
     },
-    [
-      activeRemoteInstance,
-      clearInstance,
-      currentWorkspace?.id,
-      handleSwitchWorkspace,
-      posthog,
-      setActiveInstance,
-    ],
+    [currentWorkspace?.id, handleSwitchWorkspace],
   );
 
   const handleCreateWorkspace = useCallback(() => {
@@ -1475,11 +1429,7 @@ export const AppSidebar = observer(function AppSidebar({
               )}
               numberOfLines={1}
             >
-              {activeMachine
-                ? `Connected to ${activeRemoteInstance.name}${
-                    activeMachineWorkspace ? ` · ${activeMachineWorkspace.name}` : ""
-                  } · ${activeMachine.status}`
-                : `Controlling: ${activeRemoteInstance.name}`}
+              {`Controlling: ${activeRemoteInstance.name}`}
             </Text>
           </View>
         </View>

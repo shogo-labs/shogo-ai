@@ -10,7 +10,7 @@ import type { ImageContent, Message, TextContent } from '@mariozechner/pi-ai'
 import { closeSync, openSync, readSync, statSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 import { isBinaryBuffer } from '@shogo/shared-runtime'
-import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guard'
+import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES, MAX_VIDEO_INLINE_BYTES } from './image-size-guard'
 import { userMessage } from './pi-adapter'
 
 const TEXT_MEDIA_TYPES = new Set([
@@ -96,7 +96,19 @@ export interface ParseFileAttachmentsOptions {
    * are unreadable without it and are announced instead of inlined.
    */
   workspaceDir?: string
+  /**
+   * The turn's model accepts video input (`capabilities.supportsVideoInput`).
+   * When false a `video/*` attachment is announced as text instead of being
+   * sent, so its bytes never reach a model that would reject them.
+   */
+  supportsVideo?: boolean
 }
+
+/**
+ * A video attachment travels inline, so it is capped at the largest clip whose
+ * base64 form fits `MAX_VIDEO_INLINE_BASE64_BYTES` in the request.
+ */
+export const MAX_VIDEO_ATTACHMENT_BYTES = MAX_VIDEO_INLINE_BYTES
 
 type PartSource =
   | { kind: 'data'; bytes: Buffer; base64: string }
@@ -239,6 +251,32 @@ export function parseFileAttachments(
       continue
     }
 
+    if (mediaType.startsWith('video/')) {
+      // Only a video-native model can watch it; anything else gets a one-line
+      // notice instead of bytes it would reject.
+      if (!options.supportsVideo) {
+        sections.push(
+          `[Attached Video (${label})]: This model cannot watch video. Switch to a video-native model (e.g. GLM 5.3 Flash) to send it.${savedSuffix}`,
+        )
+        continue
+      }
+      if (byteLength > MAX_VIDEO_ATTACHMENT_BYTES) {
+        sections.push(
+          `[Attached Video (${label})]: Too large to send to the model (${byteLength} bytes, max ${MAX_VIDEO_ATTACHMENT_BYTES}). ` +
+            `Video travels inline in the request, so trim or downscale it first, e.g. \`ffmpeg -i <input> -t 20 -vf scale=-2:480 -an <output>.mp4\`.${savedSuffix}`,
+        )
+        continue
+      }
+      const base64 = source.kind === 'data'
+        ? source.base64
+        : source.read(MAX_VIDEO_ATTACHMENT_BYTES).toString('base64')
+      images.push({ type: 'image', data: base64, mimeType: mediaType })
+      if (fp.savedPath) {
+        sections.push(`[Attached Video (${label})]:${savedSuffix}`)
+      }
+      continue
+    }
+
     const isTextBased =
       mediaType.startsWith('text/') || TEXT_MEDIA_TYPES.has(mediaType)
     const binaryByType = BINARY_DOCUMENT_MEDIA_TYPES.has(mediaType)
@@ -314,6 +352,12 @@ export interface SeedHistoryOptions {
    * behaviour.
    */
   workspaceDir?: string
+  /**
+   * The turn's model accepts video input. Seeded history keeps a video
+   * attachment only when true; otherwise the guard replaces it with a
+   * placeholder, same as the live path.
+   */
+  supportsVideo?: boolean
 }
 
 /** A prior message, pre-parsed so images can be capped across the whole run. */
@@ -401,9 +445,10 @@ export function buildSeededHistoryMessages(
 
     const parsed = parseFileAttachments(parts as FilePart[], {
       workspaceDir: options.workspaceDir,
+      supportsVideo: options.supportsVideo,
     })
     const guarded = parsed.images.length > 0
-      ? enforceImageSizeLimit(parsed.images, { label })
+      ? enforceImageSizeLimit(parsed.images, { label, allowVideo: options.supportsVideo })
       : []
     prepared.push({
       role: 'user',

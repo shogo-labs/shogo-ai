@@ -352,7 +352,7 @@ export async function disableSubscriptionsForConnections(input: {
       source: 'composio',
       enabled: true,
       OR: or,
-      workspace: { machineInstanceId: null },
+      workspace: { hostInstanceId: null },
     },
     select: { id: true, composioTriggerId: true },
   })
@@ -375,7 +375,7 @@ export async function reconcileComposioTriggers(): Promise<{ checked: number; di
   const client = composioTriggersClient()
   if (!client) return { checked: 0, disabled: 0 }
   const homeFilter = homeRegionWorkspaceWhere()
-  const cloudWorkspace = { machineInstanceId: null } as const
+  const cloudWorkspace = { hostInstanceId: null } as const
   const subs: Array<{ id: string; enabled: boolean; composioTriggerId: string }> = await db.eventSubscription.findMany({
     where: {
       source: 'composio',

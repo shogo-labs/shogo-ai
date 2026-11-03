@@ -64,6 +64,11 @@
  *     key, the row stays on
  *     `api.deepseek.com`. Requires `SECRETS_ENCRYPTION_KEY`. DeepSeek direct
  *     still needs `DEEPSEEK_API_KEY` (the fallback, or the only upstream).
+ *   - GLM 5.3 Flash (`z-ai/glm-5.3-flash`) — Z.ai's fast multimodal model on
+ *     the same `OpenRouter` bearer provider. `capabilities.supportsVideoInput`
+ *     is what lets an agent `read_file` an mp4 and comment on it; no provider
+ *     pin, so OpenRouter's video filter picks the cheapest endpoint that
+ *     accepts video. Only seeded when `OPENROUTER_API_KEY` is set.
  *
  * Idempotent — safe to re-run (upserts by `(provider, apiModel)` / by
  * provider label). Re-running refreshes code-owned config (display names,
@@ -736,6 +741,65 @@ async function seedDeepSeek(): Promise<void> {
   console.log(`[seed-db-models] Created Hoshi 2.0 (apiModel=${apiModel})`)
 }
 
+const GLM_FLASH_OPENROUTER_MODEL = 'z-ai/glm-5.3-flash'
+
+/**
+ * GLM 5.3 Flash — Z.ai's fast multimodal model on OpenRouter. It is the first
+ * model in the catalog that accepts **video** input (`video_url` blocks), which
+ * is what lets an agent watch a clip and comment on it. No provider pin: the
+ * OpenRouter video filter drops every endpoint that can't take video, so
+ * `sort: "price"` picks the cheapest one that can.
+ */
+async function seedGlmFlash(): Promise<void> {
+  const openrouterKey = process.env.OPENROUTER_API_KEY
+  if (!openrouterKey) {
+    console.log(
+      '[seed-db-models] OPENROUTER_API_KEY is unset — skipping GLM 5.3 Flash. Add the provider + key from the super-admin "Custom Providers" form instead.',
+    )
+    return
+  }
+  if (!isSecretCryptoConfigured()) {
+    console.log('[seed-db-models] SECRETS_ENCRYPTION_KEY not configured — cannot encrypt provider keys; skipping GLM 5.3 Flash.')
+    return
+  }
+
+  const openrouterProvider = await upsertBearerProvider(
+    'OpenRouter',
+    'https://openrouter.ai/api/v1',
+    openrouterKey,
+  )
+
+  const common = {
+    displayName: 'GLM 5.3 Flash',
+    shortDisplayName: 'GLM 5.3 Flash',
+    tier: 'economy',
+    family: 'other',
+    generation: 'current',
+    maxOutputTokens: 131_072,
+    contextWindow: 1_048_576,
+    enabled: true,
+    aliases: ['glm-5-3-flash'],
+    description: 'Fast multimodal model that can watch video and describe what happens in it.',
+    capabilities: {
+      supportsVideoInput: true,
+      openrouterProvider: { sort: 'price' },
+    },
+    // OpenRouter list prices for z-ai/glm-5.3-flash (per 1M tokens).
+    inputPerMillion: 0.0285,
+    cachedInputPerMillion: 0.0285,
+    cacheWritePerMillion: 0.0285,
+    outputPerMillion: 0.0923,
+    updatedBy: SEED_USER,
+  }
+
+  await upsertModel(
+    { provider: 'custom', apiModel: GLM_FLASH_OPENROUTER_MODEL },
+    { providerId: openrouterProvider.id, sortOrder: 20, ...common },
+    omit(common, ['enabled']),
+  )
+  console.log(`[seed-db-models] Upserted GLM 5.3 Flash (apiModel=${GLM_FLASH_OPENROUTER_MODEL})`)
+}
+
 async function seedGptLive1(): Promise<void> {
   const common = {
     displayName: 'GPT-Live 1',
@@ -774,6 +838,7 @@ export const SEEDERS: Array<[string, () => Promise<void>]> = [
   ['haiku-5-5', seedHaiku55],
   ['mimo', seedMimo],
   ['hoshi-2-0', seedDeepSeek],
+  ['glm-5-3-flash', seedGlmFlash],
   ['gpt-live-1', seedGptLive1],
   ['gpt-6-astra', seedGptAstra],
   ['gpt-6-sol', seedGptSol6],

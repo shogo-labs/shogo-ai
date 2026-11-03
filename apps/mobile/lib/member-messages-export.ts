@@ -7,7 +7,7 @@
  */
 
 import { Linking } from 'react-native'
-import { memberMessagesCsvUrl, type UsageLogCsvMachine } from './usage-log-csv'
+import { memberMessagesCsvUrl } from './usage-log-csv'
 import type { EngagementPeriod } from './engagement-utils'
 
 /**
@@ -20,15 +20,12 @@ export function memberMessagesSince(period: EngagementPeriod, now: Date = new Da
 }
 
 /**
- * Open one person's messages as a CSV, using the same base rules as the usage
- * log: a paired computer's workspace exports from that machine, everything else
- * from this app's API. Returns the URL so a caller (or a test) can see it.
+ * Open one person's messages as a CSV from this app's API. Returns the URL so a caller (or a test) can see it.
  */
 export function exportMemberMessages(input: {
   workspaceId: string
   userId: string
   period: EngagementPeriod
-  machine?: UsageLogCsvMachine | null
   apiUrl?: string
   now?: Date
   /** Defaults to a browser tab on web, the system browser on native. */
@@ -39,7 +36,6 @@ export function exportMemberMessages(input: {
     userId: input.userId,
     params: { since: memberMessagesSince(input.period, input.now) },
     apiUrl: input.apiUrl,
-    machine: input.machine,
   })
   const open = input.open ?? defaultOpen
   open(url)

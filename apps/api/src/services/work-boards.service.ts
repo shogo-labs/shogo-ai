@@ -1105,6 +1105,15 @@ export async function createWorkItem(board: any, input: ItemInput, actor: BoardA
   if (input.assigneeUserId) await assertAssignableUser(board.workspaceId, input.assigneeUserId)
   if (assigneeAgentRef) await assertAssignableAgent(board.workspaceId, assigneeAgentRef)
   const counter = await db.board.update({ where: { id: board.id }, data: { itemCounter: { increment: 1 } }, select: { itemCounter: true, keyPrefix: true } })
+  // A hosted workspace's board is written from two databases (SHO-285): a card
+  // that syncs in from the other side does not advance this copy's
+  // `itemCounter`, so it can fall behind the cards already here and mint a key
+  // that collides. Take the higher of the counter and the cards that exist.
+  const highest = await db.workItem.aggregate({ where: { boardId: board.id }, _max: { number: true } })
+  const number = Math.max(counter.itemCounter, (highest?._max?.number ?? 0) + 1)
+  if (number !== counter.itemCounter) {
+    await db.board.update({ where: { id: board.id }, data: { itemCounter: number } })
+  }
   const now = new Date()
   const item = await db.workItem.create({
     data: {
@@ -1112,8 +1121,8 @@ export async function createWorkItem(board: any, input: ItemInput, actor: BoardA
       boardId: board.id,
       columnId: column.id,
       position: await nextPosition(column.id),
-      key: `${counter.keyPrefix}-${counter.itemCounter}`,
-      number: counter.itemCounter,
+      key: `${counter.keyPrefix}-${number}`,
+      number,
       title,
       description: str(input.description, 20_000) ?? null,
       fields: input.fields && typeof input.fields === 'object' ? input.fields : {},

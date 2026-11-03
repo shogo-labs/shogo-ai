@@ -343,7 +343,10 @@ describe('when the run did hand the card on', () => {
       data: {
         conversationId: card.conversationId,
         workspaceId: seed.workspaceId,
-        seq: 88_002,
+        // Above the 88_001 this test seeds and the 88_002 the reply minted from
+        // it: `postMessage` now takes `max(seq) + 1` (SHO-285), so a fixture
+        // cannot assume it owns the sequence.
+        seq: 88_500,
         threadRootId: card.threadRootMessageId,
         authorType: 'agent',
         authorAgentRef: { projectId: dev, name: 'Dev' },

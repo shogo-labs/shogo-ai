@@ -20,8 +20,12 @@ import { prisma } from '../prisma'
 import { getShogoCloudUrl } from '../cloud-urls'
 import { getInstanceId } from '../instance-tunnel'
 import { MachineSyncPusher } from './pusher'
+import { HostSyncPuller } from './puller'
+import { adoptCloudIdentity, fetchCloudIdentity } from './host-identity'
 
 let pusher: MachineSyncPusher | null = null
+let puller: HostSyncPuller | null = null
+let starting: Promise<void> | null = null
 
 export function getMachineSyncPusher(): MachineSyncPusher | null {
   return pusher
@@ -73,31 +77,78 @@ export async function readMachineSyncStatus(): Promise<MachineSyncStatus | null>
 }
 
 /**
- * Start the pusher. A no-op without a device key: an unpaired desktop has no
- * copy to keep, and asking for one would only log noise.
+ * Start the two-way sync of this desktop's hosted workspaces (SHO-185,
+ * SHO-285). A no-op without a device key: an unpaired desktop hosts nothing.
+ *
+ * Order matters. The desktop's user first becomes the cloud account (one user:
+ * `adoptCloudIdentity`, once), so the first push already names the person by
+ * the cloud id; then the pusher (desktop → cloud) and the puller (cloud →
+ * desktop) start.
  */
 export async function startMachineSync(): Promise<void> {
   if (!process.env.SHOGO_API_KEY) return
-  if (pusher) return
-  pusher = new MachineSyncPusher({
-    prisma,
-    getCloudUrl: () => getShogoCloudUrl(),
-    getApiKey: () => process.env.SHOGO_API_KEY ?? null,
+  if (pusher || starting) return starting ?? undefined
+  const log = (line: string) => console.log(line)
+  starting = (async () => {
     // The instance row is created by the first heartbeat, so this stays null
-    // for the first second or two of a launch; the pusher waits.
-    getInstanceId: () => getInstanceId(),
-    // Without this every line the pusher emitted went nowhere: the desktop's
-    // log is what a support handoff reads, and a sync that had been broken for
-    // four days left no trace in it (SHO-241). The desktop pipes the API
-    // process's stdout into `main.log`.
-    log: (line) => console.log(line),
+    // for the first second or two of a launch.
+    let instanceId: string | null = null
+    for (let attempt = 0; attempt < 120 && !instanceId; attempt++) {
+      instanceId = getInstanceId()
+      if (!instanceId) await new Promise((resolve) => setTimeout(resolve, 1_000))
+    }
+    const apiKey = process.env.SHOGO_API_KEY
+    if (instanceId && apiKey) {
+      const identity = await fetchCloudIdentity({ cloudUrl: getShogoCloudUrl(), apiKey, instanceId })
+      if (identity) {
+        await adoptCloudIdentity(prisma, identity.id, log, { name: identity.name, email: identity.email }).catch((err) => {
+          log(`[HostSync] could not adopt the cloud identity: ${(err as Error)?.message ?? err}`)
+        })
+      } else {
+        log('[HostSync] cloud identity unavailable; syncing under the local user until it answers')
+      }
+    }
+
+    pusher = new MachineSyncPusher({
+      prisma,
+      getCloudUrl: () => getShogoCloudUrl(),
+      getApiKey: () => process.env.SHOGO_API_KEY ?? null,
+      getInstanceId: () => getInstanceId(),
+      // The desktop pipes the API process's stdout into `main.log`, which is
+      // what a support handoff reads (SHO-241).
+      log,
+    })
+    await pusher.start()
+
+    puller = new HostSyncPuller({
+      prisma,
+      getCloudUrl: () => getShogoCloudUrl(),
+      getApiKey: () => process.env.SHOGO_API_KEY ?? null,
+      getInstanceId: () => getInstanceId(),
+      log,
+      // A message sent from the cloud while this desktop was off waits on its
+      // session's queue; it runs here, now (SHO-285).
+      onQueuedTurns: async (sessionIds) => {
+        const { dispatchNext } = await import('../../services/chat-queue-dispatcher.service')
+        for (const sessionId of sessionIds) void dispatchNext(sessionId).catch(() => {})
+      },
+    })
+    puller.start()
+  })().finally(() => {
+    starting = null
   })
-  await pusher.start()
+  return starting
 }
 
 export function stopMachineSync(): void {
   pusher?.stop()
   pusher = null
+  puller?.stop()
+  puller = null
+}
+
+export function getHostSyncPuller(): HostSyncPuller | null {
+  return puller
 }
 
 /**
