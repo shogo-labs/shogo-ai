@@ -27,6 +27,12 @@ export interface UsageRow {
   /** Raw model id from the usage event; the service maps ids to labels. */
   model: string
   costUsd: number
+  /** Provider price (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
 }
 
 export interface ToolRow {
@@ -182,6 +188,12 @@ export interface WorkTotals {
   sessions: number
   tokens: number
   spendUsd: number
+  /** Provider price across the window (the "Model cost" line). */
+  modelCostUsd: number
+  /** What we add on top of the provider price (the "Shogo fee" line). */
+  shogoFeeUsd: number
+  /** Billed with no recorded provider cost (pre-2026-04-24). */
+  unitemizedUsd: number
   activeDays: number
   lastActiveAt: string | null
 }
@@ -520,9 +532,15 @@ export function computeWorkTotals(raw: RawActivity, clock: ZoneClock, window: { 
   const projects = new Set<string>()
   let tokens = 0
   let spendUsd = 0
+  let modelCostUsd = 0
+  let shogoFeeUsd = 0
+  let unitemizedUsd = 0
   for (const u of raw.usage) {
     tokens += u.tokens
     spendUsd += u.costUsd
+    modelCostUsd += u.modelCostUsd
+    shogoFeeUsd += u.shogoFeeUsd
+    unitemizedUsd += u.unitemizedUsd
     if (u.chatSessionId) sessions.add(u.chatSessionId)
     if (u.projectId) projects.add(u.projectId)
   }
@@ -626,6 +644,9 @@ export function computeWorkTotals(raw: RawActivity, clock: ZoneClock, window: { 
     sessions: sessions.size,
     tokens,
     spendUsd: round(spendUsd),
+    modelCostUsd: round(modelCostUsd),
+    shogoFeeUsd: round(shogoFeeUsd),
+    unitemizedUsd: round(unitemizedUsd),
     activeDays: days.size,
     lastActiveAt: last ? new Date(last).toISOString() : null,
   }

@@ -35,6 +35,7 @@ import {
 } from 'lucide-react-native'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { API_URL } from '../../../lib/api'
+import { CostSplitLines } from '../../analytics/SharedAnalytics'
 
 interface VoiceConfigResponse {
   phoneNumber?: string | null
@@ -53,6 +54,13 @@ interface VoiceUsageSummary {
     billedUsdOutbound: number
     billedUsdNumbers: number
     billedUsd: number
+    /** Provider price (the "Model cost" line). */
+    modelCostUsd?: number
+    /** What we add on top of the provider price (the "Shogo fee" line). */
+    shogoFeeUsd?: number
+    /** Billed with no recorded provider cost (pre-2026-04-24). */
+    unitemizedUsd?: number
+    shogoFeePercent?: number
     calls: number
     inboundCalls: number
     outboundCalls: number
@@ -463,6 +471,7 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
             label="Usage billed"
             value={`$${(usage.totals.billedUsd ?? 0).toFixed(4)}`}
           />
+          <CostSplitLines entry={usage.totals} className="mt-1" />
         </View>
       )}
 

@@ -38,10 +38,12 @@ export async function recordLocalTurnUsage(
   if (totalTokens === 0) return { billedUsd: 0, rawUsd: 0, totalTokens: 0 }
 
   const model = turn.usage.model || 'sonnet'
-  const billingModel = proxyModelToBillingModel(model)
-  const { rawUsd, billedUsd: tokenBilledUsd, pricingUnknown } = calculateUsageCost(
+  const { rawUsd, billedUsd: tokenBilledUsd, pricingUnknown, pricedAs } = calculateUsageCost(
     inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens,
   )
+  // Record the model the cost was actually priced as (the real id for a
+  // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
+  const billingModel = pricedAs ?? proxyModelToBillingModel(model)
   const durationMs = turn.openedAt ? Date.now() - turn.openedAt : 0
   const quality = turn.quality ?? {}
   const source = {

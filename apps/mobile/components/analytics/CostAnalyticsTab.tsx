@@ -391,21 +391,19 @@ function SummaryCards({
   return (
     <View className="flex-row flex-wrap gap-2">
       <MiniCard
-        label="Provider Cost"
+        label="Model cost"
         value={formatPartialCost(totalCost, unpricedRuns, totalRuns)}
         icon={icons.DollarSign}
         color="text-orange-400"
         subtitle={unpricedRuns > 0 ? `${formatNumber(unpricedRuns)} runs on models without published rates` : undefined}
       />
-      {shogoFee > 0 && (
-        <MiniCard
-          label={`Shogo Fee (${Math.round((shogoFee / totalCost) * 100)}%)`}
-          value={formatDollarCost(shogoFee)}
-          icon={icons.DollarSign}
-          color="text-orange-400"
-          subtitle={`Total ${formatDollarCost(totalWithFee)}`}
-        />
-      )}
+      <MiniCard
+        label={`Shogo Fee (${totalCost > 0 ? Math.round((shogoFee / totalCost) * 100) : 0}%)`}
+        value={formatDollarCost(shogoFee)}
+        icon={icons.DollarSign}
+        color="text-orange-400"
+        subtitle={`Total ${formatDollarCost(totalWithFee)}`}
+      />
       <MiniCard
         label="Agent Runs"
         value={formatNumber(totalRuns)}

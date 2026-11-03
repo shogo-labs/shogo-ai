@@ -465,7 +465,7 @@ describe('usage-cost DB per-token billing', () => {
   })
 
   test('zero usage yields zero cost even for DB models', () => {
-    expect(calculateUsageCost(0, 0, 'mimo-v2.5')).toEqual({ rawUsd: 0, billedUsd: 0 })
+    expect(calculateUsageCost(0, 0, 'mimo-v2.5')).toEqual({ rawUsd: 0, billedUsd: 0, pricedAs: 'mimo-v2.5' })
   })
 
   test('unknown DB id falls back to the static bucket path', () => {
