@@ -149,6 +149,8 @@ import {
   taskWakeHasResponse,
   type PersistedTail,
 } from "./late-turn-attach"
+import { repaintWhenReplyLands, turnSyncAction } from "./turn-sync"
+import { useTeamChatEvents } from "../../lib/team-chat-connection"
 import {
   lastTurnStartedBackgroundWork,
   NOTIFY_WAKE_MAX_WAIT_MS,
@@ -4614,11 +4616,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * it, so a chat that is already up to date still costs a single `/turn`
    * probe and no transcript reload.
    */
-  const repaintIfBehindPersistedTail = useCallback(async () => {
+  const repaintIfBehindPersistedTail = useCallback(async (): Promise<boolean> => {
     const sessionId = currentSessionIdRef.current
-    if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return
+    if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return false
     const tail = await probePersistedTail(sessionId)
-    if (currentSessionIdRef.current !== sessionId) return
+    if (currentSessionIdRef.current !== sessionId) return false
     if (
       !persistedTailIsUnseen(tail, messagesRef.current, {
         // A reply this window streamed is on screen under the AI SDK's id
@@ -4626,13 +4628,55 @@ const ChatPanelContent = observer(function ChatPanelContent({
         streamedHere: liveReplySessionRef.current === sessionId,
       })
     )
-      return
-    // A repaint that requires the reply keeps SHO-31's rule: another window's
-    // ordinary turn is not this window's to overwrite. A tail that is still a
-    // user row is a prompt answered elsewhere (the queue's `[Task update]`
-    // wake), so paint it and let the late-turn probe fetch the reply.
-    await reloadPersistedResponse({ requireReply: !persistedTailAwaitsReply(tail) })
+      return false
+    // Paint whatever history holds, reply or not (SHO-299). This only runs when
+    // this window is neither streaming nor sending, and `resolveHistoryPaint`
+    // still refuses to drop a reply this window streamed (SHO-85) — so the
+    // SHO-53 guard that demanded a reply here only ever refused an ordinary
+    // turn another window ran, which is exactly the case that has to land.
+    await reloadPersistedResponse({ requireReply: false })
+    // The tail was still the prompt: its reply is not written yet, and the
+    // caller should look again rather than leave a prompt with no answer.
+    return persistedTailAwaitsReply(tail)
   }, [probePersistedTail, reloadPersistedResponse])
+
+  /**
+   * Catch up after a turn ended somewhere else (SHO-299). The prompt is painted
+   * straight away; when the reply row has not landed yet, look again a couple of
+   * times instead of stopping on a prompt with no answer.
+   */
+  const catchUpAfterTurnEnded = useCallback(async () => {
+    const sessionId = currentSessionIdRef.current
+    if (!sessionId) return
+    const awaitingReply = await repaintIfBehindPersistedTail()
+    if (!awaitingReply) return
+    await repaintWhenReplyLands({
+      probe: () => probePersistedTail(sessionId),
+      reload: () => reloadPersistedResponse({ requireReply: false }),
+      isCancelled: () =>
+        currentSessionIdRef.current !== sessionId ||
+        isStreamingRef.current ||
+        isSendingMessageRef.current,
+    })
+  }, [probePersistedTail, reloadPersistedResponse, repaintIfBehindPersistedTail])
+  const catchUpAfterTurnEndedRef = useRef(catchUpAfterTurnEnded)
+  catchUpAfterTurnEndedRef.current = catchUpAfterTurnEnded
+
+  /**
+   * A turn started or ended in another window, on another device, or on the
+   * server (a `[Task update]` wake, a channel dispatch, a project call). Nothing
+   * else tells a window that stayed visible, so this is what keeps two windows
+   * on the same chat in step (SHO-299).
+   */
+  useTeamChatEvents(currentWorkspaceId ?? null, (event) => {
+    const action = turnSyncAction(event, {
+      currentSessionId: currentSessionIdRef.current,
+      isStreaming: isStreamingRef.current,
+      isSending: isSendingMessageRef.current,
+    })
+    if (action === "attach") void attachToLiveTurnIfAnyRef.current()
+    else if (action === "repaint") void catchUpAfterTurnEndedRef.current()
+  })
 
   useEffect(() => {
     if (!isActive || !currentSessionId) return

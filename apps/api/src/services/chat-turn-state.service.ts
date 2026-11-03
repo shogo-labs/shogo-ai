@@ -3,6 +3,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { Prisma } from '../generated/prisma-pg/client'
+import { publishConversationEvent } from '../lib/conversation-bus'
 import { prisma } from '../lib/prisma'
 
 /**
@@ -41,6 +42,59 @@ export type ActiveChatTurn = {
   conversationKind?: string | null
 }
 
+/** Where a chat's turn state changes are published, so every open window hears about it. */
+export const CHAT_SESSION_TURN_EVENT = 'chat-session.turn'
+
+export type ChatSessionTurnEvent = {
+  type: typeof CHAT_SESSION_TURN_EVENT
+  chatSessionId: string
+  turnId: string
+  state: 'started' | 'ended'
+}
+
+/**
+ * Tell every window showing this chat that its turn started or ended (SHO-299).
+ *
+ * A chat open in two windows used to be two islands: the panel only looks for a
+ * turn on focus (and after its own turn ends), so a window that stayed visible
+ * never learned that another window — or another device — was running one.
+ * Publishing at the turn-state insert point means every starter (HTTP routes,
+ * the channel dispatcher, the queue, a reattach) and every ender gets it for
+ * free, the same way `drainAfterTurn` does.
+ *
+ * The payload carries no message text, and it never fails the turn: a turn that
+ * cannot announce itself is still a turn that runs.
+ */
+export async function publishTurnState(
+  chatSessionId: string,
+  turnId: string,
+  state: ChatSessionTurnEvent['state'],
+): Promise<void> {
+  try {
+    const session = await prisma.chatSession.findUnique({
+      where: { id: chatSessionId },
+      select: {
+        contextType: true,
+        workspaceId: true,
+        createdByUserId: true,
+        project: { select: { workspaceId: true } },
+      },
+    })
+    if (!session) return
+    const workspaceId = session.workspaceId ?? session.project?.workspaceId ?? null
+    if (!workspaceId) return
+    // Only people who can read the session. A personal workspace chat is its
+    // owner's (the rule `assertWorkspaceSessionAccess` applies); a project chat
+    // is readable by the project's workspace, which `null` (every member)
+    // matches.
+    const audience =
+      session.contextType === 'workspace' && session.createdByUserId ? [session.createdByUserId] : null
+    publishConversationEvent(workspaceId, { type: CHAT_SESSION_TURN_EVENT, chatSessionId, turnId, state }, audience)
+  } catch (error: any) {
+    console.warn(`[ChatTurnState] Failed to publish ${state} for chat ${chatSessionId}:`, error?.message ?? error)
+  }
+}
+
 /**
  * Mark a turn as active. The generated id is returned so completion can
  * conditionally clear only the turn that started this row.
@@ -58,6 +112,7 @@ export async function markTurnStarted(
       activeTurnHeartbeatAt: now,
     },
   })
+  await publishTurnState(chatSessionId, turnId, 'started')
   return turnId
 }
 
@@ -90,7 +145,9 @@ export async function markTurnEnded(chatSessionId: string, turnId: string): Prom
   })
   // A duplicate or stale completion cleared nothing, so there is no turn for the
   // queue to follow: draining there would start a second turn beside a live one.
-  if (cleared.count > 0) drainAfterTurn(chatSessionId)
+  if (cleared.count === 0) return
+  await publishTurnState(chatSessionId, turnId, 'ended')
+  drainAfterTurn(chatSessionId)
 }
 
 /**

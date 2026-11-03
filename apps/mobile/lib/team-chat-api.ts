@@ -579,6 +579,12 @@ export type TeamChatEvent =
       locked: boolean
       updatedBy: DocAuthor | null
     }
+  /**
+   * A chat's turn started or ended somewhere else — another window, another
+   * device, or the server itself (SHO-299). Carries no message text; a panel
+   * showing that chat uses it to attach to the live turn or repaint history.
+   */
+  | { type: 'chat-session.turn'; chatSessionId: string; turnId: string; state: 'started' | 'ended' }
 
 export interface DocAuthor {
   type: 'user' | 'agent'
