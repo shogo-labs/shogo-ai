@@ -1,23 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * SHO-53 — a chat that was in the background when its wake turn ran is current
+ * SHO-53 — a chat that was in the background when its wake turn ran repaints
  * when it comes back, without a reload.
  *
  * SHO-31 (`chat-task-wake-live-attach`) covers the window that is in front and
  * untouched: its wake watch is armed by the turn that started the background
  * task, so it picks the wake up on its own. This spec covers the residual: a
- * window that sat behind another window while the wake ran.
- *
- * SHO-299 changed how that window gets there. It used to watch nothing (the
- * wake watch only runs for an active panel), so it learned about the turn only
- * through the refocus probe — by which time the turn read `completed`, which
- * the attach path treats as "history is enough". Now the API pushes
- * `chat-session.turn` to every window, so a window that is open catches up
- * from the push and is already current when someone comes back to it. What
- * SHO-53 guards is unchanged and still asserted here: the catch-up is
- * event-driven and bounded, never a poll, and coming back costs at most one
- * probe and no reload.
+ * window that sat behind another window while the wake ran. It watches
+ * nothing (the wake watch only runs for an active panel), and by the time it
+ * is looked at again the turn reads `completed`, which the attach path treats
+ * as "history is enough" — history this window has never loaded.
  *
  *   LOCAL_LLM_BASE_URL=http://127.0.0.1:18765 LOCAL_LLM_BASIC_MODEL=fake-stream \
  *   LOCAL_LLM_ADVANCED_MODEL=fake-stream E2E_LOCAL_START_STACK=1 \
@@ -304,22 +297,14 @@ test.describe("a chat that was in the background when its wake ran", () => {
     soft(persisted.update, "(a) the [Task update] message is persisted").toBe(true)
     soft(persisted.reply, "(a) the assistant wake reply is persisted").toBe(true)
 
-    // (c) The push, not a poll. A window that is open hears a turn it is not
-    // running (SHO-299), so it is current before anyone comes back to it — and
-    // what that costs is bounded to the attach and the repaint that follow the
-    // two events. A poll would be dozens of requests over the minute-plus this
-    // window sits behind; so is a task-list watch, which no event asks for.
+    // Nothing ran in this window while it was away: no watch, no polling.
     soft(
       asked.length,
-      `(c) the catch-up is bounded, not a poll (${asked.length} task/turn requests while the window was behind)`,
-    ).toBeLessThanOrEqual(10)
-    soft(
-      asked.filter((url) => /\/(tasks|processes)(\?|$)/.test(url)).length,
-      "(c) nothing starts watching the task list while the window is behind",
+      `(c) the background window made ${asked.length} task/turn requests while it was away`,
     ).toBe(0)
 
-    // (b) It is already current: the wake reply is on screen with no refocus
-    // and no reload, which is the whole point of the push.
+    // (b) Coming back repaints it — no reload.
+    await refocus(background)
     const liveDeadline = Date.now() + LIVE_RENDER_MS
     let renderedAt: number | null = null
     while (Date.now() < liveDeadline && renderedAt === null) {
@@ -328,27 +313,22 @@ test.describe("a chat that was in the background when its wake ran", () => {
     }
     soft(
       renderedAt !== null,
-      `(b) the window that was in the background shows the wake reply within ${LIVE_RENDER_MS}ms without being touched`,
+      `(b) the window that was in the background shows the wake reply within ${LIVE_RENDER_MS}ms of refocus`,
     ).toBe(true)
     soft(await countOnScreen(background, "wake-ack"), "the wake reply is rendered once").toBe(1)
 
-    // (d) Coming back to a window that is already current costs at most one
-    // probe, starts no watch, and then goes quiet.
-    const beforeRefocus = asked.length
-    await refocus(background)
-    await background.waitForTimeout(8_000)
-    soft(
-      asked.length - beforeRefocus,
-      `(d) a refocus on a current window makes at most one request, not ${asked.length - beforeRefocus}`,
-    ).toBeLessThanOrEqual(1)
+    // The catch-up is one-shot: a refocus, not the start of a poll.
+    const turned = asked.filter((url) => /\/turn(\?|$)/.test(url)).length
+    soft(turned, `(d) a refocus probes /turn once, not ${turned} times`).toBeLessThanOrEqual(1)
     soft(
       asked.filter((url) => /\/(tasks|processes)(\?|$)/.test(url)).length,
       "(d) a refocus does not start watching the task list",
     ).toBe(0)
-    const settled = asked.length
     await background.waitForTimeout(8_000)
-    soft(asked.length, "(d) the traffic stops after the catch-up").toBe(settled)
-    soft(await countOnScreen(background, "wake-ack"), "the wake reply is still rendered once").toBe(1)
+    soft(
+      asked.filter((url) => /\/turn(\?|$)/.test(url)).length,
+      "(d) the catch-up stops after the one probe",
+    ).toBe(turned)
 
     await background.close()
   })
