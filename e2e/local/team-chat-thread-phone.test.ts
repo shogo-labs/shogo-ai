@@ -9,7 +9,7 @@
 import { mkdirSync, writeFileSync } from "fs"
 import { dirname } from "path"
 import { expect, test, type Page } from "@playwright/test"
-import { activateTeamWorkspace, api, cleanupTeamNav, seedTeamNav, signIn, SCRIPT_PATH, type TeamNavSeed } from "./team-nav-seed"
+import { activateTeamWorkspace, api, cleanupTeamNav, seedTeamNav, signInByApi, SCRIPT_PATH, type TeamNavSeed } from "./team-nav-seed"
 
 /**
  * The scripted agent's stream speed is global, so a run that has to stay open
@@ -44,7 +44,7 @@ test.describe("Team chat thread on phone: back to conversation", () => {
     test.setTimeout(180_000)
     const context = await browser.newContext()
     seeder = await context.newPage()
-    await signIn(seeder)
+    await signInByApi(seeder)
     seed = await seedTeamNav(seeder)
 
     rootText = `thread root ${seed.suffix}`
@@ -60,7 +60,7 @@ test.describe("Team chat thread on phone: back to conversation", () => {
   })
 
   test.beforeEach(async ({ page }) => {
-    await signIn(page)
+    await signInByApi(page)
     await activateTeamWorkspace(page, seed.workspaceId)
   })
 

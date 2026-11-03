@@ -1,5 +1,5 @@
 # =============================================================================
-# E2E (phone) - the four phone specs, on WebKit and Chromium
+# E2E (phone) - the phone specs, on WebKit and Chromium (one job per device)
 # =============================================================================
 # `e2e/local/playwright.config.ts` splits its specs by viewport: the `chromium`
 # project `testIgnore`s PHONE_SPECS and `ci.yml` runs `--project=chromium`, so
@@ -70,9 +70,24 @@ jobs:
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" | bash scripts/ci/app-code-changed.sh
 
   phone:
-    name: 'E2E (phone: iPhone 15 Pro WebKit + Pixel 7)'
+    name: 'E2E (phone: ${{ matrix.label }})'
     needs: changes
     if: needs.changes.outputs.app == 'true'
+    # One job per device, in parallel. Both devices on one runner with
+    # `workers: 1` ran the whole suite twice back to back: 21-32m against the
+    # 30m specs cap, so unrelated PRs went red on the cap alone. Split, each
+    # device runs ~half that. Raise the cap instead and the suite just grows
+    # into the new number; keep each device's run well under 30m.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: iphone-15-pro
+            browser: webkit
+            label: iPhone 15 Pro WebKit
+          - project: pixel-7
+            browser: chromium
+            label: Pixel 7
     # Playwright 1.58 has no ubuntu26.04 deps; unpin when @playwright/test supports it
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     permissions:
@@ -147,12 +162,12 @@ jobs:
         run: |
           set -euo pipefail
           start=$(date +%s)
-          npx playwright install --with-deps chromium webkit
+          npx playwright install --with-deps ${{ matrix.browser }}
           elapsed=$(( $(date +%s) - start ))
           {
             echo "### Playwright browser install"
             echo ""
-            echo "\`npx playwright install --with-deps chromium webkit\` took **${elapsed}s** ($(( elapsed / 60 ))m$(( elapsed % 60 ))s)."
+            echo "\`npx playwright install --with-deps ${{ matrix.browser }}\` took **${elapsed}s** ($(( elapsed / 60 ))m$(( elapsed % 60 ))s)."
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Playwright install: ${elapsed}s"
@@ -171,13 +186,13 @@ jobs:
         timeout-minutes: 30
         env:
           E2E_LOCAL_START_STACK: '1'
-        run: npx playwright test --config e2e/local/playwright.config.ts --project=iphone-15-pro --project=pixel-7 --retries 0
+        run: npx playwright test --config e2e/local/playwright.config.ts --project=${{ matrix.project }} --retries 0
 
       - name: Upload report
         if: failure()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: e2e-phone-report
+          name: e2e-phone-report-${{ matrix.project }}
           path: |
             test-results/e2e-local-report
             test-results/e2e-local-artifacts
