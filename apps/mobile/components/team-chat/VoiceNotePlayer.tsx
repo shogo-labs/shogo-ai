@@ -28,6 +28,7 @@ import { formatClipDuration, playbackProgress, seekRatioForTap, waveformBars } f
 export interface VoiceNotePlayerProps {
   attachmentId: string
   url: string
+  mimeType?: string | null
   durationMs?: number | null
   peaks?: string | null
   name?: string | null
@@ -40,8 +41,29 @@ function speedLabel(speed: PlaybackSpeed): string {
   return `${speed}x`
 }
 
-export function VoiceNotePlayer({ attachmentId, url, durationMs, peaks, name }: VoiceNotePlayerProps) {
+function playbackUrlForPlatform(url: string, mimeType?: string | null, name?: string | null): string {
+  if (Platform.OS !== 'ios') return url
+  const mime = (mimeType ?? '').split(';', 1)[0].trim().toLowerCase()
+  const unsupportedOnIos = ['audio/webm', 'video/webm', 'audio/ogg', 'application/ogg', 'audio/opus'].includes(mime)
+    || /\.(?:webm|ogg|opus)$/i.test(name ?? '')
+  if (!unsupportedOnIos) return url
+
+  try {
+    const parsed = new URL(url)
+    parsed.searchParams.set('playback', 'm4a')
+    return parsed.toString()
+  } catch {
+    const hashIndex = url.indexOf('#')
+    const resource = hashIndex === -1 ? url : url.slice(0, hashIndex)
+    const hash = hashIndex === -1 ? '' : url.slice(hashIndex)
+    const separator = resource.includes('?') ? '&' : '?'
+    return `${resource}${separator}playback=m4a${hash}`
+  }
+}
+
+export function VoiceNotePlayer({ attachmentId, url, mimeType, durationMs, peaks, name }: VoiceNotePlayerProps) {
   const playback = useVoicePlayback()
+  const playbackUrl = playbackUrlForPlatform(url, mimeType, name)
   const isActive = playback.activeId === attachmentId
   const isPlaying = isActive && playback.isPlaying
   const totalMs = playback.durationMs > 0 && isActive ? playback.durationMs : (durationMs ?? 0)
@@ -62,16 +84,16 @@ export function VoiceNotePlayer({ attachmentId, url, durationMs, peaks, name }: 
   const currentPositionMs = isActive ? playback.positionMs : 0
 
   const onToggle = useCallback(() => {
-    toggleVoiceNote({ id: attachmentId, url, durationMs })
-  }, [attachmentId, url, durationMs])
+    toggleVoiceNote({ id: attachmentId, url: playbackUrl, durationMs })
+  }, [attachmentId, playbackUrl, durationMs])
 
   const seekToLocation = useCallback(
     (locationX: unknown) => {
       const ratio = seekRatioForTap(locationX, trackWidthRef.current)
       if (ratio === null) return
-      seekVoiceNote({ id: attachmentId, url, durationMs }, ratio)
+      seekVoiceNote({ id: attachmentId, url: playbackUrl, durationMs }, ratio)
     },
-    [attachmentId, url, durationMs],
+    [attachmentId, playbackUrl, durationMs],
   )
 
   const onSeek = useCallback((event: GestureResponderEvent) => {
@@ -126,8 +148,8 @@ export function VoiceNotePlayer({ attachmentId, url, durationMs, peaks, name }: 
   }, [seekToLocation])
 
   const seekByKeyboard = useCallback((direction: -1 | 1) => {
-    seekVoiceNoteByMs({ id: attachmentId, url, durationMs }, direction * 5_000)
-  }, [attachmentId, durationMs, url])
+    seekVoiceNoteByMs({ id: attachmentId, url: playbackUrl, durationMs }, direction * 5_000)
+  }, [attachmentId, durationMs, playbackUrl])
 
   const onSeekAccessibilityAction = useCallback((event: { nativeEvent: { actionName: string } }) => {
     if (event.nativeEvent.actionName === "increment") seekByKeyboard(1)
@@ -258,6 +280,12 @@ export function VoiceNotePlayer({ attachmentId, url, durationMs, peaks, name }: 
           {totalMs > 0 ? formatClipDuration(totalMs) : "--:--"}
         </Text>
       </View>
+
+      {isActive && playback.error ? (
+        <Text className="mt-1 pl-12 text-[11px] text-destructive" accessibilityRole="alert">
+          {playback.error}
+        </Text>
+      ) : null}
 
       <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
         <Pressable className="flex-1" accessibilityLabel="Close playback speed" onPress={() => setMenuOpen(false)}>

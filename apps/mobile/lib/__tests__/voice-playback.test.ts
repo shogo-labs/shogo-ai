@@ -19,6 +19,7 @@ interface EngineCalls {
 }
 
 const calls: EngineCalls = { loaded: [], plays: 0, pauses: 0, seeks: [], rates: [] }
+let failNextLoad = false
 let handlers: {
   onProgress: (positionMs: number, durationMs: number) => void
   onEnded: () => void
@@ -29,7 +30,13 @@ mock.module('../voice-playback-engine', () => ({
   createVoicePlaybackEngine: (next: typeof handlers) => {
     handlers = next
     return {
-      load: (url: string) => calls.loaded.push(url),
+      load: (url: string) => {
+        calls.loaded.push(url)
+        if (failNextLoad) {
+          failNextLoad = false
+          handlers.onError(new Error('decode failed'))
+        }
+      },
       play: () => {
         calls.plays += 1
       },
@@ -62,6 +69,7 @@ const reset = () => {
   calls.pauses = 0
   calls.seeks = []
   calls.rates = []
+  failNextLoad = false
 }
 
 const snapshot = () => readVoicePlayback()
@@ -101,6 +109,18 @@ describe('toggleVoiceNote', () => {
     toggleVoiceNote(noteB)
     expect(calls.loaded).toEqual([noteA.url, noteB.url])
     expect(snapshot()).toMatchObject({ activeId: 'b', isPlaying: true, positionMs: 0 })
+  })
+
+  test('does not stay in the playing state after a synchronous load failure and retries on tap', () => {
+    failNextLoad = true
+    toggleVoiceNote(noteA)
+    expect(calls.plays).toBe(0)
+    expect(snapshot()).toMatchObject({ isPlaying: false, error: 'Could not play this voice note. Tap to retry.' })
+
+    toggleVoiceNote(noteA)
+    expect(calls.loaded).toEqual([noteA.url, noteA.url])
+    expect(calls.plays).toBe(1)
+    expect(snapshot()).toMatchObject({ isPlaying: true, error: null })
   })
 })
 
