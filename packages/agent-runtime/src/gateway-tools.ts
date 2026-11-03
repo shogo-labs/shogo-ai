@@ -4847,12 +4847,12 @@ function agentCustomDomain(domain: CustomDomain) {
   }
 }
 
-function customDomainSuccess(action: string, data: CustomDomainsList | { domains: CustomDomain[] }) {
+function customDomainSuccess(action: string, data: { fallbackOrigin?: string; domains?: CustomDomain[] }) {
   return {
     ok: true,
     action,
     published: true,
-    fallbackOrigin: (data as CustomDomainsList).fallbackOrigin ?? null,
+    fallbackOrigin: data.fallbackOrigin ?? null,
     domains: (data.domains ?? []).map(agentCustomDomain),
     apexNote: CUSTOM_DOMAIN_APEX_NOTE,
     settings: CUSTOM_DOMAIN_SETTINGS_LOCATION,
@@ -4970,7 +4970,11 @@ async function runPublishDomainAction(
 
   const list = await apiListProjectCustomDomains(projectId)
   if (!list.ok) return textResult(customDomainFailure(action, list))
-  const data = list.data ?? { enabled: false, domains: [] }
+  const data = list.data ?? { enabled: false, published: false, domains: [] }
+
+  if (data.published === false) {
+    return textResult(customDomainFailure(action, { code: 'not_published' }))
+  }
 
   if (!data.enabled) {
     return textResult({

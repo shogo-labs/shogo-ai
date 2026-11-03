@@ -819,6 +819,8 @@ export interface CustomDomain {
 
 export interface CustomDomainsList {
   enabled: boolean
+  /** False when the project isn't published — domains can't serve yet. */
+  published?: boolean
   fallbackOrigin?: string
   domains: CustomDomain[]
 }
@@ -832,44 +834,50 @@ export async function listProjectCustomDomains(
   })
 }
 
+/** Every domain mutation returns the affected rows and the CNAME target. */
+export interface CustomDomainMutation {
+  fallbackOrigin?: string
+  domains: CustomDomain[]
+}
+
 export async function addProjectCustomDomain(
   projectId: string,
   hostname: string,
-): Promise<CheckpointCallResult<{ domains: CustomDomain[] }>> {
+): Promise<CheckpointCallResult<CustomDomainMutation>> {
   return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/domains`, {
     method: 'POST',
     body: JSON.stringify({ hostname }),
-    parse: (j) => j as { domains: CustomDomain[] },
+    parse: (j) => j as CustomDomainMutation,
   })
 }
 
 export async function verifyProjectCustomDomain(
   projectId: string,
   domainId: string,
-): Promise<CheckpointCallResult<{ domains: CustomDomain[] }>> {
+): Promise<CheckpointCallResult<CustomDomainMutation>> {
   return publishFetch(
     `/api/internal/projects/${encodeURIComponent(projectId)}/domains/${encodeURIComponent(domainId)}/verify`,
-    { method: 'POST', parse: (j) => j as { domains: CustomDomain[] } },
+    { method: 'POST', parse: (j) => j as CustomDomainMutation },
   )
 }
 
 export async function retriggerProjectCustomDomain(
   projectId: string,
   domainId: string,
-): Promise<CheckpointCallResult<{ domains: CustomDomain[] }>> {
+): Promise<CheckpointCallResult<CustomDomainMutation>> {
   return publishFetch(
     `/api/internal/projects/${encodeURIComponent(projectId)}/domains/${encodeURIComponent(domainId)}/retrigger`,
-    { method: 'POST', parse: (j) => j as { domains: CustomDomain[] } },
+    { method: 'POST', parse: (j) => j as CustomDomainMutation },
   )
 }
 
 export async function setPrimaryProjectCustomDomain(
   projectId: string,
   domainId: string,
-): Promise<CheckpointCallResult<{ domains: CustomDomain[] }>> {
+): Promise<CheckpointCallResult<CustomDomainMutation>> {
   return publishFetch(
     `/api/internal/projects/${encodeURIComponent(projectId)}/domains/${encodeURIComponent(domainId)}/primary`,
-    { method: 'PATCH', parse: (j) => j as { domains: CustomDomain[] } },
+    { method: 'PATCH', parse: (j) => j as CustomDomainMutation },
   )
 }
 

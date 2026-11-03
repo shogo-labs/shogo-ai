@@ -792,6 +792,53 @@ describe('publish domain_action — custom domains', () => {
     expect(details.customDomainHint).toMatch(/domain_action: "add"/)
   })
 
+  test('an unpublished project reports not_published for every action, and calls nothing', async () => {
+    listCustomDomainsImpl = async () => ({
+      ok: true,
+      status: 200,
+      data: { enabled: true, published: false, fallbackOrigin: 'fallback.shogo.one', domains: [] },
+    })
+
+    for (const input of [
+      { domain_action: 'list' },
+      { domain_action: 'verify', domain: 'example.com' },
+      { domain_action: 'make_primary', domain: 'example.com' },
+      { domain_action: 'remove', domain: 'example.com' },
+    ]) {
+      const details = await run(baseCtx(), input as any)
+      expect(details.ok).toBe(false)
+      expect(details.code).toBe('not_published')
+      expect(details.error).toMatch(/publish it to a subdomain first/i)
+    }
+
+    // Only the list read; no verify / primary / remove ever left the agent.
+    expect(domainCalls.map((c) => c.fn)).toEqual(['list', 'list', 'list', 'list'])
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('add and verify carry the CNAME target through', async () => {
+    addCustomDomainImpl = async () => ({
+      ok: true,
+      status: 201,
+      data: { fallbackOrigin: 'fallback.shogo.one', domains: [SAMPLE_DOMAIN('example.com')] },
+    })
+    const added = await run(baseCtx(), { domain_action: 'add', domain: 'example.com' })
+    expect(added.fallbackOrigin).toBe('fallback.shogo.one')
+
+    listCustomDomainsImpl = async () => ({
+      ok: true,
+      status: 200,
+      data: { enabled: true, published: true, fallbackOrigin: 'fallback.shogo.one', domains: [SAMPLE_DOMAIN('example.com')] },
+    })
+    verifyCustomDomainImpl = async () => ({
+      ok: true,
+      status: 200,
+      data: { fallbackOrigin: 'fallback.shogo.one', domains: [SAMPLE_DOMAIN('example.com', { status: 'active' })] },
+    })
+    const verified = await run(baseCtx(), { domain_action: 'verify', domain: 'example.com' })
+    expect(verified.fallbackOrigin).toBe('fallback.shogo.one')
+  })
+
   test('the description tells the agent never to stand up another host', () => {
     const description = publishTool(baseCtx()).description
     expect(description).toMatch(/Custom domain/i)

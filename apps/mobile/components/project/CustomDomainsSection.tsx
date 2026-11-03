@@ -294,6 +294,10 @@ function Field({
 export function CustomDomainsSection({ projectId, http, embedded = true }: CustomDomainsSectionProps) {
   const [loading, setLoading] = useState(true)
   const [enabled, setEnabled] = useState(false)
+  // A project that isn't published can't serve a domain (the routing map is
+  // written from its published subdomain), so the panel only offers removal
+  // until it is published. Domains already attached survive an unpublish.
+  const [published, setPublished] = useState(true)
   const [domains, setDomains] = useState<CustomDomain[]>([])
   const [hostname, setHostname] = useState('')
   const [adding, setAdding] = useState(false)
@@ -304,6 +308,7 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
     try {
       const data = await api.getCustomDomains(http, projectId)
       setEnabled(data.enabled)
+      setPublished(data.published !== false)
       setDomains(data.domains)
     } catch {
       // Leave whatever we have; surfacing a load error here would be noise.
@@ -488,6 +493,15 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
     <>
       {header}
 
+      {!published && (
+        <View className="mb-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/40">
+          <Text className="text-[11px] text-amber-700 dark:text-amber-400">
+            Publish this app first — a custom domain can only serve once the app is published.
+            Domains you&apos;ve already added stay attached and keep their DNS records.
+          </Text>
+        </View>
+      )}
+
       {/* Fuller guidance only in the standalone settings pane; the publish
           dropdown stays compact and links out to the guide instead. */}
       {!embedded && (
@@ -636,7 +650,7 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
               </Text>
             )}
 
-            {group.some((d) => d.status !== 'active') && (
+            {published && group.some((d) => d.status !== 'active') && (
               <View className="gap-2">
                 {/* Stalled but not yet retriggerable (cooldown): tell the user
                     when they can retry instead of a dead/disabled button. */}
@@ -686,40 +700,42 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
       })}
 
       {/* Add a domain */}
-      <View className="flex-row items-center gap-2">
-        <TextInput
-          value={hostname}
-          onChangeText={(t) => setHostname(t.replace(/\s/g, ''))}
-          placeholder="acme.com"
-          placeholderTextColor="#9ca3af"
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="url"
-          onSubmitEditing={handleAdd}
-          className="flex-1 min-w-0 h-9 px-3 text-sm text-foreground border border-border rounded-lg web:outline-none"
-        />
-        <Pressable
-          onPress={handleAdd}
-          disabled={adding || hostname.trim().length === 0}
-          className={cn(
-            'h-9 px-3 rounded-lg items-center justify-center',
-            adding || hostname.trim().length === 0 ? 'bg-muted' : 'bg-primary',
-          )}
-        >
-          {adding ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Text
-              className={cn(
-                'text-xs font-medium',
-                hostname.trim().length === 0 ? 'text-muted-foreground' : 'text-primary-foreground',
-              )}
-            >
-              Add
-            </Text>
-          )}
-        </Pressable>
-      </View>
+      {published && (
+        <View className="flex-row items-center gap-2">
+          <TextInput
+            value={hostname}
+            onChangeText={(t) => setHostname(t.replace(/\s/g, ''))}
+            placeholder="acme.com"
+            placeholderTextColor="#9ca3af"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            onSubmitEditing={handleAdd}
+            className="flex-1 min-w-0 h-9 px-3 text-sm text-foreground border border-border rounded-lg web:outline-none"
+          />
+          <Pressable
+            onPress={handleAdd}
+            disabled={adding || hostname.trim().length === 0}
+            className={cn(
+              'h-9 px-3 rounded-lg items-center justify-center',
+              adding || hostname.trim().length === 0 ? 'bg-muted' : 'bg-primary',
+            )}
+          >
+            {adding ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text
+                className={cn(
+                  'text-xs font-medium',
+                  hostname.trim().length === 0 ? 'text-muted-foreground' : 'text-primary-foreground',
+                )}
+              >
+                Add
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      )}
 
       {error && <Text className="text-[11px] text-destructive mt-1.5">{error}</Text>}
     </>
