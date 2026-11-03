@@ -295,8 +295,14 @@ describeIfInfra('machine workspace opened from the cloud (SHO-257)', () => {
     // A hosted workspace is a cloud workspace: a write lands while its host is off…
     const offlineText = `while off ${Date.now()}`
     const written = await send(view, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: offlineText })
-    expect(written.status, JSON.stringify(written.data)).toBeLessThan(300)
-    expect(await channelTexts(view, channelId)).toContain(offlineText)
+    // `send` reports a transport failure as status 0, which is also "< 300" —
+    // assert the success range explicitly so a dead cloud cannot pass as a write.
+    expect([200, 201], JSON.stringify(written.data)).toContain(written.status)
+    // A channel read is eventually consistent with a write that just landed
+    // (~tens of ms — a client shows the POST's own echo meanwhile), so wait for
+    // it instead of asserting on one immediate read.
+    await waitFor('the cloud write to be listed', async () =>
+      (await channelTexts(view, channelId)).includes(offlineText), 15_000, 250)
 
     // …and an agent turn is queued for the desktop rather than run in the cloud.
     const tag = `off${Date.now() % 100_000}`

@@ -82,23 +82,35 @@ async function backup(prisma: any): Promise<string | null> {
 /**
  * Make this desktop's user the cloud account `cloudUserId`.
  *
- * A no-op once done (a user with that id exists). Otherwise the oldest local
- * user — the desktop's single person — takes the cloud id, and the pusher is
- * reset so its next push is a fresh snapshot under the new id.
+ * A no-op once the id is adopted (a user with that id exists). Otherwise the
+ * oldest local user — the desktop's single person — takes the cloud id, and the
+ * pusher is reset so its next push is a fresh snapshot under the new id.
+ *
+ * The row's *name and email* are adopted too, every boot: the desktop's user is
+ * seeded as a placeholder (`Local User` / `local@shogo.local`), and neither sync
+ * direction ever overwrites a `User` row (cloud ingest skips existing users so a
+ * device cannot rename an account; the puller skips the desktop's own user the
+ * same way). Pairing is therefore the only moment this can be corrected, and a
+ * desktop that paired before this ran needs it on the next boot.
  */
 export async function adoptCloudIdentity(
   prisma: any,
   cloudUserId: string,
   log: (line: string) => void = () => {},
+  profile?: { email?: string | null; name?: string | null },
 ): Promise<AdoptResult> {
   const already = await prisma.user.findUnique({ where: { id: cloudUserId }, select: { id: true } })
-  if (already) return { changed: false, toUserId: cloudUserId }
+  if (already) {
+    if (profile?.name || profile?.email) await adoptProfile(prisma, cloudUserId, profile, log)
+    return { changed: false, toUserId: cloudUserId }
+  }
   const local = await prisma.user.findFirst({ orderBy: { createdAt: 'asc' }, select: { id: true } })
   if (!local) return { changed: false, toUserId: cloudUserId }
 
   const backupPath = await backup(prisma)
   log(`[HostSync] adopting cloud identity: ${local.id} → ${cloudUserId} (backup: ${backupPath ?? 'none'})`)
   const tables = await rewriteUserId(prisma, local.id, cloudUserId)
+  await adoptProfile(prisma, cloudUserId, profile, log)
 
   // Everything changed under a new id: the next push is a full snapshot, and
   // the change log the rewrite produced is not needed.
@@ -109,6 +121,28 @@ export async function adoptCloudIdentity(
   log(`[HostSync] identity adopted across ${tables} table(s)`)
   return { changed: true, fromUserId: local.id, toUserId: cloudUserId, tables, backupPath }
 }
+
+/** Take the cloud account's name and email onto the desktop's copy of the person. */
+async function adoptProfile(
+  prisma: any,
+  cloudUserId: string,
+  profile: { email?: string | null; name?: string | null } | undefined,
+  log: (line: string) => void,
+): Promise<void> {
+  if (!profile?.name && !profile?.email) return
+  const data: Record<string, string> = {}
+  if (profile.name) data.name = profile.name
+  if (profile.email) data.email = profile.email
+  try {
+    await prisma.user.update({ where: { id: cloudUserId }, data })
+    log(`[HostSync] adopted the cloud account's profile: ${Object.keys(data).join(', ')}`)
+  } catch (err: any) {
+    // The id adoption is what matters; a name the cloud cannot give us is not
+    // worth failing the sync over.
+    log(`[HostSync] could not adopt the cloud profile: ${err?.message ?? err}`)
+  }
+}
+
 
 /** Ask the cloud who this device key belongs to. Null when it cannot say. */
 export async function fetchCloudIdentity(opts: {

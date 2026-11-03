@@ -336,6 +336,16 @@ export async function pairMachine(cloudBase: string, opts: PairMachineOptions): 
     await stop()
     throw new Error(`the account has no personal workspace to compare against: ${cloudOnly.text.slice(0, 300)}`)
   }
+  // Team chat defaults to off on a personal workspace (`defaultChatMode`), and
+  // the parity seed writes a channel into this one so the two workspaces can be
+  // told apart by their content. Turn it on; it is the control, not a subject.
+  const chatOn = await call(cloudBase, state, "PATCH", `/api/workspaces/${encodeURIComponent(personal.id)}/chat-mode`, {
+    mode: "native",
+  })
+  if (chatOn.status >= 400) {
+    await stop()
+    throw new Error(`could not enable team chat on the control workspace (${chatOn.status}): ${chatOn.text.slice(0, 300)}`)
+  }
 
   return {
     machineId: machine.id,

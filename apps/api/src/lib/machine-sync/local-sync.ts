@@ -101,7 +101,7 @@ export async function startMachineSync(): Promise<void> {
     if (instanceId && apiKey) {
       const identity = await fetchCloudIdentity({ cloudUrl: getShogoCloudUrl(), apiKey, instanceId })
       if (identity) {
-        await adoptCloudIdentity(prisma, identity.id, log).catch((err) => {
+        await adoptCloudIdentity(prisma, identity.id, log, { name: identity.name, email: identity.email }).catch((err) => {
           log(`[HostSync] could not adopt the cloud identity: ${(err as Error)?.message ?? err}`)
         })
       } else {
