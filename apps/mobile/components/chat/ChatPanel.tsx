@@ -111,6 +111,7 @@ import {
 import { decideMessagesPropagation } from "./messages-propagation"
 import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
 import { mergeTranscriptRows, sortTranscriptRows } from "./transcript-merge"
+import { assistantRowsAtSend, findTurnReplyRow } from "./reconcile-reply-row"
 import {
   patchSessionFeedbackCache,
   readSessionFeedbackCache,
@@ -2357,6 +2358,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // `extraBody.clientTurnId` so this ref — and therefore the header the
   // server de-dupes on — stays stable across attempts.
   const pendingClientTurnIdRef = useRef<string | undefined>(undefined)
+  // The assistant rows this chat already had when the current send started
+  // (id -> text). The reconcile after the turn compares against this rather
+  // than "an id I had not seen before": the server saves the reply partway
+  // through the turn, so that row can already be on screen by the time the
+  // turn ends (SHO-300).
+  const reconcileAtSendRef = useRef<Map<string, string>>(new Map())
 
   // Flipped synchronously in `handleStop` so `onFinish` (which fires after
   // `stop()` finalises the in-flight assistant message) can distinguish a
@@ -3413,15 +3420,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
           )
 
         if (assistantHasContent) {
-          const priorAssistantIds = new Set(
-            (sessionMessages?.all ?? [])
-              .filter(
-                (m: any) =>
-                  m.sessionId === sessionIdForReconcile &&
-                  m.role === "assistant",
-              )
-              .map((m: any) => m.id),
-          )
           void (async () => {
             const RECONCILE_ATTEMPTS = 5
             const RECONCILE_DELAY_MS = 400
@@ -3441,13 +3439,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 )
                 continue
               }
-              const appeared = (sessionMessages?.all ?? []).some(
-                (m: any) =>
-                  m.sessionId === sessionIdForReconcile &&
-                  m.role === "assistant" &&
-                  !priorAssistantIds.has(m.id),
-              )
-              if (appeared) {
+              // The reply for THIS turn, not "an id I had not seen before":
+              // the server saves the row partway through the turn, so it can
+              // already be in `sessionMessages` by the time `onFinish` runs
+              // (SHO-300).
+              const replyRowId = findTurnReplyRow({
+                rows: (sessionMessages?.all ?? []) as any[],
+                sessionId: sessionIdForReconcile,
+                atSend: reconcileAtSendRef.current,
+                turnText: assistantText,
+              })
+              if (replyRowId) {
                 // Repaint once now that the row exists. Warming the cache is
                 // not enough: a paint that ran while the row was still missing
                 // dropped the reply from the screen, and this is what brings it
@@ -7107,6 +7109,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
           "text:",
           trimmedContent.slice(0, 80),
         )
+        // Remember the assistant rows this chat already has, so the reconcile
+        // after the turn can tell this turn's reply from an older one even
+        // though the server may save it mid-turn (SHO-300).
+        reconcileAtSendRef.current = assistantRowsAtSend(
+          (sessionMessages?.all ?? []) as any[],
+          currentSessionId,
+        )
         await deliverMessage(messagePayload, bodyExtra)
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
@@ -7138,6 +7147,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       maybeAutoNameSession,
       releaseStopSnapshot,
       showOptimisticEcho,
+      sessionMessages,
     ],
   )
 

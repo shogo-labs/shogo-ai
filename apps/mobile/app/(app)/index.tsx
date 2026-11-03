@@ -375,6 +375,21 @@ export const HomeScreen = observer(function HomeScreen({
   // The workspace on screen — the machine's own while one is open, which is
   // what the agent screen, its projects and its composer belong to (SHO-130).
   const workspaceInView = useWorkspaceInView()
+  // The agent-chat screen is keyed by its workspace, so switching workspace
+  // starts a fresh screen. The key must NOT follow every value
+  // `useActiveWorkspace()` reports: while the workspace list refreshes it can
+  // answer `null` for a frame (and the first list load answers the fallback
+  // workspace before the persisted one), which remounted the screen — and
+  // aborted the turn it was streaming — about a second after a send (SHO-300).
+  // Hold the last id we were given and only change it on a real switch.
+  const [chatScreenWorkspaceId, setChatScreenWorkspaceId] = useState<
+    string | null
+  >(null)
+  const workspaceInViewId = workspaceInView?.id ?? null
+  useEffect(() => {
+    if (workspaceInViewId) setChatScreenWorkspaceId(workspaceInViewId)
+  }, [workspaceInViewId])
+
   const currentExperience = useWorkspaceExperience()
   // A reload of `/` must land back on the chat that was open, so the agent
   // chat puts its session in the URL and the landing honours it (SHO-287).
@@ -950,9 +965,21 @@ export const HomeScreen = observer(function HomeScreen({
     return <MobileHomeFeed />
   }
   if (rendersAgentChat) {
+    // The screen is keyed by workspace so a switch starts a fresh one, but the
+    // key must not change from a placeholder to the real id: mounting with the
+    // placeholder and re-keying a frame later is what aborted a running turn
+    // (SHO-300). Wait for a workspace while the collection is still loading,
+    // and once it has loaded with none, mount on a stable "none" key.
+    if (!chatScreenWorkspaceId && workspaces?.isLoading) {
+      return (
+        <View className="flex-1 bg-background px-4 pt-16" testID="home-chrome-skeleton">
+          <WorkspaceChromeSkeletonRows count={4} />
+        </View>
+      )
+    }
     return (
       <WorkspaceAgentChatScreen
-        key={workspaceInView?.id ?? 'workspace-loading'}
+        key={chatScreenWorkspaceId ?? 'no-workspace'}
         initialSessionId={homeChatSessionId}
         startNewSession
       />
