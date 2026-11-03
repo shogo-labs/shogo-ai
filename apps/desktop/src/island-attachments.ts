@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 export const ISLAND_MAX_FILES = 10
-export const ISLAND_MAX_FILE_SIZE = 10 * 1024 * 1024
+export const ISLAND_MAX_FILE_SIZE = 100 * 1024 * 1024
 /** Project archives bypass the per-file limit (matching the composer), but
  * are read into memory and sent over IPC, so they still need a ceiling. */
 export const ISLAND_MAX_ARCHIVE_SIZE = 250 * 1024 * 1024

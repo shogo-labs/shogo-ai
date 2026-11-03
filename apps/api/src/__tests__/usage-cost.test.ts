@@ -45,8 +45,8 @@ describe('MARKUP_MULTIPLIER', () => {
 
 describe('calculateUsageCost', () => {
   test('returns {0,0} when there are no tokens (short-circuits the multiply)', () => {
-    expect(calculateUsageCost(0, 0, 'sonnet')).toEqual({ rawUsd: 0, billedUsd: 0 })
-    expect(calculateUsageCost(0, 0)).toEqual({ rawUsd: 0, billedUsd: 0 })
+    expect(calculateUsageCost(0, 0, 'sonnet')).toEqual({ rawUsd: 0, billedUsd: 0, pricedAs: 'sonnet' })
+    expect(calculateUsageCost(0, 0)).toEqual({ rawUsd: 0, billedUsd: 0, pricedAs: 'sonnet' })
   })
 
   test('prices a sonnet call against the catalog rates with the flat markup', () => {

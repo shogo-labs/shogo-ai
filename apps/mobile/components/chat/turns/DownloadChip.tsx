@@ -34,6 +34,12 @@ export interface DownloadChipProps {
   /** Agent proxy base URL (`chatContext.agentUrl`). */
   agentUrl?: string | null;
   className?: string;
+  /**
+   * `chip` (default) is the wide "Download <name>" button under a deliverable.
+   * `icon` is the same action at the size of the file viewer's other header
+   * buttons (SHO-284); its error goes in a tooltip rather than a wider button.
+   */
+  variant?: "chip" | "icon";
 }
 
 function basename(path: string): string {
@@ -51,7 +57,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-export function DownloadChip({ path, agentUrl, className }: DownloadChipProps) {
+export function DownloadChip({ path, agentUrl, className, variant = "chip" }: DownloadChipProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -113,6 +119,30 @@ export function DownloadChip({ path, agentUrl, className }: DownloadChipProps) {
   }, [url, busy, name]);
 
   if (!url) return null;
+
+  if (variant === "icon") {
+    // Same hit area as the viewer's Copy/X buttons. The failure is a tooltip,
+    // not a second line, so the header keeps one row.
+    return (
+      <Pressable
+        onPress={handlePress}
+        disabled={busy}
+        className={cn(
+          "h-8 w-8 items-center justify-center rounded-md active:bg-muted",
+          className,
+        )}
+        accessibilityRole="button"
+        accessibilityLabel={`Download ${name}`}
+        {...(error ? ({ title: error } as Record<string, string>) : {})}
+      >
+        {busy ? (
+          <ActivityIndicator size="small" />
+        ) : (
+          <Download size={15} className="text-muted-foreground" />
+        )}
+      </Pressable>
+    );
+  }
 
   return (
     <View className={cn("px-2 pb-1.5", className)}>

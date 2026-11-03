@@ -52,11 +52,14 @@ export {
   groupWorkParts,
   partitionTurn,
   extractTurnTiming,
+  readTurnProgress,
+  isTurnInProgress,
   formatWorkedDuration,
   formatRelativeTime,
   shouldShowPlanningStatus,
   type TurnPartition,
   type TurnTiming,
+  type TurnProgress,
 } from "./turnShaping"
 export { TurnFooter, type TurnFooterProps } from "./TurnFooter"
 export {

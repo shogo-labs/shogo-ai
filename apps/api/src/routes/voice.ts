@@ -92,6 +92,7 @@ import {
   calculateVoiceMinuteCost,
 } from '../lib/voice-cost'
 import { consumeUsage } from '../services/billing.service'
+import { SHOGO_FEE_PERCENT, splitUsageCost } from '../lib/usage-cost'
 import {
   recordCallUsage,
   verifyElevenLabsSignature,
@@ -1784,6 +1785,9 @@ export function voiceRoutes() {
     let billedUsdInbound = 0
     let billedUsdOutbound = 0
     let billedUsdNumbers = 0
+    let modelCostUsd = 0
+    let shogoFeeUsd = 0
+    let unitemizedUsd = 0
     let inboundCalls = 0
     let outboundCalls = 0
 
@@ -1802,6 +1806,14 @@ export function voiceRoutes() {
               })()
             : {}
       const mins = typeof meta.billedMinutes === 'number' ? meta.billedMinutes : 0
+      const split = splitUsageCost({
+        billedUsd: ev.billedUsd,
+        rawUsd: ev.rawUsd,
+        actionMetadata: meta,
+      })
+      modelCostUsd += split.modelCostUsd
+      shogoFeeUsd += split.shogoFeeUsd
+      unitemizedUsd += split.unitemizedUsd
       if (ev.actionType === 'voice_minutes_inbound') {
         minutesInbound += mins
         billedUsdInbound += ev.billedUsd
@@ -1828,6 +1840,10 @@ export function voiceRoutes() {
         billedUsdOutbound,
         billedUsdNumbers,
         billedUsd: billedUsdInbound + billedUsdOutbound + billedUsdNumbers,
+        modelCostUsd,
+        shogoFeeUsd,
+        unitemizedUsd,
+        shogoFeePercent: SHOGO_FEE_PERCENT,
         calls: inboundCalls + outboundCalls,
         inboundCalls,
         outboundCalls,

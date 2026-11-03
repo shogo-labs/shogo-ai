@@ -14,7 +14,7 @@ import {
   TouchableWithoutFeedback,
   useWindowDimensions,
 } from 'react-native'
-import { useRouter } from 'expo-router'
+import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import { LinearGradient } from 'expo-linear-gradient'
@@ -388,6 +388,12 @@ export const HomeScreen = observer(function HomeScreen({
   // what the agent screen, its projects and its composer belong to (SHO-130).
   const workspaceInView = useWorkspaceInView()
   const currentExperience = useWorkspaceExperience()
+  // A reload of `/` must land back on the chat that was open, so the agent
+  // chat puts its session in the URL and the landing honours it (SHO-287).
+  const homeParams = useLocalSearchParams<{ chatSessionId?: string | string[] }>()
+  const homeChatSessionId = Array.isArray(homeParams.chatSessionId)
+    ? homeParams.chatSessionId[0]
+    : homeParams.chatSessionId
   // `/` lands on the workspace agent on an empty chat for every workspace
   // kind and width; `/(app)/home` keeps the pre-landing layout (phone feed /
   // wide builder) and `/(app)/new-project` pins the builder.
@@ -986,6 +992,7 @@ export const HomeScreen = observer(function HomeScreen({
     return (
       <WorkspaceAgentChatScreen
         key={workspaceInView?.id ?? 'workspace-loading'}
+        initialSessionId={homeChatSessionId}
         startNewSession
       />
     )

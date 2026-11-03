@@ -155,7 +155,7 @@ describe('GET /workspaces/:workspaceId/analytics/usage-log.csv', () => {
     expect(ct).toMatch(/text\/csv/)
     expect(res.headers.get('content-disposition')).toContain(`usage-${WS}-30d.csv`)
     const lines = text.trim().split('\n')
-    expect(lines[0]).toBe('Date,User,Email,Type,Model,Provider,Tokens,Billed USD')
+    expect(lines[0]).toBe('Date,User,Email,Type,Model,Provider,Tokens,Billed USD,Model USD,Shogo fee USD')
     // Row 1 contains a comma in "A,lice" → must be quoted.
     expect(lines[1]).toContain('"A,lice"')
     // Row 2 contains a double-quote inside name → must be quoted + doubled.

@@ -3018,7 +3018,10 @@ export async function recordUsage(
         await billingService.ensureSystemWorkspace()
       }
       const billingModel = proxyModelToBillingModel(model)
-      const { rawUsd, pricingUnknown } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+      const { rawUsd, pricingUnknown, pricedAs } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+      // Record the model the cost was actually priced as (the real id for a
+      // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
+      const recordedModel = pricedAs ?? billingModel
       const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
       await prisma.usageEvent.create({
         data: {
@@ -3031,10 +3034,10 @@ export async function recordUsage(
           source: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false, ...(pricingUnknown ? { pricingUnknown } : {}) },
+          actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false, ...(pricingUnknown ? { pricingUnknown } : {}) },
         },
       })
-      console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${billingModel}) — not billed`)
+      console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${recordedModel}) — not billed`)
       invalidateAnalyticsCache({ workspaceId: tokenPayload.workspaceId, projectId: billingProjectId ?? undefined })
     } catch (err) {
       console.error('[AI Proxy] Failed to record internal usage:', err)
@@ -3064,7 +3067,10 @@ export async function recordUsage(
     // model's own per-token pricing (custom providers / admin-added models).
     // Passing the collapsed `billingModel` bucket here billed every DB model at
     // the `sonnet` fallback rate. `billingModel` is kept only for display.
-    const { rawUsd, billedUsd, pricingUnknown } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+    const { rawUsd, billedUsd, pricingUnknown, pricedAs } = calculateUsageCost(inputTokens, outputTokens, model, cachedInputTokens, cacheWriteTokens)
+    // Record the model the cost was actually priced as (the real id for a
+    // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
+    const recordedModel = pricedAs ?? billingModel
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
@@ -3077,11 +3083,11 @@ export async function recordUsage(
       actionType: 'ai_proxy_completion',
       rawUsd,
       billedUsd,
-      actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, ...(pricingUnknown ? { pricingUnknown } : {}) },
+      actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, ...(pricingUnknown ? { pricingUnknown } : {}) },
     })
 
     if (result.success) {
-      console.log(`[AI Proxy] 💰 Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${inputTokens} in, ${cacheWriteTokens} cache-write, ${cachedInputTokens} cache-read, ${outputTokens} out (${totalTokens} total, model: ${billingModel}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
+      console.log(`[AI Proxy] 💰 Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${inputTokens} in, ${cacheWriteTokens} cache-write, ${cachedInputTokens} cache-read, ${outputTokens} out (${totalTokens} total, model: ${recordedModel}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
     } else {
       console.warn(`[AI Proxy] ⚠️ Could not charge usage: ${result.error}`)
     }

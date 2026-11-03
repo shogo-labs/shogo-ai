@@ -360,6 +360,61 @@ describe('getUsageDashboard matches the pre-change read paths', () => {
   })
 
 
+  /**
+   * SHO-288: every spend figure is shown as Model cost + Shogo fee (+ anything
+   * billed before itemized billing). The three parts must add up to the total
+   * the user already saw, on both the SQL and the Node path.
+   */
+  test('the model-cost / Shogo-fee split adds up to the total on both paths', async () => {
+    const [dashboard, legacy] = await Promise.all([
+      analytics.getUsageDashboard(shapeScope, { period: PERIOD, page: 1, limit: 50 }),
+      analytics.getUsageSummary(shapeScope, PERIOD, { page: 1, limit: 50 }),
+    ])
+
+    // Two meta-only rows (rawUsd, dollarCost) and one column-only row are the
+    // model cost; the billed row with no recorded provider cost is unitemized.
+    expect(legacy.totals.modelCostUsd).toBeCloseTo(0.02316827, 9)
+    expect(legacy.totals.shogoFeeUsd).toBeCloseTo(0, 9)
+    expect(legacy.totals.unitemizedUsd).toBeCloseTo(0.002, 9)
+    expect(legacy.totals.shogoFeePercent).toBe(20)
+
+    expectSameNumbers(dashboard.summary.totals, legacy.totals)
+
+    for (const row of legacy.summaries) {
+      expect(row.modelCostUsd + row.shogoFeeUsd + row.unitemizedUsd).toBeCloseTo(
+        row.totalBilledUsd > 0 ? row.totalBilledUsd : row.totalRawUsd,
+        9,
+      )
+    }
+  })
+
+  test('a cloud row splits into model cost and a 20% fee', async () => {
+    const workspace = await db.workspace.create({
+      data: { name: 'Split Usage', slug: `${WORKSPACE_SLUG}-split`, kind: 'team' },
+    })
+    const user = await db.user.findFirst({ where: { name: 'Alice' } })
+    await db.usageEvent.create({
+      data: {
+        workspaceId: workspace.id,
+        memberId: user.id,
+        actionType: 'ai_proxy_completion',
+        source: 'daily',
+        billedUsd: 1.2,
+        rawUsd: 1,
+        balanceBefore: 0,
+        balanceAfter: 0,
+        createdAt: new Date(Date.now() - 60_000),
+        actionMetadata: { model: 'claude-sonnet-4-5', inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+      },
+    })
+    const data = await analytics.getUsageDashboard({ workspaceId: workspace.id }, { period: PERIOD })
+    expect(data.summary.totals.modelCostUsd).toBeCloseTo(1, 9)
+    expect(data.summary.totals.shogoFeeUsd).toBeCloseTo(0.2, 9)
+    expect(data.summary.totals.unitemizedUsd).toBeCloseTo(0, 9)
+    expect(data.timeseries.totals.modelCostUsd).toBeCloseTo(1, 9)
+    expect(data.timeseries.totals.shogoFeeUsd).toBeCloseTo(0.2, 9)
+  })
+
   test('a second summary page equals the legacy page', async () => {
     const [dashboard, legacy] = await Promise.all([
       analytics.getUsageDashboard(scope, { period: PERIOD, page: 2, limit: 3 }),

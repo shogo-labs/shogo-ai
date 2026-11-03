@@ -356,6 +356,13 @@ jobs:
         if: needs.prelude.outputs.verified != 'true'
         run: bun run lint
 
+      - name: Test iOS release scripts
+        if: needs.prelude.outputs.verified != 'true'
+        # The App Store pipeline only runs on tag pushes, where a broken helper
+        # costs a whole release — four of them were lost to one bad assumption
+        # (SHO-282). Keep the helpers covered on every PR instead.
+        run: ruby .github/scripts/test/ios_release_test.rb
+
       # Unit tests run with the other packages (apps/shogo-ide in TEST_PACKAGES).
       - name: Shogo Code extension (typecheck, phase checks)
         run: |

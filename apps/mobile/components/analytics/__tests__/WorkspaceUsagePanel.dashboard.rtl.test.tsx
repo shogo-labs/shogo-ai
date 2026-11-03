@@ -10,7 +10,7 @@
  */
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createElement } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 
@@ -93,8 +93,11 @@ mock.module('../WorkspaceActivitySection', () => ({ WorkspaceActivitySection: ()
 const realSharedAnalytics = await import('../SharedAnalytics')
 mock.module('../SharedAnalytics', () => ({
   ...realSharedAnalytics,
-  StatCard: ({ label, value }: any) =>
-    createElement('div', { 'data-testid': `stat-${label}` }, String(value)),
+  StatCard: ({ label, value, footer }: any) =>
+    createElement('div', { 'data-testid': `stat-${label}` }, [
+      createElement('span', { key: 'v', 'data-testid': `stat-value-${label}` }, String(value)),
+      footer ? createElement('div', { key: 'f', 'data-testid': `stat-footer-${label}` }, footer) : null,
+    ]),
   UsageTableSection: ({ onLogPageChange, logPage, onSummaryPageChange, summaryPage }: any) =>
     createElement('div', { 'data-testid': 'usage-table' }, [
       createElement('span', { key: 's', 'data-testid': 'summary-page' }, String(summaryPage)),
@@ -134,7 +137,16 @@ const dashboard = (over: Record<string, any> = {}) => ({
   },
   timeseries: {
     days: [],
-    totals: { totalSpendUsd: 0.5, totalIncludedUsd: 0.5, totalOnDemandUsd: 0, uniqueModels: 1 },
+    totals: {
+      totalSpendUsd: 0.5,
+      totalIncludedUsd: 0.5,
+      totalOnDemandUsd: 0,
+      uniqueModels: 1,
+      modelCostUsd: 0.4,
+      shogoFeeUsd: 0.1,
+      unitemizedUsd: 0,
+      shogoFeePercent: 20,
+    },
     models: [],
     groupBy: 'model',
     metric: 'spend',
@@ -171,6 +183,17 @@ describe('WorkspaceUsagePanel', () => {
     expect(workspaceId).toBe('ws_1')
     expect(params.period).toBe('7d')
     expect(params.limit).toBe('50')
+  })
+
+  test('the Spend section shows Model cost + Shogo fee under Total spend, adding up to it', async () => {
+    render(<WorkspaceUsagePanel />)
+    await waitFor(() => expect(getWorkspaceAnalytics).toHaveBeenCalledTimes(2))
+
+    expect(screen.getByTestId('stat-value-Total spend').textContent).toBe('$0.50')
+    const footer = await screen.findByTestId('stat-footer-Total spend')
+    expect(
+      within(footer).getByText(/Model \$0\.40 · Shogo fee \$0\.10 \(20%\)/),
+    ).toBeTruthy()
   })
 
   test('a chart group-by toggle issues exactly one request', async () => {
