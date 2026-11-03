@@ -119,6 +119,7 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
             <VoiceNotePlayer
               attachmentId={file.id}
               url={url}
+              mimeType={file.mimeType}
               durationMs={file.durationMs}
               peaks={file.peaks}
               name={file.name}

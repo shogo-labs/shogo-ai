@@ -92,15 +92,11 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     permissions:
       contents: read
-    # 60, not 40 (SHO-234). Setup is normally ~1m and green runs finish in
-    # 19-23m, but a run whose apt/download leg drags spends ~18m in
-    # `Install Playwright browsers` alone (17m43s, run 40506041201) on top of
-    # ~20m of specs — which lands on a 40m cap, so the job was *cancelled*
-    # mid-spec and uploaded nothing: the PR silently got no phone coverage.
-    # The specs step is bounded at 30m, so worst case here is ~20m of setup +
-    # 30m of specs; 60 leaves room for a loaded runner on top of that. Do not
-    # lower it back without re-checking that arithmetic.
-    timeout-minutes: 60
+    # Phone specs run serially across WebKit and Chromium emulation. A recent
+    # run exceeded the former 30m spec cap after 63 passing tests, so allow
+    # 45m for a loaded runner. Cold Playwright browser setup can take ~18m;
+    # the 75m job cap leaves setup and cleanup headroom beyond the spec cap.
+    timeout-minutes: 75
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -182,12 +178,12 @@ jobs:
       # --retries 0 is permanent here. Retries are exactly what hid the SHO-222
       # race: the badge assertion passed on the second attempt and the flake
       # never showed. If a phone spec is flaky, fix the spec.
-      # Its own bound, shorter than the job cap (SHO-234): an overrun here ends
+      # Its own bound, shorter than the job cap: an overrun here ends
       # as a *failed* `E2E (phone: ...)` check with `e2e-phone-report` uploaded.
       # A job-level cap instead *cancels* the run, and `if: failure()` does not
       # fire for `cancelled` — so the failure was invisible and artifact-free.
       - name: Run e2e/local phone specs
-        timeout-minutes: 30
+        timeout-minutes: 45
         env:
           E2E_LOCAL_START_STACK: '1'
         run: npx playwright test --config e2e/local/playwright.config.ts --project=${{ matrix.project }} --retries 0
