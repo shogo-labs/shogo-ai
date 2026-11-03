@@ -139,9 +139,12 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
 
   if (tool.state !== "success" || !url) return null;
 
-  const expires = isLocal ? null : `Link expires ${formatExpiry(expiresAt)}`;
+  const expires = `Link expires ${formatExpiry(expiresAt)}`;
+  // A local share has no expiry to report; the path is the useful detail.
   const subtitle = isLocal ? path : expires;
-  const actionLabel = isLocal ? `Open ${name}` : `Download ${name}. ${expires}`;
+  const actionLabel = isLocal ? `Open ${name}` : `Download ${name}`;
+  const chipTitle = `${actionLabel} · ${subtitle}`;
+  const accessibilityLabel = isLocal ? actionLabel : `Download ${name}. ${expires}`;
 
   return (
     <View className={cn("items-start", className)}>
@@ -150,9 +153,9 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
           onPress={download}
           disabled={busy}
           accessibilityRole="link"
-          accessibilityLabel={actionLabel}
+          accessibilityLabel={accessibilityLabel}
           // @ts-expect-error -- web-only tooltip
-          title={subtitle ? `${actionLabel} · ${subtitle}` : actionLabel}
+          title={chipTitle}
           testID="file-delivery-chip"
           className="shrink flex-row items-center gap-1.5 py-1 pl-2 pr-1.5 hover:bg-muted active:opacity-70"
         >
@@ -173,9 +176,9 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
           {copied ? <Check size={12} className="text-muted-foreground" /> : <Copy size={12} className="text-muted-foreground" />}
         </Pressable>
       </View>
-      {subtitle ? (
+      {isLocal ? (
         <Text className="mt-1 max-w-full text-[10px] text-muted-foreground" numberOfLines={1}>
-          {subtitle}
+          {path}
         </Text>
       ) : null}
       {error ? <Text className="mt-1 text-[10px] text-destructive">{error}</Text> : null}
