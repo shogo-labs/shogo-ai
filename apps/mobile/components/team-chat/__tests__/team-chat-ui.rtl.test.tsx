@@ -25,6 +25,10 @@ const personalLook = { color: '#FF7A8A', topper: 'cat-ears' }
 const hookMentionables: { value: unknown } = { value: null }
 /** Layout handlers the View shim captured, so a test can report a width. */
 const layoutHandlers = new WeakMap<Element, (event: unknown) => void>()
+/** Scroll calls the list shim received, so a test can assert where the list opened. */
+const listScrolls: Array<{ kind: 'index'; index: number; viewPosition: number } | { kind: 'offset'; offset: number }> = []
+/** The viewability callback the list registered, so a test can report what is on screen. */
+let reportViewable: ((info: { viewableItems: Array<{ index: number }> }) => void) | null = null
 /** Image load handlers the Image shim captured, so a test can report a size. */
 const imageLoadHandlers = new WeakMap<Element, (event: unknown) => void>()
 /** `Image.getSize` requests, so a test can answer the way web measures an image. */
@@ -107,13 +111,18 @@ mock.module('react-native', () =>
         onKeyDown: (e: any) => onKeyPress?.({ nativeEvent: { key: e.key, shiftKey: e.shiftKey }, preventDefault: () => e.preventDefault() }),
       })
     }),
-    FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent }: any, ref: any) {
+    FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent, onViewableItemsChanged }: any, ref: any) {
       // The list's own scroll node, as react-native-web reports it — where its
       // native `wheel` listener lives.
       const scroller = useRef<HTMLDivElement | null>(null)
+      if (onViewableItemsChanged) reportViewable = onViewableItemsChanged
       useImperativeHandle(ref, () => ({
-        scrollToIndex() {},
-        scrollToOffset() {},
+        scrollToIndex(info: { index: number; viewPosition: number }) {
+          listScrolls.push({ kind: 'index', index: info.index, viewPosition: info.viewPosition })
+        },
+        scrollToOffset(info: { offset: number }) {
+          listScrolls.push({ kind: 'offset', offset: info.offset })
+        },
         getScrollableNode: () => scroller.current,
       }))
       return createElement(
@@ -234,7 +243,9 @@ mock.module('../../../hooks/useChatShortcuts', () => ({
   useEditRequest: () => {},
   requestEditMessage: () => {},
 }))
-const activityTimeline: { messages: any[]; channels: any[] } = { messages: [], channels: [] }
+const activityTimeline: { messages: any[]; channels: any[]; hasMoreOlder?: boolean; older?: any[][] } = { messages: [], channels: [] }
+/** Pages the pane asked the timeline to load. */
+const loadOlderCalls: string[] = []
 /** People typing in the pane's scope; a running agent is the dock's business. */
 const typingUsers: Array<{ id: string; name: string }> = []
 /** Replies a pane asked the server to stop. */
@@ -246,11 +257,16 @@ mock.module('../../../hooks/useTeamChat', () => ({
   useConversationList: () => ({ list: activityTimeline.channels, loading: false, error: null, refresh: async () => {} }),
   useChannelDirectory: () => activityTimeline.channels,
   useConversationTimeline: () => ({
-    state: { messages: activityTimeline.messages, hasMoreOlder: false, streaming: {} },
+    state: { messages: activityTimeline.messages, hasMoreOlder: activityTimeline.hasMoreOlder ?? false, streaming: {} },
     loading: false,
     error: null,
-    getState: () => ({ messages: activityTimeline.messages, hasMoreOlder: false, streaming: {} }),
-    loadOlder: async () => {},
+    getState: () => ({ messages: activityTimeline.messages, hasMoreOlder: activityTimeline.hasMoreOlder ?? false, streaming: {} }),
+    loadOlder: async () => {
+      loadOlderCalls.push('older')
+      const page = activityTimeline.older?.shift()
+      if (page) activityTimeline.messages = [...page, ...activityTimeline.messages]
+      activityTimeline.hasMoreOlder = (activityTimeline.older?.length ?? 0) > 0
+    },
     react: async () => {},
     edit: () => {},
     remove: async () => {},
@@ -1361,6 +1377,139 @@ describe('MessageList unread line', () => {
     render(list({ unreadAfterSeq: 0, unreadNotLoaded: true, onRevealUnread }))
     fireEvent.click(screen.getByLabelText('Jump to first unread message'))
     expect(onRevealUnread).toHaveBeenCalledTimes(1)
+  })
+
+  test('the list opens at the latest message, never scrolled up to the unread line', () => {
+    listScrolls.length = 0
+    render(list({ unreadAfterSeq: 1 }))
+    expect(listScrolls).toEqual([])
+  })
+
+  test('no "New" line is drawn while the first unread is older than the loaded page', () => {
+    // The oldest loaded message is not the first unread, so marking it would lie.
+    render(list({ unreadAfterSeq: 0, unreadNotLoaded: true }))
+    expect(shim('new-messages-line')).toBeNull()
+  })
+
+  test('the pill counts the conversation\'s unread, not the loaded page', () => {
+    render(list({ unreadAfterSeq: 0, unreadNotLoaded: true, unreadCount: 120 }))
+    expect(screen.getByLabelText('Jump to first unread message').textContent).toContain('120 new messages')
+  })
+})
+
+describe('opening a channel with unread', () => {
+  const channel = (overrides: Record<string, unknown> = {}) => ({
+    id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
+    topic: null, lastSeq: 120, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+    joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 0,
+    canPost: true, canReply: true, canManage: false, members: [], ...overrides,
+  })
+  /** The conversation as the sidebar's list carries it — where the real unread count lives. */
+  const summary = (unreadCount: number) => ({ ...channel(), unreadCount, mentionCount: 0 })
+  const posted = (from: number, to: number) => {
+    const out: any[] = []
+    for (let seq = from; seq <= to; seq++) out.push(message({ id: `m${seq}`, seq, text: `message ${seq}` }))
+    return out
+  }
+  const renderPane = (conversation: any, props: Record<string, unknown> = {}) =>
+    render(
+      <TimelinePane
+        workspaceId="ws"
+        conversation={conversation}
+        me="u-me"
+        mentionables={{ ...mentionables, agents: [] }}
+        visible
+        {...props}
+      />,
+    )
+  const pill = () => screen.queryByLabelText('Jump to first unread message')
+
+  beforeEach(() => {
+    listScrolls.length = 0
+    loadOlderCalls.length = 0
+    reportViewable = null
+    activityTimeline.messages = []
+    activityTimeline.channels = []
+    activityTimeline.hasMoreOlder = false
+    activityTimeline.older = undefined
+  })
+  afterEach(() => {
+    cleanup()
+    activityTimeline.messages = []
+    activityTimeline.channels = []
+    activityTimeline.hasMoreOlder = false
+    activityTimeline.older = undefined
+  })
+
+  test('120 unread on a 50-message page: opens at the latest, pages nothing in, pill says 120', () => {
+    activityTimeline.messages = posted(71, 120)
+    activityTimeline.hasMoreOlder = true
+    activityTimeline.channels = [summary(120)]
+    renderPane(channel())
+
+    expect(listScrolls).toEqual([])
+    expect(loadOlderCalls).toEqual([])
+    expect(pill()!.textContent).toContain('120 new messages')
+    // The oldest loaded message is not the first unread, so no "New" line.
+    expect(shim('new-messages-line')).toBeNull()
+  })
+
+  test('tapping the pill seeks back to the true first unread and marks it', async () => {
+    activityTimeline.messages = posted(71, 120)
+    activityTimeline.hasMoreOlder = true
+    activityTimeline.older = [posted(1, 70)]
+    activityTimeline.channels = [summary(120)]
+    renderPane(channel())
+
+    fireEvent.click(pill()!)
+    await waitFor(() => expect(loadOlderCalls).toHaveLength(1))
+    await waitFor(() => expect(document.querySelector('[data-testid="message-highlighted"]')).not.toBeNull())
+    expect(document.querySelector('[data-testid="message-highlighted"]')!.textContent).toContain('message 1')
+    expect(shim('new-messages-line')!.parentElement?.textContent).toContain('message 1')
+  })
+
+  test('12 unread, all loaded: opens at the latest, pill says 12 and goes once the New line is on screen', () => {
+    activityTimeline.messages = posted(1, 12)
+    activityTimeline.channels = [summary(12)]
+    renderPane(channel({ lastSeq: 12 }))
+
+    expect(listScrolls).toEqual([])
+    act(() => reportViewable!({ viewableItems: [{ index: 0 }, { index: 1 }] }))
+    expect(pill()!.textContent).toContain('12 new messages')
+
+    fireEvent.click(pill()!)
+    expect(listScrolls).toEqual([{ kind: 'index', index: 11, viewPosition: 0.9 }])
+
+    act(() => reportViewable!({ viewableItems: [{ index: 0 }, { index: 11 }] }))
+    expect(pill()).toBeNull()
+    expect(shim('new-messages-line')).not.toBeNull()
+  })
+
+  test('3 unread: opens at the latest, the New line is visible, no pill', () => {
+    activityTimeline.messages = posted(1, 3)
+    activityTimeline.channels = [summary(3)]
+    renderPane(channel({ lastSeq: 3 }))
+
+    act(() => reportViewable!({ viewableItems: [{ index: 0 }, { index: 1 }, { index: 2 }] }))
+    expect(pill()).toBeNull()
+    expect(shim('new-messages-line')!.parentElement?.textContent).toContain('message 1')
+  })
+
+  test('a deep link still scrolls to its message', async () => {
+    activityTimeline.messages = posted(1, 12)
+    activityTimeline.channels = [summary(0)]
+    renderPane(channel({ lastSeq: 12, lastReadSeq: 12 }), { highlightMessageId: 'm4' })
+
+    await waitFor(() => expect(listScrolls).toContainEqual({ kind: 'index', index: 8, viewPosition: 0.5 }))
+  })
+
+  test('a thread has no unread pill', () => {
+    activityTimeline.messages = [message({ id: 'r1', seq: 2, threadRootId: 'root-1', text: 'a reply' })]
+    activityTimeline.channels = [summary(12)]
+    renderPane(channel({ lastSeq: 12 }), { threadRootId: 'root-1' })
+
+    expect(pill()).toBeNull()
+    expect(shim('new-messages-line')).toBeNull()
   })
 })
 
