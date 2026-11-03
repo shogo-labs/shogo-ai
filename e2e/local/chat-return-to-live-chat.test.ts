@@ -163,8 +163,15 @@ async function installMocks(page: Page): Promise<ReturnState> {
     const request = route.request()
     if (request.method() !== "GET") return route.continue()
     const url = new URL(request.url())
-    const sessionId = url.searchParams.get("sessionId") ?? "session-under-test"
-    state.sessions.add(sessionId)
+    // The reopen asks for the transcript one of two ways (SHO-260): a page read
+    // carries `?sessionId=`, and the delta a device with a saved cursor enables
+    // carries it in the path (`/chat-messages/session/:id/changes`). Both name
+    // the chat, so record whichever this request used — and nothing when it
+    // names none, so a request for the wrong chat can never pass as right.
+    const fromPath = url.pathname.match(/\/chat-messages\/session\/([^/]+)\//)?.[1]
+    const sessionId = url.searchParams.get("sessionId") ?? (fromPath ? decodeURIComponent(fromPath) : null)
+    if (sessionId) state.sessions.add(sessionId)
+    const rowSessionId = sessionId ?? "session-under-test"
 
     if (url.pathname.endsWith("/changes")) {
       state.deltaReads += 1
@@ -175,7 +182,7 @@ async function installMocks(page: Page): Promise<ReturnState> {
       const since = sinceRaw ? new Date(sinceRaw).getTime() : 0
       const items = state.rows
         .filter((row) => Number(row.updatedAt) >= since)
-        .map((row) => ({ ...row, sessionId }))
+        .map((row) => ({ ...row, sessionId: rowSessionId }))
       let cursor = 0
       for (const row of state.rows) cursor = Math.max(cursor, Number(row.updatedAt))
       await route.fulfill({
@@ -194,7 +201,7 @@ async function installMocks(page: Page): Promise<ReturnState> {
 
     state.pageReads += 1
     const newestFirst = state.rows
-      .map((row) => ({ ...row, sessionId }))
+      .map((row) => ({ ...row, sessionId: rowSessionId }))
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt))
     await route.fulfill({
       status: 200,
