@@ -73,7 +73,14 @@ export function isAllowedUnauthWebchatProxyPath(path: string): boolean {
 // API/Studio host, so they never reach these hosts.
 export function isUserAppProxyPath(path: string): boolean {
   return /^\/api\/preview\/[^/]+\/(?:ports\/[^/]+\/)?render(?:\/|$)/.test(path) ||
-    /^\/api\/published\/[^/]+\/api(?:\/|$)/.test(path)
+    isPublishedApiProxyPath(path)
+}
+
+// A metal published site's `/api/*`. On Knative the Worker reaches the app's
+// pod directly, so the app answers CORS itself; this proxy must behave the
+// same, so the API's CORS middleware stays out of it entirely.
+export function isPublishedApiProxyPath(path: string): boolean {
+  return /^\/api\/published\/[^/]+\/api(?:\/|$)/.test(path)
 }
 
 // The root preview proxy only. It forwards none of the visitor's cookies or

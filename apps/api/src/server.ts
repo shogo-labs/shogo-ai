@@ -184,6 +184,7 @@ import {
   apiAuthGate,
   isAllowedUnauthWebchatProxyPath,
   isPublicPreviewRenderPath,
+  isPublishedApiProxyPath,
   isTokenGatedThumbnailPath,
   isUserAppProxyPath,
 } from './middleware/api-auth-gate'
@@ -725,7 +726,7 @@ const getAllowedOrigins = (): string[] => {
 
 // Enable CORS for development and production
 const allowedOrigins = getAllowedOrigins()
-app.use('/*', cors({
+const apiCors = cors({
   origin: (origin, c) => {
     // Webchat widget requests come from external websites — allow any origin
     const reqPath = new URL(c.req.url).pathname
@@ -753,7 +754,11 @@ app.use('/*', cors({
   },
   credentials: true,
   exposeHeaders: ['Content-Disposition'],
-}))
+})
+app.use('/*', (c, next) => {
+  if (isPublishedApiProxyPath(new URL(c.req.url).pathname)) return next()
+  return apiCors(c, next)
+})
 
 // CSRF protection — validates Origin header on state-changing requests (POST/PUT/PATCH/DELETE).
 // Skips webhook and internal endpoints that use their own auth (signatures, tokens).
@@ -2507,6 +2512,8 @@ const publishedApiHandler = async (c: any) => {
       'content-type', 'accept', 'accept-encoding', 'accept-language',
       'user-agent', 'range', 'if-none-match', 'if-modified-since', 'cache-control',
       'cookie', 'authorization', 'x-forwarded-for', 'x-forwarded-host',
+      // The app answers CORS itself (isPublishedApiProxyPath skips the API's).
+      'origin', 'access-control-request-method', 'access-control-request-headers',
     ]) {
       const v = c.req.header(h)
       if (v) headers.set(h, v)

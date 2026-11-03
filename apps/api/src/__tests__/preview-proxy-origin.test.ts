@@ -15,7 +15,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { csrf } from 'hono/csrf'
 import { HTTPException } from 'hono/http-exception'
-import { isPublicPreviewRenderPath, isUserAppProxyPath } from '../middleware/api-auth-gate'
+import { isPublicPreviewRenderPath, isPublishedApiProxyPath, isUserAppProxyPath } from '../middleware/api-auth-gate'
 
 const STUDIO = 'https://studio.shogo.ai'
 const PID = '580b192d-e6bd-410e-833b-f0c473ef6890'
@@ -24,14 +24,18 @@ const PREVIEW_ORIGIN = `https://${PID}.preview.shogo.ai`
 function buildApp(): Hono {
   const app = new Hono()
   app.onError((err) => (err instanceof HTTPException ? err.getResponse() : new Response('boom', { status: 500 })))
-  app.use('/*', cors({
+  const apiCors = cors({
     origin: (origin, c) => {
       const p = new URL(c.req.url).pathname
       if (isPublicPreviewRenderPath(p)) return origin || '*'
       return origin === STUDIO ? origin : STUDIO
     },
     credentials: true,
-  }))
+  })
+  app.use('/*', (c, next) => {
+    if (isPublishedApiProxyPath(new URL(c.req.url).pathname)) return next()
+    return apiCors(c, next)
+  })
   const csrfMw = csrf({ origin: (origin) => origin === STUDIO })
   app.use('/api/*', async (c, next) => {
     const p = new URL(c.req.url).pathname
@@ -39,6 +43,8 @@ function buildApp(): Hono {
     if (!c.req.header('origin') && !c.req.header('referer')) return next()
     return csrfMw(c, next)
   })
+  app.all('/api/published/:sub/api/*', (c) =>
+    c.req.method === 'OPTIONS' ? c.body(null, 204, { 'x-answered-by': 'app' }) : c.json({ reached: true }))
   app.all('/api/*', (c) => c.json({ reached: true }))
   return app
 }
@@ -72,7 +78,7 @@ describe('user-app proxy paths skip the Studio CSRF allow-list', () => {
     expect((await post(app, '/api/projects/x', STUDIO)).status).toBe(200)
   })
 
-  test('preflight from another site to a preview is allowed; elsewhere it is not', async () => {
+  test('preflight: preview echoes the origin, published goes to the app, the rest stay Studio-only', async () => {
     const app = buildApp()
     const preflight = (path: string) => app.fetch(new Request(`http://api.test${path}`, {
       method: 'OPTIONS',
@@ -87,6 +93,9 @@ describe('user-app proxy paths skip the Studio CSRF allow-list', () => {
     expect(ok.headers.get('access-control-allow-headers')).toContain('content-type')
     const port = await preflight(`/api/preview/${PID}/ports/3000/render/api/signup`)
     expect(port.headers.get('access-control-allow-origin')).toBe(STUDIO)
+    const published = await preflight('/api/published/samsara-api/api/signup')
+    expect(published.headers.get('x-answered-by')).toBe('app')
+    expect(published.headers.get('access-control-allow-origin')).toBeNull()
     const other = await preflight('/api/projects/x')
     expect(other.headers.get('access-control-allow-origin')).toBe(STUDIO)
   })
