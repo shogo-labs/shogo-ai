@@ -183,6 +183,7 @@ import {
   type ReplayTurnStart,
 } from "./resume-replay-transport"
 import { resolveRejoinView } from "./rejoin-view"
+import { rejoinProbeVerdict } from "./rejoin-probe"
 import { markStoppedTail, mergeStoppedSnapshot } from "./stopped-turn"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useBillingData } from "@shogo/shared-app/hooks"
@@ -5775,18 +5776,37 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // A turn this window stopped is not a turn to attach to, even while
         // the runtime still reports it (stop reaches it a beat later).
         const stopped = turn.turnId !== null && turn.turnId === stoppedTurnIdRef.current
-        if (isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)) {
+        const verdict = rejoinProbeVerdict({
+          live: isLiveTurnOtherThan(turn, stoppedTurnIdRef.current),
+          stopped,
+          expectedLive,
+        })
+        if (verdict === "attach") {
           guardedAutoResumeStream("live-turn-probe")
-        } else if (expectedLive && !stopped) {
+        } else if (verdict === "reload") {
           setTimeout(
             () => reloadAndAttachLiveTurnRef.current({ settle: false }),
             750,
           )
+        } else {
+          // Nothing to join, so stop rejoining: a chat whose turn is over — or
+          // one the runtime never buffered — shows the reply the person already
+          // has, instead of hiding it behind the row for the full 8 s. This is
+          // the leave condition for the *reused* paint-time answer too, which
+          // never passes through `probeLiveTurn`'s own exit (SHO-297).
+          giveUpRejoin()
         }
       })
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projectId, localAgentUrl, chatWorkspaceId, guardedAutoResumeStream, probeLiveTurn],
+    [
+      projectId,
+      localAgentUrl,
+      chatWorkspaceId,
+      guardedAutoResumeStream,
+      probeLiveTurn,
+      giveUpRejoin,
+    ],
   )
 
   /**

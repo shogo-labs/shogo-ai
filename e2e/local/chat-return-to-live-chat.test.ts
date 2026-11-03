@@ -605,17 +605,60 @@ test.describe("rejoining a turn that is still running", () => {
 
     moveToStaleTail(state)
     // The runtime has no buffer for the chat (`/turn` 404s) and history still
-    // ends unfinished: SHO-274 behaviour — show what the person read.
+    // ends unfinished: SHO-274 behaviour — show what the person read. The bound
+    // below is what proves it: the reply is back in about a round-trip, not
+    // after the 8 s rejoin timeout.
     state.turnStatus = "unknown"
     await page.reload()
 
     await expect(
+      page.getByText(RETURN_PROMPT, { exact: false }).first(),
+      "the chat reopened",
+    ).toBeVisible({ timeout: 60_000 })
+    const paintedAt = Date.now()
+
+    await expect(
       page.getByText("old-words", { exact: false }).first(),
-      "the saved reply comes back once the probe says there is no live turn",
-    ).toBeVisible({ timeout: 20_000 })
+      "the saved reply comes back as soon as the probe says there is no live turn",
+    ).toBeVisible({ timeout: 3_000 })
+    expect(
+      Date.now() - paintedAt,
+      "the saved reply was hidden for the full rejoin timeout instead of shown as-is",
+    ).toBeLessThanOrEqual(3_000)
     await expect(
       page.getByTestId(REJOIN_ROW),
       "the rejoin row does not spin forever",
+    ).toHaveCount(0)
+  })
+
+  test("a reply the person stopped is never hidden behind the row", async ({ page }) => {
+    const state = await installMocks(page)
+    await openProjectChat(page)
+
+    // The tail carries the stop stamp, exactly as `handleStop` writes it. A
+    // stopped reply is history the person has read, so a reopen paints it
+    // straight away and offers no row (SHO-297).
+    const base = Date.now() - 120_000
+    state.rows = [
+      savedRow("m-prompt", "", "user", RETURN_PROMPT, base),
+      {
+        ...savedRow("m-stopped", "", "assistant", "stopped-words", base + 1_000),
+        parts: [
+          { type: "text", text: "stopped-words" },
+          { type: "data-turn-stopped", data: { at: base + 1_000 } },
+        ],
+      },
+    ]
+    state.turnStatus = "active"
+    await page.reload()
+
+    await expect(
+      page.getByText("stopped-words", { exact: false }).first(),
+      "the stopped reply is painted straight away",
+    ).toBeVisible({ timeout: 60_000 })
+    await expect(
+      page.getByTestId(REJOIN_ROW),
+      "a stopped reply is not treated as a rejoining tail",
     ).toHaveCount(0)
   })
 

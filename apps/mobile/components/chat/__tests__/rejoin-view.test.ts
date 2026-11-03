@@ -15,6 +15,7 @@
 import { describe, expect, test } from "bun:test"
 import type { UIMessage } from "ai"
 import { resolveRejoinView } from "../rejoin-view"
+import { rejoinProbeVerdict } from "../rejoin-probe"
 import { TURN_INTERRUPTED_PART_TYPE } from "../resume-replay-transport"
 import { TURN_STOPPED_PART_TYPE } from "../stopped-turn"
 
@@ -132,5 +133,51 @@ describe("resolveRejoinView", () => {
     resolveRejoinView({ messages, rejoining: true })
 
     expect(messages).toHaveLength(2)
+  })
+})
+
+/**
+ * The post-history `/turn` decision (SHO-297).
+ *
+ * Regression locked down here (QA found it after the first round): the
+ * paint-time probe answers with `drivesRejoin: false`, and the history load
+ * reuses that answer instead of calling `probeLiveTurn` again — so the
+ * leave-the-row condition inside `probeLiveTurn` never runs for it. A chat
+ * whose turn was over, or that the runtime never buffered, kept "Rejoining
+ * live reply…" up for the full 8 s timeout with the saved reply hidden behind
+ * it. "No live turn and nothing expected" must be a give-up, exactly like a
+ * fresh probe.
+ */
+describe("rejoinProbeVerdict", () => {
+  test("a live turn is attached to", () => {
+    expect(rejoinProbeVerdict({ live: true, stopped: false, expectedLive: false })).toBe(
+      "attach",
+    )
+  })
+
+  test("a live turn is attached to even when one was expected", () => {
+    expect(rejoinProbeVerdict({ live: true, stopped: false, expectedLive: true })).toBe(
+      "attach",
+    )
+  })
+
+  test("no live turn and nothing expected stops rejoining", () => {
+    // The blocker: this used to do nothing, so the rejoin row outlived the
+    // probe by the whole 8 s timeout and hid the saved reply.
+    expect(rejoinProbeVerdict({ live: false, stopped: false, expectedLive: false })).toBe(
+      "give-up",
+    )
+  })
+
+  test("no live turn after a stop this window sent stops rejoining", () => {
+    expect(rejoinProbeVerdict({ live: false, stopped: true, expectedLive: true })).toBe(
+      "give-up",
+    )
+  })
+
+  test("a turn that was expected but is not there yet reloads once", () => {
+    expect(rejoinProbeVerdict({ live: false, stopped: false, expectedLive: true })).toBe(
+      "reload",
+    )
   })
 })
