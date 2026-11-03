@@ -12,6 +12,7 @@ import {
   pathFromFileHref,
   resolveChatFilePath,
   resolveRelativeLinks,
+  rewriteLocalFileLinks,
 } from "../file-links"
 
 const PROJECT = "6c2a5faf-9683-4cf1-b3d1-bfdab2e912a9"
@@ -313,5 +314,38 @@ describe("mention targets", () => {
     // renderer keys the highlight off.
     expect(isMentionHref("/shogo-mention")).toBe(true)
     expect(isMentionHref("/shogo-mention/u/u1")).toBe(true)
+  })
+})
+
+
+describe("rewriteLocalFileLinks", () => {
+  test("rewrites a bare file:// URL into an in-app local href", () => {
+    const out = rewriteLocalFileLinks("Here it is: file:///Users/me/Application%20Support/report.pdf")
+    expect(out).toContain("[report.pdf](/shogo-local-file?path=")
+    expect(out).toContain(encodeURIComponent("/Users/me/Application Support/report.pdf"))
+    expect(out).not.toContain("file://")
+  })
+
+  test("rewrites an explicit markdown link target and keeps its label", () => {
+    const out = rewriteLocalFileLinks("[the report](file:///Users/me/out/report.pdf)")
+    expect(out).toBe("[the report](/shogo-local-file?path=%2FUsers%2Fme%2Fout%2Freport.pdf)")
+  })
+
+  test("leaves a file:// inside code alone", () => {
+    const fenced = "```\nfile:///Users/me/report.pdf\n```"
+    expect(rewriteLocalFileLinks(fenced)).toBe(fenced)
+    const inline = "`file:///Users/me/report.pdf`"
+    expect(rewriteLocalFileLinks(inline)).toBe(inline)
+  })
+
+  test("drops sentence punctuation after a bare URL", () => {
+    const out = rewriteLocalFileLinks("See file:///Users/me/report.pdf.")
+    expect(out).toContain("(/shogo-local-file?path=%2FUsers%2Fme%2Freport.pdf)")
+    expect(out.endsWith(".")).toBe(true)
+  })
+
+  test("is a no-op when there is no file:// link", () => {
+    const text = "Nothing to see [here](https://example.com)."
+    expect(rewriteLocalFileLinks(text)).toBe(text)
   })
 })

@@ -81,6 +81,13 @@ export interface DesktopBridge {
   pickFolders?: (opts?: { multi?: boolean; defaultPath?: string }) => Promise<
     { ok: true; paths: string[] } | { ok: false; error?: string }
   >
+  /**
+   * Show a file that lives on this machine in Finder (Explorer on Windows),
+   * or open it with the OS's default app. Main re-checks that the path is
+   * inside a workspace or a folder-linked project before touching `shell`.
+   */
+  revealPath?: (path: string) => Promise<{ ok: boolean; error?: string }>
+  openPath?: (path: string) => Promise<{ ok: boolean; error?: string }>
   permissions?: {
     getStatus: () => Promise<PermissionStatus>
     request: (kind: PermissionKind) => Promise<PermissionRequestResult>

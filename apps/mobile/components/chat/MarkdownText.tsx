@@ -22,6 +22,7 @@ import {
   linkifyFilePaths,
   mentionTargetFromHref,
   pathFromFileHref,
+  rewriteLocalFileLinks,
   rewriteWorkspaceMedia,
   resolveRelativeLinks,
   type MentionTarget,
@@ -633,7 +634,9 @@ export const MarkdownText = memo(function MarkdownText({
   );
 
   const value = useMemo(() => {
-    const normalized = withHardBreaks(rewriteWorkspaceMedia(normalizeRichTextPaste(children || "")));
+    const normalized = withHardBreaks(
+      rewriteLocalFileLinks(rewriteWorkspaceMedia(normalizeRichTextPaste(children || ""))),
+    );
     // A bare relative href has no opener on a device; resolve it before the
     // markdown parser turns it into a link nothing can open.
     const resolved = resolveRelativeLinks(normalized, { fileLinks: !!onFilePress });

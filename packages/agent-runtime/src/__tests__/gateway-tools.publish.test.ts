@@ -13,7 +13,9 @@
  * build pipeline runs.
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { mkdirSync, realpathSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import * as realInternalApi from '../internal-api'
 import type { ToolContext } from '../gateway-tools'
 
@@ -116,6 +118,10 @@ beforeEach(() => {
   delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
   delete process.env.WORKSPACE_PROJECT_IDS
   delete process.env.WORKSPACE_ID
+  // This checkout is itself a local desktop runtime, so SHOGO_LOCAL_MODE is
+  // set in the ambient env. Pin it off per test; the local-mode suite turns it
+  // back on explicitly.
+  delete process.env.SHOGO_LOCAL_MODE
   publishCalls = []
   sharedFileCalls = []
   workspaceSharedFileCalls = []
@@ -504,4 +510,79 @@ describe('publish tool copy (Pro-plan disclosure + no hard-refresh advice)', () 
     const note = String(details.note ?? '')
     expect(note).not.toMatch(/hard refresh|ctrl\+shift\+r|cmd\+shift\+r|clear (your )?cache|refresh once|refresh after/i)
   }, 15000)
+})
+
+// ---------------------------------------------------------------------------
+// Local desktop: the file is already on this machine's disk, so `share_file`
+// hands out a `file://` link instead of minting a token (SHO-302).
+// ---------------------------------------------------------------------------
+describe('share_file on local desktop', () => {
+  const prevLocalMode = process.env.SHOGO_LOCAL_MODE
+
+  afterEach(() => {
+    if (prevLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+    else process.env.SHOGO_LOCAL_MODE = prevLocalMode
+  })
+
+  test('returns a file:// link to the real path and never mints a token', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    writeFileSync(`${TEST_DIR}/local-report.pdf`, 'pdf bytes')
+
+    const result = await runShareFile(baseCtx(), { path: 'local-report.pdf' })
+
+    expect(result).toMatchObject({
+      ok: true,
+      local: true,
+      url: `file://${TEST_DIR}/local-report.pdf`,
+      path: `${TEST_DIR}/local-report.pdf`,
+      linkPath: 'local-report.pdf',
+      filename: 'local-report.pdf',
+      size: 9,
+    })
+    expect(result.expiresAt).toBeUndefined()
+    expect(sharedFileCalls).toHaveLength(0)
+    expect(workspaceSharedFileCalls).toHaveLength(0)
+  })
+
+  test('a folder-linked project file links to the real repo path, not the symlink', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    const realRepo = realpathSync(mkdtempSync(join(tmpdir(), 'sho302-repo-')))
+    writeFileSync(join(realRepo, 'report.pdf'), 'pdf')
+    const link = join(TEST_DIR, 'linked-project')
+    try {
+      symlinkSync(realRepo, link)
+    } catch {
+      return // a platform without symlink permission: covered by the test above
+    }
+
+    const result = await runShareFile(baseCtx(), { path: 'linked-project/report.pdf' })
+
+    expect(result.local).toBe(true)
+    expect(result.url).toBe(`file://${realRepo}/report.pdf`)
+    expect(result.path).toBe(`${realRepo}/report.pdf`)
+    expect(sharedFileCalls).toHaveLength(0)
+  })
+
+  test('a path with spaces is percent-encoded in the URL', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    mkdirSync(`${TEST_DIR}/Application Support`, { recursive: true })
+    writeFileSync(`${TEST_DIR}/Application Support/report.pdf`, 'pdf')
+
+    const result = await runShareFile(baseCtx(), { path: 'Application Support/report.pdf' })
+
+    expect(result.url).toBe(`file://${TEST_DIR}/Application%20Support/report.pdf`)
+    expect(result.path).toBe(`${TEST_DIR}/Application Support/report.pdf`)
+  })
+
+  test('with SHOGO_LOCAL_MODE unset the token link is unchanged', async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    writeFileSync(`${TEST_DIR}/cloud-report.pdf`, 'pdf bytes')
+
+    const result = await runShareFile(baseCtx(), { path: 'cloud-report.pdf' })
+
+    expect(result.local).toBeUndefined()
+    expect(result.url).toBe('https://api.example/f/signed-token')
+    expect(result.expiresAt).toBe('2026-10-03T00:00:00.000Z')
+    expect(sharedFileCalls).toHaveLength(1)
+  })
 })
