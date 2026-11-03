@@ -363,6 +363,12 @@ jobs:
         # (SHO-282). Keep the helpers covered on every PR instead.
         run: ruby .github/scripts/test/ios_release_test.rb
 
+      - name: Test Prisma migration Job retry
+        if: needs.prelude.outputs.verified != 'true'
+        # The migration Job only runs in a production region deploy; a lock
+        # timeout there reds the release (SHO-275). Cover it on every PR.
+        run: bash .github/scripts/test/prisma_migrate_retry_test.sh
+
       # Unit tests run with the other packages (apps/shogo-ide in TEST_PACKAGES).
       - name: Shogo Code extension (typecheck, phase checks)
         run: |

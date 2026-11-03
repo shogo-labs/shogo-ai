@@ -16,6 +16,8 @@ import type { ToolCallData } from "../tools/types"
 import { parseShellCommand, sepLabel } from "../tools/summary"
 import { CredentialChip } from "./CredentialChip"
 import { CodeText } from "../CodeText"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NATIVE_ACTIVITY_LABEL } from "../NativeActivitySheet"
 import { Spin } from "@/components/ui/Spin";
 
 const MAX_OUTPUT_LINES = 30
@@ -104,6 +106,7 @@ function ExecWidgetImpl({
 }: ExecWidgetProps) {
   const [internalExpanded, setInternalExpanded] = useState(false)
   const [showFull, setShowFull] = useState(false)
+  const nativePhone = useIsNativePhoneLayout()
 
   const isExpanded = controlledExpanded ?? internalExpanded
   const handleToggle = () => {
@@ -159,7 +162,13 @@ function ExecWidgetImpl({
             )}
           </View>
         )}
-        <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
+        <Text
+          className={cn(
+            "flex-1",
+            nativePhone ? NATIVE_ACTIVITY_LABEL : "text-[11px] text-muted-foreground",
+          )}
+          numberOfLines={1}
+        >
           <Text className="font-medium text-muted-foreground">{summary.verb}</Text>
           {summary.target ? (
             <Text className="text-foreground"> {summary.target}</Text>

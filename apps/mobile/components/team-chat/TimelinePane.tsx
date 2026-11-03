@@ -18,7 +18,7 @@ import { useComposerColumnStyle } from '../chat/composer/useComposerColumnStyle'
 import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
 import { TIMELINE_SOFT_LIMIT, useChannelDirectory, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
-import { threadCrumbs } from '../../lib/team-chat-nav'
+import { openConversationTarget, threadCrumbs } from '../../lib/team-chat-nav'
 import { composerAutofocusesOnOpen } from '../../lib/composer-autofocus'
 import { nonMemberMentionIds } from '../../lib/team-chat-mention-nudge'
 import { dismissMentionNudgeForever, getMentionNudgeDismissed } from '../../lib/mention-nudge-preference'
@@ -143,10 +143,7 @@ export function TimelinePane(props: TimelinePaneProps) {
     const openProfile = props.onOpenProfile
     return (target: MentionTarget) => {
       if (target.kind === 'c') {
-        router.push({
-          pathname: '/(app)/c/[conversationId]',
-          params: { conversationId: target.id },
-        } as any)
+        openConversationTarget(router, { conversationId: target.id })
         return
       }
       if (!openProfile) return
@@ -194,6 +191,14 @@ export function TimelinePane(props: TimelinePaneProps) {
       : null,
   )
   const [readPaused, setReadPaused] = useState(false)
+  // The conversation's real unread count when it opened, from the list's own
+  // summary: the loaded page caps at 50, so counting loaded messages is wrong.
+  const summaryUnread = channelDirectory.find((c) => c.id === conversation.id)?.unreadCount
+  const [unreadTotal, setUnreadTotal] = useState<number | null>(null)
+  useEffect(() => {
+    if (unreadTotal !== null || !unread || summaryUnread === undefined) return
+    setUnreadTotal(summaryUnread)
+  }, [unreadTotal, unread, summaryUnread])
   useMarkReadWhileVisible(threadRootId || !conversation.joined ? null : conversation.id, newestSeq, visible, readPaused)
 
   const onMarkUnread = useCallback((m: ChatMessage) => {
@@ -431,6 +436,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       unreadAfterSeq={filtering ? null : unread?.afterSeq ?? null}
       unreadUpToSeq={unread?.upToSeq}
       unreadNotLoaded={filtering ? false : unreadNotLoaded}
+      unreadCount={filtering ? null : unreadTotal}
       onRevealUnread={onRevealUnread}
       highlightId={highlight}
       insets={listInsets}

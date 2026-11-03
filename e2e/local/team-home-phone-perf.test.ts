@@ -150,13 +150,21 @@ test.describe("Team Home on a phone with 150 channels, 150 projects and 150 mess
         return { found: true, atEnd, top: scroller.scrollTop, height: scroller.scrollHeight }
       })
 
+    // Rows can be in the DOM before the list has laid out its scroll box (slow
+    // WebKit on CI), so wait for the box instead of reading it once.
+    await expect
+      .poll(async () => (await scrollToBottom()).found, {
+        message: "the Home feed has no scroll box",
+        timeout: 15_000,
+      })
+      .toBe(true)
+
     let peak = await rows(page).count()
     let reachedEnd = false
     let steps = 0
     let lastHeight = -1
     for (; steps < 200 && !reachedEnd; steps += 1) {
       const step = await scrollToBottom()
-      if (steps === 0) expect(step.found, "the Home feed has no scroll box").toBe(true)
       await page.waitForTimeout(120)
       peak = Math.max(peak, await rows(page).count())
       // "At the bottom" is only the end once the content has stopped growing:

@@ -18,6 +18,7 @@ import { AgentDefaultModelCard } from '../settings/AgentDefaultModelCard'
 import { AgentProfileBody, useAgentCard } from './AgentProfileBody'
 import { buddyAvatarColor } from './BuddyAvatar'
 import { useAgentLookEditor } from './useAgentLookEditor'
+import { openConversationTarget } from '../../lib/team-chat-nav'
 
 const SIDE_PANE_MIN_WIDTH = 1024
 
@@ -93,7 +94,7 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
               <AgentProfileBody
                 card={card}
                 onToggleMute={toggleMute}
-                onOpenChannel={(id) => router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: id } } as any)}
+                onOpenChannel={(id) => openConversationTarget(router, { conversationId: id })}
                 showModel={!!projectId}
               />
             </View>

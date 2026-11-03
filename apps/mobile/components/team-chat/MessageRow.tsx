@@ -25,6 +25,7 @@ import {
   type ReactionSummary,
 } from '../../lib/team-chat-api'
 import { messageLink, openMessageLinkInApp } from '../../lib/team-chat-links'
+import { openConversationTarget } from '../../lib/team-chat-nav'
 import { extractMessageQuotes } from '../../lib/message-quotes'
 import { previewOptOutMatcher } from '../../lib/link-preview-consent'
 import { MessageQuoteCards } from './MessageQuoteCard'
@@ -188,9 +189,7 @@ function initials(name: string): string {
 
 /** Open a channel from an agent's profile card. */
 function openConversationInApp(conversationId: string): void {
-  void import('expo-router').then(({ router }) =>
-    router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId } } as any),
-  )
+  void import('expo-router').then(({ router }) => openConversationTarget(router, { conversationId }))
 }
 
 function Avatar({ message, onPress }: { message: ChatMessage; onPress?: () => void }) {
@@ -924,9 +923,7 @@ function MessageRowImpl(props: MessageRowProps) {
   /** Open the card pane: its thread when the post is in a channel, the inbox otherwise. */
   const openWorkItem = (item: WorkItemBlock) => {
     if (message.conversationId) {
-      const params: Record<string, string> = { conversationId: message.conversationId, card: item.id }
-      if (item.boardId) params.board = item.boardId
-      router.push({ pathname: '/(app)/c/[conversationId]', params } as any)
+      openConversationTarget(router, { conversationId: message.conversationId, card: item.id, board: item.boardId })
       return
     }
     router.push({ pathname: '/(app)/work', params: { card: item.id } } as any)
@@ -1108,6 +1105,18 @@ function MessageRowImpl(props: MessageRowProps) {
       if (!target) return
       if (target.type === 'url') {
         void Linking.openURL(target.url)
+        return
+      }
+      // An activity line about a channel message opens it the way any other
+      // thread open does, so one thread at a time holds here too.
+      if (target.pathname === '/(app)/c/[conversationId]' && target.params.conversationId) {
+        openConversationTarget(router, {
+          conversationId: target.params.conversationId,
+          thread: target.params.thread,
+          msg: target.params.msg,
+          board: target.params.board,
+          card: target.params.card,
+        })
         return
       }
       router.push({ pathname: target.pathname, params: target.params } as any)
@@ -1309,7 +1318,7 @@ function MessageRowImpl(props: MessageRowProps) {
             {questionRefs.map((ref) => (
               <Pressable
                 key={`${ref.messageId}:${ref.questionId}`}
-                onPress={() => router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: message.conversationId, msg: ref.messageId } } as any)}
+                onPress={() => openConversationTarget(router, { conversationId: message.conversationId, msg: ref.messageId })}
                 accessibilityRole="link"
                 className="mt-1 flex-row items-center gap-1.5 self-start rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 active:bg-amber-500/20"
                 testID="question-ref"

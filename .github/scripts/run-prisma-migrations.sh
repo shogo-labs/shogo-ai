@@ -35,6 +35,15 @@
 # deploy reported success). DATABASE_URL is mounted from the existing
 # postgres-credentials secret rather than decoded into the manifest.
 #
+# Advisory-lock contention (SHO-275): the region's new api revision runs
+# `migrate deploy` from its entrypoint as soon as the manifests are applied,
+# so this Job usually races it for Prisma's advisory lock and the loser
+# times out after 10 s with P1002. The Job therefore runs
+# lib/prisma-migrate-retry.sh, which retries only lock timeouts with bounded
+# backoff (~5 min, inside DEADLINE_SECONDS) and fails fast on anything else.
+# The script travels in the Job spec (base64), not the image, so it also
+# works when rolling back to an image built before it existed.
+#
 # Usage:
 #   .github/scripts/run-prisma-migrations.sh <namespace> <api-image>
 
@@ -42,6 +51,9 @@ set -euo pipefail
 
 NS="${1:?namespace required}"
 IMAGE="${2:?api image required}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RETRY_B64="$(base64 < "$SCRIPT_DIR/lib/prisma-migrate-retry.sh" | tr -d '\n')"
 
 JOB="prisma-migrate-$(date +%s)"
 DEADLINE_SECONDS=900
@@ -64,6 +76,7 @@ spec:
   # One shot. A genuine migration failure (e.g. P3009) must fail the
   # deploy immediately, not silently retry. A slow image pull keeps the
   # pod Pending (not Failed), so backoffLimit: 0 does not punish it.
+  # Advisory-lock timeouts are retried inside the pod (see header).
   backoffLimit: 0
   activeDeadlineSeconds: ${DEADLINE_SECONDS}
   ttlSecondsAfterFinished: 120
@@ -73,8 +86,10 @@ spec:
       containers:
         - name: migrate
           image: ${IMAGE}
-          command: ["sh", "-c", "cd /app && bunx prisma migrate deploy"]
+          command: ["sh", "-c", "cd /app && echo \"\$MIGRATE_RETRY_SH\" | base64 -d > /tmp/prisma-migrate-retry.sh && sh /tmp/prisma-migrate-retry.sh"]
           env:
+            - name: MIGRATE_RETRY_SH
+              value: "${RETRY_B64}"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

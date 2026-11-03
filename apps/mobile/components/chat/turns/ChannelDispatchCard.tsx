@@ -13,7 +13,7 @@ import { Hash, MessageSquare } from "lucide-react-native"
 import { useRouter } from "expo-router"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { ChannelDispatch } from "@shogo/shared-app/chat"
-import { conversationThreadRoute } from "../../../lib/team-chat-nav"
+import { openConversationTarget } from "../../../lib/team-chat-nav"
 import { ChatMarkdown } from "../ChatMarkdown"
 
 export interface ChannelDispatchCardProps {
@@ -74,12 +74,10 @@ export function ChannelDispatchCard({
         <View className="gap-1.5">
           <Pressable
             onPress={() =>
-              router.push(
-                conversationThreadRoute(
-                  dispatch.conversationId,
-                  dispatch.threadRootId,
-                ) as any,
-              )
+              openConversationTarget(router, {
+                conversationId: dispatch.conversationId,
+                thread: dispatch.threadRootId,
+              })
             }
             accessibilityRole="button"
             accessibilityLabel={channel ? `Open ${where}` : "Open direct message"}
