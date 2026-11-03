@@ -16,6 +16,8 @@ import type { ToolCallData } from "../tools/types"
 import { getBasename, getLanguageLabel } from "./file-lang-map"
 import { computeLineDiff } from "./diff-utils"
 import { useChatContextSafe } from "../ChatContext"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NATIVE_ACTIVITY_LABEL } from "../NativeActivitySheet"
 import { Spin } from "@/components/ui/Spin";
 
 export interface EditFileWidgetProps {
@@ -79,6 +81,7 @@ export const EditFileWidget = memo(function EditFileWidget({
   }
 
   const chatContext = useChatContextSafe()
+  const nativePhone = useIsNativePhoneLayout()
   const { path, oldString, newString } = useMemo(() => extractEditData(tool), [tool.args])
   const basename = getBasename(path)
   const langLabel = getLanguageLabel(path)
@@ -131,7 +134,13 @@ export const EditFileWidget = memo(function EditFileWidget({
           </>
         )}
 
-        <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
+        <Text
+          className={cn(
+            "flex-1",
+            nativePhone ? NATIVE_ACTIVITY_LABEL : "text-[11px] text-muted-foreground",
+          )}
+          numberOfLines={1}
+        >
           <Text className="font-medium text-muted-foreground">Edited</Text>
           <Text
             className="font-mono text-foreground"

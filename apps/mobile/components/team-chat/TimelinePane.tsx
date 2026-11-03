@@ -191,6 +191,14 @@ export function TimelinePane(props: TimelinePaneProps) {
       : null,
   )
   const [readPaused, setReadPaused] = useState(false)
+  // The conversation's real unread count when it opened, from the list's own
+  // summary: the loaded page caps at 50, so counting loaded messages is wrong.
+  const summaryUnread = channelDirectory.find((c) => c.id === conversation.id)?.unreadCount
+  const [unreadTotal, setUnreadTotal] = useState<number | null>(null)
+  useEffect(() => {
+    if (unreadTotal !== null || !unread || summaryUnread === undefined) return
+    setUnreadTotal(summaryUnread)
+  }, [unreadTotal, unread, summaryUnread])
   useMarkReadWhileVisible(threadRootId || !conversation.joined ? null : conversation.id, newestSeq, visible, readPaused)
 
   const onMarkUnread = useCallback((m: ChatMessage) => {
@@ -428,6 +436,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       unreadAfterSeq={filtering ? null : unread?.afterSeq ?? null}
       unreadUpToSeq={unread?.upToSeq}
       unreadNotLoaded={filtering ? false : unreadNotLoaded}
+      unreadCount={filtering ? null : unreadTotal}
       onRevealUnread={onRevealUnread}
       highlightId={highlight}
       insets={listInsets}

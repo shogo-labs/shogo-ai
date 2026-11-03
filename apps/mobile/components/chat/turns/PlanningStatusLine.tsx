@@ -16,17 +16,25 @@
 
 import { memo, useEffect, useMemo, useRef } from "react"
 import { Animated, Easing, View } from "react-native"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import {
+  NATIVE_ACTIVITY_LABEL,
+  NATIVE_ACTIVITY_ROW,
+} from "../NativeActivitySheet"
 
 const LABEL = "Planning next moves"
 const TEXT_CLASS = "text-xs text-muted-foreground"
 const SHIMMER_TEXT_STYLE = { color: "#a3a3a3", fontSize: 12 } as const
+// Phone rows share the 15px activity scale; only the size moves, the dim
+// colour stays so the sweep still reads as "not a sentence" (SHO-296).
+const NATIVE_SHIMMER_TEXT_STYLE = { color: "#a3a3a3", fontSize: 15 } as const
 
 const SHIMMER_CHARS = LABEL.split("")
 // Width of the bright band, as a fraction of the label length.
 const SHIMMER_BAND = 0.18
 const SHIMMER_DIM = 0.25
 
-function ShimmerLabel() {
+function ShimmerLabel({ nativePhone }: { nativePhone: boolean }) {
   const progress = useRef(new Animated.Value(0)).current
 
   useEffect(() => {
@@ -71,8 +79,8 @@ function ShimmerLabel() {
       {SHIMMER_CHARS.map((char, i) => (
         <Animated.Text
           key={i}
-          className={TEXT_CLASS}
-          style={[SHIMMER_TEXT_STYLE, { opacity: opacities[i] }]}
+          className={nativePhone ? NATIVE_ACTIVITY_LABEL : TEXT_CLASS}
+          style={[nativePhone ? NATIVE_SHIMMER_TEXT_STYLE : SHIMMER_TEXT_STYLE, { opacity: opacities[i] }]}
         >
           {char === " " ? "\u00A0" : char}
         </Animated.Text>
@@ -82,9 +90,10 @@ function ShimmerLabel() {
 }
 
 function PlanningStatusLineImpl() {
+  const nativePhone = useIsNativePhoneLayout()
   return (
-    <View className="pt-1 pb-2">
-      <ShimmerLabel />
+    <View className={nativePhone ? NATIVE_ACTIVITY_ROW : "pt-1 pb-2"}>
+      <ShimmerLabel nativePhone={nativePhone} />
     </View>
   )
 }
