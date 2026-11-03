@@ -391,3 +391,5 @@ async function conversationReplies(sessionIds: string[]) {
   })
   return bySession
 }
+
+// probe: does RBAC (Postgres) pass on a bare main? (QA, throwaway)
