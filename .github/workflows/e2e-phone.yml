@@ -146,14 +146,18 @@ jobs:
 
       # Its own key, not ci.yml's: that cache holds Chromium only and
       # `actions/cache` never overwrites a key, so sharing it would download
-      # WebKit again on every run.
+      # WebKit again on every run. Per browser, because the two legs now install
+      # different ones and a shared key would hand each leg the other's cache.
       - name: Restore Playwright browsers
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-webkit-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: playwright-webkit-${{ runner.os }}-
+          key: playwright-${{ matrix.browser }}-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: playwright-${{ matrix.browser }}-${{ runner.os }}-
 
+      # Only this leg's browser (SHO-298). `e2e/local/global-setup.ts` warms the
+      # app in an engine that is actually installed, so a WebKit-only job no
+      # longer needs a Chromium binary it never runs a spec in.
       # Logged to the run summary (SHO-234): a slow apt/download leg here is
       # what ate the cap on run 40506041201, and inferring it from step
       # timestamps after the fact is not a thing anyone does.
