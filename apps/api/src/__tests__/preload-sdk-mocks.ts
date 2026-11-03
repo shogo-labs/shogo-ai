@@ -83,6 +83,11 @@ mock.module('@shogo-ai/sdk/ai-client', () => ({
 // exercise the real catalog (and chat-usage-tracker.test.ts which only
 // needed a non-empty cost row to not crash inside closeSession).
 
+// The real subpath is imported and spread into the mocks that mirror an SDK
+// module: a hand-listed subset breaks every consumer the moment the module
+// grows a symbol (`encodeTurnCompleteFrame`, SHO-291). Spreading is safe here —
+// `conditions = ["development"]` resolves these to source, not the unbuilt dist.
+const realStreamBuffer = await import('@shogo-ai/sdk/stream-buffer')
 mock.module('@shogo-ai/sdk/stream-buffer', () => {
   class StreamBufferWriter { write() {} close() {} }
   class StreamBufferStore {
@@ -93,6 +98,7 @@ mock.module('@shogo-ai/sdk/stream-buffer', () => {
     getSnapshot() { return null }
   }
   return {
+    ...realStreamBuffer,
     StreamBufferStore,
     StreamBufferWriter,
     createBufferingTransform: () => ({}),
@@ -101,7 +107,9 @@ mock.module('@shogo-ai/sdk/stream-buffer', () => {
   }
 })
 
+const realTechStacks = await import('@shogo-ai/sdk/tech-stack-registry')
 mock.module('@shogo-ai/sdk/tech-stack-registry', () => ({
+  ...realTechStacks,
   TechStackRegistry: class { detect() { return null } },
   TECH_STACK_REGISTRY: {},
   getTechStack: (_dir?: string) => null,
@@ -110,12 +118,6 @@ mock.module('@shogo-ai/sdk/tech-stack-registry', () => ({
   isMobileTechStack: (_stack?: any) => false,
   usesMetroBundler: (_stack?: any) => false,
   stackSeedsItself: (_stack?: any) => false,
-  // `packages/shared-runtime/src/tech-stack-registry.ts` re-exports these, so a
-  // mock without them turns every consumer of the shared-runtime barrel into
-  // "SyntaxError: export 'x' not found" at module load (SHO-291).
-  isDockerTechStack: (_stack?: any) => false,
-  getMinimumInstanceSize: (_stack?: any) => null,
-  getDeclaredPorts: (_stack?: any) => [],
 }))
 
 mock.module('@shogo-ai/sdk/cli/pkg', () => ({
