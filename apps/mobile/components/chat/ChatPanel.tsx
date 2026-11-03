@@ -4673,6 +4673,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
       currentSessionId: currentSessionIdRef.current,
       isStreaming: isStreamingRef.current,
       isSending: isSendingMessageRef.current,
+      // A window nobody is looking at keeps the SHO-53 path: silence here and
+      // one `/turn` probe on the way back, instead of a live attach that arms
+      // the task watch in a window that is not on screen.
+      isVisible:
+        Platform.OS === "web"
+          ? typeof document !== "undefined" && document.visibilityState === "visible"
+          : AppState.currentState === "active",
     })
     if (action === "attach") void attachToLiveTurnIfAnyRef.current()
     else if (action === "repaint") void catchUpAfterTurnEndedRef.current()

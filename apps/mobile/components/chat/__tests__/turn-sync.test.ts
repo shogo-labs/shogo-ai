@@ -18,7 +18,7 @@ const turnEvent = (state: string, chatSessionId = 'session-1') => ({
   state,
 })
 
-const idle = { currentSessionId: 'session-1', isStreaming: false, isSending: false }
+const idle = { currentSessionId: 'session-1', isStreaming: false, isSending: false, isVisible: true }
 
 describe('turnSyncAction', () => {
   test('attaches to a turn another window started', () => {
@@ -51,6 +51,14 @@ describe('turnSyncAction', () => {
 
   test('ignores a turn before the panel knows its chat', () => {
     expect(turnSyncAction(turnEvent('started'), { ...idle, currentSessionId: null })).toBe('ignore')
+  })
+
+  test('ignores a turn while the window is not on screen', () => {
+    // SHO-53: a window nobody is looking at must not attach — an attach arms
+    // the task watch and the late-turn poll, so a backgrounded window would
+    // poll the task list for as long as the turn runs. Refocus catches it up.
+    expect(turnSyncAction(turnEvent('started'), { ...idle, isVisible: false })).toBe('ignore')
+    expect(turnSyncAction(turnEvent('ended'), { ...idle, isVisible: false })).toBe('ignore')
   })
 
   test('ignores an unknown turn state', () => {

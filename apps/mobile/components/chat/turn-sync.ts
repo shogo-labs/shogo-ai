@@ -29,6 +29,17 @@ export interface TurnSyncContext {
   isStreaming: boolean
   /** This window is sending a message of its own. */
   isSending: boolean
+  /**
+   * A person can see this window right now (`document.visibilityState`, or
+   * `AppState` on native).
+   *
+   * A window nobody is looking at must not act on the push (SHO-53): attaching
+   * to the turn from here arms the task watch and the late-turn poll, so a
+   * backgrounded window would poll the task list for as long as the turn runs.
+   * It is behind on nothing it cannot fix when it comes back — the refocus
+   * catch-up probes `/turn` once and paints saved history.
+   */
+  isVisible: boolean
 }
 
 /**
@@ -46,6 +57,9 @@ export function turnSyncAction(
   if (!event || event.type !== 'chat-session.turn') return 'ignore'
   if (!context.currentSessionId || event.chatSessionId !== context.currentSessionId) return 'ignore'
   if (context.isStreaming || context.isSending) return 'ignore'
+  // Nothing on screen can show the turn, and acting would arm watches this
+  // window has no reason to run (SHO-53). Refocus catches it up.
+  if (!context.isVisible) return 'ignore'
   if (event.state === 'started') return 'attach'
   if (event.state === 'ended') return 'repaint'
   return 'ignore'

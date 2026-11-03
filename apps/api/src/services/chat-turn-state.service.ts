@@ -3,7 +3,6 @@
 
 import { randomUUID } from 'node:crypto'
 import type { Prisma } from '../generated/prisma-pg/client'
-import { publishConversationEvent } from '../lib/conversation-bus'
 import { prisma } from '../lib/prisma'
 
 /**
@@ -89,6 +88,11 @@ export async function publishTurnState(
     // matches.
     const audience =
       session.contextType === 'workspace' && session.createdByUserId ? [session.createdByUserId] : null
+    // Loaded on the first turn rather than with this module: `chat-turn-state`
+    // is imported by the desktop host (`server.ts`, `create-local-app.ts`,
+    // `local-system.ts`), which needs none of the fanout until a turn actually
+    // runs, and `conversation-bus` pulls in the tunnel/Redis layer.
+    const { publishConversationEvent } = await import('../lib/conversation-bus')
     publishConversationEvent(workspaceId, { type: CHAT_SESSION_TURN_EVENT, chatSessionId, turnId, state }, audience)
   } catch (error: any) {
     console.warn(`[ChatTurnState] Failed to publish ${state} for chat ${chatSessionId}:`, error?.message ?? error)
@@ -98,10 +102,16 @@ export async function publishTurnState(
 /**
  * Mark a turn as active. The generated id is returned so completion can
  * conditionally clear only the turn that started this row.
+ *
+ * `announce` is false for a turn the server replayed on its own (the chat
+ * queue, a wake): telling other windows about it would make a window nobody is
+ * looking at attach and start the wake watch, which is the polling SHO-53
+ * removed. A person's turn is announced (SHO-299).
  */
 export async function markTurnStarted(
   chatSessionId: string,
   turnId: string = randomUUID(),
+  opts: { announce?: boolean } = {},
 ): Promise<string> {
   const now = new Date()
   await prisma.chatSession.update({
@@ -112,7 +122,7 @@ export async function markTurnStarted(
       activeTurnHeartbeatAt: now,
     },
   })
-  await publishTurnState(chatSessionId, turnId, 'started')
+  if (opts.announce !== false) await publishTurnState(chatSessionId, turnId, 'started')
   return turnId
 }
 

@@ -332,6 +332,17 @@ describe('chat-turn-state service', () => {
     ])
   })
 
+  test('a turn the server replayed is not announced to other windows', async () => {
+    // SHO-53: a queued/wake turn must not make a window nobody is looking at
+    // attach — an attach arms the task watch and the late-turn poll.
+    published.length = 0
+    findUnique.mockResolvedValueOnce(projectSession as never)
+
+    await markTurnStarted('session-1', 'turn-1', { announce: false })
+
+    expect(published).toEqual([])
+  })
+
   test('publishes ended only when it cleared the turn', async () => {
     published.length = 0
     findUnique.mockResolvedValueOnce(projectSession as never)
