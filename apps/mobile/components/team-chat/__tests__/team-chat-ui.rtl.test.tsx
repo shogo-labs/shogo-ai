@@ -1379,9 +1379,24 @@ describe('MessageList unread line', () => {
     expect(onRevealUnread).toHaveBeenCalledTimes(1)
   })
 
-  test('the list opens at the latest message, never scrolled up to the unread line', () => {
+  test('the list opens at the latest message even when a screenful of rows is unread', async () => {
+    // A dozen unread rows is more than a phone screen, which is exactly when the
+    // list used to jump up to the first unread row instead of the latest message.
+    const msgs = [message({ id: 'm1', seq: 1, text: 'read already' })]
+    for (let seq = 2; seq <= 13; seq++) msgs.push(message({ id: `u${seq}`, seq, text: `unread ${seq}` }))
     listScrolls.length = 0
-    render(list({ unreadAfterSeq: 1 }))
+    render(
+      <MessageList
+        state={{ messages: msgs, streaming: {}, hasMoreOlder: false } as any}
+        loading={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+        unreadAfterSeq={1}
+      />,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 40))
     expect(listScrolls).toEqual([])
   })
 
