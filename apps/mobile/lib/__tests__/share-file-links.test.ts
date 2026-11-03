@@ -124,6 +124,8 @@ describe("failure text", () => {
     expect(shareFileErrorText("expired")).toContain("expired")
     expect(shareFileErrorText("invalid_link")).toContain("invalid")
     expect(shareFileErrorText("file_not_found")).toBe("File not found")
+    expect(shareFileErrorText("empty_file")).toContain("0 bytes")
+    expect(shareFileErrorText("empty_file")).toContain("attach it again")
     expect(shareFileErrorText("runtime_unavailable")).toContain("retry")
     expect(shareFileErrorText(undefined, "Boom")).toBe("Boom")
     expect(shareFileErrorText(undefined, null)).toBe("Could not open this file")
