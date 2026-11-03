@@ -16,6 +16,7 @@ export interface ChatMessageType {
   imageData?: string
   parts?: string
   createdAt: Date
+  updatedAt: Date
   agent: string
   model?: string
   authorUserId?: string

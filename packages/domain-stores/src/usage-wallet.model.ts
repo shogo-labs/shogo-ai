@@ -31,6 +31,7 @@ export const UsageWalletModel = types
     overageOutstandingInvoiceId: types.optional(types.string, ""),
     overageOutstandingUsd: types.optional(types.number, 0),
     overageOutstandingInvoiceUrl: types.optional(types.string, ""),
+    capNotifyPendingAt: types.optional(types.number, 0),
     alertsSentThisPeriod: types.optional(types.frozen(), {}),
     stripeMeteredItemId: types.optional(types.string, ""),
     anniversaryDay: types.number,
