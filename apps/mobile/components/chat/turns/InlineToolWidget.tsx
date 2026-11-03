@@ -19,6 +19,8 @@ import {
 } from "../tools/types"
 import { getToolSummary, sepLabel } from "../tools/summary"
 import { useChatContextSafe } from "../ChatContext"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NATIVE_ACTIVITY_LABEL } from "../NativeActivitySheet"
 import { CredentialChip } from "./CredentialChip"
 import { CodeText } from "../CodeText"
 import { Spin } from "@/components/ui/Spin";
@@ -107,6 +109,7 @@ function InlineToolWidgetImpl({
   variant = "minimal",
 }: InlineToolWidgetProps) {
   const [internalExpanded, setInternalExpanded] = useState(false)
+  const nativePhone = useIsNativePhoneLayout()
   const isExpanded = controlledExpanded ?? internalExpanded
 
   const handleToggle = () => {
@@ -237,7 +240,13 @@ function InlineToolWidgetImpl({
           </>
         )}
 
-        <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
+        <Text
+          className={cn(
+            "flex-1",
+            nativePhone ? NATIVE_ACTIVITY_LABEL : "text-[11px] text-muted-foreground",
+          )}
+          numberOfLines={1}
+        >
           <Text className="font-medium text-muted-foreground">{displayName}</Text>
           {keyArg ? (
             <Text className={isMinimal ? "text-foreground" : "text-muted-foreground/50"}>
