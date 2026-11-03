@@ -350,10 +350,6 @@ describe('GET /api/machines/:id/workspaces', () => {
   })
 })
 
-// ────────────────────────────────────────────────────────────────────
-// ALL /api/machines/:id/w/:localWorkspaceId/*
-// ────────────────────────────────────────────────────────────────────
-
 describe('POST /api/machines/:id/sync auth', () => {
   function push(app: Hono, headers: Record<string, string>) {
     return app.request('/api/machines/i-1/sync', {

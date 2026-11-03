@@ -62,7 +62,7 @@ async function openMachineWorkspace(page: Page): Promise<void> {
   const account = page.getByRole("button", { name: /— open account/ }).first()
   await expect(account).toBeVisible({ timeout: 120_000 })
   await account.click()
-  const row = page.getByTestId(`workspace-row:machine:${state.machineId}:${state.machineWorkspaceId}`)
+  const row = page.getByTestId(`workspace-row:cloud:${state.machineWorkspaceId}`)
   await expect(row, "the machine's workspace is offered in the switcher").toBeVisible({ timeout: 60_000 })
   await row.click()
   await expect(page.getByRole("button", { name: `${state.machineWorkspaceName}, workspace menu` })).toBeVisible({
@@ -115,7 +115,9 @@ test("a chat turn from the cloud runs on the machine and reads the machine's dis
   const canary = `SHO257-UI-CANARY-${Date.now()}`
   const path = ".tmp/sho257-ui-canary.txt"
   // The file exists only on the machine.
-  const relay = `${state.cloud}/api/machines/${state.machineId}/w/${state.machineWorkspaceId}`
+  // The plain cloud API: a hosted workspace's runtime calls go to its desktop
+  // through the host tunnel (SHO-285). There is no relay URL to prefix.
+  const relay = state.cloud
   await expect
     .poll(
       async () =>
