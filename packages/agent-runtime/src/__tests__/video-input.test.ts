@@ -16,12 +16,19 @@ import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { FileStateCache } from '../file-state-cache'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
-import { clearDynamicModels, registerDynamicModels } from '@shogo/model-catalog'
+import { clearDynamicModels, registerDynamicModels, modelSupportsVideoInput, resolveModelId } from '@shogo/model-catalog'
 import { enforceImageSizeLimit, scrubInvalidImages, MAX_VIDEO_INLINE_BYTES, MAX_VIDEO_INLINE_BASE64_BYTES } from '../image-size-guard'
 import { parseFileAttachments } from '../file-attachment-utils'
 
 const TEST_DIR = '/tmp/test-gw-read-video'
 const VIDEO_MODEL = 'test-glm-video-model'
+/**
+ * The seeded GLM 5.3 Flash row as the runtime receives it: a DB id (UUID) plus
+ * the `supportsVideoInput` flag the API serializes into `AGENT_MODEL_REGISTRY`.
+ * The static catalog cannot classify a UUID, so this is the path that decides
+ * whether a replayed clip on the seeded model survives.
+ */
+const DB_VIDEO_MODEL = '0f0f0f0f-2910-4a11-9c3a-6d1e6dc2a5b1'
 
 function makeCtx(overrides?: Partial<ToolContext>): ToolContext {
   return {
@@ -47,7 +54,10 @@ async function run(ctx: ToolContext, name: string, params: Record<string, any>) 
 }
 
 beforeAll(() => {
-  registerDynamicModels([{ id: VIDEO_MODEL, provider: 'custom', supportsVideoInput: true }])
+  registerDynamicModels([
+    { id: VIDEO_MODEL, provider: 'custom', supportsVideoInput: true },
+    { id: DB_VIDEO_MODEL, provider: 'openrouter', apiModel: 'z-ai/glm-5.3-flash', supportsVideoInput: true },
+  ])
 })
 
 afterAll(() => {
@@ -163,6 +173,55 @@ describe('parseFileAttachments with a video attachment', () => {
     expect(parsed.images).toHaveLength(0)
     expect(parsed.textContext).toContain('cannot watch video')
     expect(parsed.textContext).toContain('GLM 5.3 Flash')
+  })
+})
+
+describe('a DB-defined (UUID) video model', () => {
+  beforeEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+    mkdirSync(TEST_DIR, { recursive: true })
+    trustWorkspaceForTests(TEST_DIR)
+  })
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  // The seeded GLM row has no catalog entry — its id is a UUID and the static
+  // catalog has never heard of it. If this returns false the guard swaps a
+  // replayed clip for a placeholder on exactly the model that can watch it.
+  test('is recognised as video-capable through the dynamic registry', () => {
+    expect(modelSupportsVideoInput(resolveModelId(DB_VIDEO_MODEL))).toBe(true)
+    // Unknown ids pass through resolution untouched, so the flag is what decides.
+    expect(resolveModelId(DB_VIDEO_MODEL)).toBe(DB_VIDEO_MODEL)
+    expect(modelSupportsVideoInput('0f0f0f0f-0000-4000-8000-000000000000')).toBe(false)
+  })
+
+  test('read_file emits the clip instead of the "cannot watch video" error', async () => {
+    const bytes = Buffer.from('uuid-model-mp4-bytes')
+    writeFileSync(join(TEST_DIR, 'clip.mp4'), bytes)
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR), effectiveModel: DB_VIDEO_MODEL })
+
+    const r = await run(ctx, 'read_file', { path: 'clip.mp4' })
+    const blocks = r.content as any[]
+    expect(blocks[0].type).toBe('image')
+    expect(blocks[0].mimeType).toBe('video/mp4')
+    expect(blocks[0].data).toBe(bytes.toString('base64'))
+  })
+
+  test('keeps a replayed clip in seeded history rather than dropping it', () => {
+    const part = {
+      type: 'file',
+      mediaType: 'video/mp4',
+      url: 'data:video/mp4;base64,ZmFrZS1tcDQ=',
+      name: 'clip.mp4',
+    }
+    const parsed = parseFileAttachments([part], {
+      workspaceDir: TEST_DIR,
+      supportsVideo: modelSupportsVideoInput(resolveModelId(DB_VIDEO_MODEL)),
+    })
+    expect(parsed.images).toHaveLength(1)
+    expect(parsed.images[0].mimeType).toBe('video/mp4')
   })
 })
 

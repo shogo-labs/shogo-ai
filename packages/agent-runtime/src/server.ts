@@ -2061,10 +2061,12 @@ app.post('/agent/chat', async (c) => {
   // `[N image(s) were attached]` notes — see seedEmptyChatSession.
   if (allMessages.length > 1) {
     // A replayed video attachment is only kept when this turn's model can
-    // watch it; otherwise the guard swaps it for a placeholder.
+    // watch it; otherwise the guard swaps it for a placeholder. The model is
+    // the one the turn will send (request alias → session pin → workspace
+    // default), resolved from the loaded session rather than by creating it.
     const seedModelAlias =
       (typeof body.agentMode === 'string' && body.agentMode) ||
-      sessionManager.getOrCreate(chatSessionKey).modelOverride
+      agentGateway!.turnModelAliasFor(chatSessionKey)
     const seeded = seedEmptyChatSession(
       sessionManager,
       chatSessionKey,

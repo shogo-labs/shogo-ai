@@ -1611,6 +1611,24 @@ export class AgentGateway {
   }
 
   /**
+   * The model a turn sends: the session's pinned override, else the workspace
+   * default. Defined once so anything that has to classify the turn's model
+   * *before* the turn starts (history seeding deciding whether a replayed video
+   * survives) cannot disagree with the turn itself.
+   */
+  private resolveTurnModelAlias(modelOverride: string | undefined): string {
+    return modelOverride || this.config.model.name
+  }
+
+  /**
+   * The model alias a stored session's next turn will send, without creating
+   * the session (unlike `getOrCreate`, a pure lookup — see SHO-137).
+   */
+  turnModelAliasFor(sessionId: string): string {
+    return this.resolveTurnModelAlias(this.sessionManager.get(sessionId)?.modelOverride)
+  }
+
+  /**
    * Capability config for a turn's surface. `project` uses `this.config`
    * (cached from the anchor/own project's `Project.settings`); `workspace`
    * overlays the workspace agent's own toggles, with the workspace-scope
@@ -3532,7 +3550,7 @@ export class AgentGateway {
     // so load the list before either is built (cached for a few minutes; a
     // no-op without AI_PROXY_URL).
     await refreshAvailableModels()
-    const modelAlias = session.modelOverride || this.config.model.name
+    const modelAlias = this.resolveTurnModelAlias(session.modelOverride)
     const autoRouting = isAutoModel(modelAlias)
 
     let provider: string
