@@ -16,6 +16,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import type { UIMessage } from "@ai-sdk/react"
 import { useTurnGrouping } from "./useTurnGrouping"
 import { TurnGroup } from "./TurnGroup"
+import { RejoinRow } from "./RejoinRow"
 import { useMessageEditContext } from "./MessageEditContext"
 import { firstDimmedTurnIndex, replacedTurnsLabel } from "./editResend"
 import type { ToolCallData } from "../tools/types"
@@ -23,6 +24,13 @@ import type { ToolCallData } from "../tools/types"
 export interface TurnListProps {
   messages: UIMessage[]
   isStreaming?: boolean
+  /**
+   * This window believes the turn is live but has not attached to it yet
+   * (SHO-297). The stale half-written reply is already hidden by
+   * `resolveRejoinView`; this draws the "Rejoining live reply…" row where the
+   * reply goes.
+   */
+  rejoining?: boolean
   phase?: string | null
   subagentToolCalls?: ToolCallData[]
   className?: string
@@ -43,6 +51,7 @@ export const TurnList = memo(
   function TurnList({
     messages,
     isStreaming = false,
+    rejoining = false,
     phase,
     subagentToolCalls,
     className,
@@ -80,12 +89,14 @@ export const TurnList = memo(
             </View>
           )
         })}
+        {rejoining ? <RejoinRow /> : null}
       </View>
     )
   },
   (prev, next) =>
     prev.messages === next.messages &&
     prev.isStreaming === next.isStreaming &&
+    prev.rejoining === next.rejoining &&
     prev.phase === next.phase &&
     prev.subagentToolCalls === next.subagentToolCalls &&
     prev.className === next.className,
