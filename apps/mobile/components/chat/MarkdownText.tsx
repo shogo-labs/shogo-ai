@@ -97,7 +97,24 @@ const baseStyles: MarkedStyles = {
   image: { borderRadius: 6 },
 };
 
-/** Larger, readable body copy for the phone chat surface. */
+/**
+ * The native-phone chat type scale: one body size (16/24), headings set by
+ * weight instead of size, a 14px inline code, and a 12px paragraph rhythm
+ * (SHO-296).
+ *
+ * `react-native-marked` renders each top-level token as its own FlatList
+ * item, so a text part cannot strip the trailing space off its last block.
+ * `paddingVertical: 6` splits the difference: 6 + 6 = the 12px between two
+ * paragraphs, and each edge contributes 6px to `AssistantContent`'s 4px
+ * row gap — 10–12px between a sentence and the activity row beside it.
+ */
+const PHONE_PARAGRAPH_GAP = 6
+/** Gap between two list items (the library has none of its own). */
+const PHONE_LIST_ITEM_GAP = 4
+/** Space above a heading, on top of the paragraph gap below the block before it. */
+const PHONE_HEADING_MARGIN_TOP = 8
+const PHONE_HEADING_MARGIN_BOTTOM = 4
+
 const phoneChatStyles: MarkedStyles = {
   ...baseStyles,
   text: { fontSize: 16, lineHeight: 24 },
@@ -105,11 +122,67 @@ const phoneChatStyles: MarkedStyles = {
   em: { fontSize: 16, lineHeight: 24, fontStyle: "italic" },
   link: { fontSize: 16, lineHeight: 24, textDecorationLine: "underline" },
   strikethrough: { fontSize: 16, lineHeight: 24 },
-  h1: { fontSize: 18, lineHeight: 24, fontWeight: "bold", marginBottom: 6 },
-  h2: { fontSize: 18, lineHeight: 24, fontWeight: "bold", marginBottom: 5 },
-  h3: { fontSize: 18, lineHeight: 24, fontWeight: "600", marginBottom: 4 },
-  h4: { fontSize: 18, lineHeight: 24, fontWeight: "500" },
-  li: { fontSize: 16, lineHeight: 24 },
+  paragraph: {
+    paddingVertical: PHONE_PARAGRAPH_GAP,
+    marginVertical: 0,
+  },
+  // A list block keeps the 2px container inset; the 4px between items plus
+  // that inset lands a list at the same 8–12px block gap as a paragraph.
+  list: { marginVertical: 2 },
+  li: { fontSize: 16, lineHeight: 24, marginBottom: PHONE_LIST_ITEM_GAP },
+  // One step under the body, not four: inline code is body text with a chip.
+  codespan: { fontFamily: "monospace", fontSize: 14, borderRadius: 3 },
+  // Headings differ by weight, not by size, and carry no rule under them in
+  // a chat transcript.
+  h1: {
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: "bold",
+    marginVertical: 0,
+    marginTop: PHONE_HEADING_MARGIN_TOP,
+    marginBottom: PHONE_HEADING_MARGIN_BOTTOM,
+    paddingBottom: 0,
+    borderBottomWidth: 0,
+  },
+  h2: {
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: "bold",
+    marginVertical: 0,
+    marginTop: PHONE_HEADING_MARGIN_TOP,
+    marginBottom: PHONE_HEADING_MARGIN_BOTTOM,
+    paddingBottom: 0,
+    borderBottomWidth: 0,
+  },
+  h3: {
+    fontSize: 16,
+    lineHeight: 24,
+    fontWeight: "600",
+    marginVertical: 0,
+    marginTop: PHONE_HEADING_MARGIN_TOP,
+    marginBottom: PHONE_HEADING_MARGIN_BOTTOM,
+  },
+  h4: {
+    fontSize: 16,
+    lineHeight: 24,
+    fontWeight: "600",
+    marginVertical: 0,
+    marginTop: PHONE_HEADING_MARGIN_TOP,
+    marginBottom: PHONE_HEADING_MARGIN_BOTTOM,
+  },
+};
+
+/**
+ * A fenced code block is a horizontal `ScrollView` whose text the library
+ * styles with the `em` preset, so its size cannot come from `MarkedStyles`.
+ * The phone preset passes this instead; every other variant keeps passing the
+ * `em` style the library would have used, leaving card and thinking output
+ * untouched.
+ */
+const PHONE_CODE_BLOCK_TEXT: TextStyle = {
+  fontFamily: "monospace",
+  fontSize: 13,
+  lineHeight: 20,
 };
 
 const thinkingStyles: MarkedStyles = {
@@ -265,8 +338,23 @@ class NativePhoneMarkdownRenderer extends Renderer {
     private readonly fileExists?: (path: string) => boolean,
     private readonly onMentionPress?: (target: MentionTarget) => void,
     private readonly onShareFilePress?: (target: ShareFileTarget) => void,
+    private readonly codeBlockTextStyle?: TextStyle,
   ) {
     super();
+  }
+
+  override code(
+    text: string,
+    language?: string,
+    containerStyle?: ViewStyle,
+    textStyle?: TextStyle,
+  ): ReactNode {
+    return super.code(
+      text,
+      language,
+      containerStyle,
+      this.codeBlockTextStyle ?? textStyle,
+    );
   }
 
   override link(
@@ -526,6 +614,7 @@ export const MarkdownText = memo(function MarkdownText({
     : isPhoneLayout || usesMobileWorkspaceChrome
     ? phoneChatStyles
     : baseStyles;
+  const isPhoneTypeScale = sizeStyles === phoneChatStyles;
   const styles = useMemo(
     () => withColors(sizeStyles, colors),
     [sizeStyles, colors],
@@ -571,6 +660,7 @@ export const MarkdownText = memo(function MarkdownText({
         fileExists,
         onMentionPress,
         shareFileOpener,
+        isPhoneTypeScale ? PHONE_CODE_BLOCK_TEXT : undefined,
       ),
     [
       width,
@@ -582,6 +672,7 @@ export const MarkdownText = memo(function MarkdownText({
       fileExists,
       onMentionPress,
       shareFileOpener,
+      isPhoneTypeScale,
     ],
   );
 

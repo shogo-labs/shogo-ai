@@ -14,6 +14,8 @@ import type { ToolCallData } from "../tools/types"
 import { getBasename, getLanguageLabel } from "./file-lang-map"
 import { isDeliverable } from "../../../lib/deliverable"
 import { useChatContextSafe } from "../ChatContext"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NATIVE_ACTIVITY_LABEL } from "../NativeActivitySheet"
 import { DownloadChip } from "./DownloadChip"
 import { Spin } from "@/components/ui/Spin";
 
@@ -105,6 +107,7 @@ export const WriteFileWidget = memo(function WriteFileWidget({
 }: WriteFileWidgetProps) {
   const [internalExpanded, setInternalExpanded] = useState(false)
   const [showFull, setShowFull] = useState(false)
+  const nativePhone = useIsNativePhoneLayout()
 
   const isExpanded = controlledExpanded ?? internalExpanded
   const handleToggle = () => {
@@ -164,7 +167,13 @@ export const WriteFileWidget = memo(function WriteFileWidget({
           </>
         )}
 
-        <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
+        <Text
+          className={cn(
+            "flex-1",
+            nativePhone ? NATIVE_ACTIVITY_LABEL : "text-[11px] text-muted-foreground",
+          )}
+          numberOfLines={1}
+        >
           <Text className="font-medium text-muted-foreground">Wrote</Text>
           <Text
             className="font-mono text-foreground"
