@@ -10,7 +10,7 @@
  * is signed in without a context read.
  */
 
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterAll, afterEach, describe, expect, it } from 'bun:test'
 import { useEffect } from 'react'
 import { cleanup, render, waitFor } from '@testing-library/react'
 import { installHappyDom, restoreHappyDom } from '../../hooks/__tests__/happy-dom-setup.ts'
@@ -22,6 +22,10 @@ import {
 } from '../AuthProvider'
 
 installHappyDom()
+
+// Leave the process as it was found: the rest of the suite shares this
+// `globalThis` (SHO-301).
+afterAll(() => restoreHappyDom())
 
 afterEach(() => cleanup())
 

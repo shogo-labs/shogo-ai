@@ -9,6 +9,7 @@
 
 import { Hono } from 'hono'
 import type { Permission } from '@shogo/authz'
+import { AudioTranscodeError, getTranscodedAudio } from '../lib/audio-transcode'
 import { prisma } from '../lib/prisma'
 import { loadAccess as loadAuthzAccess } from '../lib/authz'
 import { canReceive, subscribeWorkspaceEvents } from '../lib/conversation-bus'
@@ -120,6 +121,33 @@ function errorResponse(c: any, err: unknown) {
     return c.json({ error: { code: err.code, message: err.message, ...err.details } }, err.status)
   }
   throw err
+}
+
+function respondWithFileBytes(
+  bytes: Uint8Array,
+  headers: Record<string, string>,
+  rangeHeader: string | undefined,
+): Response {
+  const range = parseByteRange(rangeHeader, bytes.byteLength)
+  if (range.kind === 'unsatisfiable') {
+    return new Response(null, {
+      status: 416,
+      headers: { ...headers, 'Content-Range': `bytes */${bytes.byteLength}` },
+    })
+  }
+  if (range.kind === 'range') {
+    return new Response(bytes.slice(range.start, range.end + 1) as any, {
+      status: 206,
+      headers: {
+        ...headers,
+        'Content-Length': String(range.end - range.start + 1),
+        'Content-Range': `bytes ${range.start}-${range.end}/${bytes.byteLength}`,
+      },
+    })
+  }
+  return new Response(bytes as any, {
+    headers: { ...headers, 'Content-Length': String(bytes.byteLength) },
+  })
 }
 
 type ChatLimit = (typeof CHAT_RATE_LIMITS)[keyof typeof CHAT_RATE_LIMITS]
@@ -1070,6 +1098,45 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     }
     if (!allowed) return c.json({ error: { code: 'forbidden', message: 'No access to this file' } }, 403)
     try {
+      // AVPlayer cannot decode WebM/Opus and Ogg voice notes. Native iOS
+      // players request the AAC/MP4 variant while browsers keep using the
+      // original recording format.
+      if (c.req.query('playback') === 'm4a') {
+        const canConvert = /^(?:audio\/(?:webm|ogg|opus)|video\/webm|application\/ogg)(?:;|$)/i.test(row.mimeType)
+          || /\.(?:webm|ogg|opus)$/i.test(row.name)
+        if (!canConvert) {
+          return c.json({ error: { code: 'unsupported_audio', message: 'This audio format cannot be converted for playback' } }, 415)
+        }
+        if (row.size > MAX_CONVERSATION_FILE_BYTES) {
+          return c.json({ error: { code: 'audio_conversion_failed', message: 'Audio file is too large to convert' } }, 413)
+        }
+
+        let bytes: Uint8Array
+        try {
+          bytes = await getTranscodedAudio(id, () => loadConversationFileBytes(row.storageKey))
+        } catch (error) {
+          if (error instanceof AudioTranscodeError) {
+            const status = error.code === 'too_large' ? 413 : error.code === 'failed' ? 422 : 503
+            const message = error.code === 'unavailable' || error.code === 'busy'
+              ? 'Audio conversion is temporarily unavailable'
+              : error.code === 'too_large'
+                ? 'Audio file is too large to convert'
+                : 'This audio file could not be converted'
+            return c.json({ error: { code: 'audio_conversion_failed', message } }, status)
+          }
+          return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+        }
+
+        const baseHeaders = {
+          'Content-Type': 'audio/mp4',
+          'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(`${row.name.replace(/\.[^.]+$/, '') || 'voice-note'}.m4a`)}`,
+          'Cache-Control': 'private, max-age=300',
+          'Accept-Ranges': 'bytes',
+          'X-Content-Type-Options': 'nosniff',
+        }
+        return respondWithFileBytes(bytes, baseHeaders, c.req.header('range'))
+      }
+
       // `?dl=1` is the download action on an attachment card. Pictures, video,
       // audio and PDFs are served `inline` so they can be previewed in place,
       // so following one of those links would open the file rather than save
@@ -1114,30 +1181,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       }
       // Served locally the whole file is in memory, so a range is a slice of
       // it.
-      const bytes = file.bytes as Uint8Array
-      const range = parseByteRange(c.req.header('range'), bytes.byteLength)
-      if (range.kind === 'unsatisfiable') {
-        return new Response(null, {
-          status: 416,
-          headers: { ...baseHeaders, 'Content-Range': `bytes */${bytes.byteLength}` },
-        })
-      }
-      if (range.kind === 'range') {
-        return new Response(bytes.slice(range.start, range.end + 1) as any, {
-          status: 206,
-          headers: {
-            ...baseHeaders,
-            'Content-Length': String(range.end - range.start + 1),
-            'Content-Range': `bytes ${range.start}-${range.end}/${bytes.byteLength}`,
-          },
-        })
-      }
-      return new Response(bytes as any, {
-        headers: {
-          ...baseHeaders,
-          'Content-Length': String(bytes.byteLength),
-        },
-      })
+      return respondWithFileBytes(file.bytes as Uint8Array, baseHeaders, c.req.header('range'))
     } catch {
       return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
     }

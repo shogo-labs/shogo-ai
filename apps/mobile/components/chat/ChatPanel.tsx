@@ -176,10 +176,14 @@ import {
   applyMessageSnapshot,
   dropUnfinishedAssistantTail,
   foldSnapshotContinuation,
+  isUnfinishedAssistant,
+  messageTurnKey,
   replayTurnMessage,
   withResumeReplayReset,
   type ReplayTurnStart,
 } from "./resume-replay-transport"
+import { resolveRejoinView } from "./rejoin-view"
+import { rejoinProbeVerdict } from "./rejoin-probe"
 import { markStoppedTail, mergeStoppedSnapshot } from "./stopped-turn"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useBillingData } from "@shogo/shared-app/hooks"
@@ -917,6 +921,27 @@ const SCROLL_NEAR_BOTTOM_PX = 100
  * Avoids firing on every scroll frame (wheel/trackpad).
  */
 const LOAD_OLDER_WEB_DEBOUNCE_MS = 450
+
+/**
+ * How long a reopened chat shows "Rejoining live reply…" before it gives up and
+ * puts the saved reply back (SHO-297). Long enough for the probe's 1 s + 3 s
+ * retries and the attach, short enough that a stream that never lands is not a
+ * spinner forever.
+ */
+const REJOIN_ATTACH_TIMEOUT_MS = 8_000
+
+/**
+ * A `/turn` answer this fresh is reused instead of probing again: the probe
+ * started with the paint, and the history load that follows must not repeat it
+ * (SHO-297).
+ */
+const EARLY_PROBE_REUSE_MS = 2_000
+
+/** Which turn a message belongs to, for the rejoin's give-up bookkeeping. */
+function rejoinTurnKey(message: UIMessage | undefined): string | null {
+  if (!message) return null
+  return messageTurnKey(message) ?? (message.id ? `id:${message.id}` : null)
+}
 
 /** react-native-web exposes scrollbar*; not in core ViewStyle — cast for StyleSheet. */
 const CHAT_MESSAGES_SCROLL_WEB: ViewStyle = {
@@ -3597,9 +3622,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [sessionMessages],
   )
+  /**
+   * Ends the "Rejoining live reply…" row (SHO-297). Assigned once the rejoin
+   * state is created further down; the attach gate below runs before that.
+   */
+  const giveUpRejoinRef = useRef<() => void>(() => {})
   const guardedAutoResumeStream = useCallback(
     (reason: "live-turn-probe" | "stall-recovery") => {
       if (autoResumeCircuitTrippedRef.current) {
+        giveUpRejoinRef.current()
         return
       }
       // A second probe can resolve before the first `resumeStream()` updates
@@ -3620,6 +3651,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       })
       if (!gate.attach) {
         reportLiveTurnAttachBlocked(reason, gate.reason)
+        // The prompt is not on screen, so this window is not going to join the
+        // turn right now — do not leave the rejoin row up (SHO-297).
+        giveUpRejoinRef.current()
         if (Date.now() - blockedAttachReloadAtRef.current > 1000) {
           blockedAttachReloadAtRef.current = Date.now()
           reloadAndAttachLiveTurnRef.current({ settle: false })
@@ -3633,6 +3667,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       autoResumeTimestampsRef.current = timestamps
       if (tripped) {
         autoResumeCircuitTrippedRef.current = true
+        giveUpRejoinRef.current()
         console.error(
           `[ChatPanel] Auto-resume circuit breaker tripped (${timestamps.length} automatic reconnects in the last minute, reason=${reason}); ` +
             "giving up on auto-recovery and falling back to the manual Retry banner",
@@ -3757,10 +3792,68 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const isStreaming =
     (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
 
-  // Once this window is attached, the transport is the authority on the turn
-  // and the probe's snapshot stops deciding Stop (SHO-287).
+  // --- Rejoining a live turn (SHO-297) -------------------------------------
+  // A chat reopened while its turn is still running paints the half-written
+  // reply from when the person left, then waits a network round-trip for the
+  // delta and another for the `/turn` probe before it attaches. Nothing on
+  // screen says the turn is live, so the chat looks frozen. While rejoining,
+  // the stale tail is hidden and a "Rejoining live reply…" row stands in its
+  // place, until the resume snapshot lands — or we give up and show the tail
+  // again, so it is never a spinner forever.
+  //
+  // `rejoining` is derived in render, not set from an effect: the paint that
+  // brings the stale tail on screen must never show it for a frame first.
+  /** The turn this window stopped rejoining, so a repaint cannot restart it. */
+  const [rejoinGaveUpTurn, setRejoinGaveUpTurn] = useState<string | null>(null)
+  /** A live turn a probe found while the painted tail was already finished. */
+  const [rejoinLiveTurnId, setRejoinLiveTurnId] = useState<string | null>(null)
+
+  const rejoinTail = messages[messages.length - 1]
+  const rejoinTailKey = rejoinTurnKey(rejoinTail)
+  const rejoinGaveUp =
+    rejoinTailKey !== null && rejoinGaveUpTurn === rejoinTailKey
+  const rejoining =
+    !isTransportStreaming &&
+    !rejoinGaveUp &&
+    (isUnfinishedAssistant(rejoinTail) || rejoinLiveTurnId !== null)
+
+  /** Stop rejoining this turn: the tail comes back as-is. */
+  const giveUpRejoin = useCallback(() => {
+    const key = rejoinTurnKey(messagesRef.current[messagesRef.current.length - 1])
+    if (key) setRejoinGaveUpTurn(key)
+    setRejoinLiveTurnId(null)
+  }, [])
+  giveUpRejoinRef.current = giveUpRejoin
+
+  // Never a spinner forever: an attach that does not land within the window
+  // puts the saved reply back.
   useEffect(() => {
-    if (isTransportStreaming) setLiveTurnActive(false)
+    if (!rejoining) return
+    const key = rejoinTailKey
+    const timer = setTimeout(() => {
+      console.warn(
+        "[ChatPanel] Gave up rejoining the live turn after 8s; showing the saved reply",
+      )
+      if (key) setRejoinGaveUpTurn(key)
+      setRejoinLiveTurnId(null)
+    }, REJOIN_ATTACH_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [rejoining, rejoinTailKey])
+
+  // A session switch starts a fresh rejoin: the turn we gave up on belongs to
+  // the chat the person left.
+  useEffect(() => {
+    setRejoinGaveUpTurn(null)
+    setRejoinLiveTurnId(null)
+  }, [currentSessionId])
+
+  // Once this window is attached, the transport is the authority on the turn
+  // and the probe's snapshot stops deciding Stop (SHO-287). The rejoin is over
+  // too: the snapshot has landed.
+  useEffect(() => {
+    if (!isTransportStreaming) return
+    setLiveTurnActive(false)
+    setRejoinLiveTurnId(null)
   }, [isTransportStreaming])
 
   const reloadAndAttachLiveTurnRef = useRef<
@@ -4261,6 +4354,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     isStreaming,
   ])
 
+  // While rejoining, the stale half-written reply is hidden and the row stands
+  // in its place (SHO-297). Display-only: `messages` and the device cache keep
+  // the reply, so nothing the person has read is lost if the attach never lands.
+  const rejoinView = useMemo(
+    () => resolveRejoinView({ messages: displayMessages, rejoining }),
+    [displayMessages, rejoining],
+  )
+
   /**
    * Paints the user's own bubble. `ChatInput` clears the composer synchronously
    * on submit, so anything awaited before this (the live-turn probe, the consent
@@ -4327,7 +4428,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const probeLiveTurn = useCallback(
     async (
       sessionId: string,
-      opts: { retryDelaysMs?: readonly number[]; timeoutMs?: number } = {},
+      opts: {
+        retryDelaysMs?: readonly number[]
+        timeoutMs?: number
+        /**
+         * Whether a "not live" answer ends the rejoin (SHO-297). The probe that
+         * runs with the paint leaves that to the history load's probe, so a
+         * stale answer cannot flash the row off and on again.
+         */
+        drivesRejoin?: boolean
+      } = {},
     ): Promise<ChatTurnSnapshot> => {
       const controller = new AbortController()
       const timer =
@@ -4351,20 +4461,59 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
         // The probe is the only thing that knows a turn is running before this
         // window attaches to it, so it decides the Stop button for that gap
-        // (SHO-287). Scoped to the chat on screen: a probe for a chat the
-        // person has left says nothing about this one.
+        // (SHO-287) and the "Rejoining live reply…" row (SHO-297). Scoped to the
+        // chat on screen: a probe for a chat the person has left says nothing
+        // about this one.
         if (sessionId === currentSessionIdRef.current) {
-          setLiveTurnActive(
-            isLiveTurnOtherThan(snapshot, stoppedTurnIdRef.current),
-          )
+          const live = isLiveTurnOtherThan(snapshot, stoppedTurnIdRef.current)
+          setLiveTurnActive(live)
+          // A live turn this window has not attached to is exactly what the row
+          // is for. A finished, failed, aborted or unknown turn means history
+          // owns the tail again — put it back rather than spinning.
+          if (live) {
+            setRejoinLiveTurnId(snapshot.turnId ?? "live")
+            // A turn that is live now outranks an earlier "no turn": a probe
+            // that raced the turn start must not keep the row — or the attach
+            // that follows it — suppressed for this tail.
+            setRejoinGaveUpTurn(null)
+          } else if (opts.drivesRejoin !== false) {
+            giveUpRejoin()
+          }
         }
         return snapshot
       } finally {
         if (timer) clearTimeout(timer)
       }
     },
-    [projectId, localAgentUrl, chatWorkspaceId, expoFetch, nativeHeaders],
+    [projectId, localAgentUrl, chatWorkspaceId, expoFetch, nativeHeaders, giveUpRejoin],
   )
+
+  /**
+   * The `/turn` answer the paint-time probe got, so the history load that
+   * follows reuses it instead of asking again (SHO-297).
+   */
+  const earlyProbeRef = useRef<{
+    sessionId: string
+    at: number
+    snapshot: ChatTurnSnapshot
+  } | null>(null)
+
+  // Start the live-turn probe with the paint, not after the delta: the delta is
+  // a network round-trip, and the person is looking at a stale reply for all of
+  // it. The attach itself still waits for history (SHO-147) — this only answers
+  // the question early, so Stop and the rejoin row are up within a second.
+  useEffect(() => {
+    if (!isActive || !currentSessionId) return
+    if (isStreamingRef.current || isSendingMessageRef.current) return
+    const sessionId = currentSessionId
+    void probeLiveTurn(sessionId, {
+      retryDelaysMs: [1000, 3000],
+      drivesRejoin: false,
+    }).then((snapshot) => {
+      if (currentSessionIdRef.current !== sessionId) return
+      earlyProbeRef.current = { sessionId, at: Date.now(), snapshot }
+    })
+  }, [isActive, currentSessionId, probeLiveTurn])
 
   /**
    * The newest saved row for this chat, one row wide. A refocus has to tell
@@ -5613,39 +5762,59 @@ const ChatPanelContent = observer(function ChatPanelContent({
     (loadSessionId: string, myGeneration: number) => {
       if (myGeneration !== loadGenerationRef.current) return
       if (liveTurnReloadNonceRef.current === historyOnlyNonceRef.current) return
-      const turnUrl = buildChatTurnUrl(
-        API_URL!,
-        projectId,
-        localAgentUrl,
-        loadSessionId,
-        chatWorkspaceId,
-      )
-      void probeChatTurn({
-        url: turnUrl,
-        fetch: expoFetch,
-        headers: nativeHeaders ? nativeHeaders() : undefined,
-        credentials: Platform.OS === "web" ? "include" : undefined,
-        retryDelaysMs: [1000, 3000],
-      }).then((turn) => {
+      // The probe that ran with the paint already answered this question; reuse
+      // it rather than spending another round-trip (SHO-297).
+      const early = earlyProbeRef.current
+      const reuseEarly =
+        early !== null &&
+        early.sessionId === loadSessionId &&
+        Date.now() - early.at < EARLY_PROBE_REUSE_MS
+      const answer = reuseEarly
+        ? Promise.resolve(early!.snapshot)
+        : probeLiveTurn(loadSessionId, { retryDelaysMs: [1000, 3000] })
+      void answer.then((turn) => {
         if (myGeneration !== loadGenerationRef.current) return
-        lastLiveTurnCheckAtRef.current = Date.now()
         const expectedLive = liveTurnExpectedRef.current
         liveTurnExpectedRef.current = false
         // A turn this window stopped is not a turn to attach to, even while
         // the runtime still reports it (stop reaches it a beat later).
         const stopped = turn.turnId !== null && turn.turnId === stoppedTurnIdRef.current
-        if (isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)) {
+        const live = isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)
+        // Only a live answer counts as "this window just looked". The focus
+        // recheck skips itself when a check landed in the last 3 s, so counting
+        // a "no turn" here lets a history load that ran a moment before the
+        // person came back swallow their return — the window then never asks
+        // again, and a turn that started elsewhere is never followed
+        // (SHO-297 / chat-resume-on-send). A negative is exactly the answer
+        // that has to be askable again.
+        if (live) lastLiveTurnCheckAtRef.current = Date.now()
+        const verdict = rejoinProbeVerdict({ live, stopped, expectedLive })
+        if (verdict === "attach") {
           guardedAutoResumeStream("live-turn-probe")
-        } else if (expectedLive && !stopped) {
+        } else if (verdict === "reload") {
           setTimeout(
             () => reloadAndAttachLiveTurnRef.current({ settle: false }),
             750,
           )
+        } else {
+          // Nothing to join, so stop rejoining: a chat whose turn is over — or
+          // one the runtime never buffered — shows the reply the person already
+          // has, instead of hiding it behind the row for the full 8 s. This is
+          // the leave condition for the *reused* paint-time answer too, which
+          // never passes through `probeLiveTurn`'s own exit (SHO-297).
+          giveUpRejoin()
         }
       })
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projectId, localAgentUrl, chatWorkspaceId, guardedAutoResumeStream],
+    [
+      projectId,
+      localAgentUrl,
+      chatWorkspaceId,
+      guardedAutoResumeStream,
+      probeLiveTurn,
+      giveUpRejoin,
+    ],
   )
 
   /**
@@ -9718,7 +9887,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                       )}
                     </Pressable>
                   )}
-                  {displayMessages.length > 0 ? (
+                  {rejoinView.messages.length > 0 || rejoinView.showRejoinRow ? (
                     <MessageEditProvider
                       {...messageEditValue}
                       onInlineEditingChange={
@@ -9729,8 +9898,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     >
                       <TurnFooterProvider {...turnFooterValue}>
                         <TurnList
-                          messages={displayMessages}
-                          isStreaming={isStreaming}
+                          messages={rejoinView.messages as UIMessage[]}
+                          isStreaming={isStreaming || rejoining}
+                          rejoining={rejoinView.showRejoinRow}
                           phase={phase}
                           subagentToolCalls={accumulatedSubagentTools}
                         />

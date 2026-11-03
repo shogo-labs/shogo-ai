@@ -13,7 +13,7 @@
  */
 import { expect, test, type Page } from "@playwright/test"
 import { LOCAL_API_BASE } from "./helpers"
-import { api, activateTeamWorkspace, signIn } from "./team-nav-seed"
+import { api, activateTeamWorkspace, signInByApi } from "./team-nav-seed"
 
 const CHANNELS = 150
 const PROJECTS = 150
@@ -93,7 +93,7 @@ test.describe("Team Home on a phone with 150 channels, 150 projects and 150 mess
     test.setTimeout(600_000)
     const context = await browser.newContext()
     seeder = await context.newPage()
-    await signIn(seeder)
+    await signInByApi(seeder)
     seed = await seedBigWorkspace(seeder)
   })
 
@@ -104,7 +104,7 @@ test.describe("Team Home on a phone with 150 channels, 150 projects and 150 mess
   })
 
   test.beforeEach(async ({ page }) => {
-    await signIn(page)
+    await signInByApi(page)
     await activateTeamWorkspace(page, seed.workspaceId)
   })
 

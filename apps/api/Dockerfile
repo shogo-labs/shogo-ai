@@ -54,10 +54,11 @@ ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 #            clone/fetch/push and `git.service` runs git for status/graph.
 #            (NOT git-lfs: the LFS batch endpoint only mints presigned URLs,
 #            so the API never shells out to git-lfs — see routes/git-lfs.ts.)
+#   ffmpeg -> converts WebM/Opus voice notes to AAC/MP4 for iOS playback.
 # Plus Bun (entry point uses `bun run`).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        curl bash git unzip ca-certificates netcat-openbsd && \
+        curl bash git unzip ca-certificates netcat-openbsd ffmpeg && \
     curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.4.4" && \
     command -v git && git --version && \
     rm -rf /root/.bun /var/lib/apt/lists/*

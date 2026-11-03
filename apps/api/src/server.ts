@@ -183,7 +183,10 @@ import { decide, getAccess, loadAccess } from './lib/authz'
 import {
   apiAuthGate,
   isAllowedUnauthWebchatProxyPath,
+  isPublicPreviewRenderPath,
+  isPublishedApiProxyPath,
   isTokenGatedThumbnailPath,
+  isUserAppProxyPath,
 } from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
 import { tracingMiddleware } from './middleware/tracing'
@@ -723,11 +726,16 @@ const getAllowedOrigins = (): string[] => {
 
 // Enable CORS for development and production
 const allowedOrigins = getAllowedOrigins()
-app.use('/*', cors({
+const apiCors = cors({
   origin: (origin, c) => {
     // Webchat widget requests come from external websites — allow any origin
     const reqPath = new URL(c.req.url).pathname
     if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(reqPath)) {
+      return origin || '*'
+    }
+    // A public preview is the user's app, called from its own preview host or
+    // from any site that posts to it (e.g. a signup form on the user's domain).
+    if (isPublicPreviewRenderPath(reqPath)) {
       return origin || '*'
     }
     // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
@@ -746,7 +754,11 @@ app.use('/*', cors({
   },
   credentials: true,
   exposeHeaders: ['Content-Disposition'],
-}))
+})
+app.use('/*', (c, next) => {
+  if (isPublishedApiProxyPath(new URL(c.req.url).pathname)) return next()
+  return apiCors(c, next)
+})
 
 // CSRF protection — validates Origin header on state-changing requests (POST/PUT/PATCH/DELETE).
 // Skips webhook and internal endpoints that use their own auth (signatures, tokens).
@@ -787,6 +799,11 @@ app.use('/api/*', async (c, next) => {
     path === '/api/voice/elevenlabs/webhook' ||
     path.startsWith('/api/voice/twilio/status/')
   ) {
+    return next()
+  }
+  // A user's app behind the preview / published proxy owns its own CSRF
+  // policy; the Studio origin allow-list would reject the app's own forms.
+  if (isUserAppProxyPath(path)) {
     return next()
   }
   // Requests with no Origin AND no Referer cannot have been triggered by a
@@ -2495,6 +2512,8 @@ const publishedApiHandler = async (c: any) => {
       'content-type', 'accept', 'accept-encoding', 'accept-language',
       'user-agent', 'range', 'if-none-match', 'if-modified-since', 'cache-control',
       'cookie', 'authorization', 'x-forwarded-for', 'x-forwarded-host',
+      // The app answers CORS itself (isPublishedApiProxyPath skips the API's).
+      'origin', 'access-control-request-method', 'access-control-request-headers',
     ]) {
       const v = c.req.header(h)
       if (v) headers.set(h, v)

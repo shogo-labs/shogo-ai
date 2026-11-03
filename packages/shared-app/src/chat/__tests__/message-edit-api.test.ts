@@ -16,7 +16,8 @@
  *      without window.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
+import { installHappyDom, restoreHappyDom } from '../../hooks/__tests__/happy-dom-setup.ts'
 import {
   truncateMessagesFrom,
   getPrecedingCheckpoint,
@@ -305,5 +306,43 @@ describe('rollbackProjectToCheckpoint', () => {
     // file-tree views would refetch and find nothing changed,
     // confusing the user.
     expect(received).toBeNull()
+  })
+})
+
+/**
+ * SHO-301: this file used to pass only because `window` was undefined when it
+ * ran. In the full suite another file installs happy-dom first, and then
+ * `dispatchEvent(new CustomEvent(…))` threw `ERR_INVALID_ARG_TYPE` — the
+ * helper's `try/catch` swallowed it and no listener ever heard the event.
+ * Install happy-dom here on purpose, so the dispatch is exercised for real.
+ */
+describe('rollbackProjectToCheckpoint under happy-dom (SHO-301)', () => {
+  afterAll(() => restoreHappyDom())
+
+  it('delivers SHOGO_FILES_REVERTED to a listener on the installed window', async () => {
+    installHappyDom()
+    const seen: FilesRevertedDetail[] = []
+    const onEvent = (e: Event) => seen.push((e as CustomEvent<FilesRevertedDetail>).detail)
+    window.addEventListener(SHOGO_FILES_REVERTED_EVENT, onEvent)
+    try {
+      const httpPost = vi.fn(async () => ({ data: { ok: true } }))
+      const { collection } = makeFakeCollection({ httpPost, items: [] })
+
+      await rollbackProjectToCheckpoint(collection, {
+        projectId: 'proj-hd',
+        checkpointId: 'cp-hd',
+        checkpointCreatedAt: '2026-05-17T20:00:00.000Z',
+      })
+
+      expect(seen).toEqual([
+        {
+          projectId: 'proj-hd',
+          checkpointId: 'cp-hd',
+          checkpointCreatedAt: '2026-05-17T20:00:00.000Z',
+        },
+      ])
+    } finally {
+      window.removeEventListener(SHOGO_FILES_REVERTED_EVENT, onEvent)
+    }
   })
 })
