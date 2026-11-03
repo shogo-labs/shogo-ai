@@ -118,6 +118,17 @@ spec:
       annotations:
         autoscaling.knative.dev/min-scale: "2"
         autoscaling.knative.dev/max-scale: "20"
+        # target-burst-capacity=0  Keep the activator OUT of the request path
+        #   once a replica is Ready (staging has had this since 2026-05-14).
+        #   min-scale 2 x the default target 100 is below the default burst
+        #   capacity (211), so without it every new revision starts in Proxy
+        #   mode: streams opened then pick up the activator's ~5-min request
+        #   cap, and a stream still open when gc-old-api-revisions.sh deletes
+        #   the revision pins it in the activator's concurrency reporter
+        #   forever. Each pinned revision logs "Error while getting revision"
+        #   once a second and leaks memory until the 600Mi activator OOMs
+        #   (EU OOMKilled 2026-10-15; ~6M log lines/day by 2026-11-02).
+        autoscaling.knative.dev/target-burst-capacity: "0"
     spec:
       serviceAccountName: api-service-account
       containers:
