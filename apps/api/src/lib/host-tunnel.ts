@@ -43,11 +43,20 @@ export async function hostOfWorkspace(workspaceId: string): Promise<string | nul
   if (!hostedWorkspacesResolveHere()) return null
   const cached = hostCache.get(workspaceId)
   if (cached && Date.now() - cached.at < HOST_TTL_MS) return cached.hostInstanceId
-  const row = await prisma.workspace.findUnique({
-    where: { id: workspaceId },
-    select: { hostInstanceId: true },
-  })
-  const hostInstanceId = row?.hostInstanceId ?? null
+  let hostInstanceId: string | null
+  try {
+    const row = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { hostInstanceId: true },
+    })
+    hostInstanceId = row?.hostInstanceId ?? null
+  } catch {
+    // Every runtime resolve asks this, and the answer is only an optimisation
+    // of *where* to run. A lookup that cannot be answered means "no host I know
+    // of", which is the same path a workspace with no host takes — never a
+    // failed resolve. Left uncached so the next resolve asks again.
+    return null
+  }
   hostCache.set(workspaceId, { hostInstanceId, at: Date.now() })
   return hostInstanceId
 }
