@@ -18,16 +18,28 @@ describe('Shogo island attachments', () => {
     ).toBeNull()
   })
 
-  test('rejects oversized non-archive files', () => {
+  test('accepts a 50 MB non-archive file', () => {
     expect(
       validateIslandFiles([
         {
-          name: 'large.txt',
-          type: 'text/plain',
-          size: ISLAND_MAX_FILE_SIZE + 1,
+          name: 'large.bin',
+          type: 'application/octet-stream',
+          size: 50 * 1024 * 1024,
         },
       ]),
-    ).toContain('large.txt')
+    ).toBeNull()
+  })
+
+  test('rejects oversized non-archive files', () => {
+    const error = validateIslandFiles([
+      {
+        name: 'large.txt',
+        type: 'text/plain',
+        size: ISLAND_MAX_FILE_SIZE + 1,
+      },
+    ])
+    expect(error).toContain('large.txt')
+    expect(error).toContain('100MB')
   })
 
   test('allows project archives to exceed the byte limit', () => {
