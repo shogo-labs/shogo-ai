@@ -14,6 +14,7 @@ import { useMentionables } from '../../../hooks/useTeamChat'
 import { useLater } from '../../../hooks/useChatItems'
 import type { ConversationRef } from '../../../lib/team-chat-api'
 import { mentionNames, renderMentions, scheduleOptions } from '../../../lib/team-chat-state'
+import { openConversationTarget } from '../../../lib/team-chat-nav'
 
 type Tab = 'saved' | 'reminders' | 'scheduled'
 
@@ -47,11 +48,7 @@ export default function TeamChatLater() {
 
   const open = (conversationId: string | null, messageId?: string | null, threadRootId?: string | null) => {
     if (!conversationId) return
-    const thread = threadRootId ?? messageId
-    router.push({
-      pathname: '/(app)/c/[conversationId]',
-      params: thread ? { conversationId, thread } : { conversationId },
-    } as any)
+    openConversationTarget(router, { conversationId, thread: threadRootId ?? messageId })
   }
 
   const counts = { saved: later.saved.length, reminders: later.reminders.length, scheduled: later.scheduled.length }

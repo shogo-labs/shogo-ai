@@ -22,7 +22,7 @@ import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable,
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type ConversationFile } from '../../../lib/team-chat-api'
-import { sessionRoute } from '../../../lib/team-chat-nav'
+import { openConversationTarget, setThreadFocus, sessionRoute } from '../../../lib/team-chat-nav'
 import { resolvePanes } from '../../../lib/team-chat-panes'
 import { useTeamChatEvents } from '../../../lib/team-chat-connection'
 import {
@@ -183,11 +183,13 @@ export default function ConversationScreen() {
     useCallback(() => {
       setFocused(true)
       setActiveConversation(conversationId, activeToken)
+      setThreadFocus({ conversationId, threadRootId }, activeToken)
       return () => {
         setFocused(false)
         setActiveConversation(null, activeToken)
+        setThreadFocus(null, activeToken)
       }
-    }, [conversationId, activeToken]),
+    }, [conversationId, threadRootId, activeToken]),
   )
 
   useEffect(() => {
@@ -215,24 +217,16 @@ export default function ConversationScreen() {
   const openThread = useCallback(
     (message: ChatMessage) => {
       if (!conversationId) return
-      const thread = message.threadRootId ?? message.id
-      if (threadRootId) {
-        // Already in a thread: swap it in place so Back returns to the channel, not to the previous thread.
-        router.setParams({ thread, project: undefined, files: undefined, doc: undefined } as any)
-        return
-      }
-      // Push an entry so the browser or OS back button closes the thread rather than leaving the channel.
-      router.push({
-        pathname: '/(app)/c/[conversationId]',
-        params: {
-          conversationId,
-          thread,
-          ...(boardParam ? { board: boardParam } : {}),
-          ...(cardId ? { card: cardId } : {}),
-        },
-      } as any)
+      // One thread at a time: a thread already open is swapped out in place, so Back
+      // still returns to the channel instead of to the previous thread.
+      openConversationTarget(router, {
+        conversationId,
+        thread: message.threadRootId ?? message.id,
+        board: boardParam,
+        card: cardId,
+      })
     },
-    [router, conversationId, threadRootId, boardParam, cardId],
+    [router, conversationId, boardParam, cardId],
   )
   const closeThread = useCallback(() => {
     // A thread opened from this channel pushed an entry on top of the channel: pop it, so the

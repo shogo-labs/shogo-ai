@@ -18,6 +18,26 @@ import {
 } from "../../lib/native-phone-layout"
 import { NativePhoneSheet, NativePhoneSheetCloseButton } from "../phone/NativePhoneSheet"
 
+/**
+ * The one type scale for every activity row in the native-phone transcript —
+ * Thought, Thinking…, Worked, Working…, Worked for …, the planning status
+ * line and the streaming exec / edit / write / tool rows. 15px is one step
+ * under the 16px body copy, so a row reads as a label rather than as a
+ * second body size (SHO-296).
+ */
+export const NATIVE_ACTIVITY_LABEL = "text-[15px] leading-5 text-muted-foreground"
+
+/**
+ * Row padding for an activity row: the label's own 20px line box plus 2px,
+ * with no `min-h-11`. The 44pt touch target comes from
+ * `NATIVE_ACTIVITY_HIT_SLOP` instead, so the row does not reserve ~14px of
+ * empty space above and below its text.
+ */
+export const NATIVE_ACTIVITY_ROW = "py-0.5"
+
+/** 20px line + 12px each side = a 44pt touch target without the 44px gap. */
+export const NATIVE_ACTIVITY_HIT_SLOP = { top: 12, bottom: 12, left: 8, right: 8 } as const
+
 const InsideActivitySheetContext = createContext(false)
 
 export function useInsideActivitySheet(): boolean {
@@ -74,14 +94,15 @@ export function NativeWorkTrigger({
   }
 
   return (
-    <View className="py-0.5">
+    <View className={NATIVE_ACTIVITY_ROW}>
       <Pressable
         onPress={() => setOpen(true)}
-        className="self-start py-1"
+        className="self-start"
+        hitSlop={NATIVE_ACTIVITY_HIT_SLOP}
         role="button"
         accessibilityLabel={label}
       >
-        <Text className="text-[15px] text-muted-foreground">{label}</Text>
+        <Text className={NATIVE_ACTIVITY_LABEL}>{label}</Text>
       </Pressable>
       <NativeActivitySheet
         visible={open}

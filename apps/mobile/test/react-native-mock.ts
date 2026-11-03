@@ -161,6 +161,7 @@ export const reactNativeMockBase = {
       }
     },
     timing: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
+    delay: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
     spring: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
     sequence: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),
     parallel: () => ({ start: (cb?: () => void) => cb?.(), stop: () => {}, reset: () => {} }),

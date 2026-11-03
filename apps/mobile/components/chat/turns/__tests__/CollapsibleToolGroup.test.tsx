@@ -128,6 +128,9 @@ mock.module("../../../../lib/native-phone-layout", () => ({
 mock.module("../../NativeActivitySheet", () => ({
   NativeActivitySheet: () => null,
   useInsideActivitySheet: () => false,
+  NATIVE_ACTIVITY_LABEL: "text-[15px] leading-5 text-muted-foreground",
+  NATIVE_ACTIVITY_ROW: "py-0.5",
+  NATIVE_ACTIVITY_HIT_SLOP: { top: 12, bottom: 12, left: 8, right: 8 },
 }))
 
 mock.module("../../NativeWorkedSessionExtras", () => ({

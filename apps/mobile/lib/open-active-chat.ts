@@ -3,7 +3,7 @@
 
 import type { useRouter } from 'expo-router'
 import type { WorkTarget } from './agent-directory'
-import { conversationThreadRoute } from './team-chat-nav'
+import { openConversationTarget } from './team-chat-nav'
 
 type Router = ReturnType<typeof useRouter>
 
@@ -49,9 +49,11 @@ export function openAgentWork(router: Router, target: WorkTarget) {
  */
 export function openActiveChat(router: Router, chat: ActiveChatTarget) {
   if (chat.conversationId) {
-    const route = conversationThreadRoute(chat.conversationId, chat.threadRootId)
-    if (chat.messageId) route.params.msg = chat.messageId
-    router.push(route as any)
+    openConversationTarget(router, {
+      conversationId: chat.conversationId,
+      thread: chat.threadRootId,
+      msg: chat.messageId,
+    })
     return
   }
   if (chat.projectId && chat.chatSessionId) {
