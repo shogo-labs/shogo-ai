@@ -6,6 +6,7 @@
  * app's own hosts open in place instead of in a browser.
  */
 import { Platform } from 'react-native'
+import { openConversationTarget } from './team-chat-nav'
 
 const WEB_URL = process.env.EXPO_PUBLIC_WEB_URL ?? 'https://studio.shogo.ai'
 
@@ -182,10 +183,17 @@ export function openMessageLinkInApp(href: string): boolean {
   const target = parseConversationLink(href)
   if (target) {
     void import('expo-router').then(({ router }) =>
-      router.push({
-        pathname: '/(app)/c/[conversationId]',
-        params: { conversationId: target.conversationId, ...target.params },
-      } as any),
+      openConversationTarget(router, {
+        conversationId: target.conversationId,
+        thread: target.params.thread,
+        msg: target.params.msg,
+        board: target.params.board,
+        card: target.params.card,
+        doc: target.params.doc === '1',
+        files: target.params.files === '1',
+        project: target.params.project,
+        profile: target.params.profile,
+      }),
     )
     return true
   }

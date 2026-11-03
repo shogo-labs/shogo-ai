@@ -12,6 +12,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useInbox } from '../../../hooks/useChatPrefs'
+import { openConversationTarget } from '../../../lib/team-chat-nav'
 import type { InboxItem, InboxKind } from '../../../lib/team-chat-api'
 
 const ICONS: Record<InboxKind, typeof AtSign> = {
@@ -62,11 +63,7 @@ export default function TeamChatInbox() {
   const open = (item: InboxItem) => {
     if (!item.readAt) void markRead([item.id])
     if (!item.conversationId) return
-    const thread = item.threadRootId ?? item.messageId
-    router.push({
-      pathname: '/(app)/c/[conversationId]',
-      params: thread ? { conversationId: item.conversationId, thread } : { conversationId: item.conversationId },
-    } as any)
+    openConversationTarget(router, { conversationId: item.conversationId, thread: item.threadRootId ?? item.messageId })
   }
 
   if (experience.resolved && experience.kind !== 'team') {
