@@ -40,6 +40,16 @@ export interface TurnSyncContext {
    * catch-up probes `/turn` once and paints saved history.
    */
   isVisible: boolean
+  /**
+   * The turn this window was told `started` for, and acted on (SHO-299).
+   *
+   * `ended` only means something to a window that attached to that turn: a
+   * window that never saw the start — because it was not the chat on screen, it
+   * was streaming its own turn, or the start was not announced — has nothing to
+   * reconcile, and repainting it would arm the task watch from a turn it never
+   * followed. Its refocus catch-up is the path for that (SHO-53).
+   */
+  announcedTurn: { chatSessionId?: string; turnId?: string } | null
 }
 
 /**
@@ -61,7 +71,14 @@ export function turnSyncAction(
   // window has no reason to run (SHO-53). Refocus catches it up.
   if (!context.isVisible) return 'ignore'
   if (event.state === 'started') return 'attach'
-  if (event.state === 'ended') return 'repaint'
+  if (event.state === 'ended') {
+    // Only the turn this window was told about: anything else is a turn it never
+    // followed, and reconciling it would arm watches for work it is not running.
+    const announced = context.announcedTurn
+    if (!announced || announced.turnId !== event.turnId) return 'ignore'
+    if (announced.chatSessionId && announced.chatSessionId !== event.chatSessionId) return 'ignore'
+    return 'repaint'
+  }
   return 'ignore'
 }
 

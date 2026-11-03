@@ -4450,6 +4450,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * the background task ran.
    */
   const followsAnotherWindowRef = useRef<string | null>(null)
+  /**
+   * The turn this window was told `started` for (SHO-299). `ended` is acted on
+   * only for this turn — see `turnSyncAction`.
+   */
+  const announcedTurnRef = useRef<{ chatSessionId?: string; turnId?: string } | null>(null)
   const liveTurnReloadNonceRef = useRef(0)
   // The nonce of a reload that only refreshes the history; Effect 1 skips its
   // probe so these never count against the auto-resume circuit breaker.
@@ -4696,11 +4701,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
         Platform.OS === "web"
           ? typeof document !== "undefined" && document.visibilityState === "visible"
           : AppState.currentState === "active",
+      announcedTurn: announcedTurnRef.current,
     })
     if (action === "attach") {
+      announcedTurnRef.current = { chatSessionId: event?.chatSessionId, turnId: event?.turnId }
       followsAnotherWindowRef.current = currentSessionIdRef.current
       void attachToLiveTurnIfAnyRef.current()
-    } else if (action === "repaint") void catchUpAfterTurnEndedRef.current()
+    } else if (action === "repaint") {
+      announcedTurnRef.current = null
+      void catchUpAfterTurnEndedRef.current()
+    }
   })
 
   useEffect(() => {

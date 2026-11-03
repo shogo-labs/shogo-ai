@@ -18,15 +18,38 @@ const turnEvent = (state: string, chatSessionId = 'session-1') => ({
   state,
 })
 
-const idle = { currentSessionId: 'session-1', isStreaming: false, isSending: false, isVisible: true }
+const idle = {
+  currentSessionId: 'session-1',
+  isStreaming: false,
+  isSending: false,
+  isVisible: true,
+  announcedTurn: { chatSessionId: 'session-1', turnId: 'turn-1' } as
+    | { chatSessionId?: string; turnId?: string }
+    | null,
+}
 
 describe('turnSyncAction', () => {
   test('attaches to a turn another window started', () => {
     expect(turnSyncAction(turnEvent('started'), idle)).toBe('attach')
   })
 
-  test('repaints when a turn ended somewhere else', () => {
+  test('repaints when a turn it followed ended somewhere else', () => {
     expect(turnSyncAction(turnEvent('ended'), idle)).toBe('repaint')
+  })
+
+  test('ignores the end of a turn it was never told about', () => {
+    // A turn whose `started` this window never saw — not announced (a queue
+    // wake), not the chat on screen, or it was streaming its own turn — is a
+    // turn it did not follow. Reconciling it on `ended` repaints from the
+    // transcript and arms the task watch from work this window is not running;
+    // the refocus catch-up is the path for it (SHO-53).
+    expect(turnSyncAction(turnEvent('ended'), { ...idle, announcedTurn: null })).toBe('ignore')
+    expect(
+      turnSyncAction(turnEvent('ended'), {
+        ...idle,
+        announcedTurn: { chatSessionId: 'session-1', turnId: 'turn-other' },
+      }),
+    ).toBe('ignore')
   })
 
   test('ignores a turn in another chat', () => {
