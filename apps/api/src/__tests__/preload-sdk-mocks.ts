@@ -110,6 +110,12 @@ mock.module('@shogo-ai/sdk/tech-stack-registry', () => ({
   isMobileTechStack: (_stack?: any) => false,
   usesMetroBundler: (_stack?: any) => false,
   stackSeedsItself: (_stack?: any) => false,
+  // `packages/shared-runtime/src/tech-stack-registry.ts` re-exports these, so a
+  // mock without them turns every consumer of the shared-runtime barrel into
+  // "SyntaxError: export 'x' not found" at module load (SHO-291).
+  isDockerTechStack: (_stack?: any) => false,
+  getMinimumInstanceSize: (_stack?: any) => null,
+  getDeclaredPorts: (_stack?: any) => [],
 }))
 
 mock.module('@shogo-ai/sdk/cli/pkg', () => ({
@@ -150,9 +156,17 @@ mock.module('@shogo-ai/sdk/email/server', () => ({
 // all, but Bun fully resolves every named import at module load — so
 // every missing symbol here turns into a "SyntaxError: Export named 'X'
 // not found" the moment a sibling import pulls in a file that touches it.
-// Keep this object in sync with the union of `import { ... } from
-// '@shogo/shared-runtime'` across apps/api/src/**.
+//
+// A hand-maintained mirror of that export union always drifts (SHO-291: the
+// agent-loop import graph needed TECH_STACK_REGISTRY, and adding it only moved
+// the failure to createLogger). So the real barrel is loaded first and spread
+// into the mock below: every real export exists, and only the deliberate
+// overrides win. Importing it here is safe — the `@shogo-ai/sdk/*` subpaths it
+// re-exports are mocked above, and `conditions = ["development"]` resolves them
+// to source rather than the unbuilt dist/.
+const realSharedRuntime = await import('@shogo/shared-runtime')
 mock.module('@shogo/shared-runtime', () => ({
+  ...realSharedRuntime,
   RUNTIME_CONFIG: {
     apiPort: 4000,
     runtimePort: 5000,
