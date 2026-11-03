@@ -229,7 +229,7 @@ export function scopedAnalyticsRoutes(): Hono {
         const s = String(val)
         return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
       }
-      const header = ['Date', 'User', 'Email', 'Type', 'Model', 'Provider', 'Tokens', 'Billed USD']
+      const header = ['Date', 'User', 'Email', 'Type', 'Model', 'Provider', 'Tokens', 'Billed USD', 'Model USD', 'Shogo fee USD']
       const lines: string[] = [header.join(',')]
       for (const e of entries) {
         lines.push(
@@ -242,6 +242,8 @@ export function scopedAnalyticsRoutes(): Hono {
             escape(e.provider || ''),
             escape(e.totalTokens),
             escape(e.billedUsd.toFixed(4)),
+            escape(Number(e.modelCostUsd ?? 0).toFixed(4)),
+            escape(Number(e.shogoFeeUsd ?? 0).toFixed(4)),
           ].join(','),
         )
       }

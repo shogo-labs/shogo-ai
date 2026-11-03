@@ -353,7 +353,6 @@ function UserUsageSection() {
           onLogPageChange={setLogPage}
           logPage={logPage}
           title="Your AI Usage"
-          isLocalMode={localMode}
         />
       </CardContent>
     </Card>

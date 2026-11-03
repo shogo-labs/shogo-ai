@@ -70,7 +70,7 @@ function estimateDailyCost(
   modelName: string,
   quietHoursStart?: string | null,
   quietHoursEnd?: string | null,
-): { ticksPerDay: number; usdPerTick: number; usdPerDay: number } {
+): { ticksPerDay: number; usdPerTick: number; modelUsdPerTick: number; feeUsdPerTick: number; usdPerDay: number } {
   let activeHours = 24
   if (quietHoursStart && quietHoursEnd) {
     const [sh, sm] = quietHoursStart.split(':').map(Number)
@@ -85,9 +85,11 @@ function estimateDailyCost(
   const tier = modelNameToBillingTier(modelName)
   const rawUsdPerTick = MODEL_USD_PER_TICK[tier] ?? MODEL_USD_PER_TICK.sonnet
   const tokenScale = ESTIMATED_TOKENS_PER_TICK / 3000
-  const usdPerTick = rawUsdPerTick * tokenScale * USAGE_MARKUP
+  const modelUsdPerTick = rawUsdPerTick * tokenScale
+  const usdPerTick = modelUsdPerTick * USAGE_MARKUP
+  const feeUsdPerTick = usdPerTick - modelUsdPerTick
 
-  return { ticksPerDay, usdPerTick, usdPerDay: ticksPerDay * usdPerTick }
+  return { ticksPerDay, usdPerTick, modelUsdPerTick, feeUsdPerTick, usdPerDay: ticksPerDay * usdPerTick }
 }
 
 interface HeartbeatConfig {
@@ -879,6 +881,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                             </Text>
                             <Text className="text-[10px] text-muted-foreground">
                               ~{cost.ticksPerDay} ticks/day × ~${cost.usdPerTick.toFixed(4)}/tick
+                              {' '}(${cost.modelUsdPerTick.toFixed(4)} model + ${cost.feeUsdPerTick.toFixed(4)} fee)
                             </Text>
                           </View>
                         </View>

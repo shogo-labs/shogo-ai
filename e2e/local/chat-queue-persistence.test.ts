@@ -47,6 +47,12 @@ type QueueMockState = {
   releaseChat?: () => void
   nextRowId: number
   nextReply: number
+  /**
+   * How long the enqueue POST takes to answer. The row is on the dock before
+   * that answer (the create inserts it optimistically), so a slow POST is what
+   * used to keep the pre-send echo in the transcript for a visible moment.
+   */
+  postDelayMs?: number
 }
 
 function installQueueMock(page: Page, state: QueueMockState) {
@@ -83,6 +89,9 @@ function installQueueMock(page: Page, state: QueueMockState) {
       }
       if (request.method() === "POST" && parts.length === resourceIndex + 1) {
         const body = request.postDataJSON() as Record<string, unknown>
+        if (state.postDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, state.postDelayMs))
+        }
         const row = {
           id: `queue-e2e-${++state.nextRowId}`,
           sessionId: body.sessionId,
@@ -221,6 +230,69 @@ async function waitForIdle(page: Page) {
     state: "detached",
     timeout: 30_000,
   }).catch(() => {})
+}
+
+type QueueSample = { t: number; transcript: number; dock: boolean }
+
+/**
+ * Samples, every 25 ms, where `needle` is on screen: how many transcript
+ * bubbles carry it and whether a dock row does. Both are read the way the
+ * assertions above read them — transcript text is any text node outside the
+ * dock rows and the composer, a dock row is an element labelled "Queued
+ * message" — so a sample is the same question `transcriptCount`/`queuedRow`
+ * ask, just asked continuously instead of once.
+ */
+async function startQueueSampler(page: Page, needle: string) {
+  await page.evaluate((text) => {
+    const w = window as unknown as {
+      __queueSamples: QueueSample[]
+      __queueSampler: ReturnType<typeof setInterval>
+    }
+    const composer = document.querySelector('[aria-label="Chat message input"]')
+    const composerRoot = composer?.parentElement ?? null
+    const hidden = (start: Element | null) => {
+      for (let el: Element | null = start; el; el = el.parentElement) {
+        if (el.getAttribute("aria-label") === "Queued message") return true
+        if (el.getAttribute("aria-hidden") === "true") return true
+        if (composerRoot && el === composerRoot) return true
+        const style = (el as HTMLElement).style
+        if (style && (style.pointerEvents === "none" || style.color === "transparent")) {
+          return true
+        }
+      }
+      return false
+    }
+    w.__queueSamples = []
+    w.__queueSampler = setInterval(() => {
+      let transcript = 0
+      const walker = document.createTreeWalker(document.body!, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!(node.nodeValue ?? "").includes(text)) continue
+        if (hidden(node.parentElement)) continue
+        transcript += 1
+      }
+      const dock = Array.from(
+        document.querySelectorAll('[aria-label="Queued message"]'),
+      ).some((el) => (el.textContent ?? "").includes(text))
+      w.__queueSamples.push({ t: performance.now(), transcript, dock })
+    }, 25)
+  }, needle)
+}
+
+async function readQueueSamples(page: Page): Promise<QueueSample[]> {
+  return page.evaluate(() => {
+    const w = window as unknown as {
+      __queueSamples: QueueSample[]
+      __queueSampler: ReturnType<typeof setInterval>
+    }
+    clearInterval(w.__queueSampler)
+    return w.__queueSamples
+  })
+}
+
+/** The moment the composer was submitted, on the sampler's clock. */
+async function submitTime(page: Page): Promise<number> {
+  return page.evaluate(() => performance.now())
 }
 
 async function openProject(page: Page, api: APIRequestContext) {
@@ -481,5 +553,105 @@ test.describe("server-backed chat queue — local UI", () => {
     await expect.poll(() => transcriptCount(page, alpha), { timeout: 15_000 }).toBe(1)
     await expect.poll(() => transcriptOrder(page, alpha, beta)).toBe(true)
     expect(historyGets).toEqual([])
+  })
+
+  /**
+   * SHO-286. The pre-send echo used to be painted for every send, before the
+   * code decided whether to queue, and dropped only once the enqueue POST came
+   * back. A send this window already knows is queued therefore sat in the
+   * transcript for the whole consent/enrich/POST round trip and then vanished
+   * into the dock — the flash Russell saw. A poll for "0 bubbles" passes once
+   * the count *reaches* 0, so the old test could not see it; this one samples
+   * every 25 ms from the submit until a second after the POST resolves.
+   */
+  test("a queued send never paints a bubble, even while the enqueue POST is slow", async ({ page }) => {
+    const state: QueueMockState = {
+      rows: [],
+      mockChat: false,
+      holdNextChat: false,
+      nextRowId: 0,
+      nextReply: 0,
+      postDelayMs: 1500,
+    }
+    const { lead, alpha } = prompts(`flash-${Date.now().toString(36)}`)
+    await installQueueMock(page, state)
+    await openProject(page, page.request)
+    await holdATurnWith(page, state, lead)
+
+    await startQueueSampler(page, alpha)
+    await projectComposerInput(page).fill(alpha)
+    const submittedAt = await submitTime(page)
+    await page.keyboard.press("Enter")
+
+    // The dock row is the create's own optimistic insert: it is on screen
+    // before the POST that persists it has been answered.
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+    await expect.poll(() => state.rows.length, { timeout: 10_000 }).toBe(1)
+    // Keep sampling for a second after the POST resolved.
+    await page.waitForTimeout(1000)
+    const samples = await readQueueSamples(page)
+
+    const afterSubmit = samples.filter((sample) => sample.t >= submittedAt)
+    expect(afterSubmit.length, "the sampler never ran").toBeGreaterThan(20)
+    expect(
+      afterSubmit.filter((sample) => sample.transcript > 0),
+      "the queued message was painted in the transcript",
+    ).toEqual([])
+    expect(
+      afterSubmit.filter((sample) => sample.t >= submittedAt + 100 && !sample.dock),
+      "the queued message was missing from the dock",
+    ).toEqual([])
+  })
+
+  /**
+   * The other half of SHO-286: a send this window does not know is queued
+   * (a turn started in another window) keeps the SHO-5 echo, because most such
+   * sends start a turn. When the probe says busy, the echo has to leave in the
+   * same render the dock row arrives — never a frame in both places, and never
+   * a frame in neither.
+   */
+  test("a send the probe finds busy moves to the dock without a frame in both places", async ({ page }) => {
+    const state: QueueMockState = {
+      rows: [],
+      mockChat: false,
+      holdNextChat: false,
+      nextRowId: 0,
+      nextReply: 0,
+      postDelayMs: 1200,
+    }
+    const { alpha } = prompts(`probe-${Date.now().toString(36)}`)
+    await installQueueMock(page, state)
+    // A turn is live on the server, started elsewhere: this window's own
+    // `isStreaming` is false, so the send goes through the live-turn probe.
+    await page.route("**/chat/*/turn", async (route: Route) => {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "active", turnId: "turn-from-another-window" }),
+      })
+    })
+    await openProject(page, page.request)
+
+    await startQueueSampler(page, alpha)
+    await projectComposerInput(page).fill(alpha)
+    const submittedAt = await submitTime(page)
+    await page.keyboard.press("Enter")
+
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+    await expect.poll(() => state.rows.length, { timeout: 10_000 }).toBe(1)
+    await page.waitForTimeout(1000)
+    const samples = await readQueueSamples(page)
+
+    const afterSubmit = samples.filter((sample) => sample.t >= submittedAt)
+    expect(afterSubmit.length, "the sampler never ran").toBeGreaterThan(20)
+    expect(
+      afterSubmit.filter((sample) => sample.transcript > 0 && sample.dock),
+      "the message was in the transcript and the dock at the same time",
+    ).toEqual([])
+    // It ends in the dock only: the last samples carry it there and nowhere else.
+    const tail = afterSubmit.slice(-8)
+    expect(tail.filter((sample) => !sample.dock)).toEqual([])
+    expect(tail.filter((sample) => sample.transcript > 0)).toEqual([])
   })
 })

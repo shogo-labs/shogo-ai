@@ -46,6 +46,25 @@ export function docLink(conversationId: string, base = linkBase()): string {
 }
 
 /**
+ * A file in a workspace, opened in that workspace's agent chat
+ * (`/agent?workspace=<id>&file=<path>`). Anyone who is a member of the
+ * workspace opens the same file; the link carries no token, so access is
+ * whatever the viewer already has (SHO-284).
+ *
+ * The path is the same workspace-relative path the viewer shows — a mounted
+ * project's file stays `<projectId>/…`.
+ */
+export function workspaceFileLink(
+  target: { workspaceId: string; path: string },
+  base = linkBase(),
+): string {
+  const q = new URLSearchParams()
+  q.set('workspace', target.workspaceId)
+  q.set('file', target.path)
+  return `${base}/agent?${q}`
+}
+
+/**
  * The channel a `/c/<id>` link points at, with the pane the link asked for:
  * `msg` for a message, `thread` for one of its replies, `doc`, `files`,
  * `card`/`board` for a side pane. Every shape our own links produce has to come
@@ -125,6 +144,29 @@ export function parseFileLink(href: string, hosts: Set<string> = ownHosts()): { 
 }
 
 /**
+ * The workspace and file a `/agent?workspace=…&file=…` link points at, when
+ * that link is one of ours. Both params are required: a bare `/agent` link is
+ * the landing chat, not a file (SHO-284).
+ */
+export function parseWorkspaceFileLink(
+  href: string,
+  hosts: Set<string> = ownHosts(),
+): { workspaceId: string; path: string } | null {
+  let url: URL
+  try {
+    url = new URL(href)
+  } catch {
+    return null
+  }
+  if (!hosts.has(url.host)) return null
+  if (!/^\/agent\/?$/.test(url.pathname)) return null
+  const workspaceId = url.searchParams.get('workspace')
+  const path = url.searchParams.get('file')
+  if (!workspaceId || !path) return null
+  return { workspaceId, path }
+}
+
+/**
  * Links this app can open in place: a channel (with whatever pane it asked for
  * — a message, a thread, its doc, a card), or a shared file.
  *
@@ -153,6 +195,18 @@ export function openMessageLinkInApp(href: string): boolean {
   if (file) {
     void import('expo-router').then(({ router }) =>
       router.push({ pathname: '/(app)/f/[attachmentId]', params: { attachmentId: file.attachmentId } } as any),
+    )
+    return true
+  }
+  // A workspace file link opens that workspace's agent chat on that file,
+  // rather than reloading the page on web (SHO-284).
+  const workspaceFile = parseWorkspaceFileLink(href)
+  if (workspaceFile) {
+    void import('expo-router').then(({ router }) =>
+      router.push({
+        pathname: '/(app)/agent',
+        params: { workspace: workspaceFile.workspaceId, file: workspaceFile.path },
+      } as any),
     )
     return true
   }

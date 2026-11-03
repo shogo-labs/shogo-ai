@@ -47,7 +47,7 @@ import {
   type RecentWorkItem,
 } from '../../lib/engagement-utils'
 import { Text } from '../settings/account-sheet-chrome'
-import { StatCard, formatDollarCost } from './SharedAnalytics'
+import { StatCard, CostSplitLines, formatDollarCost } from './SharedAnalytics'
 import { STACKED_PALETTE, StackedAreaChart } from './StackedAreaChart'
 import { ActivityHeatmap, HourOfWeekGrid } from './ActivityHeatmap'
 import { ModelShareDonut } from './ModelShareDonut'
@@ -320,6 +320,7 @@ export function UsageDashboard({
           value={formatDollarCost(t.spendUsd)}
           icon={Coins}
           subtitle={`${compactNumber(t.agentRequests)} agent requests`}
+          footer={<CostSplitLines entry={t} className="mt-0.5" />}
           comfortable={comfortable}
         />
       </View>

@@ -172,12 +172,12 @@ function seed() {
 function seededSqlRows() {
   const day = new Date(Date.UTC(2026, 9, 24))
   return [
-    { day, projectId: 'p_heart', heartbeat: true, model: 'm-haiku', charges: 2, billedUsd: 2, rawUsd: 2, totalTokens: 240 },
+    { day, projectId: 'p_heart', heartbeat: true, model: 'm-haiku', charges: 2, billedUsd: 2, rawUsd: 2, modelCostUsd: 2, shogoFeeUsd: 0, unitemizedUsd: 0, totalTokens: 240 },
     // Already attributed by the SQL: the row's own project was `runtime_project`,
     // the `heartbeat:<projectId>:` session named p_heart.
-    { day, projectId: 'p_heart', heartbeat: true, model: 'm-sonnet', charges: 1, billedUsd: 3, rawUsd: 2.5, totalTokens: 1000 },
-    { day, projectId: 'p_off', heartbeat: true, model: 'm-haiku', charges: 1, billedUsd: 0.5, rawUsd: 0.5, totalTokens: 150 },
-    { day, projectId: 'p_other', heartbeat: false, model: 'm-sonnet', charges: 2, billedUsd: 4, rawUsd: 4, totalTokens: 0 },
+    { day, projectId: 'p_heart', heartbeat: true, model: 'm-sonnet', charges: 1, billedUsd: 3, rawUsd: 2.5, modelCostUsd: 2.5, shogoFeeUsd: 0.5, unitemizedUsd: 0, totalTokens: 1000 },
+    { day, projectId: 'p_off', heartbeat: true, model: 'm-haiku', charges: 1, billedUsd: 0.5, rawUsd: 0.5, modelCostUsd: 0.5, shogoFeeUsd: 0, unitemizedUsd: 0, totalTokens: 150 },
+    { day, projectId: 'p_other', heartbeat: false, model: 'm-sonnet', charges: 2, billedUsd: 4, rawUsd: 4, modelCostUsd: 4, shogoFeeUsd: 0, unitemizedUsd: 0, totalTokens: 0 },
   ]
 }
 

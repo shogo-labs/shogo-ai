@@ -1160,7 +1160,6 @@ export async function closeSession(
     return { billedUsd: 0, rawUsd: 0, totalTokens }
   }
 
-  const billingModel = proxyModelToBillingModel(session.model)
   // Bill on the *real* model id, not the collapsed `billingModel` bucket.
   // `calculateUsageCost` prefers a DB-defined model's own per-token pricing
   // (custom providers, admin-added models like "Hoshi 1.0" / mimo-v2.5) and
@@ -1171,6 +1170,9 @@ export async function closeSession(
     session.inputTokens, session.outputTokens, session.model,
     session.cachedInputTokens, session.cacheWriteTokens,
   )
+  // Record the model the cost was actually priced as (the real id for a
+  // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
+  const billingModel = tokenCost.pricedAs ?? proxyModelToBillingModel(session.model)
   const rawUsd = tokenCost.rawUsd + session.imageRawUsd + session.videoRawUsd + session.threeDRawUsd + session.musicRawUsd
   const billedUsd = tokenCost.billedUsd + session.imageBilledUsd + session.videoBilledUsd + session.threeDBilledUsd + session.musicBilledUsd
   const durationMs = Date.now() - session.openedAt
