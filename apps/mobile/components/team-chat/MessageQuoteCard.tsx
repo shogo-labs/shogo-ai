@@ -20,6 +20,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type ChatMessage } from '../../lib/team-chat-api'
 import { formatShortTime } from '../../lib/team-chat-time'
 import { markdownToPlainText, renderMentions, type MentionNames } from '../../lib/team-chat-state'
+import { openConversationTarget } from '../../lib/team-chat-nav'
 import type { MessageQuote } from '../../lib/message-quotes'
 
 const api = teamChatApi()
@@ -142,10 +143,7 @@ export function MessageQuoteCard({ quote, names, className }: MessageQuoteCardPr
   const { conversationId, messageId, threadRootId } = quote.target
 
   const open = () => {
-    router.push({
-      pathname: '/(app)/c/[conversationId]',
-      params: { conversationId, msg: messageId, ...(threadRootId ? { thread: threadRootId } : {}) },
-    } as never)
+    openConversationTarget(router, { conversationId, thread: threadRootId, msg: messageId })
   }
 
   if (state.status === 'unavailable') {

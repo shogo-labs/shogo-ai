@@ -30,6 +30,7 @@ import { TimelinePane } from '../team-chat/TimelinePane'
 import { OptionSheet } from './OptionSheet'
 import { PRIORITY_DOT } from './priority'
 import { PullRequestSection } from './PullRequestChip'
+import { openConversationTarget } from '../../lib/team-chat-nav'
 
 const api = workBoardsApi()
 const chat = teamChatApi()
@@ -514,7 +515,7 @@ function CardHistory({ itemId, mentionables }: { itemId: string; mentionables: M
           }
           const link = entry.link
           const open = link.conversationId && link.refId && !link.private
-            ? () => router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: link.conversationId!, msg: link.refId! } } as any)
+            ? () => openConversationTarget(router, { conversationId: link.conversationId!, msg: link.refId! })
             : undefined
           return (
             <Pressable key={key} onPress={open} disabled={!open} className="flex-row items-start gap-2 rounded-md border border-border p-2 hover:bg-muted">

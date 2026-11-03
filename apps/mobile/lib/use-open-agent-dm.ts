@@ -12,6 +12,7 @@ import { useCallback, useRef, useState } from 'react'
 import { useRouter } from 'expo-router'
 import { invalidateConversationList } from '../hooks/useTeamChat'
 import { teamChatApi, type ConversationSummary } from './team-chat-api'
+import { openConversationTarget } from './team-chat-nav'
 
 export interface OpenAgentDmOptions {
   /** Also open the agent's project beside the thread (wide screens only). */
@@ -36,13 +37,10 @@ export function useOpenAgentDm(workspaceId: string | null | undefined) {
         if (options.navigate) {
           options.navigate(conversation)
         } else {
-          router.push({
-            pathname: '/(app)/c/[conversationId]',
-            params: {
-              conversationId: conversation.id,
-              ...(options.withProjectPane && projectId ? { project: projectId } : {}),
-            },
-          } as any)
+          openConversationTarget(router, {
+            conversationId: conversation.id,
+            ...(options.withProjectPane && projectId ? { project: projectId } : {}),
+          })
         }
         return conversation
       } finally {
