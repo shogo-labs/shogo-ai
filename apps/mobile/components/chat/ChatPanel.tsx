@@ -4472,6 +4472,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
           // owns the tail again — put it back rather than spinning.
           if (live) {
             setRejoinLiveTurnId(snapshot.turnId ?? "live")
+            // A turn that is live now outranks an earlier "no turn": a probe
+            // that raced the turn start must not keep the row — or the attach
+            // that follows it — suppressed for this tail.
+            setRejoinGaveUpTurn(null)
           } else if (opts.drivesRejoin !== false) {
             giveUpRejoin()
           }
@@ -5770,17 +5774,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         : probeLiveTurn(loadSessionId, { retryDelaysMs: [1000, 3000] })
       void answer.then((turn) => {
         if (myGeneration !== loadGenerationRef.current) return
-        lastLiveTurnCheckAtRef.current = Date.now()
         const expectedLive = liveTurnExpectedRef.current
         liveTurnExpectedRef.current = false
         // A turn this window stopped is not a turn to attach to, even while
         // the runtime still reports it (stop reaches it a beat later).
         const stopped = turn.turnId !== null && turn.turnId === stoppedTurnIdRef.current
-        const verdict = rejoinProbeVerdict({
-          live: isLiveTurnOtherThan(turn, stoppedTurnIdRef.current),
-          stopped,
-          expectedLive,
-        })
+        const live = isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)
+        // Only a live answer counts as "this window just looked". The focus
+        // recheck skips itself when a check landed in the last 3 s, so counting
+        // a "no turn" here lets a history load that ran a moment before the
+        // person came back swallow their return — the window then never asks
+        // again, and a turn that started elsewhere is never followed
+        // (SHO-297 / chat-resume-on-send). A negative is exactly the answer
+        // that has to be askable again.
+        if (live) lastLiveTurnCheckAtRef.current = Date.now()
+        const verdict = rejoinProbeVerdict({ live, stopped, expectedLive })
         if (verdict === "attach") {
           guardedAutoResumeStream("live-turn-probe")
         } else if (verdict === "reload") {
