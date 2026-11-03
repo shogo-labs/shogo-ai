@@ -20,6 +20,7 @@ import { customEmojiFor, useCustomEmoji, useCustomEmojiFeed } from '../../hooks/
 import { useOpenQuestionCount } from '../../hooks/useOpenQuestions'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { openActiveChat } from '../../lib/open-active-chat'
+import { openConversationTarget } from '../../lib/team-chat-nav'
 import { readableAgentTaskError } from '../../lib/agent-task-ui'
 import { ACTIVITY_FILTERS, buildFeed, groupFeed, relativeTime, type ActivityEntry, type ActivityFilter, type FeedHeaderRow } from '../../lib/activity-feed'
 import type { AgentTask } from '../../lib/api'
@@ -104,23 +105,14 @@ export function ActivityFeed({ compact = false, withFloatingCreate = false }: Ac
   const open = (entry: ActivityEntry) => {
     if (entry.sent) {
       const message = entry.sent
-      router.push({
-        pathname: '/(app)/c/[conversationId]',
-        params: message.threadRootId
-          ? { conversationId: message.conversationId, thread: message.threadRootId }
-          : { conversationId: message.conversationId },
-      } as any)
+      openConversationTarget(router, { conversationId: message.conversationId, thread: message.threadRootId })
       return
     }
     if (entry.inbox) {
       const item = entry.inbox
       if (!item.readAt) void inbox.markRead([item.id])
       if (!item.conversationId) return
-      const thread = item.threadRootId ?? item.messageId
-      router.push({
-        pathname: '/(app)/c/[conversationId]',
-        params: thread ? { conversationId: item.conversationId, thread } : { conversationId: item.conversationId },
-      } as any)
+      openConversationTarget(router, { conversationId: item.conversationId, thread: item.threadRootId ?? item.messageId })
       return
     }
     if (entry.agent?.chat) {

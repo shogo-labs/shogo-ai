@@ -10,6 +10,7 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'expo-router'
+import { openConversationTarget } from '../team-chat-nav'
 
 import {
   consumeColdStartNotification,
@@ -63,6 +64,20 @@ export function notificationClickHref(data: ChatNotificationClickData) {
   }
 }
 
+/**
+ * Tapping a notification opens what it was about. A team-chat one is a thread
+ * open like any other, so it goes through `openConversationTarget` and replaces
+ * a thread already on screen instead of stacking a second channel over it.
+ */
+function openHref(router: ReturnType<typeof useRouter>, href: unknown): void {
+  const route = href as { pathname?: string; params?: Record<string, string> } | null
+  if (route?.pathname === '/(app)/c/[conversationId]' && route.params?.conversationId) {
+    openConversationTarget(router, { conversationId: route.params.conversationId, thread: route.params.thread })
+    return
+  }
+  router.push(href as never)
+}
+
 export function useNotificationClickRouter(): void {
   const router = useRouter()
 
@@ -71,7 +86,7 @@ export function useNotificationClickRouter(): void {
       const href = notificationClickHref(data)
       if (!href) return
       try {
-        router.push(href as any)
+        openHref(router, href)
       } catch {
         // ignore routing errors
       }
@@ -84,7 +99,7 @@ export function useNotificationClickRouter(): void {
       const href = notificationClickHref(data)
       if (!href) return
       try {
-        router.push(href as any)
+        openHref(router, href)
       } catch {
         // ignore routing errors
       }

@@ -21,6 +21,7 @@ import { useOpenUserDm } from '../../lib/use-open-user-dm'
 import { joinHuddleCall } from '../../lib/huddle-call'
 import { directConversations } from '../../lib/dm-list'
 import { UserAvatar } from './UserAvatar'
+import { openConversationTarget } from '../../lib/team-chat-nav'
 
 const api = teamChatApi()
 
@@ -232,7 +233,7 @@ export function UserProfileBody({
             <Pressable
               key={c.id}
               onPress={() => {
-                router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: c.id } } as any)
+                openConversationTarget(router, { conversationId: c.id })
                 onClose?.()
               }}
               accessibilityRole="button"

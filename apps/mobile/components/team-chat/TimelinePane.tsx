@@ -18,7 +18,7 @@ import { useComposerColumnStyle } from '../chat/composer/useComposerColumnStyle'
 import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
 import { TIMELINE_SOFT_LIMIT, useChannelDirectory, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
-import { threadCrumbs } from '../../lib/team-chat-nav'
+import { openConversationTarget, threadCrumbs } from '../../lib/team-chat-nav'
 import { composerAutofocusesOnOpen } from '../../lib/composer-autofocus'
 import { nonMemberMentionIds } from '../../lib/team-chat-mention-nudge'
 import { dismissMentionNudgeForever, getMentionNudgeDismissed } from '../../lib/mention-nudge-preference'
@@ -143,10 +143,7 @@ export function TimelinePane(props: TimelinePaneProps) {
     const openProfile = props.onOpenProfile
     return (target: MentionTarget) => {
       if (target.kind === 'c') {
-        router.push({
-          pathname: '/(app)/c/[conversationId]',
-          params: { conversationId: target.id },
-        } as any)
+        openConversationTarget(router, { conversationId: target.id })
         return
       }
       if (!openProfile) return

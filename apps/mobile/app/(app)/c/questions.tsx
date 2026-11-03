@@ -14,6 +14,7 @@ import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useMentionables, useMyUserId } from '../../../hooks/useTeamChat'
 import { useOpenQuestions, type QuestionTab } from '../../../hooks/useOpenQuestions'
 import { mentionNames } from '../../../lib/team-chat-state'
+import { openConversationTarget } from '../../../lib/team-chat-nav'
 import type { QuestionListItem } from '../../../lib/team-chat-api'
 import { QuestionCardView } from '../../../components/team-chat/QuestionCard'
 import { AgentAvatar } from '../../../components/team-chat/AgentAvatar'
@@ -54,10 +55,7 @@ export default function QuestionsInbox() {
   const { questions, approvals, openCount, loading, error } = useOpenQuestions(workspaceId, { status: tab, scope: everyone ? 'all' : 'mine' })
 
   const openThread = (item: { conversationId: string; messageId: string; threadRootId?: string | null }) =>
-    router.push({
-      pathname: '/(app)/c/[conversationId]',
-      params: { conversationId: item.conversationId, msg: item.messageId, ...(item.threadRootId ? { thread: item.threadRootId } : {}) },
-    } as any)
+    openConversationTarget(router, { conversationId: item.conversationId, thread: item.threadRootId, msg: item.messageId })
 
   if (experience.resolved && experience.kind !== 'team') {
     return (

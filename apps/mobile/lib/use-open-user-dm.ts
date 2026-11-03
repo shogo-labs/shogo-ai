@@ -11,6 +11,7 @@ import { useCallback, useRef, useState } from 'react'
 import { useRouter } from 'expo-router'
 import { invalidateConversationList } from '../hooks/useTeamChat'
 import { teamChatApi, type ConversationSummary } from './team-chat-api'
+import { openConversationTarget } from './team-chat-nav'
 
 export interface OpenUserDmOptions {
   /** Replace the default `router.push` to the conversation. */
@@ -36,10 +37,7 @@ export function useOpenUserDm(workspaceId: string | null | undefined) {
         if (options.navigate) {
           options.navigate(conversation)
         } else {
-          router.push({
-            pathname: '/(app)/c/[conversationId]',
-            params: { conversationId: conversation.id },
-          } as any)
+          openConversationTarget(router, { conversationId: conversation.id })
         }
         return conversation
       } finally {
