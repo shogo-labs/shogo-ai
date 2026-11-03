@@ -7,7 +7,7 @@
  */
 import { expect, test, type Page } from "@playwright/test"
 import { LOCAL_API_BASE } from "./helpers"
-import { activateTeamWorkspace, api, signIn, teamWorkspaceId } from "./team-nav-seed"
+import { activateTeamWorkspace, api, signIn, signInByApi, teamWorkspaceId } from "./team-nav-seed"
 
 const suffix = Date.now().toString(36)
 // A 1x1 transparent PNG.
@@ -98,6 +98,10 @@ test.describe("Channel files", () => {
     // framing (SHO-303). Over real HTTP the API must say no, and the file must
     // never reach the Files pane — a stored 0-byte row downloads as an empty
     // file days later, with nothing anywhere saying why.
+    // Sign in before touching the API: every call below rides this page's
+    // cookie jar, and `activateTeamWorkspace` alone only sets localStorage.
+    await signInByApi(page)
+    await activateTeamWorkspace(page, workspaceId)
     const empty = await page.request.post(`${LOCAL_API_BASE}/api/conversations/${channelId}/attachments`, {
       multipart: { file: { name: `lost-kit-${suffix}.zip`, mimeType: "application/zip", buffer: Buffer.alloc(0) } },
     })
@@ -118,7 +122,6 @@ test.describe("Channel files", () => {
     })
     expect(sent.status, JSON.stringify(sent.json)).toBe(201)
 
-    await activateTeamWorkspace(page, workspaceId)
     await page.goto(`/c/${channelId}?files=1`)
     const pane = page.getByTestId("files-pane")
     await expect(pane.getByText(`tiny-${suffix}.zip`)).toBeVisible({ timeout: 30_000 })
