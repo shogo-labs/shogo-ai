@@ -51,3 +51,27 @@ export const MIME_TYPES: Record<string, string> = {
 export function mimeTypeForFile(path: string): string {
   return MIME_TYPES[extname(path).toLowerCase()] || 'application/octet-stream'
 }
+
+// Types a browser may render from `/api/local-files`. That route answers on the
+// local API origin, which carries the desktop session, so anything the browser
+// would *execute* there (html, svg, js, xml) — or an unknown octet-stream —
+// downloads instead of rendering. The app's viewer fetches the bytes itself, so
+// this only decides what a direct navigation does.
+const INLINE_SAFE_TYPES = new Set([
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
+
+export function isInlineSafeMimeType(type: string): boolean {
+  if (INLINE_SAFE_TYPES.has(type)) return true
+  return type.startsWith('video/') || type.startsWith('audio/') || type.startsWith('font/')
+}
+
+export function contentDispositionForFile(path: string): 'inline' | 'attachment' {
+  return isInlineSafeMimeType(mimeTypeForFile(path)) ? 'inline' : 'attachment'
+}

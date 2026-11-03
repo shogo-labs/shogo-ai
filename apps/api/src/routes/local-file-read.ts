@@ -13,7 +13,7 @@
 import { Hono } from 'hono'
 import { readFile, stat } from 'fs/promises'
 import { resolveLocalAbsoluteFileTarget } from '../lib/local-shared-file-target'
-import { mimeTypeForFile } from '../lib/local-file-mime'
+import { contentDispositionForFile, mimeTypeForFile } from '../lib/local-file-mime'
 
 export interface LocalFileReadRoutesConfig {
   workspacesDir: string
@@ -63,7 +63,7 @@ export function localFileReadRoutes(config: LocalFileReadRoutesConfig): Hono {
       return new Response(body, {
         headers: {
           'Content-Type': mimeTypeForFile(filename),
-          'Content-Disposition': `inline; filename="${filename}"`,
+          'Content-Disposition': `${contentDispositionForFile(filename)}; filename="${filename}"`,
           'Content-Length': String(body.byteLength),
           'Cache-Control': 'private, no-store',
           'X-Content-Type-Options': 'nosniff',

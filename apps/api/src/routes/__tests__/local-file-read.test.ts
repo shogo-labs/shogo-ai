@@ -51,6 +51,9 @@ beforeAll(() => {
   mkdirSync(join(workspacesDir, 'proj-a', 'out'), { recursive: true })
   writeFileSync(join(workspacesDir, 'proj-a', 'out', 'report.pdf'), 'pdf bytes')
   writeFileSync(join(workspacesDir, 'proj-a', 'out', 'notes.md'), '# Notes')
+  writeFileSync(join(workspacesDir, 'proj-a', 'out', 'index.html'), '<script>alert(1)</script>')
+  writeFileSync(join(workspacesDir, 'proj-a', 'out', 'diagram.svg'), '<svg/>')
+  writeFileSync(join(workspacesDir, 'proj-a', 'out', 'blob.bin'), 'opaque')
   writeFileSync(join(outsideDir, 'secret.txt'), 'nope')
   symlinkSync(outsideDir, join(workspacesDir, 'proj-a', 'escape'))
   writeFileSync(join(externalDir, 'linked.txt'), 'linked project file')
@@ -73,6 +76,32 @@ describe('GET /api/local-files', () => {
     const res = await get(join(workspacesDir, 'proj-a', 'out', 'notes.md'))
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBe('text/markdown')
+  })
+
+  it('renders a pdf inline', async () => {
+    const res = await get(join(workspacesDir, 'proj-a', 'out', 'report.pdf'))
+    expect(res.headers.get('content-disposition')).toStartWith('inline')
+  })
+
+  it('downloads an html file instead of rendering it on the API origin', async () => {
+    const res = await get(join(workspacesDir, 'proj-a', 'out', 'index.html'))
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/html')
+    expect(res.headers.get('content-disposition')).toStartWith('attachment')
+  })
+
+  it('downloads an svg file instead of rendering it on the API origin', async () => {
+    const res = await get(join(workspacesDir, 'proj-a', 'out', 'diagram.svg'))
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('image/svg+xml')
+    expect(res.headers.get('content-disposition')).toStartWith('attachment')
+  })
+
+  it('downloads an unknown type rather than rendering it', async () => {
+    const res = await get(join(workspacesDir, 'proj-a', 'out', 'blob.bin'))
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/octet-stream')
+    expect(res.headers.get('content-disposition')).toStartWith('attachment')
   })
 
   it('serves a file inside a folder-linked project root', async () => {
