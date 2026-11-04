@@ -23,6 +23,7 @@ import {
   buildSeedSql,
   countSeedRows,
   orderSeedTables,
+  parseBooleanColumns,
   parseModelTables,
   parseSeedRelations,
   parseSerialIdColumns,
@@ -93,6 +94,7 @@ export async function collectSeedTables(projectDir: string, schema: string): Pro
     ).map((row) => row.name)
 
     const serialColumns = parseSerialIdColumns(schema)
+    const booleanColumns = parseBooleanColumns(schema)
     const ordered = orderSeedTables(tableNames, parseSeedRelations(schema), parseModelTables(schema))
 
     const tables: SeedTableData[] = []
@@ -109,6 +111,7 @@ export async function collectSeedTables(projectDir: string, schema: string): Pro
         columns,
         rows: rows.map((row) => columns.map((col) => row[col] ?? null)),
         serialIdColumn: serialColumns.get(table),
+        booleanColumns: booleanColumns.get(table),
       })
     }
     return tables

@@ -1,0 +1,1 @@
+fetch('/api/leads').then(r => r.json())

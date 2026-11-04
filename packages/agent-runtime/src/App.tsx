@@ -1,0 +1,1 @@
+fetch('http://localhost:3001/api/leads').then(r => r.json())

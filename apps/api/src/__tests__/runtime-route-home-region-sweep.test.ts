@@ -234,6 +234,8 @@ const RESOLVER_FILES: Record<string, string> = {
   'lib/metal-warm-pool-controller.ts': 'resolver: places runtimes on metal hosts (one host per key, see the placement invariant test)',
   'lib/substrate/metal-substrate.ts': 'resolver: substrate wrapper over the metal controller',
   'lib/substrate/router.ts': 'resolver: picks the substrate',
+  'services/published-schema.service.ts':
+    'guard: publish-time schema push resolves via getProjectPodUrl (home-region guard); called from the /api/projects/:projectId/publish route',
   'lib/project-attachment-runtime.ts': 'route-pin: called from /api/projects/:projectId/attachments; resolves via resolveWorkspaceRuntimeUrl (home-region guard)',
   'routes/internal-runtime-routes.ts': 'guard: internal runtime routes resolve via resolveWorkspaceRuntimeUrl',
   'routes/local-agent-proxy.ts': 'local-only',

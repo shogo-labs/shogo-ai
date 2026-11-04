@@ -1,0 +1,273 @@
+
+============================================================
+AGENT RUNTIME EVAL (Local)
+============================================================
+  Track:      workspace-builds
+  Model:      claude-haiku-5-5
+  Workers:    1
+  Mode:       local process
+
+  Repeat:     3× per eval → 33 total trials
+  Evals:      33
+
+Starting workers...
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (571ms)
+
+Running evals...
+------------------------------------------------------------
+  Logs: /Users/russell/Library/Application Support/Shogo/data/workspaces.noindex/4ee83aee-c868-4a08-a1cb-3b2c166219db/packages/agent-runtime/eval-outputs/workspace-builds-haiku-2026-10-24T17-37-54/logs
+
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (503ms)
+[E1:builds-a-portfolio-in-a-projec] Worker 0: Builds a portfolio in a project, not in the workspace root (trial 1/3)
+[E1:builds-a-portfolio-in-a-projec] FAIL Builds a portfolio in a project, not in the workspace root (trial 1/3): 65/100 (18.6s) [228,084+1,807 tok (223,219 cached)]
+[E1:builds-a-portfolio-in-a-projec] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E2:builds-a-portfolio-in-a-projec] Worker 0: Builds a portfolio in a project, not in the workspace root (trial 2/3)
+[E2:builds-a-portfolio-in-a-projec] FAIL Builds a portfolio in a project, not in the workspace root (trial 2/3): 65/100 (17.1s) [228,126+1,804 tok (226,117 cached)]
+[E2:builds-a-portfolio-in-a-projec] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E3:builds-a-portfolio-in-a-projec] Worker 0: Builds a portfolio in a project, not in the workspace root (trial 3/3)
+[E3:builds-a-portfolio-in-a-projec] FAIL Builds a portfolio in a project, not in the workspace root (trial 3/3): 65/100 (17.8s) [227,673+1,808 tok (225,749 cached)]
+[E3:builds-a-portfolio-in-a-projec] Runtime score: +0/0 → 98/100 (98.0%) PASS
+[workspace-defaults] Seeded runtime template into workspace
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E4:a-pool-booted-root-that-held-t] Worker 0: A pool-booted root that held the starter app still builds in a project (trial 1/3)
+[E4:a-pool-booted-root-that-held-t] FAIL A pool-booted root that held the starter app still builds in a project (trial 1/3): 65/100 (17.1s) [246,496+2,202 tok (238,384 cached)]
+[E4:a-pool-booted-root-that-held-t] Runtime score: +0/0 → 98/100 (98.0%) PASS
+[workspace-defaults] Seeded runtime template into workspace
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (504ms)
+[E5:a-pool-booted-root-that-held-t] Worker 0: A pool-booted root that held the starter app still builds in a project (trial 2/3)
+[E5:a-pool-booted-root-that-held-t] FAIL A pool-booted root that held the starter app still builds in a project (trial 2/3): 65/100 (17.2s) [245,456+2,068 tok (243,201 cached)]
+[E5:a-pool-booted-root-that-held-t] Runtime score: +0/0 → 98/100 (98.0%) PASS
+[workspace-defaults] Seeded runtime template into workspace
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E6:a-pool-booted-root-that-held-t] Worker 0: A pool-booted root that held the starter app still builds in a project (trial 3/3)
+[E6:a-pool-booted-root-that-held-t] FAIL A pool-booted root that held the starter app still builds in a project (trial 3/3): 63/100 (22.3s) [289,775+2,557 tok (286,452 cached)]
+[E6:a-pool-booted-root-that-held-t] Runtime score: +0/0 → 96/100 (96.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (502ms)
+[E7:builds-the-app-in-a-project,-n] Worker 0: Personal workspace: builds the app in a project, never in the root (trial 1/3)
+[E7:builds-the-app-in-a-project,-n] FAIL Personal workspace: builds the app in a project, never in the root (trial 1/3): 67/100 (16.0s) [133,753+1,879 tok (99,405 cached)]
+[E7:builds-the-app-in-a-project,-n] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (502ms)
+[E8:builds-the-app-in-a-project,-n] Worker 0: Personal workspace: builds the app in a project, never in the root (trial 2/3)
+[E8:builds-the-app-in-a-project,-n] FAIL Personal workspace: builds the app in a project, never in the root (trial 2/3): 67/100 (18.0s) [169,350+1,852 tok (167,057 cached)]
+[E8:builds-the-app-in-a-project,-n] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (502ms)
+[E9:builds-the-app-in-a-project,-n] Worker 0: Personal workspace: builds the app in a project, never in the root (trial 3/3)
+[E9:builds-the-app-in-a-project,-n] FAIL Personal workspace: builds the app in a project, never in the root (trial 3/3): 67/100 (14.3s) [132,612+1,177 tok (131,221 cached)]
+[E9:builds-the-app-in-a-project,-n] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E10:a-non-technical-build-ask-stil] Worker 0: A non-technical build ask still goes through a project (trial 1/3)
+[E10:a-non-technical-build-ask-stil] FAIL A non-technical build ask still goes through a project (trial 1/3): 63/100 (19.9s) [267,380+2,037 tok (262,125 cached)]
+[E10:a-non-technical-build-ask-stil] Runtime score: +0/0 → 96/100 (96.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (502ms)
+[E11:a-non-technical-build-ask-stil] Worker 0: A non-technical build ask still goes through a project (trial 2/3)
+[E11:a-non-technical-build-ask-stil] FAIL A non-technical build ask still goes through a project (trial 2/3): 65/100 (18.5s) [228,427+1,833 tok (226,384 cached)]
+[E11:a-non-technical-build-ask-stil] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E12:a-non-technical-build-ask-stil] Worker 0: A non-technical build ask still goes through a project (trial 3/3)
+[E12:a-non-technical-build-ask-stil] FAIL A non-technical build ask still goes through a project (trial 3/3): 65/100 (19.5s) [284,251+2,011 tok (242,162 cached)]
+[E12:a-non-technical-build-ask-stil] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (502ms)
+[E13:builds-in-a-project-with-the-c] Worker 0: Builds in a project with the canvas capability on (the default surface) (trial 1/3)
+[E13:builds-in-a-project-with-the-c] FAIL Builds in a project with the canvas capability on (the default surface) (trial 1/3): 65/100 (25.9s) [401,971+2,844 tok (367,082 cached)]
+[E13:builds-in-a-project-with-the-c] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (1105ms)
+[E14:builds-in-a-project-with-the-c] Worker 0: Builds in a project with the canvas capability on (the default surface) (trial 2/3)
+[E14:builds-in-a-project-with-the-c] FAIL Builds in a project with the canvas capability on (the default surface) (trial 2/3): 65/100 (19.4s) [277,335+2,354 tok (271,014 cached)]
+[E14:builds-in-a-project-with-the-c] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E15:builds-in-a-project-with-the-c] Worker 0: Builds in a project with the canvas capability on (the default surface) (trial 3/3)
+[E15:builds-in-a-project-with-the-c] FAIL Builds in a project with the canvas capability on (the default surface) (trial 3/3): 65/100 (16.9s) [236,485+2,109 tok (230,530 cached)]
+[E15:builds-in-a-project-with-the-c] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (503ms)
+[E16:builds-in-a-project-on-a-metal] Worker 0: Builds in a project on a metal (remote-project) workspace runtime (trial 1/3)
+[E16:builds-in-a-project-on-a-metal] FAIL Builds in a project on a metal (remote-project) workspace runtime (trial 1/3): 65/100 (33.9s) [387,938+2,784 tok (347,677 cached)]
+[E16:builds-in-a-project-on-a-metal] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (547ms)
+[E17:builds-in-a-project-on-a-metal] Worker 0: Builds in a project on a metal (remote-project) workspace runtime (trial 2/3)
+[E17:builds-in-a-project-on-a-metal] FAIL Builds in a project on a metal (remote-project) workspace runtime (trial 2/3): 65/100 (34.9s) [391,371+3,730 tok (387,178 cached)]
+[E17:builds-in-a-project-on-a-metal] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E18:builds-in-a-project-on-a-metal] Worker 0: Builds in a project on a metal (remote-project) workspace runtime (trial 3/3)
+[E18:builds-in-a-project-on-a-metal] FAIL Builds in a project on a metal (remote-project) workspace runtime (trial 3/3): 65/100 (21.3s) [269,440+2,342 tok (266,681 cached)]
+[E18:builds-in-a-project-on-a-metal] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E19:adds-a-contact-form-to-the-mou] Worker 0: Adds a contact form to the mounted portfolio project (trial 1/3)
+[E19:adds-a-contact-form-to-the-mou] FAIL Adds a contact form to the mounted portfolio project (trial 1/3): 67/100 (31.6s) [359,232+5,196 tok (349,642 cached)]
+[E19:adds-a-contact-form-to-the-mou] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (502ms)
+[E20:adds-a-contact-form-to-the-mou] Worker 0: Adds a contact form to the mounted portfolio project (trial 2/3)
+[E20:adds-a-contact-form-to-the-mou] FAIL Adds a contact form to the mounted portfolio project (trial 2/3): 67/100 (30.5s) [311,899+4,174 tok (306,297 cached)]
+[E20:adds-a-contact-form-to-the-mou] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (505ms)
+[E21:adds-a-contact-form-to-the-mou] Worker 0: Adds a contact form to the mounted portfolio project (trial 3/3)
+[E21:adds-a-contact-form-to-the-mou] FAIL Adds a contact form to the mounted portfolio project (trial 3/3): 33/100 (34.5s) [449,060+5,511 tok (397,601 cached)]
+[E21:adds-a-contact-form-to-the-mou] Runtime score: +0/0 → 33/100 (33.0%) FAIL
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E22:reaches-the-unmounted-portfoli] Worker 0: Reaches the unmounted portfolio project instead of a new one (trial 1/3)
+[E22:reaches-the-unmounted-portfoli] FAIL Reaches the unmounted portfolio project instead of a new one (trial 1/3): 65/100 (36.4s) [430,903+2,889 tok (422,887 cached)]
+[E22:reaches-the-unmounted-portfoli] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E23:reaches-the-unmounted-portfoli] Worker 0: Reaches the unmounted portfolio project instead of a new one (trial 2/3)
+[E23:reaches-the-unmounted-portfoli] FAIL Reaches the unmounted portfolio project instead of a new one (trial 2/3): 65/100 (31.4s) [428,306+2,490 tok (424,135 cached)]
+[E23:reaches-the-unmounted-portfoli] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E24:reaches-the-unmounted-portfoli] Worker 0: Reaches the unmounted portfolio project instead of a new one (trial 3/3)
+[E24:reaches-the-unmounted-portfoli] FAIL Reaches the unmounted portfolio project instead of a new one (trial 3/3): 65/100 (22.8s) [347,173+2,004 tok (343,195 cached)]
+[E24:reaches-the-unmounted-portfoli] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E25:a-follow-up-change-goes-back-t] Worker 0: A follow-up change goes back to the same project (trial 1/3)
+[E25:a-follow-up-change-goes-back-t] FAIL A follow-up change goes back to the same project (trial 1/3): 65/100 (14.1s) [267,368+1,473 tok (262,149 cached)]
+[E25:a-follow-up-change-goes-back-t] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (518ms)
+[E26:a-follow-up-change-goes-back-t] Worker 0: A follow-up change goes back to the same project (trial 2/3)
+[E26:a-follow-up-change-goes-back-t] FAIL A follow-up change goes back to the same project (trial 2/3): 63/100 (22.9s) [387,854+2,398 tok (384,049 cached)]
+[E26:a-follow-up-change-goes-back-t] Runtime score: +0/0 → 96/100 (96.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (501ms)
+[E27:a-follow-up-change-goes-back-t] Worker 0: A follow-up change goes back to the same project (trial 3/3)
+[E27:a-follow-up-change-goes-back-t] FAIL A follow-up change goes back to the same project (trial 3/3): 65/100 (27.3s) [433,243+2,919 tok (428,580 cached)]
+[E27:a-follow-up-change-goes-back-t] Runtime score: +0/0 → 98/100 (98.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (1103ms)
+[E28:writing-notes-does-not-create-] Worker 0: Writing notes does not create a project (trial 1/3)
+[E28:writing-notes-does-not-create-] FAIL Writing notes does not create a project (trial 1/3): 67/100 (7.4s) [111,861+616 tok (108,050 cached)]
+[E28:writing-notes-does-not-create-] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (502ms)
+[E29:writing-notes-does-not-create-] Worker 0: Writing notes does not create a project (trial 2/3)
+[E29:writing-notes-does-not-create-] FAIL Writing notes does not create a project (trial 2/3): 67/100 (6.4s) [74,074+452 tok (73,686 cached)]
+[E29:writing-notes-does-not-create-] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (1104ms)
+[E30:writing-notes-does-not-create-] Worker 0: Writing notes does not create a project (trial 3/3)
+[E30:writing-notes-does-not-create-] FAIL Writing notes does not create a project (trial 3/3): 67/100 (6.5s) [111,422+586 tok (110,864 cached)]
+[E30:writing-notes-does-not-create-] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (1104ms)
+[E31:a-stack-question-does-not-crea] Worker 0: A stack question does not create a project or touch the root (trial 1/3)
+[E31:a-stack-question-does-not-crea] FAIL A stack question does not create a project or touch the root (trial 1/3): 67/100 (5.2s) [36,818+727 tok (33,966 cached)]
+[E31:a-stack-question-does-not-crea] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (1102ms)
+[E32:a-stack-question-does-not-crea] Worker 0: A stack question does not create a project or touch the root (trial 2/3)
+[E32:a-stack-question-does-not-crea] FAIL A stack question does not create a project or touch the root (trial 2/3): 67/100 (5.0s) [36,818+712 tok (36,814 cached)]
+[E32:a-stack-question-does-not-crea] Runtime score: +0/0 → 100/100 (100.0%) PASS
+  Starting local worker 0 (eval-worker-0) on port 6400...
+  Worker 0 ready on port 6400 (621ms)
+[E33:a-stack-question-does-not-crea] Worker 0: A stack question does not create a project or touch the root (trial 3/3)
+[E33:a-stack-question-does-not-crea] FAIL A stack question does not create a project or touch the root (trial 3/3): 67/100 (3.7s) [36,818+543 tok (36,814 cached)]
+[E33:a-stack-question-does-not-crea] Runtime score: +0/0 → 100/100 (100.0%) PASS
+
+Stopping workers...
+
+============================================================
+RESULTS
+============================================================
+  Total:    33
+  Passed:   32 (97.0%)
+  Failed:   1
+  Avg Score: 96.5
+
+INTENTION vs EXECUTION
+----------------------------------------
+  Intention: 100% (0/0)
+  Execution: 66.0% (2177/3300)
+
+EFFICIENCY METRICS
+----------------------------------------
+  Total tool calls:   201
+  Failed tool calls:  24
+  Avg tools/eval:     6.1
+  Success rate:       88.1%
+  Error penalty:      −48 points raw (24 × 2), capped at 20% per eval
+
+TOOL ERRORS
+------------------------------------------------------------
+  preview_project               14 errors across 14 evals
+  mount_project                  5 errors across 5 evals
+  read_file                      4 errors across 3 evals
+  project_create                 1 error across 1 eval
+
+COST
+----------------------------------------
+  Total input tokens: 8,468,772
+    New (uncached):   502
+    Cache read:       8,160,367 (96.4% hit rate)
+    Cache write:      307,903
+  Output tokens:      71,888
+  Total cost:         $0.1561
+  Cost/eval:          $0.0047
+  Duration:           758.5s
+
+INDIVIDUAL RESULTS
+----------------------------------------------------------------------------------------------------
+  Name                                    Score     Intent    Exec      Tools   Tokens (in/out)
+----------------------------------------------------------------------------------------------------
+  PASS Builds a portfolio in a project, no 98/100     100%       67%        5        228,084/1,807 (98% cached)
+  PASS Builds a portfolio in a project, no 98/100     100%       67%        5        228,126/1,804 (99% cached)
+  PASS Builds a portfolio in a project, no 98/100     100%       67%        5        227,673/1,808 (99% cached)
+  PASS A pool-booted root that held the st 98/100     100%       67%        6        246,496/2,202 (97% cached)
+  PASS A pool-booted root that held the st 98/100     100%       67%        5        245,456/2,068 (99% cached)
+  PASS A pool-booted root that held the st 96/100     100%       67%        8        289,775/2,557 (99% cached)
+  PASS Personal workspace: builds the app  100/100    100%       67%        3        133,753/1,879 (74% cached)
+  PASS Personal workspace: builds the app  100/100    100%       67%        5        169,350/1,852 (99% cached)
+  PASS Personal workspace: builds the app  100/100    100%       67%        3        132,612/1,177 (99% cached)
+  PASS A non-technical build ask still goe 96/100     100%       67%        6        267,380/2,037 (98% cached)
+  PASS A non-technical build ask still goe 98/100     100%       67%        5        228,427/1,833 (99% cached)
+  PASS A non-technical build ask still goe 98/100     100%       67%        6        284,251/2,011 (85% cached)
+  PASS Builds in a project with the canvas 98/100     100%       67%        9        401,971/2,844 (91% cached)
+  PASS Builds in a project with the canvas 98/100     100%       67%        6        277,335/2,354 (98% cached)
+  PASS Builds in a project with the canvas 98/100     100%       67%        5        236,485/2,109 (97% cached)
+  PASS Builds in a project on a metal (rem 98/100     100%       67%        9        387,938/2,784 (90% cached)
+  PASS Builds in a project on a metal (rem 98/100     100%       67%        11       391,371/3,730 (99% cached)
+  PASS Builds in a project on a metal (rem 98/100     100%       67%        7        269,440/2,342 (99% cached)
+  PASS Adds a contact form to the mounted  100/100    100%       67%        9        359,232/5,196 (97% cached)
+  PASS Adds a contact form to the mounted  100/100    100%       67%        7        311,899/4,174 (98% cached)
+  FAIL Adds a contact form to the mounted  33/100     100%       33%        10       449,060/5,511 (89% cached)
+  PASS Reaches the unmounted portfolio pro 98/100     100%       67%        13       430,903/2,889 (98% cached)
+  PASS Reaches the unmounted portfolio pro 98/100     100%       67%        13       428,306/2,490 (99% cached)
+  PASS Reaches the unmounted portfolio pro 98/100     100%       67%        9        347,173/2,004 (99% cached)
+  PASS A follow-up change goes back to the 98/100     100%       67%        6        267,368/1,473 (98% cached)
+  PASS A follow-up change goes back to the 96/100     100%       67%        9        387,854/2,398 (99% cached)
+  PASS A follow-up change goes back to the 98/100     100%       67%        10       433,243/2,919 (99% cached)
+  PASS Writing notes does not create a pro 100/100    100%       67%        3        111,861/616 (97% cached)
+  PASS Writing notes does not create a pro 100/100    100%       67%        1        74,074/452 (99% cached)
+  PASS Writing notes does not create a pro 100/100    100%       67%        2        111,422/586 (99% cached)
+  PASS A stack question does not create a  100/100    100%       67%        0        36,818/727 (92% cached)
+  PASS A stack question does not create a  100/100    100%       67%        0        36,818/712 (100% cached)
+  PASS A stack question does not create a  100/100    100%       67%        0        36,818/543 (100% cached)
+
+Results: /Users/russell/Library/Application Support/Shogo/data/workspaces.noindex/4ee83aee-c868-4a08-a1cb-3b2c166219db/packages/agent-runtime/eval-outputs/workspace-builds-haiku-2026-10-24T17-37-54/results.json
+Logs:    /Users/russell/Library/Application Support/Shogo/data/workspaces.noindex/4ee83aee-c868-4a08-a1cb-3b2c166219db/packages/agent-runtime/eval-outputs/workspace-builds-haiku-2026-10-24T17-37-54/logs
+============================================================
+[2026-10-24T17:50:33.284Z] EXIT: code=1
+

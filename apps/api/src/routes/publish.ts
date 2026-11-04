@@ -941,12 +941,31 @@ async function configurePublishedService(
   }
   const scale = scaleSettingsOf(environment)
 
+  // Published apps run on Knative (getPublishSubstrate). `PUBLISH_SUBSTRATE=metal`
+  // is the escape hatch. unpublishProjectEverywhere covers the other substrate on
+  // a cutover so a project that was previously elsewhere doesn't leak its runtime.
+  const { getPublishSubstrate } = await import("../lib/substrate/router")
+  const substrate = await getPublishSubstrate(projectId)
+
   // Postgres at publish (SHO-308 §1): provision the environment's database,
   // apply the app's schema and (first deploy only) seed it from `prisma/dev.db`
   // BEFORE the ksvc exists. The step writes the DATABASE_URL Secret last, so a
   // pod that boots has a database whose schema is already on it — and a refused
   // publish leaves no pod running against a half-applied schema.
-  if (serverBacked) {
+  //
+  // Gated, because the `projects-pg` infrastructure is deployed per region: on a
+  // metal publish (the escape hatch, which keeps SQLite) or in a cluster that has
+  // no `PROJECTS_DB_ADMIN_URL` yet, publishing must behave exactly as it does
+  // today rather than refusing every server app with `database_unavailable`.
+  const { shouldProvisionPublishedDatabase } = await import("../lib/publish-substrate-config")
+  const usePostgres = serverBacked && shouldProvisionPublishedDatabase(substrate.kind)
+  if (serverBacked && !usePostgres) {
+    console.log(
+      `[Publish] Keeping ${projectId}/${environmentName} on SQLite (substrate=${substrate.kind}, ` +
+        `projects-pg ${process.env.PROJECTS_DB_ADMIN_URL ? "configured" : "not configured"})`,
+    )
+  }
+  if (usePostgres) {
     const { prepareEnvironmentDatabase } = await import("../services/published-schema.service")
     const prepared = await prepareEnvironmentDatabase(projectId, environmentName, {
       allowDataLoss: opts?.allowDataLoss === true,
@@ -962,11 +981,6 @@ async function configurePublishedService(
     }
   }
 
-  // Published apps run on Knative (getPublishSubstrate). `PUBLISH_SUBSTRATE=metal`
-  // is the escape hatch. unpublishProjectEverywhere covers the other substrate on
-  // a cutover so a project that was previously elsewhere doesn't leak its runtime.
-  const { getPublishSubstrate } = await import("../lib/substrate/router")
-  const substrate = await getPublishSubstrate(projectId)
   const result = await substrate.publish(projectId, {
     subdomain,
     serverBacked,

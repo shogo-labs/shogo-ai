@@ -108,6 +108,12 @@ export interface SeedTableData {
    * insert the app makes collides with a seeded row.
    */
   serialIdColumn?: string
+  /**
+   * Columns declared `Boolean` in the schema. Prisma stores a Boolean in SQLite
+   * as INTEGER `0`/`1`, and Postgres will not accept an integer for a boolean
+   * column, so these values are emitted as `TRUE`/`FALSE` instead.
+   */
+  booleanColumns?: string[]
 }
 
 /**
@@ -234,6 +240,33 @@ export function parseSerialIdColumns(schema: string): Map<string, string> {
   return out
 }
 
+/**
+ * Columns declared `Boolean` (or `Boolean?`), per physical table.
+ *
+ * Scalar booleans only: Prisma keeps `Boolean[]` as JSON text, which is not a
+ * Postgres `boolean[]` literal and is left to the generic quoting path.
+ */
+export function parseBooleanColumns(schema: string): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  const modelTables = parseModelTables(schema)
+  const blockRe = /model\s+(\w+)\s*\{([\s\S]*?)\n\}/g
+  let m: RegExpExecArray | null
+  while ((m = blockRe.exec(schema))) {
+    const [, model, body] = m
+    for (const raw of body!.split('\n')) {
+      const line = raw.trim()
+      if (!line || line.startsWith('//')) continue
+      const field = /^(\w+)\s+Boolean(\?)?\s*(?:@|$)/.exec(line)
+      if (!field) continue
+      const table = modelTables.get(model!) ?? model!
+      const columns = out.get(table) ?? []
+      columns.push(field[1]!)
+      out.set(table, columns)
+    }
+  }
+  return out
+}
+
 /** Quote a Postgres identifier. */
 export function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`
@@ -261,14 +294,41 @@ export function quoteLiteral(value: unknown): string {
   return `'${String(value).replace(/'/g, "''")}'`
 }
 
+/**
+ * A value from SQLite for a Postgres `boolean` column.
+ *
+ * Prisma writes `0`/`1` there, so the SQLite value is normalised to a real
+ * boolean literal rather than trusting what the driver handed back.
+ */
+function quoteBoolean(value: unknown): string {
+  if (value === null || value === undefined) return 'NULL'
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE'
+  if (typeof value === 'number') return value !== 0 ? 'TRUE' : 'FALSE'
+  if (typeof value === 'bigint') return value !== BigInt(0) ? 'TRUE' : 'FALSE'
+  const text = String(value).trim().toLowerCase()
+  if (text === '' || text === 'null') return 'NULL'
+  if (text === '0' || text === 'false' || text === 'f') return 'FALSE'
+  return 'TRUE'
+}
+
 /** Every row as one multi-row `INSERT`, which keeps the load to a few statements. */
 export function buildSeedSql(tables: SeedTableData[]): string {
   const statements: string[] = ['BEGIN;']
   for (const table of tables) {
     if (table.rows.length === 0) continue
     const columns = table.columns.map(quoteIdent).join(', ')
+    const booleanAt = new Set(
+      (table.booleanColumns ?? [])
+        .map((column) => table.columns.indexOf(column))
+        .filter((index) => index >= 0),
+    )
     const values = table.rows
-      .map((row) => `(${row.map(quoteLiteral).join(', ')})`)
+      .map(
+        (row) =>
+          `(${row
+            .map((value, index) => (booleanAt.has(index) ? quoteBoolean(value) : quoteLiteral(value)))
+            .join(', ')})`,
+      )
       .join(',\n  ')
     statements.push(
       `INSERT INTO ${quoteIdent(table.table)} (${columns}) VALUES\n  ${values};`,

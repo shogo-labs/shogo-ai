@@ -12,6 +12,7 @@ import {
   buildSeedSql,
   countSeedRows,
   orderSeedTables,
+  parseBooleanColumns,
   parseModelTables,
   parseSeedRelations,
   parseSerialIdColumns,
@@ -182,5 +183,59 @@ describe('seed SQL', () => {
     const sql = buildSeedSql(tables)
     expect(sql).not.toContain('"Post"')
     expect(countSeedRows(tables)).toEqual({ tables: 1, rows: 1 })
+  })
+})
+
+describe('seed SQL for Boolean columns', () => {
+  // Prisma stores a Boolean in SQLite as INTEGER 0/1. Postgres rejects an integer
+  // for a boolean column ("column \"active\" is of type boolean but expression is
+  // of type integer"), so the seed has to emit real boolean literals.
+  const SCHEMA = `datasource db {
+  provider = "sqlite"
+}
+
+model Item {
+  id        Int     @id @default(autoincrement())
+  label     String
+  active    Boolean @default(true)
+  archived  Boolean?
+  tags      String  @default("[]")
+}
+`
+
+  it('finds scalar Boolean columns per physical table', () => {
+    const booleans = parseBooleanColumns(SCHEMA)
+    expect(booleans.get('Item')).toEqual(['active', 'archived'])
+  })
+
+  it('emits TRUE/FALSE for a Boolean column whatever SQLite hands back', () => {
+    const sql = buildSeedSql([
+      {
+        table: 'Item',
+        columns: ['id', 'label', 'active', 'archived', 'tags'],
+        rows: [
+          [1, 'one', 1, 0, '[]'],
+          [2, 'two', 0, null, '["a"]'],
+          [3, 'three', true, false, '[]'],
+        ],
+        serialIdColumn: 'id',
+        booleanColumns: ['active', 'archived'],
+      },
+    ])
+    expect(sql).toContain('(1, \'one\', TRUE, FALSE, \'[]\')')
+    expect(sql).toContain('(2, \'two\', FALSE, NULL, \'["a"]\')')
+    expect(sql).toContain('(3, \'three\', TRUE, FALSE, \'[]\')')
+  })
+
+  it('quotes a String column as before when only other columns are Boolean', () => {
+    const sql = buildSeedSql([
+      {
+        table: 'Item',
+        columns: ['id', 'label', 'active'],
+        rows: [[1, '1', 1]],
+        booleanColumns: ['active'],
+      },
+    ])
+    expect(sql).toContain("(1, '1', TRUE)")
   })
 })

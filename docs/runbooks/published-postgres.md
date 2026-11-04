@@ -54,6 +54,15 @@ this order. Skipping one produces a specific, confusing failure, noted below.
    `PROJECTS_DB_HOST`/`PROJECTS_DB_POOLER_HOST` are set literally in the staging
    overlay. Roll the API after the pooler is Ready.
 
+**This step is the switch.** Publishing moves an app onto Postgres only when the
+publish is going to Knative *and* `PROJECTS_DB_ADMIN_URL` is set
+(`shouldProvisionPublishedDatabase`), so the cluster coming up above is what turns
+the feature on for the region — before it, a publish behaves exactly as it does
+today and the site keeps its SQLite archive. `PUBLISH_POSTGRES=on` forces it
+(useful to make a half-configured cluster fail as `database_unavailable` instead
+of silently staying on SQLite), and `PUBLISH_POSTGRES=off` takes publishes back
+off Postgres without unsetting the URLs.
+
 Confirm before publishing:
 
 ```bash

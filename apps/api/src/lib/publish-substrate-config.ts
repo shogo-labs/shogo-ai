@@ -47,3 +47,33 @@ export function isPublishMetalAuthoritative(): boolean {
 export function shouldServeStaticFromEdgeOnly(): boolean {
   return process.env.PUBLISH_STATIC_KSVC !== 'true'
 }
+
+/**
+ * Whether a publish should move the app's data onto Postgres (SHO-308 §1).
+ *
+ * The publish pipeline provisions the environment's database, pushes the app's
+ * schema at it and seeds it from `prisma/dev.db` — which can only work where the
+ * `projects-pg` infrastructure exists. Two conditions, both real configuration
+ * rather than a switch that hides a broken path:
+ *
+ *   1. the site is being published to **Knative**. A metal site keeps its SQLite
+ *      data archive; that is the substrate's contract, and the escape hatch has
+ *      to stay usable.
+ *   2. the cluster's admin connection is configured (`PROJECTS_DB_ADMIN_URL`).
+ *      Unknown infrastructure must not turn every server-app publish into a 503:
+ *      with no admin URL the publish behaves exactly as it does today (SQLite),
+ *      and the environment is flipped to Postgres by the publish that follows the
+ *      cluster being wired up.
+ *
+ * `PUBLISH_POSTGRES=on|off` forces the decision for a single rollout step —
+ * `on` is how a misconfigured cluster surfaces as `database_unavailable` instead
+ * of silently staying on SQLite, and `off` is how a publish is taken back off
+ * Postgres without unsetting the URLs.
+ */
+export function shouldProvisionPublishedDatabase(substrateKind: 'knative' | 'metal'): boolean {
+  if (substrateKind !== 'knative') return false
+  const override = (process.env.PUBLISH_POSTGRES || '').trim().toLowerCase()
+  if (override === 'off') return false
+  if (override === 'on') return true
+  return !!(process.env.PROJECTS_DB_ADMIN_URL || '').trim()
+}

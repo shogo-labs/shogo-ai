@@ -206,7 +206,13 @@ export async function prepareEnvironmentDatabase(
   // Seed only a database that has never had one: republishing must never
   // overwrite what the live site has written (Q4 seeds staging from dev.db, not
   // from production, and this is the same rule for both environments).
-  const seed = !env?.dbSchema || opts.allowDataLoss === true
+  //
+  // Deliberately NOT tied to `allowDataLoss`: the seed is a plain INSERT with the
+  // seeded ids, so reloading it into a populated database can only fail on a
+  // duplicate key — after the destructive push it was meant to rescue has already
+  // dropped the column. Accepting data loss accepts the drop; it does not refill
+  // the table.
+  const seed = !env?.dbSchema
 
   let applied: { ok: boolean; status: number; data: any } | null = null
   if (!unchanged) {

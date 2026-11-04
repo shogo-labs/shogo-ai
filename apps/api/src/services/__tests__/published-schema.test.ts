@@ -224,6 +224,11 @@ model User {
     const res = await prepareEnvironmentDatabase(PROJECT, 'production', { allowDataLoss: true })
     expect(res.ok).toBe(true)
     expect(runtimeCalls.map((call) => call.mode)).toEqual(['describe', 'apply'])
+    // Accepting data loss accepts the dropped column; it must NOT re-seed. A seed
+    // is a plain INSERT with the seeded ids into a database that already has rows,
+    // so it would fail on a duplicate key *after* the drop had been applied —
+    // leaving the column gone and the publish reporting seed_failed.
+    expect(runtimeCalls[1]!.seed).toBe(false)
   })
 
   it('surfaces a runtime push failure as schema_push_failed and does not expose the database', async () => {
