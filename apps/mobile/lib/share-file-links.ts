@@ -334,6 +334,8 @@ export function shareFileErrorText(code?: string | null, message?: string | null
     case 'file_not_found':
     case 'not_found':
       return 'File not found'
+    case 'empty_file':
+      return 'This file was uploaded empty (0 bytes). Ask whoever shared it to attach it again.'
     case 'runtime_unavailable':
       return 'Runtime unavailable, retry'
     case 'rate_limited':

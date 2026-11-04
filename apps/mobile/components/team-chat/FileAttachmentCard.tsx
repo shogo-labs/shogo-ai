@@ -23,6 +23,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { downloadAttachment } from '../../lib/attachment-download'
 import { fileTypeMeta } from '../../lib/file-type'
 import { formatFileSize } from '../../lib/composer-attachments'
+import { shareFileErrorText } from '../../lib/share-file-links'
 import type { AttachmentPreview } from '../../lib/team-chat-api'
 import { AttachmentPreviewBody } from './AttachmentPreviewBody'
 
@@ -43,28 +44,47 @@ export interface FileAttachmentCardProps {
 /**
  * The corner download control. Shared with the picture attachments, so every
  * file in the timeline downloads from the same place.
+ *
+ * `disabled` is for a file stored at 0 bytes: there is nothing to save, and
+ * following the link would hand the browser a JSON error under the file's own
+ * name, so the control is inert rather than misleading.
  */
-export function DownloadBadge({ url, name, className }: { url: string; name: string; className?: string }) {
+export function DownloadBadge({
+  url,
+  name,
+  className,
+  disabled,
+  disabledHint,
+}: {
+  url: string
+  name: string
+  className?: string
+  disabled?: boolean
+  disabledHint?: string
+}) {
   const [busy, setBusy] = useState(false)
 
   const onPress = useCallback(async () => {
-    if (busy) return
+    if (busy || disabled) return
     setBusy(true)
     try {
       await downloadAttachment(url, name)
     } finally {
       setBusy(false)
     }
-  }, [busy, url, name])
+  }, [busy, disabled, url, name])
 
   return (
     <Pressable
       onPress={() => void onPress()}
-      disabled={busy}
+      disabled={busy || disabled}
       accessibilityRole="button"
-      accessibilityLabel={`Download ${name}`}
+      accessibilityLabel={disabled ? `Download ${name} unavailable` : `Download ${name}`}
+      accessibilityHint={disabled ? disabledHint : undefined}
+      accessibilityState={{ disabled: !!disabled }}
       className={cn(
         'absolute right-2 top-2 h-8 w-8 items-center justify-center rounded-full border border-white/15 bg-black/55 active:bg-black/75',
+        disabled && 'opacity-40',
         className,
       )}
     >
@@ -75,10 +95,17 @@ export function DownloadBadge({ url, name, className }: { url: string; name: str
 
 export function FileAttachmentCard({ name, mimeType, size, url, preview, onOpen, className }: FileAttachmentCardProps) {
   const meta = fileTypeMeta(name, mimeType)
+  // A row stored at 0 bytes is a file that never really arrived. It is shown
+  // as a failed upload rather than as a normal attachment, because the only
+  // other thing a person can do with it is download nothing.
+  const empty = typeof size === 'number' && size === 0
+  const emptyText = shareFileErrorText('empty_file')
   const pages = preview?.kind === 'text' && preview.pages && preview.pages > 1 ? `${preview.pages} pages` : null
-  const subtitle = [meta.label, pages, typeof size === 'number' && size > 0 ? formatFileSize(size) : null]
-    .filter(Boolean)
-    .join(' · ')
+  const subtitle = empty
+    ? 'Upload failed · 0 bytes'
+    : [meta.label, pages, typeof size === 'number' && size > 0 ? formatFileSize(size) : null]
+        .filter(Boolean)
+        .join(' · ')
 
   return (
     <View
@@ -86,11 +113,12 @@ export function FileAttachmentCard({ name, mimeType, size, url, preview, onOpen,
       testID={`attachment-card-${name}`}
     >
       <Pressable
-        onPress={onOpen}
-        disabled={!onOpen}
-        accessibilityRole={onOpen ? 'link' : undefined}
-        accessibilityLabel={onOpen ? `Open ${name}` : undefined}
-        className={cn('relative flex-row items-center gap-3 p-3', onOpen && 'active:bg-muted')}
+        onPress={empty ? undefined : onOpen}
+        disabled={empty || !onOpen}
+        accessibilityRole={empty ? undefined : onOpen ? 'link' : undefined}
+        accessibilityLabel={empty ? `${name} — upload failed, 0 bytes` : onOpen ? `Open ${name}` : undefined}
+        accessibilityHint={empty ? emptyText : undefined}
+        className={cn('relative flex-row items-center gap-3 p-3', !empty && onOpen && 'active:bg-muted')}
       >
         <View
           className="h-10 w-10 shrink-0 items-center justify-center rounded-lg"
@@ -105,13 +133,22 @@ export function FileAttachmentCard({ name, mimeType, size, url, preview, onOpen,
           <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
             {name}
           </Text>
-          <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={1}>
+          <Text
+            className={cn('mt-0.5 text-xs', empty ? 'text-destructive' : 'text-muted-foreground')}
+            numberOfLines={1}
+          >
             {subtitle}
           </Text>
         </View>
       </Pressable>
-      <AttachmentPreviewBody preview={preview} />
-      <DownloadBadge url={url} name={name} />
+      {empty ? (
+        <Text className="px-3 pb-3 text-[11px] text-muted-foreground" testID={`attachment-empty-${name}`}>
+          {emptyText}
+        </Text>
+      ) : (
+        <AttachmentPreviewBody preview={preview} />
+      )}
+      <DownloadBadge url={url} name={name} disabled={empty} disabledHint={emptyText} />
     </View>
   )
 }
