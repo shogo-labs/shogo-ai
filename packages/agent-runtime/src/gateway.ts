@@ -50,7 +50,7 @@ import { runAgentLoop, classifyRetryability, classifyTurnFailure, isFailoverFail
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import { recordCompaction, recordTurnBoundary, isPrefixOf } from './context-telemetry'
 import { summariseTurn, lastTurnStart } from './turn-boundary'
-import { renderTranscriptForSummary } from './compaction-transcript'
+import { createCompactionSummarizer } from './compaction-summarizer'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, getSessionTodos, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
@@ -1844,59 +1844,12 @@ export class AgentGateway {
     // Wire up LLM-powered summarization for context compaction. The model is
     // the admin-selected summarizer (Hoshi 2.0 by default) and must run on its
     // own provider, never the session's: the proxy routes by provider, so a
-    // mismatched pair sends the model to the wrong upstream.
+    // mismatched pair sends the model to the wrong upstream. The body lives in
+    // `compaction-summarizer.ts` so the compaction eval runs the same code
+    // (SHO-327) instead of a copy that measures itself.
     const summarizerModel = resolveSummarizerModel(process.env.AGENT_SUMMARIZER_MODEL)
     console.log(`[AgentGateway] Summarizer model: ${summarizerModel.id} (provider=${summarizerModel.provider})`)
-    this.sessionManager.setSummarizeFn(async (messages, previousSummary) => {
-      const { resolveModel: rm, resolveApiKey: rak } = await import('./pi-adapter')
-      const { runAgentLoop: summarizeLoop } = await import('./agent-loop')
-      const provider = summarizerModel.provider
-      const apiKey = rak(rm(provider, summarizerModel.id).provider)
-      if (!apiKey) throw new Error('No API key for summarization')
-
-      // No truncation: the caller chunks the head at `summarizeChunkTokens`
-      // so each excerpt is already bounded. The old 500-char-per-message /
-      // 12k-char-prompt caps threw away ~99% of a long turn — including the
-      // decisions the summary exists to preserve (SHO-96).
-      //
-      // Every toolCall is rendered, with its arguments, as `→ tool: name(args)`
-      // (compaction-transcript.ts). Without that line the summarizer can only
-      // write narration, and a model acting on narration invents a tool name
-      // — `str_replace` was called eight times that way (SHO-122).
-      const messageTexts = renderTranscriptForSummary(messages)
-
-      // Fold: when this excerpt follows an earlier chunk, the model must carry
-      // the running summary forward instead of replacing it.
-      const contract =
-        'Output these sections, in this order, and nothing else:\n' +
-        '## Decisions\n' +
-        '## Files touched\n' +
-        '## Current state\n' +
-        '  (what is done, what is in progress, the next step)\n' +
-        '## Tools used\n' +
-        '  (exact names as `name` ×count)\n' +
-        'Use only tool names that appear in the transcript — never invent one.'
-      const system = previousSummary
-        ? `You maintain a running summary of a long agent turn. You receive the running summary so far and a new excerpt of the conversation. Merge the excerpt into the running summary. Preserve: key decisions, files edited, errors encountered, and current task state. Drop only redundant detail.\n\n${contract}`
-        : `Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific.\n\n${contract}`
-
-      const prompt = previousSummary
-        ? `Running summary so far:\n${previousSummary}\n\nNew excerpt:\n${messageTexts}`
-        : messageTexts
-
-      const result = await summarizeLoop({
-        provider,
-        model: summarizerModel.id,
-        system,
-        history: [],
-        prompt,
-        tools: [],
-        maxIterations: 1,
-        loopDetection: false,
-        thinkingLevel: 'off',
-      })
-      return result.text || '(summary unavailable)'
-    })
+    this.sessionManager.setSummarizeFn(createCompactionSummarizer({ model: summarizerModel }))
 
     // Finish (or at least explain) turns this runtime was killed in the middle
     // of, before pruning can drop their sessions (SHO-121).
@@ -4874,7 +4827,7 @@ export class AgentGateway {
         apply: (summary, splitIndex, opts) => {
           // Session-relative index: the loop's array may include a head that a
           // previous compaction already folded away.
-          this.sessionManager.applyCompaction(sessionId, {
+          const result = this.sessionManager.applyCompaction(sessionId, {
             summary,
             splitIndex,
             replaceSummary: opts.replaceSummary,
@@ -4882,6 +4835,11 @@ export class AgentGateway {
               ? this.fileStateCache.getSummary(this.workspaceDir)
               : undefined,
           })
+          // Hand back what the session now holds: the persisted summary (with
+          // the facts block) and the tail a variant may have rewritten, so the
+          // memo re-emits the session, not the raw loop array (SHO-327).
+          if (!result) return undefined
+          return { summary: result.storedSummary, kept: result.keptMessages }
         },
       })
 

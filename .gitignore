@@ -265,3 +265,14 @@ e2e/issue-pipeline/results/
 
 # the eng-pod seed lives here, under the generic `demo/` rule above
 !scripts/demo/
+
+# Compaction eval artefacts (SHO-327). The fixtures are real workspace
+# transcripts exported by `scripts/export-compaction-fixtures.ts`; they are
+# redacted but still private, so they are never committed and never travel to a
+# pod that did not export them itself.
+packages/agent-runtime/src/evals/fixtures/compaction/
+evals/compaction-report.md
+evals/compaction-results.json
+# The recorded baseline is measured on those local fixtures, so it is a
+# per-machine gate, not a number CI could reproduce.
+packages/agent-runtime/src/evals/compaction/compaction-baseline.json

@@ -25,6 +25,21 @@ import {
   turnAwareCompactionEnabled,
 } from './turn-boundary'
 import { collectCompactionFacts, renderCompactionFacts } from './compaction-facts'
+import { applyVariantToKeptTail, resolveCompactionVariant } from './compaction-variants'
+import type { DroppedToolResult } from './compaction-drop'
+
+/** Share of the autocompact threshold kept verbatim after a compaction. */
+export const DEFAULT_TAIL_BUDGET_RATIO = 0.4
+
+/**
+ * `COMPACTION_TAIL_BUDGET_RATIO` (SHO-327 sweep knob). Anything outside 0..1 is
+ * ignored, so a bad value keeps production's 0.40 instead of collapsing the
+ * tail to zero.
+ */
+export function resolveTailBudgetRatio(raw = process.env.COMPACTION_TAIL_BUDGET_RATIO): number {
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 && value < 1 ? value : DEFAULT_TAIL_BUDGET_RATIO
+}
 
 /** Rough per-image token cost (a ~1MP image on Anthropic is ~1,600 tokens). */
 const IMAGE_TOKEN_ESTIMATE = 1_600
@@ -262,6 +277,17 @@ export interface SessionManagerConfig {
    * (default: 40% of the autocompact threshold).
    */
   compactionTailBudgetTokens?: number
+  /**
+   * The tail budget as a share of the autocompact threshold (default 0.4).
+   * `COMPACTION_TAIL_BUDGET_RATIO` overrides it; an explicit
+   * `compactionTailBudgetTokens` wins over both.
+   */
+  compactionTailBudgetRatio?: number
+  /**
+   * Compaction variant under test (SHO-327): `A` | `B0` | `B1` | `B2` | `C` | `D`.
+   * Default `A` = production behaviour. `COMPACTION_VARIANT` overrides it.
+   */
+  compactionVariant?: string
   /** Messages that always survive a compaction, however large (default: 2) */
   compactionMinKeepMessages?: number
 }
@@ -496,10 +522,26 @@ export interface CompactionResult {
   facts?: string
   /** Files the facts block recorded (for telemetry). */
   filesTouched?: string[]
+  /**
+   * The summary exactly as persisted (model text + facts block + extra
+   * context). The mid-turn compactor re-emits this so its wire prefix matches
+   * `buildHistory` for the same session.
+   */
+  storedSummary?: string
   /** Tool names the facts block recorded (for telemetry). */
   toolsUsed?: string[]
   /** Rounds folded by the oversized-turn valve (0 when it did not fire). */
   foldedRounds?: number
+  /**
+   * The session's messages after the compaction (summary excluded) — the
+   * mid-turn compactor re-emits these instead of re-slicing the live loop
+   * array, so a variant that rewrites the tail emits the rewritten tail.
+   */
+  keptMessages?: Message[]
+  /** Tool results variant B dropped in the kept tail (0 = none). */
+  droppedToolResults?: number
+  /** The calls whose results were dropped, for telemetry and the eval. */
+  droppedCalls?: DroppedToolResult[]
 }
 
 /**
@@ -912,7 +954,9 @@ export class SessionManager {
   get compactionTailBudgetTokens(): number {
     if (this.config.compactionTailBudgetTokens) return this.config.compactionTailBudgetTokens
     const threshold = this.autocompactThreshold
-    return threshold > 0 ? Math.max(1, Math.floor(threshold * 0.4)) : Number.MAX_SAFE_INTEGER
+    if (threshold <= 0) return Number.MAX_SAFE_INTEGER
+    const ratio = this.config.compactionTailBudgetRatio ?? resolveTailBudgetRatio()
+    return Math.max(1, Math.floor(threshold * (ratio > 0 && ratio < 1 ? ratio : DEFAULT_TAIL_BUDGET_RATIO)))
   }
 
   /** Split index bounded by the message count *and* the tail token budget. */
@@ -1122,11 +1166,18 @@ export class SessionManager {
       ? `${session.compactedSummary}\n\n`
       : ''
 
+    // Variant B (SHO-327): drop consumed tool results in the tail being kept.
+    // This is the one moment the prefix is already being rewritten, so the drop
+    // costs no extra cache break, and doing it here covers the turn-boundary and
+    // the mid-turn paths at once.
+    const variant = resolveCompactionVariant(this.config.compactionVariant)
+    const kept = applyVariantToKeptTail(variant, toKeep)
+
     const factData = collectCompactionFacts(toCompact)
-    const facts = renderCompactionFacts(factData)
+    const facts = renderCompactionFacts(factData, { dropped: kept.dropped })
     const extraSuffix = extraContext ? `\n\n${extraContext}` : ''
     session.compactedSummary = `${existingSummary}${summary}\n\n${facts}${extraSuffix}`
-    session.messages = toKeep
+    session.messages = kept.messages
     session.compactionCount++
     session.lastActivityAt = Date.now()
     this.persistSession(session)
@@ -1134,12 +1185,16 @@ export class SessionManager {
     return {
       sessionId: id,
       messagesBefore: toCompact.length + toKeep.length,
-      messagesAfter: toKeep.length,
+      messagesAfter: kept.messages.length,
       compactedCount: toCompact.length,
       summary,
+      storedSummary: session.compactedSummary ?? undefined,
       facts,
       filesTouched: factData.files.map((f) => f.path),
       toolsUsed: factData.tools.map((t) => t.name),
+      keptMessages: kept.messages,
+      droppedToolResults: kept.dropped.length,
+      droppedCalls: kept.dropped,
     }
   }
 

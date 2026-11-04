@@ -70,9 +70,14 @@ interface Frame {
  */
 export function renderTranscriptForSummary(
   messages: readonly Message[],
-  opts: { maxChars?: number } = {},
+  opts: { maxChars?: number; resultBodies?: boolean } = {},
 ): string {
   const maxChars = opts.maxChars ?? compactionSummaryInputChars()
+  // Variant C (SHO-327): the result body is dropped from the summarizer's
+  // input. Errors keep their head — a failure and its fix is the one thing a
+  // summary is reliably bad at, and it is small. Tool calls, user text and
+  // assistant prose are unaffected: those are what the summary is for.
+  const resultBodies = opts.resultBodies !== false
 
   // tool_call id -> tool name, so a result can be labelled with the tool that
   // produced it even when the assistant frame is degraded later.
@@ -114,6 +119,11 @@ export function renderTranscriptForSummary(
       const name = result.toolName || nameById.get(result.toolCallId) || 'tool'
       const text = textBlocks(msg)
       const flag = result.isError ? ', ERROR' : ''
+      if (!resultBodies) {
+        const errorHead = result.isError ? `: ${clip(text.replace(/\s+/g, ' ').trim(), RESULT_HEAD_CHARS)}` : ''
+        push(`← ${name} result (${text.length} chars${flag})${errorHead}`)
+        continue
+      }
       push(`← ${name} result (${text.length} chars${flag}): ${headTail(text, RESULT_HEAD_CHARS, RESULT_TAIL_CHARS)}`)
     }
   }

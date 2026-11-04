@@ -22,6 +22,7 @@
     "test:fast": "bun --no-env-file test",
     "evals:fixtures": "bun run src/evals/extract-fixtures.ts",
     "evals:fixtures:check": "bun run src/evals/extract-fixtures.ts --check",
+    "evals:compaction": "bun run src/evals/compaction/run-compaction-eval.ts",
     "evals:run": "cd src/evals/dspy && python3 optimize.py",
     "evals:agent": "bun run src/evals/run-eval.ts",
     "evals:agent:local": "bun run src/evals/run-eval.ts --local",

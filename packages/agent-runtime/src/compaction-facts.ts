@@ -21,6 +21,7 @@
  */
 
 import type { AssistantMessage, Message, TextContent, ToolCall, ToolResultMessage } from '@mariozechner/pi-ai'
+import type { DroppedToolResult } from './compaction-drop'
 
 /** Marks the block as machine-written, so nobody — human or model — edits it by hand. */
 export const GROUND_TRUTH_MARKER = '<!-- ground truth, generated -->'
@@ -109,8 +110,14 @@ export function collectCompactionFacts(messages: readonly Message[]): Compaction
  * always present, even when empty: a model that reads "Tools used: (none)"
  * knows the turn made no tool calls, where a missing section reads as unknown.
  * An edited file is listed even when it was never read.
+ *
+ * `dropped` (variant B) is listed only when something was actually dropped, so
+ * a run that drops nothing renders byte-identically to before the feature.
  */
-export function renderCompactionFacts(facts: CompactionFacts): string {
+export function renderCompactionFacts(
+  facts: CompactionFacts,
+  opts: { dropped?: readonly DroppedToolResult[] } = {},
+): string {
   const lines: string[] = [GROUND_TRUTH_MARKER, '## Files touched']
   if (facts.files.length === 0) {
     lines.push('- (none)')
@@ -136,6 +143,15 @@ export function renderCompactionFacts(facts: CompactionFacts): string {
       ? `- Last error seen: ${facts.lastError}`
       : '- No failing tool result in the compacted range.',
   )
+
+  const dropped = opts.dropped ?? []
+  if (dropped.length > 0) {
+    lines.push('## Dropped tool outputs')
+    lines.push('  (outputs cleared by this compaction — re-run the call to see it again)')
+    for (const entry of dropped) {
+      lines.push(`- \`${entry.toolName}(${entry.args})\` — ${entry.chars.toLocaleString('en-US')} chars`)
+    }
+  }
 
   return lines.join('\n')
 }
