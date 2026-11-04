@@ -68,8 +68,14 @@ const SKIP_FILES = new Set([
 export function isSharedRootPath(filePath: string): boolean {
   const clean = filePath.replace(/^\/+/, '').split(sep).join('/')
   if (!clean || clean.includes('\0')) return false
-  if (SKIP_PREFIXES.some((prefix) => clean.startsWith(prefix))) return false
   const segments = clean.split('/')
+  // A path is signed by the API and then joined onto a device's root, so it has
+  // to stay inside that root. `..` (and a drive letter, on Windows) would escape
+  // it: one device could presign `../../MEMORY.md` and every other device would
+  // write outside its workspace on the next pull.
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return false
+  if (/^[a-zA-Z]:/.test(clean) || clean.startsWith('~')) return false
+  if (SKIP_PREFIXES.some((prefix) => clean.startsWith(prefix))) return false
   if (segments.some((segment) => SKIP_SEGMENTS.has(segment))) return false
   const name = segments[segments.length - 1]
   if (SKIP_FILES.has(name)) return false
@@ -337,7 +343,7 @@ export function createWorkspaceRootSync(options: WorkspaceRootSyncOptions) {
             etag: null,
             sha256: conflictSha,
             size: localBytes.byteLength,
-            mtimeMs: Date.now(),
+            mtimeMs: statSync(abs(conflictPath)).mtimeMs,
           }
         } catch (err: any) {
           stats.errors.push(`conflict ${conflictPath}: ${err?.message ?? err}`)
@@ -358,7 +364,11 @@ export function createWorkspaceRootSync(options: WorkspaceRootSyncOptions) {
           etag: file.etag,
           sha256: sha256Of(bytes),
           size: bytes.byteLength,
-          mtimeMs: Date.now(),
+          // The file's own mtime, not `Date.now()`: `hasLocalEdits` compares
+          // this against `statSync().mtimeMs`, which is fractional here, so a
+          // rounded clock read would make every pulled file look edited and
+          // re-sync the whole root every scan.
+          mtimeMs: statSync(target).mtimeMs,
         }
       } catch (err: any) {
         stats.errors.push(`pull ${file.path}: ${err?.message ?? err}`)

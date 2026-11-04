@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -136,6 +136,28 @@ describe('isSharedRootPath', () => {
       expect(isSharedRootPath(path)).toBe(false)
     }
   })
+
+  /**
+   * A manifest path is joined onto the root on every device that pulls it, so a
+   * path that climbs out of the root is a write outside the workspace — signed
+   * by the API, executed by every machine. QA found this one by presigning
+   * `../../pwned.md`: it was signed, and the next pull wrote it above the root.
+   */
+  it('refuses a path that climbs out of the root, whichever way it is spelled', () => {
+    for (const path of [
+      '..',
+      '../pwned.md',
+      '../../pwned.md',
+      'memory/../../pwned.md',
+      'memory/./notes.md',
+      'memory//notes.md',
+      'C:/Windows/System32/drivers/etc/hosts',
+      'c:\\Windows\\win.ini',
+      '~/.ssh/authorized_keys',
+    ]) {
+      expect(isSharedRootPath(path)).toBe(false)
+    }
+  })
 })
 
 describe('createWorkspaceRootSync', () => {
@@ -253,6 +275,41 @@ describe('createWorkspaceRootSync', () => {
 
     await sync.sync()
     expect(store.writes.length).toBe(2)
+  })
+
+  /**
+   * The scan loop only syncs when `hasLocalEdits()` says a file moved. QA caught
+   * a pulled file being recorded with `Date.now()` while the walk compares
+   * `statSync().mtimeMs` (fractional), so every device reported an edit forever
+   * and re-listed the whole root every scan interval.
+   */
+  it('does not report an edit for a file it just pulled', async () => {
+    const store = createStore()
+    const a = tempDir()
+    const b = tempDir()
+    write(a, 'MEMORY.md', '# Memory A\n')
+    const syncA = createWorkspaceRootSync({ dir: a, deviceName: 'macbook', transport: store.transport, fetchImpl: store.fetchImpl })
+    const syncB = createWorkspaceRootSync({ dir: b, deviceName: 'windows', transport: store.transport, fetchImpl: store.fetchImpl })
+    await syncA.sync()
+
+    const stats = await syncB.sync()
+    expect(stats.pulled).toBe(1)
+    expect(read(b, 'MEMORY.md')).toBe('# Memory A\n')
+    expect(syncB.hasLocalEdits()).toBe(false)
+  })
+
+  it('writes nothing outside the root for a manifest entry that climbs out', async () => {
+    const store = createStore()
+    const parent = tempDir()
+    const dir = join(parent, 'workspace')
+    mkdirSync(dir, { recursive: true })
+    // A store object nobody should be able to make the sync write to.
+    store.objects.set('../pwned.md', { bytes: new TextEncoder().encode('PWNED'), etag: 'e1', metadata: {} })
+    const sync = createWorkspaceRootSync({ dir, deviceName: 'macbook', transport: store.transport, fetchImpl: store.fetchImpl })
+
+    const stats = await sync.sync()
+    expect(stats.pulled).toBe(0)
+    expect(existsSync(join(parent, 'pwned.md'))).toBe(false)
   })
 
   it('logs a failed transfer instead of throwing out of the sync', async () => {
