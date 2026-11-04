@@ -15,9 +15,16 @@
  * The turn, the probe and the transcript reads are mocked in the browser (the
  * same way e2e/shared/live-turn-replay.ts mocks a live turn), so this runs in
  * the ordinary e2e/local shards and needs no model.
+ *
+ * A full page load (F5, a second tab, Back after one) is NOT mocked here: a
+ * mocked transcript answers every session identically, so the chat the landing
+ * opened after the reload looked like the one in the URL and the test passed
+ * with the bug intact (SHO-300). That case lives in
+ * `e2e/staging/chat-reload-live-turn.test.ts`, against a real turn and real
+ * saved history.
  */
 import { expect, test, type Page, type Route } from "@playwright/test"
-import { openTeamHome, startProjectWithBootstrapTurn } from "./helpers"
+import { startProjectWithBootstrapTurn } from "./helpers"
 
 test.setTimeout(180_000)
 
@@ -464,39 +471,6 @@ test.describe("coming back to a live chat", () => {
       /Worked for \d/.test(text),
       `the running turn is labelled finished:\n${text.slice(0, 800)}`,
     ).toBe(false)
-  })
-
-  test("F5 mid-turn on the workspace agent chat reopens the same chat", async ({ page }) => {
-    const state = await installMocks(page)
-    // The landing chat opens empty; give it one saved row so "the same chat"
-    // is something the person can see, and so the panel reads its history.
-    state.rows = [savedRow("m-landing", "", "user", RETURN_PROMPT, Date.now() - 60_000)]
-
-    // Sign in and pick the team workspace first: `/` is the workspace agent
-    // chat, and a cold context would otherwise land on onboarding.
-    await openTeamHome(page)
-    await page.goto("/")
-    await expect(page.getByText(RETURN_PROMPT, { exact: false }).first()).toBeVisible({
-      timeout: 60_000,
-    })
-
-    // The open chat belongs in the URL, so a reload — or Back — returns to it.
-    await expect
-      .poll(() => new URL(page.url()).searchParams.get("chatSessionId"), {
-        timeout: 20_000,
-        message: "the workspace agent chat puts its session in the URL",
-      })
-      .toBeTruthy()
-    const sessionId = new URL(page.url()).searchParams.get("chatSessionId")
-
-    state.sessions.clear()
-    await page.reload()
-
-    await expect(page.getByText(RETURN_PROMPT, { exact: false }).first()).toBeVisible({
-      timeout: 60_000,
-    })
-    expect(new URL(page.url()).searchParams.get("chatSessionId")).toBe(sessionId)
-    expect(state.sessions.has(String(sessionId)), "the reopened chat is the one in the URL").toBe(true)
   })
 })
 
