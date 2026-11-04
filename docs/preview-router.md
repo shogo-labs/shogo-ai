@@ -174,3 +174,53 @@ Total TLS certs) are fully redundant and can be deleted to reclaim quota — lis
   `Workers KV Storage:Edit`, and `DNS:Edit`.
 ```
 
+
+## User-app proxies and the edge secret
+
+The API routes that serve a user's app — `/api/preview/{projectId}/render*`,
+`/api/preview/{projectId}/ports/{port}/render*` and
+`/api/published/{subdomain}/api*` — exist for these Workers. A browser
+that calls them directly on a Studio/API host is served the app as
+first-party HTML on that origin, with the visitor's session attached; the
+published proxy would also hand the visitor's cookies to the app.
+
+So both Worker scripts stamp `x-shogo-edge-auth: <SHOGO_EDGE_PROXY_SECRET>` on
+every request they forward to the API, dropping any copy the client sent
+first, and the API refuses the three route families unless the header matches
+(its 404 is the same body an unknown route gets). The API also refuses them on
+a Studio/API host without a valid header, so a self-hosted API on its own
+domain keeps working.
+
+- Terraform: `edge_proxy_secret` on `modules/preview-router` and
+  `modules/publish-hosting-oci` (bound to the Workers as `EDGE_PROXY_SECRET`).
+- API: `SHOGO_EDGE_PROXY_SECRET`, from the `api-secrets` k8s secret
+  (`EDGE_PROXY_SECRET` in the GitHub environment).
+- **One switch, five behaviours.** `isNonEdgeUserAppProxyRequest(headers)` is
+  true only when the API holds the secret *and* the request did not carry it.
+  The CSRF skip, the reflected `Origin` + `credentials`, the published proxy's
+  `cookie`/`authorization` forwarding, the dropped `set-cookie` and the sandbox
+  CSP all key off it, so with no secret every one of them keeps its previous
+  value — the image can ship ahead of the terraform apply with no visible
+  difference.
+- **Deploy runbook.** (1) merge and roll the API image — inert; (2) set
+  `EDGE_PROXY_SECRET` (one value) in the `staging`, `edge-global`,
+  `production-us` and `production-eu` GitHub environments; (3) apply terraform so the
+  Workers start sending the header (ignored while the API has no secret);
+  (4) re-run the deploy so `api-secrets` carries `SHOGO_EDGE_PROXY_SECRET` into
+  the pod and enforcement starts, with the Workers already sending it.
+  Stopping after step 1 or 3 leaves the routes as they are today, never broken.
+- Local desktop mode has no secret: its previews use
+  `/api/projects/{id}/preview/*` on loopback, and any user-app proxy response
+  to an untrusted caller is served with
+  `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups`, so
+  it runs on an opaque origin. A self-hosted API on its own domain is trusted
+  and unchanged.
+
+## WebSocket upgrades through the per-port proxy
+
+A per-port preview forwards Vite's HMR socket. That branch is built from a
+clone of the incoming request (`new Request(target, request)`) rather than from
+a header bag, so the handshake headers (`Connection`, `Upgrade`,
+`Sec-WebSocket-*`) travel with it, and the edge secret is written onto the
+clone's (mutable) headers. Covered by
+`preview-worker-routing.integration.test.ts`.

@@ -70,6 +70,7 @@ afterAll(() => {
 interface RecordedCall {
   url: string
   cf?: any
+  headers: Headers
 }
 let calls: RecordedCall[] = []
 const realFetch = globalThis.fetch
@@ -78,11 +79,14 @@ function installFetch(
   handler: (url: string, callIndex: number) => { status: number; body?: string; headers?: Record<string, string> },
 ) {
   globalThis.fetch = (async (input: any, init?: any) => {
-    const url = input instanceof Request ? input.url : typeof input === 'string' ? input : input.url
+    const req: Request | null = input instanceof Request ? input : null
+    const url = req ? req.url : typeof input === 'string' ? input : input.url
+    const headers = new Headers(req ? req.headers : init?.headers || {})
+    if (init?.headers) new Headers(init.headers).forEach((v, k) => headers.set(k, v))
     const callIndex = calls.length
-    calls.push({ url, cf: init?.cf })
-    const { status, body, headers } = handler(url, callIndex)
-    return new Response(body ?? '', { status, headers })
+    calls.push({ url, cf: init?.cf, headers })
+    const { status, body, headers: outHeaders } = handler(url, callIndex)
+    return new Response(body ?? '', { status, headers: outHeaders })
   }) as typeof fetch
 }
 
@@ -101,7 +105,7 @@ afterEach(() => {
 // marker under `mm:{projectId}`. The fake is key-aware so one can't answer for
 // the other, and writable so `setMetalMark` round-trips.
 function makeEnv(
-  opts: { apiWakeOrigin?: string; region?: string; metalProjects?: string[] } = {},
+  opts: { apiWakeOrigin?: string; region?: string; metalProjects?: string[]; edgeProxySecret?: string } = {},
 ): any {
   const kv = new Map<string, string>()
   for (const id of opts.metalProjects ?? []) kv.set(`mm:${id}`, '1')
@@ -114,6 +118,7 @@ function makeEnv(
       },
     },
     ...(opts.apiWakeOrigin ? { API_WAKE_ORIGIN: opts.apiWakeOrigin } : {}),
+    ...(opts.edgeProxySecret ? { EDGE_PROXY_SECRET: opts.edgeProxySecret } : {}),
   }
 }
 
@@ -471,5 +476,89 @@ describe('preview-router worker — per-port public preview', () => {
     const res = await workerModule.fetch(req, env)
     expect(res.status).toBe(502)
     expect(calls).toHaveLength(0)
+  })
+})
+
+// The API only serves `/api/preview/{id}/render*` to this Worker: every call
+// carries the shared edge secret, and a copy the client sent is dropped.
+describe('preview-router worker — edge proxy header', () => {
+  const SECRET = 'edge-secret-test'
+  const EDGE = 'x-shogo-edge-auth'
+
+  test('a metal render call stamps the edge secret and drops a client-supplied copy', async () => {
+    installFetch(() => ({ status: 200, body: 'console.log(1)' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, metalProjects: ['p1'], edgeProxySecret: SECRET })
+    const req = new Request('https://p1.preview.shogo.ai/assets/app.js', {
+      headers: { Accept: '*/*', 'x-shogo-edge-auth': 'forged-by-visitor' },
+    })
+
+    await workerModule.fetch(req, env)
+    const render = calls.find((c) => c.url.includes('/render'))
+    expect(render?.headers.get(EDGE)).toBe(SECRET)
+  })
+
+  test('the wake call and the per-port render call carry it too', async () => {
+    installFetch((url) => (url.includes('/wake') ? { status: 200, body: '{"ready":true}' } : { status: 200, body: 'ok' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, edgeProxySecret: SECRET })
+
+    await workerModule.fetch(new Request('https://p1.preview.shogo.ai/__shogo/wake'), env)
+    expect(calls[0].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/wake`)
+    expect(calls[0].headers.get(EDGE)).toBe(SECRET)
+
+    calls = []
+    await workerModule.fetch(new Request('https://3000--p1.preview.shogo.ai/assets/app.js', { headers: { Accept: '*/*' } }), env)
+    expect(calls.map((c) => c.url)).toEqual([
+      `${API_WAKE_ORIGIN}/api/preview/p1/wake`,
+      `${API_WAKE_ORIGIN}/api/preview/p1/ports/3000/render/assets/app.js`,
+    ])
+    expect(calls.every((c) => c.headers.get(EDGE) === SECRET)).toBe(true)
+  })
+
+  test('with no secret bound, no header is sent and a client copy is still stripped', async () => {
+    installFetch(() => ({ status: 200, body: 'console.log(1)' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, metalProjects: ['p1'] })
+    const req = new Request('https://p1.preview.shogo.ai/assets/app.js', {
+      headers: { Accept: '*/*', 'x-shogo-edge-auth': 'forged-by-visitor' },
+    })
+
+    await workerModule.fetch(req, env)
+    const render = calls.find((c) => c.url.includes('/render'))
+    expect(render?.headers.get(EDGE)).toBeNull()
+  })
+
+  test('a per-port WebSocket upgrade keeps its handshake headers and still carries the secret', async () => {
+    installFetch((url) => (url.includes('/wake') ? { status: 200, body: '{"ready":true}' } : { status: 101 }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, edgeProxySecret: SECRET })
+    // Built from a Headers instance: the handshake names are ones the fetch spec
+    // forbids a script to set, so they must be carried rather than re-declared.
+    const handshake = new Headers({
+      connection: 'Upgrade',
+      upgrade: 'websocket',
+      'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+      'sec-websocket-version': '13',
+      'sec-websocket-protocol': 'vite-hmr',
+      [EDGE]: 'forged-by-visitor',
+    })
+    await workerModule.fetch(new Request('https://3000--p1.preview.shogo.ai/', { headers: handshake }), env)
+
+    const port = calls.find((c) => c.url.includes('/ports/3000/render'))
+    expect(port?.url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/ports/3000/render/`)
+    expect(port?.headers.get('upgrade')).toBe('websocket')
+    expect(port?.headers.get('connection')).toBe('Upgrade')
+    expect(port?.headers.get('sec-websocket-key')).toBe('dGhlIHNhbXBsZSBub25jZQ==')
+    expect(port?.headers.get('sec-websocket-protocol')).toBe('vite-hmr')
+    expect(port?.headers.get(EDGE)).toBe(SECRET)
+    expect(port?.headers.get('host')).toBeNull()
+  })
+
+  test('a Knative preview proxied to the regional anchor gets no API header at all', async () => {
+    installFetch((url) =>
+      url.includes('/wake') ? { status: 200, body: '{"ready":true}' } : { status: 200, body: '<html>live</html>' },
+    )
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, edgeProxySecret: SECRET })
+    await workerModule.fetch(new Request('https://p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } }), env)
+
+    const proxied = calls.find((c) => c.cf?.resolveOverride)
+    expect(proxied?.headers.get(EDGE)).toBeNull()
   })
 })

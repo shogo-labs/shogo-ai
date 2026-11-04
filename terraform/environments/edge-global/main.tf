@@ -91,6 +91,9 @@ module "preview_router" {
   # interstitial on first navigation that polls `GET /api/preview/{projectId}/wake`
   # and reloads once the pod is ready, instead of erroring.
   api_wake_origin = "https://studio.shogo.ai"
+
+  # Shared secret the Worker sends to the API on the preview render proxies.
+  edge_proxy_secret = var.edge_proxy_secret
 }
 
 # =============================================================================

@@ -415,6 +415,9 @@ module "publish_hosting" {
   # Knative ingress; until then server-backed apps fall back to static serving.
   kourier_origin = var.kourier_origin
 
+  # Shared secret the Worker sends to the API on the published `/api/*` proxy.
+  edge_proxy_secret = var.edge_proxy_secret
+
   # The PAR (pre-authenticated request) created inside this module is
   # scoped to `shogo-published-apps-${env}`, which the object_storage
   # module creates. Without this depends_on, terraform parallelizes the
@@ -492,6 +495,9 @@ module "preview_router" {
   # on first navigation that polls `GET /api/preview/{projectId}/wake` and
   # reloads once the pod is ready, instead of erroring.
   api_wake_origin = "https://studio.staging.shogo.ai"
+
+  # Shared secret the Worker sends to the API on the preview render proxies.
+  edge_proxy_secret = var.edge_proxy_secret
 }
 
 # =============================================================================

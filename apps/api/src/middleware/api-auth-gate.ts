@@ -12,7 +12,10 @@
  *    can still apply `requireAuth` to a narrower path under the same prefix.
  * Don't repeat a `PUBLIC_PREFIXES` entry here.
  */
+import { timingSafeEqual } from 'node:crypto'
 import type { Context, Next } from 'hono'
+import { getFrontendUrl } from '../lib/cloud-urls'
+import { EDGE_PROXY_HEADER } from '../lib/preview-proxy-headers'
 import { isPublicPath, requireAuth } from './auth'
 
 export const GATE_PUBLIC_PREFIXES = [
@@ -81,6 +84,98 @@ export function isUserAppProxyPath(path: string): boolean {
 // same, so the API's CORS middleware stays out of it entirely.
 export function isPublishedApiProxyPath(path: string): boolean {
   return /^\/api\/published\/[^/]+\/api(?:\/|$)/.test(path)
+}
+
+/**
+ * Header the edge Workers (preview-router, subdomain-router) add to every
+ * request they forward to the API, carrying `SHOGO_EDGE_PROXY_SECRET`. Stripped
+ * from any client-supplied value at the edge, so its presence is proof the
+ * request came through the Worker for that user-app host.
+ */
+export { EDGE_PROXY_HEADER }
+
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a)
+  const right = Buffer.from(b)
+  if (left.length !== right.length) return false
+  return timingSafeEqual(left, right)
+}
+
+/** True when the request carries the configured edge-proxy secret. */
+export function isEdgeProxyAuthenticated(headers: Headers): boolean {
+  const expected = process.env.SHOGO_EDGE_PROXY_SECRET
+  if (!expected) return false
+  const provided = headers.get(EDGE_PROXY_HEADER)
+  if (!provided) return false
+  return safeEqual(provided, expected)
+}
+
+/**
+ * True when a `Host` header names this deployment's Studio frontend or its API
+ * — the origins a visitor's session cookie lives on — rather than a user-app
+ * host (`{id}.preview.<base>`, `{sub}.shogo.one`, a custom domain). The browser
+ * never reaches a user-app proxy on these hosts directly; only the edge Workers
+ * call the API there.
+ */
+export function isStudioOrApiHost(hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false
+  const hostname = hostHeader.trim().toLowerCase().replace(/:\d+$/, '')
+  if (!hostname) return false
+  // Loopback / local: natively local, single user, no shared origin.
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1') {
+    return false
+  }
+  const platformHosts = new Set<string>()
+  const add = (origin: string | undefined | null) => {
+    if (!origin) return
+    try {
+      platformHosts.add(new URL(origin).hostname.toLowerCase())
+    } catch {
+      /* not a URL — ignore */
+    }
+  }
+  add(getFrontendUrl())
+  add(process.env.SHOGO_CLOUD_URL)
+  add(process.env.NEXT_PUBLIC_APP_URL)
+  for (const origin of (process.env.ALLOWED_ORIGINS || '').split(',')) add(origin.trim())
+  if (platformHosts.has(hostname)) return true
+  // Sibling hostnames the platform serves from the same origins
+  // (`api.shogo.ai`, `eu.studio.shogo.ai`, `studio.staging.shogo.ai`).
+  return /^(?:api|studio|eu\.studio)\.[a-z0-9.-]+$/.test(hostname)
+}
+
+/**
+ * Whether a user-app proxy request may be served by this API process.
+ *
+ * These proxies exist for the edge Workers: a browser reaching them directly on
+ * a Studio/API host would run a user's app script first-party on that origin,
+ * with the visitor's session. Once `SHOGO_EDGE_PROXY_SECRET` is configured, a
+ * request must carry the edge header or arrive on a non-Studio host (local
+ * desktop mode, a self-hosted API on its own domain). Before the secret is
+ * wired in nothing is enforced, so applying the Workers first cannot break
+ * previews; the terraform apply sets both sides.
+ */
+export function allowUserAppProxyRequest(path: string, headers: Headers): boolean {
+  if (!isUserAppProxyPath(path)) return true
+  if (!process.env.SHOGO_EDGE_PROXY_SECRET) return true
+  if (isEdgeProxyAuthenticated(headers)) return true
+  return !isStudioOrApiHost(headers.get('host') ?? undefined)
+}
+
+/**
+ * True when this request must be treated as a direct, non-edge call: the
+ * process holds the edge secret AND the request did not carry it.
+ *
+ * Both halves matter. The API image deploys on merge while the terraform apply
+ * that hands the Workers the secret is a manual step, so without one of them
+ * everything that keys off this helper would flip for a window in which the
+ * Workers are not yet sending the header — preview backend POSTs would hit the
+ * Studio CSRF allow-list, published apps would stop seeing the visitor's
+ * session, and every preview would be served sandboxed. Until the secret
+ * exists, each of those keeps its pre-switch value.
+ */
+export function isNonEdgeUserAppProxyRequest(headers: Headers): boolean {
+  return !!process.env.SHOGO_EDGE_PROXY_SECRET && !isEdgeProxyAuthenticated(headers)
 }
 
 // The root preview proxy only. It forwards none of the visitor's cookies or
