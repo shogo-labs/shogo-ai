@@ -2689,11 +2689,14 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
         // mode still falls back to Knative if configured).
         const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
         const resolved = await resolveProjectPodUrl(projectId, { logTag: 'Runtime' })
+        const { clientRuntimeUrl } = await import('./lib/host-tunnel')
         return c.json({
           success: true,
           projectId,
           status: 'running',
-          url: resolved.url,
+          // A workspace hosted on a paired desktop reports its mode and no URL:
+          // its runtime URL is internal plumbing (see `lib/host-tunnel`).
+          url: clientRuntimeUrl(resolved) ?? undefined,
           mode: resolved.mode,
         })
       }

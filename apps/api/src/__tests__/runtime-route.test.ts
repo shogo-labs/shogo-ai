@@ -230,6 +230,23 @@ describe('POST /projects/:projectId/runtime/start', () => {
     expect((await res.json()).url).toBe('https://proj-1.shogo.app')
   })
 
+  test('host-tunnel mode: reports the mode and no URL', async () => {
+    resolveProjectPodUrlMock.mockImplementation(async () => ({
+      mode: 'host-tunnel' as const,
+      instanceId: 'inst-1',
+      url: 'http://127.0.0.1:8002/api/internal/host-tunnel/secret/inst-1/api/projects/proj-1/agent-proxy',
+    }))
+    const res = await makeApp().request('/api/projects/proj-1/runtime/start', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.success).toBe(true)
+    expect(body.mode).toBe('host-tunnel')
+    expect(body.url).toBeUndefined()
+    expect(JSON.stringify(body)).not.toContain('/api/internal/')
+  })
+
   test('forwards logTag: "Runtime" and runtimeManager to the helper', async () => {
     await makeApp().request('/api/projects/proj-1/runtime/start', { method: 'POST' })
     expect(resolveProjectPodUrlMock).toHaveBeenCalledWith('proj-1', {
@@ -421,6 +438,26 @@ describe('GET /projects/:projectId/sandbox/url', () => {
     })
   })
 
+  test('host-tunnel mode: no URL of any kind is handed to the client', async () => {
+    resolveProjectPodUrlMock.mockImplementation(async () => ({
+      mode: 'host-tunnel' as const,
+      instanceId: 'inst-1',
+      url: `http://127.0.0.1:8002/api/internal/host-tunnel/secret/inst-1/api/projects/proj-1/agent-proxy`,
+    }))
+    const res = await makeApp().request('/api/projects/proj-1/sandbox/url', {
+      headers: { host: 'api.shogo.dev' },
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.mode).toBe('host-tunnel')
+    expect(body.url).toBeUndefined()
+    expect(body.directUrl).toBeUndefined()
+    expect(body.canvasBaseUrl).toBeUndefined()
+    expect(JSON.stringify(body)).not.toContain('/api/internal/')
+    expect(JSON.stringify(body)).not.toContain('127.0.0.1')
+    expect(body.agentUrl).toBe('http://api.shogo.dev/api/projects/proj-1/agent-proxy')
+  })
+
   test('host mode + no agentPort: canvasBaseUrl falls back to runtime.url', async () => {
     resolveProjectPodUrlMock.mockImplementation(async () => ({
       mode: 'host' as const,
@@ -580,6 +617,22 @@ describe('POST /projects/:projectId/runtime/restart', () => {
     })
   })
 
+  test('host-tunnel mode: reports the mode and no URL', async () => {
+    resolveProjectPodUrlMock.mockImplementation(async () => ({
+      mode: 'host-tunnel' as const,
+      instanceId: 'inst-1',
+      url: 'http://127.0.0.1:8002/api/internal/host-tunnel/secret/inst-1/api/projects/proj-1/agent-proxy',
+    }))
+    const res = await makeApp().request('/api/projects/proj-1/runtime/restart', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.mode).toBe('host-tunnel')
+    expect(body.url).toBeUndefined()
+    expect(JSON.stringify(body)).not.toContain('/api/internal/')
+  })
+
   test('metal mode: returns res.url + port=0', async () => {
     resolveProjectPodUrlMock.mockImplementation(async () => ({
       mode: 'metal' as const,
@@ -593,6 +646,7 @@ describe('POST /projects/:projectId/runtime/restart', () => {
       projectId: 'proj-1',
       status: 'running',
       url: 'https://metal.example',
+      mode: 'metal',
       port: 0,
     })
   })
