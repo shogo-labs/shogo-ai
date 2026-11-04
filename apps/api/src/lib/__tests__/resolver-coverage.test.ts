@@ -86,6 +86,7 @@ const EXEMPT: Record<string, string> = {
   conversationDoc: 'Mutated only via /api/conversations/:id/doc routes — the conversation lookup resolves its workspace.',
   conversationDocArchive: 'Mutated only via /api/conversations/:id/doc/archives routes — the conversation lookup resolves its workspace (same as conversationDoc).',
   customDomain: 'Mutated via /api/projects/:projectId/domains — resolved by path projectId.',
+  publishedEnvironment: 'SHO-308: written and scaled only via /api/projects/:projectId/published/environments (and the agent\'s /api/internal/projects/:id/publish[/ops]) — resolved by path projectId; its child rows (publishedDeployment, publishedUsageMinute) key on that environment.',
   customEmoji: 'Mutated via workspace-scoped custom emoji routes — resolved by path workspaceId.',
   gitHubConnection: 'Mutated via /api/projects/:projectId/github — resolved by path projectId.',
   goal: 'Mutated via /api/workspaces/:workspaceId/goals — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler).',
