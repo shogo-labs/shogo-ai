@@ -37,7 +37,6 @@ import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
 import {
-  bootWaitCanEndWithoutRecord,
   chatHistoryOrigin,
   loadWorkspaceChatBoot,
   peekWorkspaceChatBoot,
@@ -297,18 +296,6 @@ export const WorkspaceAgentChatScreen = observer(
       user?.id,
     )?.id
 
-    // What the device read needs to know about the workspace collection, as
-    // primitives. `workspaces.all` is a *fresh array on every access*
-    // (`Array.from(self.items.values())`, see WorkspaceCollection), so using it
-    // as a dependency restarts this effect on every render: each run cancels the
-    // previous one before its read can answer, `bootPending` never clears, and
-    // the first-ever open never paints its loader — it renders nothing and then
-    // jumps straight to the chat when the profile and session land (SHO-309,
-    // caught in CI).
-    const workspaceCount = workspaces?.all?.length ?? 0
-    const collectionReady =
-      workspaces != null && workspaces.isLoading !== true
-
     // Read the chat this workspace opened last time off the device (SHO-309).
     // The first frame already used the synchronous mirror; this covers a
     // reload/restart, where the store has it and the mirror does not, and the
@@ -316,8 +303,15 @@ export const WorkspaceAgentChatScreen = observer(
     // whose user/workspace had not resolved yet) — there the state initialisers
     // ran against no key, so the record still has to be applied here.
     //
-    // Keyed on the key alone: nothing the collection does changes what this
-    // device holds for it, and re-running the read would only cancel itself.
+    // This is the ONLY thing that ends the wait, and that is on purpose. An
+    // earlier version also released it when the workspace collection looked
+    // settled and empty — which is the state of a freshly mounted collection
+    // *before* its first `loadAll()`, and again after `clear()`. So the release
+    // fired on the first frame of every reopen, `bootPending` went false before
+    // the workspace (and therefore the key) existed, and
+    // "Preparing Workspace Agent Chat…" painted over a chat the device held
+    // (SHO-309, caught in CI, R4 and R5). Collection state cannot answer "does
+    // this device hold a chat", so it does not get a vote.
     useEffect(() => {
       // Only fill what is still missing: a load that already answered is
       // fresher than the device copy, and the landing must keep its own empty
@@ -357,24 +351,6 @@ export const WorkspaceAgentChatScreen = observer(
         cancelled = true
       }
     }, [bootKey, initialSessionId, startNewSession])
-
-    // And the one case a missing key can never resolve: an account with no
-    // workspaces at all. Only that may end the wait without a record.
-    //
-    // A null workspace is *not* that case: `useActiveWorkspace` returns null for
-    // the whole of any `workspaces.loadAll()` (`isLoading`, which every in-app
-    // navigation triggers) even though `all` still holds the list. Releasing the
-    // wait there painted the spinner for the few frames the collection spent
-    // refreshing — over a chat the device already had (SHO-309, caught in CI).
-    //
-    // Separate from the read above, and keyed on primitives, so a collection
-    // refresh can neither cancel the read nor be missed by it.
-    useEffect(() => {
-      if (bootKey) return
-      if (bootWaitCanEndWithoutRecord({ collectionReady, workspaceCount })) {
-        setBootPending(false)
-      }
-    }, [bootKey, collectionReady, workspaceCount])
 
     const loadWorkspaceChat = useCallback(async () => {
       avatarStreaming.current = false

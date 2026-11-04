@@ -120,15 +120,19 @@ describe('the workspace agent screen opens from the device', () => {
     expect(peekHit).toContain('applyBoot(cached)')
   })
 
-  test('a missing key alone never ends the wait', () => {
-    // CI caught the wait being released on the key being null: the workspace
-    // collection was already loaded, but the workspace in view was not resolved
-    // (or was refreshing), so the screen painted the spinner over a chat the
-    // device held. Only an account with no workspaces may end it.
-    const release = screen.slice(screen.indexOf('if (bootWaitCanEndWithoutRecord'))
-    expect(release).toContain('collectionReady')
-    expect(release).toContain('workspaceCount')
-    expect(screen).not.toMatch(/workspaces\?\.all != null\) setBootPending\(false\)/)
+  test('only the device read ends the wait — collection state gets no vote', () => {
+    // Two rounds of CI went to this: the wait was also released when a nil key
+    // met a collection that looked settled and empty — which is its state
+    // before the first `loadAll()`, and after `clear()`. So it fired on the
+    // first frame of every reopen and the spinner painted over a chat the
+    // device held. Collection state cannot answer "does this device hold a
+    // chat", so the rule is gone rather than re-shaped.
+    expect(screen).not.toContain('bootWaitCanEndWithoutRecord')
+    expect(screen).not.toContain('collectionReady')
+    expect(screen).not.toContain('workspaceCount')
+    // The read's own answer is the only thing that clears it, along with a
+    // peek hit on the device mirror.
+    expect(screen).toContain('const [bootPending, setBootPending] = useState(true)')
   })
 
   test('a collection refresh cannot cancel the device read', () => {
@@ -136,18 +140,13 @@ describe('the workspace agent screen opens from the device', () => {
     // jumped straight to the chat. `WorkspaceCollection.all` is
     // `Array.from(self.items.values())` — a new array on every access — so
     // keying the read on it restarted (and cancelled) the read on every render,
-    // and `bootPending` never cleared. The read keys on the boot key alone; the
-    // collection's state reaches the "no workspaces" rule as primitives.
-    expect(screen).toContain(
-      'const workspaceCount = workspaces?.all?.length ?? 0',
-    )
+    // and `bootPending` never cleared. The read keys on the boot key alone.
     const read = screen.slice(
       screen.indexOf('const applyBoot = (record'),
       screen.indexOf('const loadWorkspaceChat = useCallback'),
     )
     expect(read).toContain('}, [bootKey, initialSessionId, startNewSession])')
-    expect(read).not.toContain('workspaces?.all]')
-    expect(screen).toContain('}, [bootKey, collectionReady, workspaceCount])')
+    expect(read).not.toContain('workspaces')
   })
 
   test('the workspace survives the collection being between answers', () => {

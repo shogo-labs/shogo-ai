@@ -21,7 +21,6 @@ import {
   writeChatHistory,
 } from '../chat-history-store'
 import {
-  bootWaitCanEndWithoutRecord,
   chatHistoryOrigin,
   loadWorkspaceChatBoot,
   peekWorkspaceChatBoot,
@@ -31,6 +30,7 @@ import {
   workspaceChatBootKey,
   workspaceChatLoadingView,
 } from '../chat-device-boot'
+import * as chatDeviceBoot from '../chat-device-boot'
 import {
   clearChatPanelMessageCache,
   writeSessionMessageCache,
@@ -235,19 +235,23 @@ describe('the first paint', () => {
     ).toBe('blank')
   })
 
-  test('the device wait ends only when the account has no workspace at all', () => {
-    // A key that is merely not resolved yet is the case the wait exists for:
-    // the user or the workspace in view has not answered, or the collection is
-    // refreshing. Releasing here paints the spinner over a chat the device has.
-    expect(
-      bootWaitCanEndWithoutRecord({ collectionReady: true, workspaceCount: 2 }),
-    ).toBe(false)
-    expect(
-      bootWaitCanEndWithoutRecord({ collectionReady: false, workspaceCount: 0 }),
-    ).toBe(false)
-    // Nothing to open, so nothing can arrive.
-    expect(
-      bootWaitCanEndWithoutRecord({ collectionReady: true, workspaceCount: 0 }),
-    ).toBe(true)
+  test('the device wait ends only when the read answers — never on a collection state', () => {
+    // This used to be a rule (`bootWaitCanEndWithoutRecord`) that released the
+    // wait for an account with no workspaces. But "settled and empty" is also
+    // the state of a freshly mounted collection before its first `loadAll()`,
+    // so the rule fired on the first frame of every reopen: `bootPending` went
+    // false while the workspace (and with it the key) did not exist yet, and
+    // "Preparing Workspace Agent Chat…" painted over a chat the device held
+    // (SHO-309, caught in CI on R4 and R5). The rule is gone; the read's own
+    // answer is the only thing that ends the wait, and a screen with no
+    // workspace resolves to `blank` anyway — so nothing is hidden by waiting.
+    expect('bootWaitCanEndWithoutRecord' in chatDeviceBoot).toBe(false)
+    expect(workspaceChatLoadingView({
+      hasWorkspace: false,
+      hasProfile: false,
+      hasSession: false,
+      bootPending: true,
+      error: null,
+    })).toBe('blank')
   })
 })

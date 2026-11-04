@@ -645,13 +645,21 @@ test.describe("a workspace agent chat opens from the device", () => {
     const row = chats.getByRole("link", { name: /^Chat: / }).first()
     await expect(row).toBeVisible({ timeout: 60_000 })
 
-    // ── The first-ever open: the device holds nothing, so the loader is honest
-    // and the chat arrives when the network answers.
+    // ── The first-ever open: the device holds nothing, so a loader is honest
+    // and the chat arrives when the network answers. Some loader must appear —
+    // the transcript still has to come over the wire — but `Preparing Workspace
+    // Agent Chat…` must not: that one was a remount artifact (the screen was
+    // rebuilt when the workspace collection answered), and it is the flash
+    // SHO-309 removed, so its absence is asserted rather than tolerated.
     state.delayMs = 1_500
     await row.click()
     await expect
-      .poll(() => loaderHits(page), { timeout: 60_000, message: "first open waits for the chat" })
-      .toContain(PREPARING_LOADER)
+      .poll(() => loaderHits(page), { timeout: 60_000, message: "the first open paints an honest loader" })
+      .not.toEqual([])
+    expect(
+      await loaderHits(page),
+      "the open must not rebuild the screen into its own Preparing loader",
+    ).not.toContain(PREPARING_LOADER)
     await expect(page.getByText(WORKSPACE_REPLY, { exact: false }).first()).toBeVisible({
       timeout: 60_000,
     })
