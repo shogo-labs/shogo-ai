@@ -44,7 +44,9 @@ import {
   openApiCrashLog,
 } from './local-server'
 import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type DesktopLogLevel } from './signoz-log-exporter'
-import { getWebDir, getBunPath, getDbPath, getWorkspacesDirDecision, getDataDir } from './paths'
+import { getWebDir, getBunPath, getDbPath, getWorkspacesDir, getWorkspacesDirDecision, getDataDir } from './paths'
+import { listProjectRoots } from './git/projectRoots'
+import { resolveAllowedLocalFile } from './local-file-roots'
 import { buildHostLimits, hostRuntimeView, writeHostLimits } from './host-limits'
 import { normalizeExecMemoryMB } from './runtime-memory'
 import { buildLocalCsp } from './local-csp'
@@ -1421,6 +1423,24 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('code-workbench:open', (event, options?: { projectId?: string; workspacePath?: string }) => {
     return openCodeWorkbenchWindow(options ?? {}, windowManager.getWindowForWebContents(event.sender))
+  })
+
+  // A local `file://` share in the viewer: show it in Finder (Explorer on
+  // Windows) or open it with the OS's default app. Main does not trust the
+  // renderer's path — it resolves it and refuses anything outside the
+  // workspaces dir or a folder-linked project root.
+  ipcMain.handle('file:reveal', (_event, filePath: string) => {
+    const target = resolveAllowedLocalFile(filePath, [getWorkspacesDir(), ...listProjectRoots()])
+    if (!target) return { ok: false as const, error: 'path_not_allowed' }
+    shell.showItemInFolder(target)
+    return { ok: true as const }
+  })
+
+  ipcMain.handle('file:open', async (_event, filePath: string) => {
+    const target = resolveAllowedLocalFile(filePath, [getWorkspacesDir(), ...listProjectRoots()])
+    if (!target) return { ok: false as const, error: 'path_not_allowed' }
+    const error = await shell.openPath(target)
+    return error ? { ok: false as const, error } : { ok: true as const }
   })
 
   // On-demand local-database repair, surfaced from the support/settings UI.

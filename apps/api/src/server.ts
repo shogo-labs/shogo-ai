@@ -1977,6 +1977,62 @@ app.get('/api/published-sites/:sourceProjectId', async (c) => {
   return router.fetch(newReq)
 })
 
+// Custom domains on a desktop-published site (SHO-304). The site is hosted on a
+// hidden host project in the cloud, so these resolve that project and reuse the
+// same domain handlers the cloud panel's own routes call. Without these mounts
+// the desktop's local-publish proxies 404 in production.
+app.get('/api/published-sites/:sourceProjectId/domains', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.post('/api/published-sites/:sourceProjectId/domains', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.post('/api/published-sites/:sourceProjectId/domains/:domainId/verify', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains/${c.req.param('domainId')}/verify`
+  const newReq = new Request(url.toString(), { method: 'POST', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.post('/api/published-sites/:sourceProjectId/domains/:domainId/retrigger', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains/${c.req.param('domainId')}/retrigger`
+  const newReq = new Request(url.toString(), { method: 'POST', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.patch('/api/published-sites/:sourceProjectId/domains/:domainId/primary', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains/${c.req.param('domainId')}/primary`
+  const newReq = new Request(url.toString(), { method: 'PATCH', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.delete('/api/published-sites/:sourceProjectId/domains/:domainId', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains/${c.req.param('domainId')}`
+  const newReq = new Request(url.toString(), { method: 'DELETE', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
 // Custom domains (Cloudflare for SaaS bring-your-own-domain). List/add and
 // per-domain verify/retrigger/primary/delete all forward into publishRoutes()
 // like the publish endpoints above.

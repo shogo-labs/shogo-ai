@@ -33,6 +33,16 @@ const attachment = {
   size: OBJECT_BYTES.byteLength,
 }
 
+/** SHO-303: a row the composer stored with no content at all. */
+const emptyAttachment = {
+  id: 'att-qa-303',
+  conversationId: 'conv-1',
+  storageKey: 'artifacts/conversations/ws-1/conv-1/content-agents-kit.zip',
+  name: 'content-agents-kit.zip',
+  mimeType: 'application/zip',
+  size: 0,
+}
+
 // ─── the object store: a real HTTP server, plus the request log ──────────────
 
 interface StorageRequest {
@@ -116,7 +126,9 @@ const storage = Bun.serve({
 mock.module('../lib/prisma', () => ({
   prisma: {
     conversationAttachment: {
-      findUnique: mock(async ({ where }: any) => (where.id === attachment.id ? attachment : null)),
+      findUnique: mock(async ({ where }: any) =>
+        where.id === attachment.id ? attachment : where.id === emptyAttachment.id ? emptyAttachment : null,
+      ),
     },
     conversation: { findUnique: mock(async () => ({ workspaceId: 'ws-1' })) },
   },
@@ -196,6 +208,24 @@ describe('SHO-240: GET /conversation-files/:id in cloud mode, over real HTTP', (
       expect(location).toContain(OBJECT_KEY)
     }
     // Nothing was read: the whole point of keeping the redirect.
+    expect(storageRequests).toHaveLength(0)
+  })
+
+  test('a stored 0-byte file answers 410 empty_file and never redirects to storage', async () => {
+    const emptyToken = realFiles.signAttachmentToken(emptyAttachment.id)
+    for (const search of [`?t=${emptyToken}`, `?t=${emptyToken}&dl=1`]) {
+      const response = await fetch(
+        `http://127.0.0.1:${api.port}/api/conversation-files/${emptyAttachment.id}${search}`,
+        { headers: { 'sec-fetch-mode': 'navigate' }, redirect: 'manual' },
+      )
+
+      expect(response.status).toBe(410)
+      expect(response.headers.get('location')).toBeNull()
+      const body = await response.json()
+      expect(body.error.code).toBe('empty_file')
+      expect(body.error.message).toContain('0 bytes')
+    }
+    // A 0-byte download would look like a successful save; the bucket is never touched.
     expect(storageRequests).toHaveLength(0)
   })
 

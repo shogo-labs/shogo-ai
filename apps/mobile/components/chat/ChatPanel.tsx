@@ -151,6 +151,8 @@ import {
   taskWakeHasResponse,
   type PersistedTail,
 } from "./late-turn-attach"
+import { repaintWhenReplyLands, turnSyncAction } from "./turn-sync"
+import { useTeamChatEvents } from "../../lib/team-chat-connection"
 import {
   lastTurnStartedBackgroundWork,
   NOTIFY_WAKE_MAX_WAIT_MS,
@@ -4620,6 +4622,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // ends before the reload's probe, the history may hold its reply mid-write,
   // so Effect 1 loads once more.
   const liveTurnExpectedRef = useRef(false)
+  /**
+   * The chat this window is *following* rather than driving (SHO-299): set when
+   * the pushed `started` event attaches this panel to another window's turn,
+   * cleared the moment the person sends from here.
+   *
+   * A follower streams the reply like anyone else, but the two timers that
+   * belong to the window that started the work stay with it: the queued-turn
+   * follow (SHO-29) and the notify wake watch (SHO-30/31). A window that merely
+   * watched does not need either — the push tells it when the next turn starts
+   * and ends — and running them is the polling SHO-53 removed: a window sitting
+   * behind another window would probe `/turn` and the task list for as long as
+   * the background task ran.
+   */
+  const followsAnotherWindowRef = useRef<string | null>(null)
+  /**
+   * The turn this window was told `started` for (SHO-299). `ended` is acted on
+   * only for this turn — see `turnSyncAction`.
+   */
+  const announcedTurnRef = useRef<{ chatSessionId?: string; turnId?: string } | null>(null)
   const liveTurnReloadNonceRef = useRef(0)
   // The nonce of a reload that only refreshes the history; Effect 1 skips its
   // probe so these never count against the auto-resume circuit breaker.
@@ -4800,11 +4821,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * it, so a chat that is already up to date still costs a single `/turn`
    * probe and no transcript reload.
    */
-  const repaintIfBehindPersistedTail = useCallback(async () => {
+  const repaintIfBehindPersistedTail = useCallback(async (): Promise<boolean> => {
     const sessionId = currentSessionIdRef.current
-    if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return
+    if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return false
     const tail = await probePersistedTail(sessionId)
-    if (currentSessionIdRef.current !== sessionId) return
+    if (currentSessionIdRef.current !== sessionId) return false
     if (
       !persistedTailIsUnseen(tail, messagesRef.current, {
         // A reply this window streamed is on screen under the AI SDK's id
@@ -4812,13 +4833,71 @@ const ChatPanelContent = observer(function ChatPanelContent({
         streamedHere: liveReplySessionRef.current === sessionId,
       })
     )
-      return
-    // A repaint that requires the reply keeps SHO-31's rule: another window's
-    // ordinary turn is not this window's to overwrite. A tail that is still a
-    // user row is a prompt answered elsewhere (the queue's `[Task update]`
-    // wake), so paint it and let the late-turn probe fetch the reply.
-    await reloadPersistedResponse({ requireReply: !persistedTailAwaitsReply(tail) })
+      return false
+    // Paint whatever history holds, reply or not (SHO-299). This only runs when
+    // this window is neither streaming nor sending, and `resolveHistoryPaint`
+    // still refuses to drop a reply this window streamed (SHO-85) — so the
+    // SHO-53 guard that demanded a reply here only ever refused an ordinary
+    // turn another window ran, which is exactly the case that has to land.
+    await reloadPersistedResponse({ requireReply: false })
+    // The tail was still the prompt: its reply is not written yet, and the
+    // caller should look again rather than leave a prompt with no answer.
+    return persistedTailAwaitsReply(tail)
   }, [probePersistedTail, reloadPersistedResponse])
+  const repaintIfBehindPersistedTailRef = useRef(repaintIfBehindPersistedTail)
+  repaintIfBehindPersistedTailRef.current = repaintIfBehindPersistedTail
+
+  /**
+   * Catch up after a turn ended somewhere else (SHO-299). The prompt is painted
+   * straight away; when the reply row has not landed yet, look again a couple of
+   * times instead of stopping on a prompt with no answer.
+   */
+  const catchUpAfterTurnEnded = useCallback(async () => {
+    const sessionId = currentSessionIdRef.current
+    if (!sessionId) return
+    const awaitingReply = await repaintIfBehindPersistedTail()
+    if (!awaitingReply) return
+    await repaintWhenReplyLands({
+      probe: () => probePersistedTail(sessionId),
+      reload: () => reloadPersistedResponse({ requireReply: false }),
+      isCancelled: () =>
+        currentSessionIdRef.current !== sessionId ||
+        isStreamingRef.current ||
+        isSendingMessageRef.current,
+    })
+  }, [probePersistedTail, reloadPersistedResponse, repaintIfBehindPersistedTail])
+  const catchUpAfterTurnEndedRef = useRef(catchUpAfterTurnEnded)
+  catchUpAfterTurnEndedRef.current = catchUpAfterTurnEnded
+
+  /**
+   * A turn started or ended in another window, on another device, or on the
+   * server (a `[Task update]` wake, a channel dispatch, a project call). Nothing
+   * else tells a window that stayed visible, so this is what keeps two windows
+   * on the same chat in step (SHO-299).
+   */
+  useTeamChatEvents(currentWorkspaceId ?? null, (event) => {
+    const action = turnSyncAction(event, {
+      currentSessionId: currentSessionIdRef.current,
+      isStreaming: isStreamingRef.current,
+      isSending: isSendingMessageRef.current,
+      // A window nobody is looking at keeps the SHO-53 path: silence here and
+      // one `/turn` probe on the way back, instead of a live attach that arms
+      // the task watch in a window that is not on screen.
+      isVisible:
+        Platform.OS === "web"
+          ? typeof document !== "undefined" && document.visibilityState === "visible"
+          : AppState.currentState === "active",
+      announcedTurn: announcedTurnRef.current,
+    })
+    if (action === "attach") {
+      announcedTurnRef.current = { chatSessionId: event?.chatSessionId, turnId: event?.turnId }
+      followsAnotherWindowRef.current = currentSessionIdRef.current
+      void attachToLiveTurnIfAnyRef.current()
+    } else if (action === "repaint") {
+      announcedTurnRef.current = null
+      void catchUpAfterTurnEndedRef.current()
+    }
+  })
 
   useEffect(() => {
     if (!isActive || !currentSessionId) return
@@ -4870,6 +4949,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const wasStreaming = wasTransportStreamingRef.current
     wasTransportStreamingRef.current = isTransportStreaming
     if (!wasStreaming || isTransportStreaming || !isActive) return
+    // A window following another window's turn is not the one the queue hands
+    // the next turn to: the push tells it when that turn starts and ends, so it
+    // must not run the follow probes (SHO-299, SHO-53). One row-wide read of the
+    // newest saved message is enough to pick up a reply the push beat here.
+    if (followsAnotherWindowRef.current === currentSessionIdRef.current) {
+      void repaintIfBehindPersistedTailRef.current()
+      return
+    }
     let cancelled = false
     void followNextTurn({
       attachIfLive: attachToLiveTurnIfAnyRef.current,
@@ -4910,6 +4997,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   useEffect(() => {
     if (!wakeWatchArmed || !isActive || !currentSessionId || isStreaming) return
+    // Only the window that started the background work watches for its wake.
+    // A follower paints the wake from the push when it ends (SHO-299) and must
+    // not poll `/tasks` + `/turn` for the length of the task (SHO-53).
+    if (followsAnotherWindowRef.current === currentSessionId) return
 
     let cancelled = false
     // The wake row and its reply both arrive after this arm, so an older
@@ -6894,6 +6985,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // already be locked and the transcript already painting the bubble
       // (QA round 1 on SHO-213: it looked frozen for the whole upload).
       isSendingMessageRef.current = true
+      // This window is driving again, so the watches it skipped while it was
+      // following another window's turn belong to it once more (SHO-299).
+      followsAnotherWindowRef.current = null
 
       // Seed the progress row before the first byte moves: a transport that
       // reports no intermediate events (a small file, a fast link) would

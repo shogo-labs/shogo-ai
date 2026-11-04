@@ -229,13 +229,13 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
     expect(json.error?.type).toBe('billing_error')
   })
 
-  test('image generation is not cut off mid-turn, but is 402d with no session', async () => {
+  test('image generation is authorized against its own price in and out of a turn (SHO-310: no in-turn bypass for media)', async () => {
     const app = makeApp()
     const token = await generateProxyToken(PROJECT_ID, WORKSPACE_ID, USER_ID)
     hasBalanceResult = false
 
     // Image endpoints authenticate via `Authorization: Bearer`, not x-api-key.
-    // No session → hard 402 (enforced as before).
+    // No session → hard 402.
     const gated = await app.request('/api/ai/v1/images/generations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -243,10 +243,11 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
     })
     expect(gated.status).toBe(402)
 
-    // In-flight turn → the pre-flight is skipped so the image call proceeds
-    // (downstream status varies under the stub; it just must not be 402).
+    // In-flight turn → still 402. A turn is admitted against its token
+    // estimate, not against media it will spend later, so the image's price is
+    // checked before it is generated even mid-turn.
     await openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-img')
-    const granted = await app.request('/api/ai/v1/images/generations', {
+    const inTurn = await app.request('/api/ai/v1/images/generations', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -255,9 +256,25 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
       },
       body: JSON.stringify({ prompt: 'a cat', model: 'dall-e-3' }),
     })
+    expect(inTurn.status).toBe(402)
+    await closeSession(PROJECT_ID, { chatSessionId: 'chat-img', bookkeeping: true })
+
+    // With room in the wallet the same in-turn call proceeds and is folded
+    // into the session, exactly as before.
+    hasBalanceResult = true
+    await openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-img-2')
+    const granted = await app.request('/api/ai/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-Chat-Session-Id': 'chat-img-2',
+      },
+      body: JSON.stringify({ prompt: 'a cat', model: 'dall-e-3' }),
+    })
     expect(granted.status).not.toBe(402)
 
-    await closeSession(PROJECT_ID, { chatSessionId: 'chat-img' })
+    await closeSession(PROJECT_ID, { chatSessionId: 'chat-img-2', bookkeeping: true })
   })
 
   test('missing header falls back to the legacy projectId-only billing session', async () => {

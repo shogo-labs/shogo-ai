@@ -31,7 +31,14 @@ const webUrl = `http://localhost:${webPort}`
 // Some specs default to a developer's API port; point them at the stack's.
 if (startStack) process.env.E2E_API_URL = apiUrl
 const repoRoot = resolve(__dirname, "../..")
-const localDbPath = resolve(repoRoot, "test-results/e2e-local.db")
+// `E2E_LOCAL_DB` lets a second run on the same machine use its own database.
+// The default path is shared, and the stack below `rm -f`s it on boot, so two
+// runs at once (or a run beside a developer's own stack) would otherwise
+// delete each other's data mid-spec.
+const localDbPath = resolve(
+  repoRoot,
+  process.env.E2E_LOCAL_DB || "test-results/e2e-local.db",
+)
 const localEnv = {
   SHOGO_LOCAL_MODE: "true",
   DATABASE_URL: `file:${localDbPath}`,

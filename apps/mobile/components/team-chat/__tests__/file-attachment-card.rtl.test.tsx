@@ -111,8 +111,32 @@ describe('what the card says the file is', () => {
   })
 
   test('leaves the size out when the file has none to show', () => {
-    renderCard({ size: 0 })
+    renderCard({ size: null })
     expect(screen.getByText('PowerPoint Presentation')).toBeDefined()
+  })
+})
+
+describe('a file that was stored with no bytes', () => {
+  const EMPTY_TEXT = 'This file was uploaded empty (0 bytes). Ask whoever shared it to attach it again.'
+
+  test('says the upload failed instead of showing a normal attachment', () => {
+    renderCard({ size: 0, name: 'content-agents-kit.zip', mimeType: 'application/zip' })
+    expect(screen.getByText('Upload failed · 0 bytes')).toBeDefined()
+    expect(screen.getByText(EMPTY_TEXT)).toBeDefined()
+  })
+
+  test('never hands a download a link, because the download would be empty', () => {
+    downloads.length = 0
+    renderCard({ size: 0 })
+    fireEvent.click(screen.getByLabelText(`Download ${DECK.name} unavailable`))
+    expect(downloads).toEqual([])
+  })
+
+  test('does not open the file', () => {
+    let opened = 0
+    renderCard({ size: 0, onOpen: () => (opened += 1) })
+    expect(screen.queryByLabelText(`Open ${DECK.name}`)).toBe(null)
+    expect(opened).toBe(0)
   })
 })
 

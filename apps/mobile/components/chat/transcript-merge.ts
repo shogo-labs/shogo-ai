@@ -71,6 +71,16 @@ export function mergeTranscriptRows<T extends TranscriptMessage>(
 ): T[] {
   if (rows.length === 0) return current as T[]
   const next = current.slice()
+  // A turn key is a scan of the message's parts. Asking for it per row × per
+  // message made a delta merge quadratic on a long turn, so each message is
+  // asked once and the answer is kept (SHO-306).
+  const keys = new Map<TranscriptMessage, string | null>()
+  const keyOf = (message: T): string | null => {
+    if (keys.has(message)) return keys.get(message)!
+    const key = turnKeyOf(message)
+    keys.set(message, key)
+    return key
+  }
   const indexById = new Map<string, number>()
   const rebuildIndex = () => {
     indexById.clear()
@@ -96,11 +106,11 @@ export function mergeTranscriptRows<T extends TranscriptMessage>(
     // an optimistic echo): the saved row *is* that message, now that the
     // server has written it. Swap it in place so the reply stays under its
     // prompt.
-    const key = turnKeyOf(row)
+    const key = keyOf(row)
     if (key) {
       let replaced = false
       for (let index = next.length - 1; index >= 0; index--) {
-        if (turnKeyOf(next[index]) !== key) continue
+        if (keyOf(next[index]) !== key) continue
         if (messageTime(next[index]) !== null) continue
         next[index] = row
         replaced = true

@@ -84,6 +84,9 @@ function WorkGroupImpl({ items, isStreaming, isExpanded, onToggle, className }: 
       className={className}
       contentKey="work-content"
       defaultExpandedWhileStreaming={false}
+      // A joined turn arrives with the whole run at once; mounting every row of
+      // it to measure a body nobody can see is the rejoin freeze (SHO-306).
+      measureWhenClosed={false}
       badge={badge}
     >
       <View className="gap-y-1">
