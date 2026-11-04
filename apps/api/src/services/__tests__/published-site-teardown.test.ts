@@ -19,6 +19,9 @@ function recordingDeps(overrides: Partial<PublishedSiteTeardownDeps> = {}) {
     unpublishRuntime: async (projectId, subdomain) => {
       calls.push(`runtime:${projectId}:${subdomain}`)
     },
+    dropPublishedDatabases: async (projectId) => {
+      calls.push(`published-databases:${projectId}`)
+    },
     deleteStaticBundle: async (subdomain) => {
       calls.push(`static-bundle:${subdomain}`)
     },
@@ -43,6 +46,7 @@ describe('teardownPublishedSite', () => {
     expect(outcomes.every((o) => o.ok)).toBe(true)
     expect(outcomes.map((o) => o.step)).toEqual([
       'runtime',
+      'published-databases',
       'static-bundle',
       'site-password',
       'server-backed-flag',
@@ -53,6 +57,7 @@ describe('teardownPublishedSite', () => {
     // from — unpublish must not delete it.
     expect(calls).toEqual([
       'runtime:proj-1:my-site',
+      'published-databases:proj-1',
       'static-bundle:my-site',
       'site-password',
       'server-backed-flag',
@@ -114,6 +119,7 @@ describe('teardownPublishedSite', () => {
     }
     const deps: Partial<PublishedSiteTeardownDeps> = {
       unpublishRuntime: boom,
+      dropPublishedDatabases: boom,
       deleteStaticBundle: boom,
       deleteDataArchive: boom,
       clearSitePassword: boom,
@@ -127,7 +133,7 @@ describe('teardownPublishedSite', () => {
       deps,
     })
 
-    expect(outcomes).toHaveLength(7)
+    expect(outcomes).toHaveLength(8)
     expect(outcomes.every((o) => !o.ok)).toBe(true)
   })
 })

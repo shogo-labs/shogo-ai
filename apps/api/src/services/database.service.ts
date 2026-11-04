@@ -157,10 +157,11 @@ async function storeCredentialsSecret(
   connectionUrl: string,
   username: string,
   password: string,
-  namespace: string = PROJECT_NAMESPACE
+  opts: { secretName?: string; namespace?: string } = {}
 ): Promise<void> {
   const api = getK8sCoreApi()
-  const secretName = dbSecretName(projectId)
+  const namespace = opts.namespace ?? PROJECT_NAMESPACE
+  const secretName = opts.secretName ?? dbSecretName(projectId)
 
   const secretBody: k8s.V1Secret = {
     apiVersion: "v1",
@@ -213,10 +214,11 @@ async function storeCredentialsSecret(
  */
 async function readCredentialsSecret(
   projectId: string,
-  namespace: string = PROJECT_NAMESPACE
+  opts: { secretName?: string; namespace?: string } = {}
 ): Promise<{ connectionUrl: string; username: string; password: string } | null> {
   const api = getK8sCoreApi()
-  const secretName = dbSecretName(projectId)
+  const namespace = opts.namespace ?? PROJECT_NAMESPACE
+  const secretName = opts.secretName ?? dbSecretName(projectId)
 
   try {
     const response = await api.readNamespacedSecret({ name: secretName, namespace })
@@ -242,10 +244,11 @@ async function readCredentialsSecret(
  */
 async function deleteCredentialsSecret(
   projectId: string,
-  namespace: string = PROJECT_NAMESPACE
+  opts: { secretName?: string; namespace?: string } = {}
 ): Promise<void> {
   const api = getK8sCoreApi()
-  const secretName = dbSecretName(projectId)
+  const namespace = opts.namespace ?? PROJECT_NAMESPACE
+  const secretName = opts.secretName ?? dbSecretName(projectId)
 
   try {
     await api.deleteNamespacedSecret({ name: secretName, namespace })
@@ -306,12 +309,32 @@ function generatePassword(): string {
  * Options:
  *   forcePasswordReset: Generate a new password, update PG + K8s Secret (use for rotation)
  */
+export interface ProvisionDatabaseOptions {
+  forcePasswordReset?: boolean
+  /**
+   * Database (and role) name. Defaults to the project-scoped name; published
+   * environments pass one database per environment (SHO-308 §1).
+   */
+  databaseName?: string
+  /** The K8s Secret that carries the credentials. */
+  secretName?: string
+  /**
+   * Write the credentials Secret. Default true — the pod reads its
+   * DATABASE_URL from it. A published environment passes false until its
+   * Postgres schema has been applied, because the Secret is what moves the pod
+   * off SQLite: writing it early would boot the app against an empty database.
+   */
+  writeSecret?: boolean
+}
+
 export async function provisionDatabase(
   projectId: string,
-  options: { forcePasswordReset?: boolean } = {}
+  options: ProvisionDatabaseOptions = {}
 ): Promise<ProjectDatabase> {
   const pool = getAdminPool()
-  const dbName = projectIdToDbName(projectId)
+  const dbName = options.databaseName ?? projectIdToDbName(projectId)
+  const secretName = options.secretName ?? dbSecretName(projectId)
+  const writeSecret = options.writeSecret ?? true
   const username = dbName // Use same name for user and database
   const host = PROJECTS_DB_HOST
   const port = parseInt(PROJECTS_DB_PORT, 10)
@@ -352,7 +375,9 @@ export async function provisionDatabase(
 
           // Update the K8s Secret with the new credentials
           try {
-            await storeCredentialsSecret(projectId, connectionUrl, username, password)
+            if (writeSecret) {
+              await storeCredentialsSecret(projectId, connectionUrl, username, password, { secretName })
+            }
           } catch (secretErr: any) {
             console.error(`[DatabaseService] Failed to update K8s Secret after password reset:`, secretErr.message)
             // Password was already changed in PG — log but don't fail
@@ -363,7 +388,7 @@ export async function provisionDatabase(
 
         // Try to read existing credentials from K8s Secret
         try {
-          const stored = await readCredentialsSecret(projectId)
+          const stored = writeSecret ? await readCredentialsSecret(projectId, { secretName }) : null
           if (stored && stored.password && stored.connectionUrl) {
             console.log(
               `[DatabaseService] Retrieved credentials from K8s Secret for "${dbName}"`
@@ -460,7 +485,9 @@ export async function provisionDatabase(
 
         // Store credentials in K8s Secret for future retrieval
         try {
-          await storeCredentialsSecret(projectId, connectionUrl, username, password)
+          if (writeSecret) {
+            await storeCredentialsSecret(projectId, connectionUrl, username, password, { secretName })
+          }
         } catch (secretErr: any) {
           // Non-fatal: credentials are in the ksvc env. Log a warning.
           // The migration script can backfill the Secret later.
@@ -531,10 +558,11 @@ export async function getDatabaseStatus(
  */
 export async function dropDatabase(
   projectId: string,
-  options: { force?: boolean } = {}
+  options: { force?: boolean; databaseName?: string; secretName?: string } = {}
 ): Promise<void> {
   const pool = getAdminPool()
-  const dbName = projectIdToDbName(projectId)
+  const dbName = options.databaseName ?? projectIdToDbName(projectId)
+  const secretName = options.secretName ?? dbSecretName(projectId)
   const username = dbName
 
   console.log(
@@ -562,7 +590,7 @@ export async function dropDatabase(
 
   // Delete the credentials K8s Secret (separate from PG connection)
   try {
-    await deleteCredentialsSecret(projectId)
+    await deleteCredentialsSecret(projectId, { secretName })
   } catch (err: any) {
     console.warn(
       `[DatabaseService] Failed to delete credentials Secret for "${dbName}":`,
@@ -588,6 +616,20 @@ export function buildDatabaseUrl(
  */
 export function getProjectsDbHost(): string {
   return PROJECTS_DB_HOST
+}
+
+/**
+ * Get the PgBouncer pooler host for the projects cluster.
+ *
+ * Published apps connect through the pooler (SHO-308 §1): a published
+ * environment can run several replicas, and each Prisma client holds a handful
+ * of connections, so the pooler — not the primary — owns the fan-out.
+ */
+export function getProjectsDbPoolerHost(): string {
+  return (
+    process.env.PROJECTS_DB_POOLER_HOST ||
+    `projects-pg-pooler-rw.${process.env.SYSTEM_NAMESPACE || "shogo-system"}.svc.cluster.local`
+  )
 }
 
 /**
