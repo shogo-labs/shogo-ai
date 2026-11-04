@@ -619,17 +619,23 @@ export function getProjectsDbHost(): string {
 }
 
 /**
- * Get the PgBouncer pooler host for the projects cluster.
+ * Get the PgBouncer pooler host for the projects cluster, or null when this
+ * deployment has no pooler.
  *
  * Published apps connect through the pooler (SHO-308 §1): a published
  * environment can run several replicas, and each Prisma client holds a handful
  * of connections, so the pooler — not the primary — owns the fan-out.
+ *
+ * There is deliberately no default hostname. A guessed Service name resolves to
+ * nothing, and the failure would surface as an unresolvable DATABASE_URL inside
+ * a published pod rather than as a publish-time refusal — the same trap
+ * PROJECTS_DB_ADMIN_URL already avoids. No Pooler CR is deployed for
+ * `projects-pg` yet, so callers must refuse with `database_unavailable` until
+ * PROJECTS_DB_POOLER_HOST is set.
  */
-export function getProjectsDbPoolerHost(): string {
-  return (
-    process.env.PROJECTS_DB_POOLER_HOST ||
-    `projects-pg-pooler-rw.${process.env.SYSTEM_NAMESPACE || "shogo-system"}.svc.cluster.local`
-  )
+export function getProjectsDbPoolerHost(): string | null {
+  const host = process.env.PROJECTS_DB_POOLER_HOST?.trim()
+  return host ? host : null
 }
 
 /**

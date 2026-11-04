@@ -19,18 +19,50 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
-const PROJECT_ID = 'proj-138-wiring'
+// A real UUID: the teardown derives each environment's database name from it,
+// and that derivation refuses anything else, so a synthetic id would exercise the
+// error path instead of the drop.
+const PROJECT_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'
+const PROD_DB = 'project_a1b2c3d4_e5f6_4a7b_8c9d_0e1f2a3b4c5d'
 const SUBDOMAIN = 'wiring-site'
 
 const calls: string[] = []
+
+// Environment rows the teardown should find. Set per test: SHO-308 §1 added a
+// `published-databases` step that only touches environments which actually
+// provisioned a database (`dbName` set), and the "no rows" and "one row" cases
+// take different paths — the second is what proves the step is wired to the real
+// drop function rather than quietly doing nothing.
+let envRows: Array<{ name: string }> = []
 
 mock.module('../lib/prisma', () =>
   withPrismaExports({
     // `clearCustomDomainKv` short-circuits before it queries, so the custom-domain
     // KV step is asserted through `getCustomHostnamesConfig` returning null.
-    prisma: { customDomain: { findMany: async () => [] } },
+    prisma: {
+      customDomain: { findMany: async () => [] },
+      publishedEnvironment: {
+        findMany: async () => envRows,
+        updateMany: async () => ({ count: envRows.length }),
+      },
+    },
   }),
 )
+
+// The real drop runs `DROP DATABASE` through the admin pool; assert the call and
+// its environment-scoped name instead, so this suite still needs no cluster.
+mock.module('../services/database.service', () => ({
+  dropDatabase: async (projectId: string, opts: any) => {
+    calls.push(`published-databases:${projectId}:${opts.databaseName}`)
+  },
+  provisionDatabase: async () => {
+    throw new Error('provisioning is not part of teardown')
+  },
+  getProjectsDbPoolerHost: () => null,
+  getProjectsDbHost: () => 'projects-pg-rw',
+  getProjectsDbPort: () => 5432,
+  dbSecretName: (projectId: string) => `project-${projectId}-db-creds`,
+}))
 
 mock.module('../lib/cloudflare-site-auth-kv', () => ({
   clearSitePassword: async (subdomain: string) => {
@@ -77,10 +109,15 @@ const { teardownPublishedSite } = await import('../services/published-site-teard
 
 beforeEach(() => {
   calls.length = 0
+  envRows = []
 })
 
 describe('teardownPublishedSite — production wiring', () => {
   test('a project delete reaches every surface, through the real defaults', async () => {
+    // A project that published to Postgres owns a database per environment, and
+    // deleting it must take both (and their Secrets) with it.
+    envRows = [{ name: 'production' }, { name: 'staging' }]
+
     const outcomes = await teardownPublishedSite(PROJECT_ID, SUBDOMAIN, {
       purgePublishedData: true,
       dropPublishPointer: false,
@@ -90,6 +127,8 @@ describe('teardownPublishedSite — production wiring', () => {
     expect(outcomes.filter((o) => !o.ok)).toEqual([])
     expect(calls).toEqual([
       `runtime:${PROJECT_ID}:${SUBDOMAIN}`,
+      `published-databases:${PROJECT_ID}:${PROD_DB}`,
+      `published-databases:${PROJECT_ID}:${PROD_DB}_staging`,
       `static-bundle:${SUBDOMAIN}`,
       `published-data:${SUBDOMAIN}`,
       `site-password:${SUBDOMAIN}`,
@@ -101,6 +140,9 @@ describe('teardownPublishedSite — production wiring', () => {
   })
 
   test('an unpublish keeps the data archive and drops the pointer', async () => {
+    // Never published to Postgres → nothing to drop, and the step must not
+    // invent a database name for an environment that has none.
+
     const outcomes = await teardownPublishedSite(PROJECT_ID, SUBDOMAIN, {
       purgePublishedData: false,
     })

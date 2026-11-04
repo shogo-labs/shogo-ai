@@ -71,6 +71,24 @@ export async function ensureEnvironmentDatabase(
     }
   }
 
+  // Refuse before provisioning. A database whose pod URL does not resolve is
+  // worse than no database: it looks provisioned, and the failure only shows up
+  // inside the published pod.
+  const poolerHost = getProjectsDbPoolerHost()
+  if (!poolerHost) {
+    console.error(
+      `[published-database] PROJECTS_DB_POOLER_HOST is not set; refusing to provision "${databaseName}" for ${projectId}/${environment}`,
+    )
+    return {
+      ok: false,
+      code: 'database_unavailable',
+      message:
+        'Publishing to Postgres needs the projects database pooler, which is not deployed on this environment (PROJECTS_DB_POOLER_HOST is unset).',
+      status: 503,
+      details: { databaseName },
+    }
+  }
+
   let provisioned
   try {
     // The Secret is what moves the pod off SQLite, so it is written only when
@@ -101,9 +119,7 @@ export async function ensureEnvironmentDatabase(
 
   let url: string
   try {
-    url = toPublishedDatabaseUrl(provisioned.connectionUrl, {
-      poolerHost: getProjectsDbPoolerHost(),
-    })
+    url = toPublishedDatabaseUrl(provisioned.connectionUrl, { poolerHost })
   } catch (err: any) {
     return {
       ok: false,

@@ -16,6 +16,8 @@ let dropCalls: Array<{ projectId: string; opts: any }> = []
 let provisionImpl: (projectId: string, opts: any) => Promise<any>
 let dropImpl: (projectId: string, opts: any) => Promise<void>
 let envUpdates: any[] = []
+let poolerHost: string | null =
+  'projects-pg-pooler-rw.shogo-system.svc.cluster.local'
 let updateImpl: ((args: any) => Promise<any>) | null = null
 
 mock.module('../database.service', () => ({
@@ -27,7 +29,7 @@ mock.module('../database.service', () => ({
     dropCalls.push({ projectId, opts })
     return dropImpl(projectId, opts)
   },
-  getProjectsDbPoolerHost: () => 'projects-pg-pooler-rw.shogo-system.svc.cluster.local',
+  getProjectsDbPoolerHost: () => poolerHost,
   getProjectsDbHost: () => 'projects-pg-rw.shogo-system.svc.cluster.local',
   getProjectsDbPort: () => 5432,
   dbSecretName: (projectId: string) => `project-${projectId}-db-creds`,
@@ -54,6 +56,7 @@ beforeEach(() => {
   dropCalls = []
   envUpdates = []
   updateImpl = null
+  poolerHost = 'projects-pg-pooler-rw.shogo-system.svc.cluster.local'
   provisionImpl = async (_projectId, opts) => ({
     databaseName: opts.databaseName,
     username: opts.databaseName,
@@ -139,6 +142,22 @@ describe('ensureEnvironmentDatabase', () => {
     if (res.ok) throw new Error('expected a refusal')
     expect(res.code).toBe('database_provision_failed')
     expect(res.message).toContain('permission denied')
+  })
+
+  test('no pooler on this deployment refuses before anything is provisioned', async () => {
+    // A guessed Service name resolves to nothing, so the pod would get a
+    // DATABASE_URL it cannot connect to — refuse at publish time instead, and
+    // do not leave a database behind that no pod can reach.
+    poolerHost = null
+
+    const res = await ensureEnvironmentDatabase(PROJECT, 'production')
+
+    if (res.ok) throw new Error('expected a refusal')
+    expect(res.code).toBe('database_unavailable')
+    expect(res.status).toBe(503)
+    expect(res.message).toContain('PROJECTS_DB_POOLER_HOST')
+    expect(provisionCalls).toHaveLength(0)
+    expect(envUpdates).toHaveLength(0)
   })
 
   test('a bad project id is refused before any SQL runs', async () => {
