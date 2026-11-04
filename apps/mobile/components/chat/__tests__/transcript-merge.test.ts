@@ -101,6 +101,35 @@ describe("mergeTranscriptRows", () => {
     const live = [user("u1", 1000), reply("live", undefined)]
     expect(mergeTranscriptRows(live, [])).toBe(live)
   })
+
+  /**
+   * SHO-306. A turn key is a scan of the message's parts, and the merge asked
+   * for it once per row × per message on screen — quadratic on a long turn, and
+   * a synchronous block on the reopen path. Each message is asked once now.
+   */
+  test("asks for a message's turn key once per merge, not once per row", () => {
+    const screen: M[] = []
+    for (let i = 0; i < 50; i += 1) {
+      screen.push(user(`u${i}`, 1000 + i * 10))
+      screen.push(reply(`a${i}`, 1005 + i * 10))
+    }
+    const rows: M[] = []
+    for (let i = 0; i < 50; i += 1) {
+      rows.push({ ...user(`u${i}`, 1000 + i * 10), content: "edited" })
+    }
+
+    const asked = new Map<M, number>()
+    mergeTranscriptRows(screen, rows, (message) => {
+      if (!message) return null
+      asked.set(message as M, (asked.get(message as M) ?? 0) + 1)
+      return `turn:${(message as M).id}`
+    })
+
+    const repeated = [...asked.entries()].filter(([, count]) => count > 1)
+    expect(
+      repeated.map(([message, count]) => `${(message as M).id} asked ${count}x`),
+    ).toEqual([])
+  })
 })
 
 describe("sortTranscriptRows", () => {

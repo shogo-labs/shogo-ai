@@ -71,6 +71,10 @@ describe('isInAppFileUrl', () => {
     expect(isInAppFileUrl('https://evil.example/api/f/eyJ0eXA.abc', API)).toBe(false)
     expect(isInAppFileUrl('https://evil.example/f/eyJ0eXA.abc', API)).toBe(false)
   })
+
+  it('matches a local file:// share so it opens in the app, not the OS', () => {
+    expect(isInAppFileUrl('file:///Users/me/Application%20Support/report.pdf', API)).toBe(true)
+  })
 })
 
 /**

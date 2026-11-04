@@ -86,6 +86,8 @@ mock.module('../services/billing-runtime', () => ({
   SYSTEM_WORKSPACE_ID: 'system',
   hasBalance: async () => true,
   checkUsageBalance: async () => ({ ok: true }),
+  resolveBillingWorkspaceId: async (workspaceId: string) => workspaceId,
+  hasPaidSubscription: async () => true,
   usageLimitErrorPayload: (reason?: string) => ({
     code: reason ?? 'usage_limit_reached',
     message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",

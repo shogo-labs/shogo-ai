@@ -38,6 +38,7 @@ import {
   hasSession,
   accumulateUsage,
   accumulateImageUsage,
+  getPendingBilledUsd,
 } from '../lib/proxy-billing-session'
 
 describe('Proxy Billing Session', () => {
@@ -380,5 +381,34 @@ describe('Proxy Billing Session', () => {
       expect(cap.errors.join('\n')).toContain('Failed to charge usage')
       expect(cap.warns.join('\n')).not.toContain('Skipping usage charge')
     })
+  })
+})
+
+// =============================================================================
+// getPendingBilledUsd — the media pre-flight's view of an open turn
+// =============================================================================
+
+describe('getPendingBilledUsd', () => {
+  test('is 0 when no session is open', async () => {
+    expect(await getPendingBilledUsd('proj-none')).toBe(0)
+  })
+
+  test('sums the turn accumulated token and media spend before it is charged', async () => {
+    await openSession('proj-pending', 'ws-1', 'user-1', 'chat-pending')
+    await accumulateUsage('proj-pending', 'sonnet', 1_000_000, 100_000, 0, 0, 'chat-pending')
+    await accumulateImageUsage('proj-pending', 'hf-soul-v2', 0.0035, 0.0042, 'chat-pending')
+
+    const pending = await getPendingBilledUsd('proj-pending', 'chat-pending')
+    // The token half is priced the same way `closeSession` prices it, and the
+    // image half is added on top of it.
+    expect(pending).toBeGreaterThan(0.0042)
+  })
+
+  test('drops back to 0 once the turn is closed and charged', async () => {
+    await openSession('proj-closed', 'ws-1', 'user-1', 'chat-closed')
+    await accumulateUsage('proj-closed', 'sonnet', 1000, 500, 0, 0, 'chat-closed')
+    expect(await getPendingBilledUsd('proj-closed', 'chat-closed')).toBeGreaterThan(0)
+    await closeSession('proj-closed', { chatSessionId: 'chat-closed', bookkeeping: true })
+    expect(await getPendingBilledUsd('proj-closed', 'chat-closed')).toBe(0)
   })
 })

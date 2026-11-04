@@ -16,7 +16,7 @@ import { Platform } from 'react-native'
 
 const WEB_URL = process.env.EXPO_PUBLIC_WEB_URL ?? 'https://studio.shogo.ai'
 
-export type InAppFileKind = 'share' | 'stored'
+export type InAppFileKind = 'share' | 'stored' | 'local'
 
 export interface InAppFileRef {
   kind: InAppFileKind
@@ -74,8 +74,52 @@ function ownHosts(): Set<string> {
   return hosts
 }
 
+/**
+ * A `file://` link is the local desktop's `share_file` result: the file lives
+ * on this machine, so it needs no token and never expires. `localFileHref`
+ * parks it in a relative href for the markdown renderer (Streamdown's
+ * sanitizer drops unknown schemes like `file:`), and `parseLocalFileHref`
+ * accepts either shape.
+ */
+export const LOCAL_FILE_HREF_PREFIX = '/shogo-local-file?path='
+
+export function localFileHref(absolutePath: string): string {
+  return `${LOCAL_FILE_HREF_PREFIX}${encodeURIComponent(absolutePath)}`
+}
+
+/** Absolute path of a `file://` URL, or null for any other scheme. */
+export function absolutePathFromFileHref(href: string | undefined | null): string | null {
+  if (typeof href !== 'string' || !/^file:/i.test(href)) return null
+  try {
+    const url = new URL(href)
+    if (url.protocol !== 'file:') return null
+    let path = decodeURIComponent(url.pathname)
+    // `file:///C:/Users/...` keeps the drive letter; the leading slash is not
+    // part of the Windows path.
+    if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1)
+    return path.length > 0 ? path : null
+  } catch {
+    return null
+  }
+}
+
+/** Absolute path of a `file://` or rewritten `/shogo-local-file` href. */
+function localFilePath(href: string): string | null {
+  const fromFile = absolutePathFromFileHref(href)
+  if (fromFile) return fromFile
+  if (!href.startsWith(LOCAL_FILE_HREF_PREFIX)) return null
+  try {
+    const url = new URL(href, 'http://shogo.local')
+    const path = url.searchParams.get('path')
+    return path && path.length > 0 ? path : null
+  } catch {
+    return null
+  }
+}
+
 /** Cheap pre-check so the markdown renderer does not parse every link as a URL. */
-const LOOKS_IN_APP_FILE = /\/(?:api\/f|f|api\/conversation-files|api\/chat-attachments|api\/cloud\/[^/]+\/(?:conversation-files|chat-attachments))\//
+const LOOKS_IN_APP_FILE =
+  /(?:file:\/\/|\/shogo-local-file\?|\/(?:api\/f|f|api\/conversation-files|api\/chat-attachments|api\/cloud\/[^/]+\/(?:conversation-files|chat-attachments))\/)/
 
 /**
  * Drop sentence punctuation the model left attached to a URL. Parentheses and
@@ -245,13 +289,34 @@ export function parseStoredFileHref(
   return { kind: 'stored', href: trimmed, name: name || 'File' }
 }
 
+/**
+ * A `file://` link (or the `/shogo-local-file` href it was rewritten to), or
+ * null. The viewer fetches the absolute path through the local-only route, so
+ * `href` becomes that route's relative URL rather than the file URL itself.
+ */
+export function parseLocalFileHref(href: string | undefined | null): InAppFileRef | null {
+  if (typeof href !== 'string' || href.length === 0) return null
+  const path = localFilePath(trimTrailing(href))
+  if (!path) return null
+  return {
+    kind: 'local',
+    href: `/api/local-files?path=${encodeURIComponent(path)}`,
+    name: basename(path) ?? 'File',
+    path,
+  }
+}
+
 /** Either kind of file the app can serve itself, or null for a real web link. */
 export function parseInAppFileHref(
   href: string | undefined | null,
   hosts: Set<string> = ownHosts(),
 ): InAppFileRef | null {
   if (typeof href !== 'string' || !LOOKS_IN_APP_FILE.test(href)) return null
-  return parseShareFileHref(href, hosts) ?? parseStoredFileHref(href, hosts)
+  return (
+    parseLocalFileHref(href) ??
+    parseShareFileHref(href, hosts) ??
+    parseStoredFileHref(href, hosts)
+  )
 }
 
 /**
@@ -269,6 +334,8 @@ export function shareFileErrorText(code?: string | null, message?: string | null
     case 'file_not_found':
     case 'not_found':
       return 'File not found'
+    case 'empty_file':
+      return 'This file was uploaded empty (0 bytes). Ask whoever shared it to attach it again.'
     case 'runtime_unavailable':
       return 'Runtime unavailable, retry'
     case 'rate_limited':

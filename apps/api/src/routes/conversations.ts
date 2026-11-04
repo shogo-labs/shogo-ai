@@ -808,6 +808,19 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       }
       const name = (file as File).name || 'file'
       const mimeType = file.type || 'application/octet-stream'
+      // A composer that lost the file's bytes still posts the multipart framing
+      // and an empty file part. Storing that row would hand the person an
+      // attachment that downloads as 0 bytes days later, with nothing anywhere
+      // saying why — so refuse it here, before the bucket or the table see it.
+      if (file.size === 0) {
+        console.warn('[ConversationFiles] refused empty upload', {
+          conversationId: access.conversation.id,
+          name,
+          mimeType,
+          ua: c.req.header('user-agent') ?? null,
+        })
+        return c.json({ error: { code: 'empty_file', message: `"${name}" is empty (0 bytes), so nothing was uploaded. Attach it again.` } }, 400)
+      }
       const key = buildConversationFileKey(access.conversation.workspaceId, access.conversation.id, name)
       const bytes = new Uint8Array(await file.arrayBuffer())
       await putConversationFile(key, bytes, mimeType)
@@ -1097,6 +1110,17 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       if (userId) allowed = await loadAccess(row.conversationId, userId).then(() => true, () => false)
     }
     if (!allowed) return c.json({ error: { code: 'forbidden', message: 'No access to this file' } }, 403)
+    // A row stored at 0 bytes is a file that was never really uploaded. Say so
+    // instead of redirecting to an empty object, which downloads as a 0-byte
+    // file with the right name and looks like a successful download.
+    if (row.size === 0) {
+      return c.json({
+        error: {
+          code: 'empty_file',
+          message: 'This file was uploaded empty (0 bytes). Ask whoever shared it to attach it again.',
+        },
+      }, 410)
+    }
     try {
       // AVPlayer cannot decode WebM/Opus and Ogg voice notes. Native iOS
       // players request the AAC/MP4 variant while browsers keep using the

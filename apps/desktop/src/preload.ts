@@ -217,6 +217,12 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   pickFolders: (opts?: { multi?: boolean; defaultPath?: string }): Promise<
     { ok: true; paths: string[] } | { ok: false; error?: string }
   > => ipcRenderer.invoke('pick-folders', opts ?? {}),
+  /** Show a local file in Finder / Explorer. Main re-checks the path. */
+  revealPath: (path: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('file:reveal', path),
+  /** Open a local file with the OS's default app. Main re-checks the path. */
+  openPath: (path: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('file:open', path),
   // Meeting recording — renderer owns the Web Audio pipeline, main owns the
   // file I/O + (on macOS) the shogo-sysaudio child process.
   startRecording: () => startRecording(),

@@ -667,6 +667,11 @@ jobs:
           # not a place in a chat job: it rewrites the models the other specs'
           # stack would be reading.
           - { name: 'E2E (agent model truth)', spec: 'agent-model-truth' }
+          # chat-two-window-sync (SHO-299) needs the fake model: it watches one
+          # window's turn arrive in another window's transcript, live, and then
+          # again through the refocus catch-up. Left in the shards it would
+          # `test.skip` itself and run nowhere (SHO-122).
+          - { name: 'E2E (chat two windows)', spec: 'chat-two-window-sync' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length

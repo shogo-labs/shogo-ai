@@ -198,6 +198,12 @@ function watchWakeRequests(page: Page): string[] {
   return seen
 }
 
+/** The counted requests, shortened to method+path, for a failing message. */
+function describe(urls: string[]): string {
+  if (urls.length === 0) return "none"
+  return urls.map((url) => new URL(url).pathname + new URL(url).search).join(" | ")
+}
+
 /** Every /api/chat-messages request this window made, from now on. */
 function watchHistoryRequests(page: Page): string[] {
   const seen: string[] = []
@@ -298,9 +304,10 @@ test.describe("a chat that was in the background when its wake ran", () => {
     soft(persisted.reply, "(a) the assistant wake reply is persisted").toBe(true)
 
     // Nothing ran in this window while it was away: no watch, no polling.
+    // The failure names every request so the cause is readable without a rerun.
     soft(
       asked.length,
-      `(c) the background window made ${asked.length} task/turn requests while it was away`,
+      `(c) the background window made ${asked.length} task/turn requests while it was away: ${describe(asked)}`,
     ).toBe(0)
 
     // (b) Coming back repaints it — no reload.
@@ -319,10 +326,10 @@ test.describe("a chat that was in the background when its wake ran", () => {
 
     // The catch-up is one-shot: a refocus, not the start of a poll.
     const turned = asked.filter((url) => /\/turn(\?|$)/.test(url)).length
-    soft(turned, `(d) a refocus probes /turn once, not ${turned} times`).toBeLessThanOrEqual(1)
+    soft(turned, `(d) a refocus probes /turn once, not ${turned} times: ${describe(asked)}`).toBeLessThanOrEqual(1)
     soft(
       asked.filter((url) => /\/(tasks|processes)(\?|$)/.test(url)).length,
-      "(d) a refocus does not start watching the task list",
+      `(d) a refocus does not start watching the task list: ${describe(asked)}`,
     ).toBe(0)
     await background.waitForTimeout(8_000)
     soft(

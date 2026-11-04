@@ -539,7 +539,7 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
         if (!response.ok) {
           return textResult({ error: friendlyMediaError('Listing media models', response.status, await response.text()) })
         }
-        const data = (await response.json()) as { images?: unknown[]; videos?: unknown[]; music?: unknown[]; currency?: string; note?: string }
+        const data = (await response.json()) as { images?: unknown[]; videos?: unknown[]; music?: unknown[]; currency?: string; note?: string; video_note?: string }
         const imageOn = ctx.config?.imageGenEnabled !== false
         const videoOn = ctx.config?.videoGenEnabled === true
         const musicOn = ctx.config?.musicGenEnabled === true
@@ -562,7 +562,7 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
           ...(showImages && imageOn ? { images } : {}),
           ...(showVideos
             ? videoOn
-              ? { videos }
+              ? { videos, ...(data.video_note ? { videos_note: data.video_note } : {}) }
               : { videos: [], videos_note: 'Video generation is off for this project. The user can enable it in Capabilities.' }
             : {}),
           ...(showMusic
@@ -756,6 +756,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
       'Generate a video clip from a text prompt, or animate a still image by passing start_image (recommended: make the still with generate_image first). ' +
       'Also edits an existing clip: pass source_video with genjutsu "motion_transfer" | "object_swap" | "restyle" (restyle needs a preset_id from the presets list). ' +
       'Saves an MP4 to videos/ by default; pass path to save anywhere in the workspace. Billed per clip on Higgsfield (the estimate comes back on submit) — call list_media_models for prices. ' +
+      'Video needs a paid plan (Basic or higher); free workspaces can generate images. The workspace must also be able to cover the clip\'s price, or the job is refused before anything is submitted. ' +
       'Waits for the clip (usually 1-5 minutes). Pass wait: false to queue several shots at once, then call generate_video({ job_id }) to check each one.',
     label: 'Generate Video',
     parameters: Type.Object({
@@ -895,7 +896,20 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
           signal,
         })
         if (!response.ok) {
-          return textResult({ error: friendlyMediaError('Video generation', response.status, await response.text()) })
+          const errorText = await response.text()
+          // Carry the proxy's `code` so the agent can tell an upgrade problem
+          // (`video_requires_paid_plan`) from a balance one.
+          let code: string | undefined
+          try {
+            const parsed = JSON.parse(errorText) as { error?: { code?: unknown } }
+            if (typeof parsed?.error?.code === 'string') code = parsed.error.code
+          } catch {
+            // Not JSON — friendlyMediaError already falls back to a readable message.
+          }
+          return textResult({
+            error: friendlyMediaError('Video generation', response.status, errorText),
+            ...(code ? { code } : {}),
+          })
         }
         submitted = (await response.json()) as typeof submitted
       } catch (err: any) {

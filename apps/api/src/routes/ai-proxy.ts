@@ -2886,7 +2886,8 @@ import { generateLyriaMusic } from '../lib/lyria'
 import { calculateUsageCost, calculateMusicUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing-runtime'
 import { getProjectUser } from '../lib/project-user-context'
-import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, accumulate3dUsage, accumulateMusicUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
+import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, accumulate3dUsage, accumulateMusicUsage, getPendingBilledUsd, hasActiveSession } from '../lib/proxy-billing-session-runtime'
+import { placeHold as placeMediaHold, releaseHold as releaseMediaHold, sumHolds as sumMediaHolds, withSpendLock as withMediaSpendLock } from '../lib/media-spend-hold'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { buildUsageLimitInfo } from '../lib/usage-limit-info'
 import { invalidateAnalyticsCache } from '../lib/analytics-cache'
@@ -3229,6 +3230,12 @@ async function generateImageHiggsfield(
     options?: Record<string, unknown>
   },
   signal?: AbortSignal,
+  /**
+   * Runs once the vendor has quoted a price and before the first image is
+   * submitted, so the workspace can be charged-for before it is spent. Throw to
+   * refuse the job (nothing is submitted).
+   */
+  authorize?: (charge: { rawUsd: number; billedUsd: number }) => Promise<void>,
 ): Promise<{ result: ImageGenerationResponse; charge: { rawUsd: number; billedUsd: number } }> {
   const n = Math.max(1, Math.min(4, params.n || 1))
   const referenceUrls = await Promise.all(
@@ -3252,6 +3259,8 @@ async function generateImageHiggsfield(
   if (!charge) {
     throw new HiggsfieldError('Higgsfield returned no price for this image. Nothing was generated or charged; try again.', 'unavailable')
   }
+
+  if (authorize) await authorize(charge)
 
   const submissions = await Promise.all(
     Array.from({ length: n }, () =>
@@ -3676,8 +3685,20 @@ function publicOption(field: ModelOptionField): Record<string, unknown> {
  */
 export async function listMediaModels(
   signal?: AbortSignal,
-  filter: { model?: string; kind?: 'image' | 'video' | 'music' } = {},
+  filter: {
+    model?: string
+    kind?: 'image' | 'video' | 'music'
+    /**
+     * Whether the workspace has a paid plan. Video needs one, so a free
+     * workspace's video entries are listed with `available: false` and
+     * `requires: 'paid_plan'` — still visible, so the agent can explain the
+     * upgrade instead of inventing a reason. Defaults to true (paid).
+     */
+    paidPlan?: boolean
+  } = {},
 ) {
+  const paidPlan = filter.paidPlan !== false
+  const videoUnavailable = paidPlan ? {} : { available: false, requires: 'paid_plan' }
   const higgsfieldKey = getImageProviderApiKey('higgsfield')
   const wanted = filter.model ? resolveMediaModelId(filter.model) : undefined
 
@@ -3784,6 +3805,7 @@ export async function listMediaModels(
           ...(entry.genjutsu === 'restyle' ? { preset_id: 'required (see presets)' } : {}),
         },
         ...(entry.deprecated ? { deprecated: true, replacement: entry.replacement } : {}),
+        ...videoUnavailable,
       }
       if (entry.provider === 'higgsfield' && higgsfieldKey) {
         // Genjutsu bills per source second, so its price is a rate, not a clip
@@ -3871,6 +3893,12 @@ export async function listMediaModels(
     default_image_model: defaultImageModel(),
     default_video_model: defaultVideoModel(),
     default_music_model: DEFAULT_MUSIC_MODEL,
+    ...(paidPlan
+      ? {}
+      : {
+          video_note:
+            'Video generation needs a paid plan (Basic or higher). Free workspaces can generate images.',
+        }),
     note: 'Prices include the Shogo markup and are what the workspace is charged. Higgsfield prices are quoted by its free /estimate for the default parameters; a `null` price means the vendor must be asked at submit time (Genjutsu prices depend on the source clip). Every model lists its documented options: pass model-specific ones as `options` on generate_image / generate_video / generate_music.',
   }
 }
@@ -4000,6 +4028,160 @@ export async function recordTranscriptionUsage(
 // =============================================================================
 
 const isLocalDev = process.env.SHOGO_LOCAL_MODE === 'true'
+
+// =============================================================================
+// Media spend authorization
+// =============================================================================
+
+/**
+ * A hold on a workspace's balance while a media job runs. `billingWorkspaceId`
+ * is the workspace that actually pays (the parent for a child workspace), so
+ * parallel submits pool into one bucket.
+ */
+interface MediaSpendHold {
+  billingWorkspaceId: string
+  holdId: string
+}
+
+type MediaSpendAuthorization =
+  | { ok: true; hold: MediaSpendHold }
+  | { ok: false; response: Response }
+
+/**
+ * Holds for a synchronous job only need to survive the provider call; an async
+ * job's hold must outlast a queue plus a render, and lapses on its own if the
+ * pod that submitted it never sees the terminal status.
+ */
+const MEDIA_HOLD_TTL_SYNC_SECONDS = 10 * 60
+const MEDIA_HOLD_TTL_ASYNC_SECONDS = 30 * 60
+
+/** Thrown from deep inside a generator when `authorizeMediaSpend` says no. */
+class MediaSpendDenied extends Error {
+  constructor(readonly response: Response) {
+    super('media spend authorization denied')
+  }
+}
+
+/**
+ * Decide whether a media job of known price may be submitted, and reserve its
+ * price if it may.
+ *
+ * The price is known before submit on every media route (Higgsfield
+ * `/estimate`, the Genjutsu rate card, `calculateImageUsageCost`,
+ * `calculateMusicUsageCost`, `estimateTripoCredits`), so the balance is tested
+ * against the job's real cost instead of the old `$0.001` probe, and the job is
+ * refused **before** the provider is called. It runs in and out of chat turns:
+ * a turn is admitted against its token estimate, not against media it will
+ * spend later, and `closeSession` could only refuse that spend after the media
+ * had already been delivered.
+ *
+ * `required` is the job's price plus what the open turn has already
+ * accumulated but not been charged plus every live hold, so neither a turn's
+ * own spend nor a parallel submit can be counted twice against the same room.
+ * `checkUsageBalance` already applies the whole rule (window room, or promo
+ * credit, or overage when the entitlement behind it is live).
+ */
+async function authorizeMediaSpend(
+  c: any,
+  tokenPayload: ProxyTokenPayload,
+  billedUsd: number,
+  holdId: string,
+  ttlSeconds: number,
+  label: string,
+  internalUsage: { actionType: string } | null = null,
+): Promise<MediaSpendAuthorization> {
+  const billingWorkspaceId = await billingService.resolveBillingWorkspaceId(tokenPayload.workspaceId)
+  const hold: MediaSpendHold = { billingWorkspaceId, holdId }
+
+  // Internal (server-tagged, non-billable) calls and the API server's own
+  // `system` sentinel workspace never touch a wallet, and a zero-price job has
+  // nothing to reserve. Local mode needs no branch of its own:
+  // `checkUsageBalance` and `hasPaidSubscription` both answer "allowed" on a
+  // desktop install.
+  if (internalUsage || billedUsd <= 0 || tokenPayload.workspaceId === billingService.SYSTEM_WORKSPACE_ID) {
+    return { ok: true, hold }
+  }
+
+  const price = billedUsd
+  const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
+    ? null
+    : (tokenPayload.projectId || null)
+  const chatSessionId = c.req.header('x-chat-session-id') || null
+  const pendingTurnUsd = billingProjectId
+    ? await getPendingBilledUsd(billingProjectId, chatSessionId).catch(() => 0)
+    : 0
+
+  const decision = await withMediaSpendLock(billingWorkspaceId, async () => {
+    const heldUsd = await sumMediaHolds(billingWorkspaceId)
+    const balanceCheck = await billingService.checkUsageBalance(
+      tokenPayload.workspaceId,
+      price + pendingTurnUsd + heldUsd,
+    )
+    if (!balanceCheck.ok) return { ok: false as const, reason: balanceCheck.reason }
+    await placeMediaHold(billingWorkspaceId, holdId, price, ttlSeconds)
+    return { ok: true as const }
+  })
+  if (decision.ok) return { ok: true, hold }
+
+  const { code, message } = billingService.usageLimitErrorPayload(decision.reason)
+  const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+    userId: tokenPayload.userId,
+    source: 'ai-proxy',
+  })
+  // Sub-cent prices keep a digit, so "about $0.00" never stands in for a real cost.
+  const priceText = price < 0.01 ? price.toFixed(4) : price.toFixed(2)
+  return {
+    ok: false,
+    response: c.json(
+      {
+        error: {
+          message: `${message} This ${label} costs about $${priceText}, and your workspace has less than that left.`,
+          type: 'billing_error',
+          code,
+          ...usageLimit,
+        },
+      },
+      402,
+    ),
+  }
+}
+
+/** Drop a synchronous job's reservation (idempotent, safe on the error path). */
+async function releaseMediaSpendHold(hold: MediaSpendHold | null | undefined): Promise<void> {
+  if (!hold) return
+  await releaseMediaHold(hold.billingWorkspaceId, hold.holdId).catch(() => {})
+}
+
+/**
+ * The `video_requires_paid_plan` refusal. Free workspaces get images; video
+ * (Genjutsu edits included) needs Basic or higher — promo credit does not
+ * unlock it. Checked before any upload, estimate or submit.
+ */
+async function videoRequiresPaidPlanResponse(
+  c: any,
+  tokenPayload: ProxyTokenPayload,
+): Promise<Response | null> {
+  // Local mode resolves to a paid plan (`hasPaidSubscription` is true on a
+  // desktop install), and the server's own internal workspace is not a
+  // customer, so neither needs a separate branch here.
+  if (tokenPayload.workspaceId === billingService.SYSTEM_WORKSPACE_ID) return null
+  if (await billingService.hasPaidSubscription(tokenPayload.workspaceId)) return null
+  const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
+    userId: tokenPayload.userId,
+    source: 'ai-proxy',
+  })
+  return c.json(
+    {
+      error: {
+        message: 'Video generation needs a paid plan (Basic or higher). Free workspaces can generate images.',
+        type: 'billing_error',
+        code: 'video_requires_paid_plan',
+        ...usageLimit,
+      },
+    },
+    402,
+  )
+}
 
 /**
  * `/ai/v1` prefixes whose handlers only ever talk to a *local* provider key:
@@ -5720,24 +5902,12 @@ export function aiProxyRoutes() {
       )
     }
 
-    // An already-admitted chat turn still in flight is never re-gated
-    // mid-message — a build that generates images mid-turn isn't interrupted.
-    if (!(await isTurnInFlight(c, tokenPayload))) {
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
-      if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
-          userId: tokenPayload.userId,
-          source: 'ai-proxy',
-        })
-        return c.json(
-          { error: { message, type: 'billing_error', code, ...usageLimit } },
-          402
-        )
-      }
-    }
+    // The price is checked (and reserved) inside the try below, once it is
+    // known — see `authorizeMediaSpend`.
+    const internalUsage = resolveInternalUsage(c, tokenPayload)
 
     let capture: Awaited<ReturnType<typeof beginCapture>> = null
+    let hold: MediaSpendHold | null = null
     try {
       const body = await c.req.json() as {
         prompt: string
@@ -5793,16 +5963,39 @@ export function aiProxyRoutes() {
       })
 
       const signal = c.req.raw.signal
+      // One hold per request, priced before the first provider call:
+      // Higgsfield quotes its own price inside the generator (the `authorize`
+      // callback runs between that estimate and the submit), the others are
+      // priced from the catalog here.
+      const holdId = `img_${randomUUID()}`
       let result: ImageGenerationResponse
       let billed = false
       if (imageModel.provider === 'openai') {
+        const estimate = calculateImageUsageCost(imageModel.entry?.id ?? model, body.quality || 'standard', body.size || '1024x1024')
+        const auth = await authorizeMediaSpend(
+          c, tokenPayload, estimate.billedUsd * (body.n || 1), holdId, MEDIA_HOLD_TTL_SYNC_SECONDS, 'image', internalUsage,
+        )
+        if (!auth.ok) return auth.response
+        hold = auth.hold
         result = await generateImageOpenAI(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'google') {
+        const estimate = calculateImageUsageCost(imageModel.entry?.id ?? model, body.quality || 'standard', body.size || '1024x1024')
+        const auth = await authorizeMediaSpend(
+          c, tokenPayload, estimate.billedUsd * (body.n || 1), holdId, MEDIA_HOLD_TTL_SYNC_SECONDS, 'image', internalUsage,
+        )
+        if (!auth.ok) return auth.response
+        hold = auth.hold
         result = await generateImageGoogle(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'local') {
         result = await generateImageLocal(imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'higgsfield' && imageModel.entry) {
-        const generated = await generateImageHiggsfield(apiKey, imageModel.entry, body, signal)
+        const generated = await generateImageHiggsfield(apiKey, imageModel.entry, body, signal, async (charge) => {
+          const auth = await authorizeMediaSpend(
+            c, tokenPayload, charge.billedUsd, holdId, MEDIA_HOLD_TTL_SYNC_SECONDS, 'image', internalUsage,
+          )
+          if (!auth.ok) throw new MediaSpendDenied(auth.response)
+          hold = auth.hold
+        })
         result = generated.result
         recordHiggsfieldImageUsage(
           tokenPayload,
@@ -5836,12 +6029,15 @@ export function aiProxyRoutes() {
       return c.json({ ...result, model: imageModel.entry?.id ?? model })
     } catch (error: any) {
       capture?.finish({ errorType: 'generation_error' })
+      if (error instanceof MediaSpendDenied) return error.response
       console.error('[AI Proxy] Image generation error:', error.message)
       const statusCode = mediaErrorStatus(error) || 500
       return c.json(
         { error: { message: error.message || 'Image generation failed', type: 'server_error', code: mediaErrorCode(error, 'generation_error') } },
         statusCode
       )
+    } finally {
+      await releaseMediaSpendHold(hold)
     }
   })
 
@@ -5863,24 +6059,12 @@ export function aiProxyRoutes() {
       )
     }
 
-    // An already-admitted chat turn still in flight is never re-gated
-    // mid-message — a build that edits images mid-turn isn't interrupted.
-    if (!(await isTurnInFlight(c, tokenPayload))) {
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
-      if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
-          userId: tokenPayload.userId,
-          source: 'ai-proxy',
-        })
-        return c.json(
-          { error: { message, type: 'billing_error', code, ...usageLimit } },
-          402
-        )
-      }
-    }
+    // The price is checked (and reserved) inside the try below, once it is
+    // known — see `authorizeMediaSpend`.
+    const internalUsage = resolveInternalUsage(c, tokenPayload)
 
     let capture: Awaited<ReturnType<typeof beginCapture>> = null
+    let hold: MediaSpendHold | null = null
     try {
       const formData = await c.req.formData()
       const prompt = formData.get('prompt') as string
@@ -5967,12 +6151,20 @@ export function aiProxyRoutes() {
 
       let result: ImageGenerationResponse
       let billed = false
+      const holdId = `img_${randomUUID()}`
       if (imageModel.provider === 'higgsfield') {
         const generated = await generateImageHiggsfield(
           apiKey,
           imageModel.entry!,
           { prompt, size, quality, n, referenceImages: imageDataUris, options },
           c.req.raw.signal,
+          async (charge) => {
+            const auth = await authorizeMediaSpend(
+              c, tokenPayload, charge.billedUsd, holdId, MEDIA_HOLD_TTL_SYNC_SECONDS, 'image edit', internalUsage,
+            )
+            if (!auth.ok) throw new MediaSpendDenied(auth.response)
+            hold = auth.hold
+          },
         )
         result = generated.result
         recordHiggsfieldImageUsage(
@@ -5987,6 +6179,12 @@ export function aiProxyRoutes() {
         // gpt-image models reject `response_format` (400 unknown_parameter)
         // and use different size tokens, same as the generations path above.
         const editModel = imageModel.apiModel
+        const estimate = calculateImageUsageCost(imageModel.entry?.id ?? model, quality, size)
+        const auth = await authorizeMediaSpend(
+          c, tokenPayload, estimate.billedUsd * n, holdId, MEDIA_HOLD_TTL_SYNC_SECONDS, 'image edit', internalUsage,
+        )
+        if (!auth.ok) return auth.response
+        hold = auth.hold
         const forwardForm = new FormData()
         if (imageFiles.length === 1) {
           forwardForm.append('image', imageFiles[0])
@@ -6024,12 +6222,15 @@ export function aiProxyRoutes() {
       return c.json({ ...result, model: imageModel.entry?.id ?? imageModel.apiModel })
     } catch (error: any) {
       capture?.finish({ errorType: 'edit_error' })
+      if (error instanceof MediaSpendDenied) return error.response
       console.error('[AI Proxy] Image edit error:', error.message)
       const statusCode = mediaErrorStatus(error) || 500
       return c.json(
         { error: { message: error.message || 'Image edit failed', type: 'server_error', code: mediaErrorCode(error, 'edit_error') } },
         statusCode
       )
+    } finally {
+      await releaseMediaSpendHold(hold)
     }
   })
 
@@ -6055,7 +6256,13 @@ export function aiProxyRoutes() {
         400
       )
     }
-    return c.json(await listMediaModels(c.req.raw.signal, { model: c.req.query('model'), kind }))
+    return c.json(await listMediaModels(c.req.raw.signal, {
+      model: c.req.query('model'),
+      kind,
+      // Free workspaces can generate images but not video: video models stay
+      // listed (so the agent can explain the upgrade) marked unavailable.
+      paidPlan: await billingService.hasPaidSubscription(tokenPayload.workspaceId),
+    }))
   })
 
   /**
@@ -6298,21 +6505,20 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!(await isTurnInFlight(c, tokenPayload))) {
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
-      if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
-          userId: tokenPayload.userId,
-          source: 'ai-proxy',
-        })
-        return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
-      }
+    const internalUsage = resolveInternalUsage(c, tokenPayload)
+
+    // Video is paid-plan only, checked before any upload, estimate or submit —
+    // and during chat turns too: promo credit and turn admission do not unlock
+    // it, because a video costs more than any turn's token estimate covers.
+    if (!internalUsage) {
+      const paidPlanRefusal = await videoRequiresPaidPlanResponse(c, tokenPayload)
+      if (paidPlanRefusal) return paidPlanRefusal
     }
 
     const invalid = (message: string, code: string) =>
       c.json({ error: { message, type: 'invalid_request_error', code } }, 400)
 
+    let hold: MediaSpendHold | null = null
     try {
       const body = await c.req.json() as {
         prompt?: string
@@ -6466,6 +6672,15 @@ export function aiProxyRoutes() {
         }
       }
 
+      // The price is settled, so the workspace is checked against it before a
+      // single byte goes to the provider. The hold keeps that price reserved
+      // until the job completes (or fails) and is billed.
+      const auth = await authorizeMediaSpend(
+        c, tokenPayload, charge.billedUsd, id, MEDIA_HOLD_TTL_ASYNC_SECONDS, 'video', internalUsage,
+      )
+      if (!auth.ok) return auth.response
+      hold = auth.hold
+
       const submission = await higgsfieldSubmit(apiKey, request.endpoint, request.input, { idempotencyKey: id, signal })
       const billedDuration = entry.sourceVideo ? sourceSeconds! : duration
 
@@ -6481,6 +6696,7 @@ export function aiProxyRoutes() {
         statusUrl: submission.statusUrl,
         requestId: submission.requestId,
         estimate: { rawUsd: charge.rawUsd, billedUsd: charge.billedUsd, ...(credits !== undefined ? { credits } : {}) },
+        ...(hold ? { hold } : {}),
         duration: billedDuration,
         audio: audio && !!entry.audio,
         aspectRatio: body.aspect_ratio,
@@ -6503,6 +6719,8 @@ export function aiProxyRoutes() {
       })
     } catch (error: any) {
       console.error('[AI Proxy] Video submit error:', error.message)
+      // Nothing was queued: give the reserved price straight back.
+      await releaseMediaSpendHold(hold)
       const statusCode = mediaErrorStatus(error) || (error.message?.includes('422') ? 400 : 502)
       return c.json(
         { error: { message: error.message || 'Video submission failed', type: 'server_error', code: mediaErrorCode(error, 'video_submit_error') } },
@@ -6528,17 +6746,7 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!(await isTurnInFlight(c, tokenPayload))) {
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
-      if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
-          userId: tokenPayload.userId,
-          source: 'ai-proxy',
-        })
-        return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
-      }
-    }
+    const internalUsage = resolveInternalUsage(c, tokenPayload)
 
     const invalid = (message: string, code: string) =>
       c.json({ error: { message, type: 'invalid_request_error', code } }, 400)
@@ -6581,6 +6789,14 @@ export function aiProxyRoutes() {
     }
     const chatSessionId = c.req.header('x-chat-session-id') || null
     const startedAt = Date.now()
+    const charge = calculateMusicUsageCost(entry.usdPerRequest)
+    // Price is flat per song, so check it before the (paid) generation starts.
+    const holdId = `music_${randomUUID()}`
+    const auth = await authorizeMediaSpend(
+      c, tokenPayload, charge.billedUsd, holdId, MEDIA_HOLD_TTL_SYNC_SECONDS, 'song', internalUsage,
+    )
+    if (!auth.ok) return auth.response
+    const hold = auth.hold
     try {
       const { interaction, audio, text } = await generateLyriaMusic({
         apiKey,
@@ -6603,7 +6819,6 @@ export function aiProxyRoutes() {
         )
       }
 
-      const charge = calculateMusicUsageCost(entry.usdPerRequest)
       await recordMediaUsage(tokenPayload, {
         kind: 'music',
         model: entry.id,
@@ -6638,6 +6853,8 @@ export function aiProxyRoutes() {
         },
         timedOut ? 504 : 502
       )
+    } finally {
+      await releaseMediaSpendHold(hold)
     }
   })
 
@@ -6676,14 +6893,17 @@ export function aiProxyRoutes() {
         const status = await higgsfieldStatus(apiKey, job.statusUrl, c.req.raw.signal)
         if (status.status === 'completed') {
           if (!status.videoUrl) {
+            await releaseMediaSpendHold(job.hold)
             return c.json({ ...base, status: 'failed', error: 'The provider finished without returning a video.' })
           }
           if (await claimVideoCharge(id)) {
-            recordHiggsfieldVideoUsage(
+            await recordHiggsfieldVideoUsage(
               tokenPayload,
               job,
               c.req.header('x-chat-session-id') || job.chatSessionId || null,
             )
+            // Charged (or folded into the open turn): the reservation is spent.
+            await releaseMediaSpendHold(job.hold)
           }
           return c.json({
             ...base,
@@ -6693,6 +6913,7 @@ export function aiProxyRoutes() {
         }
         if (status.status === 'failed' || status.status === 'nsfw' || status.status === 'canceled') {
           // Not charged: the provider refunds these, so billing them would overcharge.
+          await releaseMediaSpendHold(job.hold)
           const reason = status.error
             ?? (status.status === 'nsfw' ? 'The provider blocked this clip (content policy).' : `The provider ${status.status} the request.`)
           return c.json({ ...base, status: 'failed', error: reason })
@@ -6911,21 +7132,12 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!(await isTurnInFlight(c, tokenPayload))) {
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
-      if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
-        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
-          userId: tokenPayload.userId,
-          source: 'ai-proxy',
-        })
-        return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
-      }
-    }
+    const internalUsage = resolveInternalUsage(c, tokenPayload)
 
     const invalid = (message: string, code: string) =>
       c.json({ error: { message, type: 'invalid_request_error', code } }, 400)
 
+    let hold: MediaSpendHold | null = null
     try {
       const body = await c.req.json() as Record<string, unknown>
       const str = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : undefined)
@@ -7048,9 +7260,24 @@ export function aiProxyRoutes() {
         wire.input = resolved.input
       }
 
-      const taskId = await tripoCreateTask(apiKey, spec.path, wire, c.req.raw.signal)
       // The registry's estimate reads the same body shape the caller sent.
       const estimatedCredits = estimateTripoCredits(op, { ...body, model: jobModel || body.model })
+      // Estimated price is known before the task is created, so the workspace is
+      // checked against it (and its price held) before Tripo is called at all.
+      const holdId = `gen3d_${randomUUID()}`
+      const auth = await authorizeMediaSpend(
+        c,
+        tokenPayload,
+        roundUsd(estimatedCredits * TRIPO_USD_PER_CREDIT * 1.2),
+        holdId,
+        MEDIA_HOLD_TTL_ASYNC_SECONDS,
+        '3D model',
+        internalUsage,
+      )
+      if (!auth.ok) return auth.response
+      hold = auth.hold
+
+      const taskId = await tripoCreateTask(apiKey, spec.path, wire, c.req.raw.signal)
 
       const id = `gen3d_${randomUUID()}`
       await put3dJob({
@@ -7066,6 +7293,7 @@ export function aiProxyRoutes() {
         texture: body.pbr === true ? true : body.texture !== false,
         textureQuality: str(body.texture_quality),
         estimatedCredits,
+        ...(hold ? { hold } : {}),
         createdAt: Date.now(),
       })
       console.log(`[AI Proxy] 🧊 3D ${op} ${id}: ${tokenPayload.projectId} → tripo${spec.path} (task ${taskId}, ~${estimatedCredits} credits)`)
@@ -7080,6 +7308,8 @@ export function aiProxyRoutes() {
       })
     } catch (error: any) {
       console.error('[AI Proxy] 3D submit error:', error.message)
+      // No task was created: give the reserved price straight back.
+      await releaseMediaSpendHold(hold)
       // A rejected request (bad prompt/params) is the caller's, not ours: pass
       // Tripo's 4xx through so the runtime sees 400 rather than 502.
       const upstream: number | undefined = error instanceof TripoApiError ? error.status : undefined
@@ -7136,6 +7366,7 @@ export function aiProxyRoutes() {
       }
 
       if (task.status === 'failed') {
+        await releaseMediaSpendHold(job.hold)
         const detail = task.errorMessage || (task.errorCode !== undefined ? `Tripo error ${task.errorCode}` : 'Task failed')
         return c.json({ ...base, status: 'failed', error: detail })
       }
@@ -7150,6 +7381,7 @@ export function aiProxyRoutes() {
           : undefined
 
       if (!modelUrl && !modelUrls && !parts && task.riggable === undefined) {
+        await releaseMediaSpendHold(job.hold)
         return c.json({ ...base, status: 'failed', error: 'Tripo reported success without an output' })
       }
 
@@ -7159,7 +7391,7 @@ export function aiProxyRoutes() {
       // A free task (rig check, import) never touches the wallet — and the
       // charge-once claim is skipped so no later poll can bill it either.
       if (creditsConsumed > 0 && await claim3dCharge(id)) {
-        record3dUsage(
+        await record3dUsage(
           tokenPayload,
           {
             model: job.model || job.op,
@@ -7171,6 +7403,9 @@ export function aiProxyRoutes() {
           c.req.header('x-chat-session-id') || job.chatSessionId || null,
         )
       }
+      // Succeeded (charged or folded into the open turn) or a free task:
+      // either way this reservation is done.
+      await releaseMediaSpendHold(job.hold)
 
       return c.json({
         ...base,

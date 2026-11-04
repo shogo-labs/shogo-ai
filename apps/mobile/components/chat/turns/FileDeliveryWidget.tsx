@@ -15,7 +15,7 @@ import { cn } from "@shogo/shared-ui/primitives";
 import type { ToolCallData } from "../tools/types";
 import { FileTypeIcon } from "../FileTypeIcon";
 import { useShareFileOpener } from "../share-file-context";
-import { parseShareFileHref } from "../../../lib/share-file-links";
+import { parseInAppFileHref } from "../../../lib/share-file-links";
 
 function resultObject(result: unknown): Record<string, unknown> {
   if (result && typeof result === "object") return result as Record<string, unknown>;
@@ -62,27 +62,31 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
   const path = typeof result.path === "string" ? result.path : "download";
   const name = typeof result.filename === "string" ? result.filename : basename(path);
   const expiresAt = result.expiresAt;
+  // A local desktop share is a `file://` link to a file on this machine: no
+  // token, no expiry, and the absolute path is what the user copies.
+  const isLocal = result.local === true;
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const openShareFile = useShareFileOpener();
-  const servedFile = useMemo(() => (url ? parseShareFileHref(url) : null), [url]);
+  const servedFile = useMemo(() => (url ? parseInAppFileHref(url) : null), [url]);
+  const copyValue = isLocal ? path : url;
 
   const copyLink = useCallback(async () => {
-    if (!url) return;
+    if (!copyValue) return;
     try {
       if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard) {
-        await navigator.clipboard.writeText(url);
+        await navigator.clipboard.writeText(copyValue);
       } else {
         const Clipboard = await import("expo-clipboard");
-        await Clipboard.setStringAsync(url);
+        await Clipboard.setStringAsync(copyValue);
       }
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     } catch {
-      setError("Could not copy link");
+      setError(isLocal ? "Could not copy path" : "Could not copy link");
     }
-  }, [url]);
+  }, [copyValue, isLocal]);
 
   const download = useCallback(async () => {
     if (!url || busy) return;
@@ -136,6 +140,11 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
   if (tool.state !== "success" || !url) return null;
 
   const expires = `Link expires ${formatExpiry(expiresAt)}`;
+  // A local share has no expiry to report; the path is the useful detail.
+  const subtitle = isLocal ? path : expires;
+  const actionLabel = isLocal ? `Open ${name}` : `Download ${name}`;
+  const chipTitle = `${actionLabel} · ${subtitle}`;
+  const accessibilityLabel = isLocal ? actionLabel : `Download ${name}. ${expires}`;
 
   return (
     <View className={cn("items-start", className)}>
@@ -144,9 +153,9 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
           onPress={download}
           disabled={busy}
           accessibilityRole="link"
-          accessibilityLabel={`Download ${name}. ${expires}`}
+          accessibilityLabel={accessibilityLabel}
           // @ts-expect-error -- web-only tooltip
-          title={`Download ${name} · ${expires}`}
+          title={chipTitle}
           testID="file-delivery-chip"
           className="shrink flex-row items-center gap-1.5 py-1 pl-2 pr-1.5 hover:bg-muted active:opacity-70"
         >
@@ -159,14 +168,19 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
         <Pressable
           onPress={copyLink}
           accessibilityRole="button"
-          accessibilityLabel={copied ? "Link copied" : "Copy download link"}
+          accessibilityLabel={copied ? "Copied" : isLocal ? "Copy file path" : "Copy download link"}
           // @ts-expect-error -- web-only tooltip
-          title={copied ? "Copied" : "Copy link"}
+          title={copied ? "Copied" : isLocal ? "Copy path" : "Copy link"}
           className="self-stretch justify-center border-l border-border px-1.5 hover:bg-muted active:opacity-70"
         >
           {copied ? <Check size={12} className="text-muted-foreground" /> : <Copy size={12} className="text-muted-foreground" />}
         </Pressable>
       </View>
+      {isLocal ? (
+        <Text className="mt-1 max-w-full text-[10px] text-muted-foreground" numberOfLines={1}>
+          {path}
+        </Text>
+      ) : null}
       {error ? <Text className="mt-1 text-[10px] text-destructive">{error}</Text> : null}
     </View>
   );

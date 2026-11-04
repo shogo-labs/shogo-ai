@@ -34,6 +34,7 @@ type BillingSeam = Pick<
   | 'syncFromStripe'
   | 'hasBalance'
   | 'hasPaidSubscription'
+  | 'resolveBillingWorkspaceId'
   | 'canRunTechStackOnInstanceSize'
 >
 
@@ -69,6 +70,8 @@ export const localBilling: BillingSeam = {
   getUsageWallet: async () => null,
   getUsageWindows: async () => ({ fiveHour: uncappedWindow('five_hour'), weekly: uncappedWindow('weekly') }),
   hasPaidSubscription: async () => true,
+  // Local workspaces never have a parent to pool billing with.
+  resolveBillingWorkspaceId: async (workspaceId) => workspaceId,
   // Desktop runs every stack on the host; callers only read `currentSize` to
   // explain a refusal, which never happens here.
   canRunTechStackOnInstanceSize: async (_workspaceId, techStackId) => ({
@@ -102,5 +105,9 @@ export const syncFromStripe: BillingSeam['syncFromStripe'] = (...args) => billin
 export const hasBalance: BillingSeam['hasBalance'] = (...args) => billing().hasBalance(...args)
 export const hasPaidSubscription: BillingSeam['hasPaidSubscription'] = (...args) =>
   billing().hasPaidSubscription(...args)
+// A partial `mock.module()` stub of the cloud service need not resolve parents;
+// an unresolved id is the same workspace.
+export const resolveBillingWorkspaceId: BillingSeam['resolveBillingWorkspaceId'] = (...args) =>
+  (billing().resolveBillingWorkspaceId ?? localBilling.resolveBillingWorkspaceId)(...args)
 export const canRunTechStackOnInstanceSize: BillingSeam['canRunTechStackOnInstanceSize'] = (...args) =>
   billing().canRunTechStackOnInstanceSize(...args)
