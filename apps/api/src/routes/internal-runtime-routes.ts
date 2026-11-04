@@ -2761,6 +2761,289 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * A paired desktop's runtime calls the same internal URLs the cloud pod does;
+   * only the local API can't answer them, because it holds no object-store
+   * credentials and no tunnel registry. When it is signed in to the cloud and
+   * knows a key for this workspace, it forwards the call with that key and
+   * returns the answer untouched. `null` means "answer it here".
+   *
+   * The forward is written as one helper over an upstream path so the root
+   * routes and the device relay cannot drift apart.
+   */
+  async function relayToCloud(
+    c: any,
+    workspaceId: string | undefined,
+    upstreamPath: string,
+    body?: unknown,
+  ): Promise<Response | null> {
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') return null
+    if (!workspaceId) return null
+    const { cloudWorkspaceKey } = await import('../services/cloud-workspaces')
+    const key = await cloudWorkspaceKey(workspaceId).catch(() => null)
+    if (!key) return null
+    const { copyResponseHeaders, fetchUpstream } = await import('../lib/federated-upstream')
+    try {
+      const upstream = await fetchUpstream(upstreamPath, {
+        method: c.req.method,
+        headers: { 'content-type': 'application/json' },
+        search: new URL(c.req.url).search,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        apiKey: key,
+        signal: c.req.raw.signal,
+      })
+      return new Response(await upstream.text(), {
+        status: upstream.status,
+        headers: copyResponseHeaders(upstream),
+      })
+    } catch (err: any) {
+      return c.json(
+        { error: { code: 'cloud_unreachable', message: `Can't reach Shogo Cloud: ${err?.message ?? err}` } },
+        502,
+      )
+    }
+  }
+
+  /**
+   * GET /api/internal/workspaces/:workspaceId/root/manifest
+   *
+   * The durable copy of a Personal workspace's root, as the **cloud runtime**
+   * sees it (SHO-285 Update 2, section F). The pod has no membership session, so
+   * it authenticates as itself and the workspace comes from that identity — the
+   * same shape as `/devices` above and the reason both sides converge on one
+   * store instead of two.
+   *
+   * On a paired desktop the runtime calls the same URL against the **local**
+   * API, which holds no object-store credentials: `relayToCloud` sends the
+   * call on to the cloud with the workspace's key, so one runtime-side code
+   * path works in both places.
+   */
+  app.get('/workspaces/:workspaceId/root/manifest', async (c) => {
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const workspaceId = await identityWorkspaceId(identity)
+    if (!workspaceId || workspaceId !== c.req.param('workspaceId')) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    }
+    const relayed = await relayToCloud(
+      c,
+      c.req.param('workspaceId'),
+      `/api/workspaces/${encodeURIComponent(c.req.param('workspaceId')!)}/root/manifest`,
+    )
+    if (relayed) return relayed
+    const sinceRaw = c.req.query('since')
+    const since = sinceRaw ? new Date(sinceRaw) : null
+    const { readWorkspaceRootManifest } = await import('../lib/workspace-root-files')
+    try {
+      return c.json(
+        await readWorkspaceRootManifest(workspaceId, {
+          since: since && !Number.isNaN(since.getTime()) ? since : null,
+        }),
+      )
+    } catch (err: any) {
+      return c.json(
+        { error: { code: 'root_manifest_failed', message: err?.message ?? 'Could not read the root' } },
+        502,
+      )
+    }
+  })
+
+  /**
+   * POST /api/internal/workspaces/:workspaceId/root/presign
+   *   body: { files: [{ path, action, sha256?, instanceId?, contentType? }] }
+   *
+   * Signed read/write URLs for the workspace root, for the pod that runs the
+   * Personal's cloud turns.
+   */
+  app.post('/workspaces/:workspaceId/root/presign', async (c) => {
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const workspaceId = await identityWorkspaceId(identity)
+    if (!workspaceId || workspaceId !== c.req.param('workspaceId')) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    }
+    const body = (await c.req.json().catch(() => null)) as { files?: any[] } | null
+    if (!body || !Array.isArray(body.files)) {
+      return c.json({ error: { code: 'bad_request', message: 'files array is required' } }, 400)
+    }
+    const relayed = await relayToCloud(
+      c,
+      c.req.param('workspaceId'),
+      `/api/workspaces/${encodeURIComponent(c.req.param('workspaceId')!)}/root/presign`,
+      body,
+    )
+    if (relayed) return relayed
+    const { presignWorkspaceRoot } = await import('../lib/workspace-root-files')
+    try {
+      return c.json(await presignWorkspaceRoot(workspaceId, body.files))
+    } catch (err: any) {
+      return c.json(
+        { error: { code: 'root_presign_failed', message: err?.message ?? 'Could not sign the request' } },
+        502,
+      )
+    }
+  })
+
+  /**
+   * GET /api/internal/devices
+   *
+   * The paired desktops of the people in this workspace (SHO-285 Update 2).
+   * Backs the "Your devices" block the Personal agent's context carries, so it
+   * knows which machines it can reach before it tries.
+   */
+  app.get('/devices', async (c) => {
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const workspaceId = await identityWorkspaceId(identity)
+    if (!workspaceId) return c.json({ error: 'Unauthorized' }, 401)
+
+    const members = (await prisma.member.findMany({
+      where: { workspaceId, projectId: null },
+      select: { userId: true },
+    })) as Array<{ userId: string }>
+    const userIds = members.map((member) => member.userId).filter(Boolean)
+    if (!userIds.length) return c.json({ devices: [] })
+
+    const rows = (await prisma.instance.findMany({
+      where: { userId: { in: userIds } },
+      select: { id: true, name: true, os: true, arch: true, status: true, lastSeenAt: true, metadata: true },
+      orderBy: [{ lastSeenAt: 'desc' }],
+    })) as Array<Record<string, any>>
+
+    // "Online" is the heartbeat's own answer: a tunnel that has not been seen
+    // for two minutes is not reachable, whatever the row still says.
+    const freshAfter = Date.now() - 2 * 60_000
+    const devices = rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      os: row.os ?? null,
+      arch: row.arch ?? null,
+      online: row.status === 'online' && row.lastSeenAt ? new Date(row.lastSeenAt).getTime() > freshAfter : false,
+      lastSeenAt: row.lastSeenAt ? new Date(row.lastSeenAt).toISOString() : null,
+      homeDir: typeof row.metadata?.homeDir === 'string' ? row.metadata.homeDir : null,
+    }))
+    return c.json({ devices })
+  })
+
+  /**
+   * POST /api/internal/devices/:instanceId/remote-tool
+   *   body: { tool, args? }
+   *
+   * Run one allow-listed tool on a paired desktop (SHO-285 Update 2): the same
+   * seam as `project: "<id>"`, with a device as the target. The call goes
+   * caller runtime → this route → the instance tunnel → the desktop's own
+   * `/agent/remote/tool`, where the desktop's permission system decides what is
+   * allowed. A device that is not a member's is refused, and an offline one
+   * answers `device_offline` with its last-seen time rather than hanging.
+   */
+  app.post('/devices/:instanceId/remote-tool', async (c) => {
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const workspaceId = await identityWorkspaceId(identity)
+    if (!workspaceId) return c.json({ error: 'Unauthorized' }, 401)
+
+    const instanceId = c.req.param('instanceId')
+    const instance = (await prisma.instance.findUnique({
+      where: { id: instanceId },
+      select: { id: true, name: true, userId: true, lastSeenAt: true },
+    })) as { id: string; name: string; userId: string | null; lastSeenAt: Date | null } | null
+    if (!instance?.userId) {
+      return c.json({ error: { code: 'device_not_found', message: 'No such device' } }, 404)
+    }
+    const member = await prisma.member.findFirst({
+      where: { workspaceId, userId: instance.userId, projectId: null },
+      select: { id: true },
+    })
+    if (!member) {
+      return c.json(
+        { error: { code: 'device_not_member', message: 'That device belongs to someone outside this workspace.' } },
+        403,
+      )
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body || typeof body.tool !== 'string' || !body.tool.trim()) {
+      return c.json({ error: { code: 'bad_request', message: 'tool is required' } }, 400)
+    }
+    if (body.args !== undefined && (typeof body.args !== 'object' || body.args === null || Array.isArray(body.args))) {
+      return c.json({ error: { code: 'bad_request', message: 'args must be an object' } }, 400)
+    }
+
+    // A desktop's runtime calls this against the **local** API, which has no
+    // tunnel registry: it forwards the whole call to the cloud and returns the
+    // answer. The cloud branch below is dead code in the desktop bundle
+    // (`SHOGO_LOCAL_MODE` is defined at build time), which is what keeps the
+    // cloud-only islands — `routes/instances` and its Redis billing sessions —
+    // out of it.
+    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+      const relayed = await relayToCloud(
+        c,
+        workspaceId,
+        `/api/internal/devices/${encodeURIComponent(instanceId)}/remote-tool`,
+        body,
+      )
+      if (relayed) return relayed
+      return c.json(
+        {
+          error: {
+            code: 'device_relay_unavailable',
+            message: `${instance.name} can only be reached through Shogo Cloud from here.`,
+            instanceId,
+          },
+        },
+        503,
+      )
+    } else {
+      const { ensureTunnelConnected } = await import('../routes/instances')
+      const { hostTunnelRuntimeUrl } = await import('../lib/host-tunnel')
+      const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
+      if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
+        return c.json(
+          {
+            error: {
+              code: 'device_offline',
+              message: `${instance.name} is offline${instance.lastSeenAt ? ` (last seen ${new Date(instance.lastSeenAt).toISOString()})` : ''}`,
+              instanceId,
+              lastSeenAt: instance.lastSeenAt ? new Date(instance.lastSeenAt).toISOString() : null,
+            },
+          },
+          503,
+        )
+      }
+
+      // The desktop's workspace agent proxy, reached through the same host tunnel
+      // every cloud→desktop turn uses: one transport, one auth header, one place
+      // that answers `host_offline`.
+      const tunnelUrl = `${hostTunnelRuntimeUrl(instanceId, { workspaceId })}/agent/remote/tool`
+      const timeoutMs = Math.min(Math.max(Number(body.timeoutMs ?? 5 * 60_000) || 0, 10_000), 20 * 60_000)
+      try {
+        const response = await fetch(tunnelUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tool: body.tool.trim(), args: body.args ?? {} }),
+          signal: AbortSignal.timeout(timeoutMs),
+        })
+        const text = await response.text()
+        return new Response(text, {
+          status: response.status,
+          headers: { 'content-type': response.headers.get('content-type') ?? 'application/json' },
+        })
+      } catch (err: any) {
+        const offline = /offline/i.test(err?.message ?? '')
+        return c.json(
+          {
+            error: {
+              code: offline ? 'device_offline' : 'device_tunnel_error',
+              message: err?.message ?? 'The device could not be reached',
+              instanceId,
+            },
+          },
+          offline ? 503 : 502,
+        )
+      }
+    }
+  })
+
+  /**
    * POST /api/internal/projects/:projectId/remote-tool
    *   body: { tool, args?, callerProjectId?, timeoutMs? }
    *

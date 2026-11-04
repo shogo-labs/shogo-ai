@@ -38,6 +38,7 @@ import { wipeCloudKey } from './cloud-key-wipe'
 import { deriveProjectRuntimeToken } from './project-runtime-token'
 import { getShogoCloudUrl } from './cloud-urls'
 import { resolveLocalApiPort } from './local-api-port'
+import { registerInstanceIdSource } from './tunnel-instance-id'
 
 // Re-export the worker's symbols so existing callers keep working.
 export const TUNNEL_PROTOCOL_VERSION = _TUNNEL_PROTOCOL_VERSION
@@ -220,6 +221,11 @@ const PRIMARY_TUNNEL = 'primary'
  * `syncCloudWorkspaces`; they no longer buy a tunnel.
  */
 let activeTunnel: TunnelHandle | null = null
+
+// `getInstanceId()` below is the tunnel's own view; this publishes the same
+// answer to `tunnel-instance-id.ts`, so a caller that only needs "which device
+// am I" does not have to import this module (and with it the runtime manager).
+registerInstanceIdSource(() => activeTunnel?.instanceId ?? null)
 
 /**
  * What the rest of this module needs from a tunnel, whichever thread it runs on.

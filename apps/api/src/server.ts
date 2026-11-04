@@ -26,6 +26,7 @@ import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
 import { workspaceChatRoutes } from './routes/workspace-chat'
+import { workspaceRootRoutes } from './routes/workspace-root'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceExportRoutes } from './routes/workspace-export'
 import { workspaceMoveRoutes } from './routes/workspace-moves'
@@ -1647,6 +1648,9 @@ app.route('/api', syncRoutes())
 // model). Session CRUD and the /chat proxy (+ turn/stream/stop) use the
 // unconditional merged-root workspace runtime.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+// The Personal workspace's shared root (SHO-285 Update 2): the durable copy of
+// AGENTS.md / MEMORY.md / memory/ that every device of the account hydrates from.
+app.route('/api', workspaceRootRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workspaceAgentRoutes({
   authorize: sessionAuthorize(getAuthUserId),
   saveAgentAvatar: cloud.saveAgentAvatar,

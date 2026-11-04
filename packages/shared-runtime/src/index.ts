@@ -11,6 +11,21 @@ export {
 } from './s3-sync'
 
 export {
+  createWorkspaceRootSync,
+  conflictPathFor,
+  isSharedRootPath,
+  sha256Of,
+  type WorkspaceRootFile,
+  type WorkspaceRootManifest,
+  type WorkspaceRootPresignRequest,
+  type WorkspaceRootPresignResult,
+  type WorkspaceRootSync,
+  type WorkspaceRootSyncOptions,
+  type WorkspaceRootSyncStats,
+  type WorkspaceRootTransport,
+} from './workspace-root-sync'
+
+export {
   CAPABILITY_INFO,
   CAPABILITY_KEYS,
   mergeCapabilitySettingsIntoConfig,

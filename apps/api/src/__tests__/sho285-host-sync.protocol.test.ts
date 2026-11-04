@@ -36,18 +36,56 @@ function timeOf(value: unknown): number {
 function matches(row: Row, where: any): boolean {
   if (!where) return true
   for (const [key, cond] of Object.entries(where)) {
+    // Boolean combinators, as Prisma spells them. Without these the memory db
+    // silently matched every row for an `OR` filter — which is how a test that
+    // proves the feed is scoped once passed with the scope gone.
+    if (key === 'OR') {
+      if (!(cond as any[]).some((clause) => matches(row, clause))) return false
+      continue
+    }
+    if (key === 'AND') {
+      if (!(cond as any[]).every((clause) => matches(row, clause))) return false
+      continue
+    }
+    if (key === 'NOT') {
+      if (matches(row, cond)) return false
+      continue
+    }
     const value = row[key]
     if (cond === null) {
       if (value != null) return false
       continue
     }
     if (cond && typeof cond === 'object' && !(cond instanceof Date)) {
-      const c = cond as any
-      if (c.in && !c.in.includes(value)) return false
-      if ('not' in c && c.not === null && value == null) return false
-      if ('not' in c && c.not !== null && value === c.not) return false
-      if (c.gt !== undefined && !(value > c.gt)) return false
-      if (c.lt !== undefined && !(timeOf(value) < timeOf(c.lt))) return false
+      for (const [op, operand] of Object.entries(cond as Record<string, any>)) {
+        switch (op) {
+          case 'in':
+            if (!(operand as any[]).includes(value)) return false
+            break
+          case 'notIn':
+            if ((operand as any[]).includes(value)) return false
+            break
+          case 'not':
+            if (operand === null ? value != null : value === operand) return false
+            break
+          case 'gt':
+            if (!(value > operand)) return false
+            break
+          case 'gte':
+            if (!(value >= operand)) return false
+            break
+          case 'lt':
+            if (!(timeOf(value) < timeOf(operand))) return false
+            break
+          case 'lte':
+            if (!(timeOf(value) <= timeOf(operand))) return false
+            break
+          default:
+            // An operator this fake does not model must fail loudly: a missed
+            // filter is a test that passes while proving nothing.
+            throw new Error(`memory test db: unsupported where operator '${op}' on '${key}'`)
+        }
+      }
       continue
     }
     if (value !== cond) return false
