@@ -574,6 +574,16 @@ export function localSystemRoutes(): Hono {
           }]
         : []
 
+    // Why the machine copy is or is not moving (SHO-301). A stalled sync used to
+    // be invisible: the only symptom was "the other side never got it".
+    let sync: unknown = null
+    try {
+      const { readMachineSyncStatus } = await import('../lib/machine-sync/local-sync')
+      sync = await readMachineSyncStatus()
+    } catch (err) {
+      console.warn('[LocalSystem] instance-info: sync status unavailable:', (err as Error)?.message ?? err)
+    }
+
     return Response.json({
       name,
       hostname: os.hostname(),
@@ -583,6 +593,7 @@ export function localSystemRoutes(): Hono {
       cloudUrl: getShogoCloudUrl(),
       workspaceName,
       workspaces,
+      sync,
     })
   })
 

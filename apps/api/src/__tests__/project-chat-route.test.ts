@@ -110,6 +110,8 @@ const billingMock = {
   }),
   getEffectivePlanId: async () => 'pro',
   canPublishSubdomain: async () => true,
+  resolveBillingWorkspaceId: async (workspaceId: string) => workspaceId,
+  hasPaidSubscription: async () => true,
   SYSTEM_WORKSPACE_ID: 'system-workspace',
 }
 mock.module('../services/billing.service', () => billingMock)

@@ -24,6 +24,7 @@ import {
   linkifyFilePaths,
   mentionTargetFromHref,
   pathFromFileHref,
+  rewriteLocalFileLinks,
   rewriteWorkspaceMedia,
   resolveRelativeLinks,
   type MentionTarget,
@@ -31,7 +32,7 @@ import {
 import { MarkdownMedia } from "./MarkdownMedia.web"
 import { FileTypeIcon } from "./FileTypeIcon.web"
 import { useShareFileOpener } from "./share-file-context"
-import { parseInAppFileHref } from "../../lib/share-file-links"
+import { LOCAL_FILE_HREF_PREFIX, parseInAppFileHref } from "../../lib/share-file-links"
 import { withHardBreaks } from "../../lib/markdown-breaks"
 import type { MarkdownVariant } from "./MarkdownText"
 
@@ -247,7 +248,9 @@ export const MarkdownText = memo(
     const cls = className ? `${baseClassName} ${className}` : baseClassName
     const source = children || ""
     const body = useMemo(() => {
-      const normalized = withHardBreaks(rewriteWorkspaceMedia(normalizeRichTextPaste(source)))
+      const normalized = withHardBreaks(
+        rewriteLocalFileLinks(rewriteWorkspaceMedia(normalizeRichTextPaste(source))),
+      )
       // A relative link we wrote cannot be opened by a browser: Streamdown's
       // hardener replaces it with `[blocked]`. Resolve it before it parses.
       const resolved = resolveRelativeLinks(normalized, { fileLinks: !!onFilePress })
@@ -283,7 +286,10 @@ export const MarkdownText = memo(
           controls={false}
           components={components}
           urlTransform={(url, key, node) =>
-            url.startsWith(FILE_HREF_PREFIX) || url.startsWith(IMAGE_SRC_PREFIX) || isMentionHref(url)
+            url.startsWith(FILE_HREF_PREFIX) ||
+            url.startsWith(IMAGE_SRC_PREFIX) ||
+            url.startsWith(LOCAL_FILE_HREF_PREFIX) ||
+            isMentionHref(url)
               ? url
               : defaultUrlTransform(url, key, node)
           }

@@ -85,7 +85,7 @@ async function warmHostTunnel(): Promise<void> {
   const { cloud: c } = clients()
   const path = `/api/instances/${encodeURIComponent(machine.machineId)}`
   await send(c, 'POST', `${path}/request-connect`)
-  await waitFor(
+  await waitForSync(
     'the desktop tunnel',
     async () => {
       const res = await read(c, path)
@@ -98,6 +98,40 @@ async function warmHostTunnel(): Promise<void> {
 
 function logs(): string {
   return `--- cloud ---\n${cloud?.log.join('').slice(-3000)}\n--- desktop ---\n${machine?.log.join('').slice(-3000)}`
+}
+
+/**
+ * The desktop's own view of its machine copy (SHO-301): whether the pusher and
+ * the puller are moving, why not, and until when. A stalled sync used to leave
+ * no trace at all — the only symptom was "the other side never got it".
+ */
+async function syncStatus(): Promise<string> {
+  try {
+    const res = await read(clients().desktop, '/api/local/instance-info')
+    const sync = res.data?.sync ?? null
+    return JSON.stringify(sync ?? `no sync status (HTTP ${res.status})`, null, 2)
+  } catch (err) {
+    return `unavailable: ${(err as Error)?.message ?? err}`
+  }
+}
+
+/**
+ * `waitFor`, but a timeout says *why*: both processes' logs and the desktop's
+ * sync status (pusher `lastError`/`authBlockedUntil`/`stalledUntil`, puller
+ * `lastError`/`blockedUntil`). Every wait in this suite goes through here so a
+ * flake is diagnosable from the CI log instead of a bare "last: false".
+ */
+async function waitForSync<T>(
+  what: string,
+  fn: () => Promise<T | null | undefined | false>,
+  timeoutMs = 30_000,
+  intervalMs = 250,
+): Promise<T> {
+  try {
+    return await waitFor(what, fn, timeoutMs, intervalMs)
+  } catch (err) {
+    throw new Error(`${(err as Error).message}\n--- desktop sync ---\n${await syncStatus()}\n${logs()}`)
+  }
 }
 
 beforeAll(async () => {
@@ -158,7 +192,7 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
     // content — the rows synced up, they are not a read-only copy. The sync is
     // asynchronous, so wait for it to settle rather than race the pusher.
     let pending = SURFACES.map((surface) => surface.name)
-    await waitFor(
+    await waitForSync(
       `every surface to show the desktop's content (still waiting on: ${pending.join(', ')})`,
       async () => {
         pending = []
@@ -194,7 +228,7 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
 
     // A file that exists only on the desktop's disk, written through the
     // desktop's own API (never through the cloud).
-    await waitFor('the desktop runtime to take a file', async () => {
+    await waitForSync('the desktop runtime to take a file', async () => {
       const status = await writeMachineCanary(machine, path, canary)
       return status === 200
     }, 120_000, 2_000)
@@ -247,7 +281,7 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
     const local = await send(desktop, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text })
     expect(local.status, JSON.stringify(local.data)).toBeLessThan(300)
 
-    await waitFor('the desktop message in the cloud', async () =>
+    await waitForSync('the desktop message in the cloud', async () =>
       (await channelTexts(c, channelId)).includes(text), 60_000, 1_000)
   }, 120_000)
 
@@ -261,7 +295,7 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
     expect(created.status, JSON.stringify(created.data)).toBeLessThan(300)
     const itemId = created.data?.item?.id
     expect(itemId).toBeTruthy()
-    await waitFor('the cloud card on the desktop', async () => {
+    await waitForSync('the cloud card on the desktop', async () => {
       const res = await read(desktop, `/api/work-items/${encodeURIComponent(itemId)}`)
       return res.status < 300 && res.data?.item?.title === title
     }, 60_000, 1_000)
@@ -271,7 +305,7 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
     const local = await send(desktop, 'POST', `/api/boards/${encodeURIComponent(boardId)}/items`, { title: localTitle })
     expect(local.status, JSON.stringify(local.data)).toBeLessThan(300)
     const localId = local.data?.item?.id
-    await waitFor('the desktop card in the cloud', async () => {
+    await waitForSync('the desktop card in the cloud', async () => {
       const res = await read(c, `/api/work-items/${encodeURIComponent(localId)}`)
       return res.status < 300 && res.data?.item?.title === localTitle
     }, 60_000, 1_000)
@@ -283,7 +317,7 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
     await new Promise((r) => setTimeout(r, 1_100))
     expect((await send(c, 'PATCH', `/api/work-items/${encodeURIComponent(itemId)}`, { title: cloudEdit })).status).toBeLessThan(300)
 
-    await waitFor('the later edit on the desktop', async () => {
+    await waitForSync('the later edit on the desktop', async () => {
       const res = await read(desktop, `/api/work-items/${encodeURIComponent(itemId)}`)
       return res.status < 300 && res.data?.item?.title === cloudEdit
     }, 60_000, 1_000)
@@ -319,17 +353,17 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
     const offChannelText = `saved while off ${Date.now()}`
     const offChannel = await send(c, 'POST', `/api/conversations/${encodeURIComponent(channelId)}/messages`, { text: offChannelText })
     expect(offChannel.status, JSON.stringify(offChannel.data)).toBeLessThan(300)
-    await waitFor('the channel message saved on the cloud', async () =>
+    await waitForSync('the channel message saved on the cloud', async () =>
       (await channelTexts(c, channelId)).includes(offChannelText), 30_000, 1_000)
 
     await machine.restart()
 
     // The cloud's writes reach the desktop again.
-    await waitFor('the channel message on the desktop', async () =>
+    await waitForSync('the channel message on the desktop', async () =>
       (await channelTexts(desktop, channelId)).includes(offChannelText), 180_000, 2_000)
 
     // And the queued turn runs there, once, as the person's own message.
-    await waitFor('the queued turn on the desktop', async () => {
+    await waitForSync('the queued turn on the desktop', async () => {
       const res = await read(desktop, `/api/chat-messages?sessionId=${encodeURIComponent(seeds.machine.workspaceChatId)}&limit=50&offset=0`)
       return JSON.stringify(res.data ?? '').includes(queuedText)
     }, 180_000, 3_000)

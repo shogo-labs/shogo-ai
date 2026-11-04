@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
+import { publishTurnState } from './chat-turn-state.service'
 import { MAX_WAKE_ATTEMPTS, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAUSED, WAKE_PAUSED_MARKERS, WAKE_WORKSPACE_PAUSED, type WakeRelease } from './background-tasks.service'
 
 /** Well above TURN_REATTACH_AFTER_MS, so the reattach job gets to a dead tracker's turn first. */
@@ -168,7 +169,7 @@ async function isSessionIdle(chatSessionId: string): Promise<boolean> {
 
   // A dead API process can leave the activity marker behind. Clear only the
   // stale marker; a fresh turn is never touched by this recovery path.
-  await (prisma as any).chatSession.updateMany({
+  const cleared = await (prisma as any).chatSession.updateMany({
     where: { id: chatSessionId, activeTurnId: session.activeTurnId },
     data: {
       activeTurnId: null,
@@ -176,6 +177,10 @@ async function isSessionIdle(chatSessionId: string): Promise<boolean> {
       activeTurnHeartbeatAt: null,
     },
   })
+  // A window still showing that turn has nothing left to follow: tell it the
+  // turn is over so it repaints from saved history instead of waiting on a
+  // stream that died with the process (SHO-299).
+  if (cleared?.count > 0) await publishTurnState(chatSessionId, session.activeTurnId, 'ended')
   return true
 }
 

@@ -51,6 +51,7 @@ const KEYFRAMES = `
 .login-showcase-seg:hover .login-showcase-track { background: var(--login-showcase-track-hover); }
 @media (prefers-reduced-motion: reduce) {
   .login-showcase-flip-in, .login-showcase-flip-out, .login-showcase-fade-up { animation: none; }
+  .login-showcase-flip-out { display: none; }
 }
 `
 

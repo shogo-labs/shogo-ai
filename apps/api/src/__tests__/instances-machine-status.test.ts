@@ -43,6 +43,10 @@ mock.module('../lib/tunnel-redis', () => ({
     return onlineIds.has(id)
   },
   getPodId: () => 'pod-test',
+  // The conversation bus (reached through chat-turn-state) reads these two
+  // off the real module; a mock that omits them fails the whole file at load.
+  getSharedRedis: () => null,
+  whenReady: async () => {},
   getSharedRedis: () => null,
   verifyPodAlive: async () => false,
 }))

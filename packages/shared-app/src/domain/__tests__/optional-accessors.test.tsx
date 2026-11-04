@@ -12,9 +12,9 @@
  * provider's module singletons — the same instance, no context needed.
  */
 
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterAll, afterEach, describe, expect, it } from 'bun:test'
 import { cleanup, render } from '@testing-library/react'
-import { installHappyDom } from '../../hooks/__tests__/happy-dom-setup.ts'
+import { installHappyDom, restoreHappyDom } from '../../hooks/__tests__/happy-dom-setup.ts'
 import {
   SDKDomainProvider,
   getDomainActions,
@@ -28,6 +28,10 @@ import {
 } from '../SDKDomainProvider'
 
 installHappyDom()
+
+// The suite runs every file in one Bun process: leaving a synthetic `window`
+// behind changes what unrelated tests see (SHO-301).
+afterAll(() => restoreHappyDom())
 
 afterEach(() => {
   cleanup()

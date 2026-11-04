@@ -43,6 +43,13 @@ mock.module('../services/cloud-workspaces', () => ({
   setCloudWorkspaces: async () => {},
   clearCloudWorkspaces: async () => {},
 }))
+// The machine copy's own status (SHO-301): the route must pass it through, so a
+// stalled sync is visible instead of only showing up as "the other side never
+// got it".
+let syncStatus: unknown = null
+mock.module('../lib/machine-sync/local-sync', () => ({
+  readMachineSyncStatus: async () => syncStatus,
+}))
 
 const { localSystemRoutes } = await import('../routes/local-system')
 
@@ -126,5 +133,37 @@ describe('GET /api/local/instance-info', () => {
     keyInfoValue = JSON.stringify({ workspace: { id: 'ws-1' }, user: { id: 'u-1' } })
     const body = (await (await getInfo()).json()) as any
     expect(body.workspaceName).toBeNull()
+  })
+
+  test('reports why the machine copy is not moving, and until when (SHO-301)', async () => {
+    syncStatus = {
+      running: true,
+      instanceId: 'inst-1',
+      lastAckedAt: null,
+      lastError: 'unauthorized',
+      pendingChanges: 3,
+      copyReady: false,
+      authBlockedUntil: 1_800_000_000_000,
+      stalledUntil: 0,
+      authRefusals: 3,
+      lastPostStatus: 401,
+      lastPostCode: 'unauthorized',
+      puller: {
+        lastError: 'feed refused (401)',
+        blockedUntil: 1_800_000_000_000,
+        authRefusals: 3,
+        lastPulledAt: null,
+      },
+    }
+
+    const body = (await (await getInfo()).json()) as any
+    expect(body.sync).toEqual(syncStatus)
+  })
+
+  test('reports no sync status rather than failing when the copy is not running', async () => {
+    syncStatus = null
+    const res = await getInfo()
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as any).sync).toBeNull()
   })
 })

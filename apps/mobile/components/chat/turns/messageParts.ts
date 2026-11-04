@@ -80,7 +80,27 @@ function isTransparentToReasoning(part: any): boolean {
   )
 }
 
-export function extractOrderedParts(message: UIMessage): MessagePart[] {
+/**
+ * Remembers the `MessagePart` a raw AI SDK part produced last time.
+ *
+ * A streamed delta appends to the turn's last message, so the message object
+ * (and its `parts` array) is new on every chunk while the parts already in it
+ * keep their identity. Rebuilding a `MessagePart` for each of them anyway gave
+ * every earlier row a new object, which defeated the memo on the row and made
+ * a joined turn's cost grow with its length on every commit (SHO-306). Keyed by
+ * the raw part, so a part that is still the same object yields the same
+ * `MessagePart` — and the row that renders it can bail out.
+ *
+ * The index is kept with it because a part's generated id is derived from its
+ * position: a part that moved (an inference retry drops the text before it)
+ * must not keep an id that now belongs to another part.
+ */
+export type PartReuseCache = WeakMap<object, { index: number; part: MessagePart }>
+
+export function extractOrderedParts(
+  message: UIMessage,
+  reuse?: PartReuseCache,
+): MessagePart[] {
   const parts = (message as any).parts as any[] | undefined
 
   if (!parts || !Array.isArray(parts)) {
@@ -94,6 +114,18 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
   }
 
   const result: MessagePart[] = []
+  /** The part this raw part produced last time, if it is still the same one. */
+  const reused = (raw: any, index: number): MessagePart | undefined => {
+    if (!reuse || typeof raw !== "object" || raw === null) return undefined
+    const hit = reuse.get(raw)
+    return hit && hit.index === index ? hit.part : undefined
+  }
+  const keep = (raw: any, index: number, part: MessagePart): MessagePart => {
+    if (reuse && typeof raw === "object" && raw !== null) {
+      reuse.set(raw, { index, part })
+    }
+    return part
+  }
 
   for (let index = 0; index < parts.length; index++) {
     const part = parts[index]
@@ -150,39 +182,48 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
       }
     } else if (part.type === "text") {
       if (part.text && part.text.trim()) {
-        result.push({ type: "text", text: part.text, id: `text-${index}` })
+        result.push(
+          reused(part, index) ??
+            keep(part, index, { type: "text", text: part.text, id: `text-${index}` }),
+        )
       }
     } else if (part.type === "data-context-summarized") {
       // Context-summarization divider. Emitted by the runtime mid-turn (and
       // persisted by the API) since SHO-96; it sits in the transcript so the
       // user can see why the context ring dropped.
       const payload = (part as { data?: Record<string, unknown> }).data ?? {}
-      result.push({
-        type: "compaction",
-        trigger: payload.trigger === "manual" ? "manual" : "auto",
-        tokensBefore: Number(payload.tokensBefore) || 0,
-        tokensAfter: Number(payload.tokensAfter) || 0,
-        messagesBefore: Number(payload.messagesBefore) || 0,
-        messagesAfter: Number(payload.messagesAfter) || 0,
-        id: `compaction-${index}`,
-      })
+      result.push(
+        reused(part, index) ??
+          keep(part, index, {
+            type: "compaction",
+            trigger: payload.trigger === "manual" ? "manual" : "auto",
+            tokensBefore: Number(payload.tokensBefore) || 0,
+            tokensAfter: Number(payload.tokensAfter) || 0,
+            messagesBefore: Number(payload.messagesBefore) || 0,
+            messagesAfter: Number(payload.messagesAfter) || 0,
+            id: `compaction-${index}`,
+          }),
+      )
     } else if (part.type === "tool-invocation") {
       const inv = part.toolInvocation
       if (inv) {
-        result.push({
-          type: "tool",
-          id: inv.toolCallId || `tool-${index}`,
-          tool: {
-            id: inv.toolCallId || `tool-${index}`,
-            toolName: inv.toolName || "unknown",
-            category: getToolCategory(inv.toolName || ""),
-            state: mapToolState(inv.state),
-            args: inv.args,
-            result: inv.result,
-            error: safeErrorString(inv.error),
-            timestamp: 0,
-          },
-        })
+        result.push(
+          reused(part, index) ??
+            keep(part, index, {
+              type: "tool",
+              id: inv.toolCallId || `tool-${index}`,
+              tool: {
+                id: inv.toolCallId || `tool-${index}`,
+                toolName: inv.toolName || "unknown",
+                category: getToolCategory(inv.toolName || ""),
+                state: mapToolState(inv.state),
+                args: inv.args,
+                result: inv.result,
+                error: safeErrorString(inv.error),
+                timestamp: 0,
+              },
+            }),
+        )
       }
     } else if (part.type === "dynamic-tool") {
       const toolCallId = part.toolCallId || `tool-${index}`
@@ -192,36 +233,46 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
           : part.error
       const preliminary =
         part.state === "output-available" && (part as any).preliminary === true
-      result.push({
-        type: "tool",
-        id: toolCallId,
-        tool: {
-          id: toolCallId,
-          toolName: part.toolName || "unknown",
-          category: getToolCategory(part.toolName || ""),
-          state: mapToolState(part.state, preliminary),
-          args: part.input,
-          result: part.output,
-          error: safeErrorString(rawError),
-          timestamp: 0,
-          ...withCredential((part as { credential?: unknown }).credential, (part.output as { credential?: unknown } | null)?.credential),
-        },
-      })
+      result.push(
+        reused(part, index) ??
+          keep(part, index, {
+            type: "tool",
+            id: toolCallId,
+            tool: {
+              id: toolCallId,
+              toolName: part.toolName || "unknown",
+              category: getToolCategory(part.toolName || ""),
+              state: mapToolState(part.state, preliminary),
+              args: part.input,
+              result: part.output,
+              error: safeErrorString(rawError),
+              timestamp: 0,
+              ...withCredential((part as { credential?: unknown }).credential, (part.output as { credential?: unknown } | null)?.credential),
+            },
+          }),
+      )
     } else if (part.type === "file" && part.url) {
-      if (part.mediaType?.startsWith("image/")) {
-        result.push({
-          type: "image",
-          url: part.url,
-          mediaType: part.mediaType,
-          id: `img-${index}`,
-        })
+      const cached = reused(part, index)
+      if (cached) {
+        result.push(cached)
+      } else if (part.mediaType?.startsWith("image/")) {
+        result.push(
+          keep(part, index, {
+            type: "image",
+            url: part.url,
+            mediaType: part.mediaType,
+            id: `img-${index}`,
+          }),
+        )
       } else {
-        result.push({
-          type: "file",
-          url: part.url,
-          mediaType: part.mediaType || "application/octet-stream",
-          id: `file-${index}`,
-        })
+        result.push(
+          keep(part, index, {
+            type: "file",
+            url: part.url,
+            mediaType: part.mediaType || "application/octet-stream",
+            id: `file-${index}`,
+          }),
+        )
       }
     }
   }

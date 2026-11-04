@@ -55,6 +55,20 @@ const POLL_INTERVAL_MS = 500
 const AUTH_RETRY_MS = 10 * 60_000
 
 /**
+ * Refusals of the device key tolerated before the pusher parks for
+ * `AUTH_RETRY_MS`, and the short wait between them.
+ *
+ * One refusal is not evidence the key is dead. Right after pairing, or while a
+ * restarted desktop is still adopting the cloud identity, the cloud can answer
+ * 401/403 to a request the person did not make — and arming the ten-minute park
+ * on that first answer made a healthy machine look offline for ten minutes on
+ * every restart (SHO-301: AC4/AC5 of the two-process suite stalled with no
+ * progress at all). The park is only armed once the refusal repeats.
+ */
+const AUTH_REFUSALS_BEFORE_BLOCK = 3
+const AUTH_SETTLE_RETRY_MS = 2_000
+
+/**
  * Wait after the cloud refuses a batch for a reason a retry cannot fix
  * (a snapshot naming another machine's workspace, `unknown_model`). Retrying every 30 s does not repair it
  * and hides it in a log nobody reads; ten minutes keeps the error visible in
@@ -157,6 +171,8 @@ export class MachineSyncPusher {
   private pushes = 0
   private authBlockedUntil = 0
   private stalledUntil = 0
+  /** Consecutive 401/403 answers since the last accepted push. */
+  private authRefusals = 0
   private pendingChanges = 0
   private copyReady = false
   /**
@@ -198,6 +214,15 @@ export class MachineSyncPusher {
     pendingChanges: number
     /** A full snapshot has been accepted by the cloud: the copy is complete. */
     copyReady: boolean
+    /** Epoch ms the pusher is parked until after the cloud refused the device key (0 = not parked). */
+    authBlockedUntil: number
+    /** Epoch ms the pusher is parked until after a refusal a retry cannot fix (0 = not parked). */
+    stalledUntil: number
+    /** Consecutive 401/403 answers since the last accepted push. */
+    authRefusals: number
+    /** Status and code of the last failed POST, for a support handoff. */
+    lastPostStatus: number
+    lastPostCode: string | null
   } {
     return {
       running: this.running,
@@ -209,6 +234,11 @@ export class MachineSyncPusher {
       pushes: this.pushes,
       pendingChanges: this.pendingChanges,
       copyReady: this.copyReady,
+      authBlockedUntil: this.authBlockedUntil,
+      stalledUntil: this.stalledUntil,
+      authRefusals: this.authRefusals,
+      lastPostStatus: this.lastPostStatus,
+      lastPostCode: this.lastPostCode,
     }
   }
 
@@ -253,6 +283,9 @@ export class MachineSyncPusher {
     if (authWait > 0) return authWait
     const stallWait = this.stalledUntil - Date.now()
     if (stallWait > 0) return stallWait
+    // A refusal the cloud may still take back (identity settling after pairing
+    // or a restart): retry soon instead of jumping to the failure backoff.
+    if (this.authRefusals > 0) return AUTH_SETTLE_RETRY_MS
     // Each accepted snapshot page resets `failureCount`, so a snapshot that dies
     // on a later page would otherwise restart within a second (PERF-14).
     const failures = Math.max(this.failureCount, this.snapshotFailures)
@@ -501,6 +534,7 @@ export class MachineSyncPusher {
     if (response.ok) {
       this.failureCount = 0
       this.authBlockedUntil = 0
+      this.authRefusals = 0
       this.lastError = null
       this.pushes++
       this.lastAckedAt = Date.now()
@@ -561,8 +595,17 @@ export class MachineSyncPusher {
     this.failureCount++
     this.lastError = code ?? `HTTP ${response.status}`
     if (response.status === 401 || response.status === 403) {
-      this.authBlockedUntil = Date.now() + AUTH_RETRY_MS
-      this.log(`[MachineSync] Cloud refused the device key (${this.lastError}); retrying in ${AUTH_RETRY_MS / 60_000} min`)
+      this.authRefusals++
+      if (this.authRefusals >= AUTH_REFUSALS_BEFORE_BLOCK) {
+        this.authBlockedUntil = Date.now() + AUTH_RETRY_MS
+        this.log(
+          `[MachineSync] Cloud refused the device key ${this.authRefusals} times (${this.lastError}); retrying in ${AUTH_RETRY_MS / 60_000} min`,
+        )
+      } else {
+        this.log(
+          `[MachineSync] Cloud refused the device key (${this.lastError}); retrying in ${AUTH_SETTLE_RETRY_MS / 1000}s`,
+        )
+      }
       return false
     }
     this.log(`[MachineSync] Cloud rejected batch: ${this.lastError} (HTTP ${response.status})`)

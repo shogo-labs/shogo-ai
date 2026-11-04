@@ -41,7 +41,9 @@ if (!globalThis.__happyDomInstalled) {
   (globalThis as any).Element = win.Element;
   (globalThis as any).Node = win.Node;
   (globalThis as any).Event = (globalThis as any).Event ?? win.Event;
-  (globalThis as any).CustomEvent = win.CustomEvent;
+  // Native first, like `Event` above: `window` is `globalThis`, so its
+  // `dispatchEvent` only accepts a native `Event` instance.
+  (globalThis as any).CustomEvent = (globalThis as any).CustomEvent ?? win.CustomEvent;
   (globalThis as any).getComputedStyle = win.getComputedStyle.bind(win);
   (globalThis as any).requestAnimationFrame = win.requestAnimationFrame.bind(win);
   (globalThis as any).cancelAnimationFrame = win.cancelAnimationFrame.bind(win);

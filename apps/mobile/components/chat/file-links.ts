@@ -7,6 +7,7 @@
  * id, so a path like `<uuid>/BILLING-AUDIT.md` is workspace-relative. Paths
  * without that prefix stay relative to the chat's current project.
  */
+import { absolutePathFromFileHref, localFileHref } from "../../lib/share-file-links"
 
 /**
  * Relative href with no URL scheme. Streamdown's sanitizer drops unknown
@@ -173,6 +174,53 @@ export function linkifyFilePaths(markdown: string): string {
   text = unmask(text, links, "LINK")
   text = unmask(text, fences, "FENCE")
   return text
+}
+
+const BARE_FILE_URL_RE = /file:\/\/[^\s<>"'`]+/gi
+
+/**
+ * Rewrite a `file://` link into the app's own relative href.
+ *
+ * On local desktop `share_file` returns a `file://` URL, but Streamdown's
+ * sanitizer drops the `file:` scheme and the native parser has no opener for
+ * it, so the link would render as blocked text. Parking the absolute path in
+ * `/shogo-local-file?path=` (the same trick as `FILE_HREF_PREFIX`) keeps it a
+ * link the renderer can turn into a file chip. Both an explicit markdown link
+ * and a bare URL the agent pasted are handled.
+ */
+export function rewriteLocalFileLinks(markdown: string): string {
+  if (!/file:\/\//i.test(markdown)) return markdown
+  const fences: string[] = []
+  const inlineCode: string[] = []
+  const links: string[] = []
+  let text = mask(markdown, FENCE_RE, fences, "FENCE")
+  text = mask(text, INLINE_CODE_RE, inlineCode, "CODE")
+
+  text = text.replace(
+    MARKDOWN_LINK_RE,
+    (full, image: string, label: string, target: string, title: string) => {
+      if (image) return full
+      const href = target.startsWith("<") ? target.slice(1, -1).trim() : target
+      const path = absolutePathFromFileHref(href)
+      if (!path) return full
+      return `[${label}](${localFileHref(path)}${title})`
+    },
+  )
+
+  // Protect the links just written (and any other link) so the bare-URL pass
+  // cannot rewrite a `file://` that sits inside a link target.
+  text = mask(text, EXISTING_LINK_RE, links, "LINK")
+  text = text.replace(BARE_FILE_URL_RE, (match) => {
+    const { candidate, trailing } = splitTrailingUrlPunctuation(match)
+    const path = absolutePathFromFileHref(candidate)
+    if (!path) return match
+    const name = path.split(/[\\/]/).pop() || "File"
+    return `[${name}](${localFileHref(path)})${trailing}`
+  })
+
+  text = unmask(text, links, "LINK")
+  text = unmask(text, inlineCode, "CODE")
+  return unmask(text, fences, "FENCE")
 }
 
 const MARKDOWN_LINK_RE = /(!?)\[([^\]\n]*)\]\(\s*(<[^>\n]+>|[^)\s]+)((?:\s+"[^"\n]*")?)\s*\)/g

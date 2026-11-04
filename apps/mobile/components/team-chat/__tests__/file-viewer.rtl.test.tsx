@@ -56,6 +56,12 @@ const api = {
         conversation: { id: 'conv-1', name: 'general', kind: 'public' },
       }
     }
+    if (id === 'empty') {
+      return {
+        file: { ...baseFile, id, name: 'content-agents-kit.zip', mimeType: 'application/zip', size: 0, hasText: false },
+        conversation: { id: 'conv-1', name: 'general', kind: 'public' },
+      }
+    }
     return { file: { ...baseFile, id }, conversation: { id: 'conv-1', name: 'general', kind: 'public' } }
   },
   fileText: async () => ({ fileId: 'att-1', name: 'notes.txt', mimeType: 'text/plain', text: 'line one', offset: 0, totalChars: 8, nextOffset: null }),
@@ -140,5 +146,18 @@ describe('opening a shared file', () => {
 
     await screen.findByText(/This file isn't available/)
     expect(container.textContent).not.toContain('/api/conversation-files')
+  })
+
+  test('a file stored at 0 bytes says the upload failed and offers no download', async () => {
+    downloads.length = 0
+    const { container } = render(createElement(FileViewer, { attachmentId: 'empty' }))
+
+    await screen.findByText('Upload failed · 0 bytes')
+    expect(screen.getByText(/uploaded empty \(0 bytes\)/)).toBeDefined()
+    // No download button at all: an anchor here would save the API's JSON error
+    // under the zip's name.
+    expect(screen.queryByText('Download')).toBe(null)
+    expect(container.textContent).not.toContain('Download')
+    expect(downloads).toEqual([])
   })
 })

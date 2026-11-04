@@ -16,6 +16,7 @@ import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { installSyncTriggers, triggerStatements } from '../machine-sync/triggers.ts'
 import { MachineSyncPusher, type SyncBatchRequest } from '../machine-sync/pusher.ts'
+import { HostSyncPuller } from '../machine-sync/puller.ts'
 import { applyBatch, normaliseRow, releaseHostedWorkspaces } from '../machine-sync/ingest.ts'
 import { applyRewrites } from '../machine-sync/models.ts'
 
@@ -517,10 +518,16 @@ describe('the pusher', () => {
     expect(headers[0]['x-api-key']).toBeUndefined()
   })
 
-  test('a refused device key (401) pauses pushing for minutes, not seconds', async () => {
+  test('one refused device key (401) retries in seconds — a refusal the cloud takes back must not park sync', async () => {
+    // SHO-301: right after pairing or a restart the cloud can answer 401 while
+    // the desktop is still adopting its identity. Arming the ten-minute park on
+    // that first answer left a healthy machine with no sync at all.
     const { db, changes } = fakeDesktopDb({ rows: { chatMessage: [{ id: 'm1', sessionId: 's1', content: 'hi' }] } })
     rowSeq(changes, 'ChatMessage', 'm1')
-    responses = [{ status: 401, body: { error: { code: 'unauthorized' } } }]
+    responses = [
+      { status: 401, body: { error: { code: 'unauthorized' } } },
+      { status: 200, body: { ok: true, cursor: 1 } },
+    ]
     const pusher = new MachineSyncPusher({
       prisma: db,
       getCloudUrl: () => 'https://studio.example',
@@ -531,10 +538,40 @@ describe('the pusher', () => {
     await pusher.tick()
     expect(posted).toHaveLength(1)
     expect(pusher.status.lastError).toBe('unauthorized')
+    expect(pusher.status.authRefusals).toBe(1)
+    expect(pusher.status.authBlockedUntil).toBe(0)
+    expect((pusher as any).nextDelay()).toBeLessThanOrEqual(2_000)
+
+    // The next tick gets through, and the refusal is forgotten.
+    await pusher.tick()
+    expect(posted).toHaveLength(2)
+    expect(pusher.status.authRefusals).toBe(0)
+    expect(pusher.status.lastError).toBeNull()
+  })
+
+  test('a device key the cloud keeps refusing pauses pushing for minutes, not seconds', async () => {
+    const { db, changes } = fakeDesktopDb({ rows: { chatMessage: [{ id: 'm1', sessionId: 's1', content: 'hi' }] } })
+    rowSeq(changes, 'ChatMessage', 'm1')
+    responses = [
+      { status: 401, body: { error: { code: 'unauthorized' } } },
+      { status: 401, body: { error: { code: 'unauthorized' } } },
+      { status: 401, body: { error: { code: 'unauthorized' } } },
+    ]
+    const pusher = new MachineSyncPusher({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'shogo_sk_device',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: fakeFetch(),
+    })
+    for (const _ of [1, 2, 3]) await pusher.tick()
+    expect(posted).toHaveLength(3)
+    expect(pusher.status.authRefusals).toBe(3)
+    expect(pusher.status.authBlockedUntil).toBeGreaterThan(Date.now() + 9 * 60_000)
     expect((pusher as any).nextDelay()).toBeGreaterThanOrEqual(9 * 60_000)
     // A mutation's syncNow() does not hammer the cloud during the pause either.
     await pusher.syncNow()
-    expect(posted).toHaveLength(1)
+    expect(posted).toHaveLength(3)
   })
 
   test('a state row whose snapshot never landed still sends a snapshot, not deltas', async () => {
@@ -936,6 +973,71 @@ const ingestCtx = (db: any) => ({
   instanceId: 'inst-1',
   ownerUserId: 'cloud-user-1',
   homeRegion: 'us-ashburn-1',
+})
+
+describe('the puller', () => {
+  function fakePullerDb() {
+    const state = new Map<string, any>()
+    return {
+      machineSyncState: {
+        findUnique: async ({ where }: any) => state.get(where.instanceId) ?? null,
+        upsert: async ({ where, create }: any) => {
+          state.set(where.instanceId, create)
+          return create
+        },
+      },
+    }
+  }
+
+  function pullerWith(db: any, status: number | number[], body: unknown = {}) {
+    const codes = Array.isArray(status) ? [...status] : null
+    let calls = 0
+    const puller = new HostSyncPuller({
+      prisma: db,
+      getCloudUrl: () => 'https://studio.example',
+      getApiKey: () => 'shogo_sk_device',
+      getInstanceId: () => 'inst-1',
+      fetchImpl: (async () => {
+        calls++
+        const code = codes ? (codes.shift() ?? 200) : (status as number)
+        return new Response(JSON.stringify(body), { status: code })
+      }) as unknown as typeof fetch,
+    })
+    return { puller, calls: () => calls }
+  }
+
+  test('one refused device key (401) retries in seconds; a repeated one backs off for minutes', async () => {
+    // SHO-301 (AC5): after a restart the cloud can refuse the feed once while
+    // the desktop adopts its identity. Parking ten minutes there left the
+    // desktop with no cloud → desktop sync at all.
+    const { puller, calls } = pullerWith(fakePullerDb(), 401)
+
+    expect(await puller.tick()).toBeLessThanOrEqual(2_000)
+    expect(puller.status.blockedUntil).toBe(0)
+    expect(puller.status.authRefusals).toBe(1)
+
+    expect(await puller.tick()).toBeLessThanOrEqual(2_000)
+    const parked = await puller.tick()
+    expect(calls()).toBe(3)
+    expect(parked).toBeGreaterThanOrEqual(9 * 60_000)
+    expect(puller.status.blockedUntil).toBeGreaterThan(Date.now() + 9 * 60_000)
+  })
+
+  test('a page that lands clears the refusal count', async () => {
+    const { puller } = pullerWith(fakePullerDb(), [401, 200], {
+      cursor: 1,
+      more: false,
+      userId: 'u1',
+      models: [],
+      deletes: [],
+    })
+    await puller.tick()
+    expect(puller.status.authRefusals).toBe(1)
+    await puller.tick()
+    expect(puller.status.authRefusals).toBe(0)
+    expect(puller.status.lastError).toBeNull()
+    expect(puller.status.blockedUntil).toBe(0)
+  })
 })
 
 describe('the ingest', () => {

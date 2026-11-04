@@ -133,6 +133,18 @@ export interface CollapsibleToolGroupProps {
   /** Optional trailing element rendered after the label, before the chevron (e.g. a +N/-N diff badge). */
   badge?: ReactNode
   /**
+   * When true (default), the body is mounted once while the group is closed so
+   * the height spring has a real target the first time it opens.
+   *
+   * A run of work that can hold hundreds of tool calls must pass `false`: a
+   * window that joins a long turn receives the whole run at once, and mounting
+   * every row of it just to measure a body the person cannot see is what froze
+   * the screen on rejoin (SHO-306). The group is collapsed by default even
+   * while it streams, so it only needs a height when someone opens it — and
+   * then `onContentSizeChange` / `onLayout` measures it.
+   */
+  measureWhenClosed?: boolean
+  /**
    * When true, renders the label (+ optional badge) as a static row
    * with no chevron and no expandable body — used when there's
    * nothing to expand (e.g. a "Worked for X" header on a turn with no
@@ -170,6 +182,7 @@ function CollapsibleToolGroupImpl({
   badge,
   disabled = false,
   scrollBody = true,
+  measureWhenClosed = true,
   children,
 }: CollapsibleToolGroupProps) {
   const [internalExpanded, setInternalExpanded] = useState(
@@ -254,12 +267,19 @@ function CollapsibleToolGroupImpl({
     [],
   )
 
+  // When the body is not measured while closed it is measured on the frame it
+  // opens, so there is no height to animate to yet. Opening towards
+  // `STREAM_MAX_HEIGHT` in that gap springs a short run out to the full cap and
+  // snaps it back; opening from 0 lets it grow once the measurement lands
+  // (SHO-306).
+  const unmountedTarget = scrollBody && measureWhenClosed ? STREAM_MAX_HEIGHT : 0
+
   const heightAnimate = useMemo(
     () => ({
       opacity: 1,
-      height: targetHeight || (scrollBody ? STREAM_MAX_HEIGHT : 0),
+      height: targetHeight || unmountedTarget,
     }),
-    [targetHeight, scrollBody],
+    [targetHeight, unmountedTarget],
   )
 
   const handleHiddenLayout = useCallback((e: LayoutChangeEvent) => {
@@ -372,8 +392,11 @@ function CollapsibleToolGroupImpl({
       </Pressable>
 
       {/* Hidden measurer — mirrors ThinkingWidget so the spring animation
-          has a real target height instead of jumping to STREAM_MAX_HEIGHT. */}
-      {measuredHeight === 0 && (
+          has a real target height instead of jumping to STREAM_MAX_HEIGHT.
+          Only mounted while closed when the body is known to be small
+          (`measureWhenClosed`); a work run of hundreds of rows is measured
+          when it opens instead. */}
+      {measuredHeight === 0 && (isOpen || measureWhenClosed) && (
         <View style={styles.hiddenMeasure} onLayout={handleHiddenLayout}>
           <View className="ml-2 pl-2 border-l border-border/40 pt-2.5 pb-1">
             {children}

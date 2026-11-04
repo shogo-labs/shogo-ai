@@ -578,3 +578,53 @@ describe("formatRelativeTime", () => {
     expect(formatRelativeTime(recent)).toBe("just now");
   });
 });
+
+/**
+ * SHO-306. A joined turn re-groups its parts on every streamed chunk. Handing
+ * the row a brand-new group object each time defeated its memo, so a run of
+ * hundreds of tool calls was re-summarised and re-rendered per chunk. A group
+ * whose items are the same parts as last time is now the same object.
+ */
+describe("groupWorkParts — reusing groups across deltas", () => {
+  function workPart(i: number): MessagePart {
+    return tool("Read", { path: `src/file-${i}.ts` });
+  }
+
+  test("an unchanged run is the same group object", () => {
+    const parts = [workPart(0), workPart(1), workPart(2)];
+    const first = groupWorkParts(parts);
+    const second = groupWorkParts(parts, first);
+
+    expect(second[0]).toBe(first[0]);
+  });
+
+  test("only the run the delta grew is rebuilt", () => {
+    const head = [workPart(0), workPart(1)];
+    const first = groupWorkParts([...head, { type: "text", text: "a", id: "t0" }]);
+    const second = groupWorkParts(
+      [...head, { type: "text", text: "a", id: "t0" }, workPart(2)],
+      first,
+    );
+
+    // The first run is untouched, so its row keeps its identity.
+    expect(second[0]).toBe(first[0]);
+    // The new run is a new group.
+    expect(second[2]).not.toBe(first[1]);
+    expect(second[2]).toMatchObject({ type: "work-group" });
+  });
+
+  test("a run that gained an item is rebuilt", () => {
+    const first = groupWorkParts([workPart(0)]);
+    const second = groupWorkParts([workPart(0), workPart(1)], first);
+
+    expect(second[0]).not.toBe(first[0]);
+    if (second[0].type === "work-group") expect(second[0].items).toHaveLength(2);
+  });
+
+  test("without a previous grouping every group is new", () => {
+    const parts = [workPart(0), workPart(1)];
+    const a = groupWorkParts(parts);
+    const b = groupWorkParts(parts);
+    expect(b[0]).not.toBe(a[0]);
+  });
+});
