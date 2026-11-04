@@ -677,6 +677,8 @@ export interface PublishOptions {
   password?: string
   siteTitle?: string
   siteDescription?: string
+  /** Target environment. `staging` deploys to the optional staging site. */
+  environment?: 'production' | 'staging'
 }
 
 async function publishFetch<T>(
@@ -775,6 +777,35 @@ export async function publishProject(
     body: JSON.stringify(opts),
     parse: (j) => j as PublishResult,
   }, publishRequestTimeoutMs())
+}
+
+export interface PublishOpsOptions {
+  action: string
+  environment?: 'production' | 'staging'
+  minReplicas?: number
+  maxReplicas?: number
+  size?: 's' | 'm' | 'l'
+  deploymentId?: string
+  since?: number
+  replica?: string
+}
+
+/**
+ * Run a published-app ops action (SHO-308): status, metrics, logs, scale,
+ * rollback, redeploy, promote, create_env, delete_env, list.
+ *
+ * An ops action never builds or publishes new code — scale/rollback/redeploy
+ * all reuse an image that already exists.
+ */
+export async function publishOps(
+  projectId: string,
+  opts: PublishOpsOptions,
+): Promise<CheckpointCallResult<Record<string, unknown>>> {
+  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/publish/ops`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    parse: (j) => j as Record<string, unknown>,
+  }, 60_000)
 }
 
 export interface SharedFileResult {

@@ -187,6 +187,7 @@ import {
   rollbackCheckpoint as apiRollbackCheckpoint,
   getPublishState as apiGetPublishState,
   publishProject as apiPublishProject,
+  publishOps as apiPublishOps,
   createSharedFileLink as apiCreateSharedFileLink,
   createWorkspaceSharedFileLink as apiCreateWorkspaceSharedFileLink,
   createGitHubPullRequest as apiCreateGitHubPullRequest,
@@ -4794,6 +4795,8 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds and that the scripts/stylesheets it references load — share THAT URL with the user. If it returns `brokenAssets`, the site renders blank: fix the asset paths and republish before telling the user it works.',
       'The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
       'In a workspace runtime, pass `project_id` for the mounted project to publish. It defaults to the current project, the workspace anchor, or the only attached project.',
+      'Published apps run on Knative and scale past one instance. Pass `environment: "staging"` to deploy to the optional staging site (`{subdomain}--staging.shogo.one`) for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
+      'For anything other than a deploy — checking replicas/latency/cost, tailing logs, changing scale, rolling back, redeploying, promoting, creating or deleting staging — pass `ops_action` instead of publishing. An ops action NEVER builds or publishes new code. Get the user\'s confirmation before: raising max replicas or size (real money), rollback, promote to production, and deleting an environment.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -4821,21 +4824,109 @@ function createPublishTool(ctx: ToolContext): AgentTool {
             'Project to publish. Required in a workspace runtime when more than one project is attached and none is the current or anchor project.',
         }),
       ),
+      environment: Type.Optional(
+        Type.Union([Type.Literal('production'), Type.Literal('staging')], {
+          description:
+            'Which environment to deploy to. Defaults to "production". "staging" creates/uses the optional staging site for load testing and debugging.',
+        }),
+      ),
+      ops_action: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal('status'),
+            Type.Literal('metrics'),
+            Type.Literal('logs'),
+            Type.Literal('scale'),
+            Type.Literal('rollback'),
+            Type.Literal('redeploy'),
+            Type.Literal('promote'),
+            Type.Literal('create_env'),
+            Type.Literal('delete_env'),
+            Type.Literal('list'),
+          ],
+          {
+            description:
+              'Run a published-app ops action instead of publishing. Never builds or publishes new code. Requires the user\'s confirmation for scale-up (real money), rollback, promote and delete_env.',
+          },
+        ),
+      ),
+      min_replicas: Type.Optional(
+        Type.Number({ description: 'ops_action "scale": minimum replicas (0 = scale to zero).' }),
+      ),
+      max_replicas: Type.Optional(
+        Type.Number({ description: 'ops_action "scale": maximum replicas. Clamped to the plan cap.' }),
+      ),
+      size: Type.Optional(
+        Type.Union([Type.Literal('s'), Type.Literal('m'), Type.Literal('l')], {
+          description: 'ops_action "scale": pod size tier. Larger tiers cost more.',
+        }),
+      ),
+      deployment_id: Type.Optional(
+        Type.String({ description: 'ops_action "rollback": the deployment to roll back to. Defaults to the previous one.' }),
+      ),
+      since: Type.Optional(
+        Type.Number({ description: 'ops_action "metrics": window start, epoch ms. Defaults to the last 24h.' }),
+      ),
+      replica: Type.Optional(
+        Type.String({ description: 'ops_action "logs": the pod name to tail. Defaults to a ready pod.' }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { subdomain, access_level, password, site_title, site_description, project_id } = params as {
+      const {
+        subdomain,
+        access_level,
+        password,
+        site_title,
+        site_description,
+        project_id,
+        environment,
+        ops_action,
+        min_replicas,
+        max_replicas,
+        size,
+        deployment_id,
+        since,
+        replica,
+      } = params as {
         subdomain?: string
         access_level?: 'anyone' | 'authenticated' | 'private' | 'password'
         password?: string
         site_title?: string
         site_description?: string
         project_id?: string
+        environment?: 'production' | 'staging'
+        ops_action?: 'status' | 'metrics' | 'logs' | 'scale' | 'rollback' | 'redeploy' | 'promote' | 'create_env' | 'delete_env' | 'list'
+        min_replicas?: number
+        max_replicas?: number
+        size?: 's' | 'm' | 'l'
+        deployment_id?: string
+        since?: number
+        replica?: string
       }
       const projectId = resolveTargetProjectId(ctx, project_id)
       if (!projectId) {
         return textResult({
           error: 'No project context is available, so the app cannot be published. Pass project_id for the project to publish.',
         })
+      }
+
+      // Ops actions never deploy. They run against an environment and return
+      // the same data the Deployment tab shows.
+      if (ops_action) {
+        const ops = await apiPublishOps(projectId, {
+          action: ops_action,
+          environment,
+          minReplicas: min_replicas,
+          maxReplicas: max_replicas,
+          size,
+          deploymentId: deployment_id,
+          since,
+          replica,
+        })
+        if (!ops.ok) {
+          return textResult({ error: ops.error, code: ops.code })
+        }
+        return textResult(ops.data ?? {})
       }
 
       // Resolve first-publish vs republish from the current state.
@@ -4858,6 +4949,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         password,
         siteTitle: site_title,
         siteDescription: site_description,
+        environment: environment === 'staging' ? 'staging' : 'production',
       })
 
       if (!res.ok) {

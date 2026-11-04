@@ -14,6 +14,7 @@
 
 import type { ProjectSubstrate, PublishOpts, PublishResult, Resources, RuntimeStatus, RuntimeSummary, WakeOpts } from './types'
 import { shouldServeStaticFromEdgeOnly } from '../publish-substrate-config'
+import type { PublishedEnvironmentName, PublishedSize } from '../published-scale'
 
 /** The slice of KnativeProjectManager this substrate needs (DI seam for tests). */
 export interface KnativeBackend {
@@ -26,13 +27,44 @@ export interface KnativeBackend {
   ): Promise<void>
   listAllServices(): Promise<Array<{ projectId: string; name: string; status: { ready: boolean; url: string | null; replicas: number } }>>
   // --- published site (ksvc + DomainMapping) ---
-  createPublishedService(projectId: string, subdomain: string, opts?: { minScale?: number }): Promise<string>
-  createPublishedServerService(projectId: string, subdomain: string, opts?: { minScale?: number }): Promise<string>
-  createPublishedDomainMapping(subdomain: string, projectId: string): Promise<void>
-  deletePublishedService(projectId: string): Promise<void>
+  createPublishedService(
+    projectId: string,
+    subdomain: string,
+    opts?: { minScale?: number; maxScale?: number; environment?: PublishedEnvironmentName },
+  ): Promise<string>
+  createPublishedServerService(
+    projectId: string,
+    subdomain: string,
+    opts?: {
+      minScale?: number
+      maxScale?: number
+      size?: PublishedSize
+      environment?: PublishedEnvironmentName
+      image?: string
+    },
+  ): Promise<string>
+  createPublishedDomainMapping(
+    subdomain: string,
+    projectId: string,
+    environment?: PublishedEnvironmentName,
+  ): Promise<void>
+  deletePublishedService(projectId: string, environment?: PublishedEnvironmentName): Promise<void>
   deletePublishedDomainMapping(subdomain: string): Promise<void>
-  setPublishedMinScale(projectId: string, minScale: number): Promise<void>
-  healthCheckPublished(projectId: string, timeoutMs?: number): Promise<boolean>
+  setPublishedMinScale(
+    projectId: string,
+    minScale: number,
+    environment?: PublishedEnvironmentName,
+  ): Promise<void>
+  setPublishedScale?(
+    projectId: string,
+    settings: { minReplicas: number; maxReplicas: number; size: PublishedSize },
+    environment?: PublishedEnvironmentName,
+  ): Promise<void>
+  healthCheckPublished(
+    projectId: string,
+    timeoutMs?: number,
+    environment?: PublishedEnvironmentName,
+  ): Promise<boolean>
 }
 
 /**
@@ -111,12 +143,21 @@ export class KnativeSubstrate implements ProjectSubstrate {
 
   async publish(projectId: string, opts: PublishOpts): Promise<PublishResult> {
     const { subdomain, serverBacked, alwaysOn } = opts
-    const minScale = alwaysOn ? 1 : 0
+    const environment: PublishedEnvironmentName = opts.environment ?? 'production'
+    const minScale = opts.scale?.minReplicas ?? (alwaysOn ? 1 : 0)
+    const maxScale = opts.scale?.maxReplicas ?? 1
+    const size: PublishedSize = opts.scale?.size ?? 's'
     const kv = await this.serverBackedKv()
 
     if (serverBacked) {
-      const url = await this.backend.createPublishedServerService(projectId, subdomain, { minScale })
-      await this.backend.createPublishedDomainMapping(subdomain, projectId)
+      const url = await this.backend.createPublishedServerService(projectId, subdomain, {
+        minScale,
+        maxScale,
+        size,
+        environment,
+        image: opts.image,
+      })
+      await this.backend.createPublishedDomainMapping(subdomain, projectId, environment)
       await kv.setServerBackedFlag(subdomain, 'knative')
       return { serverBacked: true, substrate: this.kind, url }
     }
@@ -127,12 +168,16 @@ export class KnativeSubstrate implements ProjectSubstrate {
     // server-backed publish, dropping the Knative dependency for static apps.
     await kv.clearServerBackedFlag(subdomain)
     if (shouldServeStaticFromEdgeOnly()) {
-      await this.backend.deletePublishedService(projectId).catch(() => {})
+      await this.backend.deletePublishedService(projectId, environment).catch(() => {})
       await this.backend.deletePublishedDomainMapping(subdomain).catch(() => {})
       return { serverBacked: false, substrate: this.kind }
     }
-    const url = await this.backend.createPublishedService(projectId, subdomain, { minScale })
-    await this.backend.createPublishedDomainMapping(subdomain, projectId)
+    const url = await this.backend.createPublishedService(projectId, subdomain, {
+      minScale,
+      maxScale,
+      environment,
+    })
+    await this.backend.createPublishedDomainMapping(subdomain, projectId, environment)
     return { serverBacked: false, substrate: this.kind, url }
   }
 

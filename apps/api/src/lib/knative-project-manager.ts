@@ -31,6 +31,13 @@ import type { InstanceSizeName } from '../config/instance-sizes'
 import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
 import { fnv1a64 } from './advisory-lock'
 import { parseProjectSettings } from './project-settings'
+import {
+  buildPublishedScaleAnnotations,
+  publishedContainerResources,
+  publishedServiceName,
+  type PublishedEnvironmentName,
+  type PublishedScaleSettings,
+} from './published-scale'
 
 const knativeTracer = trace.getTracer('shogo-knative-manager')
 
@@ -1044,8 +1051,12 @@ export class KnativeProjectManager {
    * published service doesn't exist yet — the publish flow seeds min-scale at
    * create time from `Project.publishedAlwaysOn`.
    */
-  async setPublishedMinScale(projectId: string, minScale: number): Promise<void> {
-    const serviceName = `published-${projectId}`
+  async setPublishedMinScale(
+    projectId: string,
+    minScale: number,
+    environment: PublishedEnvironmentName = 'production',
+  ): Promise<void> {
+    const serviceName = publishedServiceName(projectId, environment)
     const patch = {
       spec: {
         template: {
@@ -1064,12 +1075,47 @@ export class KnativeProjectManager {
   }
 
   /**
+   * Apply a full scale setting (min/max replicas + size tier) to a published
+   * environment without a republish. A merge-patch on the template rolls a new
+   * revision, so the change takes effect in place; the image is unchanged.
+   */
+  async setPublishedScale(
+    projectId: string,
+    settings: PublishedScaleSettings,
+    environment: PublishedEnvironmentName = 'production',
+  ): Promise<void> {
+    const serviceName = publishedServiceName(projectId, environment)
+    const patch = {
+      spec: {
+        template: {
+          metadata: {
+            annotations: buildPublishedScaleAnnotations(settings),
+          },
+          spec: {
+            containers: [
+              {
+                name: RUNTIME_CONFIG.containerName,
+                resources: publishedContainerResources(settings.size),
+              },
+            ],
+          },
+        },
+      },
+    }
+    await mergePatchKnativeService(this.namespace, serviceName, patch)
+    console.log(
+      `[KnativeProjectManager] Set published service ${serviceName} scale ` +
+        `min=${settings.minReplicas} max=${settings.maxReplicas} size=${settings.size}`,
+    )
+  }
+
+  /**
    * In-cluster URL of a *published* service (`published-{projectId}`). When the
    * service is scaled to zero this address routes through the Knative activator,
    * so a request to it both reports readiness AND triggers scale-from-zero.
    */
-  publishedServiceUrl(projectId: string): string {
-    return `http://published-${projectId}.${this.namespace}.svc.cluster.local`
+  publishedServiceUrl(projectId: string, environment: PublishedEnvironmentName = 'production'): string {
+    return `http://${publishedServiceName(projectId, environment)}.${this.namespace}.svc.cluster.local`
   }
 
   /**
@@ -1084,8 +1130,12 @@ export class KnativeProjectManager {
    * this non-blocking: the visitor's loading page polls repeatedly rather than
    * holding one long request open across a multi-minute cold start.
    */
-  async healthCheckPublished(projectId: string, timeoutMs: number = 5000): Promise<boolean> {
-    const url = this.publishedServiceUrl(projectId)
+  async healthCheckPublished(
+    projectId: string,
+    timeoutMs: number = 5000,
+    environment: PublishedEnvironmentName = 'production',
+  ): Promise<boolean> {
+    const url = this.publishedServiceUrl(projectId, environment)
     try {
       const response = await fetch(`${url}/ready`, {
         method: "GET",
@@ -1096,6 +1146,123 @@ export class KnativeProjectManager {
       // Timeout / connection refused / still cold-starting — not ready yet. The
       // request still reached the activator, so scale-from-zero is in flight.
       return false
+    }
+  }
+
+  /**
+   * The pods currently backing a published environment. This is the source of
+   * truth for the Deployment tab's replica count (SHO-308 §4) — not metal VM
+   * state, and not a cached number.
+   */
+  async listPublishedPods(
+    projectId: string,
+    environment: PublishedEnvironmentName = 'production',
+  ): Promise<Array<{
+    name: string
+    phase: string
+    ready: boolean
+    restarts: number
+    startedAt: string | null
+    revision: string | null
+  }>> {
+    const serviceName = publishedServiceName(projectId, environment)
+    const coreApi = getCoreApi()
+    const res = await coreApi.listNamespacedPod({
+      namespace: this.namespace,
+      labelSelector: `serving.knative.dev/service=${serviceName}`,
+    })
+    const items = ((res as any).items ?? []) as any[]
+    return items.map((pod) => {
+      const statuses = (pod.status?.containerStatuses ?? []) as any[]
+      const ready = statuses.length > 0 && statuses.every((s) => s.ready === true)
+      const restarts = statuses.reduce((sum, s) => sum + (s.restartCount ?? 0), 0)
+      return {
+        name: pod.metadata?.name ?? '',
+        phase: pod.status?.phase ?? 'Unknown',
+        ready,
+        restarts,
+        startedAt: pod.status?.startTime ?? null,
+        revision: pod.metadata?.labels?.['serving.knative.dev/revision'] ?? null,
+      }
+    })
+  }
+
+  /** Tail a published environment's `user-container` logs. */
+  async readPublishedLogs(
+    projectId: string,
+    environment: PublishedEnvironmentName = 'production',
+    opts?: { podName?: string; tailLines?: number },
+  ): Promise<string> {
+    const serviceName = publishedServiceName(projectId, environment)
+    const coreApi = getCoreApi()
+    let podName = opts?.podName
+    if (!podName) {
+      const pods = await this.listPublishedPods(projectId, environment)
+      const running = pods.find((p) => p.ready) ?? pods[0]
+      if (!running) return ''
+      podName = running.name
+    }
+    const log = await coreApi.readNamespacedPodLog({
+      name: podName,
+      namespace: this.namespace,
+      container: RUNTIME_CONFIG.containerName,
+      tailLines: opts?.tailLines ?? 200,
+    })
+    return typeof log === 'string' ? log : String(log ?? '')
+  }
+
+  /**
+   * Point a published environment at a different image, rolling a new revision
+   * with no build. This is what rollback and promote use: the image already
+   * exists in OCIR, so the only work is a template patch.
+   */
+  async setPublishedImage(
+    projectId: string,
+    image: string,
+    environment: PublishedEnvironmentName = 'production',
+  ): Promise<void> {
+    const serviceName = publishedServiceName(projectId, environment)
+    const patch = {
+      spec: {
+        template: {
+          metadata: {
+            annotations: {
+              'shogo.io/deploy-timestamp': new Date().toISOString(),
+            },
+          },
+          spec: {
+            containers: [
+              {
+                name: RUNTIME_CONFIG.containerName,
+                image,
+              },
+            ],
+          },
+        },
+      },
+    }
+    await mergePatchKnativeService(this.namespace, serviceName, patch)
+    console.log(`[KnativeProjectManager] Set published service ${serviceName} image=${image}`)
+  }
+
+  /** The revision currently serving traffic for a published environment. */
+  async getPublishedRevision(
+    projectId: string,
+    environment: PublishedEnvironmentName = 'production',
+  ): Promise<string | null> {
+    const serviceName = publishedServiceName(projectId, environment)
+    const api = getCustomApi()
+    try {
+      const svc: any = await api.getNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        name: serviceName,
+      })
+      return svc?.status?.latestReadyRevisionName ?? svc?.status?.latestCreatedRevisionName ?? null
+    } catch {
+      return null
     }
   }
 
@@ -1579,9 +1746,9 @@ export class KnativeProjectManager {
   async createPublishedService(
     projectId: string,
     subdomain: string,
-    opts?: { minScale?: number },
+    opts?: { minScale?: number; maxScale?: number; environment?: PublishedEnvironmentName },
   ): Promise<string> {
-    const serviceName = `published-${projectId}`
+    const serviceName = publishedServiceName(projectId, opts?.environment ?? 'production')
     const api = getCustomApi()
     const publishBucket = process.env.PUBLISH_BUCKET || 'shogo-published-apps-staging'
 
@@ -1647,10 +1814,9 @@ export class KnativeProjectManager {
         template: {
           metadata: {
             annotations: {
-              // min-scale defaults to 0 (scale-to-zero); always-on published
-              // apps pass minScale=1 to keep a warm replica (no cold start).
+              // Static nginx pods are cheap and stateless, so they scale freely.
               "autoscaling.knative.dev/min-scale": String(opts?.minScale ?? 0),
-              "autoscaling.knative.dev/max-scale": "1",
+              "autoscaling.knative.dev/max-scale": String(opts?.maxScale ?? 10),
               "autoscaling.knative.dev/scale-to-zero-pod-retention-period": "1800s",
               "autoscaling.knative.dev/target": "100",
               "shogo.io/deploy-timestamp": new Date().toISOString(),
@@ -1755,11 +1921,24 @@ export class KnativeProjectManager {
   async createPublishedServerService(
     projectId: string,
     subdomain: string,
-    opts?: { minScale?: number },
+    opts?: {
+      minScale?: number
+      maxScale?: number
+      size?: PublishedScaleSettings['size']
+      environment?: PublishedEnvironmentName
+      /** Prebuilt per-commit image. Falls back to the shared runtime image. */
+      image?: string
+    },
   ): Promise<string> {
-    const serviceName = `published-${projectId}`
+    const environment = opts?.environment ?? 'production'
+    const serviceName = publishedServiceName(projectId, environment)
+    const scale: PublishedScaleSettings = {
+      minReplicas: opts?.minScale ?? 0,
+      maxReplicas: opts?.maxScale ?? 1,
+      size: opts?.size ?? 's',
+    }
     const api = getCustomApi()
-    const runtimeImage = RUNTIME_CONFIG.image()
+    const runtimeImage = opts?.image || RUNTIME_CONFIG.image()
     const workDir = RUNTIME_CONFIG.workDir
     const publishDomain = process.env.PUBLISH_DOMAIN || 'shogo.one'
     const publishedDataBucket =
@@ -1772,6 +1951,7 @@ export class KnativeProjectManager {
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
       // Published-mode switches: run server.tsx, no agent gateway.
       { name: "SHOGO_PUBLISHED_MODE", value: "true" },
+      { name: "PUBLISHED_ENVIRONMENT", value: environment },
       { name: "PUBLISHED_SUBDOMAIN", value: subdomain },
       { name: "PUBLISH_DOMAIN", value: publishDomain },
       { name: "PUBLIC_PREVIEW_URL", value: `https://${subdomain}.${publishDomain}` },
@@ -1842,6 +2022,20 @@ export class KnativeProjectManager {
       })
     }
 
+    // Postgres at publish (SHO-308 §1): the environment's database URL lives in
+    // a per-environment K8s secret written by the publish flow. `optional: true`
+    // keeps a static/legacy site bootable before its DB exists.
+    env.push({
+      name: "DATABASE_URL",
+      valueFrom: {
+        secretKeyRef: {
+          name: `published-db-${projectId}-${environment}`,
+          key: "database-url",
+          optional: true,
+        },
+      },
+    })
+
     if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
       env.push({ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: process.env.OTEL_EXPORTER_OTLP_ENDPOINT })
       env.push({ name: "OTEL_SERVICE_NAME", value: "shogo-published" })
@@ -1867,20 +2061,22 @@ export class KnativeProjectManager {
         template: {
           metadata: {
             annotations: {
-              // min-scale defaults to 0 (scale-to-zero); always-on published
-              // apps pass minScale=1 to keep a warm replica (no cold start).
-              "autoscaling.knative.dev/min-scale": String(opts?.minScale ?? 0),
-              "autoscaling.knative.dev/max-scale": "1",
-              "autoscaling.knative.dev/scale-to-zero-pod-retention-period": "1800s",
-              "autoscaling.knative.dev/target": "10",
+              // Knative's autoscaler owns scaling (SHO-308 §3): min/max come
+              // from the environment's settings, so a published app scales past
+              // one replica. min >= 1 is what "always-on" means now.
+              ...buildPublishedScaleAnnotations(scale),
               "shogo.io/deploy-timestamp": new Date().toISOString(),
             },
           },
           spec: {
-            // Cold start hydrates source + deps + runs a build, so allow a
-            // generous startup window before the request times out.
-            timeoutSeconds: 600,
-            responseStartTimeoutSeconds: 300,
+            // The image is prebuilt at publish, so boot is a process start, not
+            // a build. Keep a modest window for cold starts.
+            timeoutSeconds: 300,
+            responseStartTimeoutSeconds: 60,
+            // 0 = Knative's concurrency target decides; the pod handles many
+            // concurrent requests rather than one at a time.
+            containerConcurrency: 0,
+            terminationGracePeriodSeconds: 30,
             securityContext: { fsGroup: 999 },
             containers: [
               {
@@ -1889,10 +2085,7 @@ export class KnativeProjectManager {
                 imagePullPolicy: "Always",
                 ports: [{ containerPort: 8080, name: "http1" }],
                 env,
-                resources: {
-                  requests: { memory: "512Mi", cpu: "100m" },
-                  limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
-                },
+                resources: publishedContainerResources(scale.size),
                 volumeMounts: [{ name: "project-data", mountPath: workDir }],
                 readinessProbe: {
                   httpGet: { path: "/ready", port: 8080 },
@@ -1972,10 +2165,14 @@ export class KnativeProjectManager {
    * Create a DomainMapping for a published app's subdomain.
    * Maps {subdomain}.shogo.one -> published-{projectId}
    */
-  async createPublishedDomainMapping(subdomain: string, projectId: string): Promise<void> {
+  async createPublishedDomainMapping(
+    subdomain: string,
+    projectId: string,
+    environment: PublishedEnvironmentName = 'production',
+  ): Promise<void> {
     const publishDomain = process.env.PUBLISH_DOMAIN || 'shogo.one'
     const domainName = `${subdomain}.${publishDomain}`
-    const serviceName = `published-${projectId}`
+    const serviceName = publishedServiceName(projectId, environment)
 
     console.log(`[KnativeProjectManager] Creating published DomainMapping: ${domainName} -> ${serviceName}`)
 
@@ -2095,8 +2292,11 @@ export class KnativeProjectManager {
   /**
    * Delete a published service (no PVC cleanup needed -- uses emptyDir).
    */
-  async deletePublishedService(projectId: string): Promise<void> {
-    const serviceName = `published-${projectId}`
+  async deletePublishedService(
+    projectId: string,
+    environment: PublishedEnvironmentName = 'production',
+  ): Promise<void> {
+    const serviceName = publishedServiceName(projectId, environment)
     const api = getCustomApi()
 
     try {

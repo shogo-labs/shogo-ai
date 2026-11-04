@@ -1003,6 +1003,26 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'chat-turn-journal.ts appends frame N of one turn from the request that is streaming it; the pair is the idempotency key that lets a retried append detect it already landed, and a turn streams from exactly one region.',
   },
+  // --- published apps on Knative (SHO-308) ---------------------------------
+  {
+    key: 'PublishedEnvironment.subdomain',
+    category: 'request_scoped',
+    reason:
+      'A published subdomain is claimed once by the publish request that owns it (routes/publish.ts claims + releases it) and the row lives in the project workspace home region; a cross-region duplicate claim is rejected by the unique and surfaced back to the user as "subdomain taken", which is the intended outcome rather than a lost write.',
+  },
+  {
+    key: 'PublishedEnvironment.(name,projectId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'At most one production and one staging environment per project. ensureProductionEnvironment/createStagingEnvironment upsert on this exact pair from a request pinned to the project workspace home region, so the second writer of a retry updates the same row instead of creating a duplicate.',
+  },
+  {
+    key: 'PublishedUsageMinute.(environmentId,minute)',
+    category: 'cron_locked',
+    reason:
+      'Replication metering rows are written only by jobs/published-usage.ts, which runs under withGlobalJobLock(published-usage-collect). One lock holder per tick means one row per (environment, minute) regardless of how many regions tick; the biller reads the same key under published-usage-bill and only ever updates billedAt.',
+    writer: 'published-usage-collect',
+  },
 ]
 
 // ===========================================================================

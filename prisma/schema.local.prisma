@@ -4688,3 +4688,64 @@ model WorkspaceMove {
   @@index([status])
   @@map("workspace_moves")
 }
+
+// =============================================================================
+// Published environments (SHO-308) — mirrors prisma/schema.prisma.
+// SQLite has no enums, so `name`/`size`/`status` are plain strings.
+// =============================================================================
+
+model PublishedEnvironment {
+  id                  String   @id @default(cuid())
+  projectId           String
+  /// "production" | "staging"
+  name                String
+  subdomain           String   @unique
+  minReplicas         Int      @default(0)
+  maxReplicas         Int      @default(1)
+  /// "s" | "m" | "l"
+  size                String   @default("s")
+  dbProvider          String?
+  dbName              String?
+  currentDeploymentId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([projectId, name])
+  @@index([projectId])
+  @@map("published_environments")
+}
+
+model PublishedDeployment {
+  id             String   @id @default(cuid())
+  environmentId  String
+  commitSha      String
+  imageRef       String
+  imageDigest    String?
+  schemaHash     String?
+  revisionName   String?
+  promotedFromId String?
+  createdBy      String?
+  /// "pending" | "building" | "ready" | "failed" | "superseded"
+  status         String   @default("pending")
+  createdAt      DateTime @default(now())
+
+  @@index([environmentId, createdAt])
+  @@map("published_deployments")
+}
+
+model PublishedUsageMinute {
+  id             String    @id @default(cuid())
+  environmentId  String
+  minute         DateTime
+  podSeconds     Int       @default(0)
+  requests       Int       @default(0)
+  errors5xx      Int       @default(0)
+  p95Ms          Int?
+  egressBytes    BigInt    @default(0)
+  dbStorageBytes BigInt    @default(0)
+  billedAt       DateTime?
+
+  @@unique([environmentId, minute])
+  @@index([billedAt])
+  @@map("published_usage_minutes")
+}

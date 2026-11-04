@@ -5890,3 +5890,82 @@ model WorkspaceMove {
   @@index([status])
   @@map("workspace_moves")
 }
+
+// =============================================================================
+// Published environments (SHO-308)
+//
+// A published app runs on Knative in one or more environments. `production` is
+// the live site; `staging` is optional and exists so a user (or the agent) can
+// load-test and debug before promoting. Dev/editing stays on metal and is NOT
+// modelled here. Scale settings live per environment, not on Project.
+// =============================================================================
+
+model PublishedEnvironment {
+  id                  String   @id @default(cuid())
+  projectId           String
+  /// "production" | "staging"
+  name                String
+  /// The full subdomain this environment serves: `{sub}` for production,
+  /// `{sub}--staging` for staging.
+  subdomain           String   @unique
+  /// Knative autoscaler bounds. min >= 1 is what "always-on" means now.
+  minReplicas         Int      @default(0)
+  maxReplicas         Int      @default(1)
+  /// Size tier: "s" | "m" | "l" (pod CPU/memory, see lib/published-scale.ts).
+  size                String   @default("s")
+  /// "postgres" once the environment's database is provisioned.
+  dbProvider          String?
+  /// The Postgres database name on the projects-pg cluster.
+  dbName              String?
+  /// The deployment currently serving traffic.
+  currentDeploymentId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([projectId, name])
+  @@index([projectId])
+  @@map("published_environments")
+}
+
+model PublishedDeployment {
+  id             String   @id @default(cuid())
+  environmentId  String
+  commitSha      String
+  /// OCIR image reference, e.g. `<region>.ocir.io/<ns>/shogo/published/<id>:<sha>`.
+  imageRef       String
+  imageDigest    String?
+  /// Hash of the Postgres schema pushed with this deployment.
+  schemaHash     String?
+  /// The Knative revision this deployment created.
+  revisionName   String?
+  /// Set when this deployment was promoted from another environment.
+  promotedFromId String?
+  createdBy      String?
+  /// "pending" | "building" | "ready" | "failed" | "superseded"
+  status         String   @default("pending")
+  createdAt      DateTime @default(now())
+
+  @@index([environmentId, createdAt])
+  @@map("published_deployments")
+}
+
+model PublishedUsageMinute {
+  id             String    @id @default(cuid())
+  environmentId  String
+  /// Truncated to the minute.
+  minute         DateTime
+  /// Pod-seconds consumed in this minute (summed across replicas).
+  podSeconds     Int       @default(0)
+  requests       Int       @default(0)
+  errors5xx      Int       @default(0)
+  p95Ms          Int?
+  egressBytes    BigInt    @default(0)
+  dbStorageBytes BigInt    @default(0)
+  /// Set when the hourly billing job has charged this row. A rerun never
+  /// double-charges because the job only reads rows where this is null.
+  billedAt       DateTime?
+
+  @@unique([environmentId, minute])
+  @@index([billedAt])
+  @@map("published_usage_minutes")
+}

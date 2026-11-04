@@ -299,6 +299,7 @@ describe('publish tool', () => {
         password: 'hunter2',
         siteTitle: 'My Site',
         siteDescription: 'desc',
+        environment: 'production',
       },
     })
     expect(details).toMatchObject({
