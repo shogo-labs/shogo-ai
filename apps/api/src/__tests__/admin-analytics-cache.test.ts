@@ -125,4 +125,26 @@ describe('admin analytics cache', () => {
 
     expect(svc.getWorkspaceActivityTable).toHaveBeenCalledTimes(2)
   })
+
+  /**
+   * A failed read must not be remembered: the entry is evicted, so the next
+   * request retries and the caller still sees the 500. (QA round 3 hit the
+   * other half of this: a *successful* entry outliving a test's failure
+   * injection, which is why the route suite clears the cache per test.)
+   */
+  test('an error is not cached — the next request retries and still fails', async () => {
+    svc.getUsageSummary.mockImplementationOnce(async () => {
+      throw new Error('boom')
+    })
+
+    const first = await app().request('/api/admin/analytics/usage-summary?period=30d')
+    expect(first.status).toBe(500)
+    expect(await first.json()).toMatchObject({ error: { code: 'analytics_failed', message: 'boom' } })
+
+    const second = await app().request('/api/admin/analytics/usage-summary?period=30d')
+    expect(second.status).toBe(200)
+
+    // Once (throwing) + once (recovered) — the failure did not serve the second call.
+    expect(svc.getUsageSummary).toHaveBeenCalledTimes(2)
+  })
 })
