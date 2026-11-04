@@ -11,10 +11,10 @@
  */
 
 import { getModelTier, resolveModelId, calculateDollarCost, modelSupportsVideoInput } from '@shogo/model-catalog'
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync, realpathSync } from 'fs'
 import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
@@ -4952,8 +4952,9 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       'Use this whenever the user asks to download, receive, get, or send a generated file such as a PDF, DOCX, ZIP, EXE, image, or other artifact.',
       'This is for individual files, not web apps. Do not invent a localhost or preview URL, and do not use the publish tool for a file download.',
       'Never upload the file to a third-party host (filebin, file.io, transfer.sh, tmpfiles, 0x0.st, or similar) with curl or any other tool; this is the only supported way to hand a user a file.',
-      'After this succeeds, paste the returned URL verbatim and tell the user when it expires. Do not delete or overwrite the shared file before the user downloads it.',
+      'After this succeeds, paste the returned URL verbatim; tell the user when it expires only when the result has an `expiresAt`. Do not delete or overwrite the shared file before the user downloads it.',
       'In a workspace runtime the file decides where the link points: a file inside a mounted project gets a project link, anything else gets a workspace link. `project_id` only picks the project when the path alone is ambiguous.',
+      'On local desktop it returns a `file://` link to the file on disk that does not expire.',
     ].join(' '),
     label: 'Share file',
     parameters: Type.Object({
@@ -4996,6 +4997,30 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
         return textResult({
           error: `File not found: ${path}`,
           ...(hint ? { hint } : {}),
+        })
+      }
+
+      // Local desktop: the file is already on this machine's disk, so the link
+      // is the file itself. No token to sign, nothing to expire, and no
+      // several-hundred-character URL for the model to mistype.
+      if (process.env.SHOGO_LOCAL_MODE === 'true') {
+        let realPath = resolved
+        try {
+          realPath = realpathSync(resolved)
+        } catch {
+          // A path that vanished between stat and realpath is still the file
+          // the caller named; the viewer reports it as missing.
+        }
+        const filename = path.split('/').pop() || path
+        return textResult({
+          ok: true,
+          local: true,
+          url: pathToFileURL(realPath).href,
+          path: realPath,
+          linkPath: path,
+          filename,
+          size: fileSize,
+          note: 'Links straight to the file on disk; it does not expire. Paste url verbatim.',
         })
       }
 

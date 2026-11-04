@@ -15,9 +15,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { ActivityIndicator, Modal, Platform, Pressable, Text, View } from "react-native"
-import { Download, RotateCcw, X } from "lucide-react-native"
+import { Download, FolderOpen, ExternalLink, RotateCcw, X } from "lucide-react-native"
 import { downloadAttachment } from "../../lib/attachment-download"
 import { resolveChatAttachmentUrl } from "../../lib/chat-attachment-url"
+import { getDesktopBridge } from "../../lib/desktop-bridge"
 import { shareFileErrorFromBody, shareFileErrorText, type InAppFileRef } from "../../lib/share-file-links"
 import { useResolvedTheme } from "../../contexts/theme"
 import { FileContentView, viewerPathKey } from "../files/FileContentView"
@@ -67,6 +68,12 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
 
   const source = useMemo(() => resolveChatAttachmentUrl(target.href), [target.href])
   const isDark = useResolvedTheme() === "dark"
+  // A local share is a file on this machine: the desktop can show it in
+  // Finder or hand it to the OS's default app. Nothing to reveal on web/native.
+  const desktop = Platform.OS === "web" ? getDesktopBridge() : null
+  const localPath = target.kind === "local" ? target.path ?? null : null
+  const canReveal = !!localPath && !!desktop?.revealPath
+  const canOpenExternally = !!localPath && !!desktop?.openPath
 
   useEffect(() => {
     let cancelled = false
@@ -174,6 +181,32 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
     }
   }, [saving, source, state, target.name])
 
+  const reveal = useCallback(async () => {
+    if (!localPath || !desktop?.revealPath) return
+    setSaveError(null)
+    const result = await desktop.revealPath(localPath)
+    if (!result.ok) {
+      setSaveError(
+        result.error === "path_not_allowed"
+          ? "That file is outside your Shogo folders"
+          : result.error || "Could not show the file",
+      )
+    }
+  }, [desktop, localPath])
+
+  const openExternally = useCallback(async () => {
+    if (!localPath || !desktop?.openPath) return
+    setSaveError(null)
+    const result = await desktop.openPath(localPath)
+    if (!result.ok) {
+      setSaveError(
+        result.error === "path_not_allowed"
+          ? "That file is outside your Shogo folders"
+          : result.error || "Could not open the file",
+      )
+    }
+  }, [desktop, localPath])
+
   const subtitle =
     state.status === "ready" ? formatSize(state.size) : state.status === "error" ? "" : "Loading…"
 
@@ -196,6 +229,32 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
             </Text>
           ) : null}
         </View>
+        {canReveal ? (
+          <Pressable
+            onPress={reveal}
+            accessibilityRole="button"
+            accessibilityLabel={`Show ${target.name} in Finder`}
+            testID="share-file-reveal"
+            className="flex-row items-center gap-1 rounded-md px-2 py-1 hover:bg-muted active:opacity-70"
+          >
+            <FolderOpen size={14} className="text-muted-foreground" />
+            <Text className="text-[11px] text-muted-foreground">
+              {desktop?.platform === "win32" ? "Show in Explorer" : "Show in Finder"}
+            </Text>
+          </Pressable>
+        ) : null}
+        {canOpenExternally ? (
+          <Pressable
+            onPress={openExternally}
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${target.name} in its default app`}
+            testID="share-file-open-external"
+            className="flex-row items-center gap-1 rounded-md px-2 py-1 hover:bg-muted active:opacity-70"
+          >
+            <ExternalLink size={14} className="text-muted-foreground" />
+            <Text className="text-[11px] text-muted-foreground">Open</Text>
+          </Pressable>
+        ) : null}
         {state.status === "ready" ? (
           <Pressable
             onPress={save}
