@@ -72,7 +72,54 @@ const prismaApi = {
       return { ...row }
     },
   },
+  // SHO-308: every publish has a `production` environment row carrying the
+  // Knative scale settings. This fake keeps the same in-memory shape.
+  publishedEnvironment: {
+    findUnique: async ({ where }: any) => {
+      if (where.projectId_name) {
+        const { projectId, name } = where.projectId_name
+        return Object.values(envRows).find((e) => e.projectId === projectId && e.name === name) ?? null
+      }
+      if (where.id) return Object.values(envRows).find((e) => e.id === where.id) ?? null
+      return null
+    },
+    create: async ({ data }: any) => {
+      const row = {
+        id: `penv_${Object.keys(envRows).length + 1}`,
+        minReplicas: 0,
+        maxReplicas: 1,
+        size: 's',
+        dbProvider: null,
+        dbName: null,
+        currentDeploymentId: null,
+        ...data,
+      }
+      envRows[row.id] = row
+      return { ...row }
+    },
+    update: async ({ where, data }: any) => {
+      const row = Object.values(envRows).find((e) => e.id === where.id)
+      if (!row) throw new Error(`no environment ${where.id}`)
+      Object.assign(row, data)
+      return { ...row }
+    },
+  },
+  // SHO-308: every publish records what the environment now serves, so
+  // rollback/redeploy/promote have a real image to point at.
+  publishedDeployment: {
+    create: async ({ data }: any) => {
+      const row = { id: `pdep_${deploymentRows.length + 1}`, createdAt: new Date(), ...data }
+      deploymentRows.push(row)
+      return { ...row }
+    },
+    updateMany: async () => ({ count: 0 }),
+    findUnique: async ({ where }: any) => deploymentRows.find((d) => d.id === where.id) ?? null,
+  },
 }
+
+const deploymentRows: any[] = []
+
+const envRows: Record<string, any> = {}
 
 let apiKeyResult: { workspaceId: string; userId: string } | null = { workspaceId: 'ws-a', userId: 'u1' }
 let canPublish = true
@@ -160,6 +207,7 @@ function patch(path: string, body: any, key: string | null = 'shogo_sk_test') {
 
 beforeEach(() => {
   rows = {}
+  for (const key of Object.keys(envRows)) delete envRows[key]
   createCalls.length = 0
   updateCalls.length = 0
   s3Puts.length = 0

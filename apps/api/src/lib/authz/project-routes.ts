@@ -40,6 +40,11 @@ export const PROJECT_ROUTE_RULES: readonly ProjectRouteRule[] = [
     ],
     permission: 'project:publish',
   },
+  // The Deployment tab and `publish ops_action`. Every read is gated on
+  // `project:publish` too: pod logs can carry connection strings, and metrics
+  // and cost expose what the project is billed.
+  { methods: 'write', paths: ['/published/*'], permission: 'project:publish' },
+  { methods: ['GET'], paths: ['/published/*'], permission: 'project:publish' },
   { methods: 'write', paths: ['/members', '/members/*', '/visibility'], permission: 'project.members:manage' },
   {
     methods: 'write',

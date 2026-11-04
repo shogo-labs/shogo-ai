@@ -1938,6 +1938,23 @@ app.post('/api/projects/:projectId/republish', async (c) => {
   return router.fetch(newReq)
 })
 
+// Published environments / Deployment tab (SHO-308). One catch-all: the
+// environment sub-routes (status, metrics, logs, scale, rollback, redeploy,
+// create, delete, promote) all live behind the same prefix in publishRoutes().
+for (const method of ['GET', 'POST', 'DELETE', 'PATCH'] as const) {
+  app.on(method, '/api/projects/:projectId/published/*', async (c) => {
+    const router = publishRoutes()
+    const url = new URL(c.req.url)
+    url.pathname = url.pathname.replace(/^\/api/, '')
+    const newReq = new Request(url.toString(), {
+      method,
+      headers: c.req.raw.headers,
+      ...(method === 'GET' || method === 'DELETE' ? {} : { body: c.req.raw.body }),
+    })
+    return router.fetch(newReq)
+  })
+}
+
 // Desktop publishing (SHO-245): the desktop builds the bundle on the user's
 // machine and uploads it here, and these routes host it. API-key auth only —
 // machine-to-machine, never the browser.
@@ -10458,6 +10475,24 @@ setTimeout(async () => {
     } catch (err: any) {
       console.error(
         '[SyncPrLinks] failed to schedule sweep (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Published-app metering + billing (SHO-308 §9): samples each published
+// environment's pods once a minute and turns the completed rows into one
+// `consumeUsage` charge per environment per hour. Both steps are wrapped in
+// withGlobalJobLock, so one region meters and bills per tick.
+{
+  ;(async () => {
+    try {
+      const { startPublishedUsageCron } = await import('./jobs/published-usage')
+      startPublishedUsageCron()
+    } catch (err: any) {
+      console.error(
+        '[PublishedUsage] failed to schedule meter/biller (non-fatal):',
         err?.message ?? err,
       )
     }

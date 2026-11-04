@@ -33,36 +33,36 @@ describe('publish-substrate-config', () => {
   })
 
   describe('isPublishMetalAuthoritative', () => {
-    it('defaults to Knative when the metal fleet is disabled', () => {
+    it('defaults to Knative when nothing is set', () => {
       expect(isPublishMetalAuthoritative()).toBe(false)
     })
 
-    it('is metal-authoritative once the fleet is enabled', () => {
+    it('stays Knative when the metal fleet is enabled (metal is dev-only)', () => {
       process.env.SHOGO_METAL_ENABLED = 'true'
-      expect(isPublishMetalAuthoritative()).toBe(true)
+      expect(isPublishMetalAuthoritative()).toBe(false)
     })
 
-    it('follows metal-only / drain modes (they imply enabled)', () => {
+    it('stays Knative under metal-only / drain modes', () => {
       process.env.SHOGO_METAL_ALL_PROJECTS = 'true'
-      expect(isPublishMetalAuthoritative()).toBe(true)
+      expect(isPublishMetalAuthoritative()).toBe(false)
     })
 
-    it('PUBLISH_SUBSTRATE=metal forces metal even when the fleet flag is off', () => {
+    it('PUBLISH_SUBSTRATE=metal forces metal (escape hatch / rollback)', () => {
       process.env.PUBLISH_SUBSTRATE = 'metal'
       expect(isPublishMetalAuthoritative()).toBe(true)
     })
 
-    it('PUBLISH_SUBSTRATE=knative forces Knative even when the fleet is enabled (rollback)', () => {
+    it('PUBLISH_SUBSTRATE=knative is explicit Knative', () => {
       process.env.SHOGO_METAL_ENABLED = 'true'
       process.env.PUBLISH_SUBSTRATE = 'knative'
       expect(isPublishMetalAuthoritative()).toBe(false)
     })
 
-    it('ignores an unknown PUBLISH_SUBSTRATE value (falls back to the fleet flag)', () => {
+    it('ignores an unknown PUBLISH_SUBSTRATE value (stays Knative)', () => {
       process.env.PUBLISH_SUBSTRATE = 'nonsense'
       expect(isPublishMetalAuthoritative()).toBe(false)
       process.env.SHOGO_METAL_ENABLED = 'true'
-      expect(isPublishMetalAuthoritative()).toBe(true)
+      expect(isPublishMetalAuthoritative()).toBe(false)
     })
   })
 

@@ -370,24 +370,33 @@ app.post('/projects/:projectId/publish', async (c) => {
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
 
-  let body: { subdomain?: string; accessLevel?: any; password?: string; siteTitle?: string; siteDescription?: string }
+  let body: {
+    subdomain?: string
+    accessLevel?: any
+    password?: string
+    siteTitle?: string
+    siteDescription?: string
+    environment?: 'production' | 'staging'
+  }
   try {
     body = (await c.req.json()) as typeof body
   } catch {
     return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
   }
-  if (!body.subdomain || typeof body.subdomain !== 'string') {
+  const environment = body.environment === 'staging' ? 'staging' : 'production'
+  if (!body.subdomain && environment !== 'staging') {
     return c.json({ error: { code: 'subdomain_required', message: 'subdomain is required' } }, 400)
   }
 
   try {
     const { publishProject } = await import('./publish')
     const result = await publishProject(projectId, {
-      subdomain: body.subdomain,
+      subdomain: body.subdomain ?? '',
       accessLevel: body.accessLevel,
       password: body.password,
       siteTitle: body.siteTitle,
       siteDescription: body.siteDescription,
+      environment,
     })
     if (!result.ok) {
       return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
@@ -403,6 +412,98 @@ app.post('/projects/:projectId/publish', async (c) => {
   } catch (err: any) {
     console.error(`[Internal] publish for ${projectId} failed:`, err.message)
     return c.json({ error: { code: 'publish_failed', message: 'Failed to publish' } }, 500)
+  }
+})
+
+/**
+ * POST /api/internal/projects/:projectId/publish/ops — the agent's `publish`
+ * `ops_action` (SHO-308 §5).
+ *
+ * One route for every ops action so the tool stays a single call and the
+ * dashboard (which uses /api/projects/:id/published/*) and the agent share the
+ * same service. An ops action never builds or publishes new code.
+ * Auth: K8s SA token (cluster) OR HMAC-signed `x-runtime-token` (metal / local).
+ */
+app.post('/projects/:projectId/publish/ops', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  let body: {
+    action?: string
+    environment?: string
+    minReplicas?: number
+    maxReplicas?: number
+    size?: string
+    deploymentId?: string
+    since?: number
+    replica?: string
+    confirm?: boolean
+  }
+  try {
+    body = (await c.req.json()) as typeof body
+  } catch {
+    return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
+  }
+
+  const action = String(body.action ?? '').trim()
+  const environment = body.environment === 'staging' ? 'staging' : 'production'
+
+  try {
+    const ops = await import('../services/published-ops.service')
+    let res: any
+    switch (action) {
+      case 'status':
+        res = await ops.getEnvironmentStatus(projectId, environment)
+        break
+      case 'metrics':
+        res = await ops.getEnvironmentMetrics(projectId, environment, { sinceMs: body.since })
+        break
+      case 'logs':
+        res = await ops.getEnvironmentLogs(projectId, environment, { podName: body.replica })
+        break
+      case 'scale':
+        res = await ops.scaleEnvironment(projectId, environment, {
+          minReplicas: body.minReplicas,
+          maxReplicas: body.maxReplicas,
+          size: body.size,
+        })
+        break
+      case 'rollback':
+        res = await ops.rollbackEnvironment(projectId, environment, body.deploymentId)
+        break
+      case 'redeploy':
+        res = await ops.redeployEnvironment(projectId, environment)
+        break
+      case 'promote':
+        res = await ops.promoteStagingToProduction(projectId)
+        break
+      case 'create_env':
+        res = await ops.createEnvironment(projectId, environment)
+        break
+      case 'delete_env':
+        res = await ops.deleteEnvironment(projectId, environment)
+        break
+      case 'ls':
+      case 'list':
+        res = { ok: true, value: { environments: await ops.listEnvironmentStatuses(projectId) } }
+        break
+      default:
+        return c.json(
+          {
+            error: {
+              code: 'unknown_action',
+              message: `Unknown ops action "${action}". Use status, metrics, logs, scale, rollback, redeploy, promote, create_env, delete_env or list.`,
+            },
+          },
+          400,
+        )
+    }
+    if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+    return c.json({ ok: true, ...res.value })
+  } catch (err: any) {
+    console.error(`[Internal] publish ops "${action}" for ${projectId} failed:`, err?.message ?? err)
+    return c.json({ error: { code: 'ops_failed', message: err?.message ?? 'Ops action failed' } }, 500)
   }
 })
 
