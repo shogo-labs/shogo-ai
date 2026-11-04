@@ -961,11 +961,6 @@ export const HomeScreen = observer(function HomeScreen({
     return <MobileHomeFeed />
   }
   if (rendersAgentChat) {
-    // The screen is keyed by workspace so a switch starts a fresh one, and the
-    // key must not change from a placeholder to the real id: re-keying a frame
-    // after mount is what aborted a running turn (SHO-300).
-    // `useWorkspaceRemountKey` gives the same key from the first commit through
-    // loading → first workspace, so mounting straight away is safe.
     return (
       <WorkspaceAgentChatScreen
         key={homeChatMountKey}
