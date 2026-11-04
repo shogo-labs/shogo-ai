@@ -105,6 +105,20 @@ describe('the workspace agent screen opens from the device', () => {
     expect(peekHit).toContain('applyBoot(cached)')
   })
 
+  test('a missing key alone never ends the wait', () => {
+    // CI caught the wait being released on the key being null: the workspace
+    // collection was already loaded, but the workspace in view was not resolved
+    // (or was refreshing), so the screen painted the spinner over a chat the
+    // device held. Only an account with no workspaces may end it.
+    const effect = screen.slice(screen.indexOf('const applyBoot = (record'))
+    const noKey = effect.slice(
+      effect.indexOf('if (!bootKey)'),
+      effect.indexOf('const cached = peekWorkspaceChatBoot'),
+    )
+    expect(noKey).toContain('bootWaitCanEndWithoutRecord({')
+    expect(noKey).not.toMatch(/workspaces\?\.all != null\) setBootPending\(false\)/)
+  })
+
   test('a successful load answers the next open', () => {
     expect(screen).toContain('rememberWorkspaceChatBoot<PersonalAgentProfile>(bootKey, {')
   })

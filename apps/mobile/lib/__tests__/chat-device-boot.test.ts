@@ -21,6 +21,7 @@ import {
   writeChatHistory,
 } from '../chat-history-store'
 import {
+  bootWaitCanEndWithoutRecord,
   chatHistoryOrigin,
   loadWorkspaceChatBoot,
   peekWorkspaceChatBoot,
@@ -227,5 +228,21 @@ describe('the first paint', () => {
     ).toBe('chat')
     // No workspace yet is the app booting, not this chat.
     expect(workspaceChatLoadingView({ ...base, hasWorkspace: false })).toBe('spinner')
+  })
+
+  test('the device wait ends only when the account has no workspace at all', () => {
+    // A key that is merely not resolved yet is the case the wait exists for:
+    // the user or the workspace in view has not answered, or the collection is
+    // refreshing. Releasing here paints the spinner over a chat the device has.
+    expect(
+      bootWaitCanEndWithoutRecord({ collectionReady: true, workspaceCount: 2 }),
+    ).toBe(false)
+    expect(
+      bootWaitCanEndWithoutRecord({ collectionReady: false, workspaceCount: 0 }),
+    ).toBe(false)
+    // Nothing to open, so nothing can arrive.
+    expect(
+      bootWaitCanEndWithoutRecord({ collectionReady: true, workspaceCount: 0 }),
+    ).toBe(true)
   })
 })

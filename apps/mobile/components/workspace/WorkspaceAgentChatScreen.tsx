@@ -31,6 +31,7 @@ import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
 import {
+  bootWaitCanEndWithoutRecord,
   chatHistoryOrigin,
   loadWorkspaceChatBoot,
   peekWorkspaceChatBoot,
@@ -289,10 +290,23 @@ export const WorkspaceAgentChatScreen = observer(
         }
       }
       if (!bootKey) {
-        // Nothing to look up yet. Once the account's workspaces are known and
-        // none is in view there is no record that could fill this frame, so
-        // waiting longer would only hide a legitimately empty screen.
-        if (workspaces?.all != null) setBootPending(false)
+        // Nothing to look up yet. Only an account with no workspaces at all
+        // can never produce a key, so only that may end the wait.
+        //
+        // A null workspace is *not* that case: `useActiveWorkspace` returns
+        // null for the whole of any `workspaces.loadAll()` (`isLoading`, which
+        // every in-app navigation triggers) even though `all` still holds the
+        // list. Releasing the wait there painted the spinner for the few frames
+        // the collection spent refreshing — over a chat the device already had
+        // (SHO-309, caught in CI).
+        if (
+          bootWaitCanEndWithoutRecord({
+            collectionReady: workspaces != null && workspaces.isLoading !== true,
+            workspaceCount: workspaces?.all?.length ?? 0,
+          })
+        ) {
+          setBootPending(false)
+        }
         return
       }
       const cached = peekWorkspaceChatBoot<PersonalAgentProfile>(bootKey)

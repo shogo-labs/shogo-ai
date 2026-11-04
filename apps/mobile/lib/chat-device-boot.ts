@@ -130,6 +130,25 @@ export function transcriptLoaderVisible(input: {
 }
 
 /**
+ * Whether the device wait may end *without* a record having answered, because
+ * no record can arrive at all: the account's workspaces are known and there are
+ * none, so no workspace agent chat can be opened from it (SHO-309).
+ *
+ * A missing key is not, on its own, a reason to stop waiting. The key is null
+ * whenever the signed-in user or the workspace in view has not resolved yet —
+ * which is the first frame of every reopen, and every moment the workspace
+ * collection is refreshing. Releasing the wait there is what let
+ * "Preparing Workspace Agent Chat…" paint over a chat the device already had.
+ */
+export function bootWaitCanEndWithoutRecord(input: {
+  /** The workspace collection has answered and is not refreshing. */
+  collectionReady: boolean
+  workspaceCount: number
+}): boolean {
+  return input.collectionReady && input.workspaceCount === 0
+}
+
+/**
  * What a workspace agent chat renders while it has no chat to show.
  *
  *  - `error`: the load failed and nothing cached can stand in for it.
