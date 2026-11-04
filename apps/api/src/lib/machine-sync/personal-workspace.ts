@@ -32,10 +32,20 @@ export interface PersonalWorkspaceRef {
   slug: string
 }
 
-/** Tables that carry a `workspaceId` column, read from the live database. */
-async function workspaceScopedTables(db: any): Promise<string[]> {
-  const dialect = detectDialect()
-  if (dialect === 'sqlite') {
+/**
+ * Tables that carry a `workspaceId` column, read from the live database — and
+ * the dialect they came from.
+ *
+ * The dialect is asked of the database, not of `process.env.DATABASE_URL`: a
+ * test process, a script and a desktop all reach this module with whatever env
+ * they happen to have, and mis-guessing it here means querying
+ * `information_schema` on SQLite (or the reverse) and failing the merge. The
+ * SQLite probe runs first — `sqlite_master` exists on every SQLite database and
+ * nowhere else — and it is deliberately called outside the transaction below,
+ * so a Postgres error on it costs nothing.
+ */
+async function workspaceScopedTables(db: any): Promise<{ tables: string[]; dialect: 'sqlite' | 'postgres' }> {
+  try {
     const tables = (await db.$queryRawUnsafe(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
     )) as Array<{ name: string }>
@@ -46,18 +56,14 @@ async function workspaceScopedTables(db: any): Promise<string[]> {
       }>
       if (columns.some((column) => column.name === 'workspaceId')) out.push(name)
     }
-    return out
+    return { tables: out, dialect: 'sqlite' }
+  } catch {
+    const rows = (await db.$queryRawUnsafe(
+      `SELECT table_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND column_name = 'workspaceId'`,
+    )) as Array<{ table_name: string }>
+    return { tables: rows.map((row) => row.table_name), dialect: 'postgres' }
   }
-  const rows = (await db.$queryRawUnsafe(
-    `SELECT table_name FROM information_schema.columns
-      WHERE table_schema = 'public' AND column_name = 'workspaceId'`,
-  )) as Array<{ table_name: string }>
-  return rows.map((row) => row.table_name)
-}
-
-function detectDialect(): 'sqlite' | 'postgres' {
-  const url = String(process.env.DATABASE_URL ?? '')
-  return url.startsWith('file:') || url.endsWith('.db') ? 'sqlite' : 'postgres'
 }
 
 function quote(name: string): string {
@@ -96,10 +102,10 @@ export async function mergePersonalWorkspace(
     (await db.project.findMany({ where: { workspaceId: fromId }, select: { id: true } })) as Array<{ id: string }>
   ).map((row) => row.id)
 
-  const tables = await workspaceScopedTables(db)
+  const { tables, dialect } = await workspaceScopedTables(db)
   let rows = 0
   await db.$transaction(async (tx: any) => {
-    if (detectDialect() === 'sqlite') await tx.$executeRawUnsafe('PRAGMA defer_foreign_keys = ON')
+    if (dialect === 'sqlite') await tx.$executeRawUnsafe('PRAGMA defer_foreign_keys = ON')
     // A job keeps running where it was requested: anything the duplicate had
     // without an explicit placement was running on this device (a merge only
     // happens because a device pushed the duplicate up), so it is pinned here
