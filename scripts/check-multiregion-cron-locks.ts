@@ -350,6 +350,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Workspace slug from createPersonalWorkspace/createPaidWorkspace, single-source per workspace creation; suffix uses deterministic user prefix or nanoid.',
   },
   {
+    key: 'Workspace.personalOwnerId',
+    category: 'request_scoped',
+    reason:
+      'One Personal per account, written by createPersonalWorkspace in the signup hook and claimed at pairing; both are single-request paths for a user homed to one region, so a cross-region conflict needs idempotency work rather than leader election (SHO-285).',
+  },
+  {
     key: 'WorkspaceAgentProfile.workspaceId',
     category: 'single_tenant_upsert',
     reason:

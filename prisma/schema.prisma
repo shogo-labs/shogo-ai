@@ -231,6 +231,14 @@ model Workspace {
   // background workers skip it (`CLOUD_HOSTED_WORKSPACE_ONLY`) because the
   // desktop runs its schedules, heartbeats and triggers. Null = cloud compute.
   hostInstanceId String?
+  // The account whose Personal this is (SHO-285 Update 2). One Personal per
+  // account, enforced by the database rather than by a check somebody has to
+  // remember: a second create fails on this unique index. Set only when
+  // `kind = personal`, null on every team workspace. The Personal is the
+  // cloud's row on every surface — same id on each device, `hostInstanceId`
+  // null, synced both ways — so a user with a cloud account and two desktops
+  // has one Personal, not three.
+  personalOwnerId String? @unique
   // Set when this workspace was moved to another one (desktop <-> cloud). The
   // source is kept, shows a "Moved to <target>" banner and has its schedules and
   // triggers disabled; `movedToWorkspaceId` points at the copy that took over.
@@ -407,6 +415,12 @@ model AgentSchedule {
   notifyThreadRootId   String?
   runningAt            DateTime?
   consecutiveFailures  Int       @default(0)
+  /// Where this job runs (SHO-285 Update 2): null = the cloud, an `Instance.id`
+  /// = that paired desktop. A job runs where it was requested — created from a
+  /// desktop window or a desktop-runtime turn it is pinned to that device, from
+  /// the cloud or the phone it stays null. Exactly one scheduler fires it: the
+  /// cloud runs the null ones, each desktop runs its own.
+  runOnInstanceId      String?
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
@@ -416,6 +430,7 @@ model AgentSchedule {
 
   @@index([enabled, nextRunAt])
   @@index([workspaceId])
+  @@index([runOnInstanceId])
   @@index([goalId])
   @@index([userId])
   @@map("agent_schedules")
@@ -901,6 +916,9 @@ model AgentConfig {
   channels           Json      @default("[]")
   modelProvider      String    @default("anthropic")
   modelName          String    @default("claude-haiku-4-5")
+  /// Where this project's heartbeat runs (SHO-285 Update 2): null = the cloud,
+  /// an `Instance.id` = that paired desktop. Same rule as `AgentSchedule`.
+  runOnInstanceId    String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 

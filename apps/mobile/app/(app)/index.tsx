@@ -49,6 +49,7 @@ import { setPendingFiles } from '../../lib/pending-image-store'
 import type { ChatReference } from '../../lib/chat-references'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
+import { useWorkspaceRemountKey } from '../../hooks/useWorkspaceRemountKey'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
 import { workspaceProjectFilter } from '../../lib/project-load'
@@ -375,21 +376,15 @@ export const HomeScreen = observer(function HomeScreen({
   // The workspace on screen — the machine's own while one is open, which is
   // what the agent screen, its projects and its composer belong to (SHO-130).
   const workspaceInView = useWorkspaceInView()
-  // The agent-chat screen is keyed by its workspace, so switching workspace
-  // starts a fresh screen. The key must NOT follow every value
-  // `useActiveWorkspace()` reports: while the workspace list refreshes it can
-  // answer `null` for a frame (and the first list load answers the fallback
-  // workspace before the persisted one), which remounted the screen — and
-  // aborted the turn it was streaming — about a second after a send (SHO-300).
-  // Hold the last id we were given and only change it on a real switch.
-  const [chatScreenWorkspaceId, setChatScreenWorkspaceId] = useState<
-    string | null
-  >(null)
-  const workspaceInViewId = workspaceInView?.id ?? null
-  useEffect(() => {
-    if (workspaceInViewId) setChatScreenWorkspaceId(workspaceInViewId)
-  }, [workspaceInViewId])
-
+  // The landing chat's React key. It must NOT be the raw workspace id: on a
+  // cold start that is `null` for the first frames and then the id, so the
+  // screen was torn down and rebuilt the moment the collection answered. The
+  // rebuilt instance has a fresh single-flight ref, so the landing minted a
+  // second empty chat for the same workspace (SHO-309, caught in CI as two
+  // empty landing chats). `useWorkspaceRemountKey` keeps the key across
+  // loading → first workspace and only bumps it for a genuinely different one
+  // (the same fix SHO-298 applied to the phone shell).
+  const homeChatMountKey = useWorkspaceRemountKey(workspaceInView?.id)
   const currentExperience = useWorkspaceExperience()
   // A reload of `/` must land back on the chat that was open, so the agent
   // chat puts its session in the URL and the landing honours it (SHO-287).
@@ -968,14 +963,10 @@ export const HomeScreen = observer(function HomeScreen({
     // The screen is keyed by workspace so a switch starts a fresh one, but the
     // key must not change from a placeholder to the real id: mounting with the
     // placeholder and re-keying a frame later is what aborted a running turn
-    // (SHO-300). Wait while the collection is still loading, and also while a
-    // workspace is already in view but the key has not caught up yet — that
-    // second case is a first load on a profile with no cached workspace kind,
-    // where the collection lands in the same commit that first reports the
-    // workspace, so `isLoading` is already false and the effect below has not
-    // run. Once the collection has loaded with no workspace at all, mount on a
-    // stable "none" key.
-    if (!chatScreenWorkspaceId && (workspaces?.isLoading || workspaceInViewId)) {
+    // (SHO-300). `useWorkspaceRemountKey` keeps the key across a cold start, so
+    // the only remaining wait is the collection itself; once it has loaded with
+    // no workspace at all we mount on the stable "none" key.
+    if (!workspaceInViewId && workspaces?.isLoading) {
       return (
         <View className="flex-1 bg-background px-4 pt-16" testID="home-chrome-skeleton">
           <WorkspaceChromeSkeletonRows count={4} />
@@ -984,7 +975,7 @@ export const HomeScreen = observer(function HomeScreen({
     }
     return (
       <WorkspaceAgentChatScreen
-        key={chatScreenWorkspaceId ?? 'no-workspace'}
+        key={homeChatMountKey}
         initialSessionId={homeChatSessionId}
         startNewSession
       />

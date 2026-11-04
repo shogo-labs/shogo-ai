@@ -194,6 +194,62 @@ export async function callRemoteTool(
 }
 
 // ---------------------------------------------------------------------------
+// Client: caller runtime → API (a paired desktop as the target)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run `tool` on a paired desktop (SHO-285 Update 2). Same allow-list and same
+ * seam as `project: "<id>"`, with a device as the target: the API checks the
+ * device belongs to a member of this workspace, then carries the call over the
+ * instance tunnel to the desktop's own `/agent/remote/tool`, where that
+ * desktop's permission system decides what is allowed.
+ */
+export async function callRemoteDeviceTool(
+  instanceId: string,
+  tool: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<AgentToolResult<any>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) throw new RemoteToolError('No API URL configured', 0)
+  const timeout = AbortSignal.timeout(REMOTE_TOOL_REQUEST_TIMEOUT_MS)
+  let res: Response
+  try {
+    res = await fetch(`${apiUrl}/api/internal/devices/${encodeURIComponent(instanceId)}/remote-tool`, {
+      method: 'POST',
+      headers: getInternalHeaders(),
+      body: JSON.stringify({ tool, args: clampRemoteArgs(tool, args) }),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    })
+  } catch (err: any) {
+    if (signal?.aborted && !timeout.aborted) {
+      throw new RemoteToolError(`Remote ${tool} on device ${instanceId} was cancelled`, 0, 'aborted')
+    }
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    throw new RemoteToolError(
+      timedOut
+        ? `Remote ${tool} on device ${instanceId} timed out`
+        : `Remote ${tool} on device ${instanceId} failed: ${err?.message ?? err}`,
+      0,
+      timedOut ? 'timeout' : undefined,
+    )
+  }
+  const json = (await res.json().catch(() => null)) as any
+  if (res.ok && json?.ok === true && json.result && Array.isArray(json.result.content)) {
+    return json.result as AgentToolResult<any>
+  }
+  const err = json?.error
+  const code = typeof err === 'string' ? err : typeof err?.code === 'string' ? err.code : undefined
+  const message = typeof err?.message === 'string' ? err.message : typeof err === 'string' ? err : `HTTP ${res.status}`
+  throw new RemoteToolError(
+    `Remote ${tool} on device ${instanceId} failed (HTTP ${res.status}): ${message}`,
+    res.status,
+    code,
+    json && typeof json === 'object' && !Array.isArray(json) ? (json as Record<string, unknown>) : undefined,
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Server: `/agent/remote/tool` on the target runtime
 // ---------------------------------------------------------------------------
 

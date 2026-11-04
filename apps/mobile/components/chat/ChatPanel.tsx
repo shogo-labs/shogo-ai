@@ -123,11 +123,13 @@ import {
   chatHistoryKey as buildChatHistoryKey,
   chatSessionHistoryKey,
   deltaSince,
+  peekChatHistory,
   readChatHistory,
   removeChatHistory,
   writeChatHistory,
   type ChatHistoryEntry,
 } from "../../lib/chat-history-store"
+import { chatHistoryOrigin, seedTranscript, transcriptLoaderVisible } from "../../lib/chat-device-boot"
 import { useResolvedTheme } from "../../contexts/theme"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
@@ -1163,6 +1165,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
   continueProjectName,
 }: ChatPanelProps) {
   const { instance: activeInstance } = useActiveInstance()
+  // ── The device key for this chat's transcript (SHO-260/SHO-309) ──────────
+  //
+  // Declared up here, before the first paint, because the first paint now
+  // seeds from it: a chat this device has seen must not open behind a loader.
+  const historyOrigin = chatHistoryOrigin(activeInstance?.instanceId)
+  const historyKeyFor = useCallback(
+    (sessionId: string | null) =>
+      sessionId && userId
+        ? buildChatHistoryKey(
+            userId,
+            historyOrigin,
+            chatSessionHistoryKey(sessionId),
+          )
+        : null,
+    [userId, historyOrigin],
+  )
   const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
   const chatDockStore = useChatDockStore()
   const {
@@ -1738,7 +1756,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     return () => setActiveChatNotificationContext(null)
   }, [currentSessionId, isActive, projectId])
 
-  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(() => {
+    // A chat this device already holds is complete on the first frame — that is
+    // the whole point (SHO-309): the loader is for a chat we must fetch.
+    if (!currentSessionId) return true
+    return (seedTranscript(currentSessionId, historyKeyFor(currentSessionId)).messages?.length ?? 0) > 0
+  })
   const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] =
     useState<string>(DEFAULT_MODEL)
@@ -2042,7 +2065,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Paints refused in a row while the server catches up; carried on the Sentry
   // event so a report shows how hard the reply was to keep on screen.
   const historyPaintAttemptRef = useRef(0)
-  const cachedMessagesRef = useRef<any[] | null>(null)
+  // The transcript this device already holds for the chat, read synchronously
+  // so the FIRST frame can paint it (SHO-309). The memory cache is the live
+  // one; the durable store's mirror covers a reload, where memory is empty.
+  const firstPaintSeed = useMemo(
+    () => seedTranscript(currentSessionId, historyKeyFor(currentSessionId)),
+    [currentSessionId, historyKeyFor],
+  )
+  const cachedMessagesRef = useRef<any[] | null>(firstPaintSeed.messages)
   // Assigned once the device-history helpers further down are created. The
   // render-time write-through and `paintLoadedHistory` sit above them, so they
   // reach the store through this ref (SHO-260).
@@ -2057,22 +2087,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
     /** When it was sent — the chat tag's delivery window is read off this (SHO-52). */
     sentAt?: number
   } | null>(null)
-  const lastNonEmptyMessagesRef = useRef<UIMessage[]>([])
+  const lastNonEmptyMessagesRef = useRef<UIMessage[]>(
+    (firstPaintSeed.messages as UIMessage[] | null) ?? [],
+  )
 
   // Reset stale state synchronously when the session changes so we never
   // render one frame of the previous session's messages before showing
   // the loading indicator for the new session.
   //
-  // Hydrate from the module-level `sessionMessageCache` if we've seen this
-  // session before — this is what makes re-visits render instantly instead
-  // of briefly showing a loader while the stale-while-revalidate fetch runs.
+  // Hydrate from the device — the module-level `sessionMessageCache` first,
+  // then the durable store's mirror — if we've seen this session before. This
+  // is what makes re-visits render instantly instead of briefly showing a
+  // loader while the stale-while-revalidate fetch runs.
   if (prevSessionIdRef.current !== currentSessionId) {
-    const cachedForSession = currentSessionId
-      ? (readSessionMessageCache(currentSessionId) ?? null)
-      : null
+    const cachedForSession = seedTranscript(
+      currentSessionId,
+      historyKeyFor(currentSessionId),
+    ).messages
     prevSessionIdRef.current = currentSessionId
     cachedMessagesRef.current = cachedForSession
-    lastNonEmptyMessagesRef.current = cachedForSession ?? []
+    lastNonEmptyMessagesRef.current = (cachedForSession as UIMessage[]) ?? []
     isLoadingMessagesRef.current = false
     // State-mirror reset is deferred to an effect (can't call setState in
     // render); Effect 1 reads the ref for its in-flight dedup so behaviour
@@ -2452,6 +2486,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   } = useChat({
     transport: chatTransport,
     id: currentSessionId || undefined,
+    // The transcript the device already holds, so the panel's first frame is
+    // the chat itself rather than an empty list behind a loader (SHO-309).
+    messages: (cachedMessagesRef.current as UIMessage[] | null) ?? undefined,
     resume: false,
     experimental_throttle: 50,
     onError: (err) => {
@@ -5550,20 +5587,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // downloaded only for a chat with no saved slice, or when the server says
   // the delta cannot be applied (`reset`, or a row count that does not add up
   // because something was deleted).
-  const historyOrigin = String(activeInstance?.instanceId ?? API_URL ?? "local")
   const activeSessionIdRef = useRef(currentSessionId)
   activeSessionIdRef.current = currentSessionId
-  const historyKeyFor = useCallback(
-    (sessionId: string | null) =>
-      sessionId && userId
-        ? buildChatHistoryKey(
-            userId,
-            historyOrigin,
-            chatSessionHistoryKey(sessionId),
-          )
-        : null,
-    [userId, historyOrigin],
-  )
+  // `historyOrigin`/`historyKeyFor` are declared at the top of this component:
+  // the first paint seeds from them (SHO-309).
   const historyStoreKey = historyKeyFor(currentSessionId)
   const historyStoreKeyRef = useRef<string | null>(historyStoreKey)
   historyStoreKeyRef.current = historyStoreKey
@@ -5573,6 +5600,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   >(new Map())
   const historyHydratedRef = useRef<Set<string>>(new Set())
   const historyHydrationPendingRef = useRef<Set<string>>(new Set())
+  // Keys whose device answer has arrived (or that needed no read at all). The
+  // loader is decided from THIS, during render: `historyHydrationPendingRef` is
+  // filled inside the hydration effect, i.e. after the first paint, so a frame
+  // that reads it sees "nothing pending" for a chat the device is about to
+  // hand over — one "Loading conversation..." flash on every reopen (SHO-309).
+  const historyHydrationSettledRef = useRef<Set<string>>(new Set())
   const [historyHydrationTick, setHistoryHydrationTick] = useState(0)
 
   /** The delta read. Same routing insert point as the transcript itself. */
@@ -5795,9 +5828,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const key = historyStoreKey
     const sessionId = currentSessionId
     if (!isActive || !key || !sessionId) return
-    if (historyHydratedRef.current.has(key)) return
+    // The synchronous mirror may already hold this chat (it seeded the first
+    // frame). Seed its cursor the same way the read below would, so Effect 1
+    // takes the delta path instead of downloading the page again (SHO-309).
+    if (!historyMetaRef.current.has(key)) {
+      const peeked = peekChatHistory("project", key)
+      if (peeked) {
+        historyMetaRef.current.set(key, {
+          cursor: peeked.cursor,
+          total: peeked.total,
+        })
+      }
+    }
+    if (historyHydratedRef.current.has(key)) {
+      historyHydrationSettledRef.current.add(key)
+      return
+    }
     if (cachedMessagesRef.current && cachedMessagesRef.current.length > 0) {
       historyHydratedRef.current.add(key)
+      historyHydrationSettledRef.current.add(key)
       return
     }
     historyHydratedRef.current.add(key)
@@ -5833,6 +5882,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       .catch((err) => console.warn("[ChatPanel] saved history failed to load:", err))
       .finally(() => {
         historyHydrationPendingRef.current.delete(key)
+        historyHydrationSettledRef.current.add(key)
         setHistoryHydrationTick((tick) => tick + 1)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -10010,9 +10060,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
                         />
                       </TurnFooterProvider>
                     </MessageEditProvider>
-                  ) : !isStreaming &&
-                    !isInitialLoadComplete &&
-                    currentSessionId ? (
+                  ) : transcriptLoaderVisible({
+                    hasSession: !!currentSessionId,
+                    isComplete: isInitialLoadComplete,
+                    isStreaming,
+                    // Decided during render from the device read's own record:
+                    // a key whose read has not answered yet is a chat that is
+                    // about to appear, so this frame shows nothing instead of a
+                    // loader that flashes and goes (SHO-309).
+                    hydrationPending:
+                      !!historyStoreKey &&
+                      !historyHydrationSettledRef.current.has(historyStoreKey),
+                  }) ? (
                     <View className="flex-col items-center justify-center flex-1 gap-3">
                       <View className="flex-row items-center gap-1">
                         <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-50" />

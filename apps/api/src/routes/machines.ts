@@ -593,7 +593,14 @@ export function machineRoutes() {
       select: { id: true, name: true, email: true, image: true },
     })
     if (!user) return c.json({ error: { code: 'not_found', message: 'Account not found' } }, 404)
-    return c.json({ user, instanceId: device.instanceId })
+    // The account's Personal (SHO-285 Update 2): the desktop adopts this row
+    // instead of seeding its own, so one person has one Personal on every
+    // device. Null only for an account that has none yet.
+    const personal = await prisma.workspace.findFirst({
+      where: { personalOwnerId: user.id },
+      select: { id: true, name: true, slug: true },
+    })
+    return c.json({ user, instanceId: device.instanceId, personal: personal ?? null })
   })
 
   // GET /machines/:id/changes?cursor=N — the cloud → desktop half of a hosted

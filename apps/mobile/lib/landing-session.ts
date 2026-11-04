@@ -56,17 +56,47 @@ export interface EnsureLandingSessionDeps {
  * The landing session for `workspaceId`: the existing empty landing chat when
  * there is one, otherwise a newly created one. A failed list falls back to
  * creating, so a listing hiccup cannot leave the landing with no chat at all.
+ *
+ * Single-flight per workspace for the whole JS session, not per caller. The
+ * landing screen can legitimately remount (a workspace switch, a route change,
+ * a key that moved), and a guard held in a component ref dies with it: the new
+ * instance lists before the first create has landed, sees nothing, and mints a
+ * second empty chat for the same workspace (SHO-309, caught in CI as two empty
+ * landing chats 30 ms apart). The map outlives the component, so the second
+ * caller joins the first one's answer instead of racing it.
+ *
+ * It holds only the *in-flight* attempt, and is dropped as soon as it settles:
+ * this is a guard against a race, not a memory. A later landing must list
+ * again, because the chat it opened last time may have a conversation in it by
+ * then and the landing owes the person a fresh one.
  */
-export async function ensureLandingSession(
+const landingSessions = new Map<string, Promise<{ id: string }>>()
+
+export function ensureLandingSession(
   workspaceId: string,
   deps: EnsureLandingSessionDeps,
 ): Promise<{ id: string }> {
-  let reusable: string | null = null
-  try {
-    reusable = pickReusableLandingSession(await deps.list(workspaceId))
-  } catch {
-    reusable = null
+  const inFlight = landingSessions.get(workspaceId)
+  if (inFlight) return inFlight
+  const promise = (async () => {
+    let reusable: string | null = null
+    try {
+      reusable = pickReusableLandingSession(await deps.list(workspaceId))
+    } catch {
+      reusable = null
+    }
+    if (reusable) return { id: reusable }
+    return deps.create(workspaceId)
+  })()
+  landingSessions.set(workspaceId, promise)
+  const settle = () => {
+    if (landingSessions.get(workspaceId) === promise) landingSessions.delete(workspaceId)
   }
-  if (reusable) return { id: reusable }
-  return deps.create(workspaceId)
+  promise.then(settle, settle)
+  return promise
+}
+
+/** Forget any in-flight landing attempt (tests, and a sign-out). */
+export function resetLandingSessions(): void {
+  landingSessions.clear()
 }

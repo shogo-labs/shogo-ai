@@ -221,6 +221,51 @@ export function buildS3Key(...parts: string[]): string {
 }
 
 /**
+ * S3 key for one file in a workspace's **root** (`AGENTS.md`, `MEMORY.md`,
+ * `memory/`, skills) — the durable copy every device of that account hydrates
+ * from (SHO-285 Update 2, section F). Lives in the same workspaces bucket as the
+ * per-project archives, under its own `workspace-root/` namespace so a project
+ * id can never collide with a workspace id.
+ *
+ * This is deliberately NOT keyed by instance: one account, one root, whichever
+ * machine wrote it.
+ */
+export function buildWorkspaceRootKey(workspaceId: string, filePath: string): string {
+  return `workspace-root/${workspaceId}/${filePath.replace(/^\/+/, '')}`
+}
+
+/** The prefix a workspace's whole root lives under. */
+export function buildWorkspaceRootPrefix(workspaceId: string): string {
+  return `workspace-root/${workspaceId}/`
+}
+
+/**
+ * One object's stored metadata (the `x-amz-meta-*` values a presigned PUT
+ * carried), plus size/etag/last-modified. Returns null when the object is gone.
+ */
+export async function headS3Object(
+  key: string,
+  bucket?: string,
+): Promise<{ size: number; etag?: string; lastModified?: Date; metadata: Record<string, string> } | null> {
+  const client = getS3Client()
+  try {
+    const response = await client.send(
+      new HeadObjectCommand({ Bucket: bucket || getS3Bucket(), Key: key }),
+    )
+    return {
+      size: response.ContentLength ?? 0,
+      etag: response.ETag?.replace(/"/g, ''),
+      lastModified: response.LastModified,
+      metadata: response.Metadata ?? {},
+    }
+  } catch (err: any) {
+    const status = err?.$metadata?.httpStatusCode
+    if (status === 404 || err?.name === 'NotFound' || err?.name === 'NoSuchKey') return null
+    throw err
+  }
+}
+
+/**
  * Read and parse a JSON file from S3.
  */
 export async function readJsonFromS3(key: string): Promise<any> {
@@ -363,6 +408,12 @@ export interface PresignOptions {
    * link save the file instead of displaying it.
    */
   responseContentDisposition?: string
+  /**
+   * `x-amz-meta-*` values baked into a signed **write**. The uploader must send
+   * them, so they cannot be attached after signing — used by the workspace-root
+   * store to record which device wrote which bytes, and the sha256 of them.
+   */
+  metadata?: Record<string, string>
 }
 
 /**
@@ -399,6 +450,7 @@ export async function getPresignedWriteUrl(
     Bucket: bucket,
     Key: key,
     ...(options.contentType && { ContentType: options.contentType }),
+    ...(options.metadata && Object.keys(options.metadata).length > 0 && { Metadata: options.metadata }),
   })
 
   return getSignedUrl(client, command, { expiresIn })
@@ -517,6 +569,8 @@ export async function listAllObjectsInS3(prefix: string, bucket?: string): Promi
   relativePath: string
   size: number
   lastModified?: Date
+  /** S3 ETag, quotes stripped. For a single-part upload this is the object's MD5. */
+  etag?: string
 }>> {
   const client = getS3Client()
   const effectiveBucket = bucket || getS3Bucket()
@@ -526,6 +580,7 @@ export async function listAllObjectsInS3(prefix: string, bucket?: string): Promi
     relativePath: string
     size: number
     lastModified?: Date
+    etag?: string
   }> = []
 
   let continuationToken: string | undefined
@@ -544,6 +599,7 @@ export async function listAllObjectsInS3(prefix: string, bucket?: string): Promi
           relativePath: object.Key.slice(prefix.length),
           size: object.Size || 0,
           lastModified: object.LastModified,
+          etag: object.ETag?.replace(/"/g, ''),
         })
       }
     }

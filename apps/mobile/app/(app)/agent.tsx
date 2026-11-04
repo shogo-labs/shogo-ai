@@ -12,6 +12,7 @@ import { useLocalSearchParams } from 'expo-router'
 import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
 import { SessionBreadcrumb } from '../../components/team-chat/SessionBreadcrumb'
 import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
+import { useWorkspaceRemountKey } from '../../hooks/useWorkspaceRemountKey'
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
@@ -34,10 +35,17 @@ export default function AgentChatRoute() {
     file?: string | string[]
   }>()
   const chatSessionId = firstParam(params.chatSessionId)
+  // The workspace id alone is not a stable key: on a cold open it is `null` for
+  // the first frames and then the id, so the chat was torn down and rebuilt the
+  // moment the collection answered — a second load, a second page read, and a
+  // window in which the screen had no `chatSessionId` yet and fell back to the
+  // primary chat (SHO-309). `useWorkspaceRemountKey` keeps the key across
+  // loading → first workspace and only bumps it for a genuinely different one.
+  const mountKey = useWorkspaceRemountKey(workspace?.id)
   const header = firstParam(params.fromConversation) ? <SessionBreadcrumb params={params} /> : undefined
   return (
     <WorkspaceAgentChatScreen
-      key={`${workspace?.id ?? 'workspace-loading'}:${chatSessionId ?? ''}`}
+      key={`${mountKey}:${chatSessionId ?? ''}`}
       initialSessionId={chatSessionId}
       initialMessage={firstParam(params.initialMessage)}
       initialFilePath={firstParam(params.file) ?? null}
