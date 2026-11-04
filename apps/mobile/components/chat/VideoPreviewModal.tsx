@@ -13,8 +13,8 @@ import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from
 import { ActivityIndicator, Platform, Text, useWindowDimensions, View } from "react-native"
 import { VideoIcon, X } from "lucide-react-native"
 import { GestureHandlerRootView } from "react-native-gesture-handler"
-import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { cn } from "@shogo/shared-ui/primitives"
+import { useSafeAreaInsetsOrZero } from "../../lib/use-safe-area-insets-or-zero"
 import {
   Modal,
   ModalBackdrop,
@@ -53,7 +53,7 @@ export function VideoPreviewModal({
   title = "Video preview",
 }: VideoPreviewModalProps) {
   const { width, height } = useWindowDimensions()
-  const insets = useSafeAreaInsets()
+  const insets = useSafeAreaInsetsOrZero()
   const isPhone = Platform.OS !== "web" && width < 600
   const [phoneArea, setPhoneArea] = useState<{ w: number; h: number } | null>(null)
   const [failed, setFailed] = useState(false)

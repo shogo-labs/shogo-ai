@@ -33,7 +33,6 @@ import {
   PinchGestureHandler,
   State,
 } from "react-native-gesture-handler"
-import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   Modal,
@@ -49,6 +48,7 @@ import {
   isShogoDesktop,
 } from "./chatImageActions"
 import { useAgentImageSource } from "../../lib/agent-image-source"
+import { useSafeAreaInsetsOrZero } from "../../lib/use-safe-area-insets-or-zero"
 import { useEscapeToClose } from "../../lib/use-escape-to-close"
 
 export interface ImagePreviewModalProps {
@@ -259,7 +259,7 @@ export function ImagePreviewModal({
     null,
   )
   const { width, height } = useWindowDimensions()
-  const insets = useSafeAreaInsets()
+  const insets = useSafeAreaInsetsOrZero()
   // Measured size of the phone image area, so the image fills exactly the
   // space between the header and the bottom inset.
   const [phoneArea, setPhoneArea] = useState<{ w: number; h: number } | null>(
