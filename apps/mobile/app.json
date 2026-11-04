@@ -2,7 +2,7 @@
   "expo": {
     "name": "Shogo",
     "slug": "shogo",
-    "version": "1.0.10",
+    "version": "2.4.11",
     "orientation": "default",
     "icon": "./assets/shogo-icon.png",
     "scheme": "shogo",
