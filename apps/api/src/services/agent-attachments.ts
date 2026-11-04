@@ -38,7 +38,28 @@ export async function readAgentUpload(c: any): Promise<{ file: File; form: FormD
   if (file.size > MAX_CONVERSATION_FILE_BYTES) {
     throw new ConversationError(400, 'too_large', 'Files are limited to 50 MB')
   }
+  assertNotEmpty(file)
   return { file: file as File, form }
+}
+
+/** Names a zero-byte attachment the way the person will see it, so both the
+ *  user and agent upload routes answer with the same code and wording. */
+export function emptyFileError(name: string, size = 0): ConversationError {
+  return new ConversationError(
+    400,
+    'empty_file',
+    `"${name}" is empty (${size} bytes), so nothing was uploaded. Attach it again.`,
+  )
+}
+
+function assertNotEmpty(file: File) {
+  if (file.size !== 0) return
+  const name = file.name || 'file'
+  console.warn('[ConversationFiles] refused empty upload', {
+    name,
+    mimeType: file.type || 'application/octet-stream',
+  })
+  throw emptyFileError(name)
 }
 
 export async function storeAgentAttachment(input: {
@@ -53,6 +74,9 @@ export async function storeAgentAttachment(input: {
   const mimeType = input.file.type || 'application/octet-stream'
   const key = buildConversationFileKey(input.workspaceId, input.conversationId, name)
   const bytes = new Uint8Array(await input.file.arrayBuffer())
+  // Last line of defence: a zero-byte row is a message with a file that cannot
+  // ever be downloaded, so no caller may store one.
+  if (bytes.byteLength === 0) throw emptyFileError(name)
   await putConversationFile(key, bytes, mimeType)
   const row = await db.conversationAttachment.create({
     data: {

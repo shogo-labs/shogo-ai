@@ -68,6 +68,7 @@ import { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } from '../rout
 import { localPlatformRoutes } from '../routes/local-platform'
 import { localPublishRoutes } from '../routes/local-publish'
 import { localSharedFileRoutes } from '../routes/local-shared-files'
+import { localFileReadRoutes } from '../routes/local-file-read'
 import { resolveLocalSharedFileTarget } from '../lib/local-shared-file-target'
 import { marketplaceRoutes } from '../routes/marketplace'
 import { appActionsRoutes } from '../routes/app-actions'
@@ -124,6 +125,7 @@ export function createLocalApp(): LocalAppBundle {
     }),
   )
   app.route('/', localSharedFileRoutes({ workspacesDir }))
+  app.route('/', localFileReadRoutes({ workspacesDir }))
   app.route('/api/local/projects', localProjectsRoutes())
   // Publishing from the desktop (SHO-245): build in the project's local
   // runtime, upload to Shogo Cloud, host it on {subdomain}.shogo.one. Mounted

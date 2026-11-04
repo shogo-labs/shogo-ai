@@ -32,6 +32,11 @@ export interface ThreeDJobRecord {
   textureQuality?: string
   /** Advisory price shown at submit; billing follows `credits_consumed`. */
   estimatedCredits?: number
+  /**
+   * The spend reservation placed for the estimated price at submit, released
+   * when the task is charged or fails. Absent when nothing was reserved.
+   */
+  hold?: { billingWorkspaceId: string; holdId: string }
   createdAt: number
 }
 

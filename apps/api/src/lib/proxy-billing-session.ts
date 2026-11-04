@@ -468,6 +468,44 @@ function accumulate3dUsageLocal(
   return true
 }
 
+/** Billed USD a session has accumulated but not yet charged at close. */
+function sessionBilledUsd(session: BillingSession): number {
+  const token = calculateUsageCost(
+    session.inputTokens,
+    session.outputTokens,
+    session.model,
+    session.cachedInputTokens,
+    session.cacheWriteTokens,
+  )
+  return token.billedUsd
+    + session.imageBilledUsd
+    + session.videoBilledUsd
+    + session.threeDBilledUsd
+    + session.musicBilledUsd
+}
+
+function getPendingBilledUsdLocal(projectId: string, chatSessionId?: string | null): number {
+  const session = lookupSessionLocal(projectId, chatSessionId)
+  return session ? sessionBilledUsd(session) : 0
+}
+
+async function getPendingBilledUsdRedis(
+  r: NonNullable<ReturnType<typeof redisOrNull>>,
+  projectId: string,
+  chatSessionId?: string | null,
+): Promise<number> {
+  const keys = chatSessionId
+    ? [sessionKey(projectId, chatSessionId), projectId]
+    : [projectId]
+  for (const key of keys) {
+    const hash = await r.hgetall(redisHashKey(key))
+    if (!hash || Object.keys(hash).length === 0) continue
+    const session = parseSessionHash(hash, [])
+    if (session) return sessionBilledUsd(session)
+  }
+  return 0
+}
+
 function setQualitySignalsLocal(
   projectId: string,
   quality: BillingSessionQualitySignals,
@@ -977,6 +1015,30 @@ export async function accumulate3dUsage(
     }
   }
   return accumulate3dUsageLocal(projectId, rawUsd, billedUsd, chatSessionId)
+}
+
+/**
+ * Billed USD an open turn has accumulated but not yet charged. 0 when no
+ * session is open for the tuple.
+ *
+ * The AI proxy's media pre-flight adds this to a job's price: media generated
+ * inside a chat turn is folded into the session and charged at close, so the
+ * turn's own accumulated spend is already spoken for and must not be counted
+ * as available balance for the next job.
+ */
+export async function getPendingBilledUsd(
+  projectId: string,
+  chatSessionId?: string | null,
+): Promise<number> {
+  const r = redisOrNull()
+  if (r) {
+    try {
+      return await withRedisTimeout(getPendingBilledUsdRedis(r, projectId, chatSessionId))
+    } catch (err) {
+      console.warn(`[BillingSession] Redis getPendingBilledUsd failed, reading the local map:`, (err as Error).message)
+    }
+  }
+  return getPendingBilledUsdLocal(projectId, chatSessionId)
 }
 
 export async function setQualitySignals(

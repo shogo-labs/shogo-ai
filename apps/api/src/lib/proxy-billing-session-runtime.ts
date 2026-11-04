@@ -38,6 +38,7 @@ type BillingSessionSeam = Pick<
   | 'accumulateVideoUsage'
   | 'accumulate3dUsage'
   | 'accumulateMusicUsage'
+  | 'getPendingBilledUsd'
   | 'setQualitySignals'
 >
 
@@ -111,6 +112,9 @@ export const localBillingSession: BillingSessionSeam = {
   accumulateVideoUsage: async () => false,
   accumulate3dUsage: async () => false,
   accumulateMusicUsage: async () => false,
+  // Desktop has no wallet, so nothing is pending: the media pre-flight's
+  // pending-turn term is zero and local media is never billed at all.
+  getPendingBilledUsd: async () => 0,
   setQualitySignals: async (projectId, quality, chatSessionId) => {
     const turn = lookupLocalTurn(projectId, chatSessionId)
     if (!turn) return false
@@ -142,6 +146,10 @@ export const accumulateMusicUsage: BillingSessionSeam['accumulateMusicUsage'] = 
   (session().accumulateMusicUsage ?? localBillingSession.accumulateMusicUsage)(...args)
 export const setQualitySignals: BillingSessionSeam['setQualitySignals'] = (...args) =>
   session().setQualitySignals(...args)
+export const getPendingBilledUsd: BillingSessionSeam['getPendingBilledUsd'] = (...args) =>
+  // A partial `mock.module()` stub of the cloud module need not carry the
+  // pending-USD read; treat a missing one as "nothing pending".
+  (session().getPendingBilledUsd ?? localBillingSession.getPendingBilledUsd)(...args)
 
 /**
  * Records a turn that had no anchor project (so no billing session) from its

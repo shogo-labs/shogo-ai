@@ -32,6 +32,19 @@ const file: ConversationFile = {
   url: '/api/conversation-files/att-1?t=sig',
 }
 
+// What the composer used to store when it lost a file's bytes (SHO-303).
+const emptyFile: ConversationFile = {
+  ...file,
+  id: 'att-empty',
+  name: 'content-agents-kit.zip',
+  mimeType: 'application/zip',
+  kind: 'document',
+  size: 0,
+  url: '/api/conversation-files/att-empty?t=sig',
+}
+
+let files: ConversationFile[] = [file]
+
 mock.module(resolve(import.meta.dir, '../../../lib/attachment-download'), () => ({
   attachmentDownloadUrl: (url: string) => url,
   downloadAttachment: async (_url: string, name: string) => {
@@ -47,7 +60,7 @@ mock.module('@shogo/shared-ui/primitives', () => ({
 
 mock.module(resolve(import.meta.dir, '../../../hooks/useConversationFiles'), () => ({
   useConversationFiles: () => ({
-    files: [file],
+    files,
     loading: false,
     loadingMore: false,
     error: null as string | null,
@@ -71,8 +84,8 @@ const FlatList = ({ data, renderItem, keyExtractor }: Record<string, any>) =>
     ),
   )
 
-const Pressable = ({ onPress, accessibilityLabel, children }: Record<string, any>) =>
-  createElement('button', { n: accessibilityLabel, onClick: onPress }, children as ReactNode)
+const Pressable = ({ onPress, accessibilityLabel, disabled, children }: Record<string, any>) =>
+  createElement('button', { n: accessibilityLabel, onClick: disabled ? undefined : onPress }, children as ReactNode)
 
 const rn = createReactNativeMock({ FlatList, Pressable })
 rn.Linking = {
@@ -91,6 +104,7 @@ afterEach(() => {
   cleanup()
   openedUrls.length = 0
   downloads.length = 0
+  files = [file]
 })
 
 function renderPane(opened: Array<Record<string, unknown>>) {
@@ -131,5 +145,24 @@ describe('the conversation Files tab', () => {
 
     expect(downloads).toEqual(['Q4 forecast.xlsx'])
     expect(opened).toEqual([])
+  })
+
+  test('a file stored with no bytes says so and offers neither open nor download', () => {
+    files = [emptyFile]
+    const opened: Array<Record<string, unknown>> = []
+    const container = renderPane(opened)
+
+    expect(container.textContent).toContain('Upload failed · 0 bytes')
+
+    // Inert even if something still dispatches the press: a download here
+    // would save the API's JSON error under the zip's own name.
+    // Not a link at all: there is nowhere to open it.
+    expect(container.querySelector('[n="Open content-agents-kit.zip"]')).toBe(null)
+    fireEvent.click(container.querySelector('[n="Download content-agents-kit.zip unavailable"]') as HTMLElement)
+    fireEvent.click(container.querySelector('[n="content-agents-kit.zip — upload failed, 0 bytes"]') as HTMLElement)
+
+    expect(downloads).toEqual([])
+    expect(opened).toEqual([])
+    expect(openedUrls).toEqual([])
   })
 })

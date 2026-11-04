@@ -91,6 +91,8 @@ mock.module('../lib/prisma', () => ({
 mock.module('../services/billing-runtime', () => ({
   SYSTEM_WORKSPACE_ID: 'system',
   checkUsageBalance: async () => ({ ok: true }),
+  resolveBillingWorkspaceId: async (workspaceId: string) => workspaceId,
+  hasPaidSubscription: async () => true,
   usageLimitErrorPayload: () => ({ code: 'usage_limit_reached', message: 'limit' }),
   hasAdvancedModelAccess: async () => true,
   consumeUsage: async () => ({ success: true }),

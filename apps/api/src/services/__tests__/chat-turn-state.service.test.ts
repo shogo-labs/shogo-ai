@@ -6,11 +6,20 @@ import { describe, expect, mock, test } from 'bun:test'
 const update = mock(async () => ({}))
 const updateMany = mock(async () => ({ count: 1 }))
 const findMany = mock(async () => [])
+const findUnique = mock(async (): Promise<unknown> => null)
 const findMessage = mock(async (): Promise<unknown> => null)
 mock.module('../../lib/prisma', () => ({
   prisma: {
-    chatSession: { update, updateMany, findMany },
+    chatSession: { update, updateMany, findMany, findUnique },
     conversationMessage: { findFirst: findMessage },
+  },
+}))
+
+type Published = { workspaceId: string; event: Record<string, unknown>; audience: string[] | null }
+const published: Published[] = []
+mock.module('../../lib/conversation-bus', () => ({
+  publishConversationEvent: (workspaceId: string, event: Record<string, unknown>, audience: string[] | null = null) => {
+    published.push({ workspaceId, event, audience })
   },
 }))
 
@@ -294,5 +303,79 @@ describe('chat-turn-state service', () => {
 
     expect(await sweepDeadTurnsOnLocalBoot()).toBe(0)
     expect(updateMany).not.toHaveBeenCalled()
+  })
+
+  // -------------------------------------------------------------------------
+  // A chat open in two windows: the turn state is the one place every starter
+  // and ender passes through, so the announcement lives here (SHO-299).
+  // -------------------------------------------------------------------------
+
+  const projectSession = {
+    contextType: 'project',
+    workspaceId: null,
+    createdByUserId: null,
+    project: { workspaceId: 'workspace-1' },
+  }
+
+  test('publishes a started turn to the chat workspace', async () => {
+    published.length = 0
+    findUnique.mockResolvedValueOnce(projectSession as never)
+
+    await markTurnStarted('session-1', 'turn-1')
+
+    expect(published).toEqual([
+      {
+        workspaceId: 'workspace-1',
+        event: { type: 'chat-session.turn', chatSessionId: 'session-1', turnId: 'turn-1', state: 'started' },
+        audience: null,
+      },
+    ])
+  })
+
+  test('a turn the server replayed is not announced to other windows', async () => {
+    // SHO-53: a queued/wake turn must not make a window nobody is looking at
+    // attach — an attach arms the task watch and the late-turn poll.
+    published.length = 0
+    findUnique.mockResolvedValueOnce(projectSession as never)
+
+    await markTurnStarted('session-1', 'turn-1', { announce: false })
+
+    expect(published).toEqual([])
+  })
+
+  test('publishes ended only when it cleared the turn', async () => {
+    published.length = 0
+    findUnique.mockResolvedValueOnce(projectSession as never)
+    await markTurnEnded('session-1', 'turn-1')
+    expect(published.map((entry) => entry.event.state)).toEqual(['ended'])
+
+    // A duplicate or stale completion cleared nothing, so there is no turn to
+    // announce — a second `ended` would repaint a window that is already right.
+    published.length = 0
+    updateMany.mockResolvedValueOnce({ count: 0 } as never)
+    await markTurnEnded('session-1', 'turn-1')
+    expect(published).toEqual([])
+  })
+
+  test('a personal workspace chat is announced only to its owner', async () => {
+    published.length = 0
+    findUnique.mockResolvedValueOnce({
+      contextType: 'workspace',
+      workspaceId: 'workspace-1',
+      createdByUserId: 'user-1',
+      project: null,
+    } as never)
+
+    await markTurnStarted('session-1', 'turn-1')
+
+    expect(published[0]).toMatchObject({ workspaceId: 'workspace-1', audience: ['user-1'] })
+  })
+
+  test('a publish failure never fails the turn', async () => {
+    published.length = 0
+    findUnique.mockRejectedValueOnce(new Error('database is down') as never)
+
+    await expect(markTurnStarted('session-1', 'turn-1')).resolves.toBe('turn-1')
+    expect(published).toEqual([])
   })
 })

@@ -514,6 +514,8 @@ export interface CustomDomain {
 export interface CustomDomainsResponse {
   /** Whether Cloudflare for SaaS is configured on this deployment. */
   enabled: boolean
+  /** False when the project has no live publish — domains can't serve yet. */
+  published?: boolean
   /** CNAME target the user points their domain at (when enabled). */
   fallbackOrigin?: string
   domains: CustomDomain[]
