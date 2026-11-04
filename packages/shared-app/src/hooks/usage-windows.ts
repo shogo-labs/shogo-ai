@@ -105,3 +105,65 @@ export function deriveUsageWindows(opts: {
     weekly: buildView('weekly', week, limits.weeklyUsd, SEVEN_DAY_MS),
   }
 }
+
+/**
+ * Resolve the windows a client should display, from the two sources it has.
+ *
+ * - A **paid** plan meters each seat on the server (`Member` counters), so the
+ *   server snapshot is the seat's real usage and the wallet carries nothing
+ *   live for it. The snapshot is returned verbatim: merging the wallet would
+ *   surface leftover *pooled* counters against a smaller per-seat window (a
+ *   full bar for usage the API no longer counts) for up to a week after a
+ *   workspace switches to per-seat metering.
+ * - The **free** tier still meters the shared wallet, and the wallet is
+ *   refetched far more often than the workspace-plan endpoint. So derive live
+ *   from the wallet, taking the newer window start and never reporting less
+ *   usage than the snapshot did (a stale snapshot must not hide real spend).
+ */
+export function resolveUsageWindows(opts: {
+  wallet: WalletWindowFields | null | undefined
+  windows: UsageWindows | undefined
+  meteredPerSeat: boolean
+  now?: number
+}): UsageWindows | undefined {
+  const { wallet, windows, meteredPerSeat } = opts
+  if (!windows) return undefined
+  if (!wallet || meteredPerSeat) return windows
+
+  const now = opts.now ?? Date.now()
+  const snapshotStart = (resetsAt: string | null, durationMs: number) =>
+    resetsAt ? Date.parse(resetsAt) - durationMs : NaN
+
+  const pick = (
+    walletStart: WalletWindowFields['fiveHourWindowStart'],
+    walletUsed: number | null | undefined,
+    view: UsageWindowView,
+    durationMs: number,
+  ) => {
+    const ws = toMs(walletStart)
+    const ss = snapshotStart(view.resetsAt, durationMs)
+    const snapUsed = view.usedUsd ?? 0
+    // Wallet never opened (rolled to zero) and the snapshot knows the start.
+    if (Number.isNaN(ws)) return { start: Number.isNaN(ss) ? null : ss, used: snapUsed }
+    // Snapshot has no open window; the wallet is the only live source.
+    if (Number.isNaN(ss)) return { start: ws, used: walletUsed ?? 0 }
+    return ss > ws ? { start: ss, used: snapUsed } : { start: ws, used: Math.max(walletUsed ?? 0, snapUsed) }
+  }
+
+  const five = pick(wallet.fiveHourWindowStart, wallet.fiveHourUsedUsd, windows.fiveHour, FIVE_HOUR_MS)
+  const week = pick(wallet.weeklyWindowStart, wallet.weeklyUsedUsd, windows.weekly, SEVEN_DAY_MS)
+
+  return deriveUsageWindows({
+    wallet: {
+      fiveHourWindowStart: five.start,
+      fiveHourUsedUsd: five.used,
+      weeklyWindowStart: week.start,
+      weeklyUsedUsd: week.used,
+    },
+    limits: {
+      fiveHourUsd: windows.fiveHour.limitUsd,
+      weeklyUsd: windows.weekly.limitUsd,
+    },
+    now,
+  })
+}

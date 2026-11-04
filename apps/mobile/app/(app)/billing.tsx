@@ -82,10 +82,10 @@ import {
 // Claude Code). Expresses each tier's rolling-window allowance as a multiple
 // of the entry paid tier (Basic), derived from the weekly window so copy
 // stays in sync with ROLLING_WINDOW_LIMITS. Enterprise is uncapped.
-const BASIC_WEEKLY_USD = getWindowLimitsForPlan('basic', 1)?.weeklyUsd ?? 0
+const BASIC_WEEKLY_USD = getWindowLimitsForPlan('basic')?.weeklyUsd ?? 0
 
 function relativeUsageCopy(planId: string): string {
-  const limits = getWindowLimitsForPlan(planId, 1)
+  const limits = getWindowLimitsForPlan(planId)
   if (!limits) return 'Unlimited usage — no rate windows'
   if (!BASIC_WEEKLY_USD || limits.weeklyUsd <= BASIC_WEEKLY_USD) {
     return 'Standard 5-hour & weekly usage windows'

@@ -6,7 +6,7 @@
  * live usage bars will disagree with what the server actually enforces.
  */
 import { describe, expect, it } from 'vitest'
-import { deriveUsageWindows, FIVE_HOUR_MS, SEVEN_DAY_MS } from '../usage-windows'
+import { deriveUsageWindows, resolveUsageWindows, FIVE_HOUR_MS, SEVEN_DAY_MS } from '../usage-windows'
 
 const NOW = Date.parse('2026-06-18T12:00:00.000Z')
 const LIMITS = { fiveHourUsd: 0.2, weeklyUsd: 0.5 }
@@ -140,5 +140,85 @@ describe('deriveUsageWindows', () => {
 
     expect(fromString).toEqual(fromNumber)
     expect(fromString.fiveHour.utilization).toBeCloseTo(0.5, 10)
+  })
+})
+
+describe('resolveUsageWindows', () => {
+  const WEEK_LIMIT = { fiveHourUsd: 1.84, weeklyUsd: 4.6 } // business, per seat
+  const snapshot = (usedUsd: number, startMs: number | null) => ({
+    fiveHour: {
+      kind: 'five_hour' as const,
+      usedUsd,
+      limitUsd: WEEK_LIMIT.fiveHourUsd,
+      utilization: usedUsd / WEEK_LIMIT.fiveHourUsd,
+      resetsAt: startMs == null ? null : new Date(startMs + FIVE_HOUR_MS).toISOString(),
+    },
+    weekly: {
+      kind: 'weekly' as const,
+      usedUsd,
+      limitUsd: WEEK_LIMIT.weeklyUsd,
+      utilization: usedUsd / WEEK_LIMIT.weeklyUsd,
+      resetsAt: startMs == null ? null : new Date(startMs + SEVEN_DAY_MS).toISOString(),
+    },
+  })
+
+  it('returns undefined until the server snapshot has loaded', () => {
+    expect(resolveUsageWindows({ wallet: null, windows: undefined, meteredPerSeat: false })).toBeUndefined()
+  })
+
+  it('a paid plan shows the seat snapshot verbatim, never the pooled wallet', () => {
+    // A seat that has not spent anything yet, while the wallet still carries
+    // leftover pooled usage from before the workspace moved to per-seat meters.
+    const res = resolveUsageWindows({
+      wallet: { fiveHourWindowStart: NOW - 1000, fiveHourUsedUsd: 5, weeklyWindowStart: NOW - 1000, weeklyUsedUsd: 5 },
+      windows: snapshot(0, null),
+      meteredPerSeat: true,
+      now: NOW,
+    })!
+    expect(res.weekly.usedUsd).toBe(0)
+    expect(res.weekly.utilization).toBe(0)
+    expect(res.weekly.limitUsd).toBe(4.6)
+  })
+
+  it('the free tier derives live from the wallet', () => {
+    const res = resolveUsageWindows({
+      wallet: {
+        fiveHourWindowStart: NOW - 60 * 60 * 1000,
+        fiveHourUsedUsd: 0.1,
+        weeklyWindowStart: NOW - 2 * 24 * 60 * 60 * 1000,
+        weeklyUsedUsd: 0.25,
+      },
+      windows: snapshot(0, null),
+      meteredPerSeat: false,
+      now: NOW,
+    })!
+    expect(res.fiveHour.usedUsd).toBeCloseTo(0.1, 10)
+    expect(res.weekly.usedUsd).toBeCloseTo(0.25, 10)
+  })
+
+  it('keeps the server limits and never reports less usage than the snapshot', () => {
+    const weekStart = NOW - 60 * 60 * 1000
+    const res = resolveUsageWindows({
+      // Same window start on both sides, wallet lower than the snapshot.
+      wallet: { fiveHourWindowStart: weekStart, fiveHourUsedUsd: 1, weeklyWindowStart: weekStart, weeklyUsedUsd: 1 },
+      windows: snapshot(3, weekStart),
+      meteredPerSeat: false,
+      now: NOW,
+    })!
+    expect(res.fiveHour.usedUsd).toBe(3)
+    expect(res.fiveHour.limitUsd).toBe(WEEK_LIMIT.fiveHourUsd)
+  })
+
+  it('prefers the newer window start (a reset must not show stale usage)', () => {
+    const oldStart = NOW - 9 * 24 * 60 * 60 * 1000
+    const newStart = NOW - 60 * 60 * 1000
+    const res = resolveUsageWindows({
+      wallet: { fiveHourWindowStart: oldStart, fiveHourUsedUsd: 4, weeklyWindowStart: oldStart, weeklyUsedUsd: 4 },
+      windows: snapshot(0.5, newStart),
+      meteredPerSeat: false,
+      now: NOW,
+    })!
+    expect(res.weekly.usedUsd).toBe(0.5)
+    expect(res.weekly.resetsAt).toBe(new Date(newStart + SEVEN_DAY_MS).toISOString())
   })
 })
