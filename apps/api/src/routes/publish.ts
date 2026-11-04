@@ -957,12 +957,15 @@ async function configurePublishedService(
   // metal publish (the escape hatch, which keeps SQLite) or in a cluster that has
   // no `PROJECTS_DB_ADMIN_URL` yet, publishing must behave exactly as it does
   // today rather than refusing every server app with `database_unavailable`.
-  const { shouldProvisionPublishedDatabase } = await import("../lib/publish-substrate-config")
+  const { shouldProvisionPublishedDatabase, missingProjectsDatabaseConfig } = await import(
+    "../lib/publish-substrate-config"
+  )
   const usePostgres = serverBacked && shouldProvisionPublishedDatabase(substrate.kind)
   if (serverBacked && !usePostgres) {
+    const missing = missingProjectsDatabaseConfig()
     console.log(
-      `[Publish] Keeping ${projectId}/${environmentName} on SQLite (substrate=${substrate.kind}, ` +
-        `projects-pg ${process.env.PROJECTS_DB_ADMIN_URL ? "configured" : "not configured"})`,
+      `[Publish] Keeping ${projectId}/${environmentName} on SQLite ` +
+        `(substrate=${substrate.kind}${missing.length ? `, projects-pg missing ${missing.join(", ")}` : ""})`,
     )
   }
   if (usePostgres) {

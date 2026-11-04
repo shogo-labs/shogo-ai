@@ -169,10 +169,28 @@ describe('seed SQL', () => {
     // One statement for both rows: a self-reference inside one INSERT is
     // resolved at statement end, so a single row-per-INSERT load would fail.
     expect(sql.match(/INSERT INTO/g)).toHaveLength(1)
+    // The table name is quoted inside the literal (that argument is parsed as a
+    // name, so `'User'` folds to `user` and fails with `relation "user" does not
+    // exist`, aborting the whole seed transaction). The column is plain: it is
+    // compared to the attribute name as a string, so quoting it fails.
     expect(sql).toContain(
-      `setval(pg_get_serial_sequence('User', 'id'), GREATEST((SELECT COALESCE(MAX("id"), 0) FROM "User"), 1))`,
+      `setval(pg_get_serial_sequence('"User"', 'id'), GREATEST((SELECT COALESCE(MAX("id"), 0) FROM "User"), 1))`,
     )
     expect(sql.trimEnd().endsWith('COMMIT;')).toBe(true)
+  })
+
+  it('quotes a mapped table name but passes the column name literally', () => {
+    const sql = buildSeedSql([
+      {
+        table: 'app_user',
+        columns: ['Id', 'email'],
+        rows: [[7, 'a@example.com']],
+        serialIdColumn: 'Id',
+      },
+    ])
+    // `'"app_user"'` resolves the table; `'Id'` must reach the lookup verbatim so
+    // a PascalCase id column still matches.
+    expect(sql).toContain(`pg_get_serial_sequence('"app_user"', 'Id')`)
   })
 
   it('skips empty tables but still counts what is being copied', () => {

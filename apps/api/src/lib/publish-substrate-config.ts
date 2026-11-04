@@ -59,11 +59,14 @@ export function shouldServeStaticFromEdgeOnly(): boolean {
  *   1. the site is being published to **Knative**. A metal site keeps its SQLite
  *      data archive; that is the substrate's contract, and the escape hatch has
  *      to stay usable.
- *   2. the cluster's admin connection is configured (`PROJECTS_DB_ADMIN_URL`).
- *      Unknown infrastructure must not turn every server-app publish into a 503:
- *      with no admin URL the publish behaves exactly as it does today (SQLite),
- *      and the environment is flipped to Postgres by the publish that follows the
- *      cluster being wired up.
+ *   2. the cluster is reachable *and* its databases have a pooled address —
+ *      `PROJECTS_DB_ADMIN_URL` and `PROJECTS_DB_POOLER_HOST`. These are exactly
+ *      the two things `ensureEnvironmentDatabase` refuses on (it answers
+ *      `database_unavailable` for a missing pooler or a missing admin URL), so
+ *      the gate and the refusal can never disagree: a region that would 503 is a
+ *      region that this gate keeps on SQLite, publishing exactly as it does
+ *      today. Checking only one of them would let the other turn every
+ *      server-app publish into a 503.
  *
  * `PUBLISH_POSTGRES=on|off` forces the decision for a single rollout step —
  * `on` is how a misconfigured cluster surfaces as `database_unavailable` instead
@@ -75,5 +78,20 @@ export function shouldProvisionPublishedDatabase(substrateKind: 'knative' | 'met
   const override = (process.env.PUBLISH_POSTGRES || '').trim().toLowerCase()
   if (override === 'off') return false
   if (override === 'on') return true
-  return !!(process.env.PROJECTS_DB_ADMIN_URL || '').trim()
+  return !!configuredProjectsDatabase()
+}
+
+/**
+ * The parts of the projects-database configuration that are missing, for the
+ * publish log. Empty when the cluster is fully wired up.
+ */
+export function missingProjectsDatabaseConfig(): string[] {
+  const missing: string[] = []
+  if (!(process.env.PROJECTS_DB_ADMIN_URL || '').trim()) missing.push('PROJECTS_DB_ADMIN_URL')
+  if (!(process.env.PROJECTS_DB_POOLER_HOST || '').trim()) missing.push('PROJECTS_DB_POOLER_HOST')
+  return missing
+}
+
+function configuredProjectsDatabase(): boolean {
+  return missingProjectsDatabaseConfig().length === 0
 }

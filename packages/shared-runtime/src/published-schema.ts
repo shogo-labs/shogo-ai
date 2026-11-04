@@ -267,6 +267,11 @@ export function parseBooleanColumns(schema: string): Map<string, string[]> {
   return out
 }
 
+/** Quote a Postgres string literal (e.g. a name passed to `pg_get_serial_sequence`). */
+export function quoteLiteralText(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
 /** Quote a Postgres identifier. */
 export function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`
@@ -337,8 +342,17 @@ export function buildSeedSql(tables: SeedTableData[]): string {
       // `pg_get_serial_sequence` resolves the sequence behind the identity, so
       // the reset works whether the column is `serial` or `GENERATED ... AS
       // IDENTITY`, and a table with no rows is left alone by MAX() + COALESCE.
+      //
+      // The table name is quoted *inside* the literal because that argument is
+      // parsed as a name: unquoted, Postgres folds `User` to `user` and every
+      // Prisma-default PascalCase table fails with `relation "user" does not
+      // exist`, aborting the seed transaction (`seed_failed` for almost every
+      // real app). The column name is NOT quoted there: it is compared as a plain
+      // string to the attribute name, so quoting it looks for an attribute
+      // literally called `"id"` and fails.
       statements.push(
-        `SELECT setval(pg_get_serial_sequence('${table.table.replace(/'/g, "''")}', '${table.serialIdColumn}'), ` +
+        `SELECT setval(pg_get_serial_sequence(${quoteLiteralText(quoteIdent(table.table))}, ` +
+          `${quoteLiteralText(table.serialIdColumn)}), ` +
           `GREATEST((SELECT COALESCE(MAX(${quoteIdent(table.serialIdColumn)}), 0) FROM ${quoteIdent(table.table)}), 1));`,
       )
     }
