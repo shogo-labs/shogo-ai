@@ -33,9 +33,9 @@ describe('constants', () => {
 
   test('SEAT_INCLUDED_USD has all 5 plan tiers with expected values', () => {
     expect(SEAT_INCLUDED_USD.free).toBe(0)
-    expect(SEAT_INCLUDED_USD.basic).toBe(5)
+    expect(SEAT_INCLUDED_USD.basic).toBe(10)
     expect(SEAT_INCLUDED_USD.pro).toBe(20)
-    expect(SEAT_INCLUDED_USD.business).toBe(40)
+    expect(SEAT_INCLUDED_USD.business).toBe(20)
     expect(SEAT_INCLUDED_USD.enterprise).toBe(2000)
   })
 })
@@ -47,10 +47,10 @@ describe('getMonthlyIncludedForPlan — single-seat plans', () => {
     expect(getMonthlyIncludedForPlan('free', 50)).toBe(0)
   })
 
-  test('basic with any seats returns $5 (single-user, seats ignored)', () => {
-    expect(getMonthlyIncludedForPlan('basic')).toBe(5)
-    expect(getMonthlyIncludedForPlan('basic', 1)).toBe(5)
-    expect(getMonthlyIncludedForPlan('basic', 100)).toBe(5)
+  test('basic with any seats returns $10 (single-user, seats ignored)', () => {
+    expect(getMonthlyIncludedForPlan('basic')).toBe(10)
+    expect(getMonthlyIncludedForPlan('basic', 1)).toBe(10)
+    expect(getMonthlyIncludedForPlan('basic', 100)).toBe(10)
   })
 })
 
@@ -64,8 +64,8 @@ describe('getMonthlyIncludedForPlan — multi-seat plans', () => {
     expect(getMonthlyIncludedForPlan('pro', 5)).toBe(100)
   })
 
-  test('business × 3 seats = $120', () => {
-    expect(getMonthlyIncludedForPlan('business', 3)).toBe(120)
+  test('business × 3 seats = $60', () => {
+    expect(getMonthlyIncludedForPlan('business', 3)).toBe(60)
   })
 
   test('enterprise × 10 seats = $20,000', () => {
@@ -91,7 +91,7 @@ describe('getMonthlyIncludedForPlan — seats-arg clamping', () => {
   })
 
   test('seats omitted defaults to 1', () => {
-    expect(getMonthlyIncludedForPlan('business')).toBe(40)
+    expect(getMonthlyIncludedForPlan('business')).toBe(20)
   })
 })
 
