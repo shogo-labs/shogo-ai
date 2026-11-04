@@ -13,6 +13,9 @@ CREATE TABLE "published_environments" (
     "dbProvider" TEXT,
     "dbName" TEXT,
     "currentDeploymentId" TEXT,
+    "publishStatus" TEXT NOT NULL DEFAULT 'idle',
+    "publishError" TEXT,
+    "publishStatusAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -64,7 +67,7 @@ CREATE INDEX "published_usage_minutes_billedAt_idx" ON "published_usage_minutes"
 -- becomes min-scale 1 (the old meaning of always-on).
 INSERT INTO "published_environments" ("id", "projectId", "name", "subdomain", "minReplicas", "maxReplicas", "size", "createdAt", "updatedAt")
 SELECT
-    'penv_' || "id",
+    'penv_' || gen_random_uuid()::text,
     "id",
     'production',
     "publishedSubdomain",

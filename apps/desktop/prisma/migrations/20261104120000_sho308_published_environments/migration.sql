@@ -13,6 +13,9 @@ CREATE TABLE "published_environments" (
     "dbProvider" TEXT,
     "dbName" TEXT,
     "currentDeploymentId" TEXT,
+    "publishStatus" TEXT NOT NULL DEFAULT 'idle',
+    "publishError" TEXT,
+    "publishStatusAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL
 );
@@ -55,7 +58,7 @@ CREATE INDEX "published_usage_minutes_billedAt_idx" ON "published_usage_minutes"
 
 INSERT INTO "published_environments" ("id", "projectId", "name", "subdomain", "minReplicas", "maxReplicas", "size", "createdAt", "updatedAt")
 SELECT
-    'penv_' || "id",
+    'penv_' || lower(hex(randomblob(16))),
     "id",
     'production',
     "publishedSubdomain",

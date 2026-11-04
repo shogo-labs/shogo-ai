@@ -22,6 +22,7 @@ import {
   type PublishedScaleSettings,
 } from '../lib/published-scale'
 import {
+  clampEnvironmentsForExhaustedWallet,
   createStagingEnvironment,
   deleteEnvironmentRow,
   getEnvironment,
@@ -33,6 +34,7 @@ import {
   type PublishedOpsOk,
 } from './published-environments.service'
 import { computePublishedCost, roundUsd } from '../config/published-pricing'
+import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 
 function isKubernetes(): boolean {
   return !!process.env.KUBERNETES_SERVICE_HOST
@@ -237,6 +239,67 @@ export async function getEnvironmentLogs(
   }
 }
 
+/**
+ * Out-of-funds clamp, applied end to end (SHO-308 §9).
+ *
+ * `clampEnvironmentsForExhaustedWallet` only rewrites the rows; Knative keeps
+ * serving until the new scale is pushed, so this is the function the billing job
+ * calls. Prod is never taken down — it is held at max-scale 1 — and staging is
+ * dropped to zero. Returns the environments that were actually re-scaled.
+ */
+export async function applyExhaustedWalletClamp(
+  projectId: string,
+): Promise<Array<{ environment: PublishedEnvironmentRow; settings: PublishedScaleSettings; applied: boolean }>> {
+  const changed = await clampEnvironmentsForExhaustedWallet(projectId)
+  if (changed.length === 0) return []
+  const k8s = isKubernetes()
+  const results: Array<{ environment: PublishedEnvironmentRow; settings: PublishedScaleSettings; applied: boolean }> = []
+  for (const change of changed) {
+    let applied = false
+    if (k8s) {
+      try {
+        const mgr = await manager()
+        await mgr.setPublishedScale(projectId, change.settings, change.environment.name as PublishedEnvironmentName)
+        applied = true
+      } catch (err: any) {
+        // Leave `applied: false` so the caller can retry and the owner is told
+        // the site is still running at its old scale.
+        console.warn(
+          `[published-ops] clamp ${projectId}/${change.environment.name} could not reach Knative:`,
+          err?.message ?? err,
+        )
+      }
+    }
+    results.push({ ...change, applied })
+  }
+  return results
+}
+
+/**
+ * Deploy state for one environment. Staging has its own row state so a failed
+ * staging build can never mark production failed (SHO-308 §8).
+ */
+export async function setEnvironmentPublishStatus(
+  environmentId: string,
+  status: 'idle' | 'building' | 'uploading' | 'configuring' | 'live' | 'failed',
+  error?: string | null,
+): Promise<void> {
+  await prisma.publishedEnvironment.update({
+    where: { id: environmentId },
+    data: { publishStatus: status, publishError: error ?? null, publishStatusAt: new Date() },
+  })
+}
+
+/**
+ * The container image a publish just ran, for `PublishedDeployment.imageRef`.
+ * Per-commit images come from §2; until then every environment runs the shared
+ * runtime image, which is still a real reference — recording `''` would let
+ * `promote` patch production to no image at all.
+ */
+export function resolvePublishedImageRef(): string {
+  return process.env.PUBLISHED_RUNTIME_IMAGE || RUNTIME_CONFIG.image()
+}
+
 /** Apply a scale change and push it to Knative (no republish). */
 export async function scaleEnvironment(
   projectId: string,
@@ -275,6 +338,11 @@ export async function rollbackEnvironment(
         orderBy: { createdAt: 'desc' },
       })
   if (!target) return fail('deployment_not_found', 'No earlier deployment to roll back to', 404)
+  if (!target.imageRef) {
+    // A deployment row with no image can only come from a publish that never
+    // recorded one. Rolling back to it would patch the ksvc to no image at all.
+    return fail('image_missing', 'That deployment has no recorded image to serve', 409)
+  }
 
   if (isKubernetes()) {
     const mgr = await manager()
@@ -313,6 +381,7 @@ export async function redeployEnvironment(
   if (!env.currentDeploymentId) return fail('no_deployment', 'This environment has no deployment yet', 409)
   const current = await prisma.publishedDeployment.findUnique({ where: { id: env.currentDeploymentId } })
   if (!current) return fail('no_deployment', 'This environment has no deployment yet', 409)
+  if (!current.imageRef) return fail('image_missing', 'The current deployment has no recorded image', 409)
 
   if (isKubernetes()) {
     const mgr = await manager()
@@ -337,6 +406,9 @@ export async function promoteStagingToProduction(
   if (!staging.currentDeploymentId) return fail('no_deployment', 'Staging has no deployment to promote', 409)
   const source = await prisma.publishedDeployment.findUnique({ where: { id: staging.currentDeploymentId } })
   if (!source) return fail('no_deployment', 'Staging has no deployment to promote', 409)
+  if (!source.imageRef) {
+    return fail('image_missing', 'Staging has no recorded image to promote — redeploy staging first', 409)
+  }
 
   const production = await getEnvironment(projectId, 'production')
   if (!production) return fail('not_published', 'Publish the app before promoting', 409)

@@ -106,6 +106,8 @@ export interface PublishResult {
   substrate: SubstrateKind
   /** Cluster/mesh-routable URL of the published runtime, when one exists. */
   url?: string
+  /** Knative revision this publish created, when the substrate reported one. */
+  revisionName?: string
 }
 
 export interface ProjectSubstrate {

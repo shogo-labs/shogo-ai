@@ -112,12 +112,46 @@ describe('setEnvironmentScale', () => {
     await ensureProductionEnvironment('p1', 'acme')
   })
 
-  it('applies a scale within the plan caps', async () => {
+  it('applies a single-replica scale to an app that still runs local state', async () => {
+    const res = await setEnvironmentScale('p1', 'production', { minReplicas: 1, maxReplicas: 1, size: 'm' })
+    expect(res.ok).toBe(true)
+    if (res.ok) {
+      expect(res.value.settings).toEqual({ minReplicas: 1, maxReplicas: 1, size: 'm' })
+      expect(res.value.environment.maxReplicas).toBe(1)
+    }
+  })
+
+  it('applies a scale within the plan caps once the app has shared state', async () => {
+    envs[0].dbProvider = 'postgres'
+    envs[0].dbName = 'project_p1'
+    envs[0].uploadsShared = true
     const res = await setEnvironmentScale('p1', 'production', { minReplicas: 1, maxReplicas: 4, size: 'm' })
     expect(res.ok).toBe(true)
     if (res.ok) {
       expect(res.value.settings).toEqual({ minReplicas: 1, maxReplicas: 4, size: 'm' })
       expect(res.value.environment.maxReplicas).toBe(4)
+    }
+  })
+
+  it('refuses a second replica with local_state_in_use while the app is on pod-local SQLite', async () => {
+    const res = await setEnvironmentScale('p1', 'production', { maxReplicas: 3 })
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.code).toBe('local_state_in_use')
+      expect(res.status).toBe(409)
+      expect(res.message).toContain('SQLite')
+      expect(envs[0].maxReplicas).toBe(1)
+    }
+  })
+
+  it('still refuses local_state_in_use when only the database is shared', async () => {
+    envs[0].dbProvider = 'postgres'
+    envs[0].dbName = 'project_p1'
+    const res = await setEnvironmentScale('p1', 'production', { maxReplicas: 2 })
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.code).toBe('local_state_in_use')
+      expect(res.message).toContain('uploads')
     }
   })
 

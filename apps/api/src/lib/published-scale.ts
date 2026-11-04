@@ -119,6 +119,28 @@ export function publishedContainerResources(size: PublishedSize): {
   }
 }
 
+/**
+ * Why this environment cannot run more than one replica, or `null` when it can
+ * (SHO-308 AC 6).
+ *
+ * Knative starts each replica with its own `emptyDir`, so anything the app
+ * writes into the pod is per-pod state. Until the app has both a Postgres
+ * database (one DB shared by every replica) and object-backed uploads, a second
+ * replica would diverge — two SQLite files, two upload dirs — and the guard in
+ * `setEnvironmentScale` refuses it with `local_state_in_use`.
+ */
+export function publishedLocalStateReason(env: {
+  dbProvider?: string | null
+  dbName?: string | null
+  uploadsShared?: boolean
+}): string | null {
+  const missing: string[] = []
+  if (env.dbProvider !== 'postgres' || !env.dbName) missing.push('its database is a SQLite file inside each pod')
+  if (env.uploadsShared !== true) missing.push('its uploads land in a per-pod directory')
+  if (missing.length === 0) return null
+  return `This app still keeps ${missing.join(' and ')}, so a second replica would serve different data. Publishing it to Postgres with object-backed uploads unlocks more replicas.`
+}
+
 export type PublishedScaleValidation =
   | { ok: true; settings: PublishedScaleSettings }
   | { ok: false; code: 'invalid_scale'; message: string }

@@ -18,6 +18,7 @@ import { prisma } from '../lib/prisma'
 import {
   DEFAULT_PUBLISHED_SCALE,
   normalizePublishedSize,
+  publishedLocalStateReason,
   publishedSubdomainForEnv,
   validatePublishedScale,
   type PublishedEnvironmentName,
@@ -36,6 +37,8 @@ export interface PublishedEnvironmentRow {
   dbProvider: string | null
   dbName: string | null
   currentDeploymentId: string | null
+  /** Set once uploads are served from the shared bucket rather than a pod dir. */
+  uploadsShared?: boolean
 }
 
 export type PublishedOpsError = {
@@ -173,6 +176,20 @@ export async function setEnvironmentScale(
     )
   }
 
+  // AC 6: a second replica only makes sense once every replica reads the same
+  // data. Until the app is on Postgres with object-backed uploads, Knative's
+  // per-pod emptyDir means two replicas would serve two different SQLite files.
+  if (validated.settings.maxReplicas > 1) {
+    const localState = publishedLocalStateReason(env)
+    if (localState) {
+      return fail('local_state_in_use', localState, 409, {
+        field: 'maxReplicas',
+        dbProvider: env.dbProvider,
+        dbName: env.dbName,
+      })
+    }
+  }
+
   const updated = await prisma.publishedEnvironment.update({
     where: { id: env.id },
     data: {
@@ -259,11 +276,12 @@ export async function clampEnvironmentsForExhaustedWallet(
       })
       changed.push({ environment: updated as PublishedEnvironmentRow, settings: scaleSettingsOf(updated as PublishedEnvironmentRow) })
     } else {
-      // Staging is allowed to scale to zero (min=0); it just can't stay warm.
-      if (env.minReplicas === 0) continue
+      // Staging is allowed to scale to zero and is capped at one replica: the
+      // wallet is empty, so nothing may fan out until funds return.
+      if (env.minReplicas === 0 && env.maxReplicas <= 1) continue
       const updated = await prisma.publishedEnvironment.update({
         where: { id: env.id },
-        data: { minReplicas: 0 },
+        data: { minReplicas: 0, maxReplicas: 1 },
       })
       changed.push({ environment: updated as PublishedEnvironmentRow, settings: scaleSettingsOf(updated as PublishedEnvironmentRow) })
     }

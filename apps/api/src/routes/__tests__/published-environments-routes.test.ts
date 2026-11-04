@@ -245,7 +245,10 @@ describe('GET /projects/:id/published/environments/:name/metrics', () => {
 })
 
 describe('POST /projects/:id/published/environments/:name/scale', () => {
-  it('applies a scale inside the plan cap', async () => {
+  it('applies a scale inside the plan cap once the app has shared state', async () => {
+    envs[0].dbProvider = 'postgres'
+    envs[0].dbName = 'project_p1'
+    envs[0].uploadsShared = true
     const res = await post('/projects/p1/published/environments/production/scale', {
       minReplicas: 1,
       maxReplicas: 4,
@@ -255,6 +258,15 @@ describe('POST /projects/:id/published/environments/:name/scale', () => {
     const body = await res.json()
     expect(body.settings).toEqual({ minReplicas: 1, maxReplicas: 4, size: 'm' })
     expect(envs[0].maxReplicas).toBe(4)
+  })
+
+  it('refuses a second replica with local_state_in_use on pod-local state', async () => {
+    const res = await post('/projects/p1/published/environments/production/scale', {
+      maxReplicas: 3,
+    })
+    expect(res.status).toBe(409)
+    expect((await res.json()).error.code).toBe('local_state_in_use')
+    expect(envs[0].maxReplicas).toBe(1)
   })
 
   it('refuses a scale above the plan cap with plan_limit', async () => {

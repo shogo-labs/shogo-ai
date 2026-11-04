@@ -4707,6 +4707,11 @@ model PublishedEnvironment {
   dbProvider          String?
   dbName              String?
   currentDeploymentId String?
+  /// Per-environment deploy state, so a failed staging build never marks
+  /// production failed (SHO-308 §8). Mirrors Project.publishStatus.
+  publishStatus       String   @default("idle")
+  publishError        String?
+  publishStatusAt     DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 

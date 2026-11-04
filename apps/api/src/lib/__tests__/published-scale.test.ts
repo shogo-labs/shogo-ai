@@ -9,6 +9,7 @@ import {
   isReservedEnvironmentSubdomain,
   normalizePublishedSize,
   publishedContainerResources,
+  publishedLocalStateReason,
   publishedServiceName,
   publishedSubdomainForEnv,
   validatePublishedScale,
@@ -107,6 +108,41 @@ describe('published-scale', () => {
       expect(normalizePublishedSize('M')).toBe('m')
       expect(normalizePublishedSize(undefined)).toBe('s')
       expect(normalizePublishedSize('huge')).toBe('s')
+    })
+  })
+
+  describe('publishedLocalStateReason (AC 6)', () => {
+    it('refuses more than one replica while the database is a per-pod SQLite file', () => {
+      const reason = publishedLocalStateReason({ dbProvider: null, dbName: null, uploadsShared: false })
+      expect(reason).toContain('SQLite')
+      expect(reason).toContain('uploads')
+    })
+
+    it('still refuses when only uploads are still per-pod', () => {
+      const reason = publishedLocalStateReason({
+        dbProvider: 'postgres',
+        dbName: 'project_abc',
+        uploadsShared: false,
+      })
+      expect(reason).toContain('uploads')
+      expect(reason).not.toContain('SQLite')
+    })
+
+    it('still refuses when only the database is per-pod', () => {
+      const reason = publishedLocalStateReason({ dbProvider: null, dbName: null, uploadsShared: true })
+      expect(reason).toContain('SQLite')
+      // Only the DB is named as pod-local; uploads are already shared.
+      expect(reason).not.toContain('per-pod directory')
+    })
+
+    it('allows more than one replica once both are shared', () => {
+      expect(
+        publishedLocalStateReason({
+          dbProvider: 'postgres',
+          dbName: 'project_abc',
+          uploadsShared: true,
+        }),
+      ).toBeNull()
     })
   })
 })

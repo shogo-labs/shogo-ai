@@ -95,7 +95,7 @@ export async function billPublishedUsage(now: Date = new Date()): Promise<BillSu
     }
 
     const { consumeUsage } = await import('../services/billing.service')
-    const { clampEnvironmentsForExhaustedWallet } = await import('../services/published-environments.service')
+    const { applyExhaustedWalletClamp } = await import('../services/published-ops.service')
     const { getProjectOwnerUserId } = await import('../lib/project-user-context')
 
     let environmentsCharged = 0
@@ -152,13 +152,28 @@ export async function billPublishedUsage(now: Date = new Date()): Promise<BillSu
       })
 
       if (!result.success) {
-        // Wallet exhausted: prod is never taken down, it is clamped to 1
-        // replica; staging scales to zero. The rows stay unbilled so the charge
-        // lands once funds return.
-        const changes = await clampEnvironmentsForExhaustedWallet(env.projectId)
-        clamped += changes.length
+        // Only a genuinely empty wallet clamps. A transient failure (peer call,
+        // DB hiccup, unknown reason) must leave the site at full scale and the
+        // rows unbilled so the next tick retries the charge.
+        const exhausted =
+          result.reason === 'usage_limit_reached' || result.reason === 'overage_cap_reached'
+        if (exhausted) {
+          // Prod is never taken down: it is held at max-scale 1, staging drops
+          // to zero. `applyExhaustedWalletClamp` also pushes the new scale to
+          // Knative, so the clamp actually reaches the running service.
+          const changes = await applyExhaustedWalletClamp(env.projectId)
+          clamped += changes.filter((c) => c.applied).length
+          const notApplied = changes.filter((c) => !c.applied)
+          if (notApplied.length > 0) {
+            console.error(
+              `[published-usage] clamp persisted but NOT applied for ${env.projectId}: ` +
+                notApplied.map((c) => c.environment.name).join(', '),
+            )
+          }
+        }
         console.warn(
-          `[published-usage] charge refused for ${env.projectId}/${env.name}: ${result.reason ?? result.error}`,
+          `[published-usage] charge refused for ${env.projectId}/${env.name} ` +
+            `(${result.reason ?? result.error ?? 'unknown'}): ${result.error ?? ''}`,
         )
         continue
       }

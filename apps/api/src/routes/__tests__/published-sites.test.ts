@@ -104,7 +104,20 @@ const prismaApi = {
       return { ...row }
     },
   },
+  // SHO-308: every publish records what the environment now serves, so
+  // rollback/redeploy/promote have a real image to point at.
+  publishedDeployment: {
+    create: async ({ data }: any) => {
+      const row = { id: `pdep_${deploymentRows.length + 1}`, createdAt: new Date(), ...data }
+      deploymentRows.push(row)
+      return { ...row }
+    },
+    updateMany: async () => ({ count: 0 }),
+    findUnique: async ({ where }: any) => deploymentRows.find((d) => d.id === where.id) ?? null,
+  },
 }
+
+const deploymentRows: any[] = []
 
 const envRows: Record<string, any> = {}
 

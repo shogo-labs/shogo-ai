@@ -932,7 +932,34 @@ async function configurePublishedService(
     `[Publish] Published ${projectId} via ${result.substrate} substrate ` +
       `(serverBacked=${result.serverBacked}${result.url ? `, url=${result.url}` : ""})`,
   )
+
+  // Record what this environment is now serving so rollback, redeploy and
+  // promote have a real image to point at (SHO-308 §4/§5). Without this row the
+  // three ops actions have nothing to switch to.
+  const { recordPublishedDeployment } = await import("../services/published-deployments.service")
+  const { resolvePublishedImageRef } = await import("../services/published-ops.service")
+  await recordPublishedDeployment({
+    environmentId: environment.id,
+    commitSha: (await currentPublishedCommitSha(projectId)) ?? "",
+    imageRef: resolvePublishedImageRef(),
+    revisionName: result.revisionName ?? null,
+    status: "ready",
+  })
+
   return { serverBacked: result.serverBacked }
+}
+
+/** The commit the publish is shipping, for the deployment record. */
+async function currentPublishedCommitSha(projectId: string): Promise<string | null> {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { publishedCommitSha: true },
+    })
+    return (project as any)?.publishedCommitSha ?? null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -1431,40 +1458,61 @@ export async function deployToStaging(projectId: string): Promise<PublishProject
     }
     const subdomain = staging.subdomain
 
+    // Environments need a substrate that can hold more than one runtime. Metal
+    // keeps a single published microVM per project, so refuse rather than let a
+    // staging publish re-point production's VM (SHO-308 §8).
+    const { getPublishSubstrate } = await import("../lib/substrate/router")
+    const substrate = await getPublishSubstrate(projectId)
+    if (substrate.kind !== "knative") {
+      return {
+        ok: false,
+        status: 409,
+        code: "staging_requires_knative",
+        message:
+          "Staging environments run on Knative. This workspace is set to the metal substrate, which serves one published runtime per project.",
+      }
+    }
+
     if (!isKubernetes()) {
       return { ok: true, status: 200, subdomain, environment: "staging" } as PublishProjectResult
     }
 
     await acquirePublishLock(projectId)
+    // Staging deploy state lives on the staging row, never on the project: a
+    // failed staging build must not mark production failed (SHO-308 §8).
+    const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
     try {
-      await setPublishStatus(projectId, "building")
+      await setEnvironmentPublishStatus(staging.id, "building")
       const build = await triggerBuildWithRetry(projectId)
       if (!build.success) {
-        await setPublishStatus(projectId, "failed", build.code || "build_failed")
+        await setEnvironmentPublishStatus(staging.id, "failed", build.code || "build_failed")
         return { ok: false, status: 500, code: build.code || "build_failed", message: build.error || "Build failed" }
       }
       const files = await downloadDistFiles(projectId)
       if (files.size === 0) {
-        await setPublishStatus(projectId, "failed", "no_files")
+        await setEnvironmentPublishStatus(staging.id, "failed", "no_files")
         return { ok: false, status: 400, code: "no_files", message: "No files to publish - build may have failed" }
       }
-      await setPublishStatus(projectId, "uploading")
+      await setEnvironmentPublishStatus(staging.id, "uploading")
       await uploadToS3(subdomain, files)
       await purgePublishedCache(subdomain)
 
-      await setPublishStatus(projectId, "configuring")
+      await setEnvironmentPublishStatus(staging.id, "configuring")
       const serverBacked = await detectServerBacked(projectId)
       await configurePublishedService(projectId, subdomain, { serverBacked, environment: "staging" })
 
-      // Record the deployment so promote/rollback have an image to point at.
+      // Record the deployment so promote/rollback have the exact image staging
+      // is serving. An empty imageRef here would let `promote` patch production
+      // to no image at all.
       const { recordPublishedDeployment } = await import("../services/published-deployments.service")
+      const { resolvePublishedImageRef } = await import("../services/published-ops.service")
       await recordPublishedDeployment({
         environmentId: staging.id,
         commitSha: (project as any).publishedCommitSha ?? "",
-        imageRef: process.env.PUBLISHED_RUNTIME_IMAGE || "",
+        imageRef: resolvePublishedImageRef(),
         status: "ready",
       })
-      await setPublishStatus(projectId, "live")
+      await setEnvironmentPublishStatus(staging.id, "live")
       return { ok: true, status: 200, subdomain, environment: "staging" } as PublishProjectResult
     } finally {
       await releasePublishLock(projectId)
