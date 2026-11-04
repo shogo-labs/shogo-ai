@@ -385,7 +385,6 @@ export const HomeScreen = observer(function HomeScreen({
   // loading → first workspace and only bumps it for a genuinely different one
   // (the same fix SHO-298 applied to the phone shell).
   const homeChatMountKey = useWorkspaceRemountKey(workspaceInView?.id)
-  const workspaceInViewId = workspaceInView?.id ?? null
   const currentExperience = useWorkspaceExperience()
   // A reload of `/` must land back on the chat that was open, so the agent
   // chat puts its session in the URL and the landing honours it (SHO-287).
@@ -961,19 +960,11 @@ export const HomeScreen = observer(function HomeScreen({
     return <MobileHomeFeed />
   }
   if (rendersAgentChat) {
-    // The screen is keyed by workspace so a switch starts a fresh one, but the
-    // key must not change from a placeholder to the real id: mounting with the
-    // placeholder and re-keying a frame later is what aborted a running turn
-    // (SHO-300). `useWorkspaceRemountKey` keeps the key across a cold start, so
-    // the only remaining wait is the collection itself; once it has loaded with
-    // no workspace at all we mount on the stable "none" key.
-    if (!workspaceInViewId && workspaces?.isLoading) {
-      return (
-        <View className="flex-1 bg-background px-4 pt-16" testID="home-chrome-skeleton">
-          <WorkspaceChromeSkeletonRows count={4} />
-        </View>
-      )
-    }
+    // The screen is keyed by workspace so a switch starts a fresh one, and the
+    // key must not change from a placeholder to the real id: re-keying a frame
+    // after mount is what aborted a running turn (SHO-300).
+    // `useWorkspaceRemountKey` gives the same key from the first commit through
+    // loading → first workspace, so mounting straight away is safe.
     return (
       <WorkspaceAgentChatScreen
         key={homeChatMountKey}
