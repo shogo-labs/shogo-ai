@@ -56,6 +56,8 @@ import {
   type AttachMode,
 } from '../services/workspace-session.service'
 import { resolveWorkspaceRuntimeUrl, WorkspaceRuntimeNotEnabledError } from '../lib/resolve-workspace-runtime-url'
+import { projectPreviewUrl } from '../lib/project-preview-url'
+import { rememberPreviewRegion } from '../lib/cloudflare-preview-region-kv'
 import { pinWorkspaceRoutesToHomeRegion, WORKSPACE_RUNTIME_ROUTE_PATTERNS } from '../lib/chat-region-pin'
 import {
   fetchFromWorkspaceRuntime as fetchFromWorkspaceRuntimeShared,
@@ -534,13 +536,27 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             ...runtimeExtra,
           })
 
+    // On metal this is the preview origin, not the resolved runtime origin: the
+    // runtime URL there is the box's public DNAT `http://<ip>:<port>` — internal
+    // plumbing the API alone uses (SHO-322). The preview subdomain is what a
+    // person opens; the Worker proxies it to the box once its home region is in
+    // KV. Other substrates (`/p/<id>/` on a merged-root pod) are not routed by
+    // the preview subdomain, and local/desktop's localhost URL already *is* the
+    // user's link, so both keep the resolved URL.
+    const metalPreviewUrl = resolved.mode === 'metal' ? await projectPreviewUrl(projectId) : null
+    if (metalPreviewUrl) {
+      await rememberPreviewRegion(projectId).catch((err) =>
+        console.warn(`[preview-url] remember region ${projectId.slice(0, 8)} failed (non-fatal): ${err?.message ?? err}`),
+      )
+    }
+
     return c.json({
       projectId,
       mode: resolved.mode,
       runtimeUrl: resolved.url,
       // Trailing slash is canonical: the app is built with vite base
       // `/p/<projectId>/`, so its absolute asset URLs resolve under this.
-      previewUrl: `${resolved.url}/p/${projectId}/`,
+      previewUrl: metalPreviewUrl ?? `${resolved.url}/p/${projectId}/`,
     })
   })
 

@@ -41,6 +41,8 @@ import {
 import { memberCallFailure, resolveWhileStarting } from '../lib/workspace-member-call'
 import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
 import { isMetalEnabled } from '../lib/metal-eligibility'
+import { projectPreviewUrl } from '../lib/project-preview-url'
+import { rememberPreviewRegion } from '../lib/cloudflare-preview-region-kv'
 import { REMOTE_IMPORT_MAX_BASE64_CHARS, remoteToolPermission } from '../lib/remote-tool-policy'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getRuntimeManager } from '../lib/runtime/manager'
@@ -1281,7 +1283,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       }
     }
 
-    const previewUrl = `${runtimeUrl}/p/${projectId}/`
+    // The caller hands this URL to a person, so it must be the public preview
+    // origin, never the runtime URL we just resolved (on metal that is the
+    // box's public DNAT `http://<ip>:<port>`, internal plumbing only — SHO-322).
+    // Pin the project's hosting region first so the preview-router Worker
+    // proxies to this box instead of its default region.
+    const publicPreviewUrl = await projectPreviewUrl(projectId)
+    if (publicPreviewUrl) {
+      await rememberPreviewRegion(projectId).catch((err) =>
+        console.warn(`[preview] remember region ${projectId.slice(0, 8)} failed (non-fatal): ${err?.message ?? err}`),
+      )
+    }
+    const previewUrl = publicPreviewUrl ?? `${runtimeUrl}/p/${projectId}/`
     if (!agentCallSvc) {
       // Capability not wired on this API (slim desktop composer): the URL is
       // still correct — the app builds on first request — so say so, don't
