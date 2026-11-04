@@ -35,17 +35,33 @@ export interface BuildRecordInput {
   now?: Date
 }
 
+/** What a `last-quit.json` activity block may contain, old shape or new. */
+type StoredActivity = {
+  agentRuns?: unknown
+  backgroundCommands?: unknown
+  /** The pre-SHO-317 name for `agentRuns`. */
+  liveTurns?: unknown
+}
+
+/** The activity block, normalised from either the current or the old record shape. */
+function normalizeActivity(raw: StoredActivity | null | undefined): LiveActivity {
+  const source = raw ?? {}
+  // An old record (SHO-181) stored `liveTurns` + `runningTasks` +
+  // `runningAgentReplies` and summed them; `liveTurns` is the only one that was
+  // ever an agent run, so it becomes `agentRuns` and the rest are dropped.
+  const runs = source.agentRuns ?? source.liveTurns
+  return {
+    agentRuns: Math.max(0, Number(runs) | 0),
+    backgroundCommands: Math.max(0, Number(source.backgroundCommands) | 0),
+  }
+}
+
 export function buildLastQuitRecord(input: BuildRecordInput): LastQuitRecord {
-  const activity = input.activity ?? { liveTurns: 0, runningTasks: 0, runningAgentReplies: 0 }
   return {
     reason: input.reason,
     fromVersion: input.version ?? null,
     at: (input.now ?? new Date()).toISOString(),
-    activity: {
-      liveTurns: Math.max(0, activity.liveTurns | 0),
-      runningTasks: Math.max(0, activity.runningTasks | 0),
-      runningAgentReplies: Math.max(0, activity.runningAgentReplies | 0),
-    },
+    activity: normalizeActivity(input.activity),
   }
 }
 
@@ -65,17 +81,12 @@ export function readLastQuit(filePath: string): LastQuitRecord | null {
     if (!existsSync(filePath)) return null
     const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as Partial<LastQuitRecord> | null
     if (!parsed || typeof parsed !== 'object' || typeof parsed.at !== 'string') return null
-    const activity = parsed.activity ?? {}
     const reason = parsed.reason === 'update' || parsed.reason === 'restart' || parsed.reason === 'quit' ? parsed.reason : 'quit'
     return {
       reason,
       fromVersion: typeof parsed.fromVersion === 'string' ? parsed.fromVersion : null,
       at: parsed.at,
-      activity: {
-        liveTurns: Math.max(0, Number((activity as LiveActivity).liveTurns) | 0),
-        runningTasks: Math.max(0, Number((activity as LiveActivity).runningTasks) | 0),
-        runningAgentReplies: Math.max(0, Number((activity as LiveActivity).runningAgentReplies) | 0),
-      },
+      activity: normalizeActivity(parsed.activity),
     }
   } catch {
     return null
@@ -98,12 +109,19 @@ export function takeInterruptedNotice(filePath: string): string | null {
 }
 
 export function buildInterruptedNotice(record: LastQuitRecord): string | null {
-  const total =
-    record.activity.liveTurns + record.activity.runningTasks + record.activity.runningAgentReplies
-  if (total <= 0) return null
-  const runs = total === 1 ? '1 agent run' : `${total} agent runs`
-  if (record.reason === 'quit') {
-    return `Quitting interrupted ${runs}; they pick up again automatically on the next launch.`
+  const runs = record.activity.agentRuns
+  const commands = record.activity.backgroundCommands
+  if (runs <= 0 && commands <= 0) return null
+  const runsPhrase = runs === 1 ? '1 agent run' : `${runs} agent runs`
+  const commandsPhrase = commands === 1 ? '1 background command' : `${commands} background commands`
+  const verb = record.reason === 'quit' ? 'Quitting interrupted' : 'Restarting for the update interrupted'
+  const resume = record.reason === 'quit' ? ' on the next launch' : ''
+  // Background commands are mentioned next to the runs, never instead of them:
+  // they die with the process but they are not agent runs, and they do not come
+  // back the way a run does — they report back as interrupted (SHO-317).
+  if (runs > 0 && commands > 0) {
+    return `${verb} ${runsPhrase}, and ${commandsPhrase}. The runs pick up again automatically${resume}; the commands report back as interrupted.`
   }
-  return `Restarting for the update interrupted ${runs}; they pick up again automatically.`
+  if (runs > 0) return `${verb} ${runsPhrase}; they pick up again automatically${resume}.`
+  return `${verb} ${commandsPhrase}; ${commands === 1 ? 'it reports' : 'they report'} back as interrupted.`
 }

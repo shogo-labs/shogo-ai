@@ -80,7 +80,7 @@ describe('GET /api/local/system/activity', () => {
   test('counts nothing when the machine is idle', async () => {
     const res = await call('GET', '/local/system/activity')
     expect(res.status).toBe(200)
-    expect(res.json).toMatchObject({ ok: true, liveTurns: 0, runningTasks: 0, runningAgentReplies: 0, sessions: [] })
+    expect(res.json).toMatchObject({ ok: true, agentRuns: 0, backgroundCommands: 0, liveTurns: 0, sessions: [] })
   })
 
   test('counts a live turn, a running task and a running team-chat reply, and names the chat', async () => {
@@ -116,14 +116,51 @@ describe('GET /api/local/system/activity', () => {
         authorType: 'agent',
         text: 'working on it',
         agentStatus: 'running',
+        // The reply runs in the session above: one run, not two (SHO-317).
+        agentSessionId: sessionId,
       },
     })
 
     const res = await call('GET', '/local/system/activity')
     expect(res.status).toBe(200)
-    expect(res.json).toMatchObject({ ok: true, liveTurns: 1, runningTasks: 1, runningAgentReplies: 1 })
+    // One live run. The running `agent_reply` watch is not a run — it survives a
+    // restart and fires its `[Task update]` on the next boot.
+    expect(res.json).toMatchObject({ ok: true, agentRuns: 1, backgroundCommands: 0, liveTurns: 1 })
     expect(res.json.sessions).toHaveLength(1)
     expect(res.json.sessions[0]).toMatchObject({ id: sessionId, title: 'Ship the release' })
+  })
+
+  test('card watches are not agent runs, and a background command is reported separately', async () => {
+    // Russell's live machine (SHO-317): 4 live runs, 2 replies on them and 7 card
+    // watches showed as "19 interrupted agent runs".
+    const sessionId = await newSession('Watching cards')
+    await db.chatSession.update({
+      where: { id: sessionId },
+      data: {
+        activeTurnId: 'turn-watch',
+        activeTurnStartedAt: new Date(),
+        activeTurnHeartbeatAt: new Date(),
+      },
+    })
+    const mkTask = (source: string, i: number) =>
+      db.backgroundTask.create({
+        data: {
+          id: `t_${source}_${i}_${Date.now()}`,
+          chatSessionId: sessionId,
+          source,
+          targetRef: `ref-${i}`,
+          title: `${source} ${i}`,
+          status: 'running',
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      })
+    for (let i = 0; i < 7; i += 1) await mkTask('work_item', i)
+    await mkTask('project_call', 50)
+    await mkTask('shell', 51)
+
+    const res = await call('GET', '/local/system/activity')
+    expect(res.json).toMatchObject({ ok: true, agentRuns: 1, backgroundCommands: 1 })
+    expect(res.json.runningTasks).toBe(9)
   })
 
   test('a turn whose heartbeat stopped is not live, so "when idle" can still fire', async () => {
@@ -139,7 +176,7 @@ describe('GET /api/local/system/activity', () => {
     })
 
     const res = await call('GET', '/local/system/activity')
-    expect(res.json).toMatchObject({ liveTurns: 0, runningTasks: 0, runningAgentReplies: 0 })
+    expect(res.json).toMatchObject({ agentRuns: 0, backgroundCommands: 0 })
     expect(res.json.sessions).toEqual([])
   })
 })

@@ -52,14 +52,14 @@ function useDesktopUpdateStatus() {
     desktop.onInterruptedNotice?.((data: { notice: string | null }) => {
       setInterruptedNotice(data?.notice ?? null)
     })
-    desktop.onRestartDrain?.((data: { active: boolean; activity: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null }) => {
+    desktop.onRestartDrain?.((data: { active: boolean; activity: { agentRuns: number; backgroundCommands: number } | null }) => {
       if (!data?.active) {
         setDraining(null)
         return
       }
       const activity = data.activity
       setDraining(
-        (activity?.liveTurns ?? 0) + (activity?.runningTasks ?? 0) + (activity?.runningAgentReplies ?? 0),
+        activity?.agentRuns ?? 0,
       )
     })
 
@@ -85,7 +85,7 @@ function useDesktopUpdateStatus() {
       setChoice({
         message: result.message ?? 'Agent runs are still working.',
         total:
-          (activity?.liveTurns ?? 0) + (activity?.runningTasks ?? 0) + (activity?.runningAgentReplies ?? 0),
+          activity?.agentRuns ?? 0,
       })
       return
     }
@@ -106,7 +106,7 @@ function useDesktopUpdateStatus() {
     }
     const activity = result?.activity
     setDraining(
-      (activity?.liveTurns ?? 0) + (activity?.runningTasks ?? 0) + (activity?.runningAgentReplies ?? 0),
+      activity?.agentRuns ?? 0,
     )
   }, [])
 
