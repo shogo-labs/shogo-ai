@@ -1,1 +1,0 @@
-app.get('/api/leads', async () => fetch('/api/leads'))
