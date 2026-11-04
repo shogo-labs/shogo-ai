@@ -67,7 +67,7 @@ test("a chat session in the URL reaches the app group", async () => {
   })
 })
 
-test("other parameters survive the redirect too", async () => {
+test("the landing's own parameters survive the redirect too", async () => {
   params = { chatSessionId: "sess_123", embed: "ide" }
   render(<RootIndex />)
 
@@ -75,6 +75,19 @@ test("other parameters survive the redirect too", async () => {
   expect(hrefs.at(-1)).toEqual({
     pathname: "/(app)",
     params: { chatSessionId: "sess_123", embed: "ide" },
+  })
+})
+
+// A `?workspace=` on `/` belongs to the guarded file-link arrival (SHO-284),
+// not to the landing: the redirect must not hand it to the screen.
+test("a workspace param is left behind at the front door", async () => {
+  params = { chatSessionId: "sess_123", workspace: "ws-stranger", file: "p/f.md" }
+  render(<RootIndex />)
+
+  await waitFor(() => expect(hrefs.length).toBeGreaterThan(0))
+  expect(hrefs.at(-1)).toEqual({
+    pathname: "/(app)",
+    params: { chatSessionId: "sess_123" },
   })
 })
 

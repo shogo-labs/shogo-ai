@@ -17,11 +17,25 @@ test("a chat session in the URL survives the redirect", () => {
   })
 })
 
-test("every parameter survives, not just the chat session", () => {
+test("the parameters the landing understands survive with the chat session", () => {
   expect(appRedirectHref({ chatSessionId: "s", embed: "ide" })).toEqual({
     pathname: "/(app)",
     params: { chatSessionId: "s", embed: "ide" },
   })
+})
+
+// `workspace=` and `file=` are the guarded file-link arrival (SHO-284): the
+// sidebar and `useFileLinkArrival` decide, once the workspace list is known,
+// whether a link may move the person. Forwarding them through `/` would hand
+// every page load to that flow, so the redirect leaves them alone.
+test("a workspace or file param is not forwarded", () => {
+  expect(
+    appRedirectHref({
+      chatSessionId: "s",
+      workspace: "11111111-2222-3333-4444-555555555555",
+      file: "proj-1/E2E-REPORT.md",
+    }),
+  ).toEqual({ pathname: "/(app)", params: { chatSessionId: "s" } })
 })
 
 test("a repeated parameter keeps all of its values", () => {
