@@ -6720,7 +6720,6 @@ export class AgentGateway {
       os: string | null
       online: boolean
       lastSeenAt: string | null
-      homeDir: string | null
     }> = []
     try {
       const res = await fetch(`${apiUrl}/api/internal/devices`, {
@@ -6737,8 +6736,8 @@ export class AgentGateway {
       const state = device.online
         ? 'online'
         : `offline${device.lastSeenAt ? `, last seen ${device.lastSeenAt}` : ''}`
-      const where = [device.os, device.homeDir ? `home ${device.homeDir}` : null].filter(Boolean).join(', ')
-      return `- **${device.name}** (${state})${where ? ` — ${where}` : ''}`
+      const where = device.os ? ` — ${device.os}` : ''
+      return `- **${device.name}** (${state})${where}`
     })
     return [
       '## Your devices',
@@ -6746,8 +6745,10 @@ export class AgentGateway {
       "These are the user's paired desktops. Pass `device: \"<name>\"` to `exec`, `exec_wait`,",
       '`exec_list`, `read_file`, `write_file`, `edit_file`, `delete_file` or `search` to run that',
       "tool on one of them; each desktop resolves paths in its own runtime (use an absolute path to",
-      'reach beyond its workspace) and its permission system decides what is allowed. An offline',
-      'device answers `device_offline` with its last-seen time — say so rather than retrying.',
+      'reach beyond its workspace) and its own settings decide what is allowed: its owner can turn',
+      'remote tools off, and a command or file change waits for their approval on that computer.',
+      'An offline device answers `device_offline` with its last-seen time, and one that has not',
+      'allowed remote tools answers `remote_device_tools_disabled` — say which, rather than retrying.',
       '',
       ...lines,
       '',

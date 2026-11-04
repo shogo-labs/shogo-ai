@@ -13,6 +13,8 @@ export type AppAccess = 'off' | 'read' | 'readwrite'
 
 export interface LocalAccessPrefs {
   apps: Record<LocalAppId, AppAccess>
+  /** Let this computer run tools another of the person's runtimes asked for. */
+  remoteTools: boolean
   computerUse: boolean
   blockedFolders: string[]
   dictation: DictationShortcutConfig
@@ -23,6 +25,7 @@ export const DEFAULT_PUSH_TO_TALK = 'Fn'
 export function defaultLocalAccess(): LocalAccessPrefs {
   return {
     apps: { mail: 'read', messages: 'read', notes: 'read', whatsapp: 'read' },
+    remoteTools: false,
     computerUse: false,
     blockedFolders: [],
     dictation: { pushToTalk: DEFAULT_PUSH_TO_TALK, handsFree: null },

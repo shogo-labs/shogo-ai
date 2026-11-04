@@ -334,6 +334,30 @@ export function ComputerAndFilesPanel() {
       </Section>
 
       <Section
+        title="Devices"
+        description="Your other computers can ask this one to run a tool. Reading is allowed once you turn this on; running a command or changing a file always asks you here first."
+      >
+        <View className="overflow-hidden rounded-2xl border border-border bg-card">
+          <View testID="settings-remote-tools" className="flex-row items-center justify-between gap-4 px-5 py-4">
+            <View className="min-w-0 flex-1">
+              <Text className="text-base font-semibold text-foreground">
+                Let my other devices run tools on this computer
+              </Text>
+              <Text className="mt-0.5 text-sm leading-5 text-muted-foreground">
+                {prefs.remoteTools
+                  ? 'Commands and file changes still need your approval in this window.'
+                  : 'Off. This computer runs only the work you start here.'}
+              </Text>
+            </View>
+            <Switch
+              checked={prefs.remoteTools}
+              onCheckedChange={(remoteTools) => void save({ remoteTools })}
+            />
+          </View>
+        </View>
+      </Section>
+
+      <Section
         title="Files and local apps"
         description="Choose which local apps Shogo can read. When you turn an app off, Shogo is blocked from its data."
       >
