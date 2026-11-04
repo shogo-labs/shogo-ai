@@ -1,0 +1,186 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+/**
+ * Postgres at publish, schema half (SHO-308 §1): the conversion, the hash and
+ * the seed SQL the publish path depends on.
+ */
+
+import { describe, expect, it } from 'bun:test'
+import {
+  buildPublishSchema,
+  buildSeedSql,
+  countSeedRows,
+  orderSeedTables,
+  parseModelTables,
+  parseSeedRelations,
+  parseSerialIdColumns,
+  publishedSchemaHash,
+  quoteLiteral,
+  PublishSchemaError,
+} from '../published-schema'
+
+const SQLITE_SCHEMA = `datasource db {
+  provider = "sqlite"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+model User {
+  id    Int     @id @default(autoincrement())
+  email String  @unique
+  posts Post[]
+}
+
+model Post {
+  id       Int    @id @default(autoincrement())
+  title    String
+  authorId Int
+  author   User   @relation(fields: [authorId], references: [id])
+}
+
+model Category {
+  id       Int        @id @default(autoincrement())
+  name     String
+  parentId Int?
+  parent   Category?  @relation("Tree", fields: [parentId], references: [id])
+  children Category[] @relation("Tree")
+}
+`
+
+describe('buildPublishSchema', () => {
+  it('converts a SQLite schema to the Postgres one that gets pushed', () => {
+    const built = buildPublishSchema(SQLITE_SCHEMA)
+    expect(built.content).toContain('provider = "postgresql"')
+    expect(built.content).not.toContain('provider = "sqlite"')
+    expect(built.transformed).toBe(true)
+    expect(built.hash).toBe(publishedSchemaHash(built.content))
+  })
+
+  it('leaves an already-Postgres schema untouched', () => {
+    const pg = SQLITE_SCHEMA.replace('provider = "sqlite"', 'provider = "postgresql"')
+    const built = buildPublishSchema(pg)
+    expect(built.content).toBe(pg)
+    expect(built.transformed).toBe(false)
+    expect(built.warnings).toEqual([])
+  })
+
+  it('refuses a schema with no datasource provider', () => {
+    expect(() => buildPublishSchema('model A { id Int @id }')).toThrow(PublishSchemaError)
+    try {
+      buildPublishSchema('model A { id Int @id }')
+    } catch (err: any) {
+      expect(err.code).toBe('no_provider')
+    }
+  })
+})
+
+describe('publishedSchemaHash', () => {
+  it('ignores comments, blank lines and indentation', () => {
+    const a = publishedSchemaHash(SQLITE_SCHEMA)
+    const reformatted = SQLITE_SCHEMA.replace(/\n  /g, '\n').replace('model User {', '// a note\nmodel User {')
+    expect(publishedSchemaHash(reformatted)).toBe(a)
+  })
+
+  it('changes when a field changes', () => {
+    const a = publishedSchemaHash(SQLITE_SCHEMA)
+    expect(publishedSchemaHash(SQLITE_SCHEMA.replace('title    String', 'title    String?'))).not.toBe(a)
+  })
+})
+
+describe('seed ordering', () => {
+  it('maps models to their physical tables', () => {
+    const tables = parseModelTables(SQLITE_SCHEMA)
+    expect(tables.get('User')).toBe('User')
+    expect(tables.get('Post')).toBe('Post')
+    expect(
+      parseModelTables('model Blog {\n  id Int @id\n  @@map("blogs")\n}').get('Blog'),
+    ).toBe('blogs')
+  })
+
+  it('reads only the side that holds the foreign key', () => {
+    const relations = parseSeedRelations(SQLITE_SCHEMA)
+    expect(relations).toEqual([
+      { child: 'Post', parent: 'User' },
+      { child: 'Category', parent: 'Category' },
+    ])
+  })
+
+  it('inserts referenced tables first', () => {
+    const ordered = orderSeedTables(
+      ['Post', 'User'],
+      parseSeedRelations(SQLITE_SCHEMA),
+      parseModelTables(SQLITE_SCHEMA),
+    )
+    expect(ordered).toEqual(['User', 'Post'])
+  })
+
+  it('keeps declaration order for a cycle rather than dropping a table', () => {
+    const schema = `model A {
+  id Int @id
+  bId Int
+  b   B   @relation(fields: [bId], references: [id])
+}
+model B {
+  id Int @id
+  aId Int
+  a   A   @relation(fields: [aId], references: [id])
+}`
+    const ordered = orderSeedTables(['A', 'B'], parseSeedRelations(schema), parseModelTables(schema))
+    expect(ordered.sort()).toEqual(['A', 'B'])
+  })
+
+  it('flags autoincrement ids so their sequences are reset', () => {
+    const serial = parseSerialIdColumns(SQLITE_SCHEMA)
+    expect(serial.get('User')).toBe('id')
+    expect(serial.get('Post')).toBe('id')
+  })
+})
+
+describe('seed SQL', () => {
+  it('quotes identifiers and every scalar a SQLite row can hold', () => {
+    expect(quoteLiteral(null)).toBe('NULL')
+    expect(quoteLiteral(42)).toBe('42')
+    expect(quoteLiteral(0)).toBe('0')
+    expect(quoteLiteral(true)).toBe('TRUE')
+    expect(quoteLiteral("O'Brien")).toBe("'O''Brien'")
+    expect(quoteLiteral(Buffer.from('hi'))).toBe("'\\x6869'::bytea")
+  })
+
+  it('emits one multi-row INSERT, then moves the sequence past the rows', () => {
+    const sql = buildSeedSql([
+      {
+        table: 'User',
+        columns: ['id', 'email'],
+        rows: [
+          [1, 'a@example.com'],
+          [2, 'b@example.com'],
+        ],
+        serialIdColumn: 'id',
+      },
+    ])
+    expect(sql).toContain('BEGIN;')
+    expect(sql).toContain('INSERT INTO "User" ("id", "email") VALUES')
+    expect(sql).toContain("(1, 'a@example.com'),")
+    // One statement for both rows: a self-reference inside one INSERT is
+    // resolved at statement end, so a single row-per-INSERT load would fail.
+    expect(sql.match(/INSERT INTO/g)).toHaveLength(1)
+    expect(sql).toContain(
+      `setval(pg_get_serial_sequence('User', 'id'), GREATEST((SELECT COALESCE(MAX("id"), 0) FROM "User"), 1))`,
+    )
+    expect(sql.trimEnd().endsWith('COMMIT;')).toBe(true)
+  })
+
+  it('skips empty tables but still counts what is being copied', () => {
+    const tables = [
+      { table: 'User', columns: ['id'], rows: [[1]], serialIdColumn: 'id' },
+      { table: 'Post', columns: ['id'], rows: [] },
+    ]
+    const sql = buildSeedSql(tables)
+    expect(sql).not.toContain('"Post"')
+    expect(countSeedRows(tables)).toEqual({ tables: 1, rows: 1 })
+  })
+})

@@ -4,9 +4,11 @@ PostgreSQL clusters managed by the CloudNativePG operator.
 
 ## Architecture
 
-Currently only the **platform-pg** cluster is deployed. A future **projects-pg**
-cluster is planned but not yet implemented — dev projects use SQLite and
-published-app PostgreSQL provisioning is still on the roadmap.
+**platform-pg** is deployed in every region. **projects-pg** (published apps'
+databases) is committed and deployed in **staging**; its prod-region clusters are
+not written yet, so the prod poolers must not be applied before them. Dev/editing
+projects keep using SQLite — only *published* environments move to Postgres.
+See `docs/runbooks/published-postgres.md` for the deploy order.
 
 ### Platform Cluster (`platform-pg`) — **active**
 - Runs on OCI OKE clusters across all regions
@@ -14,13 +16,22 @@ published-app PostgreSQL provisioning is still on the roadmap.
 - Continuous backup to OCI Object Storage via Barman (S3-compatible API)
 - Used by: API, MCP, Auth services
 
-### Projects Cluster (`projects-pg`) — **stub / not deployed**
-- Intended to host per-project databases (`project_{uuid}`) on a shared cluster
-- Will replace per-project PostgreSQL sidecars once published-app support ships
-- Related code stubs: `apps/api/src/services/database.service.ts` (provisioning
-  logic), unused imports in `knative-project-manager.ts` and
-  `warm-pool-controller.ts`
-- No cluster manifest exists yet — will be added when the feature is built
+### Projects Cluster (`projects-pg`) — **staging deployed, prod pending**
+- Hosts the databases of **published** apps: one database per published
+  environment (`project_<uuid>` / `project_<uuid>_staging`), its own role, no
+  cross-database access
+- Kept separate from `platform-pg` on purpose: published apps run untrusted DDL
+  and bursty connection pools, and must never be able to touch user/billing data
+- Manifests: `staging-oci/projects-cluster.yaml` + `staging-oci/projects-pooler.yaml`
+  (deployed), `production-{us,eu}-oci/projects-pooler.yaml` (committed — apply
+  only after that region's cluster exists), `production-oci/projects-cluster.yaml`
+  (older stub, superseded by the per-region manifests)
+- Code: `apps/api/src/services/database.service.ts` (provisioning),
+  `apps/api/src/services/published-database.service.ts` (per-environment naming
+  and Secret), `apps/api/src/services/published-schema.service.ts` (schema push,
+  destructive-change guard, seed)
+- Pooler: `projects-pg-pooler-rw` (transaction mode). Published pods connect
+  through it; `prisma db push` and the seed load use the primary directly
 
 ## Services Created
 

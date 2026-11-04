@@ -6223,6 +6223,99 @@ app.get('/agent/server-info', (c) => {
 })
 
 /**
+ * Apply the project's Prisma schema to its published Postgres database, and
+ * optionally load `prisma/dev.db` into it (SHO-308 §1).
+ *
+ * Called by the publish flow (apps/api/src/services/published-schema.service.ts)
+ * with the environment's *direct* connection string — never the pooled one,
+ * because `prisma db push` issues DDL and takes session locks.
+ *
+ * Two modes:
+ *   `{ mode: "describe" }` returns the Postgres schema the app would get, its
+ *   hash and its warnings, without touching anything — that is what the API
+ *   classifies against the schema the environment already has.
+ *   `{ mode: "apply", databaseUrl, seed }` pushes it.
+ *
+ * An `expectedHash` on an apply refuses a schema that changed since the describe
+ * call, so what the API classified is what gets applied.
+ *
+ * Lives under `/agent/*` (auth-gated by `x-runtime-token`, and skipped by the
+ * SPA catch-all) like the other publish endpoints.
+ */
+app.post('/agent/published-schema', async (c) => {
+  const projectDir = getProjectWorkspaceDir(c.req.query('projectId'))
+  if (!projectDir) {
+    return c.json({ ok: false, code: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
+  }
+
+  let body: {
+    mode?: 'describe' | 'apply'
+    databaseUrl?: string
+    seed?: boolean
+    expectedHash?: string
+  }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ ok: false, code: 'invalid_body', message: 'Expected a JSON body' }, 400)
+  }
+
+  const { applyPublishedSchema, resolvePublishSchema } = await import('./published-schema-apply')
+
+  if ((body.mode ?? 'describe') === 'describe') {
+    let resolved
+    try {
+      resolved = resolvePublishSchema(projectDir)
+    } catch (err: any) {
+      return c.json(
+        { ok: false, code: err?.code ?? 'schema_invalid', message: err?.message ?? 'Invalid schema' },
+        400,
+      )
+    }
+    if (!resolved) return c.json({ ok: true, schema: null })
+    return c.json({
+      ok: true,
+      schema: {
+        content: resolved.content,
+        hash: resolved.hash,
+        warnings: resolved.warnings,
+        transformed: resolved.transformed,
+      },
+    })
+  }
+
+  if (!body.databaseUrl || !/^postgres(ql)?:\/\//.test(body.databaseUrl)) {
+    return c.json(
+      { ok: false, code: 'invalid_database_url', message: 'apply needs a postgres:// databaseUrl' },
+      400,
+    )
+  }
+  if (body.expectedHash) {
+    const current = resolvePublishSchema(projectDir)
+    if (!current || current.hash !== body.expectedHash) {
+      return c.json(
+        {
+          ok: false,
+          code: 'schema_changed',
+          message: 'prisma/schema.prisma changed while publishing; publish again',
+        },
+        409,
+      )
+    }
+  }
+
+  const result = await applyPublishedSchema({
+    projectDir,
+    databaseUrl: body.databaseUrl,
+    seed: body.seed === true,
+  })
+  if (!result.ok) {
+    return c.json({ ok: false, code: result.code, message: result.message }, 400)
+  }
+  return c.json({ ok: true, hash: result.hash, warnings: result.warnings, seeded: result.seeded })
+})
+
+/**
  * Force an immediate, AWAITED git sync of the workspace and return the
  * resulting HEAD sha. Called by the publish flow (apps/api/src/routes/
  * publish.ts) so the published source is committed + persisted to the

@@ -1,0 +1,47 @@
+# =============================================================================
+# PgBouncer Pooler — projects-pg (Production US)
+# =============================================================================
+# Fronts projects-pg (published app databases, SHO-308 §1) the way
+# platform-pg-pooler-rw fronts the platform cluster: published apps open a few
+# pooled connections each and the pooler owns the fan-out.
+#
+# The API's PROJECTS_DB_POOLER_HOST points at this Service;
+# `toPublishedDatabaseUrl` rewrites each environment's DATABASE_URL onto it with
+# `pgbouncer=true&connection_limit=5`. DDL (`prisma db push`, the seed load) uses
+# the primary directly and never this pooler.
+#
+# Connection budget (prod-US):
+#   pooler server conns = 2 instances x default_pool_size(40) = 80 backend conns against projects-pg max_connections = 1000
+#   ---------------------------------------------------------------------
+#   sized to leave headroom for CNPG itself, monitoring and migrations
+#
+# REQUIRES the projects-pg cluster in this region first — see
+# docs/runbooks/published-postgres.md. Applying this manifest alone gives the API
+# a hostname whose backing cluster does not exist, which is exactly the failure
+# PROJECTS_DB_POOLER_HOST being required (not defaulted) exists to prevent.
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: projects-pg-pooler-rw
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: production
+spec:
+  cluster:
+    name: projects-pg
+  instances: 2
+  type: rw
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      max_client_conn: "2000"
+      default_pool_size: "40"
+      min_pool_size: "5"
+      reserve_pool_size: "5"
+      reserve_pool_timeout: "3"
+      max_prepared_statements: "200"
+      server_idle_timeout: "120"
+  monitoring:
+    enablePodMonitor: true

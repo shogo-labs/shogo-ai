@@ -20,7 +20,8 @@
     "./interrupted-turn": "./src/interrupted-turn.ts",
     "./child-process": "./src/child-process.ts",
     "./workspace-root-sync": "./src/workspace-root-sync.ts",
-    "./published-database": "./src/published-database.ts"
+    "./published-database": "./src/published-database.ts",
+    "./published-schema": "./src/published-schema.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -38,6 +39,7 @@
     "@opentelemetry/sdk-node": "^0.213.0",
     "@opentelemetry/sdk-trace-base": "^2.5.1",
     "@opentelemetry/semantic-conventions": "^1.39.0",
+    "@shogo-ai/db": "workspace:*",
     "@shogo-ai/sdk": "workspace:*",
     "@shogo/model-catalog": "workspace:*",
     "ai": "^6.0.73",

@@ -4741,6 +4741,10 @@ model PublishedEnvironment {
   size                String   @default("s")
   dbProvider          String?
   dbName              String?
+  /// The Postgres-provider schema last applied to that database (SHO-308 §1).
+  dbSchema            String?
+  /// Hash of `dbSchema`, so an unchanged schema skips the push on republish.
+  dbSchemaHash        String?
   currentDeploymentId String?
   /// Per-environment deploy state, so a failed staging build never marks
   /// production failed (SHO-308 §8). Mirrors Project.publishStatus.

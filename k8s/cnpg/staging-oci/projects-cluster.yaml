@@ -1,0 +1,104 @@
+# =============================================================================
+# Projects PostgreSQL Cluster (Staging - OCI / OKE)
+# =============================================================================
+# Databases for PUBLISHED apps (SHO-308 §1): one per published environment,
+# `project_<uuid>` for production and `project_<uuid>_staging` for staging.
+#
+# This is deliberately NOT the platform cluster. Published apps are untrusted
+# user workloads with their own DDL, connection count and blast radius; keeping
+# them apart means an app's `db push` or a runaway connection pool can never
+# touch the workspace/user/billing tables.
+#
+# Applied MANUALLY (like the staging platform cluster — the deploy workflow only
+# applies the production publication manifests). See
+# docs/runbooks/published-postgres.md for the order and the two secret steps
+# that cannot be committed (S3 backup credentials, and the admin URL the API
+# reads).
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: projects-pg
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: staging
+spec:
+  # One instance in staging: it exists to prove the publish path (schema push,
+  # seed, pooler, AC 1/2) before a prod region, and a standby would double the
+  # block-volume cost for no extra coverage of that path.
+  instances: 1
+
+  enablePDB: false
+
+  # Same reasoning as platform-pg: published apps can burst CPU and memory, and
+  # the database must not be the pod that gets evicted. PriorityClass lives in
+  # k8s/overlays/staging/priority-classes.yaml and must exist first.
+  priorityClassName: shogo-db-critical
+
+  postgresql:
+    parameters:
+      # Every published env holds a handful of pooled connections and publishes
+      # are bursty, so connections are the resource this cluster runs out of
+      # first. The PgBouncer in front of it (projects-pooler.yaml) is what keeps
+      # the actual backend count bounded.
+      max_connections: "400"
+      shared_buffers: "256MB"
+      effective_cache_size: "768MB"
+      work_mem: "4MB"
+      maintenance_work_mem: "64MB"
+      wal_buffers: "8MB"
+      log_min_duration_statement: "1000"
+      log_checkpoints: "on"
+    pg_hba:
+      - host all all 10.0.0.0/8 md5
+      - host all all 172.16.0.0/12 md5
+
+  bootstrap:
+    initdb:
+      # The maintenance database `provisionDatabase` connects to in order to
+      # CREATE DATABASE. It holds no app data.
+      database: shogo_projects
+      owner: shogo
+
+  storage:
+    size: 50Gi
+    storageClass: oci-bv
+
+  backup:
+    barmanObjectStore:
+      endpointURL: https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com
+      # Separate prefix from platform backups: published app data is restored on
+      # its own schedule (and a PITR of one must never imply the other).
+      destinationPath: s3://shogo-pg-backups-staging/projects/
+      s3Credentials:
+        accessKeyId:
+          name: cnpg-s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: cnpg-s3-credentials
+          key: SECRET_ACCESS_KEY
+        region:
+          name: cnpg-s3-credentials
+          key: REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "7d"
+
+  monitoring:
+    enablePodMonitor: true
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  affinity:
+    nodeSelector:
+      node.kubernetes.io/purpose: system
+    topologyKey: kubernetes.io/hostname

@@ -37,6 +37,11 @@ export interface PublishedDatabase {
   secretName: string
   /** The pooled URL the pod gets. Never returned to a browser. */
   url: string
+  /**
+   * The primary's own URL. Used for DDL (`prisma db push`, the seed load), which
+   * must not run through a transaction-mode PgBouncer. Never given to a pod.
+   */
+  directUrl: string
   provider: 'postgres'
 }
 
@@ -151,7 +156,7 @@ export async function ensureEnvironmentDatabase(
 
   return {
     ok: true,
-    value: { databaseName, secretName, url, provider: 'postgres' },
+    value: { databaseName, secretName, url, directUrl: provisioned.connectionUrl, provider: 'postgres' },
   }
 }
 

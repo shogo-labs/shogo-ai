@@ -353,3 +353,20 @@ export {
   type ParsedSchema,
   type DestructiveChange,
 } from './published-database'
+
+export {
+  buildPublishSchema,
+  publishedSchemaHash,
+  parseModelTables,
+  parseSeedRelations,
+  parseSerialIdColumns,
+  orderSeedTables,
+  quoteIdent,
+  quoteLiteral,
+  buildSeedSql,
+  countSeedRows,
+  PublishSchemaError,
+  type PublishSchema,
+  type SeedRelation,
+  type SeedTableData,
+} from './published-schema'

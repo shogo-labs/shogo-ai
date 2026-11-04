@@ -1329,6 +1329,9 @@ describe('POST /projects/:projectId/publish', () => {
         subdomain: 'my-site', accessLevel: 'public', password: undefined,
         siteTitle: 'My Site', siteDescription: 'desc',
         environment: 'production',
+        // Publishing with a schema change that would destroy data is refused
+        // unless the caller explicitly accepts the loss (SHO-308 §1).
+        allowDataLoss: false,
       },
     })
   })

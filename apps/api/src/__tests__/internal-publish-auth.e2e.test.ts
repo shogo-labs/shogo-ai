@@ -126,6 +126,9 @@ describe('internal publish auth e2e (real runtime token, production mode)', () =
         // SHO-308 §5: the route now always tells the substrate which
         // environment to publish, defaulting to production.
         environment: 'production',
+        // §1: false unless the caller asked to accept a destructive schema
+        // change, so an unconfirmed drop is refused rather than applied.
+        allowDataLoss: false,
       },
     })
   })

@@ -5200,6 +5200,12 @@ function createPublishTool(ctx: ToolContext): AgentTool {
             'Which environment to deploy to. Defaults to "production". "staging" creates/uses the optional staging site for load testing and debugging.',
         }),
       ),
+      allow_data_loss: Type.Optional(
+        Type.Boolean({
+          description:
+            'Only after the user explicitly confirms: proceed even though the schema change destroys data (a dropped table/column, a narrowed type, or a new required column with no default). Publishing is refused with `destructive_schema_change` otherwise — show the user exactly which fields would lose data first.',
+        }),
+      ),
       ops_action: Type.Optional(
         Type.Union(
           [
@@ -5271,6 +5277,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         site_description,
         project_id,
         environment,
+        allow_data_loss,
         ops_action,
         min_replicas,
         max_replicas,
@@ -5288,6 +5295,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         site_description?: string
         project_id?: string
         environment?: 'production' | 'staging'
+        allow_data_loss?: boolean
         ops_action?: 'status' | 'metrics' | 'logs' | 'scale' | 'rollback' | 'redeploy' | 'promote' | 'create_env' | 'delete_env' | 'list'
         min_replicas?: number
         max_replicas?: number
@@ -5350,6 +5358,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         siteTitle: site_title,
         siteDescription: site_description,
         environment: environment === 'staging' ? 'staging' : 'production',
+        allowDataLoss: allow_data_loss === true,
       })
 
       if (!res.ok) {
@@ -5382,6 +5391,23 @@ function createPublishTool(ctx: ToolContext): AgentTool {
           return textResult({
             error:
               'This app has a server (server.tsx / custom-routes.ts), which cannot be hosted from the desktop. Sync the project to Shogo Cloud and publish it there. Do NOT retry publishing from here — the same call will fail again.',
+            code: res.code,
+          })
+        }
+        if (res.code === 'destructive_schema_change') {
+          const changes = (res.details?.changes as Array<{ message?: string }> | undefined) ?? []
+          const list = changes.map((c) => c.message).filter(Boolean).slice(0, 5).join(' ')
+          return textResult({
+            error:
+              `This publish would destroy data in the ${environment === 'staging' ? 'staging' : 'production'} database: ${list || res.error}. ` +
+              'Tell the user exactly what would be lost and ask them to confirm. Only then call publish again with `allow_data_loss: true`. Nothing was deployed and the live site is unchanged.',
+            code: res.code,
+            changes: changes.map((c) => c.message).filter(Boolean),
+          })
+        }
+        if (res.code === 'database_unavailable' || res.code === 'schema_push_failed' || res.code === 'seed_failed') {
+          return textResult({
+            error: `${res.error} This is a hosting/infrastructure failure, not something to retry with different arguments — the user's work is saved and the previous deploy (if any) is still serving.`,
             code: res.code,
           })
         }
