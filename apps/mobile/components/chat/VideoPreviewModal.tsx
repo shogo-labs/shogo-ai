@@ -9,7 +9,7 @@
  * phones it is full-screen with a safe-area header, like ImagePreviewModal.
  */
 
-import React, { Suspense, lazy, useEffect, useMemo, useState } from "react"
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react"
 import { ActivityIndicator, Platform, Text, useWindowDimensions, View } from "react-native"
 import { VideoIcon, X } from "lucide-react-native"
 import { GestureHandlerRootView } from "react-native-gesture-handler"
@@ -57,6 +57,7 @@ export function VideoPreviewModal({
   const isPhone = Platform.OS !== "web" && width < 600
   const [phoneArea, setPhoneArea] = useState<{ w: number; h: number } | null>(null)
   const [failed, setFailed] = useState(false)
+  const handleVideoError = useCallback(() => setFailed(true), [])
 
   useEffect(() => {
     if (visible) setFailed(false)
@@ -110,7 +111,7 @@ export function VideoPreviewModal({
       renderUnavailable("Could not play this video.")
     ) : (
       <Suspense fallback={<ActivityIndicator size="large" />}>
-        <NativeVideoView url={url} width={w} height={h} onError={() => setFailed(true)} />
+        <NativeVideoView url={url} width={w} height={h} onError={handleVideoError} />
       </Suspense>
     )
 

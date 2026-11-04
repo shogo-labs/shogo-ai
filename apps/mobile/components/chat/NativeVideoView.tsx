@@ -8,6 +8,8 @@
 import { useEffect } from "react"
 import { ActivityIndicator, View } from "react-native"
 import { useVideoPlayer, VideoView } from "expo-video"
+import { API_URL } from "../../lib/api-url"
+import { isUrlOnOrigin } from "../../lib/same-origin-url"
 import { useAgentVideoSource } from "./turns/GeneratedVideoPlayer"
 
 export interface NativeVideoViewProps {
@@ -18,7 +20,9 @@ export interface NativeVideoViewProps {
 }
 
 export default function NativeVideoView({ url, width, height, onError }: NativeVideoViewProps) {
-  const { source, failed } = useAgentVideoSource(url)
+  // Chat markdown can point at any host; only the app's own origin gets the
+  // signed-in session attached.
+  const { source, failed } = useAgentVideoSource(url, { sendSession: isUrlOnOrigin(url, API_URL) })
   const player = useVideoPlayer(source, (p) => {
     p.loop = false
     p.play()

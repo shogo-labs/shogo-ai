@@ -15,7 +15,11 @@ import { useVideoPlayer, VideoView, type VideoSource } from "expo-video"
 import { agentFetch } from "../../../lib/agent-fetch"
 import { getAgentImageSource } from "../../../lib/agent-image-source"
 
-export function useAgentVideoSource(uri: string): { source: VideoSource; failed: boolean } {
+export function useAgentVideoSource(
+  uri: string,
+  options: { sendSession?: boolean } = {},
+): { source: VideoSource; failed: boolean } {
+  const sendSession = options.sendSession ?? true
   const [source, setSource] = useState<VideoSource>(null)
   const [failed, setFailed] = useState(false)
 
@@ -25,7 +29,8 @@ export function useAgentVideoSource(uri: string): { source: VideoSource; failed:
     setFailed(false)
 
     if (Platform.OS !== "web") {
-      const native = getAgentImageSource(uri)
+      // A URL off the app's own origin never gets the session cookie.
+      const native = sendSession ? getAgentImageSource(uri) : { uri }
       setSource({ uri: native.uri ?? uri, headers: native.headers as Record<string, string> | undefined })
       return
     }
@@ -46,7 +51,7 @@ export function useAgentVideoSource(uri: string): { source: VideoSource; failed:
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [uri])
+  }, [uri, sendSession])
 
   return { source, failed }
 }
