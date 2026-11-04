@@ -385,6 +385,7 @@ export const HomeScreen = observer(function HomeScreen({
   // loading → first workspace and only bumps it for a genuinely different one
   // (the same fix SHO-298 applied to the phone shell).
   const homeChatMountKey = useWorkspaceRemountKey(workspaceInView?.id)
+  const workspaceInViewId = workspaceInView?.id ?? null
   const currentExperience = useWorkspaceExperience()
   // A reload of `/` must land back on the chat that was open, so the agent
   // chat puts its session in the URL and the landing honours it (SHO-287).
