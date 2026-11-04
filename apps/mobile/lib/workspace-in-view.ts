@@ -30,6 +30,33 @@ function asKind(kind: string | null | undefined): 'personal' | 'team' {
   return kind === 'personal' ? 'personal' : 'team'
 }
 
+/**
+ * The workspace a surface is showing while the collection is between answers.
+ *
+ * `useActiveWorkspace()` is null for the whole of every `workspaces.loadAll()`
+ * — each in-app navigation refetches the collection — and a screen remounts
+ * inside that window on every reopen. A chat that is already on the device must
+ * not wait for the list to come back, so a surface that already had the
+ * workspace keeps it (`lastInView`), and one that has never resolved it in this
+ * JS session falls back to the person's persisted selection with the `kind`
+ * cached for it — the same pair `useWorkspaceExperience` uses so a returning
+ * user does not flash the team shell (SHO-309).
+ *
+ * Answer null when the selection has no cached kind: an id this device has
+ * never resolved is not a workspace the surface can show yet.
+ */
+export function workspaceInViewWhileLoading(
+  inView: WorkspaceInView | null,
+  lastInView: WorkspaceInView | null,
+  selectedId: string | null | undefined,
+  cachedKind: 'personal' | 'team' | null,
+): WorkspaceInView | null {
+  if (inView) return inView
+  if (lastInView && lastInView.id === selectedId) return lastInView
+  if (!selectedId || !cachedKind) return null
+  return { id: selectedId, name: selectedId, kind: cachedKind, host: 'cloud' }
+}
+
 /** The workspace the user is looking at. */
 export function workspaceInView(cloud: CloudWorkspaceLike | null | undefined): WorkspaceInView | null {
   if (!cloud?.id) return null

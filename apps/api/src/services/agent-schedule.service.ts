@@ -3,6 +3,7 @@
 
 import { Cron } from 'croner'
 import { prisma } from '../lib/prisma'
+import { jobPlacement } from '../lib/job-placement'
 
 export const MAX_AGENT_SCHEDULES = 25
 export const MAX_TOTAL_AGENT_SCHEDULES = 100
@@ -229,6 +230,10 @@ export async function createSchedule(input: AgentScheduleInput) {
       timezone,
       enabled: input.enabled !== false,
       nextRunAt,
+      // A job runs where it was requested (SHO-285 Update 2): created from a
+      // desktop window it is pinned to that device, from the cloud or the phone
+      // it stays null and the cloud fires it.
+      runOnInstanceId: jobPlacement(),
       notifyConversationId: input.notifyConversationId ?? null,
       notifyThreadRootId: input.notifyConversationId ? input.notifyThreadRootId ?? null : null,
     },

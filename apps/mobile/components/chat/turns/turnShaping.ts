@@ -206,12 +206,34 @@ function scanTransparentRun(
  * transparently) into a single `work-group`. Falls back to same-name
  * grouping (`tool-group`) for repeated non-work tools (MCP/skill
  * calls), and passes everything else through unchanged.
+ *
+ * `prev` is the grouping this turn produced last time. A group whose items are
+ * the same objects as before is returned as the same object, so the row that
+ * renders it bails out of the commit instead of re-summarising a run of
+ * hundreds of tool calls on every streamed chunk (SHO-306). Only the group the
+ * delta actually grew is rebuilt.
  */
-export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
+export function groupWorkParts(
+  parts: MessagePart[],
+  prev?: readonly GroupedMessagePart[],
+): GroupedMessagePart[] {
   const result: GroupedMessagePart[] = [];
   const visibleParts = parts.filter(
     (part) => part.type !== "tool" || !HIDDEN_TOOLS.has(part.tool.toolName),
   );
+
+  const prevById = new Map<string, GroupedMessagePart>();
+  if (prev) for (const group of prev) prevById.set(group.id, group);
+
+  const sameParts = (a: readonly MessagePart[], b: readonly MessagePart[]) =>
+    a.length === b.length && a.every((item, index) => item === b[index]);
+  const sameTools = (
+    a: readonly { tool: ToolCallData; id: string }[],
+    b: readonly { tool: ToolCallData; id: string }[],
+  ) =>
+    a.length === b.length &&
+    a.every((item, index) => item.tool === b[index].tool && item.id === b[index].id);
+
   let i = 0;
 
   while (i < visibleParts.length) {
@@ -231,11 +253,13 @@ export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
       );
       if (toolCount >= MIN_WORK_GROUP_SIZE) {
         const slice = visibleParts.slice(i, endIdx);
-        result.push({
-          type: "work-group",
-          items: slice,
-          id: `work-${visibleParts[i].id}`,
-        });
+        const id = `work-${visibleParts[i].id}`;
+        const prior = prevById.get(id);
+        result.push(
+          prior && prior.type === "work-group" && sameParts(prior.items, slice)
+            ? prior
+            : { type: "work-group", items: slice, id },
+        );
         i = endIdx;
         continue;
       }
@@ -258,11 +282,13 @@ export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
           )
           .map((item) => ({ tool: item.tool, id: item.id }));
         if (tools.length >= MIN_GROUP_SIZE) {
-          result.push({
-            type: "image-gallery",
-            tools,
-            id: `image-gallery-${visibleParts[i].id}`,
-          });
+          const id = `image-gallery-${visibleParts[i].id}`;
+          const prior = prevById.get(id);
+          result.push(
+            prior && prior.type === "image-gallery" && sameTools(prior.tools, tools)
+              ? prior
+              : { type: "image-gallery", tools, id },
+          );
           i = endIdx;
           continue;
         }
@@ -295,12 +321,13 @@ export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
         tool: (p as { type: "tool"; tool: ToolCallData; id: string }).tool,
         id: p.id,
       }));
-      result.push({
-        type: "tool-group",
-        toolName,
-        tools: groupTools,
-        id: `group-${visibleParts[i].id}`,
-      });
+      const id = `group-${visibleParts[i].id}`;
+      const prior = prevById.get(id);
+      result.push(
+        prior && prior.type === "tool-group" && sameTools(prior.tools, groupTools)
+          ? prior
+          : { type: "tool-group", toolName, tools: groupTools, id },
+      );
     } else {
       result.push(part);
     }

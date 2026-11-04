@@ -398,3 +398,22 @@ export function resolveActiveWorkspaceId(
   }
   return fallback
 }
+
+/**
+ * The workspace a `?workspace=` link may move the person to, or `null`.
+ *
+ * Read-side counterpart to `resolveActiveWorkspaceId`, for links rather than
+ * render paths: a link names one workspace, and either this account is a member
+ * of it or the link does nothing at all. Resolving a link through
+ * `resolveActiveWorkspaceId` answered `ownWorkspaceIds[0]` for a workspace the
+ * person is not in and persisted it, so opening a refused file link moved them
+ * out of the workspace they were reading — and switched the screen behind the
+ * "you don't have access to this workspace" message (SHO-284).
+ */
+export function adoptableWorkspaceParam(
+  ownWorkspaceIds: readonly string[],
+  targetId: string | null | undefined,
+): string | null {
+  if (!targetId) return null
+  return ownWorkspaceIds.includes(targetId) ? targetId : null
+}

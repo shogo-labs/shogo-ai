@@ -49,6 +49,7 @@ import { setPendingFiles } from '../../lib/pending-image-store'
 import type { ChatReference } from '../../lib/chat-references'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
+import { useWorkspaceRemountKey } from '../../hooks/useWorkspaceRemountKey'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
 import { workspaceProjectFilter } from '../../lib/project-load'
@@ -375,6 +376,15 @@ export const HomeScreen = observer(function HomeScreen({
   // The workspace on screen — the machine's own while one is open, which is
   // what the agent screen, its projects and its composer belong to (SHO-130).
   const workspaceInView = useWorkspaceInView()
+  // The landing chat's React key. It must NOT be the raw workspace id: on a
+  // cold start that is `null` for the first frames and then the id, so the
+  // screen was torn down and rebuilt the moment the collection answered. The
+  // rebuilt instance has a fresh single-flight ref, so the landing minted a
+  // second empty chat for the same workspace (SHO-309, caught in CI as two
+  // empty landing chats). `useWorkspaceRemountKey` keeps the key across
+  // loading → first workspace and only bumps it for a genuinely different one
+  // (the same fix SHO-298 applied to the phone shell).
+  const homeChatMountKey = useWorkspaceRemountKey(workspaceInView?.id)
   const currentExperience = useWorkspaceExperience()
   // A reload of `/` must land back on the chat that was open, so the agent
   // chat puts its session in the URL and the landing honours it (SHO-287).
@@ -952,7 +962,7 @@ export const HomeScreen = observer(function HomeScreen({
   if (rendersAgentChat) {
     return (
       <WorkspaceAgentChatScreen
-        key={workspaceInView?.id ?? 'workspace-loading'}
+        key={homeChatMountKey}
         initialSessionId={homeChatSessionId}
         startNewSession
       />

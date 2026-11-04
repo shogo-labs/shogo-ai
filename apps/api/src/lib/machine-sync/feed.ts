@@ -40,9 +40,14 @@ export async function readHostFeed(
   opts: { instanceId: string; ownerUserId: string; cursor: number; limit?: number; now?: number },
 ): Promise<HostFeedPage> {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_LIMIT), 2_000)
+  // The workspaces this desktop hosts, plus the account's Personal (SHO-285
+  // Update 2): the Personal is the cloud's row on every surface, so it comes
+  // down to each device the same way a hosted workspace's rows do.
   const hosted = (
     (await db.workspace.findMany({
-      where: { hostInstanceId: opts.instanceId },
+      where: {
+        OR: [{ hostInstanceId: opts.instanceId }, { personalOwnerId: opts.ownerUserId }],
+      },
       select: { id: true },
     })) as Array<{ id: string }>
   ).map((row) => row.id)

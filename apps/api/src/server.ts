@@ -26,6 +26,7 @@ import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
 import { workspaceChatRoutes } from './routes/workspace-chat'
+import { workspaceRootRoutes } from './routes/workspace-root'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceExportRoutes } from './routes/workspace-export'
 import { workspaceMoveRoutes } from './routes/workspace-moves'
@@ -1647,6 +1648,9 @@ app.route('/api', syncRoutes())
 // model). Session CRUD and the /chat proxy (+ turn/stream/stop) use the
 // unconditional merged-root workspace runtime.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+// The Personal workspace's shared root (SHO-285 Update 2): the durable copy of
+// AGENTS.md / MEMORY.md / memory/ that every device of the account hydrates from.
+app.route('/api', workspaceRootRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workspaceAgentRoutes({
   authorize: sessionAuthorize(getAuthUserId),
   saveAgentAvatar: cloud.saveAgentAvatar,
@@ -1974,6 +1978,62 @@ app.get('/api/published-sites/:sourceProjectId', async (c) => {
   const url = new URL(c.req.url)
   url.pathname = `/published-sites/${c.req.param('sourceProjectId')}`
   const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+// Custom domains on a desktop-published site (SHO-304). The site is hosted on a
+// hidden host project in the cloud, so these resolve that project and reuse the
+// same domain handlers the cloud panel's own routes call. Without these mounts
+// the desktop's local-publish proxies 404 in production.
+app.get('/api/published-sites/:sourceProjectId/domains', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.post('/api/published-sites/:sourceProjectId/domains', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.post('/api/published-sites/:sourceProjectId/domains/:domainId/verify', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains/${c.req.param('domainId')}/verify`
+  const newReq = new Request(url.toString(), { method: 'POST', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.post('/api/published-sites/:sourceProjectId/domains/:domainId/retrigger', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains/${c.req.param('domainId')}/retrigger`
+  const newReq = new Request(url.toString(), { method: 'POST', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.patch('/api/published-sites/:sourceProjectId/domains/:domainId/primary', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains/${c.req.param('domainId')}/primary`
+  const newReq = new Request(url.toString(), { method: 'PATCH', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+app.delete('/api/published-sites/:sourceProjectId/domains/:domainId', async (c) => {
+  const router = publishedSitesRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/published-sites/${c.req.param('sourceProjectId')}/domains/${c.req.param('domainId')}`
+  const newReq = new Request(url.toString(), { method: 'DELETE', headers: c.req.raw.headers })
   return router.fetch(newReq)
 })
 

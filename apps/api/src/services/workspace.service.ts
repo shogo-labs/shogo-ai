@@ -74,6 +74,11 @@ export async function createPersonalWorkspace(
         name: workspaceName,
         slug,
         kind: 'personal',
+        // One Personal per account (SHO-285 Update 2), enforced by the unique
+        // index rather than by a check a caller has to remember: a second
+        // create fails here instead of quietly giving the person a second
+        // Personal on another device.
+        personalOwnerId: userId,
         // Pin write-ownership to the region that created the workspace so all
         // workspace-scoped writes stay single-writer (replication-safe).
         ...workspaceHomeRegionField(),

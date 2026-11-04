@@ -6,13 +6,14 @@
  * workspaces. With no chat selected it opens the signed-in user's most
  * recent personal chat, creating one when they have none.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import { ActivityIndicator, AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
 import { Sparkles, X } from "lucide-react-native"
 import { useAuth } from "../../contexts/auth"
+import { useActiveInstance } from "../../contexts/active-instance"
 import {
   useDomainHttp,
   useMemberCollection,
@@ -25,10 +26,24 @@ import {
   shouldAdoptChatWorkspace,
 } from "../../lib/switch-workspace"
 import { pickTeamWorkspace } from "../../lib/team-workspace"
-import { useWorkspaceInView } from "../../hooks/useWorkspaceInView"
+import { useWorkspaceInView, type WorkspaceInView } from "../../hooks/useWorkspaceInView"
+import { workspaceInViewWhileLoading } from "../../lib/workspace-in-view"
+import {
+  getActiveWorkspaceId,
+  getCachedWorkspaceKind,
+  subscribeActiveWorkspaceId,
+} from "../../lib/workspace-store"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
+import {
+  chatHistoryOrigin,
+  loadWorkspaceChatBoot,
+  peekWorkspaceChatBoot,
+  rememberWorkspaceChatBoot,
+  workspaceChatBootKey,
+  workspaceChatLoadingView,
+} from "../../lib/chat-device-boot"
 import {
   chatActivityEvents,
   chatSessionEvents,
@@ -144,7 +159,45 @@ export const WorkspaceAgentChatScreen = observer(
     // open, so its id and kind — not the cloud workspace that happens to be
     // selected — decide this chat's sessions, its scope and its chrome
     // (SHO-130).
-    const workspace = useWorkspaceInView()
+    //
+    // It has to survive the collection being between answers. `useActiveWorkspace()`
+    // is null for the whole of every `loadAll()` — each in-app navigation
+    // refetches it — and this screen remounts inside that window on every
+    // reopen, so a plain `useWorkspaceInView()` loses the workspace for the
+    // first frames of exactly the open this card is about: no id, no boot key,
+    // no chat, and (before the loading view was fixed) a spinner over a
+    // transcript the device already had (SHO-309).
+    const inView = useWorkspaceInView()
+    const selectedWorkspaceId = useSyncExternalStore(
+      subscribeActiveWorkspaceId,
+      getActiveWorkspaceId,
+      getActiveWorkspaceId,
+    )
+    const lastInView = useRef<WorkspaceInView | null>(null)
+    if (inView) lastInView.current = inView
+    const cachedKind = useMemo(
+      () => (inView ? null : getCachedWorkspaceKind(selectedWorkspaceId)),
+      [inView, selectedWorkspaceId],
+    )
+    const workspace = workspaceInViewWhileLoading(
+      inView,
+      lastInView.current,
+      selectedWorkspaceId,
+      cachedKind,
+    )
+    const { instance: activeInstance } = useActiveInstance()
+    // Which chat this workspace opens, and what its agent is called, are on the
+    // device (SHO-309) — keyed the same way chat history is, so a paired
+    // computer's workspace never reads a cloud one's answer.
+    const bootKey = useMemo(
+      () =>
+        workspaceChatBootKey(
+          user?.id,
+          chatHistoryOrigin(activeInstance?.instanceId),
+          workspace?.id,
+        ),
+      [user?.id, activeInstance?.instanceId, workspace?.id],
+    )
     const projects = useProjectCollection()
     const experience = useWorkspaceExperience()
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
@@ -154,8 +207,40 @@ export const WorkspaceAgentChatScreen = observer(
     const [planPane, setPlanPane] = useState<PlanPaneState | null>(null)
     const [filePane, setFilePane] = useState<FilePaneState | null>(null)
     const [buildPlanRequest, setBuildPlanRequest] = useState<BuildPlanRequest | null>(null)
-    const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
-    const [sessionId, setSessionId] = useState<string | null>(null)
+    // The first frame paints from what the device already holds: a chat that
+    // has been opened before must not go through "Preparing Workspace Agent
+    // Chat…" again (SHO-309).
+    const [profile, setProfile] = useState<PersonalAgentProfile | null>(
+      () => peekWorkspaceChatBoot<PersonalAgentProfile>(bootKey)?.profile ?? null,
+    )
+    const [sessionId, setSessionId] = useState<string | null>(() => {
+      // An explicit chat, and the landing's empty chat, each name their own
+      // session — only a plain open resumes the cached primary one.
+      if (initialSessionId) return initialSessionId
+      if (startNewSession) return null
+      return peekWorkspaceChatBoot<PersonalAgentProfile>(bootKey)?.sessionId ?? null
+    })
+    // What the screen is showing right now, for a load that must not blank a
+    // chat that is already painted.
+    const shownIdentity = useRef<{
+      sessionId: string | null
+      profile: PersonalAgentProfile | null
+    }>({ sessionId, profile })
+    shownIdentity.current = { sessionId, profile }
+    // The workspace whose identity is on screen. A re-run of the load for the
+    // same workspace (a new `projects`/`http` identity) must not reset it.
+    const shownWorkspace = useRef<string | null>(null)
+    // True until the device read for this workspace has answered. While it is,
+    // a chat we have opened before may be about to appear, so the screen shows
+    // nothing rather than a loader (SHO-309).
+    //
+    // It starts true even before the key exists — `bootKey` needs the signed-in
+    // user and the workspace in view, and this screen remounts on every reopen,
+    // so on its first frame the key is still null. Starting false there is what
+    // let the spinner paint on reopen: the key was not known yet, so nothing
+    // looked pending, and "Preparing Workspace Agent Chat…" covered a chat the
+    // device already had (SHO-309).
+    const [bootPending, setBootPending] = useState(true)
     const [prefillRequest, setPrefillRequest] =
       useState<RestoreDraftRequest | null>(null)
     const [avatarState, setAvatarState] = useState<BuddyState>("idle")
@@ -211,6 +296,62 @@ export const WorkspaceAgentChatScreen = observer(
       user?.id,
     )?.id
 
+    // Read the chat this workspace opened last time off the device (SHO-309).
+    // The first frame already used the synchronous mirror; this covers a
+    // reload/restart, where the store has it and the mirror does not, and the
+    // case where the key only became known after the first frame (a remount
+    // whose user/workspace had not resolved yet) — there the state initialisers
+    // ran against no key, so the record still has to be applied here.
+    //
+    // This is the ONLY thing that ends the wait, and that is on purpose. An
+    // earlier version also released it when the workspace collection looked
+    // settled and empty — which is the state of a freshly mounted collection
+    // *before* its first `loadAll()`, and again after `clear()`. So the release
+    // fired on the first frame of every reopen, `bootPending` went false before
+    // the workspace (and therefore the key) existed, and
+    // "Preparing Workspace Agent Chat…" painted over a chat the device held
+    // (SHO-309, caught in CI, R4 and R5). Collection state cannot answer "does
+    // this device hold a chat", so it does not get a vote.
+    useEffect(() => {
+      // Only fill what is still missing: a load that already answered is
+      // fresher than the device copy, and the landing must keep its own empty
+      // chat rather than opening the cached primary one.
+      const applyBoot = (record: { sessionId: string | null; profile: PersonalAgentProfile | null } | null) => {
+        if (!record) return
+        const shown = shownIdentity.current
+        if (record.profile && !shown.profile) setProfile(record.profile)
+        if (
+          record.sessionId &&
+          !shown.sessionId &&
+          !initialSessionId &&
+          !startNewSession
+        ) {
+          setSessionId(record.sessionId)
+        }
+      }
+      if (!bootKey) return
+      const cached = peekWorkspaceChatBoot<PersonalAgentProfile>(bootKey)
+      if (cached) {
+        applyBoot(cached)
+        setBootPending(false)
+        return
+      }
+      let cancelled = false
+      setBootPending(true)
+      void loadWorkspaceChatBoot<PersonalAgentProfile>(bootKey)
+        .then((record) => {
+          if (cancelled) return
+          applyBoot(record)
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled) setBootPending(false)
+        })
+      return () => {
+        cancelled = true
+      }
+    }, [bootKey, initialSessionId, startNewSession])
+
     const loadWorkspaceChat = useCallback(async () => {
       avatarStreaming.current = false
       setAvatarState("idle")
@@ -227,6 +368,7 @@ export const WorkspaceAgentChatScreen = observer(
         setSessionId(null)
         setAttachments([])
         setFocusedProjectId(null)
+        shownWorkspace.current = null
         return
       }
       const version = ++loadVersion.current
@@ -236,10 +378,20 @@ export const WorkspaceAgentChatScreen = observer(
         // Never render the previous workspace's transcript/profile while the
         // next workspace is resolving. ChatPanel caches by session id, so this
         // reset is an access-boundary safeguard rather than cosmetic loading.
-        setProfile(null)
-        setSessionId(null)
-        setAttachments([])
-        setFocusedProjectId(null)
+        //
+        // It happens when the *workspace* changes, not when this load re-runs
+        // for the same one: a new `projects`/`http` identity used to blank the
+        // chat and remount it mid-session (SHO-309).
+        if (shownWorkspace.current !== workspace.id) {
+          shownWorkspace.current = workspace.id
+          const boot = peekWorkspaceChatBoot<PersonalAgentProfile>(bootKey)
+          setProfile(boot?.profile ?? null)
+          setSessionId(
+            initialSessionId ?? (startNewSession ? null : (boot?.sessionId ?? null)),
+          )
+          setAttachments([])
+          setFocusedProjectId(null)
+        }
         const sessionSource = agentSessionSource({
           initialSessionId,
           startNewSession,
@@ -301,15 +453,27 @@ export const WorkspaceAgentChatScreen = observer(
         setProfile(nextProfile)
         setSessionId(session.id)
         publishCurrentWorkspaceSession(workspace.id, session.id)
+        // Answer for the next open, and for the island and side chats, which
+        // read the same record (SHO-309). Only a plain open resumes the cached
+        // session — a URL chat and the landing's empty chat are one-off
+        // choices, not what "this workspace's chat" means.
+        rememberWorkspaceChatBoot<PersonalAgentProfile>(bootKey, {
+          profile: nextProfile,
+          ...(sessionSource === "primary" ? { sessionId: session.id } : {}),
+        })
       } catch (cause) {
         if (version !== loadVersion.current) return
+        // A chat already on screen outranks a failed revalidation: keep it
+        // rather than replacing it with an error (SHO-309).
+        const shown = shownIdentity.current
+        if (shown.sessionId && shown.profile) return
         setError(
           cause instanceof Error
             ? cause.message
             : "Could not load Workspace Agent Chat",
         )
       }
-    }, [http, workspace?.id, workspace?.kind, initialSessionId, startNewSession, projects])
+    }, [http, workspace?.id, workspace?.kind, initialSessionId, startNewSession, projects, bootKey])
 
     useEffect(() => {
       void loadWorkspaceChat()
@@ -568,10 +732,18 @@ export const WorkspaceAgentChatScreen = observer(
       [],
     )
 
+    const loadingView = workspaceChatLoadingView({
+      hasWorkspace: !!workspace?.id,
+      hasProfile: !!profile,
+      hasSession: !!sessionId,
+      bootPending,
+      error,
+    })
+
     if (!workspace?.id || !sessionId || !profile) {
       return (
         <View className="flex-1 items-center justify-center bg-background px-6">
-          {error ? (
+          {loadingView === "error" ? (
             <>
               <Text className="text-center text-sm text-destructive">
                 {error}
@@ -587,13 +759,18 @@ export const WorkspaceAgentChatScreen = observer(
                 </Text>
               </Pressable>
             </>
-          ) : (
+          ) : loadingView === "spinner" ? (
             <>
               <ActivityIndicator />
               <Text className="mt-3 text-sm text-muted-foreground">
                 Preparing Workspace Agent Chat…
               </Text>
             </>
+          ) : (
+            // The device read has not answered yet: a chat opened before is
+            // about to appear, so this frame shows nothing rather than a
+            // loader that would flash and go (SHO-309).
+            null
           )}
         </View>
       )

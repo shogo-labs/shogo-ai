@@ -88,6 +88,68 @@ async function checkSubdomain(subdomain: string): Promise<{ available: boolean; 
     : { available: true }
 }
 
+/**
+ * Forward a custom-domain request to Shogo Cloud.
+ *
+ * On desktop the published site lives on a hidden host project in the cloud, and
+ * that host project owns the domain rows — so the desktop's panel and the
+ * agent's `publish` tool both proxy to the cloud's `/published-sites/.../domains`
+ * routes with the stored cloud credential, exactly like publish itself. No
+ * credential means the user isn't signed in to cloud, which surfaces as
+ * `cloud_signin_required` so the UI can prompt.
+ */
+async function cloudDomainsRequest(
+  sourceProjectId: string,
+  method: string,
+  subpath: string,
+  body?: unknown,
+): Promise<{ status: number; body: any }> {
+  const cloudKey = await getUpstreamCredential()
+  if (!cloudKey) {
+    return {
+      status: 401,
+      body: {
+        error: {
+          code: 'cloud_signin_required',
+          message: 'Custom domains need a Shogo Cloud account. Sign in to Shogo Cloud in Settings, then try again.',
+        },
+      },
+    }
+  }
+
+  const base = getShogoCloudUrl().replace(/\/$/, '')
+  const url =
+    `${base}/api/published-sites/${encodeURIComponent(sourceProjectId)}/domains` +
+    (subpath ? `/${subpath.split('/').map(encodeURIComponent).join('/')}` : '')
+
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        authorization: `Bearer ${cloudKey}`,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(30_000),
+    })
+    const json = await res.json().catch(() => null)
+    return {
+      status: res.status,
+      body: json ?? { error: { code: 'cloud_error', message: `Shogo Cloud returned HTTP ${res.status}` } },
+    }
+  } catch (err: any) {
+    return {
+      status: 502,
+      body: {
+        error: {
+          code: 'cloud_unreachable',
+          message: err?.message ?? 'Could not reach Shogo Cloud. Check your connection and try again.',
+        },
+      },
+    }
+  }
+}
+
 export function localPublishRoutes(): Hono {
   const router = new Hono()
 
@@ -179,6 +241,48 @@ export function localPublishRoutes(): Hono {
     )
   })
 
+  // ── Custom domains (panel) ───────────────────────────────────────────────
+  // Proxied to the cloud host project, which owns the domain rows (SHO-304).
+
+  router.get('/projects/:projectId/domains', async (c) => {
+    const r = await cloudDomainsRequest(c.req.param('projectId'), 'GET', '')
+    return c.json(r.body, r.status as any)
+  })
+
+  router.post('/projects/:projectId/domains', async (c) => {
+    const body = await c.req.json().catch(() => null)
+    const r = await cloudDomainsRequest(c.req.param('projectId'), 'POST', '', body ?? {})
+    return c.json(r.body, r.status as any)
+  })
+
+  router.post('/projects/:projectId/domains/:domainId/verify', async (c) => {
+    const r = await cloudDomainsRequest(
+      c.req.param('projectId'), 'POST', `${c.req.param('domainId')}/verify`,
+    )
+    return c.json(r.body, r.status as any)
+  })
+
+  router.post('/projects/:projectId/domains/:domainId/retrigger', async (c) => {
+    const r = await cloudDomainsRequest(
+      c.req.param('projectId'), 'POST', `${c.req.param('domainId')}/retrigger`,
+    )
+    return c.json(r.body, r.status as any)
+  })
+
+  router.patch('/projects/:projectId/domains/:domainId/primary', async (c) => {
+    const r = await cloudDomainsRequest(
+      c.req.param('projectId'), 'PATCH', `${c.req.param('domainId')}/primary`,
+    )
+    return c.json(r.body, r.status as any)
+  })
+
+  router.delete('/projects/:projectId/domains/:domainId', async (c) => {
+    const r = await cloudDomainsRequest(
+      c.req.param('projectId'), 'DELETE', c.req.param('domainId'),
+    )
+    return c.json(r.body, r.status as any)
+  })
+
   // ── Agent tool (runtime token) ───────────────────────────────────────────
 
   async function authorizeRuntime(c: Context, projectId: string): Promise<boolean> {
@@ -221,6 +325,51 @@ export function localPublishRoutes(): Hono {
       accessLevel: result.accessLevel,
       hasPassword: result.hasPassword,
     })
+  })
+
+  // ── Custom domains (agent tool, runtime token) ───────────────────────────
+
+  router.get('/internal/projects/:projectId/domains', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!(await authorizeRuntime(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const r = await cloudDomainsRequest(projectId, 'GET', '')
+    return c.json(r.body, r.status as any)
+  })
+
+  router.post('/internal/projects/:projectId/domains', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!(await authorizeRuntime(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const body = await c.req.json().catch(() => null)
+    const r = await cloudDomainsRequest(projectId, 'POST', '', body ?? {})
+    return c.json(r.body, r.status as any)
+  })
+
+  router.post('/internal/projects/:projectId/domains/:domainId/verify', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!(await authorizeRuntime(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const r = await cloudDomainsRequest(projectId, 'POST', `${c.req.param('domainId')}/verify`)
+    return c.json(r.body, r.status as any)
+  })
+
+  router.post('/internal/projects/:projectId/domains/:domainId/retrigger', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!(await authorizeRuntime(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const r = await cloudDomainsRequest(projectId, 'POST', `${c.req.param('domainId')}/retrigger`)
+    return c.json(r.body, r.status as any)
+  })
+
+  router.patch('/internal/projects/:projectId/domains/:domainId/primary', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!(await authorizeRuntime(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const r = await cloudDomainsRequest(projectId, 'PATCH', `${c.req.param('domainId')}/primary`)
+    return c.json(r.body, r.status as any)
+  })
+
+  router.delete('/internal/projects/:projectId/domains/:domainId', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!(await authorizeRuntime(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const r = await cloudDomainsRequest(projectId, 'DELETE', c.req.param('domainId'))
+    return c.json(r.body, r.status as any)
   })
 
   return router

@@ -23,6 +23,10 @@ export function getProjectRoot(projectId: string): string | null {
   return REGISTRY.get(projectId) ?? null;
 }
 
+export function listProjectRoots(): string[] {
+  return [...new Set(REGISTRY.values())];
+}
+
 export function unsetProjectRoot(projectId: string): void {
   REGISTRY.delete(projectId);
 }

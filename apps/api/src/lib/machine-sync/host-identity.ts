@@ -150,7 +150,13 @@ export async function fetchCloudIdentity(opts: {
   apiKey: string
   instanceId: string
   fetchImpl?: typeof fetch
-}): Promise<{ id: string; email?: string | null; name?: string | null } | null> {
+}): Promise<{
+  id: string
+  email?: string | null
+  name?: string | null
+  /** The account's Personal (SHO-285 Update 2): the row this device adopts. */
+  personal?: { id: string; name: string; slug: string } | null
+} | null> {
   const url = `${opts.cloudUrl.replace(/\/$/, '')}/api/machines/${encodeURIComponent(opts.instanceId)}/identity`
   try {
     const response = await (opts.fetchImpl ?? fetch)(url, {
@@ -158,8 +164,16 @@ export async function fetchCloudIdentity(opts: {
       signal: AbortSignal.timeout(15_000),
     })
     if (!response.ok) return null
-    const body = (await response.json()) as { user?: { id?: string; email?: string; name?: string } }
-    return body.user?.id ? { id: body.user.id, email: body.user.email, name: body.user.name } : null
+    const body = (await response.json()) as {
+      user?: { id?: string; email?: string; name?: string }
+      personal?: { id?: string; name?: string; slug?: string } | null
+    }
+    if (!body.user?.id) return null
+    const personal =
+      body.personal?.id && body.personal.slug
+        ? { id: body.personal.id, name: body.personal.name ?? 'Personal', slug: body.personal.slug }
+        : null
+    return { id: body.user.id, email: body.user.email, name: body.user.name, personal }
   } catch {
     return null
   }

@@ -7,7 +7,7 @@
  */
 import { expect, test, type Page } from "@playwright/test"
 import { LOCAL_API_BASE } from "./helpers"
-import { activateTeamWorkspace, api, signIn, teamWorkspaceId } from "./team-nav-seed"
+import { activateTeamWorkspace, api, signIn, signInByApi, teamWorkspaceId } from "./team-nav-seed"
 
 const suffix = Date.now().toString(36)
 // A 1x1 transparent PNG.
@@ -91,6 +91,41 @@ test.describe("Channel files", () => {
     await expect(pane.getByText(`launch-spec-${suffix}.md`)).toBeVisible({ timeout: 30_000 })
     await share(page, channelId, "Budget", { name: `budget-${suffix}.csv`, mimeType: "text/csv", buffer: Buffer.from("a,b\n1,2") })
     await expect(pane.getByText(`budget-${suffix}.csv`)).toBeVisible({ timeout: 15_000 })
+  })
+
+  test("an upload that carries no bytes is refused instead of stored empty", async ({ page }) => {
+    // The composer that lost a file's content still posted the multipart
+    // framing (SHO-303). Over real HTTP the API must say no, and the file must
+    // never reach the Files pane — a stored 0-byte row downloads as an empty
+    // file days later, with nothing anywhere saying why.
+    // Sign in before touching the API: every call below rides this page's
+    // cookie jar, and `activateTeamWorkspace` alone only sets localStorage.
+    await signInByApi(page)
+    await activateTeamWorkspace(page, workspaceId)
+    const empty = await page.request.post(`${LOCAL_API_BASE}/api/conversations/${channelId}/attachments`, {
+      multipart: { file: { name: `lost-kit-${suffix}.zip`, mimeType: "application/zip", buffer: Buffer.alloc(0) } },
+    })
+    expect(empty.status()).toBe(400)
+    expect((await empty.json()).error.code).toBe("empty_file")
+
+    const oneByte = await page.request.post(`${LOCAL_API_BASE}/api/conversations/${channelId}/attachments`, {
+      multipart: { file: { name: `tiny-${suffix}.zip`, mimeType: "application/zip", buffer: Buffer.from([7]) } },
+    })
+    expect(oneByte.status(), await oneByte.text()).toBe(201)
+    const tiny = (await oneByte.json()).attachment
+    expect(tiny.size).toBe(1)
+    // Only attachments on a message reach the Files pane, so send it.
+    const sent = await api(page, "POST", `/api/conversations/${channelId}/messages`, {
+      text: "one byte",
+      attachmentIds: [tiny.id],
+      clientMsgId: crypto.randomUUID(),
+    })
+    expect(sent.status, JSON.stringify(sent.json)).toBe(201)
+
+    await page.goto(`/c/${channelId}?files=1`)
+    const pane = page.getByTestId("files-pane")
+    await expect(pane.getByText(`tiny-${suffix}.zip`)).toBeVisible({ timeout: 30_000 })
+    await expect(pane.getByText(`lost-kit-${suffix}.zip`)).toHaveCount(0)
   })
 
   test("phones open Files from the actions sheet, in place of the timeline", async ({ page }) => {

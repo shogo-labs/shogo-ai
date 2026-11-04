@@ -302,6 +302,9 @@ export const UNIQUE_SAFE: ReadonlySet<string> = new Set([
   'Meeting.shareToken',
   'Huddle.activeKey',
   'Huddle.roomName',
+  // The account whose Personal this is (SHO-285 Update 2): one user id, the same
+  // on both sides, so two devices cannot collide on it.
+  'Workspace.personalOwnerId',
 ])
 
 /** Values the cloud must rewrite on the way in, because they are globally unique. */
@@ -322,16 +325,25 @@ export const REWRITES: Readonly<
    * Every desktop calls its workspace the same thing (`local@shogo.local`'s
    * personal workspace), so the slug collides. The suffix also makes the copy
    * obvious in a database dump.
+   *
+   * The account's Personal is the exception (SHO-285 Update 2): it is one row
+   * with one id on every surface, so it keeps the cloud's slug and never grows
+   * a `-m-` suffix.
    */
   'Workspace.slug': (row, ctx) => {
+    if (row.personalOwnerId) return row.slug
     const slug = typeof row.slug === 'string' && row.slug ? row.slug : 'workspace'
     const suffix = `-m-${ctx.instanceId.slice(0, 8)}`
     // Rows round-trip now (SHO-285): a slug that came down already suffixed
     // keeps one suffix.
     return slug.endsWith(suffix) ? slug : `${slug}${suffix}`
   },
-  /** The host (SHO-285): its compute is this desktop, and cloud workers skip it. */
-  'Workspace.hostInstanceId': (_row, ctx) => ctx.instanceId,
+  /**
+   * The host (SHO-285): its compute is this desktop, and cloud workers skip it.
+   * The Personal is never hosted — it runs where the person is (cloud or the
+   * desktop they are sitting at), so it stays null.
+   */
+  'Workspace.hostInstanceId': (row, ctx) => (row.personalOwnerId ? null : ctx.instanceId),
   /** The retired read-only copy marker. */
   'Workspace.machineInstanceId': () => null,
   /** The copy lives in the region that received it, not the desktop's idea of one. */

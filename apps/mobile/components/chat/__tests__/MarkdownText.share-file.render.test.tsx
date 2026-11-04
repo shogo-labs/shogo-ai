@@ -108,4 +108,22 @@ describe("a share_file link in a message", () => {
       "https://github.com/shogo-labs/shogo-ai",
     )
   })
+
+  test("a local file:// share is a chip that opens the local route", () => {
+    const opened: Array<Record<string, unknown>> = []
+    const container = renderInApp(
+      "Here it is: file:///Users/me/Application%20Support/report.pdf",
+      (target) => opened.push(target as Record<string, unknown>),
+    ).container
+
+    const chip = container.querySelector('[data-testid="chat-file-chip"]')
+    expect(chip?.textContent).toBe("report.pdf")
+    expect(chip?.getAttribute("data-file-kind")).toBe("local")
+    fireEvent.click(chip!)
+    expect(opened[0]).toMatchObject({
+      kind: "local",
+      path: "/Users/me/Application Support/report.pdf",
+      href: "/api/local-files?path=%2FUsers%2Fme%2FApplication%20Support%2Freport.pdf",
+    })
+  })
 })

@@ -170,6 +170,78 @@ describe("coalesceChunkBursts", () => {
     expect(yields).toBe(0)
   })
 
+  /**
+   * SHO-306. The slice is wall clock, not the consumer's own apply time: the
+   * apply schedules a React commit that runs in its own task, and pacing on the
+   * gap between two reads left that commit uncounted — so the next slice began
+   * the moment it finished and the page never got an idle moment to paint or
+   * take a keystroke. A consumer that is quick per chunk but slow overall must
+   * still be interrupted.
+   */
+  test("paces on wall clock, so a slow page is interrupted even when each chunk is quick", async () => {
+    const burst: any[] = []
+    for (let i = 0; i < 40; i++) burst.push({ type: "text-start", id: `p${i}` })
+    const source = new ReadableStream({
+      start(controller) {
+        for (const chunk of burst) controller.enqueue(chunk)
+        controller.close()
+      },
+    })
+    let yields = 0
+    const out = coalesceChunkBursts(source, {
+      sliceMs: 5,
+      yieldToEventLoop: async () => {
+        yields++
+        // The commit the apply scheduled: work the reader did not measure
+        // before, and the reason the page froze.
+        await new Promise((r) => setTimeout(r, 2))
+      },
+    })
+    const reader = out.getReader()
+    let seen = 0
+    while (true) {
+      const { done } = await reader.read()
+      if (done) break
+      seen++
+      // A quick apply per chunk — under the slice on its own.
+      await new Promise((r) => setTimeout(r, 2))
+    }
+    expect(seen).toBe(40)
+    // ~4 ms of page time per chunk over a 5 ms slice: roughly one yield every
+    // other chunk, and certainly not the zero a per-chunk measurement gives.
+    expect(yields).toBeGreaterThanOrEqual(10)
+  })
+
+  test("a quiet stream does not spend its slice budget while it waits", async () => {
+    let push!: (chunk: any) => void
+    let close!: () => void
+    const source = new ReadableStream({
+      start(controller) {
+        push = (chunk) => controller.enqueue(chunk)
+        close = () => controller.close()
+      },
+    })
+    let yields = 0
+    const reading = readAll(
+      coalesceChunkBursts(source, {
+        idleMs: 1,
+        sliceMs: 50,
+        yieldToEventLoop: async () => {
+          yields++
+        },
+      }),
+    )
+    // Chunks arrive far apart: the reader is idle between them, so the time it
+    // spent waiting must not count as work and force a yield.
+    for (let i = 0; i < 5; i++) {
+      push({ type: "text-delta", id: "a", delta: String(i) })
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    close()
+    expect((await reading).map((c) => c.delta).join("")).toBe("01234")
+    expect(yields).toBe(0)
+  })
+
   test("cancelling mid-burst stops delivery and cancels the source", async () => {
     let cancelled = false
     const source = new ReadableStream({

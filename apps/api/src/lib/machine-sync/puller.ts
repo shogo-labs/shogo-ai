@@ -18,6 +18,7 @@
 import { incomingWins } from './ingest-lww'
 import { CHANGE_TABLE } from './triggers'
 import { delegateName } from './models'
+import { foldOrphanedPersonalRoot } from './personal-workspace'
 
 const DEFAULT_INTERVAL_MS = 2_000
 const IDLE_INTERVAL_MS = 2_000
@@ -52,6 +53,12 @@ export interface HostSyncPullerOptions {
   fetchImpl?: typeof fetch
   log?: (line: string) => void
   intervalMs?: number
+  /**
+   * The name a folded-in Personal root is filed under (`merged/<device>/`).
+   * Same name the adoption path uses, so a merge that happens on the cloud and
+   * one that happens at pairing land in the same folder.
+   */
+  deviceName?: string
   /** Called with the sessions that gained pending queued turns. */
   onQueuedTurns?: (sessionIds: string[]) => void | Promise<void>
 }
@@ -101,6 +108,7 @@ export async function applyHostFeedPage(
   prisma: any,
   page: Pick<HostFeedPageWire, 'models' | 'deletes'>,
   log: (line: string) => void = () => {},
+  opts: { deviceName?: string } = {},
 ): Promise<{ applied: number; skipped: number; deleted: number; queuedSessions: string[] }> {
   let applied = 0
   let skipped = 0
@@ -154,6 +162,27 @@ export async function applyHostFeedPage(
     const delegate = prisma[delegateName(entry.model)]
     if (!delegate) continue
     try {
+      // The cloud's merge of this device's Personal into the account's Personal
+      // (SHO-285 Update 2) deletes the duplicate row here, but the duplicate's
+      // root is on *this* disk — the cloud never held those files, so the
+      // cloud-side merge moved none of them. Fold the directory into the
+      // survivor's `merged/<device>/` before the row goes, or the files are
+      // stranded with no row to find them by.
+      if (entry.model === 'Workspace') {
+        const row = await prisma.workspace
+          ?.findUnique({ where: { id: entry.recordId }, select: { kind: true } })
+          .catch(() => null)
+        if (row?.kind === 'personal') {
+          const survivor = await prisma.workspace
+            ?.findFirst({ where: { kind: 'personal', NOT: { id: entry.recordId } }, select: { id: true } })
+            .catch(() => null)
+          if (survivor?.id) {
+            const deviceName = opts.deviceName ?? process.env.SHOGO_INSTANCE_NAME ?? 'device'
+            const moved = foldOrphanedPersonalRoot(entry.recordId, survivor.id, deviceName)
+            if (moved) log(`[HostSync] moved ${moved} file(s) from the merged Personal into merged/${deviceName}`)
+          }
+        }
+      }
       const result = await delegate.deleteMany({ where: { id: entry.recordId } })
       if (result?.count) {
         deleted += result.count
@@ -285,7 +314,7 @@ export class HostSyncPuller {
       }
       const page = (await response.json()) as HostFeedPageWire
       if (page.models?.length || page.deletes?.length) {
-        const result = await applyHostFeedPage(this.opts.prisma, page, this.log)
+        const result = await applyHostFeedPage(this.opts.prisma, page, this.log, { deviceName: this.opts.deviceName })
         if (result.applied || result.deleted) {
           this.log(`[HostSync] pulled ${result.applied} row(s), ${result.deleted} delete(s) from the cloud`)
         }

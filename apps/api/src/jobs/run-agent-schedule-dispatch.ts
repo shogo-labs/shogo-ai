@@ -12,6 +12,7 @@
 
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
+import { schedulePlacementWhere } from '../lib/job-placement'
 import { nextAgentScheduleRun } from '../services/agent-schedule.service'
 import {
   AgentTurnError,
@@ -230,12 +231,11 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
   const now = new Date()
   const staleBefore = new Date(now.getTime() - SCHEDULE_STALE_AFTER_MS)
   const homeFilter = homeRegionWorkspaceWhere()
-  // Schedules of a hosted workspace run on its desktop (SHO-285); firing them
-  // here too would double every run.
-  const cloudOnly = { hostInstanceId: null } as const
-  const workspaceFilter = {
-    workspace: homeFilter ? { AND: [homeFilter, cloudOnly] } : cloudOnly,
-  }
+  // A job runs where it was requested (SHO-285 Update 2): the cloud fires the
+  // unpinned ones, each desktop fires its own. `schedulePlacementWhere` is the
+  // exact complement of the desktop's filter, so a job can never fire twice.
+  const placement = schedulePlacementWhere()
+  const workspaceFilter = homeFilter ? { workspace: homeFilter } : {}
 
   const capacity = MAX_CONCURRENT_SCHEDULE_RUNS - inFlightRuns.size
   if (capacity <= 0) return
@@ -247,6 +247,7 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
       AND: [
         { OR: [{ runningAt: null }, { runningAt: { lt: staleBefore } }] },
         { OR: [{ goalId: null }, { goal: { status: 'active' } }] },
+        placement,
       ],
       ...workspaceFilter,
     },

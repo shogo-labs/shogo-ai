@@ -122,11 +122,13 @@ import {
   chatHistoryKey as buildChatHistoryKey,
   chatSessionHistoryKey,
   deltaSince,
+  peekChatHistory,
   readChatHistory,
   removeChatHistory,
   writeChatHistory,
   type ChatHistoryEntry,
 } from "../../lib/chat-history-store"
+import { chatHistoryOrigin, seedTranscript, transcriptLoaderVisible } from "../../lib/chat-device-boot"
 import { useResolvedTheme } from "../../contexts/theme"
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
@@ -149,6 +151,8 @@ import {
   taskWakeHasResponse,
   type PersistedTail,
 } from "./late-turn-attach"
+import { repaintWhenReplyLands, turnSyncAction } from "./turn-sync"
+import { useTeamChatEvents } from "../../lib/team-chat-connection"
 import {
   lastTurnStartedBackgroundWork,
   NOTIFY_WAKE_MAX_WAIT_MS,
@@ -1160,6 +1164,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
   continueProjectName,
 }: ChatPanelProps) {
   const { instance: activeInstance } = useActiveInstance()
+  // ── The device key for this chat's transcript (SHO-260/SHO-309) ──────────
+  //
+  // Declared up here, before the first paint, because the first paint now
+  // seeds from it: a chat this device has seen must not open behind a loader.
+  const historyOrigin = chatHistoryOrigin(activeInstance?.instanceId)
+  const historyKeyFor = useCallback(
+    (sessionId: string | null) =>
+      sessionId && userId
+        ? buildChatHistoryKey(
+            userId,
+            historyOrigin,
+            chatSessionHistoryKey(sessionId),
+          )
+        : null,
+    [userId, historyOrigin],
+  )
   const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
   const chatDockStore = useChatDockStore()
   const {
@@ -1735,7 +1755,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     return () => setActiveChatNotificationContext(null)
   }, [currentSessionId, isActive, projectId])
 
-  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(() => {
+    // A chat this device already holds is complete on the first frame — that is
+    // the whole point (SHO-309): the loader is for a chat we must fetch.
+    if (!currentSessionId) return true
+    return (seedTranscript(currentSessionId, historyKeyFor(currentSessionId)).messages?.length ?? 0) > 0
+  })
   const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] =
     useState<string>(DEFAULT_MODEL)
@@ -2039,7 +2064,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Paints refused in a row while the server catches up; carried on the Sentry
   // event so a report shows how hard the reply was to keep on screen.
   const historyPaintAttemptRef = useRef(0)
-  const cachedMessagesRef = useRef<any[] | null>(null)
+  // The transcript this device already holds for the chat, read synchronously
+  // so the FIRST frame can paint it (SHO-309). The memory cache is the live
+  // one; the durable store's mirror covers a reload, where memory is empty.
+  const firstPaintSeed = useMemo(
+    () => seedTranscript(currentSessionId, historyKeyFor(currentSessionId)),
+    [currentSessionId, historyKeyFor],
+  )
+  const cachedMessagesRef = useRef<any[] | null>(firstPaintSeed.messages)
   // Assigned once the device-history helpers further down are created. The
   // render-time write-through and `paintLoadedHistory` sit above them, so they
   // reach the store through this ref (SHO-260).
@@ -2054,22 +2086,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
     /** When it was sent — the chat tag's delivery window is read off this (SHO-52). */
     sentAt?: number
   } | null>(null)
-  const lastNonEmptyMessagesRef = useRef<UIMessage[]>([])
+  const lastNonEmptyMessagesRef = useRef<UIMessage[]>(
+    (firstPaintSeed.messages as UIMessage[] | null) ?? [],
+  )
 
   // Reset stale state synchronously when the session changes so we never
   // render one frame of the previous session's messages before showing
   // the loading indicator for the new session.
   //
-  // Hydrate from the module-level `sessionMessageCache` if we've seen this
-  // session before — this is what makes re-visits render instantly instead
-  // of briefly showing a loader while the stale-while-revalidate fetch runs.
+  // Hydrate from the device — the module-level `sessionMessageCache` first,
+  // then the durable store's mirror — if we've seen this session before. This
+  // is what makes re-visits render instantly instead of briefly showing a
+  // loader while the stale-while-revalidate fetch runs.
   if (prevSessionIdRef.current !== currentSessionId) {
-    const cachedForSession = currentSessionId
-      ? (readSessionMessageCache(currentSessionId) ?? null)
-      : null
+    const cachedForSession = seedTranscript(
+      currentSessionId,
+      historyKeyFor(currentSessionId),
+    ).messages
     prevSessionIdRef.current = currentSessionId
     cachedMessagesRef.current = cachedForSession
-    lastNonEmptyMessagesRef.current = cachedForSession ?? []
+    lastNonEmptyMessagesRef.current = (cachedForSession as UIMessage[]) ?? []
     isLoadingMessagesRef.current = false
     // State-mirror reset is deferred to an effect (can't call setState in
     // render); Effect 1 reads the ref for its in-flight dedup so behaviour
@@ -2443,6 +2479,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   } = useChat({
     transport: chatTransport,
     id: currentSessionId || undefined,
+    // The transcript the device already holds, so the panel's first frame is
+    // the chat itself rather than an empty list behind a loader (SHO-309).
+    messages: (cachedMessagesRef.current as UIMessage[] | null) ?? undefined,
     resume: false,
     experimental_throttle: 50,
     onError: (err) => {
@@ -4583,6 +4622,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // ends before the reload's probe, the history may hold its reply mid-write,
   // so Effect 1 loads once more.
   const liveTurnExpectedRef = useRef(false)
+  /**
+   * The chat this window is *following* rather than driving (SHO-299): set when
+   * the pushed `started` event attaches this panel to another window's turn,
+   * cleared the moment the person sends from here.
+   *
+   * A follower streams the reply like anyone else, but the two timers that
+   * belong to the window that started the work stay with it: the queued-turn
+   * follow (SHO-29) and the notify wake watch (SHO-30/31). A window that merely
+   * watched does not need either — the push tells it when the next turn starts
+   * and ends — and running them is the polling SHO-53 removed: a window sitting
+   * behind another window would probe `/turn` and the task list for as long as
+   * the background task ran.
+   */
+  const followsAnotherWindowRef = useRef<string | null>(null)
+  /**
+   * The turn this window was told `started` for (SHO-299). `ended` is acted on
+   * only for this turn — see `turnSyncAction`.
+   */
+  const announcedTurnRef = useRef<{ chatSessionId?: string; turnId?: string } | null>(null)
   const liveTurnReloadNonceRef = useRef(0)
   // The nonce of a reload that only refreshes the history; Effect 1 skips its
   // probe so these never count against the auto-resume circuit breaker.
@@ -4763,11 +4821,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * it, so a chat that is already up to date still costs a single `/turn`
    * probe and no transcript reload.
    */
-  const repaintIfBehindPersistedTail = useCallback(async () => {
+  const repaintIfBehindPersistedTail = useCallback(async (): Promise<boolean> => {
     const sessionId = currentSessionIdRef.current
-    if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return
+    if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) return false
     const tail = await probePersistedTail(sessionId)
-    if (currentSessionIdRef.current !== sessionId) return
+    if (currentSessionIdRef.current !== sessionId) return false
     if (
       !persistedTailIsUnseen(tail, messagesRef.current, {
         // A reply this window streamed is on screen under the AI SDK's id
@@ -4775,13 +4833,71 @@ const ChatPanelContent = observer(function ChatPanelContent({
         streamedHere: liveReplySessionRef.current === sessionId,
       })
     )
-      return
-    // A repaint that requires the reply keeps SHO-31's rule: another window's
-    // ordinary turn is not this window's to overwrite. A tail that is still a
-    // user row is a prompt answered elsewhere (the queue's `[Task update]`
-    // wake), so paint it and let the late-turn probe fetch the reply.
-    await reloadPersistedResponse({ requireReply: !persistedTailAwaitsReply(tail) })
+      return false
+    // Paint whatever history holds, reply or not (SHO-299). This only runs when
+    // this window is neither streaming nor sending, and `resolveHistoryPaint`
+    // still refuses to drop a reply this window streamed (SHO-85) — so the
+    // SHO-53 guard that demanded a reply here only ever refused an ordinary
+    // turn another window ran, which is exactly the case that has to land.
+    await reloadPersistedResponse({ requireReply: false })
+    // The tail was still the prompt: its reply is not written yet, and the
+    // caller should look again rather than leave a prompt with no answer.
+    return persistedTailAwaitsReply(tail)
   }, [probePersistedTail, reloadPersistedResponse])
+  const repaintIfBehindPersistedTailRef = useRef(repaintIfBehindPersistedTail)
+  repaintIfBehindPersistedTailRef.current = repaintIfBehindPersistedTail
+
+  /**
+   * Catch up after a turn ended somewhere else (SHO-299). The prompt is painted
+   * straight away; when the reply row has not landed yet, look again a couple of
+   * times instead of stopping on a prompt with no answer.
+   */
+  const catchUpAfterTurnEnded = useCallback(async () => {
+    const sessionId = currentSessionIdRef.current
+    if (!sessionId) return
+    const awaitingReply = await repaintIfBehindPersistedTail()
+    if (!awaitingReply) return
+    await repaintWhenReplyLands({
+      probe: () => probePersistedTail(sessionId),
+      reload: () => reloadPersistedResponse({ requireReply: false }),
+      isCancelled: () =>
+        currentSessionIdRef.current !== sessionId ||
+        isStreamingRef.current ||
+        isSendingMessageRef.current,
+    })
+  }, [probePersistedTail, reloadPersistedResponse, repaintIfBehindPersistedTail])
+  const catchUpAfterTurnEndedRef = useRef(catchUpAfterTurnEnded)
+  catchUpAfterTurnEndedRef.current = catchUpAfterTurnEnded
+
+  /**
+   * A turn started or ended in another window, on another device, or on the
+   * server (a `[Task update]` wake, a channel dispatch, a project call). Nothing
+   * else tells a window that stayed visible, so this is what keeps two windows
+   * on the same chat in step (SHO-299).
+   */
+  useTeamChatEvents(currentWorkspaceId ?? null, (event) => {
+    const action = turnSyncAction(event, {
+      currentSessionId: currentSessionIdRef.current,
+      isStreaming: isStreamingRef.current,
+      isSending: isSendingMessageRef.current,
+      // A window nobody is looking at keeps the SHO-53 path: silence here and
+      // one `/turn` probe on the way back, instead of a live attach that arms
+      // the task watch in a window that is not on screen.
+      isVisible:
+        Platform.OS === "web"
+          ? typeof document !== "undefined" && document.visibilityState === "visible"
+          : AppState.currentState === "active",
+      announcedTurn: announcedTurnRef.current,
+    })
+    if (action === "attach") {
+      announcedTurnRef.current = { chatSessionId: event?.chatSessionId, turnId: event?.turnId }
+      followsAnotherWindowRef.current = currentSessionIdRef.current
+      void attachToLiveTurnIfAnyRef.current()
+    } else if (action === "repaint") {
+      announcedTurnRef.current = null
+      void catchUpAfterTurnEndedRef.current()
+    }
+  })
 
   useEffect(() => {
     if (!isActive || !currentSessionId) return
@@ -4833,6 +4949,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const wasStreaming = wasTransportStreamingRef.current
     wasTransportStreamingRef.current = isTransportStreaming
     if (!wasStreaming || isTransportStreaming || !isActive) return
+    // A window following another window's turn is not the one the queue hands
+    // the next turn to: the push tells it when that turn starts and ends, so it
+    // must not run the follow probes (SHO-299, SHO-53). One row-wide read of the
+    // newest saved message is enough to pick up a reply the push beat here.
+    if (followsAnotherWindowRef.current === currentSessionIdRef.current) {
+      void repaintIfBehindPersistedTailRef.current()
+      return
+    }
     let cancelled = false
     void followNextTurn({
       attachIfLive: attachToLiveTurnIfAnyRef.current,
@@ -4873,6 +4997,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   useEffect(() => {
     if (!wakeWatchArmed || !isActive || !currentSessionId || isStreaming) return
+    // Only the window that started the background work watches for its wake.
+    // A follower paints the wake from the push when it ends (SHO-299) and must
+    // not poll `/tasks` + `/turn` for the length of the task (SHO-53).
+    if (followsAnotherWindowRef.current === currentSessionId) return
 
     let cancelled = false
     // The wake row and its reply both arrive after this arm, so an older
@@ -5457,20 +5585,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // downloaded only for a chat with no saved slice, or when the server says
   // the delta cannot be applied (`reset`, or a row count that does not add up
   // because something was deleted).
-  const historyOrigin = String(activeInstance?.instanceId ?? API_URL ?? "local")
   const activeSessionIdRef = useRef(currentSessionId)
   activeSessionIdRef.current = currentSessionId
-  const historyKeyFor = useCallback(
-    (sessionId: string | null) =>
-      sessionId && userId
-        ? buildChatHistoryKey(
-            userId,
-            historyOrigin,
-            chatSessionHistoryKey(sessionId),
-          )
-        : null,
-    [userId, historyOrigin],
-  )
+  // `historyOrigin`/`historyKeyFor` are declared at the top of this component:
+  // the first paint seeds from them (SHO-309).
   const historyStoreKey = historyKeyFor(currentSessionId)
   const historyStoreKeyRef = useRef<string | null>(historyStoreKey)
   historyStoreKeyRef.current = historyStoreKey
@@ -5480,6 +5598,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   >(new Map())
   const historyHydratedRef = useRef<Set<string>>(new Set())
   const historyHydrationPendingRef = useRef<Set<string>>(new Set())
+  // Keys whose device answer has arrived (or that needed no read at all). The
+  // loader is decided from THIS, during render: `historyHydrationPendingRef` is
+  // filled inside the hydration effect, i.e. after the first paint, so a frame
+  // that reads it sees "nothing pending" for a chat the device is about to
+  // hand over — one "Loading conversation..." flash on every reopen (SHO-309).
+  const historyHydrationSettledRef = useRef<Set<string>>(new Set())
   const [historyHydrationTick, setHistoryHydrationTick] = useState(0)
 
   /** The delta read. Same routing insert point as the transcript itself. */
@@ -5702,9 +5826,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const key = historyStoreKey
     const sessionId = currentSessionId
     if (!isActive || !key || !sessionId) return
-    if (historyHydratedRef.current.has(key)) return
+    // The synchronous mirror may already hold this chat (it seeded the first
+    // frame). Seed its cursor the same way the read below would, so Effect 1
+    // takes the delta path instead of downloading the page again (SHO-309).
+    if (!historyMetaRef.current.has(key)) {
+      const peeked = peekChatHistory("project", key)
+      if (peeked) {
+        historyMetaRef.current.set(key, {
+          cursor: peeked.cursor,
+          total: peeked.total,
+        })
+      }
+    }
+    if (historyHydratedRef.current.has(key)) {
+      historyHydrationSettledRef.current.add(key)
+      return
+    }
     if (cachedMessagesRef.current && cachedMessagesRef.current.length > 0) {
       historyHydratedRef.current.add(key)
+      historyHydrationSettledRef.current.add(key)
       return
     }
     historyHydratedRef.current.add(key)
@@ -5740,6 +5880,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       .catch((err) => console.warn("[ChatPanel] saved history failed to load:", err))
       .finally(() => {
         historyHydrationPendingRef.current.delete(key)
+        historyHydrationSettledRef.current.add(key)
         setHistoryHydrationTick((tick) => tick + 1)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -6844,6 +6985,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // already be locked and the transcript already painting the bubble
       // (QA round 1 on SHO-213: it looked frozen for the whole upload).
       isSendingMessageRef.current = true
+      // This window is driving again, so the watches it skipped while it was
+      // following another window's turn belong to it once more (SHO-299).
+      followsAnotherWindowRef.current = null
 
       // Seed the progress row before the first byte moves: a transport that
       // reports no intermediate events (a small file, a fast link) would
@@ -9906,9 +10050,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
                         />
                       </TurnFooterProvider>
                     </MessageEditProvider>
-                  ) : !isStreaming &&
-                    !isInitialLoadComplete &&
-                    currentSessionId ? (
+                  ) : transcriptLoaderVisible({
+                    hasSession: !!currentSessionId,
+                    isComplete: isInitialLoadComplete,
+                    isStreaming,
+                    // Decided during render from the device read's own record:
+                    // a key whose read has not answered yet is a chat that is
+                    // about to appear, so this frame shows nothing instead of a
+                    // loader that flashes and goes (SHO-309).
+                    hydrationPending:
+                      !!historyStoreKey &&
+                      !historyHydrationSettledRef.current.has(historyStoreKey),
+                  }) ? (
                     <View className="flex-col items-center justify-center flex-1 gap-3">
                       <View className="flex-row items-center gap-1">
                         <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-50" />

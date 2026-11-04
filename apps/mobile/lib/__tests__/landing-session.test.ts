@@ -6,6 +6,7 @@ import {
   ensureLandingSession,
   LANDING_SESSION_NAME,
   pickReusableLandingSession,
+  resetLandingSessions,
   type LandingSessionCandidate,
 } from '../landing-session'
 
@@ -100,5 +101,45 @@ describe('ensureLandingSession', () => {
     })
     expect(res).toEqual({ id: 'fresh' })
     expect(created).toHaveLength(1)
+  })
+
+  // The landing screen can remount while its first create is still in flight
+  // (a workspace switch, a route change, a key that moved). A guard held in a
+  // component ref dies with the instance, so the new one listed before the
+  // first create landed, saw nothing, and minted a second empty chat for the
+  // same workspace — two empty landing chats 30 ms apart in CI (SHO-309).
+  test('two callers racing for one workspace mint one chat, not two', async () => {
+    resetLandingSessions()
+    const created: string[] = []
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const d = {
+      list: async () => {
+        await gate
+        return [] as LandingSessionCandidate[]
+      },
+      create: async () => {
+        created.push('created')
+        return { id: 'fresh' }
+      },
+    }
+    const first = ensureLandingSession('ws-race', d)
+    const second = ensureLandingSession('ws-race', d)
+    release!()
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { id: 'fresh' },
+      { id: 'fresh' },
+    ])
+    expect(created, 'the second caller joins the first attempt').toHaveLength(1)
+  })
+
+  test('a later landing lists again, so a used chat is not reopened', async () => {
+    resetLandingSessions()
+    const listed: string[] = []
+    await ensureLandingSession('ws-2', deps([session('empty')], listed))
+    await ensureLandingSession('ws-2', deps([session('used', { messageCount: 3 })], listed))
+    expect(listed, 'the guard is a race guard, not a memory').toEqual(['ws-2', 'ws-2'])
   })
 })

@@ -20,7 +20,12 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
 
-export type ChatHistoryKind = 'project' | 'team'
+/**
+ * `boot` is not a transcript: it is the few bytes that let a chat open with no
+ * loader in front of it — which session it resumes and what its agent is
+ * called (SHO-309). Same backend, same key scoping, its own store.
+ */
+export type ChatHistoryKind = 'project' | 'team' | 'boot'
 
 /** What one chat's saved slice looks like. */
 export interface ChatHistoryEntry<T = any> {
@@ -117,8 +122,11 @@ export function newestUpdatedAt(
 // ─── Backends ────────────────────────────────────────────────────────────────
 
 export interface ChatHistoryBackend {
-  read(kind: ChatHistoryKind, key: string): Promise<ChatHistoryEntry | null>
-  write(kind: ChatHistoryKind, key: string, entry: ChatHistoryEntry): Promise<void>
+  // The payload is whatever that kind stores: a `ChatHistoryEntry` for a
+  // transcript, a `ChatBootRecord` for `boot`. The store itself is a keyed blob
+  // store, so it does not care which kind a row belongs to.
+  read(kind: ChatHistoryKind, key: string): Promise<any | null>
+  write(kind: ChatHistoryKind, key: string, entry: any): Promise<void>
   remove(kind: ChatHistoryKind, key: string): Promise<void>
   /** Every stored key of this kind, oldest saved first. */
   entries(kind: ChatHistoryKind): Promise<Array<{ key: string; savedAt: number; bytes: number }>>
@@ -126,10 +134,13 @@ export interface ChatHistoryBackend {
 }
 
 const DB_NAME = 'shogo-chat-history'
-const DB_VERSION = 1
+// 2 adds the `boot` store (SHO-309); `onupgradeneeded` creates whatever is
+// missing, so an existing v1 database keeps every transcript it already holds.
+const DB_VERSION = 2
 const KIND_NAMES: Record<ChatHistoryKind, string> = {
   project: 'project',
   team: 'team',
+  boot: 'boot',
 }
 
 function sizeOf(entry: ChatHistoryEntry): number {
@@ -154,7 +165,14 @@ function openDb(): Promise<IDBDatabase | null> {
         }
       }
     }
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      // A version upgrade (this store gained the `boot` store in version 2)
+      // waits on every open connection, and this module keeps one per
+      // operation. Without this the other windows would block the upgrade
+      // until they closed, and their reads would answer null while it waited.
+      request.result.onversionchange = () => request.result.close()
+      resolve(request.result)
+    }
     request.onerror = () => resolve(null)
     request.onblocked = () => resolve(null)
   })
@@ -383,6 +401,7 @@ export function getChatHistoryBackend(): ChatHistoryBackend {
 export function setChatHistoryBackend(next: ChatHistoryBackend | null): void {
   backend = next
   memoryMirror.clear()
+  bootMirror.clear()
 }
 
 // ─── Synchronous mirror ──────────────────────────────────────────────────────
@@ -473,5 +492,80 @@ export async function removeChatHistory(
 /** Sign-out and env switches: nothing from the old identity survives. */
 export async function clearChatHistory(): Promise<void> {
   memoryMirror.clear()
+  bootMirror.clear()
   await getChatHistoryBackend().clear().catch(() => {})
+}
+
+// ─── Chat boot records (SHO-309) ─────────────────────────────────────────────
+//
+// What a chat needs before its first frame: which session it resumes and what
+// its agent is called. That is not a transcript — `writeChatHistory` trims
+// messages and refuses an empty one, which a boot record is by nature — so it
+// has its own kind, its own mirror and its own (untrimmed) write, on the same
+// backend and key scoping, so sign-out clears it with everything else.
+
+export interface ChatBootRecord<TProfile = unknown> {
+  /** The chat this surface opens, or null when the workspace has none yet. */
+  sessionId: string | null
+  /** Enough of the agent to paint its name and avatar. */
+  profile: TProfile | null
+  savedAt: number
+}
+
+const bootMirror = new Map<string, ChatBootRecord<any>>()
+
+/** The boot record already read or written this JS session, if any. */
+export function peekChatBoot<TProfile>(key: string | null): ChatBootRecord<TProfile> | null {
+  if (!key) return null
+  return (bootMirror.get(key) as ChatBootRecord<TProfile> | undefined) ?? null
+}
+
+export async function readChatBoot<TProfile>(
+  key: string,
+): Promise<ChatBootRecord<TProfile> | null> {
+  const cached = bootMirror.get(key)
+  if (cached) return cached as ChatBootRecord<TProfile>
+  const entry = (await getChatHistoryBackend()
+    .read('boot', key)
+    .catch(() => null)) as ChatBootRecord<TProfile> | null
+  if (entry) bootMirror.set(key, entry)
+  return entry
+}
+
+/**
+ * Merge into this surface's boot record. A caller that only knows the profile
+ * (the island's name, a side chat) must not wipe the session, and vice versa.
+ * The mirror is updated before this returns; the promise is the device write,
+ * for a caller (or a test) that needs to know when it landed.
+ */
+export function writeChatBoot<TProfile>(
+  key: string | null,
+  patch: { sessionId?: string | null; profile?: TProfile | null },
+): Promise<void> {
+  if (!key) return Promise.resolve()
+  const previous = bootMirror.get(key)
+  const next: ChatBootRecord<any> = {
+    sessionId: patch.sessionId !== undefined ? patch.sessionId : (previous?.sessionId ?? null),
+    profile: patch.profile !== undefined ? patch.profile : (previous?.profile ?? null),
+    savedAt: Date.now(),
+  }
+  bootMirror.set(key, next)
+  // A cold write has to merge with what the device holds too, or the first
+  // profile-only write of a session would drop the session it never read.
+  const persist = async () => {
+    const stored = previous ?? ((await getChatHistoryBackend().read('boot', key)) as ChatBootRecord<any> | null)
+    const merged: ChatBootRecord<any> = {
+      sessionId: patch.sessionId !== undefined ? patch.sessionId : (stored?.sessionId ?? null),
+      profile: patch.profile !== undefined ? patch.profile : (stored?.profile ?? null),
+      savedAt: Date.now(),
+    }
+    bootMirror.set(key, merged)
+    await getChatHistoryBackend().write('boot', key, merged).catch(() => {})
+  }
+  return persist()
+}
+
+export async function removeChatBoot(key: string): Promise<void> {
+  bootMirror.delete(key)
+  await getChatHistoryBackend().remove('boot', key).catch(() => {})
 }

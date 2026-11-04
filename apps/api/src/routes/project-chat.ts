@@ -2157,7 +2157,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // left the tracking consumer hung). A cancel() handler also
           // unblocks pull() if the consumer goes away.
           try {
-            activityTurnId = await markTurnStarted(incomingChatSessionId)
+            // A turn the server replayed from the chat queue is not a person
+            // typing in a window, so no other window attaches to it (SHO-53:
+            // a window nobody is looking at must not start the task watch).
+            // The dispatcher marks its internal calls with `X-Queue-User-Id`.
+            activityTurnId = await markTurnStarted(incomingChatSessionId, undefined, {
+              announce: !c.req.header("X-Queue-User-Id"),
+            })
           } catch (error) {
             // Activity is observational; a schema/database issue must not block chat.
             console.warn(`[ProjectChat] Failed to mark active chat ${incomingChatSessionId}:`, error)

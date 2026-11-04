@@ -233,8 +233,13 @@ export const cloudSocketRelayHandlers = {
 
 /**
  * Appends cloud workspaces to the local workspace list: local ones first,
- * then cloud (cloud Personal first among those). Local workspaces, Personal
- * included, stay listed while signed in.
+ * then cloud. Local workspaces, Personal included, stay listed while signed in.
+ *
+ * A person has one Personal on every surface (SHO-285 Update 2): the desktop
+ * adopts the account's Personal at pairing, so its own row already carries the
+ * cloud id and the cloud's copy is not added beside it. The cloud Personal is
+ * only appended when the local list has no Personal at all — before adoption
+ * has run — so the switcher never shows two and never shows none.
  */
 export const cloudWorkspaceListMiddleware: MiddlewareHandler = async (c, next) => {
   await next()
@@ -245,12 +250,12 @@ export const cloudWorkspaceListMiddleware: MiddlewareHandler = async (c, next) =
   if (!body || !Array.isArray(body.items)) return
   const local = body.items
   const known = new Set(local.map((w: any) => w.id))
-  const extra = workspaces.filter((w) => !known.has(w.id)).map(cloudRow)
-  const items = [
-    ...local,
-    ...extra.filter((w) => w.kind === 'personal'),
-    ...extra.filter((w) => w.kind !== 'personal'),
-  ]
+  const hasLocalPersonal = local.some((w: any) => w.kind === 'personal')
+  const extra = workspaces
+    .filter((w) => !known.has(w.id) && (w.kind !== 'personal' || !hasLocalPersonal))
+    .map(cloudRow)
+    .sort((a: any, b: any) => Number(b.kind === 'personal') - Number(a.kind === 'personal'))
+  const items = [...local, ...extra]
   const headers = new Headers(c.res.headers)
   headers.delete('content-length')
   const total = (body.total ?? body.items.length) + extra.length

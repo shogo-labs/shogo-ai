@@ -35,7 +35,7 @@
  *     chat-history-cache --project chromium
  */
 import { expect, test, type Page, type Route } from "@playwright/test"
-import { startProjectWithBootstrapTurn } from "./helpers"
+import { LOCAL_API_BASE, startProjectWithBootstrapTurn } from "./helpers"
 import { activateTeamWorkspace, api, signIn, teamWorkspaceId } from "./team-nav-seed"
 
 test.setTimeout(240_000)
@@ -263,7 +263,7 @@ async function waitForStoredHistory(page: Page, timeoutMs = 20_000): Promise<num
   while (Date.now() < deadline) {
     const count = await page.evaluate(async () => {
       const db = await new Promise<IDBDatabase | null>((resolve) => {
-        const open = indexedDB.open("shogo-chat-history", 1)
+        const open = indexedDB.open("shogo-chat-history")
         open.onsuccess = () => resolve(open.result)
         open.onerror = () => resolve(null)
         open.onblocked = () => resolve(null)
@@ -311,7 +311,9 @@ test.describe("project chat keeps its history on the device", () => {
       REOPEN_BYTE_BUDGET,
     )
 
-    // AC1: the reload paints from the device — before the delta can answer.
+    // AC1: the reload paints from the device — before the delta can answer,
+    // and without either loader (SHO-309).
+    await watchForLoaders(page)
     const bytesBeforeReopen = state.bytes
     state.deltaDelayMs = 2_000
     await page.reload()
@@ -326,6 +328,10 @@ test.describe("project chat keeps its history on the device", () => {
       page.getByText(BOOTSTRAP_REPLY, { exact: false }).first(),
       "the transcript is painted from the device, before /changes answers",
     ).toBeVisible()
+    expect(
+      await loaderHits(page),
+      "a reopen may not show \"Loading conversation...\" for a chat the device holds",
+    ).toEqual([])
     await expect
       .poll(() => state.deltaPending, { timeout: 20_000, message: "the delta answered" })
       .toBe(false)
@@ -399,6 +405,311 @@ test.describe("project chat keeps its history on the device", () => {
       })
       .toBeGreaterThan(pageReadsAfterColdOpen)
     await expect(page.getByText(BOOTSTRAP_PROMPT, { exact: false }).first()).toBeVisible()
+  })
+})
+
+// ─── SHO-309: a reopen shows no loader at all ────────────────────────────────
+//
+// Two loaders used to run in series on every open — the workspace screen's
+// "Preparing Workspace Agent Chat…" (it threw away the session and profile it
+// had just resolved) and the panel's "Loading conversation..." (it started
+// empty on a chat whose transcript was already on the device). These watch the
+// DOM from navigation start, so a one-frame flash counts.
+
+const PREPARING_LOADER = "Preparing Workspace Agent Chat"
+const TRANSCRIPT_LOADER = "Loading conversation"
+
+/**
+ * Record every appearance of either loader in this document. Installed with
+ * `addInitScript`, so it also runs on a reload — the case a spec that only
+ * looks at the network cannot see.
+ */
+async function watchForLoaders(page: Page): Promise<void> {
+  await page.addInitScript(
+    (needles: string[]) => {
+      const scope = window as unknown as { __loaderHits?: string[] }
+      scope.__loaderHits = []
+      const record = (text: string) => {
+        for (const needle of needles) {
+          if (text.includes(needle)) scope.__loaderHits!.push(needle)
+        }
+      }
+      // Nodes the router mounts (either loader is its own subtree).
+      new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of Array.from(record.addedNodes)) recordText(node)
+        }
+      }).observe(document, { childList: true, subtree: true })
+      function recordText(node: Node) {
+        record(node.textContent ?? "")
+      }
+      // …and a frame-level sweep, for a loader whose text an existing node
+      // has re-rendered into (React updates the text node in place).
+      const startedAt = Date.now()
+      const sweep = () => {
+        if (document.body) record(document.body.textContent ?? "")
+        if (Date.now() - startedAt < 30_000) requestAnimationFrame(sweep)
+      }
+      requestAnimationFrame(sweep)
+    },
+    [PREPARING_LOADER, TRANSCRIPT_LOADER],
+  )
+}
+
+/** The loader text seen in the document currently on screen. */
+async function loaderHits(page: Page): Promise<string[]> {
+  return page.evaluate(
+    () => ((window as unknown as { __loaderHits?: string[] }).__loaderHits ?? []) as string[],
+  )
+}
+
+async function personalWorkspaceId(page: Page): Promise<string> {
+  const res = await page.request.get(`${LOCAL_API_BASE}/api/workspaces`)
+  const json = await res.json()
+  const items = (json?.items ?? json?.data?.items ?? []) as Array<{ id: string; kind?: string }>
+  const id = items.find((w) => w.kind === "personal")?.id
+  if (!id) throw new Error(`local stack has no personal workspace: ${JSON.stringify(json)}`)
+  return id
+}
+
+/** Whether the device holds this workspace agent chat's opening identity. */
+async function bootRecordStored(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () =>
+      new Promise<boolean>((resolve) => {
+        const open = indexedDB.open("shogo-chat-history")
+        open.onsuccess = () => {
+          const db = open.result
+          if (!db.objectStoreNames.contains("boot")) return resolve(false)
+          const request = db.transaction("boot", "readonly").objectStore("boot").getAll()
+          request.onsuccess = () =>
+            resolve(
+              (request.result ?? []).some(
+                (row: any) =>
+                  typeof row?.entry?.profile?.name === "string" &&
+                  row.entry.profile.name === "Mina",
+              ),
+            )
+          request.onerror = () => resolve(false)
+        }
+        open.onerror = () => resolve(false)
+        open.onblocked = () => resolve(false)
+      }),
+  )
+}
+
+const WORKSPACE_REPLY = "a workspace chat the device has already seen"
+
+interface WorkspaceChatState {
+  workspaceId: string
+  sessionId: string
+  rows: Array<Record<string, unknown>>
+  total: number
+  pageReads: number
+  deltaReads: number
+  bytes: number
+  primaryReads: number
+  profileReads: number
+  deltaPending: boolean
+  delayMs: number
+}
+
+/**
+ * A workspace agent chat whose *opening identity* and transcript are served
+ * slowly, so anything on screen before they answer came from the device.
+ */
+async function installWorkspaceChatMocks(
+  page: Page,
+  workspaceId: string,
+): Promise<WorkspaceChatState> {
+  const state: WorkspaceChatState = {
+    workspaceId,
+    sessionId: "ws-session-under-test",
+    rows: [],
+    total: 0,
+    pageReads: 0,
+    deltaReads: 0,
+    bytes: 0,
+    primaryReads: 0,
+    profileReads: 0,
+    deltaPending: false,
+    delayMs: 0,
+  }
+  const base = Date.now() - 600_000
+  state.rows = [
+    savedRow(`ws-${0}`, state.sessionId, "user", "open the workspace chat", base),
+    savedRow(`ws-${1}`, state.sessionId, "assistant", WORKSPACE_REPLY, base + 60_000),
+  ]
+  state.total = state.rows.length
+
+  const slow = async () => {
+    if (!state.delayMs) return
+    await new Promise((resolve) => setTimeout(resolve, state.delayMs))
+  }
+
+  // The primary session and the agent profile are exactly the two calls the
+  // screen used to block its first paint on.
+  await page.route("**/api/workspaces/*/sessions/primary", async (route: Route) => {
+    state.primaryReads += 1
+    await slow()
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        session: { id: state.sessionId, workspaceId: state.workspaceId, isPrimary: true },
+      }),
+    })
+  })
+
+  await page.route("**/api/workspaces/*/agent-profile", async (route: Route) => {
+    if (route.request().method() !== "GET") return route.continue()
+    state.profileReads += 1
+    await slow()
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        profile: {
+          name: "Mina",
+          avatarUrl: null,
+          tagline: "your agent",
+          personality: "warm",
+          statusText: null,
+        },
+      }),
+    })
+  })
+
+  await page.route(MESSAGES_GLOB, async (route: Route) => {
+    const request = route.request()
+    if (request.method() !== "GET") return route.continue()
+    const url = new URL(request.url())
+    const sessionId = state.sessionId
+
+    if (url.pathname.endsWith("/changes")) {
+      state.deltaReads += 1
+      state.deltaPending = true
+      await slow()
+      const sinceRaw = url.searchParams.get("since")
+      const since = sinceRaw ? new Date(sinceRaw).getTime() : 0
+      const items = state.rows
+        .filter((row) => msOf(row.updatedAt) >= since)
+        .map((row) => ({ ...row, sessionId }))
+      let cursor = 0
+      for (const row of state.rows) {
+        const at = msOf(row.updatedAt)
+        if (at > cursor) cursor = at
+      }
+      const body = {
+        ok: true,
+        items,
+        total: state.total,
+        cursor: cursor ? new Date(cursor).toISOString() : new Date(since).toISOString(),
+        reset: false,
+      }
+      state.bytes += JSON.stringify(body).length
+      state.deltaPending = false
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      })
+      return
+    }
+
+    state.pageReads += 1
+    await slow()
+    const pageBody = JSON.stringify({
+      ok: true,
+      items: state.rows.map((row) => ({ ...row, sessionId })),
+      total: state.total,
+    })
+    state.bytes += pageBody.length
+    await route.fulfill({ status: 200, contentType: "application/json", body: pageBody })
+  })
+
+  return state
+}
+
+test.describe("a workspace agent chat opens from the device", () => {
+  test.use({ viewport: { width: 1440, height: 900 } })
+
+  test("reopening it shows neither loader, in-app or on a reload", async ({ page }) => {
+    await watchForLoaders(page)
+    await signIn(page)
+    const state = await installWorkspaceChatMocks(page, await personalWorkspaceId(page))
+
+    await page.goto("/")
+    const chats = page.getByTestId("workspace-chats-panel")
+    await expect(chats).toBeVisible({ timeout: 90_000 })
+    const row = chats.getByRole("link", { name: /^Chat: / }).first()
+    await expect(row).toBeVisible({ timeout: 60_000 })
+
+    // ── The first-ever open: the device holds nothing, so a loader is honest
+    // and the chat arrives when the network answers. Some loader must appear —
+    // the transcript still has to come over the wire — but `Preparing Workspace
+    // Agent Chat…` must not: that one was a remount artifact (the screen was
+    // rebuilt when the workspace collection answered), and it is the flash
+    // SHO-309 removed, so its absence is asserted rather than tolerated.
+    state.delayMs = 1_500
+    await row.click()
+    await expect
+      .poll(() => loaderHits(page), { timeout: 60_000, message: "the first open paints an honest loader" })
+      .not.toEqual([])
+    expect(
+      await loaderHits(page),
+      "the open must not rebuild the screen into its own Preparing loader",
+    ).not.toContain(PREPARING_LOADER)
+    await expect(page.getByText(WORKSPACE_REPLY, { exact: false }).first()).toBeVisible({
+      timeout: 60_000,
+    })
+    await waitForStoredHistory(page)
+    // What the screen resolved is now on the device: that is what the next
+    // open paints (SHO-309).
+    await expect
+      .poll(() => bootRecordStored(page), {
+        timeout: 20_000,
+        message: "the screen stored the chat it opens",
+      })
+      .toBe(true)
+
+    // ── Reopening inside the app: back to the list, then forward into the chat
+    // again — a client-side round trip, no document reload.
+    await page.goBack()
+    await expect(chats).toBeVisible({ timeout: 60_000 })
+    const hitsBeforeInApp = (await loaderHits(page)).length
+    const pageReadsBeforeInApp = state.pageReads
+    state.delayMs = 2_500
+    await page.goForward()
+    await expect(
+      page.getByText(WORKSPACE_REPLY, { exact: false }).first(),
+      "the chat is painted from the device while the session and profile are still in flight",
+    ).toBeVisible({ timeout: 20_000 })
+    expect(
+      (await loaderHits(page)).slice(hitsBeforeInApp),
+      "neither loader may appear when the chat is reopened inside the app",
+    ).toEqual([])
+    expect(state.pageReads, "an in-app reopen must not download the page again").toBe(
+      pageReadsBeforeInApp,
+    )
+
+    // ── Reopening by a full reload. The device is cold; the store is not.
+    const bytesBeforeReload = state.bytes
+    const pageReadsBeforeReload = state.pageReads
+    await page.reload()
+    await expect(
+      page.getByText(WORKSPACE_REPLY, { exact: false }).first(),
+      "a reload paints the transcript from the device",
+    ).toBeVisible({ timeout: 30_000 })
+    expect(await loaderHits(page), "neither loader may appear on a reload").toEqual([])
+    expect(
+      state.pageReads,
+      "the reopen must not download the chat's first page again",
+    ).toBe(pageReadsBeforeReload)
+    expect(state.deltaReads, "the reopen asks only for what changed").toBeGreaterThan(0)
+    expect(state.bytes - bytesBeforeReload, "the reopen stays small on the wire").toBeLessThan(
+      REOPEN_BYTE_BUDGET,
+    )
   })
 })
 
@@ -483,7 +794,7 @@ async function waitForTeamHistory(
     const found = await page.evaluate(
       (id) =>
         new Promise<boolean>((resolve) => {
-          const open = indexedDB.open("shogo-chat-history", 1)
+          const open = indexedDB.open("shogo-chat-history")
           open.onsuccess = () => {
             const db = open.result
             if (!db.objectStoreNames.contains("team")) return resolve(false)
