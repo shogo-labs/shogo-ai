@@ -133,7 +133,7 @@ import {
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
 import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
-import { buildWorkspaceRootConflictContext } from './workspace-root-sync'
+import { buildWorkspaceRootConflictContext, currentWorkspaceRootSync } from './workspace-root-sync'
 import {
   createToolProfile,
   deferredToolsEnabled,
@@ -3633,6 +3633,20 @@ export class AgentGateway {
     // The device list is fetched once per turn, before the (synchronous) prompt
     // builder runs, so the agent knows which desktops it can reach.
     this.devicesContext = await this.buildDevicesContext()
+
+    // Pull the shared workspace root before the (synchronous) prompt builder
+    // runs. Without this a file another device wrote a second ago is only on
+    // disk at the next 60 s tick, so a turn that reads MEMORY.md can answer from
+    // a stale copy. Bounded: a slow store must never hold up the turn.
+    if (process.env.WORKSPACE_KIND === 'personal') {
+      const rootSync = currentWorkspaceRootSync()
+      if (rootSync) {
+        await Promise.race([
+          rootSync.pull().catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, 3_000)),
+        ])
+      }
+    }
 
     let systemPrompt = this.loadBootstrapContext(
       sessionId,
