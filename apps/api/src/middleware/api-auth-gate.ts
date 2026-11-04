@@ -94,13 +94,6 @@ export function isPublishedApiProxyPath(path: string): boolean {
  */
 export { EDGE_PROXY_HEADER }
 
-declare module 'hono' {
-  interface ContextVariableMap {
-    /** True when the request carried the edge-proxy secret. */
-    edgeProxy?: boolean
-  }
-}
-
 function safeEqual(a: string, b: string): boolean {
   const left = Buffer.from(a)
   const right = Buffer.from(b)
@@ -167,6 +160,22 @@ export function allowUserAppProxyRequest(path: string, headers: Headers): boolea
   if (!process.env.SHOGO_EDGE_PROXY_SECRET) return true
   if (isEdgeProxyAuthenticated(headers)) return true
   return !isStudioOrApiHost(headers.get('host') ?? undefined)
+}
+
+/**
+ * True when this request must be treated as a direct, non-edge call: the
+ * process holds the edge secret AND the request did not carry it.
+ *
+ * Both halves matter. The API image deploys on merge while the terraform apply
+ * that hands the Workers the secret is a manual step, so without one of them
+ * everything that keys off this helper would flip for a window in which the
+ * Workers are not yet sending the header — preview backend POSTs would hit the
+ * Studio CSRF allow-list, published apps would stop seeing the visitor's
+ * session, and every preview would be served sandboxed. Until the secret
+ * exists, each of those keeps its pre-switch value.
+ */
+export function isNonEdgeUserAppProxyRequest(headers: Headers): boolean {
+  return !!process.env.SHOGO_EDGE_PROXY_SECRET && !isEdgeProxyAuthenticated(headers)
 }
 
 // The root preview proxy only. It forwards none of the visitor's cookies or

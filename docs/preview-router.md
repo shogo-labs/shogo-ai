@@ -195,12 +195,22 @@ domain keeps working.
   `modules/publish-hosting-oci` (bound to the Workers as `EDGE_PROXY_SECRET`).
 - API: `SHOGO_EDGE_PROXY_SECRET`, from the `api-secrets` k8s secret
   (`EDGE_PROXY_SECRET` in the GitHub environment).
-- **Deploy order: terraform first (Workers), then the API image.** Nothing is
-  enforced until the API has the secret, so a Worker that sends the header
-  early is harmless; once the API has it, every direct call on a Studio host
-  is refused.
+- **One switch, five behaviours.** `isNonEdgeUserAppProxyRequest(headers)` is
+  true only when the API holds the secret *and* the request did not carry it.
+  The CSRF skip, the reflected `Origin` + `credentials`, the published proxy's
+  `cookie`/`authorization` forwarding, the dropped `set-cookie` and the sandbox
+  CSP all key off it, so with no secret every one of them keeps its previous
+  value — the image can ship ahead of the terraform apply with no visible
+  difference.
+- **Deploy runbook.** (1) merge and roll the API image — inert; (2) set
+  `EDGE_PROXY_SECRET` in the GitHub environments; (3) apply terraform so the
+  Workers start sending the header (ignored while the API has no secret);
+  (4) re-run the deploy so `api-secrets` carries `SHOGO_EDGE_PROXY_SECRET` into
+  the pod and enforcement starts, with the Workers already sending it.
+  Stopping after step 1 or 3 leaves the routes as they are today, never broken.
 - Local desktop mode has no secret: its previews use
   `/api/projects/{id}/preview/*` on loopback, and any user-app proxy response
-  that arrives without the header is served with
+  to an untrusted caller is served with
   `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups`, so
-  it runs on an opaque origin.
+  it runs on an opaque origin. A self-hosted API on its own domain is trusted
+  and unchanged.

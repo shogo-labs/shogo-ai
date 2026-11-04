@@ -67,16 +67,16 @@ export function filterUpstreamResponseHeaders(
 }
 
 /**
- * `Content-Security-Policy` for a user-app proxy response that did not come
- * through the edge Worker (local desktop mode, or a self-hosted API answering on
- * its own domain). The sandbox gives the document an opaque origin: the app's
- * scripts run, but never as the page that framed them and never with that page's
- * cookies.
+ * `Content-Security-Policy` for a user-app proxy response from a caller not
+ * trusted with the visitor's session (a direct call on a Studio/API host; local
+ * desktop mode and a self-hosted API on their own domain are trusted). The
+ * sandbox gives the document an opaque origin: the app's scripts run, but never
+ * as the page that framed them and never with that page's cookies.
  */
 export const USER_APP_SANDBOX_CSP = 'sandbox allow-scripts allow-forms allow-popups'
 
 /** Headers forwarded to a metal published app's own `/api/*` server. */
-export function publishedProxyRequestHeaders(incoming: Headers, opts: { fromEdge: boolean }): Headers {
+export function publishedProxyRequestHeaders(incoming: Headers, opts: { trustVisitor: boolean }): Headers {
   const headers = new Headers()
   const names = [
     'content-type', 'accept', 'accept-encoding', 'accept-language',
@@ -85,9 +85,9 @@ export function publishedProxyRequestHeaders(incoming: Headers, opts: { fromEdge
     // The app answers CORS itself (isPublishedApiProxyPath skips the API's).
     'origin', 'access-control-request-method', 'access-control-request-headers',
   ]
-  // The visitor's session stays with the edge: a non-edge caller must not hand
+  // The visitor's session stays with the edge: an untrusted caller must not hand
   // its Studio/API cookies or bearer token to the app.
-  if (opts.fromEdge) names.push('cookie', 'authorization')
+  if (opts.trustVisitor) names.push('cookie', 'authorization')
   for (const name of names) {
     const value = incoming.get(name)
     if (value) headers.set(name, value)
@@ -96,17 +96,17 @@ export function publishedProxyRequestHeaders(incoming: Headers, opts: { fromEdge
 }
 
 /** Headers returned from a metal published app's own `/api/*` server. */
-export function publishedProxyResponseHeaders(upstream: Headers, opts: { fromEdge: boolean }): Headers {
+export function publishedProxyResponseHeaders(upstream: Headers, opts: { trustVisitor: boolean }): Headers {
   const out = new Headers()
   upstream.forEach((value, key) => {
     const k = key.toLowerCase()
     if (k === 'transfer-encoding' || k === 'connection') return
     // A published app may set its own session cookies — but only across the edge,
-    // where the browser is on the app's own host. A non-edge caller is on a
+    // where the browser is on the app's own host. An untrusted caller is on a
     // Studio/API host and must not receive them.
-    if (k === 'set-cookie' && !opts.fromEdge) return
+    if (k === 'set-cookie' && !opts.trustVisitor) return
     out.set(key, value)
   })
-  if (!opts.fromEdge) out.set('content-security-policy', USER_APP_SANDBOX_CSP)
+  if (!opts.trustVisitor) out.set('content-security-policy', USER_APP_SANDBOX_CSP)
   return out
 }

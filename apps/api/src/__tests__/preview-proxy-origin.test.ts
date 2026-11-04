@@ -10,7 +10,7 @@
  *
  * Mirrors the /api/* csrf + cors wiring in server.ts with the real predicates.
  */
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { csrf } from 'hono/csrf'
@@ -18,6 +18,7 @@ import { HTTPException } from 'hono/http-exception'
 import {
   EDGE_PROXY_HEADER,
   allowUserAppProxyRequest,
+  isNonEdgeUserAppProxyRequest,
   isPublicPreviewRenderPath,
   isPublishedApiProxyPath,
   isUserAppProxyPath,
@@ -28,25 +29,41 @@ const STUDIO = 'https://studio.shogo.ai'
 const PID = '580b192d-e6bd-410e-833b-f0c473ef6890'
 const PREVIEW_ORIGIN = `https://${PID}.preview.shogo.ai`
 
+const EDGE_SECRET = 'edge-proxy-test-secret'
+
+function withEdgeSecret<T>(value: string | undefined, fn: () => Promise<T> | T): Promise<T> {
+  const previous = process.env.SHOGO_EDGE_PROXY_SECRET
+  if (value === undefined) delete process.env.SHOGO_EDGE_PROXY_SECRET
+  else process.env.SHOGO_EDGE_PROXY_SECRET = value
+  const restore = () => {
+    if (previous === undefined) delete process.env.SHOGO_EDGE_PROXY_SECRET
+    else process.env.SHOGO_EDGE_PROXY_SECRET = previous
+  }
+  return Promise.resolve()
+    .then(fn)
+    .finally(restore)
+}
+
 function buildApp(): Hono {
   const app = new Hono()
   app.onError((err) => (err instanceof HTTPException ? err.getResponse() : new Response('boom', { status: 500 })))
   const apiCors = cors({
     origin: (origin, c) => {
       const p = new URL(c.req.url).pathname
-      if (isPublicPreviewRenderPath(p)) return origin || '*'
+      if (isPublicPreviewRenderPath(p) && !isNonEdgeUserAppProxyRequest(c.req.raw.headers)) return origin || '*'
       return origin === STUDIO ? origin : STUDIO
     },
     credentials: true,
   })
   app.use('/*', (c, next) => {
-    if (isPublishedApiProxyPath(new URL(c.req.url).pathname)) return next()
+    const p = new URL(c.req.url).pathname
+    if (isPublishedApiProxyPath(p) && !isNonEdgeUserAppProxyRequest(c.req.raw.headers)) return next()
     return apiCors(c, next)
   })
   const csrfMw = csrf({ origin: (origin) => origin === STUDIO })
   app.use('/api/*', async (c, next) => {
     const p = new URL(c.req.url).pathname
-    if (isUserAppProxyPath(p)) return next()
+    if (isUserAppProxyPath(p) && !isNonEdgeUserAppProxyRequest(c.req.raw.headers)) return next()
     if (!c.req.header('origin') && !c.req.header('referer')) return next()
     return csrfMw(c, next)
   })
@@ -63,6 +80,18 @@ function post(app: Hono, path: string, origin?: string) {
 }
 
 describe('user-app proxy paths skip the Studio CSRF allow-list', () => {
+  // These are the answers the proxies give while `SHOGO_EDGE_PROXY_SECRET` is
+  // not configured — the deploy window in which the Workers do not send the
+  // edge header yet. Pinned regardless of the developer's environment.
+  const savedSecret = process.env.SHOGO_EDGE_PROXY_SECRET
+  beforeEach(() => {
+    delete process.env.SHOGO_EDGE_PROXY_SECRET
+  })
+  afterEach(() => {
+    if (savedSecret === undefined) delete process.env.SHOGO_EDGE_PROXY_SECRET
+    else process.env.SHOGO_EDGE_PROXY_SECRET = savedSecret
+  })
+
   test('preview render: same-origin and cross-site form POSTs reach the app', async () => {
     const app = buildApp()
     for (const origin of [PREVIEW_ORIGIN, 'https://playsamsara.com']) {
@@ -113,21 +142,6 @@ describe('user-app proxy paths skip the Studio CSRF allow-list', () => {
 // Studio/API host must not be able to reach them directly; the edge sends
 // `x-shogo-edge-auth` carrying SHOGO_EDGE_PROXY_SECRET.
 // -----------------------------------------------------------------------------
-const EDGE_SECRET = 'edge-proxy-test-secret'
-
-function withEdgeSecret<T>(value: string | undefined, fn: () => Promise<T> | T): Promise<T> {
-  const previous = process.env.SHOGO_EDGE_PROXY_SECRET
-  if (value === undefined) delete process.env.SHOGO_EDGE_PROXY_SECRET
-  else process.env.SHOGO_EDGE_PROXY_SECRET = value
-  const restore = () => {
-    if (previous === undefined) delete process.env.SHOGO_EDGE_PROXY_SECRET
-    else process.env.SHOGO_EDGE_PROXY_SECRET = previous
-  }
-  return Promise.resolve()
-    .then(fn)
-    .finally(restore)
-}
-
 const PROXY_PATHS = [
   `/api/preview/${PID}/render/`,
   `/api/preview/${PID}/ports/3000/render/api/signup`,
@@ -139,7 +153,6 @@ function buildGatedApp(): Hono {
   app.onError((err) => (err instanceof HTTPException ? err.getResponse() : new Response('boom', { status: 500 })))
   app.use('/api/*', async (c, next) => {
     const p = new URL(c.req.url).pathname
-    c.set('edgeProxy', isEdgeProxyAuthenticatedForTest(c.req.raw.headers))
     if (!allowUserAppProxyRequest(p, c.req.raw.headers)) return c.text('404 Not Found', 404)
     return next()
   })
@@ -148,13 +161,6 @@ function buildGatedApp(): Hono {
   app.all('/api/preview/:projectId/ports/:port/render/*', appResponse)
   app.all('/api/published/:subdomain/api/*', appResponse)
   return app
-}
-
-// Mirrors `isEdgeProxyAuthenticated` for the app under test, keeping the guard
-// wiring in server.ts honest without importing server.ts.
-function isEdgeProxyAuthenticatedForTest(headers: Headers): boolean {
-  const expected = process.env.SHOGO_EDGE_PROXY_SECRET
-  return !!expected && headers.get(EDGE_PROXY_HEADER) === expected
 }
 
 function get(app: Hono, path: string, headers: Record<string, string>) {
@@ -222,7 +228,7 @@ describe('published api proxy keeps the visitor session at the edge', () => {
   })
 
   test('without the edge header no cookie or authorization is forwarded', () => {
-    const headers = publishedProxyRequestHeaders(browserRequest(), { fromEdge: false })
+    const headers = publishedProxyRequestHeaders(browserRequest(), { trustVisitor: false })
     expect(headers.get('cookie')).toBeNull()
     expect(headers.get('authorization')).toBeNull()
     expect(headers.get('accept')).toBe('application/json')
@@ -230,7 +236,7 @@ describe('published api proxy keeps the visitor session at the edge', () => {
   })
 
   test('with the edge header the app still gets the visitor session', () => {
-    const headers = publishedProxyRequestHeaders(browserRequest(), { fromEdge: true })
+    const headers = publishedProxyRequestHeaders(browserRequest(), { trustVisitor: true })
     expect(headers.get('cookie')).toBe('better-auth.session_token=abc')
     expect(headers.get('authorization')).toBe('Bearer studio-token')
   })
@@ -240,13 +246,107 @@ describe('published api proxy keeps the visitor session at the edge', () => {
       'content-type': 'application/json',
       'set-cookie': 'app_session=1; Path=/',
     })
-    const nonEdge = publishedProxyResponseHeaders(upstream, { fromEdge: false })
+    const nonEdge = publishedProxyResponseHeaders(upstream, { trustVisitor: false })
     expect(nonEdge.get('set-cookie')).toBeNull()
     expect(nonEdge.get('content-security-policy')).toContain('sandbox')
     expect(nonEdge.get('content-type')).toBe('application/json')
 
-    const edge = publishedProxyResponseHeaders(upstream, { fromEdge: true })
+    const edge = publishedProxyResponseHeaders(upstream, { trustVisitor: true })
     expect(edge.get('set-cookie')).toBe('app_session=1; Path=/')
     expect(edge.get('content-security-policy')).toBeNull()
+  })
+})
+
+// -----------------------------------------------------------------------------
+// The switch itself: `isNonEdgeUserAppProxyRequest` is what every behaviour
+// below keys off, so pin its two halves directly.
+// -----------------------------------------------------------------------------
+describe('isNonEdgeUserAppProxyRequest', () => {
+  test('is false while no secret is configured, whatever the header says', async () => {
+    await withEdgeSecret(undefined, () => {
+      expect(isNonEdgeUserAppProxyRequest(new Headers())).toBe(false)
+      expect(isNonEdgeUserAppProxyRequest(new Headers({ [EDGE_PROXY_HEADER]: 'anything' }))).toBe(false)
+    })
+  })
+
+  test('is true once the secret exists and the request did not carry it', async () => {
+    await withEdgeSecret(EDGE_SECRET, () => {
+      expect(isNonEdgeUserAppProxyRequest(new Headers())).toBe(true)
+      expect(isNonEdgeUserAppProxyRequest(new Headers({ [EDGE_PROXY_HEADER]: 'wrong' }))).toBe(true)
+      expect(isNonEdgeUserAppProxyRequest(new Headers({ [EDGE_PROXY_HEADER]: EDGE_SECRET }))).toBe(false)
+    })
+  })
+})
+
+// -----------------------------------------------------------------------------
+// With the secret configured, a direct (non-edge) caller loses the exceptions
+// the proxies hand the Worker.
+// -----------------------------------------------------------------------------
+describe('with the edge secret configured, a direct caller gets the Studio answers', () => {
+  test('a preview form POST from the app\'s own origin is refused without the edge header', async () => {
+    await withEdgeSecret(EDGE_SECRET, async () => {
+      const app = buildApp()
+      expect((await post(app, `/api/preview/${PID}/render/api/signup`, PREVIEW_ORIGIN)).status).toBe(403)
+      expect((await post(app, '/api/published/samsara-api/api/signup', 'https://samsara-api.shogo.one')).status).toBe(403)
+    })
+  })
+
+  test('and the request that carries it keeps them', async () => {
+    await withEdgeSecret(EDGE_SECRET, async () => {
+      const app = buildApp()
+      const res = await app.fetch(new Request(`http://api.test/api/preview/${PID}/render/api/signup`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: PREVIEW_ORIGIN,
+          [EDGE_PROXY_HEADER]: EDGE_SECRET,
+        },
+        body: 'email=a%40b.c',
+      }))
+      expect(res.status).toBe(200)
+    })
+  })
+
+  test('preflight stops echoing a foreign origin without the edge header', async () => {
+    await withEdgeSecret(EDGE_SECRET, async () => {
+      const app = buildApp()
+      const res = await app.fetch(new Request(`http://api.test/api/preview/${PID}/render/api/signup`, {
+        method: 'OPTIONS',
+        headers: { origin: 'https://playsamsara.com', 'access-control-request-method': 'POST' },
+      }))
+      expect(res.headers.get('access-control-allow-origin')).toBe(STUDIO)
+    })
+  })
+})
+
+describe('published proxy header policy for a trusted vs untrusted caller', () => {
+  test('an untrusted caller forwards no visitor session and gets a sandboxed response', () => {
+    const request = publishedProxyRequestHeaders(
+      new Headers({ cookie: 'better-auth.session_token=abc', authorization: 'Bearer t' }),
+      { trustVisitor: false },
+    )
+    expect(request.get('cookie')).toBeNull()
+    expect(request.get('authorization')).toBeNull()
+    const response = publishedProxyResponseHeaders(
+      new Headers({ 'set-cookie': 'app_session=1; Path=/' }),
+      { trustVisitor: false },
+    )
+    expect(response.get('set-cookie')).toBeNull()
+    expect(response.get('content-security-policy')).toContain('sandbox')
+  })
+
+  test('a trusted caller keeps the previous behaviour unchanged', () => {
+    const request = publishedProxyRequestHeaders(
+      new Headers({ cookie: 'better-auth.session_token=abc', authorization: 'Bearer t' }),
+      { trustVisitor: true },
+    )
+    expect(request.get('cookie')).toBe('better-auth.session_token=abc')
+    expect(request.get('authorization')).toBe('Bearer t')
+    const response = publishedProxyResponseHeaders(
+      new Headers({ 'set-cookie': 'app_session=1; Path=/' }),
+      { trustVisitor: true },
+    )
+    expect(response.get('set-cookie')).toBe('app_session=1; Path=/')
+    expect(response.get('content-security-policy')).toBeNull()
   })
 })
