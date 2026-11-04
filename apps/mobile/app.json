@@ -21,7 +21,6 @@
         "backgroundColor": "#FB8C00"
       },
       "package": "ai.shogo.mobile",
-      "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "blockedPermissions": [
         "android.permission.READ_EXTERNAL_STORAGE",

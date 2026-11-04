@@ -31,7 +31,8 @@
 #   KEY_ALIAS                   - Key alias within the keystore
 #   KEY_PASSWORD                - Key password
 #   FIREBASE_ANDROID_GOOGLE_SERVICES_JSON_BASE64 - Base64-encoded Firebase client config for ai.shogo.mobile
-#   GOOGLE_SERVICES_JSON_BASE64 - Base64-encoded Play Store service account key (legacy name)
+#   PLAY_STORE_SERVICE_ACCOUNT_JSON_BASE64      - Base64-encoded Play publishing key (preferred name)
+#   GOOGLE_SERVICES_JSON_BASE64                 - Legacy Play key secret; used as a fallback
 # =============================================================================
 
 name: Android Build & Update
@@ -733,7 +734,9 @@ jobs:
 
       - name: Decode Play Store service account key
         if: steps.submit-decision.outputs.should_submit == 'true'
-        run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > apps/mobile/play-store-service-account.json
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT_JSON_BASE64: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON_BASE64 || secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: printf '%s' "$PLAY_STORE_SERVICE_ACCOUNT_JSON_BASE64" | base64 --decode > apps/mobile/play-store-service-account.json
 
       - name: Submit to Play Store
         if: steps.submit-decision.outputs.should_submit == 'true'
