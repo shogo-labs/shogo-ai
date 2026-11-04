@@ -32,7 +32,7 @@ interface Harness {
   now: () => number
 }
 
-function harness(initial: LiveActivity | null = { liveTurns: 0, runningTasks: 0, runningAgentReplies: 0 }): Harness {
+function harness(initial: LiveActivity | null = { agentRuns: 0, backgroundCommands: 0 }): Harness {
   let activity = initial
   let clock = 1_000_000
   const quits: number[] = []
@@ -85,8 +85,8 @@ function harness(initial: LiveActivity | null = { liveTurns: 0, runningTasks: 0,
   }
 }
 
-const IDLE: LiveActivity = { liveTurns: 0, runningTasks: 0, runningAgentReplies: 0 }
-const ONE_TURN: LiveActivity = { liveTurns: 1, runningTasks: 0, runningAgentReplies: 0 }
+const IDLE: LiveActivity = { agentRuns: 0, backgroundCommands: 0 }
+const ONE_TURN: LiveActivity = { agentRuns: 1, backgroundCommands: 0 }
 
 describe('restart when idle', () => {
   it('turns the drain on and restarts once nothing is running', async () => {
@@ -136,13 +136,29 @@ describe('restart when idle', () => {
     await h.restart.start()
 
     await h.advance(5_000) // zero
-    h.setActivity({ liveTurns: 0, runningTasks: 1, runningAgentReplies: 0 })
+    h.setActivity({ agentRuns: 1, backgroundCommands: 0 })
     await h.advance(5_000) // a task started: window cleared
     h.setActivity(IDLE)
     await h.advance(5_000) // window starts again
     await h.advance(5_000)
     expect(h.quits).toHaveLength(0)
     await h.advance(5_000)
+    expect(h.quits).toHaveLength(1)
+  })
+
+  it('restarts once no agent run is live, even with card watches and a running command', async () => {
+    // SHO-317: watches live in the DB and a background command reports back as
+    // interrupted — neither is an agent run, so neither holds the restart.
+    const h = harness({ agentRuns: 1, backgroundCommands: 4 })
+    await h.restart.start()
+    await h.advance(5_000)
+    expect(h.quits).toHaveLength(0)
+
+    h.setActivity({ agentRuns: 0, backgroundCommands: 4 })
+    await h.advance(5_000) // first zero reading starts the window
+    await h.advance(5_000)
+    expect(h.quits).toHaveLength(0)
+    await h.advance(5_000) // 10s of quiet
     expect(h.quits).toHaveLength(1)
   })
 

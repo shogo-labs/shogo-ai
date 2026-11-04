@@ -13,9 +13,18 @@
  */
 
 export interface LiveActivity {
-  liveTurns: number
-  runningTasks: number
-  runningAgentReplies: number
+  /**
+   * Agent runs a restart would interrupt — one per run, counted by the API.
+   * A team-chat reply and the chat session it opens are the same run, and a card
+   * watch is not a run at all (SHO-317).
+   */
+  agentRuns: number
+  /**
+   * Background *commands* (a shell task, a subagent) that die with the process.
+   * They are not agent runs and they do not hold "Restart when idle": SHO-141
+   * marks them interrupted and wakes their agent on the next boot.
+   */
+  backgroundCommands: number
 }
 
 export interface ActivitySession {
@@ -28,22 +37,43 @@ export interface LiveActivityReport extends LiveActivity {
   sessions: ActivitySession[]
 }
 
-export const NO_LIVE_ACTIVITY: LiveActivity = { liveTurns: 0, runningTasks: 0, runningAgentReplies: 0 }
+export const NO_LIVE_ACTIVITY: LiveActivity = { agentRuns: 0, backgroundCommands: 0 }
 
 function toCount(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
 }
 
-/** Everything that would be interrupted, as one number. */
+/**
+ * Everything a restart interrupts, as one number.
+ *
+ * Deliberately `agentRuns` alone: background commands are reported next to it
+ * but must not keep the machine "busy" — a `sleep 900` in a shell would hold
+ * "Restart when idle" forever while interrupting no run at all.
+ */
 export function liveActivityTotal(activity: LiveActivity | null | undefined): number {
   if (!activity) return 0
-  return toCount(activity.liveTurns) + toCount(activity.runningTasks) + toCount(activity.runningAgentReplies)
+  return toCount(activity.agentRuns)
+}
+
+/** ", and 2 background commands, which report back as interrupted" — or ''. */
+function backgroundClause(count: number): string {
+  if (count <= 0) return ''
+  return count === 1
+    ? ', and 1 background command, which reports back as interrupted'
+    : `, and ${count} background commands, which report back as interrupted`
 }
 
 /** "3 agent runs are working" / "1 agent run is working". */
 export function describeLiveActivity(activity: LiveActivity | null | undefined): string {
   const total = liveActivityTotal(activity)
-  return total === 1 ? '1 agent run is working' : `${total} agent runs are working`
+  const base = total === 1 ? '1 agent run is working' : `${total} agent runs are working`
+  if (total === 0) {
+    const commands = toCount(activity?.backgroundCommands)
+    return commands === 1
+      ? '1 background command is running'
+      : `${commands} background commands are running`
+  }
+  return base + backgroundClause(toCount(activity?.backgroundCommands))
 }
 
 /**
@@ -76,9 +106,10 @@ export async function fetchLiveActivity(
         }))
       : []
     return {
-      liveTurns: toCount(body.liveTurns),
-      runningTasks: toCount(body.runningTasks),
-      runningAgentReplies: toCount(body.runningAgentReplies),
+      // `liveTurns` is the pre-SHO-317 name: an API old enough to answer without
+      // `agentRuns` still has the live-turn count, and that is the honest number.
+      agentRuns: toCount(body.agentRuns ?? body.liveTurns),
+      backgroundCommands: toCount(body.backgroundCommands),
       sessions,
     }
   } catch {

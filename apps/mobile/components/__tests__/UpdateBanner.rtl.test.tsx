@@ -32,7 +32,7 @@ mock.module('lucide-react-native', () => ({ X: () => null }))
 
 const { UpdateBanner } = await import('../UpdateBanner')
 
-type Counts = { liveTurns: number; runningTasks: number; runningAgentReplies: number }
+type Counts = { agentRuns: number; backgroundCommands: number }
 
 interface InstallResult {
   ok: boolean
@@ -142,8 +142,8 @@ describe('UpdateBanner restart gate', () => {
         {
           ok: false,
           needsChoice: true,
-          message: '3 agent runs are working. Restart now, or wait until they finish?',
-          activity: { liveTurns: 2, runningTasks: 1, runningAgentReplies: 0 },
+          message: '2 agent runs are working, and 1 background command, which reports back as interrupted. Restart now, or wait until they finish?',
+          activity: { agentRuns: 2, backgroundCommands: 1 },
         },
       ],
     })
@@ -155,7 +155,7 @@ describe('UpdateBanner restart gate', () => {
     await waitFor(() => expect(banner('shogo-update-banner-choice')).not.toBeNull())
     // The probe is the *only* call: no mode was sent, so nothing quit.
     expect(fake.installCalls()).toEqual([undefined])
-    expect(screen.getByText(/3 agent runs are working/)).toBeInTheDocument()
+    expect(screen.getByText(/2 agent runs are working, and 1 background command/)).toBeInTheDocument()
     expect(screen.getByTestId('update-restart-when-idle')).toBeInTheDocument()
     expect(screen.getByTestId('update-restart-now')).toBeInTheDocument()
   })
@@ -167,7 +167,7 @@ describe('UpdateBanner restart gate', () => {
         {
           ok: true,
           mode: 'when-idle',
-          activity: { liveTurns: 2, runningTasks: 1, runningAgentReplies: 0 },
+          activity: { agentRuns: 2, backgroundCommands: 1 },
         },
       ],
     })
@@ -179,14 +179,14 @@ describe('UpdateBanner restart gate', () => {
 
     await waitFor(() => expect(banner('shogo-update-banner-draining')).not.toBeNull())
     expect(fake.installCalls()[1]).toEqual({ mode: 'when-idle' })
-    expect(screen.getByText('Restarting when idle — 3 agent runs working')).toBeInTheDocument()
+    expect(screen.getByText('Restarting when idle — 2 agent runs working')).toBeInTheDocument()
 
     // The drain's own polls move the count down, and say so honestly.
-    act(() => fake.drain({ active: true, activity: { liveTurns: 1, runningTasks: 0, runningAgentReplies: 0 } }))
+    act(() => fake.drain({ active: true, activity: { agentRuns: 1, backgroundCommands: 0 } }))
     await waitFor(() =>
       expect(screen.getByText('Restarting when idle — 1 agent run working')).toBeInTheDocument(),
     )
-    act(() => fake.drain({ active: true, activity: { liveTurns: 0, runningTasks: 0, runningAgentReplies: 0 } }))
+    act(() => fake.drain({ active: true, activity: { agentRuns: 0, backgroundCommands: 0 } }))
     await waitFor(() =>
       expect(screen.getByText(/waiting for the last run to finish/)).toBeInTheDocument(),
     )
@@ -196,7 +196,7 @@ describe('UpdateBanner restart gate', () => {
     const fake = installBridge({
       installResults: [
         { ok: false, needsChoice: true, message: '1 agent run is working.' },
-        { ok: true, mode: 'when-idle', activity: { liveTurns: 1, runningTasks: 0, runningAgentReplies: 0 } },
+        { ok: true, mode: 'when-idle', activity: { agentRuns: 1, backgroundCommands: 0 } },
       ],
     })
     render(createElement(UpdateBanner))

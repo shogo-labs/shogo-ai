@@ -12,6 +12,7 @@
 
 import { hostname as osHostname, platform, arch as osArch } from 'os'
 import { prisma } from './prisma'
+import { DEFAULT_STALE_AFTER_MS } from '../services/chat-turn-state.service'
 
 export interface MachineWorkspaceSummary {
   id: string
@@ -65,13 +66,56 @@ async function readDeviceId(db: any): Promise<string | null> {
   }
 }
 
+/**
+ * Background-task sources that are *watches*, not processes. Their row lives in
+ * the database, survives a restart and fires its `[Task update]` on the next
+ * boot, so a restart interrupts nothing. Mirrors `REMOTE_SOURCES` in
+ * `background-tasks.service`, which is what the runtime reports them as.
+ *
+ * Everything else (`shell`, `subagent`) is a child process that dies with us.
+ */
+const WATCH_TASK_SOURCES = ['work_item', 'agent_reply', 'project_call']
+
 export interface LiveWorkCounts {
-  /** Open agent turns — one per chat with a turn in flight. */
+  /**
+   * Agent runs a restart would interrupt: one per distinct run — a chat with a
+   * live turn, or a team-chat reply that has been dispatched but has not opened
+   * its session yet. The number the update banner and the Quit dialog print.
+   */
+  agentRuns: number
+  /**
+   * Background *processes* (a shell command, a subagent) that die with the
+   * process. They are not agent runs, and they do not hold "Restart when idle":
+   * SHO-141 settles them as `interrupted` and wakes the agent, which is the
+   * "wake the agent later" a watch needs anyway.
+   */
+  backgroundCommands: number
+  /** @deprecated Read `agentRuns`. Kept one release for an older desktop shell. */
   liveTurns: number
-  /** Background tasks still running. */
+  /** @deprecated Read `agentRuns`/`backgroundCommands`. */
   runningTasks: number
-  /** Team-chat agent replies that have not finished. */
+  /** @deprecated Read `agentRuns`. */
   runningAgentReplies: number
+}
+
+/**
+ * The freshness rule for a live turn, shared with the desktop route so the
+ * number it prints and the list it shows can never disagree.
+ *
+ * A turn whose last heartbeat is older than `staleBefore` is dead — the same
+ * threshold `chat-turn-reattach` uses to take a turn over. Without a cutoff
+ * (the cloud heartbeat does not pass one) every session holding an
+ * `activeTurnId` counts, which is the historical behaviour.
+ */
+export function liveTurnWhere(staleBefore?: Date | null): Record<string, unknown> {
+  const where: Record<string, unknown> = { activeTurnId: { not: null } }
+  if (!staleBefore) return where
+  where.OR = [
+    { activeTurnHeartbeatAt: { gte: staleBefore } },
+    { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: { gte: staleBefore } }] },
+    { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: null }] },
+  ]
+  return where
 }
 
 /**
@@ -81,33 +125,52 @@ export interface LiveWorkCounts {
  * and the desktop's update/quit gate (SHO-181) wants to know when they hit zero
  * before it restarts — for which a turn whose heartbeat has stopped is not live.
  * Both go through here so the two can never disagree about what "running" means.
+ *
+ * `agentRuns` is deliberately not a sum of table counts. A team-chat reply opens
+ * a chat session, so counting reply rows *and* sessions counted the same run
+ * twice, and every card watch counted a third time as soon as a running
+ * `BackgroundTask` row was treated as a live run (SHO-317: 19 "interrupted" runs
+ * for 4 real ones).
  */
 export async function countLiveWork(
   db: any = prisma,
   opts: {
     /** Treat a turn whose last heartbeat is older than this as dead. */
     staleTurnBefore?: Date | null
-    /** Skip the team-chat count (the heartbeat does not need it). */
+    /** Count team-chat replies that have not opened their session yet. */
     agentReplies?: boolean
   } = {},
 ): Promise<LiveWorkCounts> {
-  const turnWhere: Record<string, unknown> = { activeTurnId: { not: null } }
-  if (opts.staleTurnBefore) {
-    const stale = opts.staleTurnBefore
-    turnWhere.OR = [
-      { activeTurnHeartbeatAt: { gte: stale } },
-      { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: { gte: stale } }] },
-      { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: null }] },
-    ]
-  }
-  const [liveTurns, runningTasks, runningAgentReplies] = await Promise.all([
-    db.chatSession.count({ where: turnWhere }),
-    db.backgroundTask.count({ where: { status: 'running' } }),
-    opts.agentReplies
-      ? db.conversationMessage.count({ where: { authorType: 'agent', agentStatus: 'running', deletedAt: null } })
-      : Promise.resolve(0),
-  ])
+  // A reply that is still being written needs the same freshness rule: past the
+  // window it is an orphan, and the boot sweep settles it rather than counting it.
+  const replyFreshAfter = opts.staleTurnBefore ?? new Date(Date.now() - DEFAULT_STALE_AFTER_MS)
+  const runningReplyWhere = { authorType: 'agent', agentStatus: 'running', deletedAt: null }
+  const [liveTurns, runningTasks, backgroundCommands, runningAgentReplies, justDispatched] =
+    await Promise.all([
+      db.chatSession.count({ where: liveTurnWhere(opts.staleTurnBefore) }),
+      db.backgroundTask.count({ where: { status: 'running' } }),
+      db.backgroundTask.count({
+        where: { status: 'running', NOT: { source: { in: WATCH_TASK_SOURCES } } },
+      }),
+      opts.agentReplies
+        ? db.conversationMessage.count({ where: runningReplyWhere })
+        : Promise.resolve(0),
+      opts.agentReplies
+        ? db.conversationMessage.count({
+            where: {
+              ...runningReplyWhere,
+              // No session yet: the run is dispatched and its turn has not
+              // opened, so no session row covers it.
+              agentSessionId: null,
+              createdAt: { gte: replyFreshAfter },
+            },
+          })
+        : Promise.resolve(0),
+    ])
+  // Dedupe by run, not by row: a reply whose session is live is that session.
   return {
+    agentRuns: (liveTurns ?? 0) + (justDispatched ?? 0),
+    backgroundCommands: backgroundCommands ?? 0,
     liveTurns: liveTurns ?? 0,
     runningTasks: runningTasks ?? 0,
     runningAgentReplies: runningAgentReplies ?? 0,
@@ -209,7 +272,7 @@ export async function collectMachineSnapshot(): Promise<MachineSnapshot> {
     },
     workspaces: summaries,
     activity: {
-      runningTurns: liveWork.liveTurns,
+      runningTurns: liveWork.agentRuns,
       runningTasks: liveWork.runningTasks,
       chats: chats ?? 0,
       lastActivityAt: overall ? overall.toISOString() : null,

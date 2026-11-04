@@ -106,12 +106,18 @@ export function localSystemRoutes(): Hono {
   })
 
   /**
-   * GET /local/system/activity — what is live right now (SHO-181).
+   * GET /local/system/activity — what is live right now (SHO-181, SHO-317).
    *
    * The desktop's update banner and its Quit dialog both need one honest answer
-   * to "will a restart interrupt someone?", so the counts come from the same
-   * places the rest of the product already trusts: an open agent turn, a running
-   * background task, and a team-chat agent reply that has not finished.
+   * to "will a restart interrupt someone?", so the count comes from one place:
+   * `agentRuns` — the distinct agent runs a restart would interrupt.
+   *
+   * A team-chat reply and its chat session are the same run, so reply rows are
+   * only added when the run has not opened a session yet. A running background
+   * task is usually a *watch* (a card watch, a `project_call`), which lives in
+   * the database, survives the restart and fires on the next boot: watches are
+   * never counted, and a `shell`/`subagent` process is reported separately as a
+   * `backgroundCommand` because it dies with us but is not an agent run.
    *
    * A turn whose heartbeat is older than `TURN_REATTACH_AFTER_MS` is not live —
    * that is the threshold the reattach job already uses to call a turn dead. It
@@ -121,19 +127,14 @@ export function localSystemRoutes(): Hono {
   router.get('/local/system/activity', async (c) => {
     try {
       const { TURN_REATTACH_AFTER_MS } = await import('../services/chat-turn-state.service')
-      const { countLiveWork } = await import('../lib/machine-snapshot')
+      const { countLiveWork, liveTurnWhere } = await import('../lib/machine-snapshot')
       const staleBefore = new Date(Date.now() - TURN_REATTACH_AFTER_MS)
       const [counts, sessions] = await Promise.all([
         countLiveWork(prisma as any, { staleTurnBefore: staleBefore, agentReplies: true }),
         prisma.chatSession.findMany({
-          where: {
-            activeTurnId: { not: null },
-            OR: [
-              { activeTurnHeartbeatAt: { gte: staleBefore } },
-              { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: { gte: staleBefore } }] },
-              { AND: [{ activeTurnHeartbeatAt: null }, { activeTurnStartedAt: null }] },
-            ],
-          },
+          // The same predicate `countLiveWork` counts with, so the list and
+          // `agentRuns` can never disagree.
+          where: liveTurnWhere(staleBefore) as any,
           select: {
             id: true,
             name: true,
@@ -147,6 +148,11 @@ export function localSystemRoutes(): Hono {
       ])
       return c.json({
         ok: true,
+        agentRuns: counts.agentRuns,
+        backgroundCommands: counts.backgroundCommands,
+        // Kept one release for a desktop shell that predates `agentRuns`. It
+        // still sums these, so it still overcounts — that is the bug this fixes,
+        // and the fields go away once no shipped shell reads them.
         liveTurns: counts.liveTurns,
         runningTasks: counts.runningTasks,
         runningAgentReplies: counts.runningAgentReplies,

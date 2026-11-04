@@ -285,7 +285,7 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     mode?: 'now' | 'when-idle' | 'immediate'
     needsChoice?: boolean
     message?: string
-    activity?: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null
+    activity?: { agentRuns: number; backgroundCommands: number } | null
     error?: string
   }> => ipcRenderer.invoke('install-update', options),
   cancelIdleRestart: (): Promise<{ ok: boolean; cancelled: boolean }> =>
@@ -293,11 +293,11 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getLiveActivity: (): Promise<{
     ok: boolean
     total: number
-    activity: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null
+    activity: { agentRuns: number; backgroundCommands: number } | null
   }> => ipcRenderer.invoke('get-live-activity'),
   /** "Restarting when idle — N working", and the counts under it. */
   onRestartDrain: (
-    callback: (data: { active: boolean; activity: { liveTurns: number; runningTasks: number; runningAgentReplies: number } | null }) => void,
+    callback: (data: { active: boolean; activity: { agentRuns: number; backgroundCommands: number } | null }) => void,
   ) => {
     ipcRenderer.on('desktop-restart-drain', (_event, data) => callback(data))
   },

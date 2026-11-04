@@ -31,7 +31,7 @@ describe('last-quit.json', () => {
       const record = buildLastQuitRecord({
         reason: 'update',
         version: '2.3.10',
-        activity: { liveTurns: 1, runningTasks: 1, runningAgentReplies: 1 },
+        activity: { agentRuns: 1, backgroundCommands: 1 },
       })
       expect(writeLastQuit(file.path, record)).toBe(true)
       expect(readLastQuit(file.path)).toEqual(record)
@@ -48,12 +48,13 @@ describe('last-quit.json', () => {
         buildLastQuitRecord({
           reason: 'update',
           version: '2.3.10',
-          activity: { liveTurns: 1, runningTasks: 1, runningAgentReplies: 0 },
+          activity: { agentRuns: 1, backgroundCommands: 2 },
         }),
       )
 
       expect(takeInterruptedNotice(file.path)).toBe(
-        'Restarting for the update interrupted 2 agent runs; they pick up again automatically.',
+        'Restarting for the update interrupted 1 agent run, and 2 background commands. ' +
+          'The runs pick up again automatically; the commands report back as interrupted.',
       )
       expect(takeInterruptedNotice(file.path)).toBeNull()
       // Read means gone: the file is what makes it once-only.
@@ -68,7 +69,7 @@ describe('last-quit.json', () => {
     try {
       writeLastQuit(
         file.path,
-        buildLastQuitRecord({ reason: 'quit', activity: { liveTurns: 0, runningTasks: 0, runningAgentReplies: 0 } }),
+        buildLastQuitRecord({ reason: 'quit', activity: { agentRuns: 0, backgroundCommands: 0 } }),
       )
       expect(takeInterruptedNotice(file.path)).toBeNull()
     } finally {
@@ -82,9 +83,45 @@ describe('last-quit.json', () => {
         reason: 'quit',
         fromVersion: '2.3.10',
         at: '2026-10-24T06:33:00.000Z',
-        activity: { liveTurns: 1, runningTasks: 0, runningAgentReplies: 0 },
+        activity: { agentRuns: 1, backgroundCommands: 0 },
       }),
     ).toBe('Quitting interrupted 1 agent run; they pick up again automatically on the next launch.')
+  })
+
+  it('reports a background command on its own without inventing agent runs', () => {
+    expect(
+      buildInterruptedNotice({
+        reason: 'update',
+        fromVersion: '2.3.10',
+        at: '2026-10-24T06:33:00.000Z',
+        activity: { agentRuns: 0, backgroundCommands: 1 },
+      }),
+    ).toBe('Restarting for the update interrupted 1 background command; it reports back as interrupted.')
+  })
+
+  it('reads a record written before agentRuns existed', () => {
+    // SHO-181 stored three counts and summed them. Only `liveTurns` was an agent
+    // run; the other two must not come back as extra runs on the next boot.
+    const file = tempFile()
+    try {
+      writeFileSync(
+        file.path,
+        JSON.stringify({
+          reason: 'update',
+          fromVersion: '2.3.9',
+          at: '2026-10-24T06:33:00.000Z',
+          activity: { liveTurns: 4, runningTasks: 7, runningAgentReplies: 2 },
+        }),
+        'utf8',
+      )
+
+      expect(readLastQuit(file.path)?.activity).toEqual({ agentRuns: 4, backgroundCommands: 0 })
+      expect(takeInterruptedNotice(file.path)).toBe(
+        'Restarting for the update interrupted 4 agent runs; they pick up again automatically.',
+      )
+    } finally {
+      file.cleanup()
+    }
   })
 
   it('ignores a corrupt record instead of failing the boot', () => {
