@@ -15,7 +15,7 @@
  * side chats; the home screen wires it directly).
  */
 
-import { useEffect, useRef, useState, useCallback } from "react"
+import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import { AppState, Platform } from "react-native"
 import type { ChatReference } from "./chat-references"
@@ -460,6 +460,14 @@ export interface ChatComposerMemoryState {
   loadedKey: string | null
   /** True only once THIS chat's record is known (never for "no chat yet"). */
   ready: boolean
+  /**
+   * The live draft for this chat, read straight from the cache.
+   *
+   * The typed text is deliberately NOT part of `record`: putting it in React
+   * state re-rendered every consumer (the whole ChatPanel) on each keystroke
+   * (SHO-314). Callers that need the text read it here.
+   */
+  readDraft: () => ComposerDraft | null
   saveDraft: (text: string, references: ChatReference[]) => void
   clearDraft: () => void
   saveModel: (modelId: string) => void
@@ -500,6 +508,28 @@ export function useChatComposerMemory(
   const keyRef = useRef<string | null>(key)
   keyRef.current = key
 
+  /**
+   * Mirrors `state.loadedKey` so the write callbacks can decide whether a
+   * write needs a render WITHOUT depending on the state value — a state
+   * dependency gives them a new identity on every render, which is what broke
+   * `ChatInput`'s memo and re-ran the restore effect per keystroke (SHO-314).
+   */
+  const knownKeyRef = useRef<string | null>(state.loadedKey)
+  knownKeyRef.current = state.loadedKey
+
+  const isKnownKey = useCallback(
+    (forKey: string) => knownKeyRef.current === forKey,
+    [],
+  )
+
+  const setKnownKey = useCallback(
+    (forKey: string) => {
+      knownKeyRef.current = forKey
+      setState({ record: memory.peek(forKey), loadedKey: forKey })
+    },
+    [memory],
+  )
+
   useEffect(() => {
     if (!key) {
       setState({ record: null, loadedKey: null })
@@ -520,42 +550,42 @@ export function useChatComposerMemory(
   const recordForCurrentKey =
     key && state.loadedKey === key ? state.record : null
 
+  const readDraft = useCallback((): ComposerDraft | null => {
+    const current = keyRef.current
+    if (!current) return null
+    return memory.peek(current)?.draft ?? null
+  }, [memory])
+
   const saveDraft = useCallback(
     (text: string, references: ChatReference[]) => {
       const current = keyRef.current
       if (!current) return
       memory.setDraft(current, text, references)
-      setState((prev) => ({
-        record: memory.peek(current),
-        // Writing a draft means we know everything this chat has: mark it
-        // loaded so a still-pending read can never undo the edit.
-        loadedKey: current,
-      }))
+      // The text itself is not state (see `readDraft`). Only the "do we know
+      // this chat's record?" fact is, and it flips at most once per chat —
+      // typing a draft into a chat whose load has not settled yet. On the
+      // ordinary path (record already loaded) this is a bare cache write: no
+      // setState, so no ChatPanel render per keystroke.
+      if (!isKnownKey(current)) setKnownKey(current)
     },
-    [memory],
+    [memory, isKnownKey, setKnownKey],
   )
 
   const clearDraft = useCallback(() => {
     const current = keyRef.current
     if (!current) return
     memory.clearDraft(current)
-    setState((prev) => ({
-      record: memory.peek(current),
-      loadedKey: current,
-    }))
-  }, [memory])
+    setKnownKey(current)
+  }, [memory, setKnownKey])
 
   const saveModel = useCallback(
     (modelId: string) => {
       const current = keyRef.current
       if (!current) return
       memory.setModel(current, modelId)
-      setState((prev) => ({
-        record: memory.peek(current),
-        loadedKey: current,
-      }))
+      setKnownKey(current)
     },
-    [memory],
+    [memory, setKnownKey],
   )
 
   const flush = useCallback(() => {
@@ -563,15 +593,31 @@ export function useChatComposerMemory(
     if (current) memory.flush(current)
   }, [memory])
 
-  return {
-    record: recordForCurrentKey,
-    loadedKey: state.loadedKey,
-    ready: !!key && state.loadedKey === key,
-    saveDraft,
-    clearDraft,
-    saveModel,
-    flush,
-  }
+  // One stable object per (chat, record) pair. Consumers pass these callbacks
+  // into memoized children and list them in effect deps, so a fresh object
+  // every render silently defeated both (SHO-314).
+  return useMemo<ChatComposerMemoryState>(
+    () => ({
+      record: recordForCurrentKey,
+      loadedKey: state.loadedKey,
+      ready: !!key && state.loadedKey === key,
+      readDraft,
+      saveDraft,
+      clearDraft,
+      saveModel,
+      flush,
+    }),
+    [
+      recordForCurrentKey,
+      state.loadedKey,
+      key,
+      readDraft,
+      saveDraft,
+      clearDraft,
+      saveModel,
+      flush,
+    ],
+  )
 }
 
 /**
