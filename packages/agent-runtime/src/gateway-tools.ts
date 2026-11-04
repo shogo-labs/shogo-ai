@@ -1319,9 +1319,12 @@ function createCopyToProjectTool(ctx: ToolContext): AgentTool {
 }
 
 /**
- * Metal-only preview: ask the API for the project's own runtime URL and start
- * its build there. The response is the contract the agent sees; every failure
- * becomes a code it can act on instead of the mount-era 410 (SHO-125).
+ * Metal-only preview: ask the API for the project's public preview URL and
+ * start its build there. The API answers with the project's preview origin
+ * (`https://<id>.preview.<base>/p/<id>/`), never its internal runtime URL — a
+ * metal host's `http://<ip>:<port>` is plumbing, not a link a person can open
+ * (SHO-322). Every failure becomes a code the agent can act on instead of the
+ * mount-era 410 (SHO-125).
  */
 async function previewProjectViaApi(ctx: ToolContext, projectId: string): Promise<AgentToolResult<any>> {
   const workspaceId = resolveWorkspaceId(ctx)
@@ -1384,17 +1387,21 @@ async function previewProjectViaApi(ctx: ToolContext, projectId: string): Promis
  *     triggers that on-demand build via `POST /p/<projectId>/preview/start`.
  *   - Metal: each project has its OWN runtime and other projects are never
  *     mounted here, so the local route can only answer 410. The API resolves
- *     the project's runtime, starts its build and returns
- *     `<podUrl>/p/<projectId>/` (SHO-125).
+ *     the project's runtime, starts its build and returns the project's public
+ *     preview origin (`https://<id>.preview.<base>/p/<projectId>/`) — never the
+ *     runtime URL, which on metal is the box's DNAT `http://<ip>:<port>` (SHO-125,
+ *     SHO-322).
  */
 function createPreviewProjectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'preview_project',
     label: 'Preview Project',
     description:
-      "Build and serve a project's app so it can be opened in a browser, and return the one URL that is " +
+      "Build and serve a project's **web app** so it can be opened in a browser, and return the one URL that is " +
       'actually reachable. Works for any project of this workspace: each project runs in its own runtime, ' +
       'and this tool starts that project\'s build (it never mounts the project here). ' +
+      'This is for running apps only — generated files (mp4/mp3/pdf/images/…) are handed out with ' +
+      '`share_file`, never through a preview URL. ' +
       'Call this before sharing any "preview"/"running app" link — never construct or hand out ' +
       "a localhost/port link yourself (e.g. from this runtime's own base URL or an env var); only the URL this " +
       'tool returns is guaranteed to work. If this tool errors, there is NO working localhost fallback — report ' +

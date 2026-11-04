@@ -10,10 +10,13 @@
  * (real runtime-token auth, real RBAC, sqlite world) and then fetches the URL
  * the route returned, exactly as `curl` would.
  *
- * What it proves: the URL is `<pod>/p/<id>/`, that pod serves it 2xx, and the
- * pod's own `/preview/start` was kicked on the same origin with the workspace
- * token. What it cannot prove (no metal host here): that a real guest's
- * `/preview/start` finishes building inside 75s.
+ * What it proves: with no preview domain configured (local/desktop — where the
+ * runtime URL genuinely IS the user's own link, see SHO-322), the URL is
+ * `<pod>/p/<id>/`, that pod serves it 2xx, and the pod's own `/preview/start`
+ * was kicked on the same origin with the workspace token. What it cannot prove
+ * (no metal host here): that a real guest's `/preview/start` finishes building
+ * inside 75s. The cloud/metal case — the answer is the `*.preview.<base>`
+ * origin, never the pod — is `qa-sho322-metal-preview-url.acceptance.test.ts`.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { rmSync } from 'fs'
@@ -21,6 +24,9 @@ import { setupChannelsTestDb } from './helpers/channels-test-db'
 
 const { dir } = setupChannelsTestDb()
 process.env.BETTER_AUTH_SECRET ||= 'qa-sho125-preview-secret'
+// No preview domain configured — the local/desktop shape this test describes
+// (SHO-322). With one set, the route answers the preview origin instead.
+delete process.env.PREVIEW_BASE_DOMAIN
 
 const { seedRbacWorld, db, _setRbacModeForTests } = await import('./helpers/rbac-world')
 const { runtimeInternalRoutes } = await import('../routes/internal-runtime-routes')

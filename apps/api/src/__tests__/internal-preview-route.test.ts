@@ -6,7 +6,13 @@
  * SHO-125 §4c — the internal twin of the user-auth `preview-url` route. A
  * workspace runtime on metal has no route to another project's app (mounting
  * was removed), so `preview_project` asks this endpoint, which resolves that
- * project's own runtime, starts its build and returns `<podUrl>/p/<id>/`.
+ * project's own runtime, starts its build and returns the project's **public
+ * preview origin** (`https://<id>.preview.<base>/p/<id>/`).
+ *
+ * SHO-322: it used to return the resolved runtime URL, which on metal is the
+ * box's public DNAT `http://<ip>:<port>` — a prod user was handed
+ * `http://103.219.171.29:20011/p/<id>/…`. The runtime URL must never appear in
+ * the response; it is only the target of the internal `/preview/start` hop.
  *
  * Real runtime-token auth and real RBAC over the seeded sqlite world; only the
  * target runtime's HTTP surface is faked.
@@ -17,6 +23,9 @@ import { setupChannelsTestDb } from './helpers/channels-test-db'
 
 const { dir } = setupChannelsTestDb()
 process.env.BETTER_AUTH_SECRET ||= 'internal-preview-route-secret'
+// A real preview domain, so the route answers with the public origin (a
+// deployment without one falls back to the runtime URL — asserted below).
+process.env.PREVIEW_BASE_DOMAIN ||= 'preview.test'
 
 const { seedRbacWorld, db, _setRbacModeForTests } = await import('./helpers/rbac-world')
 const { runtimeInternalRoutes } = await import('../routes/internal-runtime-routes')
@@ -25,6 +34,7 @@ const { deriveWorkspaceRuntimeToken } = await import('../lib/workspace-runtime-t
 const { deriveRuntimeToken } = await import('../lib/runtime-token')
 const { signRequesterTicket, workspaceTicketKey } = await import('../lib/requester-ticket')
 const { setProjectRuntimeUrlResolver } = await import('../services/agent-call.service')
+const { getPreviewUrl } = await import('../lib/knative-project-manager')
 
 type World = Awaited<ReturnType<typeof seedRbacWorld>>
 const world: { value?: World } = {}
@@ -115,17 +125,23 @@ describe('POST /workspaces/:ws/sessions/:session/projects/:id/preview', () => {
     expect(forwarded).toEqual([])
   })
 
-  test('resolves the project runtime, starts its build there, and returns its /p/<id>/ url', async () => {
-    const res = await preview(world.value!.projects.restricted)
+  test('resolves the project runtime, starts its build there, and returns its public preview url', async () => {
+    const projectId = world.value!.projects.restricted
+    const res = await preview(projectId)
 
     expect(res.status).toBe(200)
     expect(res.body).toEqual({
-      projectId: world.value!.projects.restricted,
+      projectId,
       sessionId: 'session-1',
       mode: 'metal',
-      url: `http://target-pod:4000/p/${world.value!.projects.restricted}/`,
+      url: `${getPreviewUrl(projectId)}/p/${projectId}/`,
       status: 'ready',
     })
+    // The user-facing link is https on the preview origin, never the resolved
+    // runtime origin (SHO-322: that is the metal box's DNAT `http://<ip>:<port>`).
+    expect(res.body.url.startsWith('https://')).toBe(true)
+    expect(res.body.url).not.toContain('target-pod')
+    expect(JSON.stringify(res.body)).not.toContain('http://target-pod:4000')
     // Kicked the target's own /preview/start with the workspace token the API
     // derives for that hop.
     expect(forwarded).toHaveLength(1)
@@ -133,6 +149,23 @@ describe('POST /workspaces/:ws/sessions/:session/projects/:id/preview', () => {
     expect(forwarded[0].token).toBe(deriveWorkspaceRuntimeToken(world.value!.workspaceA))
     // The project token is NOT what a remote hop presents.
     expect(forwarded[0].token).not.toBe(deriveRuntimeToken(world.value!.projects.restricted))
+  })
+
+  test('falls back to the runtime url only when the deployment has no preview domain', async () => {
+    // Local/desktop: there is no `*.preview.<base>` to point at, and the
+    // runtime URL is the user's own localhost link. Keep today's behaviour
+    // instead of handing out a domain that does not resolve (SHO-322).
+    const projectId = world.value!.projects.restricted
+    const saved = process.env.PREVIEW_BASE_DOMAIN
+    delete process.env.PREVIEW_BASE_DOMAIN
+    try {
+      const res = await preview(projectId)
+      expect(res.status).toBe(200)
+      expect(res.body.url).toBe(`http://target-pod:4000/p/${projectId}/`)
+    } finally {
+      if (saved === undefined) delete process.env.PREVIEW_BASE_DOMAIN
+      else process.env.PREVIEW_BASE_DOMAIN = saved
+    }
   })
 
   test('answers `building` (not an error) while the target is still compiling', async () => {
