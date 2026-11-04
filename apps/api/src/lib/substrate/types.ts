@@ -108,6 +108,11 @@ export interface PublishResult {
   url?: string
   /** Knative revision this publish created, when the substrate reported one. */
   revisionName?: string
+  /**
+   * The exact container image the published runtime is serving. Recorded on the
+   * deployment row so rollback/redeploy/promote switch to what actually ran.
+   */
+  imageRef?: string
 }
 
 export interface ProjectSubstrate {

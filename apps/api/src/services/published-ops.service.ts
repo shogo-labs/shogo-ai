@@ -34,7 +34,7 @@ import {
   type PublishedOpsOk,
 } from './published-environments.service'
 import { computePublishedCost, roundUsd } from '../config/published-pricing'
-import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
+import { resolvePublishedRuntimeImage } from '../lib/published-image'
 
 function isKubernetes(): boolean {
   return !!process.env.KUBERNETES_SERVICE_HOST
@@ -297,7 +297,7 @@ export async function setEnvironmentPublishStatus(
  * `promote` patch production to no image at all.
  */
 export function resolvePublishedImageRef(): string {
-  return process.env.PUBLISHED_RUNTIME_IMAGE || RUNTIME_CONFIG.image()
+  return resolvePublishedRuntimeImage()
 }
 
 /** Apply a scale change and push it to Knative (no republish). */
@@ -331,10 +331,21 @@ export async function rollbackEnvironment(
   const env = await getEnvironment(projectId, name)
   if (!env) return fail('environment_not_found', `No ${name} environment for this project`, 404)
 
+  const current = env.currentDeploymentId
+    ? await prisma.publishedDeployment.findUnique({ where: { id: env.currentDeploymentId } })
+    : null
+
+  // "Roll back" has to mean a different image. Excluding only the current row
+  // would happily pick a superseded twin that serves the same image and change
+  // nothing, so exclude anything running the image we are already on.
   const target = deploymentId
     ? await prisma.publishedDeployment.findFirst({ where: { id: deploymentId, environmentId: env.id } })
     : await prisma.publishedDeployment.findFirst({
-        where: { environmentId: env.id, id: { not: env.currentDeploymentId ?? '' } },
+        where: {
+          environmentId: env.id,
+          id: { not: env.currentDeploymentId ?? '' },
+          ...(current?.imageRef ? { imageRef: { not: current.imageRef } } : {}),
+        },
         orderBy: { createdAt: 'desc' },
       })
   if (!target) return fail('deployment_not_found', 'No earlier deployment to roll back to', 404)

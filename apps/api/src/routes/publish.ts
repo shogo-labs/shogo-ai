@@ -941,7 +941,9 @@ async function configurePublishedService(
   await recordPublishedDeployment({
     environmentId: environment.id,
     commitSha: (await currentPublishedCommitSha(projectId)) ?? "",
-    imageRef: resolvePublishedImageRef(),
+    // Prefer what the substrate reported running; the resolver is the same
+    // precedence, so this can only differ if a substrate chose something else.
+    imageRef: result.imageRef ?? resolvePublishedImageRef(),
     revisionName: result.revisionName ?? null,
     status: "ready",
   })
@@ -1501,17 +1503,10 @@ export async function deployToStaging(projectId: string): Promise<PublishProject
       const serverBacked = await detectServerBacked(projectId)
       await configurePublishedService(projectId, subdomain, { serverBacked, environment: "staging" })
 
-      // Record the deployment so promote/rollback have the exact image staging
-      // is serving. An empty imageRef here would let `promote` patch production
-      // to no image at all.
-      const { recordPublishedDeployment } = await import("../services/published-deployments.service")
-      const { resolvePublishedImageRef } = await import("../services/published-ops.service")
-      await recordPublishedDeployment({
-        environmentId: staging.id,
-        commitSha: (project as any).publishedCommitSha ?? "",
-        imageRef: resolvePublishedImageRef(),
-        status: "ready",
-      })
+      // The deployment row is recorded by configurePublishedService, for
+      // whichever environment it published — recording again here would write a
+      // duplicate whose twin is immediately superseded, leaving rollback to
+      // "roll back" to the same image and change nothing.
       await setEnvironmentPublishStatus(staging.id, "live")
       return { ok: true, status: 200, subdomain, environment: "staging" } as PublishProjectResult
     } finally {

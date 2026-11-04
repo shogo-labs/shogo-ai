@@ -27,6 +27,7 @@ import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
 import { setPreviewRegion, clearPreviewRegion } from './cloudflare-preview-region-kv'
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
+import { resolvePublishedRuntimeImage } from './published-image'
 import type { InstanceSizeName } from '../config/instance-sizes'
 import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
 import { fnv1a64 } from './advisory-lock'
@@ -1938,7 +1939,10 @@ export class KnativeProjectManager {
       size: opts?.size ?? 's',
     }
     const api = getCustomApi()
-    const runtimeImage = opts?.image || RUNTIME_CONFIG.image()
+    // One resolver for the ksvc image and the recorded deployment (see
+    // lib/published-image.ts), so `rollback`/`redeploy` cannot point at a
+    // different image than the one that is actually running.
+    const runtimeImage = resolvePublishedRuntimeImage(opts?.image)
     const workDir = RUNTIME_CONFIG.workDir
     const publishDomain = process.env.PUBLISH_DOMAIN || 'shogo.one'
     const publishedDataBucket =

@@ -15,6 +15,7 @@
 import type { ProjectSubstrate, PublishOpts, PublishResult, Resources, RuntimeStatus, RuntimeSummary, WakeOpts } from './types'
 import { shouldServeStaticFromEdgeOnly } from '../publish-substrate-config'
 import type { PublishedEnvironmentName, PublishedSize } from '../published-scale'
+import { resolvePublishedRuntimeImage } from '../published-image'
 
 /** The slice of KnativeProjectManager this substrate needs (DI seam for tests). */
 export interface KnativeBackend {
@@ -159,7 +160,9 @@ export class KnativeSubstrate implements ProjectSubstrate {
       })
       await this.backend.createPublishedDomainMapping(subdomain, projectId, environment)
       await kv.setServerBackedFlag(subdomain, 'knative')
-      return { serverBacked: true, substrate: this.kind, url }
+      // Report the image the ksvc actually runs, so the recorded deployment
+      // cannot drift from it when PUBLISHED_RUNTIME_IMAGE is set.
+      return { serverBacked: true, substrate: this.kind, url, imageRef: resolvePublishedRuntimeImage(opts.image) }
     }
 
     // Static app. The Cloudflare Worker serves it entirely from PUBLISH_BUCKET,
