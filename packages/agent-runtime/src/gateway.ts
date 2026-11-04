@@ -133,6 +133,7 @@ import {
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
 import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
+import { buildWorkspaceRootConflictContext } from './workspace-root-sync'
 import {
   createToolProfile,
   deferredToolsEnabled,
@@ -6486,6 +6487,14 @@ export class AgentGateway {
     // The user's paired desktops (SHO-285 Update 2), when this workspace has any.
     if (this.devicesContext) {
       pushDynamic('devices', this.devicesContext)
+    }
+
+    // Conflict copies of a shared workspace-root file (SHO-285 Update 2): the
+    // cloud's version won, and the losing edit is sitting beside it. Named once
+    // per turn so the agent can offer both lines instead of silently keeping one.
+    if (process.env.WORKSPACE_KIND === 'personal') {
+      const conflicts = buildWorkspaceRootConflictContext(this.workspaceDir)
+      if (conflicts) pushDynamic('workspace-root-conflicts', conflicts)
     }
 
     // Runtime build + console log tails (canvas mode only — Vite preview pipeline)

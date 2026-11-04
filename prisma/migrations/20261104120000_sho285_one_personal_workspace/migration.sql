@@ -6,7 +6,10 @@
 -- enforced by the database instead of by a check somebody has to remember.
 ALTER TABLE "workspaces" ADD COLUMN "personalOwnerId" TEXT;
 
--- Backfill: each user's oldest Personal becomes *the* Personal. Older
+-- Backfill: each user's oldest Personal becomes *the* Personal — and a cloud
+-- Personal (`hostInstanceId IS NULL`) beats a desktop-hosted one, because the
+-- cloud's is the one that survives (Russell, 2026-11-04) and a merge that picked
+-- a hosted row as the winner would pin every job to that one desktop. Older
 -- duplicates keep a null owner, so they are not blocked by the unique index and
 -- the merge (which rewrites their rows into the winner and deletes the empty
 -- row) can still find them by `kind = 'personal'`.
@@ -17,7 +20,10 @@ UPDATE "workspaces" w
           FROM "workspaces" w2
           JOIN "members" m ON m."workspaceId" = w2."id" AND m."role" = 'owner'
          WHERE w2."kind" = 'personal'
-         ORDER BY m."userId", w2."createdAt" ASC, w2."id" ASC
+         ORDER BY m."userId",
+                  (w2."hostInstanceId" IS NULL) DESC,
+                  w2."createdAt" ASC,
+                  w2."id" ASC
        ) winner
  WHERE w."id" = winner."workspaceId";
 

@@ -217,6 +217,7 @@ import {
   listWorkspaceMembers,
   listAvailableWorkspaceProjects,
 } from './workspace-members'
+import { startWorkspaceRootSync } from './workspace-root-sync'
 import { seedEmptyChatSession } from './file-attachment-utils'
 import { parseHistorySeed } from './history-seed'
 import { fileURLToPath } from 'url'
@@ -6652,6 +6653,9 @@ async function initializeEssentials(): Promise<void> {
   // Bootstrap workspace files
   ensureWorkspaceFiles()
   if (IS_WORKSPACE_RUNTIME) initWorkspaceMembers()
+  // The Personal's root is shared with every device of the account (SHO-285
+  // Update 2, section F): pull the cloud copy now, then keep it in step.
+  if (IS_WORKSPACE_RUNTIME) startWorkspaceRootSync()
   logTiming('Workspace files ready')
 
   // Seed tech stack if specified (covers warm pool assignment path where

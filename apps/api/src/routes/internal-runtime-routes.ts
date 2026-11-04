@@ -2761,6 +2761,120 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * A paired desktop's runtime calls the same internal URLs the cloud pod does;
+   * only the local API can't answer them, because it holds no object-store
+   * credentials. When it is signed in to the cloud and knows a key for this
+   * workspace, it forwards the call with that key and returns the answer
+   * untouched. `null` means "answer it here".
+   */
+  async function relayRootToCloud(
+    c: any,
+    kind: 'manifest' | 'presign',
+    body?: unknown,
+  ): Promise<Response | null> {
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') return null
+    const workspaceId = c.req.param('workspaceId')
+    if (!workspaceId) return null
+    const { cloudWorkspaceKey } = await import('../services/cloud-workspaces')
+    const key = await cloudWorkspaceKey(workspaceId).catch(() => null)
+    if (!key) return null
+    const { copyResponseHeaders, fetchUpstream } = await import('../lib/federated-upstream')
+    try {
+      const upstream = await fetchUpstream(
+        `/api/workspaces/${encodeURIComponent(workspaceId)}/root/${kind}`,
+        {
+          method: c.req.method,
+          headers: { 'content-type': 'application/json' },
+          search: new URL(c.req.url).search,
+          body: body === undefined ? undefined : JSON.stringify(body),
+          apiKey: key,
+          signal: c.req.raw.signal,
+        },
+      )
+      return new Response(await upstream.text(), {
+        status: upstream.status,
+        headers: copyResponseHeaders(upstream),
+      })
+    } catch (err: any) {
+      return c.json(
+        { error: { code: 'cloud_unreachable', message: `Can't reach Shogo Cloud: ${err?.message ?? err}` } },
+        502,
+      )
+    }
+  }
+
+  /**
+   * GET /api/internal/workspaces/:workspaceId/root/manifest
+   *
+   * The durable copy of a Personal workspace's root, as the **cloud runtime**
+   * sees it (SHO-285 Update 2, section F). The pod has no membership session, so
+   * it authenticates as itself and the workspace comes from that identity — the
+   * same shape as `/devices` above and the reason both sides converge on one
+   * store instead of two.
+   *
+   * On a paired desktop the runtime calls the same URL against the **local**
+   * API, which holds no object-store credentials: `relayRootToCloud` sends the
+   * call on to the cloud with the workspace's key, so one runtime-side code
+   * path works in both places.
+   */
+  app.get('/workspaces/:workspaceId/root/manifest', async (c) => {
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const workspaceId = await identityWorkspaceId(identity)
+    if (!workspaceId || workspaceId !== c.req.param('workspaceId')) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    }
+    const relayed = await relayRootToCloud(c, 'manifest')
+    if (relayed) return relayed
+    const sinceRaw = c.req.query('since')
+    const since = sinceRaw ? new Date(sinceRaw) : null
+    const { readWorkspaceRootManifest } = await import('../lib/workspace-root-files')
+    try {
+      return c.json(
+        await readWorkspaceRootManifest(workspaceId, {
+          since: since && !Number.isNaN(since.getTime()) ? since : null,
+        }),
+      )
+    } catch (err: any) {
+      return c.json(
+        { error: { code: 'root_manifest_failed', message: err?.message ?? 'Could not read the root' } },
+        502,
+      )
+    }
+  })
+
+  /**
+   * POST /api/internal/workspaces/:workspaceId/root/presign
+   *   body: { files: [{ path, action, sha256?, instanceId?, contentType? }] }
+   *
+   * Signed read/write URLs for the workspace root, for the pod that runs the
+   * Personal's cloud turns.
+   */
+  app.post('/workspaces/:workspaceId/root/presign', async (c) => {
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const workspaceId = await identityWorkspaceId(identity)
+    if (!workspaceId || workspaceId !== c.req.param('workspaceId')) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    }
+    const body = (await c.req.json().catch(() => null)) as { files?: any[] } | null
+    if (!body || !Array.isArray(body.files)) {
+      return c.json({ error: { code: 'bad_request', message: 'files array is required' } }, 400)
+    }
+    const relayed = await relayRootToCloud(c, 'presign', body)
+    if (relayed) return relayed
+    const { presignWorkspaceRoot } = await import('../lib/workspace-root-files')
+    try {
+      return c.json(await presignWorkspaceRoot(workspaceId, body.files))
+    } catch (err: any) {
+      return c.json(
+        { error: { code: 'root_presign_failed', message: err?.message ?? 'Could not sign the request' } },
+        502,
+      )
+    }
+  })
+
+  /**
    * GET /api/internal/devices
    *
    * The paired desktops of the people in this workspace (SHO-285 Update 2).

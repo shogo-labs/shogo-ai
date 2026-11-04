@@ -242,8 +242,12 @@ export async function mergeDuplicatePersonals(
   for (const [userId, list] of byOwner) {
     if (list.length < 2) continue
     // The cloud's Personal wins (Russell, 2026-11-04): the one the unique index
-    // already names, else the oldest.
-    const winner = list.find((row) => row.personalOwnerId) ?? list[0]
+    // already names, else an unhosted one, else the oldest. Picking a hosted row
+    // would leave the surviving Personal pinned to a single desktop.
+    const winner =
+      list.find((row) => row.personalOwnerId) ??
+      list.find((row) => row.hostInstanceId === null) ??
+      list[0]
     const merged: string[] = []
     for (const duplicate of list) {
       if (duplicate.id === winner.id) continue

@@ -25,9 +25,12 @@ CREATE INDEX "agent_schedules_runOnInstanceId_idx" ON "agent_schedules"("runOnIn
 -- CreateIndex
 CREATE UNIQUE INDEX "workspaces_personalOwnerId_key" ON "workspaces"("personalOwnerId");
 
--- One Personal per account (SHO-285 Update 2): the oldest Personal each user
--- owns becomes *the* Personal. Duplicates keep a null owner so the unique index
--- accepts them and the merge can still find them by `kind = 'personal'`.
+-- One Personal per account (SHO-285 Update 2): the Personal each user owns
+-- becomes *the* Personal, and a cloud one (`hostInstanceId IS NULL`) beats a
+-- desktop-hosted one because the cloud's is canonical (Russell, 2026-11-04) —
+-- picking a hosted row here would pin every job to that one desktop. Duplicates
+-- keep a null owner so the unique index accepts them and the merge can still
+-- find them by `kind = 'personal'`.
 UPDATE "workspaces"
    SET "personalOwnerId" = (
         SELECT m."userId"
@@ -45,7 +48,9 @@ UPDATE "workspaces"
                 SELECT m3."userId" FROM "members" m3
                  WHERE m3."workspaceId" = "workspaces"."id" AND m3."role" = 'owner' LIMIT 1
                )
-         ORDER BY w2."createdAt" ASC, w2."id" ASC
+         ORDER BY (w2."hostInstanceId" IS NULL) DESC,
+                  w2."createdAt" ASC,
+                  w2."id" ASC
          LIMIT 1
        );
 
