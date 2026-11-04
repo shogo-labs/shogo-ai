@@ -85,6 +85,26 @@ describe('the workspace agent screen opens from the device', () => {
     expect(render).toContain('loadingView === "spinner"')
   })
 
+  test('the wait starts before the key exists, not after', () => {
+    // This screen remounts on every reopen, and `bootKey` needs the signed-in
+    // user and the workspace in view — both unset on its first frame. Deriving
+    // `bootPending` from the key made that frame "not pending", so the spinner
+    // covered a chat the device already had (SHO-309, caught in CI).
+    expect(screen).toContain('const [bootPending, setBootPending] = useState(true)')
+    expect(screen).not.toMatch(/useState\(\s*\(\) => !!bootKey/)
+  })
+
+  test('a record that arrives after the first frame still fills the screen', () => {
+    // Same reason: the state initialisers above ran with no key, so a peek hit
+    // in the effect must apply the record instead of only clearing `pending`.
+    const effect = screen.slice(screen.indexOf('const applyBoot = (record'))
+    const peekHit = effect.slice(
+      effect.indexOf('const cached = peekWorkspaceChatBoot'),
+      effect.indexOf('setBootPending(true)'),
+    )
+    expect(peekHit).toContain('applyBoot(cached)')
+  })
+
   test('a successful load answers the next open', () => {
     expect(screen).toContain('rememberWorkspaceChatBoot<PersonalAgentProfile>(bootKey, {')
   })

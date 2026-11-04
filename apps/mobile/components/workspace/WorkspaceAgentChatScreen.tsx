@@ -202,9 +202,14 @@ export const WorkspaceAgentChatScreen = observer(
     // True until the device read for this workspace has answered. While it is,
     // a chat we have opened before may be about to appear, so the screen shows
     // nothing rather than a loader (SHO-309).
-    const [bootPending, setBootPending] = useState(
-      () => !!bootKey && !peekWorkspaceChatBoot<PersonalAgentProfile>(bootKey),
-    )
+    //
+    // It starts true even before the key exists — `bootKey` needs the signed-in
+    // user and the workspace in view, and this screen remounts on every reopen,
+    // so on its first frame the key is still null. Starting false there is what
+    // let the spinner paint on reopen: the key was not known yet, so nothing
+    // looked pending, and "Preparing Workspace Agent Chat…" covered a chat the
+    // device already had (SHO-309).
+    const [bootPending, setBootPending] = useState(true)
     const [prefillRequest, setPrefillRequest] =
       useState<RestoreDraftRequest | null>(null)
     const [avatarState, setAvatarState] = useState<BuddyState>("idle")
@@ -262,13 +267,37 @@ export const WorkspaceAgentChatScreen = observer(
 
     // Read the chat this workspace opened last time off the device (SHO-309).
     // The first frame already used the synchronous mirror; this covers a
-    // reload/restart, where the store has it and the mirror does not.
+    // reload/restart, where the store has it and the mirror does not, and the
+    // case where the key only became known after the first frame (a remount
+    // whose user/workspace had not resolved yet) — there the state initialisers
+    // ran against no key, so the record still has to be applied here.
     useEffect(() => {
+      // Only fill what is still missing: a load that already answered is
+      // fresher than the device copy, and the landing must keep its own empty
+      // chat rather than opening the cached primary one.
+      const applyBoot = (record: { sessionId: string | null; profile: PersonalAgentProfile | null } | null) => {
+        if (!record) return
+        const shown = shownIdentity.current
+        if (record.profile && !shown.profile) setProfile(record.profile)
+        if (
+          record.sessionId &&
+          !shown.sessionId &&
+          !initialSessionId &&
+          !startNewSession
+        ) {
+          setSessionId(record.sessionId)
+        }
+      }
       if (!bootKey) {
-        setBootPending(false)
+        // Nothing to look up yet. Once the account's workspaces are known and
+        // none is in view there is no record that could fill this frame, so
+        // waiting longer would only hide a legitimately empty screen.
+        if (workspaces?.all != null) setBootPending(false)
         return
       }
-      if (peekWorkspaceChatBoot<PersonalAgentProfile>(bootKey)) {
+      const cached = peekWorkspaceChatBoot<PersonalAgentProfile>(bootKey)
+      if (cached) {
+        applyBoot(cached)
         setBootPending(false)
         return
       }
@@ -277,19 +306,7 @@ export const WorkspaceAgentChatScreen = observer(
       void loadWorkspaceChatBoot<PersonalAgentProfile>(bootKey)
         .then((record) => {
           if (cancelled) return
-          // Only fill what is still missing: a load that already answered is
-          // fresher than the device copy, and the landing must keep its own
-          // empty chat rather than opening the cached primary one.
-          const shown = shownIdentity.current
-          if (record?.profile && !shown.profile) setProfile(record.profile)
-          if (
-            record?.sessionId &&
-            !shown.sessionId &&
-            !initialSessionId &&
-            !startNewSession
-          ) {
-            setSessionId(record.sessionId)
-          }
+          applyBoot(record)
         })
         .catch(() => undefined)
         .finally(() => {
@@ -298,7 +315,7 @@ export const WorkspaceAgentChatScreen = observer(
       return () => {
         cancelled = true
       }
-    }, [bootKey, initialSessionId, startNewSession])
+    }, [bootKey, initialSessionId, startNewSession, workspaces?.all])
 
     const loadWorkspaceChat = useCallback(async () => {
       avatarStreaming.current = false
