@@ -2,12 +2,14 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * A video attached to a message: an inline player on web, a tile that opens
- * the system player on iOS and Android.
+ * the in-app video viewer on iOS and Android.
  */
-import React from 'react'
-import { Linking, Platform, Pressable, Text, View } from 'react-native'
+import React, { Suspense, lazy, useState } from 'react'
+import { Platform, Pressable, Text, View } from 'react-native'
 import { PlayCircle } from 'lucide-react-native'
 import { fitChatImage } from '../chat/turns/image-sizing'
+
+const VideoPreviewModal = lazy(() => import('../chat/VideoPreviewModal').then((m) => ({ default: m.VideoPreviewModal })))
 
 interface WebVideoProps {
   src: string
@@ -23,6 +25,7 @@ const WebVideo = 'video' as unknown as React.FC<WebVideoProps>
 
 export function VideoAttachment({ url, name, width, height, containerWidth }: { url: string; name: string; width?: number | null; height?: number | null; containerWidth?: number | null }) {
   // A video without recorded dimensions is assumed 16:9 rather than the 4:3 an image falls back to.
+  const [open, setOpen] = useState(false)
   const web = fitChatImage({ naturalWidth: width, naturalHeight: height, containerWidth, maxHeight: 360, fallbackAspect: 16 / 9 })
   if (Platform.OS === 'web') {
     return (
@@ -40,16 +43,23 @@ export function VideoAttachment({ url, name, width, height, containerWidth }: { 
     )
   }
   return (
-    <Pressable
-      testID="message-video"
-      accessibilityRole="button"
-      accessibilityLabel={`Play ${name}`}
-      onPress={() => void Linking.openURL(url).catch(() => {})}
-      className="items-center justify-center gap-1 rounded-lg border border-border bg-black"
-      style={{ width: 220, height: 124 }}
-    >
-      <PlayCircle size={32} color="#ffffff" />
-      <Text className="max-w-[200px] text-xs text-white" numberOfLines={1}>{name}</Text>
-    </Pressable>
+    <>
+      <Pressable
+        testID="message-video"
+        accessibilityRole="button"
+        accessibilityLabel={`Play ${name}`}
+        onPress={() => setOpen(true)}
+        className="items-center justify-center gap-1 rounded-lg border border-border bg-black"
+        style={{ width: 220, height: 124 }}
+      >
+        <PlayCircle size={32} color="#ffffff" />
+        <Text className="max-w-[200px] text-xs text-white" numberOfLines={1}>{name}</Text>
+      </Pressable>
+      {open ? (
+        <Suspense fallback={null}>
+          <VideoPreviewModal visible onClose={() => setOpen(false)} url={url} title={name} />
+        </Suspense>
+      ) : null}
+    </>
   )
 }

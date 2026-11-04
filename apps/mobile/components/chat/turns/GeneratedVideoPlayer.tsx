@@ -15,7 +15,7 @@ import { useVideoPlayer, VideoView, type VideoSource } from "expo-video"
 import { agentFetch } from "../../../lib/agent-fetch"
 import { getAgentImageSource } from "../../../lib/agent-image-source"
 
-function useAgentVideoSource(uri: string): { source: VideoSource; failed: boolean } {
+export function useAgentVideoSource(uri: string): { source: VideoSource; failed: boolean } {
   const [source, setSource] = useState<VideoSource>(null)
   const [failed, setFailed] = useState(false)
 

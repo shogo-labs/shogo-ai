@@ -38,6 +38,7 @@ mock.module('react-native/Libraries/Utilities/codegenNativeCommands', () => ({
 // load time. These tests run under happy-dom, so passthrough host views cover
 // the gesture wrapper surface without evaluating native code.
 mock.module('react-native-gesture-handler', () => ({
+  GestureHandlerRootView: reactNativeMockBase.View,
   PanGestureHandler: reactNativeMockBase.View,
   PinchGestureHandler: reactNativeMockBase.View,
   State: { ACTIVE: 4 },

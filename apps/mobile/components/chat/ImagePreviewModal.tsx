@@ -7,6 +7,7 @@
  * an actual PNG image blob when the platform clipboard supports it.
  */
 
+import type React from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
@@ -27,10 +28,12 @@ import {
   X,
 } from "lucide-react-native"
 import {
+  GestureHandlerRootView,
   PanGestureHandler,
   PinchGestureHandler,
   State,
 } from "react-native-gesture-handler"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   Modal,
@@ -256,6 +259,12 @@ export function ImagePreviewModal({
     null,
   )
   const { width, height } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
+  // Measured size of the phone image area, so the image fills exactly the
+  // space between the header and the bottom inset.
+  const [phoneArea, setPhoneArea] = useState<{ w: number; h: number } | null>(
+    null,
+  )
   const showCopy = !isShogoDesktop()
   const activeItem = gallery?.[currentIndex]
   const activeUrl = activeItem?.url ?? url
@@ -322,6 +331,12 @@ export function ImagePreviewModal({
     }, 2200)
   }, [activeUrl, copyState, mediaType])
 
+  // Phones get a full-bleed, non-scrolling body so the image can fill the
+  // screen; everything else keeps the scrollable modal body.
+  const BodyComponent: React.ElementType = isPhone
+    ? GestureHandlerRootView
+    : ModalBody
+
   return (
     <Modal isOpen={visible} onClose={onClose} size="full">
       <ModalBackdrop />
@@ -341,6 +356,7 @@ export function ImagePreviewModal({
             "flex-row items-center justify-between border-b border-border px-4 py-3",
             isPhone && "bg-black border-white/10",
           )}
+          style={isPhone ? { paddingTop: insets.top + 8 } : undefined}
         >
           <View className="min-w-0 flex-1 flex-row items-center gap-2">
             <ImageIcon size={15} className="text-muted-foreground" />
@@ -417,22 +433,41 @@ export function ImagePreviewModal({
                 </Text>
               </Pressable>
             ) : null}
-            <ModalCloseButton className="h-11 w-11 items-center justify-center rounded-md">
+            <ModalCloseButton
+              className={cn(
+                "h-11 w-11 items-center justify-center",
+                isPhone ? "rounded-full bg-white/15" : "rounded-md",
+              )}
+              accessibilityLabel="Close image preview"
+            >
               <X
-                size={16}
+                size={isPhone ? 20 : 16}
                 className={isPhone ? "text-white" : "text-muted-foreground"}
               />
             </ModalCloseButton>
           </View>
         </ModalHeader>
 
-        <ModalBody className="m-0 p-0">
+        <BodyComponent
+          className="m-0 p-0"
+          style={isPhone ? { flex: 1 } : undefined}
+        >
           <View
             className={cn(
-              "flex-1 items-center justify-center p-3",
-              isPhone && "bg-black",
+              "flex-1 items-center justify-center",
+              isPhone ? "bg-black" : "p-3",
             )}
-            style={{ maxHeight: imageMaxHeight }}
+            style={isPhone ? undefined : { maxHeight: imageMaxHeight }}
+            onLayout={
+              isPhone
+                ? (event) => {
+                    const { width: w, height: h } = event.nativeEvent.layout
+                    setPhoneArea((prev) =>
+                      prev && prev.w === w && prev.h === h ? prev : { w, h },
+                    )
+                  }
+                : undefined
+            }
           >
             {loadState === "loading" ? (
               <View className="absolute inset-0 items-center justify-center">
@@ -449,6 +484,18 @@ export function ImagePreviewModal({
                   The original may have moved or the browser blocked access.
                 </Text>
               </View>
+            ) : isPhone ? (
+              imageSource && phoneArea ? (
+                <PinchableImage
+                  source={imageSource}
+                  width={phoneArea.w}
+                  height={phoneArea.h}
+                  alt={activeAlt}
+                  onLoad={() => setLoadState("loaded")}
+                  onError={() => setLoadState("failed")}
+                  onSwipeDown={onClose}
+                />
+              ) : null
             ) : (
               <ScrollView
                 horizontal
@@ -465,35 +512,26 @@ export function ImagePreviewModal({
                 showsVerticalScrollIndicator={false}
               >
                 {imageSource ? (
-                  isPhone ? (
-                    <PinchableImage
-                      source={imageSource}
-                      width={width - 24}
-                      height={imageMaxHeight}
-                      alt={activeAlt}
-                      onLoad={() => setLoadState("loaded")}
-                      onError={() => setLoadState("failed")}
-                      onSwipeDown={onClose}
-                    />
-                  ) : (
-                    <Image
-                      source={imageSource}
-                      resizeMode="contain"
-                      accessibilityLabel={activeAlt}
-                      onLoad={() => setLoadState("loaded")}
-                      onError={() => setLoadState("failed")}
-                      style={{
-                        width: panelMaxWidth - 24,
-                        height: imageMaxHeight,
-                        opacity: loadState === "loaded" ? 1 : 0,
-                      }}
-                    />
-                  )
+                  <Image
+                    source={imageSource}
+                    resizeMode="contain"
+                    accessibilityLabel={activeAlt}
+                    onLoad={() => setLoadState("loaded")}
+                    onError={() => setLoadState("failed")}
+                    style={{
+                      width: panelMaxWidth - 24,
+                      height: imageMaxHeight,
+                      opacity: loadState === "loaded" ? 1 : 0,
+                    }}
+                  />
                 ) : null}
               </ScrollView>
             )}
             {hasGallery ? (
-              <View className="absolute bottom-5 left-0 right-0 flex-row items-center justify-center gap-3">
+              <View
+                className="absolute left-0 right-0 flex-row items-center justify-center gap-3"
+                style={{ bottom: isPhone ? insets.bottom + 20 : 20 }}
+              >
                 <Pressable
                   onPress={() =>
                     setCurrentIndex((index) => Math.max(0, index - 1))
@@ -543,7 +581,7 @@ export function ImagePreviewModal({
               </View>
             ) : null}
           </View>
-        </ModalBody>
+        </BodyComponent>
       </ModalContent>
     </Modal>
   )
