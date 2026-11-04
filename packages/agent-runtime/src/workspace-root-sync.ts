@@ -37,12 +37,18 @@ function deviceName(): string {
   return process.env.SHOGO_DEVICE_NAME || hostname() || 'device'
 }
 
+/**
+ * The two endpoints this runtime calls. Each URL is written whole rather than
+ * off a shared `…/root` base: `local-route-parity.test.ts` reads the paths out
+ * of this source and requires the desktop composer to serve them, and a bare
+ * `…/root` prefix is a path no route answers.
+ */
 function transportFor(workspaceId: string, apiUrl: string): WorkspaceRootTransport {
-  const base = `${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}/root`
+  const id = encodeURIComponent(workspaceId)
   return {
     async manifest(opts = {}) {
       const query = opts.since ? `?since=${encodeURIComponent(opts.since)}` : ''
-      const res = await fetch(`${base}/manifest${query}`, {
+      const res = await fetch(`${apiUrl}/api/internal/workspaces/${id}/root/manifest${query}`, {
         headers: getInternalHeaders(),
         signal: AbortSignal.timeout(20_000),
       })
@@ -50,7 +56,7 @@ function transportFor(workspaceId: string, apiUrl: string): WorkspaceRootTranspo
       return (await res.json()) as any
     },
     async presign(files) {
-      const res = await fetch(`${base}/presign`, {
+      const res = await fetch(`${apiUrl}/api/internal/workspaces/${id}/root/presign`, {
         method: 'POST',
         headers: getInternalHeaders(),
         body: JSON.stringify({ files }),

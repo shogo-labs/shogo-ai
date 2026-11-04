@@ -66,10 +66,14 @@ describe('fetchDueAgents()', () => {
   test('selects enabled rows that are due OR have no nextHeartbeatAt (self-heal)', async () => {
     const s = new LocalHeartbeatScheduler()
     await (s as any).fetchDueAgents()
-    const { OR } = prismaCalls.findMany[0].where
-    expect(OR).toHaveLength(2)
-    expect(OR[0]).toEqual({ nextHeartbeatAt: null })
-    expect(OR[1].nextHeartbeatAt.lte).toBeInstanceOf(Date)
+    // The due-window OR is one clause of the AND, beside the placement filter
+    // (SHO-285 Update 2: this device's heartbeats, plus unpinned ones).
+    const { AND } = prismaCalls.findMany[0].where
+    const due = AND.find((clause: any) => Array.isArray(clause.OR))
+    expect(due).toBeDefined()
+    expect(due.OR).toHaveLength(2)
+    expect(due.OR[0]).toEqual({ nextHeartbeatAt: null })
+    expect(due.OR[1].nextHeartbeatAt.lte).toBeInstanceOf(Date)
   })
 
   test('marks rows with a null nextHeartbeatAt as unscheduled so they are repaired, not fired', async () => {

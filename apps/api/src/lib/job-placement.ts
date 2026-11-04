@@ -18,7 +18,7 @@
  */
 
 import { hostedWorkspacesResolveHere } from './cloud-topology'
-import { getInstanceId } from './instance-tunnel'
+import { activeInstanceId } from './tunnel-instance-id'
 
 /** True in a desktop process (local mode), false in the cloud API. */
 export function isDesktopRuntime(): boolean {
@@ -31,11 +31,7 @@ export function isDesktopRuntime(): boolean {
  */
 export function desktopInstanceId(): string | null {
   if (!isDesktopRuntime()) return null
-  try {
-    return getInstanceId()
-  } catch {
-    return null
-  }
+  return activeInstanceId()
 }
 
 /**

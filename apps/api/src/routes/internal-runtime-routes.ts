@@ -2763,34 +2763,34 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /**
    * A paired desktop's runtime calls the same internal URLs the cloud pod does;
    * only the local API can't answer them, because it holds no object-store
-   * credentials. When it is signed in to the cloud and knows a key for this
-   * workspace, it forwards the call with that key and returns the answer
-   * untouched. `null` means "answer it here".
+   * credentials and no tunnel registry. When it is signed in to the cloud and
+   * knows a key for this workspace, it forwards the call with that key and
+   * returns the answer untouched. `null` means "answer it here".
+   *
+   * The forward is written as one helper over an upstream path so the root
+   * routes and the device relay cannot drift apart.
    */
-  async function relayRootToCloud(
+  async function relayToCloud(
     c: any,
-    kind: 'manifest' | 'presign',
+    workspaceId: string | undefined,
+    upstreamPath: string,
     body?: unknown,
   ): Promise<Response | null> {
     if (process.env.SHOGO_LOCAL_MODE !== 'true') return null
-    const workspaceId = c.req.param('workspaceId')
     if (!workspaceId) return null
     const { cloudWorkspaceKey } = await import('../services/cloud-workspaces')
     const key = await cloudWorkspaceKey(workspaceId).catch(() => null)
     if (!key) return null
     const { copyResponseHeaders, fetchUpstream } = await import('../lib/federated-upstream')
     try {
-      const upstream = await fetchUpstream(
-        `/api/workspaces/${encodeURIComponent(workspaceId)}/root/${kind}`,
-        {
-          method: c.req.method,
-          headers: { 'content-type': 'application/json' },
-          search: new URL(c.req.url).search,
-          body: body === undefined ? undefined : JSON.stringify(body),
-          apiKey: key,
-          signal: c.req.raw.signal,
-        },
-      )
+      const upstream = await fetchUpstream(upstreamPath, {
+        method: c.req.method,
+        headers: { 'content-type': 'application/json' },
+        search: new URL(c.req.url).search,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        apiKey: key,
+        signal: c.req.raw.signal,
+      })
       return new Response(await upstream.text(), {
         status: upstream.status,
         headers: copyResponseHeaders(upstream),
@@ -2813,7 +2813,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * store instead of two.
    *
    * On a paired desktop the runtime calls the same URL against the **local**
-   * API, which holds no object-store credentials: `relayRootToCloud` sends the
+   * API, which holds no object-store credentials: `relayToCloud` sends the
    * call on to the cloud with the workspace's key, so one runtime-side code
    * path works in both places.
    */
@@ -2824,7 +2824,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!workspaceId || workspaceId !== c.req.param('workspaceId')) {
       return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
     }
-    const relayed = await relayRootToCloud(c, 'manifest')
+    const relayed = await relayToCloud(
+      c,
+      c.req.param('workspaceId'),
+      `/api/workspaces/${encodeURIComponent(c.req.param('workspaceId')!)}/root/manifest`,
+    )
     if (relayed) return relayed
     const sinceRaw = c.req.query('since')
     const since = sinceRaw ? new Date(sinceRaw) : null
@@ -2861,7 +2865,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!body || !Array.isArray(body.files)) {
       return c.json({ error: { code: 'bad_request', message: 'files array is required' } }, 400)
     }
-    const relayed = await relayRootToCloud(c, 'presign', body)
+    const relayed = await relayToCloud(
+      c,
+      c.req.param('workspaceId'),
+      `/api/workspaces/${encodeURIComponent(c.req.param('workspaceId')!)}/root/presign`,
+      body,
+    )
     if (relayed) return relayed
     const { presignWorkspaceRoot } = await import('../lib/workspace-root-files')
     try {
@@ -2959,52 +2968,78 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'args must be an object' } }, 400)
     }
 
-    const { ensureTunnelConnected } = await import('../routes/instances')
-    const { hostTunnelRuntimeUrl } = await import('../lib/host-tunnel')
-    const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
-    if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
+    // A desktop's runtime calls this against the **local** API, which has no
+    // tunnel registry: it forwards the whole call to the cloud and returns the
+    // answer. The cloud branch below is dead code in the desktop bundle
+    // (`SHOGO_LOCAL_MODE` is defined at build time), which is what keeps the
+    // cloud-only islands — `routes/instances` and its Redis billing sessions —
+    // out of it.
+    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+      const relayed = await relayToCloud(
+        c,
+        workspaceId,
+        `/api/internal/devices/${encodeURIComponent(instanceId)}/remote-tool`,
+        body,
+      )
+      if (relayed) return relayed
       return c.json(
         {
           error: {
-            code: 'device_offline',
-            message: `${instance.name} is offline${instance.lastSeenAt ? ` (last seen ${new Date(instance.lastSeenAt).toISOString()})` : ''}`,
+            code: 'device_relay_unavailable',
+            message: `${instance.name} can only be reached through Shogo Cloud from here.`,
             instanceId,
-            lastSeenAt: instance.lastSeenAt ? new Date(instance.lastSeenAt).toISOString() : null,
           },
         },
         503,
       )
-    }
-
-    // The desktop's workspace agent proxy, reached through the same host tunnel
-    // every cloud→desktop turn uses: one transport, one auth header, one place
-    // that answers `host_offline`.
-    const tunnelUrl = `${hostTunnelRuntimeUrl(instanceId, { workspaceId })}/agent/remote/tool`
-    const timeoutMs = Math.min(Math.max(Number(body.timeoutMs ?? 5 * 60_000) || 0, 10_000), 20 * 60_000)
-    try {
-      const response = await fetch(tunnelUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tool: body.tool.trim(), args: body.args ?? {} }),
-        signal: AbortSignal.timeout(timeoutMs),
-      })
-      const text = await response.text()
-      return new Response(text, {
-        status: response.status,
-        headers: { 'content-type': response.headers.get('content-type') ?? 'application/json' },
-      })
-    } catch (err: any) {
-      const offline = /offline/i.test(err?.message ?? '')
-      return c.json(
-        {
-          error: {
-            code: offline ? 'device_offline' : 'device_tunnel_error',
-            message: err?.message ?? 'The device could not be reached',
-            instanceId,
+    } else {
+      const { ensureTunnelConnected } = await import('../routes/instances')
+      const { hostTunnelRuntimeUrl } = await import('../lib/host-tunnel')
+      const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
+      if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
+        return c.json(
+          {
+            error: {
+              code: 'device_offline',
+              message: `${instance.name} is offline${instance.lastSeenAt ? ` (last seen ${new Date(instance.lastSeenAt).toISOString()})` : ''}`,
+              instanceId,
+              lastSeenAt: instance.lastSeenAt ? new Date(instance.lastSeenAt).toISOString() : null,
+            },
           },
-        },
-        offline ? 503 : 502,
-      )
+          503,
+        )
+      }
+
+      // The desktop's workspace agent proxy, reached through the same host tunnel
+      // every cloud→desktop turn uses: one transport, one auth header, one place
+      // that answers `host_offline`.
+      const tunnelUrl = `${hostTunnelRuntimeUrl(instanceId, { workspaceId })}/agent/remote/tool`
+      const timeoutMs = Math.min(Math.max(Number(body.timeoutMs ?? 5 * 60_000) || 0, 10_000), 20 * 60_000)
+      try {
+        const response = await fetch(tunnelUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tool: body.tool.trim(), args: body.args ?? {} }),
+          signal: AbortSignal.timeout(timeoutMs),
+        })
+        const text = await response.text()
+        return new Response(text, {
+          status: response.status,
+          headers: { 'content-type': response.headers.get('content-type') ?? 'application/json' },
+        })
+      } catch (err: any) {
+        const offline = /offline/i.test(err?.message ?? '')
+        return c.json(
+          {
+            error: {
+              code: offline ? 'device_offline' : 'device_tunnel_error',
+              message: err?.message ?? 'The device could not be reached',
+              instanceId,
+            },
+          },
+          offline ? 503 : 502,
+        )
+      }
     }
   })
 

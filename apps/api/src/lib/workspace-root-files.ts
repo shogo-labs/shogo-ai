@@ -38,7 +38,7 @@ import {
   isSharedRootPath,
   type WorkspaceRootFile,
   type WorkspaceRootManifest,
-} from '@shogo/shared-runtime'
+} from '@shogo/shared-runtime/workspace-root-sync'
 
 /**
  * The skip list and the conflict-name rule live in `@shogo/shared-runtime`,
@@ -46,6 +46,11 @@ import {
  * module. Two copies of the list would drift, and a path one side hides while
  * the other sends is uploaded forever. Re-exported here so the routes and tests
  * have one import for everything about a workspace root.
+ *
+ * Imported from the subpath, not the barrel: the API's test preload replaces
+ * the barrel with a hand-kept symbol mirror (apps/api/src/__tests__/
+ * preload-sdk-mocks.ts), and every new name on it is another load-time
+ * `Export named 'X' not found` in an unrelated test file.
  */
 export { isSharedRootPath, conflictPathFor }
 export type WorkspaceRootEntry = WorkspaceRootFile

@@ -20,16 +20,6 @@
 
 import { mock } from 'bun:test'
 
-// Loaded by path (a specifier the `@shogo/shared-runtime` mock below does not
-// cover) so the workspace-root rules are the real ones, not a second copy.
-const sharedRootRules = await import('../../../../packages/shared-runtime/src/workspace-root-sync').then(
-  (mod) => ({ isSharedRootPath: mod.isSharedRootPath, conflictPathFor: mod.conflictPathFor }),
-  () => ({
-    isSharedRootPath: (_path: string) => false,
-    conflictPathFor: (path: string, device: string) => `${path}.conflict-${device}`,
-  }),
-)
-
 // @shogo/shared-runtime re-exports these symbols from these SDK subpaths:
 //   ai-proxy:      configureAIProxy
 //   chat-message:  extractUserText, findLastUserMessage
@@ -301,10 +291,4 @@ mock.module('@shogo/shared-runtime', () => ({
       startsWith(0x52, 0x49, 0x46, 0x46)
     )
   },
-  // The workspace-root rules (SHO-285 Update 2, section F) are pure functions
-  // over a path, and both the API's routes and the sync engine must agree on
-  // them. Loaded by path rather than restated here — a mirrored skip list that
-  // drifts is exactly the bug that makes a log directory sync forever.
-  isSharedRootPath: sharedRootRules.isSharedRootPath,
-  conflictPathFor: sharedRootRules.conflictPathFor,
 }))
