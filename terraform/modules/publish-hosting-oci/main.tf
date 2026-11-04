@@ -98,6 +98,13 @@ variable "site_auth_secret" {
   sensitive   = true
 }
 
+variable "edge_proxy_secret" {
+  description = "Shared secret the subdomain-router Worker sends to the Shogo API as `x-shogo-edge-auth` on every request it forwards to a METAL-backed published app's `/api/*`. Bound to the Worker as EDGE_PROXY_SECRET; the API reads the same value as SHOGO_EDGE_PROXY_SECRET. Leave null/empty to send no header (the API enforces nothing until its own copy is configured). Apply this module before rolling out the API image so both sides land together. Use a long random value."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
 variable "oci_region" {
   description = "OCI region (e.g. us-ashburn-1)"
   type        = string
@@ -362,6 +369,16 @@ resource "cloudflare_worker_script" "subdomain_router" {
       text = var.api_published_origin
     }
   }
+
+  # Secret the API accepts on the published `/api/*` proxy. Always stripped from
+  # the client's request first, so a visitor cannot forge it.
+  dynamic "secret_text_binding" {
+    for_each = var.edge_proxy_secret != null && var.edge_proxy_secret != "" ? [1] : []
+    content {
+      name = "EDGE_PROXY_SECRET"
+      text = var.edge_proxy_secret
+    }
+  }
   # The OCI PAR `access_uri` returned by the provider ends in `/o/`
   # (verified via OCI CLI on the live PAR; matches OCI docs). The
   # original implementation built `originUrl = par_base_url + path`
@@ -622,6 +639,19 @@ resource "cloudflare_worker_script" "subdomain_router" {
       return !!(await serverBackedFlag(env, subdomain));
     }
 
+    // Requests forwarded to the Shogo API's published proxy carry the shared
+    // edge secret. A copy the visitor sent is always dropped first, so it cannot
+    // be forged.
+    var EDGE_PROXY_HEADER = 'x-shogo-edge-auth';
+    function applyApiHeaders(env, headers) {
+      headers.delete(EDGE_PROXY_HEADER);
+      if (env.EDGE_PROXY_SECRET) headers.set(EDGE_PROXY_HEADER, env.EDGE_PROXY_SECRET);
+      return headers;
+    }
+    function apiHeaders(env, incoming) {
+      return applyApiHeaders(env, new Headers(incoming || {}));
+    }
+
     // Probe a server-backed app's readiness, waking it if asleep. Backend-aware:
     //   - metal   → GET $${API_PUBLISHED_ORIGIN}/api/published/{subdomain}/wake,
     //               which resolves/resumes the project's microVM and reports
@@ -642,7 +672,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
           const wakeUrl = API + '/api/published/' + subdomain + '/wake';
           const resp = await fetch(wakeUrl, {
             signal: ctrl.signal,
-            headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
+            headers: apiHeaders(env, { 'User-Agent': 'Cloudflare-Worker-Wake' }),
           });
           if (!resp.ok) return false;
           const body = await resp.json().catch(function () { return { ready: false }; });
@@ -815,6 +845,8 @@ resource "cloudflare_worker_script" "subdomain_router" {
             if (API) {
               const backendUrl = API + '/api/published/' + subdomain + url.pathname + url.search;
               const backendReq = new Request(backendUrl, request);
+              // Drop any copy the visitor sent, then stamp this Worker's own.
+              applyApiHeaders(env, backendReq.headers);
               backendReq.headers.set('X-Forwarded-Host', subdomain + '.' + PUBLISH_DOMAIN);
               backendReq.headers.set('X-Forwarded-Proto', 'https');
               return fetch(backendReq);

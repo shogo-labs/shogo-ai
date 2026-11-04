@@ -158,6 +158,11 @@ jobs:
           # all regions that share the primary DB so encrypted ModelProvider
           # rows decrypt everywhere. See docs/github-environments-setup.md.
           if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
+          # Shared secret with the edge Workers (preview-router, subdomain
+          # router) for the user-app proxies: they stamp `x-shogo-edge-auth`
+          # and the API refuses those routes without it. Must equal the
+          # terraform `edge_proxy_secret` the Workers are bound with.
+          if [ -n "${{ secrets.EDGE_PROXY_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_EDGE_PROXY_SECRET="${{ secrets.EDGE_PROXY_SECRET }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \

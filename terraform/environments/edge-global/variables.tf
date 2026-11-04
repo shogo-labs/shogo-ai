@@ -42,3 +42,10 @@ variable "eu_lb_ip" {
   type        = string
   default     = "79.76.126.115"
 }
+
+variable "edge_proxy_secret" {
+  description = "Shared secret the preview-router Worker sends to the API as `x-shogo-edge-auth` on every request it forwards to the preview render proxies. The API reads the same value as SHOGO_EDGE_PROXY_SECRET and refuses those routes without it. Set it on both sides in the same rollout (Worker first, then the API secret). Empty sends no header, and the API enforces nothing until its own copy is set."
+  type        = string
+  default     = null
+  sensitive   = true
+}

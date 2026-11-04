@@ -117,6 +117,13 @@ variable "api_wake_origin" {
   default     = null
 }
 
+variable "edge_proxy_secret" {
+  description = "Shared secret the Worker sends to the Shogo API as `x-shogo-edge-auth` on every request it forwards to the user-app proxies (`/api/preview/{id}/render*`). Bound to the Worker as EDGE_PROXY_SECRET; the API reads the same value as SHOGO_EDGE_PROXY_SECRET and refuses those routes without it. Leave null/empty to send no header (the API enforces nothing until its own copy is configured). Apply this module before rolling out the API image so both sides land together. Use a long random value."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
 locals {
   # preview_base_domain relative to the zone. prod: `preview.shogo.ai` under
   # `shogo.ai` -> `preview`. staging: `preview.staging.shogo.ai` -> `preview.staging`.
@@ -246,6 +253,17 @@ resource "cloudflare_worker_script" "preview_router" {
     }
   }
 
+  # Secret the API accepts on the user-app proxy routes it exposes to this
+  # Worker. Always stripped from the client's request first, so a visitor cannot
+  # forge it.
+  dynamic "secret_text_binding" {
+    for_each = var.edge_proxy_secret != null && var.edge_proxy_secret != "" ? [1] : []
+    content {
+      name = "EDGE_PROXY_SECRET"
+      text = var.edge_proxy_secret
+    }
+  }
+
   content = <<-JS
     const ANCHORS = ${jsonencode({ for code, r in cloudflare_record.anchor : code => r.hostname })};
     const DEFAULT_REGION = '${var.default_region}';
@@ -316,7 +334,7 @@ resource "cloudflare_worker_script" "preview_router" {
       try {
         const resp = await fetch(base + '/api/preview/' + projectId + '/wake', withRegionOverride({
           signal: ctrl.signal,
-          headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
+          headers: edgeAuthHeaders(env, { 'User-Agent': 'Cloudflare-Worker-Wake' }),
         }, region));
         if (!resp.ok) return { ready: false, url: null };
         const data = await resp.json();
@@ -343,6 +361,17 @@ resource "cloudflare_worker_script" "preview_router" {
     function withRegionOverride(init, region) {
       if (!region || !ANCHORS[region]) return init;
       return Object.assign({}, init, { cf: { resolveOverride: ANCHORS[region] } });
+    }
+
+    // Requests this Worker forwards to the API's user-app proxies carry the
+    // shared edge secret. A copy the client sent is always dropped first, so a
+    // visitor cannot forge one.
+    var EDGE_PROXY_HEADER = 'x-shogo-edge-auth';
+    function edgeAuthHeaders(env, incoming) {
+      var headers = new Headers(incoming || {});
+      headers.delete(EDGE_PROXY_HEADER);
+      if (env.EDGE_PROXY_SECRET) headers.set(EDGE_PROXY_HEADER, env.EDGE_PROXY_SECRET);
+      return headers;
     }
 
     // --- Metal (API-proxy) helpers -------------------------------------------
@@ -372,7 +401,7 @@ resource "cloudflare_worker_script" "preview_router" {
     async function proxyToApiRender(request, env, projectId, url, region) {
       const base = env.API_WAKE_ORIGIN.replace(/\/+$/, '');
       const target = base + '/api/preview/' + projectId + '/render' + url.pathname + url.search;
-      const headers = new Headers(request.headers);
+      const headers = edgeAuthHeaders(env, request.headers);
       headers.delete('host');
       const init = { method: request.method, headers: headers, redirect: 'manual' };
       if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -390,12 +419,13 @@ resource "cloudflare_worker_script" "preview_router" {
     async function proxyToApiPortRender(request, env, projectId, port, url, region) {
       const base = env.API_WAKE_ORIGIN.replace(/\/+$/, '');
       const target = base + '/api/preview/' + projectId + '/ports/' + port + '/render' + url.pathname + url.search;
-      // WebSocket upgrades (Vite hot reload) must be streamed, not buffered.
-      if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') {
-        return fetch(new Request(target, request), withRegionOverride({}, region));
-      }
-      const headers = new Headers(request.headers);
+      const headers = edgeAuthHeaders(env, request.headers);
       headers.delete('host');
+      // WebSocket upgrades (Vite hot reload) must be streamed, not buffered —
+      // the upgrade headers ride along on the same header set.
+      if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') {
+        return fetch(new Request(target, { method: request.method, headers: headers, redirect: 'manual' }), withRegionOverride({}, region));
+      }
       const init = { method: request.method, headers: headers, redirect: 'manual' };
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         init.body = await request.arrayBuffer();

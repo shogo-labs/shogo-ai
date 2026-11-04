@@ -122,7 +122,13 @@ import {
   deleteProjectPort,
   setProjectPortVisibility,
 } from './lib/project-port-mutations'
-import { filterUpstreamResponseHeaders, forwardClientHeaders } from './lib/preview-proxy-headers'
+import {
+  USER_APP_SANDBOX_CSP,
+  filterUpstreamResponseHeaders,
+  forwardClientHeaders,
+  publishedProxyRequestHeaders,
+  publishedProxyResponseHeaders,
+} from './lib/preview-proxy-headers'
 import { getFrontendUrl, getShogoCloudUrl } from './lib/cloud-urls'
 import {
   fetchCloudVisibleModels,
@@ -183,7 +189,9 @@ import type { Permission } from '@shogo/authz'
 import { decide, getAccess, loadAccess } from './lib/authz'
 import {
   apiAuthGate,
+  allowUserAppProxyRequest,
   isAllowedUnauthWebchatProxyPath,
+  isEdgeProxyAuthenticated,
   isPublicPreviewRenderPath,
   isPublishedApiProxyPath,
   isTokenGatedThumbnailPath,
@@ -727,6 +735,19 @@ const getAllowedOrigins = (): string[] => {
 
 // Enable CORS for development and production
 const allowedOrigins = getAllowedOrigins()
+// A user-app proxy request may only be served on behalf of an edge Worker.
+// Computed once per request (both the CORS/CSRF exceptions below and the three
+// proxy handlers need it) and refused here, before any CORS or CSRF answer, so a
+// request that is not edge-authenticated get exactly the body an unknown route
+// does and learns nothing about the route existing.
+app.use('/api/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  c.set('edgeProxy', isEdgeProxyAuthenticated(c.req.raw.headers))
+  if (!allowUserAppProxyRequest(path, c.req.raw.headers)) {
+    return c.text('404 Not Found', 404)
+  }
+  return next()
+})
 const apiCors = cors({
   origin: (origin, c) => {
     // Webchat widget requests come from external websites — allow any origin
@@ -736,7 +757,9 @@ const apiCors = cors({
     }
     // A public preview is the user's app, called from its own preview host or
     // from any site that posts to it (e.g. a signup form on the user's domain).
-    if (isPublicPreviewRenderPath(reqPath)) {
+    // Only for an edge-authenticated request: a direct call on a Studio host
+    // keeps the Studio answer, credentials echo included.
+    if (isPublicPreviewRenderPath(reqPath) && isEdgeProxyAuthenticated(c.req.raw.headers)) {
       return origin || '*'
     }
     // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
@@ -757,7 +780,10 @@ const apiCors = cors({
   exposeHeaders: ['Content-Disposition'],
 })
 app.use('/*', (c, next) => {
-  if (isPublishedApiProxyPath(new URL(c.req.url).pathname)) return next()
+  const path = new URL(c.req.url).pathname
+  // A published app answers CORS itself — but only when the call came through
+  // the edge Worker. A direct call on a Studio host keeps the API's answer.
+  if (isPublishedApiProxyPath(path) && isEdgeProxyAuthenticated(c.req.raw.headers)) return next()
   return apiCors(c, next)
 })
 
@@ -804,7 +830,9 @@ app.use('/api/*', async (c, next) => {
   }
   // A user's app behind the preview / published proxy owns its own CSRF
   // policy; the Studio origin allow-list would reject the app's own forms.
-  if (isUserAppProxyPath(path)) {
+  // The exception holds only for an edge-authenticated request, which is the
+  // only kind these proxies serve once the edge secret is configured.
+  if (isUserAppProxyPath(path) && isEdgeProxyAuthenticated(c.req.raw.headers)) {
     return next()
   }
   // Requests with no Origin AND no Referer cannot have been triggered by a
@@ -2446,6 +2474,7 @@ const previewRenderHandler = async (c: any) => {
       outHeaders.set(key, value)
     })
     outHeaders.set('access-control-allow-origin', '*')
+    if (!c.get('edgeProxy')) outHeaders.set('content-security-policy', USER_APP_SANDBOX_CSP)
     return new Response(resp.body, { status: resp.status, headers: outHeaders })
   } catch (err: any) {
     console.error('[preview/render]', err?.message || err)
@@ -2526,6 +2555,7 @@ const previewPortRenderHandler = async (c: any) => {
     }
     const resp = await fetch(targetUrl, init)
     const outHeaders = filterUpstreamResponseHeaders(resp.headers, { passSetCookie: true })
+    if (!c.get('edgeProxy')) outHeaders.set('content-security-policy', USER_APP_SANDBOX_CSP)
     return new Response(resp.body, { status: resp.status, headers: outHeaders })
   } catch (err: any) {
     console.error('[preview/port-render]', err?.message || err)
@@ -2584,30 +2614,12 @@ const publishedApiHandler = async (c: any) => {
     const search = new URL(c.req.url).search
     const targetUrl = `${target.replace(/\/+$/, '')}${path}${search}`
 
-    const headers = new Headers()
-    for (const h of [
-      'content-type', 'accept', 'accept-encoding', 'accept-language',
-      'user-agent', 'range', 'if-none-match', 'if-modified-since', 'cache-control',
-      'cookie', 'authorization', 'x-forwarded-for', 'x-forwarded-host',
-      // The app answers CORS itself (isPublishedApiProxyPath skips the API's).
-      'origin', 'access-control-request-method', 'access-control-request-headers',
-    ]) {
-      const v = c.req.header(h)
-      if (v) headers.set(h, v)
-    }
+    const headers = publishedProxyRequestHeaders(c.req.raw.headers, { fromEdge: c.get('edgeProxy') === true })
     const init: RequestInit = { method: c.req.method, headers, redirect: 'manual' }
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') init.body = await c.req.arrayBuffer()
 
     const resp = await fetch(targetUrl, init)
-
-    // Strip hop-by-hop headers; keep set-cookie (a published app is a real site
-    // that may set session cookies for its own users, unlike embedded previews).
-    const outHeaders = new Headers()
-    resp.headers.forEach((value, key) => {
-      const k = key.toLowerCase()
-      if (k === 'transfer-encoding' || k === 'connection') return
-      outHeaders.set(key, value)
-    })
+    const outHeaders = publishedProxyResponseHeaders(resp.headers, { fromEdge: c.get('edgeProxy') === true })
     return new Response(resp.body, { status: resp.status, headers: outHeaders })
   } catch (err: any) {
     console.error('[published/api]', err?.message || err)

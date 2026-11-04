@@ -15,7 +15,14 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { csrf } from 'hono/csrf'
 import { HTTPException } from 'hono/http-exception'
-import { isPublicPreviewRenderPath, isPublishedApiProxyPath, isUserAppProxyPath } from '../middleware/api-auth-gate'
+import {
+  EDGE_PROXY_HEADER,
+  allowUserAppProxyRequest,
+  isPublicPreviewRenderPath,
+  isPublishedApiProxyPath,
+  isUserAppProxyPath,
+} from '../middleware/api-auth-gate'
+import { publishedProxyRequestHeaders, publishedProxyResponseHeaders } from '../lib/preview-proxy-headers'
 
 const STUDIO = 'https://studio.shogo.ai'
 const PID = '580b192d-e6bd-410e-833b-f0c473ef6890'
@@ -98,5 +105,148 @@ describe('user-app proxy paths skip the Studio CSRF allow-list', () => {
     expect(published.headers.get('access-control-allow-origin')).toBeNull()
     const other = await preflight('/api/projects/x')
     expect(other.headers.get('access-control-allow-origin')).toBe(STUDIO)
+  })
+})
+
+// -----------------------------------------------------------------------------
+// The three user-app proxies are for the edge Workers only. A browser on a
+// Studio/API host must not be able to reach them directly; the edge sends
+// `x-shogo-edge-auth` carrying SHOGO_EDGE_PROXY_SECRET.
+// -----------------------------------------------------------------------------
+const EDGE_SECRET = 'edge-proxy-test-secret'
+
+function withEdgeSecret<T>(value: string | undefined, fn: () => Promise<T> | T): Promise<T> {
+  const previous = process.env.SHOGO_EDGE_PROXY_SECRET
+  if (value === undefined) delete process.env.SHOGO_EDGE_PROXY_SECRET
+  else process.env.SHOGO_EDGE_PROXY_SECRET = value
+  const restore = () => {
+    if (previous === undefined) delete process.env.SHOGO_EDGE_PROXY_SECRET
+    else process.env.SHOGO_EDGE_PROXY_SECRET = previous
+  }
+  return Promise.resolve()
+    .then(fn)
+    .finally(restore)
+}
+
+const PROXY_PATHS = [
+  `/api/preview/${PID}/render/`,
+  `/api/preview/${PID}/ports/3000/render/api/signup`,
+  '/api/published/samsara-api/api/signup',
+]
+
+function buildGatedApp(): Hono {
+  const app = new Hono()
+  app.onError((err) => (err instanceof HTTPException ? err.getResponse() : new Response('boom', { status: 500 })))
+  app.use('/api/*', async (c, next) => {
+    const p = new URL(c.req.url).pathname
+    c.set('edgeProxy', isEdgeProxyAuthenticatedForTest(c.req.raw.headers))
+    if (!allowUserAppProxyRequest(p, c.req.raw.headers)) return c.text('404 Not Found', 404)
+    return next()
+  })
+  const appResponse = (c: any) => c.html('<html>app</html>')
+  app.all('/api/preview/:projectId/render/*', appResponse)
+  app.all('/api/preview/:projectId/ports/:port/render/*', appResponse)
+  app.all('/api/published/:subdomain/api/*', appResponse)
+  return app
+}
+
+// Mirrors `isEdgeProxyAuthenticated` for the app under test, keeping the guard
+// wiring in server.ts honest without importing server.ts.
+function isEdgeProxyAuthenticatedForTest(headers: Headers): boolean {
+  const expected = process.env.SHOGO_EDGE_PROXY_SECRET
+  return !!expected && headers.get(EDGE_PROXY_HEADER) === expected
+}
+
+function get(app: Hono, path: string, headers: Record<string, string>) {
+  return app.fetch(new Request(`http://api.test${path}`, { method: 'GET', headers }))
+}
+
+describe('user-app proxies only answer for the edge Worker', () => {
+  test('on a Studio host with no edge header, every proxy path is a plain 404 — never app HTML', async () => {
+    await withEdgeSecret(EDGE_SECRET, async () => {
+      const app = buildGatedApp()
+      for (const path of PROXY_PATHS) {
+        const res = await get(app, path, { host: 'studio.shogo.ai' })
+        expect(res.status).toBe(404)
+        expect(res.headers.get('content-type') || '').not.toContain('text/html')
+        expect(await res.text()).toBe('404 Not Found')
+      }
+    })
+  })
+
+  test('on an api host too, and with a wrong header value', async () => {
+    await withEdgeSecret(EDGE_SECRET, async () => {
+      const app = buildGatedApp()
+      const host = await get(app, PROXY_PATHS[0], { host: 'api.shogo.ai' })
+      expect(host.status).toBe(404)
+      const forged = await get(app, PROXY_PATHS[0], { host: 'studio.shogo.ai', [EDGE_PROXY_HEADER]: 'nope' })
+      expect(forged.status).toBe(404)
+    })
+  })
+
+  test('with the edge header the request reaches the handler', async () => {
+    await withEdgeSecret(EDGE_SECRET, async () => {
+      const app = buildGatedApp()
+      for (const path of PROXY_PATHS) {
+        const res = await get(app, path, { host: 'studio.shogo.ai', [EDGE_PROXY_HEADER]: EDGE_SECRET })
+        expect(res.status).toBe(200)
+        expect(await res.text()).toBe('<html>app</html>')
+      }
+    })
+  })
+
+  test('a non-Studio host (local desktop mode) is served rather than refused', async () => {
+    await withEdgeSecret(EDGE_SECRET, async () => {
+      const app = buildGatedApp()
+      const res = await get(app, PROXY_PATHS[0], { host: 'localhost:37301' })
+      expect(res.status).toBe(200)
+    })
+  })
+
+  test('nothing is enforced until the edge secret is configured, so the Workers can ship first', async () => {
+    await withEdgeSecret(undefined, async () => {
+      const app = buildGatedApp()
+      for (const path of PROXY_PATHS) {
+        expect((await get(app, path, { host: 'studio.shogo.ai' })).status).toBe(200)
+      }
+    })
+  })
+})
+
+describe('published api proxy keeps the visitor session at the edge', () => {
+  const browserRequest = () => new Headers({
+    cookie: 'better-auth.session_token=abc',
+    authorization: 'Bearer studio-token',
+    accept: 'application/json',
+    'x-forwarded-host': 'samsara-api.shogo.one',
+  })
+
+  test('without the edge header no cookie or authorization is forwarded', () => {
+    const headers = publishedProxyRequestHeaders(browserRequest(), { fromEdge: false })
+    expect(headers.get('cookie')).toBeNull()
+    expect(headers.get('authorization')).toBeNull()
+    expect(headers.get('accept')).toBe('application/json')
+    expect(headers.get('x-forwarded-host')).toBe('samsara-api.shogo.one')
+  })
+
+  test('with the edge header the app still gets the visitor session', () => {
+    const headers = publishedProxyRequestHeaders(browserRequest(), { fromEdge: true })
+    expect(headers.get('cookie')).toBe('better-auth.session_token=abc')
+    expect(headers.get('authorization')).toBe('Bearer studio-token')
+  })
+
+  test('a non-edge response drops set-cookie and is sandboxed; an edge one passes both through', () => {
+    const upstream = new Headers({
+      'content-type': 'application/json',
+      'set-cookie': 'app_session=1; Path=/',
+    })
+    const nonEdge = publishedProxyResponseHeaders(upstream, { fromEdge: false })
+    expect(nonEdge.get('set-cookie')).toBeNull()
+    expect(nonEdge.get('content-security-policy')).toContain('sandbox')
+    expect(nonEdge.get('content-type')).toBe('application/json')
+
+    const edge = publishedProxyResponseHeaders(upstream, { fromEdge: true })
+    expect(edge.get('set-cookie')).toBe('app_session=1; Path=/')
+    expect(edge.get('content-security-policy')).toBeNull()
   })
 })

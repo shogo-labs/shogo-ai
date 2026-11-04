@@ -301,6 +301,13 @@ variable "site_auth_secret" {
   sensitive   = true
 }
 
+variable "edge_proxy_secret" {
+  description = "Forwarded to `publish-hosting-oci`: shared secret the subdomain-router Worker sends to the Shogo API as `x-shogo-edge-auth` on every request it forwards to a METAL-backed published app's `/api/*` (bound as EDGE_PROXY_SECRET). The API reads the same value as SHOGO_EDGE_PROXY_SECRET. Null/empty sends no header (the API enforces nothing until its copy is set). Use a long random value."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
 # -----------------------------------------------------------------------------
 # Autoscaler IAM
 # -----------------------------------------------------------------------------

@@ -271,6 +271,10 @@ module "publish_hosting" {
   # sites. Null disables the edge gate (fail-open to public).
   site_auth_secret = var.site_auth_secret
 
+  # Shared secret the Worker sends to the API on the published `/api/*` proxy.
+  # Null sends no header (the API enforces nothing until its copy is set).
+  edge_proxy_secret = var.edge_proxy_secret
+
   # OCI Object Storage's PAR API has eventual consistency against bucket
   # creation. Without this depends_on, terraform parallelizes the
   # published_apps bucket creation and the PAR creation, and the PAR

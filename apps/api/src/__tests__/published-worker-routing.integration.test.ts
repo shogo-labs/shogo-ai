@@ -109,6 +109,7 @@ function installFetch(handler: (url: string) => { status: number; body?: string 
     const url = req ? req.url : typeof input === 'string' ? input : input.url
     const headers: Record<string, string> = {}
     if (req) req.headers.forEach((v, k) => { headers[k] = v })
+    if (init?.headers) new Headers(init.headers).forEach((v, k) => { headers[k] = v })
     calls.push({ url, headers, cf: init?.cf })
     const { status, body } = handler(url)
     return new Response(body ?? '', { status })
@@ -404,5 +405,53 @@ describe('subdomain-router worker — legacy flags once metal is bound', () => {
 
     await workerModule.fetch(req, env)
     expect(calls[0].url).toBe(`${API_PUBLISHED_ORIGIN}/api/published/new-site/api/items`)
+  })
+})
+
+// The API only serves the published `/api/*` proxy to this Worker: every call
+// carries the shared edge secret, and a copy the visitor sent is dropped.
+describe('subdomain-router worker — edge proxy header', () => {
+  const SECRET = 'edge-secret-test'
+  const withSecret = (flags: Record<string, string>) => ({
+    ...makeBothOriginsEnv(flags),
+    EDGE_PROXY_SECRET: SECRET,
+  })
+
+  test('the metal /api proxy stamps the edge secret and drops a client-supplied copy', async () => {
+    installFetch(() => ({ status: 200, body: '{"ok":true}' }))
+    const env = withSecret({ 'new-site': 'metal' })
+    const req = new Request('https://new-site.shogo.one/api/items', {
+      headers: { 'x-shogo-edge-auth': 'forged-by-visitor' },
+    })
+
+    await workerModule.fetch(req, env)
+    expect(calls[0].url).toBe(`${API_PUBLISHED_ORIGIN}/api/published/new-site/api/items`)
+    expect(calls[0].headers['x-shogo-edge-auth']).toBe(SECRET)
+  })
+
+  test('the metal wake probe carries it too', async () => {
+    installFetch(() => ({ status: 200, body: '{"ready":true}' }))
+    const env = withSecret({ 'new-site': 'metal' })
+    await workerModule.fetch(new Request('https://new-site.shogo.one/__shogo/wake'), env)
+    expect(calls[0].url).toBe(`${API_PUBLISHED_ORIGIN}/api/published/new-site/wake`)
+    expect(calls[0].headers['x-shogo-edge-auth']).toBe(SECRET)
+  })
+
+  test('with no secret bound, a visitor-supplied header is still stripped', async () => {
+    installFetch(() => ({ status: 200, body: '{"ok":true}' }))
+    const env = makeBothOriginsEnv({ 'new-site': 'metal' })
+    const req = new Request('https://new-site.shogo.one/api/items', {
+      headers: { 'x-shogo-edge-auth': 'forged-by-visitor' },
+    })
+
+    await workerModule.fetch(req, env)
+    expect(calls[0].headers['x-shogo-edge-auth']).toBeUndefined()
+  })
+
+  test('the Knative /api proxy is untouched: no edge header is added', async () => {
+    installFetch(() => ({ status: 200, body: '{"ok":true}' }))
+    const env = withSecret({ 'new-site': 'knative' })
+    await workerModule.fetch(new Request('https://new-site.shogo.one/api/items'), env)
+    expect(calls[0].headers['x-shogo-edge-auth']).toBeUndefined()
   })
 })

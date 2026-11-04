@@ -312,6 +312,10 @@ module "us" {
   # edge (server-backed apps fall back to static serving).
   api_published_origin = "https://studio.shogo.ai"
 
+  # Shared secret the subdomain-router Worker sends to the API on the published
+  # `/api/*` proxy.
+  edge_proxy_secret = var.edge_proxy_secret
+
   # Bring-your-own custom hostnames (Cloudflare for SaaS). Off until a
   # DEDICATED zone (separate from shogo.one) is supplied — see variables.tf.
   enable_custom_domains = var.enable_custom_domains

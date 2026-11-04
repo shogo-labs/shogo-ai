@@ -580,6 +580,16 @@ spec:
                   name: api-secrets
                   key: SHOGO_INTERNAL_SECRET
                   optional: true
+            # Shared secret with the edge Workers (preview-router, subdomain
+            # router): they stamp `x-shogo-edge-auth` on every request they
+            # forward to a user-app proxy, and the API refuses those routes
+            # without it. Leave unset and nothing is enforced.
+            - name: SHOGO_EDGE_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SHOGO_EDGE_PROXY_SECRET
+                  optional: true
             # --- Affiliate content-CPM (Instagram / TikTok view tracking) ---
             # Optional, DB-controlled feature. The master toggle, provider,
             # CPM rate, hold days, and caps are all super-admin PlatformSetting

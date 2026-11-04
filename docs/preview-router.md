@@ -174,3 +174,33 @@ Total TLS certs) are fully redundant and can be deleted to reclaim quota — lis
   `Workers KV Storage:Edit`, and `DNS:Edit`.
 ```
 
+
+## User-app proxies and the edge secret
+
+The API routes that serve a user's app — `/api/preview/{projectId}/render*`,
+`/api/preview/{projectId}/ports/{port}/render*` and
+`/api/published/{subdomain}/api*` — exist for these Workers. A browser
+that calls them directly on a Studio/API host is served the app as
+first-party HTML on that origin, with the visitor's session attached; the
+published proxy would also hand the visitor's cookies to the app.
+
+So both Worker scripts stamp `x-shogo-edge-auth: <SHOGO_EDGE_PROXY_SECRET>` on
+every request they forward to the API, dropping any copy the client sent
+first, and the API refuses the three route families unless the header matches
+(its 404 is the same body an unknown route gets). The API also refuses them on
+a Studio/API host without a valid header, so a self-hosted API on its own
+domain keeps working.
+
+- Terraform: `edge_proxy_secret` on `modules/preview-router` and
+  `modules/publish-hosting-oci` (bound to the Workers as `EDGE_PROXY_SECRET`).
+- API: `SHOGO_EDGE_PROXY_SECRET`, from the `api-secrets` k8s secret
+  (`EDGE_PROXY_SECRET` in the GitHub environment).
+- **Deploy order: terraform first (Workers), then the API image.** Nothing is
+  enforced until the API has the secret, so a Worker that sends the header
+  early is harmless; once the API has it, every direct call on a Studio host
+  is refused.
+- Local desktop mode has no secret: its previews use
+  `/api/projects/{id}/preview/*` on loopback, and any user-app proxy response
+  that arrives without the header is served with
+  `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups`, so
+  it runs on an opaque origin.
