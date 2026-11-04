@@ -11,10 +11,9 @@ import { Platform, View } from "react-native"
 import { useLocalSearchParams, useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
 import { useAuth } from "../../contexts/auth"
-import { useDomainHttp } from "../../contexts/domain"
+import { useWorkspaceAgentProfile } from "../../hooks/useWorkspaceAgentProfile"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
-import { api, type PersonalAgentProfile } from "../../lib/api"
 import { ChatPanel } from "../chat/ChatPanel"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
@@ -27,7 +26,6 @@ export const SideChatScreen = observer(function SideChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
   const router = useRouter()
   const { user } = useAuth()
-  const http = useDomainHttp()
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
@@ -37,7 +35,9 @@ export const SideChatScreen = observer(function SideChatScreen() {
   const useFloatingAgentChrome =
     usesMobileWorkspaceChrome || Platform.OS !== "web"
   const workspaceId = workspace?.id
-  const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
+  // Cached on the device by the workspace chat screen, so the header does not
+  // flash "Shogo" before the real name arrives (SHO-309).
+  const profile = useWorkspaceAgentProfile(workspaceId)
   const [prefillRequest, setPrefillRequest] =
     useState<RestoreDraftRequest | null>(null)
   const [buddyLookSheetOpen, setBuddyLookSheetOpen] = useState(false)
@@ -71,24 +71,7 @@ export const SideChatScreen = observer(function SideChatScreen() {
       clearTimeout(avatarFinishedTimer.current)
       avatarFinishedTimer.current = null
     }
-    if (!workspaceId) {
-      setProfile(null)
-      return
-    }
-    let cancelled = false
-    setProfile(null)
-    void api
-      .getAgentProfile(http, workspaceId)
-      .then((nextProfile) => {
-        if (!cancelled) setProfile(nextProfile)
-      })
-      .catch(() => {
-        if (!cancelled) setProfile(null)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [http, workspaceId])
+  }, [workspaceId])
 
   useEffect(
     () => () => {

@@ -8,7 +8,8 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { useDomainHttp } from "../../contexts/domain"
-import { api, type PersonalAgentProfile } from "../../lib/api"
+import { api } from "../../lib/api"
+import { useWorkspaceAgentProfile } from "../../hooks/useWorkspaceAgentProfile"
 import { DEFAULT_AGENT_NAME } from "./island-view"
 import type { WorkspaceAgentChat } from "./workspace-agent-rows"
 
@@ -21,21 +22,7 @@ function toMillis(value: unknown): number {
 
 /** The workspace agent's display name, falling back to "Shogo". */
 export function useWorkspaceAgentName(workspaceId: string | undefined): string {
-  const http = useDomainHttp()
-  const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
-
-  useEffect(() => {
-    if (!workspaceId) return
-    let cancelled = false
-    void api
-      .getAgentProfile(http, workspaceId)
-      .then((next) => !cancelled && setProfile(next))
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [http, workspaceId])
-
+  const profile = useWorkspaceAgentProfile(workspaceId)
   return profile?.name?.trim() || DEFAULT_AGENT_NAME
 }
 
