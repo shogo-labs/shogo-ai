@@ -110,13 +110,29 @@ describe('the workspace agent screen opens from the device', () => {
     // collection was already loaded, but the workspace in view was not resolved
     // (or was refreshing), so the screen painted the spinner over a chat the
     // device held. Only an account with no workspaces may end it.
-    const effect = screen.slice(screen.indexOf('const applyBoot = (record'))
-    const noKey = effect.slice(
-      effect.indexOf('if (!bootKey)'),
-      effect.indexOf('const cached = peekWorkspaceChatBoot'),
+    const release = screen.slice(screen.indexOf('if (bootWaitCanEndWithoutRecord'))
+    expect(release).toContain('collectionReady')
+    expect(release).toContain('workspaceCount')
+    expect(screen).not.toMatch(/workspaces\?\.all != null\) setBootPending\(false\)/)
+  })
+
+  test('a collection refresh cannot cancel the device read', () => {
+    // CI's next failure: the first-ever open painted no loader at all, then
+    // jumped straight to the chat. `WorkspaceCollection.all` is
+    // `Array.from(self.items.values())` — a new array on every access — so
+    // keying the read on it restarted (and cancelled) the read on every render,
+    // and `bootPending` never cleared. The read keys on the boot key alone; the
+    // collection's state reaches the "no workspaces" rule as primitives.
+    expect(screen).toContain(
+      'const workspaceCount = workspaces?.all?.length ?? 0',
     )
-    expect(noKey).toContain('bootWaitCanEndWithoutRecord({')
-    expect(noKey).not.toMatch(/workspaces\?\.all != null\) setBootPending\(false\)/)
+    const read = screen.slice(
+      screen.indexOf('const applyBoot = (record'),
+      screen.indexOf('const loadWorkspaceChat = useCallback'),
+    )
+    expect(read).toContain('}, [bootKey, initialSessionId, startNewSession])')
+    expect(read).not.toContain('workspaces?.all]')
+    expect(screen).toContain('}, [bootKey, collectionReady, workspaceCount])')
   })
 
   test('a successful load answers the next open', () => {
