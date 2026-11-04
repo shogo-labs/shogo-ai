@@ -5507,6 +5507,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   >(new Map())
   const historyHydratedRef = useRef<Set<string>>(new Set())
   const historyHydrationPendingRef = useRef<Set<string>>(new Set())
+  // Keys whose device answer has arrived (or that needed no read at all). The
+  // loader is decided from THIS, during render: `historyHydrationPendingRef` is
+  // filled inside the hydration effect, i.e. after the first paint, so a frame
+  // that reads it sees "nothing pending" for a chat the device is about to
+  // hand over — one "Loading conversation..." flash on every reopen (SHO-309).
+  const historyHydrationSettledRef = useRef<Set<string>>(new Set())
   const [historyHydrationTick, setHistoryHydrationTick] = useState(0)
 
   /** The delta read. Same routing insert point as the transcript itself. */
@@ -5741,9 +5747,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
       }
     }
-    if (historyHydratedRef.current.has(key)) return
+    if (historyHydratedRef.current.has(key)) {
+      historyHydrationSettledRef.current.add(key)
+      return
+    }
     if (cachedMessagesRef.current && cachedMessagesRef.current.length > 0) {
       historyHydratedRef.current.add(key)
+      historyHydrationSettledRef.current.add(key)
       return
     }
     historyHydratedRef.current.add(key)
@@ -5779,6 +5789,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       .catch((err) => console.warn("[ChatPanel] saved history failed to load:", err))
       .finally(() => {
         historyHydrationPendingRef.current.delete(key)
+        historyHydrationSettledRef.current.add(key)
         setHistoryHydrationTick((tick) => tick + 1)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -9949,12 +9960,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     hasSession: !!currentSessionId,
                     isComplete: isInitialLoadComplete,
                     isStreaming,
-                    // A device read still in flight is not a load: the chat is
+                    // Decided during render from the device read's own record:
+                    // a key whose read has not answered yet is a chat that is
                     // about to appear, so this frame shows nothing instead of a
                     // loader that flashes and goes (SHO-309).
                     hydrationPending:
                       !!historyStoreKey &&
-                      historyHydrationPendingRef.current.has(historyStoreKey),
+                      !historyHydrationSettledRef.current.has(historyStoreKey),
                   }) ? (
                     <View className="flex-col items-center justify-center flex-1 gap-3">
                       <View className="flex-row items-center gap-1">

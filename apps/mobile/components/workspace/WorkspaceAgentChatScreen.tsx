@@ -6,7 +6,7 @@
  * workspaces. With no chat selected it opens the signed-in user's most
  * recent personal chat, creating one when they have none.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import { ActivityIndicator, AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
@@ -26,7 +26,13 @@ import {
   shouldAdoptChatWorkspace,
 } from "../../lib/switch-workspace"
 import { pickTeamWorkspace } from "../../lib/team-workspace"
-import { useWorkspaceInView } from "../../hooks/useWorkspaceInView"
+import { useWorkspaceInView, type WorkspaceInView } from "../../hooks/useWorkspaceInView"
+import { workspaceInViewWhileLoading } from "../../lib/workspace-in-view"
+import {
+  getActiveWorkspaceId,
+  getCachedWorkspaceKind,
+  subscribeActiveWorkspaceId,
+} from "../../lib/workspace-store"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
@@ -154,7 +160,32 @@ export const WorkspaceAgentChatScreen = observer(
     // open, so its id and kind — not the cloud workspace that happens to be
     // selected — decide this chat's sessions, its scope and its chrome
     // (SHO-130).
-    const workspace = useWorkspaceInView()
+    //
+    // It has to survive the collection being between answers. `useActiveWorkspace()`
+    // is null for the whole of every `loadAll()` — each in-app navigation
+    // refetches it — and this screen remounts inside that window on every
+    // reopen, so a plain `useWorkspaceInView()` loses the workspace for the
+    // first frames of exactly the open this card is about: no id, no boot key,
+    // no chat, and (before the loading view was fixed) a spinner over a
+    // transcript the device already had (SHO-309).
+    const inView = useWorkspaceInView()
+    const selectedWorkspaceId = useSyncExternalStore(
+      subscribeActiveWorkspaceId,
+      getActiveWorkspaceId,
+      getActiveWorkspaceId,
+    )
+    const lastInView = useRef<WorkspaceInView | null>(null)
+    if (inView) lastInView.current = inView
+    const cachedKind = useMemo(
+      () => (inView ? null : getCachedWorkspaceKind(selectedWorkspaceId)),
+      [inView, selectedWorkspaceId],
+    )
+    const workspace = workspaceInViewWhileLoading(
+      inView,
+      lastInView.current,
+      selectedWorkspaceId,
+      cachedKind,
+    )
     const { instance: activeInstance } = useActiveInstance()
     // Which chat this workspace opens, and what its agent is called, are on the
     // device (SHO-309) — keyed the same way chat history is, so a paired

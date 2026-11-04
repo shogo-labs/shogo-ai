@@ -226,8 +226,13 @@ describe('the first paint', () => {
         error: 'boom',
       }),
     ).toBe('chat')
-    // No workspace yet is the app booting, not this chat.
-    expect(workspaceChatLoadingView({ ...base, hasWorkspace: false })).toBe('spinner')
+    // No workspace yet is the app booting, not this chat — and it is the frame a
+    // reopen starts on (the collection is refetching), so a spinner here would
+    // cover a chat the device holds (SHO-309, caught in CI).
+    expect(workspaceChatLoadingView({ ...base, hasWorkspace: false })).toBe('blank')
+    expect(
+      workspaceChatLoadingView({ ...base, hasWorkspace: false, bootPending: true }),
+    ).toBe('blank')
   })
 
   test('the device wait ends only when the account has no workspace at all', () => {

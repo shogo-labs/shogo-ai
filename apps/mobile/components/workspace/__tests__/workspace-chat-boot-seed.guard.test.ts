@@ -56,6 +56,21 @@ describe('the panel opens from the device', () => {
   test('the delta path is seeded from the same mirror the paint used', () => {
     expect(panel).toContain('const peeked = peekChatHistory("project", key)')
   })
+
+  test('the loader is decided during render, not by an effect', () => {
+    // CI caught one "Loading conversation..." frame on a reload: the pending
+    // flag was filled inside the hydration effect, i.e. after the first paint,
+    // so the frame that needed to wait read "nothing pending". The render reads
+    // the settled set instead, which is only true once the device answered.
+    const loader = panel.lastIndexOf('Loading conversation...')
+    const gate = panel.lastIndexOf('hydrationPending:', loader)
+    expect(gate).toBeGreaterThan(-1)
+    expect(panel.slice(gate, loader)).toContain(
+      '!historyHydrationSettledRef.current.has(historyStoreKey)',
+    )
+    // …and every path that will not paint a device answer settles the key.
+    expect(panel).toContain('historyHydrationSettledRef.current.add(key)')
+  })
 })
 
 describe('the workspace agent screen opens from the device', () => {
@@ -133,6 +148,23 @@ describe('the workspace agent screen opens from the device', () => {
     expect(read).toContain('}, [bootKey, initialSessionId, startNewSession])')
     expect(read).not.toContain('workspaces?.all]')
     expect(screen).toContain('}, [bootKey, collectionReady, workspaceCount])')
+  })
+
+  test('the workspace survives the collection being between answers', () => {
+    // CI's next failure, and the one the video showed: on an in-app reopen the
+    // whole screen remounted while `workspaces.loadAll()` was in flight, so
+    // `useWorkspaceInView()` was null for the first frames — no id, no boot key,
+    // no chat — and the chrome flipped to the team shell. The workspace must be
+    // kept across that window (and seeded from the persisted selection when
+    // this JS session has never resolved it).
+    expect(screen).not.toMatch(/const workspace = useWorkspaceInView\(\)/)
+    expect(screen).toContain('const inView = useWorkspaceInView()')
+    expect(screen).toMatch(
+      /workspaceInViewWhileLoading\(\s*inView,\s*lastInView\.current,\s*selectedWorkspaceId,/,
+    )
+    // Keyed on the persisted selection, so a switch still lands: the old
+    // workspace is only kept while the person's selection is still that one.
+    expect(screen).toContain('getCachedWorkspaceKind(selectedWorkspaceId)')
   })
 
   test('a successful load answers the next open', () => {

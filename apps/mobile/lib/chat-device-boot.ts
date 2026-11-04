@@ -163,7 +163,10 @@ export function workspaceChatLoadingView(input: {
   bootPending: boolean
   error: string | null
 }): 'chat' | 'spinner' | 'error' | 'blank' {
-  if (!input.hasWorkspace) return input.bootPending ? 'blank' : 'spinner'
+  // Without a workspace there is no chat to prepare, so a spinner would be
+  // describing a load that is not running — and this is the frame a reopen
+  // starts on, while the collection is between answers. Show nothing (SHO-309).
+  if (!input.hasWorkspace) return 'blank'
   if (input.hasProfile && input.hasSession) return 'chat'
   if (input.error) return 'error'
   if (input.bootPending) return 'blank'
