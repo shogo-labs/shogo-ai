@@ -119,10 +119,12 @@ const styles = StyleSheet.create({
 // dock zone reads as the same card language stacked on top of the composer.
 // Status panels remain subtly translucent, while blocking panels must fully
 // obscure the transcript because they park the agent turn and require action.
+// `shadow-dock` is the theme's warm 4% stone shadow; the bare `shadow-md`
+// (pure black) only comes back in dark mode, where it is unchanged.
 const STATUS_ZONE_CARD_CLASS =
-  "overflow-hidden rounded-xl border border-border/60 bg-popover shadow-md"
+  "overflow-hidden rounded-xl border border-border/60 bg-popover shadow-dock dark:shadow-md"
 const BLOCKING_ZONE_CARD_CLASS =
-  "overflow-hidden rounded-xl border border-border/60 bg-popover shadow-md"
+  "overflow-hidden rounded-xl border border-border/60 bg-popover shadow-dock dark:shadow-md"
 
 export interface ChatDockProps {
   /** Available height above the composer, used to cap the status zone at ~45%. */

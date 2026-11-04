@@ -249,6 +249,18 @@ module.exports = {
         '2xs': '10px',
       },
       boxShadow: {
+        // The dock card above the composer sits on the light theme's warm
+        // off-white canvas, where Tailwind's `shadow-md` (two pure-black 10%
+        // layers) reads as a heavy grey smudge. This mirrors the light
+        // `--shadow-agent` token in global.css: a warm stone tint at 4%.
+        // It is written out literally because NativeWind cannot resolve a CSS
+        // var inside a native shadow; `dock-shadow-token.test.ts` keeps the two
+        // definitions in sync. Dark mode keeps today's `dark:shadow-md`.
+        //
+        // The ambient layer comes FIRST: `nativewind/dist/tailwind/shadows.js`
+        // keeps only the first valid layer for a native shadow, so the tight 1px
+        // layer leading would leave iOS with a 2px lift and no ambient one.
+        dock: '0 8px 24px rgba(28, 25, 23, 0.04), 0 1px 2px rgba(28, 25, 23, 0.04)',
         'hard-1': '-2px 2px 8px 0px rgba(38, 38, 38, 0.20)',
         'hard-2': '0px 3px 10px 0px rgba(38, 38, 38, 0.20)',
         'hard-3': '2px 2px 8px 0px rgba(38, 38, 38, 0.20)',
@@ -258,6 +270,12 @@ module.exports = {
         'soft-2': '0px 0px 20px rgba(38, 38, 38, 0.2)',
         'soft-3': '0px 0px 30px rgba(38, 38, 38, 0.1)',
         'soft-4': '0px 0px 40px rgba(38, 38, 38, 0.1)',
+      },
+      // NativeWind keeps only the first box-shadow layer on native, and on
+      // Android it derives elevation from that layer's blur radius (24px → 24dp).
+      // The dock pins a shallower elevation so it gets lift, not a hard drop.
+      elevation: {
+        dock: 3,
       },
     },
   },
