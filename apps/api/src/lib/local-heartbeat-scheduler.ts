@@ -13,6 +13,7 @@
  */
 
 import { BaseHeartbeatScheduler, type DueAgent } from './base-heartbeat-scheduler'
+import { heartbeatPlacementWhere } from './job-placement'
 
 const POLL_INTERVAL_MS = parseInt(process.env.HEARTBEAT_POLL_INTERVAL_MS || '15000', 10)
 const BATCH_SIZE = parseInt(process.env.HEARTBEAT_BATCH_SIZE || '5', 10)
@@ -47,7 +48,14 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
       const rows = await prisma.agentConfig.findMany({
         where: {
           heartbeatEnabled: true,
-          OR: [{ nextHeartbeatAt: null }, { nextHeartbeatAt: { lte: new Date() } }],
+          AND: [
+            { OR: [{ nextHeartbeatAt: null }, { nextHeartbeatAt: { lte: new Date() } }] },
+            // A job runs where it was requested (SHO-285 Update 2): this desktop
+            // fires the heartbeats pinned to it, plus the unpinned ones of
+            // workspaces that are not the account's Personal (a local-only
+            // workspace on an unpaired desktop still runs its own).
+            heartbeatPlacementWhere(),
+          ],
         },
         select: {
           id: true,

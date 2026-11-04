@@ -16,6 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
+  adoptableWorkspaceParam,
   clearActiveWorkspaceId,
   clearWorkspaceSwitchIntent,
   getActiveWorkspaceId,
@@ -296,5 +297,31 @@ describe('switches made in another window', () => {
     unsub()
     window.dispatchEvent(new StorageEvent('storage', { key: 'shogo:active-workspace-id', newValue: 'ws-3' }))
     expect(pings).toBe(1)
+  })
+})
+
+/**
+ * A `?workspace=` link is a request, not a fallback: either the account is a
+ * member of that workspace and the link may move them, or it changes nothing.
+ * Answering a stranger's id with the person's first own workspace is what
+ * SHO-284's E2E caught — the refused file link switched the screen anyway.
+ */
+describe('adoptableWorkspaceParam', () => {
+  test('returns a workspace the account is a member of', () => {
+    expect(adoptableWorkspaceParam(['ws-1', 'ws-2'], 'ws-2')).toBe('ws-2')
+  })
+
+  test('returns null for a workspace the account is not in', () => {
+    expect(adoptableWorkspaceParam(['ws-1', 'ws-2'], 'ws-stranger')).toBeNull()
+  })
+
+  test('returns null rather than the first own workspace when the list is empty', () => {
+    expect(adoptableWorkspaceParam([], 'ws-stranger')).toBeNull()
+  })
+
+  test('returns null when the link names no workspace', () => {
+    expect(adoptableWorkspaceParam(['ws-1'], null)).toBeNull()
+    expect(adoptableWorkspaceParam(['ws-1'], undefined)).toBeNull()
+    expect(adoptableWorkspaceParam(['ws-1'], '')).toBeNull()
   })
 })

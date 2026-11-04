@@ -20,6 +20,7 @@
 
 import { prisma } from '../lib/prisma'
 import { computeJitter } from '../lib/base-heartbeat-scheduler'
+import { jobPlacement } from '../lib/job-placement'
 
 export const MIN_HEARTBEAT_INTERVAL_SECONDS = 60
 export const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 1800
@@ -171,6 +172,10 @@ export async function updateHeartbeatConfig(
         projectId,
         heartbeatEnabled: enabled,
         heartbeatInterval: interval,
+        // A job runs where it was requested (SHO-285 Update 2): a heartbeat
+        // switched on from a desktop window is pinned to that device, one
+        // switched on from the cloud stays null and the cloud fires it.
+        runOnInstanceId: jobPlacement(),
       } as any,
     })
   }

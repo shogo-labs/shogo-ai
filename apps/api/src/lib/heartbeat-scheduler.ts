@@ -127,8 +127,10 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
         JOIN "projects" p ON p."id" = ac."projectId"
         JOIN "workspaces" w ON w."id" = p."workspaceId"
         WHERE ac."heartbeatEnabled" = true
-          -- A workspace whose rows live on a paired desktop already heartbeats
-          -- there (SHO-185); the cloud copy is for reading, not for running.
+          -- A job runs where it was requested (SHO-285 Update 2): the cloud fires
+          -- the unpinned ones in workspaces it runs, each desktop fires its own.
+          -- A workspace whose rows live on a paired desktop heartbeats there.
+          AND ac."runOnInstanceId" IS NULL
           AND w."hostInstanceId" IS NULL
           AND (ac."nextHeartbeatAt" IS NULL OR ac."nextHeartbeatAt" <= NOW())
           AND (
