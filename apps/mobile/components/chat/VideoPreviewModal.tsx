@@ -88,18 +88,26 @@ export function VideoPreviewModal({
   const videoHeight = Math.max(240, panelMaxHeight - 80)
   const BodyComponent: React.ElementType = isPhone ? GestureHandlerRootView : ModalBody
 
-  const unavailable = (
+  // The native player can't decode inline `data:` payloads (composer
+  // attachments), so those keep the "sent with your message" notice.
+  const inlineOnly = Platform.OS !== "web" && url.startsWith("data:")
+
+  const renderUnavailable = (message: string) => (
     <View className="items-center justify-center gap-3 p-8">
-      <VideoIcon size={40} className="text-muted-foreground" />
-      <Text className="text-sm text-muted-foreground text-center">
-        {failed ? "Could not play this video." : "Video preview is not available on this platform."}
+      <VideoIcon size={40} className={isPhone ? "text-white" : "text-muted-foreground"} />
+      <Text className={cn("text-center text-sm", isPhone ? "text-white" : "text-muted-foreground")}>
+        {message}
       </Text>
     </View>
   )
 
   const renderNativeVideo = (w: number, h: number) =>
-    failed ? (
-      unavailable
+    inlineOnly ? (
+      renderUnavailable(
+        "Video preview is not available for this attachment on this device.\nIt will be sent with your message.",
+      )
+    ) : failed ? (
+      renderUnavailable("Could not play this video.")
     ) : (
       <Suspense fallback={<ActivityIndicator size="large" />}>
         <NativeVideoView url={url} width={w} height={h} onError={() => setFailed(true)} />

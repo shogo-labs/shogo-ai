@@ -28,6 +28,16 @@ export default function NativeVideoView({ url, width, height, onError }: NativeV
     if (failed) onError?.()
   }, [failed, onError])
 
+  // A dead URL or a format the platform can't decode never fails the fetch
+  // above; the player reports it through its status instead.
+  useEffect(() => {
+    if (player.status === "error") onError?.()
+    const subscription = player.addListener("statusChange", ({ status }) => {
+      if (status === "error") onError?.()
+    })
+    return () => subscription.remove()
+  }, [player, onError])
+
   return (
     <View className="items-center justify-center bg-black" style={{ width, height }}>
       {source ? (
