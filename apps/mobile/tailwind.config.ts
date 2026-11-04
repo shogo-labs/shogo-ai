@@ -249,6 +249,14 @@ module.exports = {
         '2xs': '10px',
       },
       boxShadow: {
+        // The dock card above the composer sits on the light theme's warm
+        // off-white canvas, where Tailwind's `shadow-md` (two pure-black 10%
+        // layers) reads as a heavy grey smudge. This mirrors the light
+        // `--shadow-agent` token in global.css: a warm stone tint at 4%.
+        // It is written out literally because NativeWind cannot resolve a CSS
+        // var inside a native shadow; `dock-shadow-token.test.ts` keeps the two
+        // definitions in sync. Dark mode keeps today's `dark:shadow-md`.
+        dock: '0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.04)',
         'hard-1': '-2px 2px 8px 0px rgba(38, 38, 38, 0.20)',
         'hard-2': '0px 3px 10px 0px rgba(38, 38, 38, 0.20)',
         'hard-3': '2px 2px 8px 0px rgba(38, 38, 38, 0.20)',
