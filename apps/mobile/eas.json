@@ -47,7 +47,7 @@
   "submit": {
     "staging": {
       "android": {
-        "serviceAccountKeyPath": "./google-services.json",
+        "serviceAccountKeyPath": "./play-store-service-account.json",
         "track": "internal"
       },
       "ios": {
@@ -58,7 +58,7 @@
     },
     "production": {
       "android": {
-        "serviceAccountKeyPath": "./google-services.json",
+        "serviceAccountKeyPath": "./play-store-service-account.json",
         "track": "production"
       },
       "ios": {

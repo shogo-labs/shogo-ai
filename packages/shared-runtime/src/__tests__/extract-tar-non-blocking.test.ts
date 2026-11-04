@@ -133,13 +133,13 @@ describe('extractTarFastNonBlocking', () => {
     }
 
     // Only enforce the responsiveness check when extraction was long enough
-    // to actually exercise the event loop (>100ms). Tiny archives finish
-    // before the probe even fires.
+    // to actually exercise the event loop (>100ms). Fast extractions can
+    // finish before Bun dispatches the first 25ms interval callback.
     if (extractMs > 100) {
+      // A long extraction must allow the event loop to process the probe.
+      expect(ticks.length).toBeGreaterThan(0)
       expect(maxGap).toBeLessThan(200)
     }
-    // We must have observed *some* ticks during extraction.
-    expect(ticks.length).toBeGreaterThan(0)
   })
 })
 
