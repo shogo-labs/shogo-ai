@@ -46,6 +46,7 @@ import {
   ActiveUsersTrendChart,
 } from '../../../components/analytics/SharedAnalytics'
 import { API_BASE, fetchAdminJson, AnalyticsHeader } from '../_analytics-shared'
+import { usePanelSequence, SUPERSEDED } from '../_panel-sequence'
 
 // =============================================================================
 // Marketing-specific types
@@ -169,41 +170,163 @@ export default function AdminMarketingAnalyticsPage() {
 
   const internalParam = excludeInternal ? 'true' : 'false'
 
-  const loadAll = useCallback(async () => {
-    const pParams = { period, excludeInternal: internalParam }
-
+  /**
+   * One loader per panel, each depending only on the params *it* sends (see the
+   * same split in ../ai-analytics.tsx): paging the user-activity table used to
+   * refetch all nine panels, so one page of twenty rows cost a full platform
+   * overview, both timeseries, the funnel, the source breakdown and the digest.
+   */
+  const trackOverview = usePanelSequence()
+  const loadOverview = useCallback(async () => {
     setOverview((s) => ({ ...s, loading: true }))
+    const data = await trackOverview(() => fetchAdminJson<OverviewData>('/analytics/overview'))
+    if (data === SUPERSEDED) return
+    setOverview({ data, loading: false })
+  }, [trackOverview])
+
+  const trackActiveUsers = usePanelSequence()
+  const loadActiveUsers = useCallback(async () => {
     setActiveUsers((s) => ({ ...s, loading: true }))
+    const data = await trackActiveUsers(() => fetchAdminJson<ActiveUsersData>('/analytics/active-users', {
+      period,
+      excludeInternal: internalParam,
+    }))
+    if (data === SUPERSEDED) return
+    setActiveUsers({ data, loading: false })
+  }, [period, internalParam, trackActiveUsers])
+
+  const trackActivityTs = usePanelSequence()
+  const loadActivityTs = useCallback(async () => {
     setActivityTs((s) => ({ ...s, loading: true }))
+    const data = await trackActivityTs(() => fetchAdminJson<ActivityTimeseriesPoint[]>('/analytics/activity-timeseries', {
+      period,
+      excludeInternal: internalParam,
+    }))
+    if (data === SUPERSEDED) return
+    setActivityTs({ data, loading: false })
+  }, [period, internalParam, trackActivityTs])
+
+  const trackActiveUsersTs = usePanelSequence()
+  const loadActiveUsersTs = useCallback(async () => {
     setActiveUsersTs((s) => ({ ...s, loading: true }))
+    const data = await trackActiveUsersTs(() => fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', {
+      period,
+      excludeInternal: internalParam,
+    }))
+    if (data === SUPERSEDED) return
+    setActiveUsersTs({ data, loading: false })
+  }, [period, internalParam, trackActiveUsersTs])
+
+  const trackFunnel = usePanelSequence()
+  const loadFunnel = useCallback(async () => {
     setFunnel((s) => ({ ...s, loading: true }))
+    const data = await trackFunnel(() => fetchAdminJson<FunnelData>('/analytics/funnel', {
+      period,
+      excludeInternal: internalParam,
+    }))
+    if (data === SUPERSEDED) return
+    setFunnel({ data, loading: false })
+  }, [period, internalParam, trackFunnel])
+
+  const trackUserActivity = usePanelSequence()
+  const loadUserActivity = useCallback(async () => {
     setUserActivity((s) => ({ ...s, loading: true }))
+    const data = await trackUserActivity(() => fetchAdminJson<UserActivityData>('/analytics/user-activity', {
+      period,
+      excludeInternal: internalParam,
+      page: String(userPage),
+      limit: '20',
+    }))
+    if (data === SUPERSEDED) return
+    setUserActivity({ data, loading: false })
+  }, [period, internalParam, userPage, trackUserActivity])
+
+  const trackSourceBreakdown = usePanelSequence()
+  const loadSourceBreakdown = useCallback(async () => {
     setSourceBreakdown((s) => ({ ...s, loading: true }))
+    const data = await trackSourceBreakdown(() => fetchAdminJson<SourceBreakdownData>('/analytics/source-breakdown', {
+      period,
+      excludeInternal: internalParam,
+    }))
+    if (data === SUPERSEDED) return
+    setSourceBreakdown({ data, loading: false })
+  }, [period, internalParam, trackSourceBreakdown])
+
+  const trackAiDigest = usePanelSequence()
+  const loadAiDigest = useCallback(async () => {
     setAiDigest((s) => ({ ...s, loading: true }))
+    const data = await trackAiDigest(() => fetchAdminJson<AIDigestData>('/analytics/ai-digest'))
+    if (data === SUPERSEDED) return
+    setAiDigest({ data, loading: false })
+  }, [trackAiDigest])
+
+  const trackDigestList = usePanelSequence()
+  const loadDigestList = useCallback(async () => {
     setDigestList((s) => ({ ...s, loading: true }))
+    const data = await trackDigestList(() => fetchAdminJson<AIDigestListItem[]>('/analytics/ai-digest/list', { limit: '14' }))
+    if (data === SUPERSEDED) return
+    setDigestList({ data, loading: false })
+  }, [trackDigestList])
 
-    const [ov, au, act, auTs, fn, ua, sb, dig, dl] = await Promise.all([
-      fetchAdminJson<OverviewData>('/analytics/overview'),
-      fetchAdminJson<ActiveUsersData>('/analytics/active-users', pParams),
-      fetchAdminJson<ActivityTimeseriesPoint[]>('/analytics/activity-timeseries', pParams),
-      fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', pParams),
-      fetchAdminJson<FunnelData>('/analytics/funnel', pParams),
-      fetchAdminJson<UserActivityData>('/analytics/user-activity', { ...pParams, page: String(userPage), limit: '20' }),
-      fetchAdminJson<SourceBreakdownData>('/analytics/source-breakdown', pParams),
-      fetchAdminJson<AIDigestData>('/analytics/ai-digest'),
-      fetchAdminJson<AIDigestListItem[]>('/analytics/ai-digest/list', { limit: '14' }),
+  const loadAll = useCallback(async () => {
+    await Promise.all([
+      loadOverview(),
+      loadActiveUsers(),
+      loadActivityTs(),
+      loadActiveUsersTs(),
+      loadFunnel(),
+      loadUserActivity(),
+      loadSourceBreakdown(),
+      loadAiDigest(),
+      loadDigestList(),
     ])
+  }, [
+    loadOverview,
+    loadActiveUsers,
+    loadActivityTs,
+    loadActiveUsersTs,
+    loadFunnel,
+    loadUserActivity,
+    loadSourceBreakdown,
+    loadAiDigest,
+    loadDigestList,
+  ])
 
-    setOverview({ data: ov, loading: false })
-    setActiveUsers({ data: au, loading: false })
-    setActivityTs({ data: act, loading: false })
-    setActiveUsersTs({ data: auTs, loading: false })
-    setFunnel({ data: fn, loading: false })
-    setUserActivity({ data: ua, loading: false })
-    setSourceBreakdown({ data: sb, loading: false })
-    setAiDigest({ data: dig, loading: false })
-    setDigestList({ data: dl, loading: false })
-  }, [period, userPage, internalParam])
+  useEffect(() => {
+    void loadOverview()
+  }, [loadOverview])
+
+  useEffect(() => {
+    void loadActiveUsers()
+  }, [loadActiveUsers])
+
+  useEffect(() => {
+    void loadActivityTs()
+  }, [loadActivityTs])
+
+  useEffect(() => {
+    void loadActiveUsersTs()
+  }, [loadActiveUsersTs])
+
+  useEffect(() => {
+    void loadFunnel()
+  }, [loadFunnel])
+
+  useEffect(() => {
+    void loadUserActivity()
+  }, [loadUserActivity])
+
+  useEffect(() => {
+    void loadSourceBreakdown()
+  }, [loadSourceBreakdown])
+
+  useEffect(() => {
+    void loadAiDigest()
+  }, [loadAiDigest])
+
+  useEffect(() => {
+    void loadDigestList()
+  }, [loadDigestList])
 
   const handleGenerateDigest = useCallback(async () => {
     setGenerating(true)
@@ -228,10 +351,6 @@ export default function AdminMarketingAnalyticsPage() {
     const dig = await fetchAdminJson<AIDigestData>('/analytics/ai-digest', { date })
     setAiDigest({ data: dig, loading: false })
   }, [])
-
-  useEffect(() => {
-    loadAll()
-  }, [loadAll])
 
   const onRefresh = async () => {
     setRefreshing(true)

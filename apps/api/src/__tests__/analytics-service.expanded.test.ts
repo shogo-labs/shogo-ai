@@ -63,6 +63,9 @@ function enqueueQueryRaw(...batches: any[][]) {
   queryRawQueue.push(...batches)
 }
 
+/** Every `$queryRaw*` statement, in call order — the rollups are asserted here. */
+let rawSqlLog: string[] = []
+
 function matchWhere<T extends Record<string, any>>(row: T, where?: any): boolean {
   if (!where) return true
   for (const [k, v] of Object.entries(where)) {
@@ -168,8 +171,14 @@ const mockPrisma: any = {
   apiKey: makeModel(store.apiKeys),
   appInstall: makeModel(store.appInstalls),
   deviceVersionEvent: makeModel(store.deviceVersionEvents),
-  $queryRawUnsafe: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
-  $queryRaw: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
+  $queryRawUnsafe: async (sql: string) => {
+    rawSqlLog.push(sql)
+    return queryRawQueue.length ? queryRawQueue.shift()! : []
+  },
+  $queryRaw: async (sql: string) => {
+    rawSqlLog.push(sql)
+    return queryRawQueue.length ? queryRawQueue.shift()! : []
+  },
 }
 
 mock.module('../lib/prisma', () => ({
@@ -187,6 +196,7 @@ mock.module('../lib/prisma', () => ({
 // SQLite/local path before importing the module.
 process.env.SHOGO_LOCAL_MODE = 'true'
 const analytics = await import('../services/analytics.service')
+const { clearAnalyticsCache } = await import('../lib/analytics-cache')
 
 function rebuildModels() {
   mockPrisma.usageEvent = makeModel(store.usageEvents)
@@ -219,6 +229,9 @@ beforeEach(() => {
   store.appInstalls.length = 0
   store.deviceVersionEvents.length = 0
   queryRawQueue = []
+  rawSqlLog = []
+  // The usage-group scan `getUsageSummary` reads from is cached per window.
+  clearAnalyticsCache()
   rebuildModels()
 })
 
@@ -506,8 +519,8 @@ describe('getUsageLog', () => {
 describe('getUsageSummary', () => {
   test('aggregates per (member, model) pair with totals', async () => {
     store.usageEvents.push(
-      { actionType: 'ai_proxy_completion', memberId: 'u-1', billedUsd: 1, rawUsd: 0.8, workspaceId: 'w-1', projectId: 'p-1', source: 'monthly', createdAt: new Date(), actionMetadata: { model: 'm1', inputTokens: 100, outputTokens: 50, totalTokens: 150 } },
-      { actionType: 'ai_proxy_completion', memberId: 'u-1', billedUsd: 2, rawUsd: 1.6, workspaceId: 'w-1', projectId: 'p-1', source: 'monthly', createdAt: new Date(), actionMetadata: { model: 'm1', inputTokens: 200, outputTokens: 100, totalTokens: 300 } },
+      { actionType: 'ai_proxy_completion', memberId: 'u-1', billedUsd: 1, rawUsd: 0.8, workspaceId: 'w-1', projectId: 'p-1', source: 'monthly', createdAt: new Date(Date.now() - 60_000), actionMetadata: { model: 'm1', inputTokens: 100, outputTokens: 50, totalTokens: 150 } },
+      { actionType: 'ai_proxy_completion', memberId: 'u-1', billedUsd: 2, rawUsd: 1.6, workspaceId: 'w-1', projectId: 'p-1', source: 'monthly', createdAt: new Date(Date.now() - 60_000), actionMetadata: { model: 'm1', inputTokens: 200, outputTokens: 100, totalTokens: 300 } },
     )
     store.users.push({ id: 'u-1', name: 'A', email: 'a@x', image: null })
     rebuildModels()
@@ -632,36 +645,19 @@ describe('parseMeta + voiceLabel branches', () => {
 // =========================================================================
 
 describe('getSpendTimeseries', () => {
+  /** `getSpendTimeseries` answers from one grouped statement + one totals row. */
+  const enqueueSpend = (groups: any[], totals: any) => enqueueQueryRaw(groups, [totals])
+
   test('groups by model by default and zero-fills days', async () => {
     const from = new Date('2026-01-01T00:00:00.000Z')
     const to = new Date('2026-01-03T00:00:00.000Z')
-    store.usageEvents.push(
-      {
-        id: 'e-1',
-        actionType: 'ai_proxy_completion',
-        memberId: 'u-1',
-        billedUsd: 1,
-        rawUsd: 0.8,
-        workspaceId: 'w-1',
-        projectId: 'p-1',
-        source: 'monthly',
-        createdAt: new Date('2026-01-01T12:00:00.000Z'),
-        actionMetadata: { model: 'claude' },
-      },
-      {
-        id: 'e-2',
-        actionType: 'ai_proxy_completion',
-        memberId: 'u-2',
-        billedUsd: 2,
-        rawUsd: 1.5,
-        workspaceId: 'w-1',
-        projectId: 'p-1',
-        source: 'overage',
-        createdAt: new Date('2026-01-02T12:00:00.000Z'),
-        actionMetadata: { model: 'gpt-4' },
-      },
+    enqueueSpend(
+      [
+        { day: '2026-01-01', series: 'claude', spend: 1, tokens: 0, requests: 1 },
+        { day: '2026-01-02', series: 'gpt-4', spend: 2, tokens: 0, requests: 1 },
+      ],
+      { spend: 3, onDemand: 2, modelCost: 2.4, shogoFee: 0.6, unitemized: 0 },
     )
-    rebuildModels()
     const out = await analytics.getSpendTimeseries(
       { workspaceId: 'w-1' },
       '30d',
@@ -674,89 +670,47 @@ describe('getSpendTimeseries', () => {
     expect(out.totals.totalOnDemandUsd).toBe(2)
     expect(out.totals.totalIncludedUsd).toBe(1)
     expect(out.days.length).toBeGreaterThanOrEqual(2)
+    // Two statements, both filtered by the window and the scope.
+    expect(rawSqlLog).toHaveLength(2)
+    expect(rawSqlLog[0]).toContain('GROUP BY 1, 2')
+    expect(rawSqlLog[0]).toContain('t.\"workspaceId\" = ?')
+    expect(rawSqlLog[1]).toContain('"onDemand"')
   })
 
   test('falls back to rawUsd then meta.rawUsd / dollarCost when billedUsd is 0', async () => {
     const from = new Date('2026-02-01T00:00:00.000Z')
     const to = new Date('2026-02-02T00:00:00.000Z')
-    store.usageEvents.push(
-      {
-        id: 'e-1',
-        actionType: 'ai_proxy_completion',
-        memberId: 'u-1',
-        billedUsd: 0,
-        rawUsd: 0.5,
-        workspaceId: 'w-1',
-        projectId: 'p-1',
-        source: 'monthly',
-        createdAt: new Date('2026-02-01T12:00:00.000Z'),
-        actionMetadata: { model: 'm1' },
-      },
-      {
-        id: 'e-2',
-        actionType: 'ai_proxy_completion',
-        memberId: 'u-1',
-        billedUsd: 0,
-        rawUsd: null,
-        workspaceId: 'w-1',
-        projectId: 'p-1',
-        source: 'monthly',
-        createdAt: new Date('2026-02-01T13:00:00.000Z'),
-        actionMetadata: { model: 'm2', rawUsd: 0.25 },
-      },
-      {
-        id: 'e-3',
-        actionType: 'ai_proxy_completion',
-        memberId: 'u-1',
-        billedUsd: 0,
-        rawUsd: null,
-        workspaceId: 'w-1',
-        projectId: 'p-1',
-        source: 'monthly',
-        createdAt: new Date('2026-02-01T14:00:00.000Z'),
-        actionMetadata: { model: 'm3', dollarCost: 0.1 },
-      },
+    enqueueSpend(
+      [{ day: '2026-02-01', series: 'm1', spend: 0.85, tokens: 0, requests: 3 }],
+      { spend: 0.85, onDemand: 0, modelCost: 0.85, shogoFee: 0, unitemized: 0 },
     )
-    rebuildModels()
     const out = await analytics.getSpendTimeseries(
       { workspaceId: 'w-1' },
       '30d',
       { fromIso: from.toISOString(), toIso: to.toISOString() },
     )
     expect(out.totals.totalSpendUsd).toBeCloseTo(0.85, 5)
+
+    // The fallback ladder itself is now a SQL CASE on the event's own columns.
+    const statement = rawSqlLog[0]
+    expect(statement).toContain('"billedUsd" > 0')
+    expect(statement).toContain('t."rawUsd" IS NOT NULL AND t."rawUsd" > 0')
+    expect(statement).toContain("json_extract(t.\"actionMetadata\", '$.rawUsd')")
+    expect(statement).toContain("json_extract(t.\"actionMetadata\", '$.dollarCost')")
   })
 
   test('groupBy=user resolves user emails / names from prisma.user.findMany', async () => {
     const from = new Date('2026-03-01T00:00:00.000Z')
     const to = new Date('2026-03-02T00:00:00.000Z')
-    store.usageEvents.push(
-      {
-        id: 'e-1',
-        actionType: 'ai_proxy_completion',
-        memberId: 'u-1',
-        billedUsd: 1,
-        rawUsd: 0,
-        workspaceId: 'w-1',
-        projectId: 'p-1',
-        source: 'monthly',
-        createdAt: new Date('2026-03-01T12:00:00.000Z'),
-        actionMetadata: { model: 'claude', totalTokens: 100 },
-      },
-      {
-        id: 'e-2',
-        actionType: 'ai_proxy_completion',
-        memberId: 'system',
-        billedUsd: 1,
-        rawUsd: 0,
-        workspaceId: 'w-1',
-        projectId: 'p-1',
-        source: 'monthly',
-        createdAt: new Date('2026-03-01T13:00:00.000Z'),
-        actionMetadata: { model: 'claude' },
-      },
-    )
     store.users.push({ id: 'u-1', email: 'alice@x.com', name: 'Alice' })
     rebuildModels()
+    enqueueSpend(
+      [
+        { day: '2026-03-01', series: 'u-1', spend: 1, tokens: 100, requests: 1 },
+        { day: '2026-03-01', series: 'system', spend: 1, tokens: 0, requests: 1 },
+      ],
+      { spend: 2, onDemand: 0, modelCost: 2, shogoFee: 0, unitemized: 0 },
+    )
     const out = await analytics.getSpendTimeseries(
       { workspaceId: 'w-1' },
       '30d',
@@ -765,24 +719,17 @@ describe('getSpendTimeseries', () => {
     expect(out.groupBy).toBe('user')
     // alice@x.com series should appear plus the 'system' memberId fallback
     expect(out.models).toEqual(expect.arrayContaining(['alice@x.com', 'system']))
+    // The series column is the member id, resolved to a label in Node.
+    expect(rawSqlLog[0]).toContain('t."memberId" AS "series"')
   })
 
   test('groupBy=source / metric=tokens / metric=requests both work', async () => {
     const from = new Date('2026-04-01T00:00:00.000Z')
     const to = new Date('2026-04-02T00:00:00.000Z')
-    store.usageEvents.push({
-      id: 'e-1',
-      actionType: 'ai_proxy_completion',
-      memberId: 'u-1',
-      billedUsd: 1,
-      rawUsd: 0,
-      workspaceId: 'w-1',
-      projectId: 'p-1',
-      source: 'monthly',
-      createdAt: new Date('2026-04-01T12:00:00.000Z'),
-      actionMetadata: { model: 'claude', totalTokens: 200 },
-    })
-    rebuildModels()
+    enqueueSpend(
+      [{ day: '2026-04-01', series: 'monthly', spend: 1, tokens: 200, requests: 1 }],
+      { spend: 1, onDemand: 0, modelCost: 1, shogoFee: 0, unitemized: 0 },
+    )
     const tokensOut = await analytics.getSpendTimeseries(
       { workspaceId: 'w-1' },
       '30d',
@@ -791,34 +738,28 @@ describe('getSpendTimeseries', () => {
     expect(tokensOut.metric).toBe('tokens')
     expect(tokensOut.groupBy).toBe('source')
     expect(tokensOut.days.some((d) => d.total === 200)).toBe(true)
+    expect(rawSqlLog[0]).toContain('t."source" AS "series"')
 
+    enqueueSpend(
+      [{ day: '2026-04-01', series: 'claude', spend: 1, tokens: 200, requests: 4 }],
+      { spend: 1, onDemand: 0, modelCost: 1, shogoFee: 0, unitemized: 0 },
+    )
     const requestsOut = await analytics.getSpendTimeseries(
       { workspaceId: 'w-1' },
       '30d',
       { fromIso: from.toISOString(), toIso: to.toISOString(), metric: 'requests' },
     )
     expect(requestsOut.metric).toBe('requests')
-    expect(requestsOut.days.some((d) => d.total === 1)).toBe(true)
+    expect(requestsOut.days.some((d) => d.total === 4)).toBe(true)
   })
 
   test('collapses long-tail series into "Other" when over topN', async () => {
     const from = new Date('2026-05-01T00:00:00.000Z')
     const to = new Date('2026-05-02T00:00:00.000Z')
-    for (let i = 0; i < 5; i++) {
-      store.usageEvents.push({
-        id: `e-${i}`,
-        actionType: 'ai_proxy_completion',
-        memberId: 'u-1',
-        billedUsd: 10 - i, // ranked deterministically
-        rawUsd: 0,
-        workspaceId: 'w-1',
-        projectId: 'p-1',
-        source: 'monthly',
-        createdAt: new Date('2026-05-01T12:00:00.000Z'),
-        actionMetadata: { model: `m${i}` },
-      })
-    }
-    rebuildModels()
+    enqueueSpend(
+      [0, 1, 2, 3, 4].map((i) => ({ day: '2026-05-01', series: `m${i}`, spend: 10 - i, tokens: 0, requests: 1 })),
+      { spend: 40, onDemand: 0, modelCost: 40, shogoFee: 0, unitemized: 0 },
+    )
     const out = await analytics.getSpendTimeseries(
       { workspaceId: 'w-1' },
       '30d',
@@ -1460,7 +1401,7 @@ describe('getUsageSummary scope branches', () => {
       workspaceId: 'w-1',
       projectId: 'p-1',
       source: 'monthly',
-      createdAt: new Date(),
+      createdAt: new Date(Date.now() - 60_000),
       actionMetadata: { model: 'm', inputTokens: 10, outputTokens: 5, totalTokens: 15 },
     })
     rebuildModels()
@@ -1478,7 +1419,7 @@ describe('getUsageSummary scope branches', () => {
       workspaceId: 'w-1',
       projectId: 'p-1',
       source: 'monthly',
-      createdAt: new Date(),
+      createdAt: new Date(Date.now() - 60_000),
       actionMetadata: { model: 'm' },
     })
     rebuildModels()
@@ -1495,7 +1436,7 @@ describe('getUsageSummary scope branches', () => {
       workspaceId: 'w-1',
       projectId: 'p-1',
       source: 'monthly',
-      createdAt: new Date(),
+      createdAt: new Date(Date.now() - 60_000),
       actionMetadata: { model: 'm', rawUsd: 0.42 },
     })
     rebuildModels()
@@ -1510,24 +1451,25 @@ describe('getUsageSummary scope branches', () => {
 
 describe('getChatAnalytics with data', () => {
   test('projectId scope filters chat sessions to context and computes avg', async () => {
-    const now = new Date()
-    store.chatSessions.push(
-      { id: 's-1', contextId: 'p-1', createdAt: now, _count: { messages: 2 } },
-      { id: 's-2', contextId: 'p-1', createdAt: now, _count: { messages: 4 } },
+    // Three statements now (SHO-311): sessions per day, message count, tool-call
+    // count — each one already scoped to the project in SQL.
+    enqueueQueryRaw(
+      [{ day: '2026-06-01', count: 2 }],
+      [{ count: 2 }],
+      [{ count: 5 }],
     )
-    // chatMessage.count is a number; matchWhere will ignore the nested
-    // `session: { contextId, createdAt: {gte} }` because relation filters
-    // aren't recognised — instead it just returns the row count. Push two
-    // matching messages so totalMessages reports 2.
-    store.chatMessages.push(
-      { id: 'cm-1', role: 'user', agent: 'technical', sessionId: 's-1' },
-      { id: 'cm-2', role: 'user', agent: 'technical', sessionId: 's-1' },
-    )
-    rebuildModels()
     const out = await analytics.getChatAnalytics({ projectId: 'p-1' })
     expect(out.totalSessions).toBe(2)
     expect(out.totalMessages).toBe(2)
+    expect(out.totalToolCalls).toBe(5)
     expect(out.avgMessagesPerSession).toBe(1)
+    expect(out.dailySessions).toEqual([{ date: '2026-06-01', count: 2 }])
+    // Every statement carries the project scope; none of them reads a row list.
+    expect(rawSqlLog).toHaveLength(3)
+    for (const statement of rawSqlLog) {
+      expect(statement).toMatch(/COUNT\(\*\)/)
+      expect(statement).toContain('"contextId" = ?')
+    }
   })
 })
 
