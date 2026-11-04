@@ -23,6 +23,7 @@
  *   bun run scripts/mine-prod-failures.ts --export       # write redacted fixtures
  */
 
+import { redactSecretText } from './lib/redact-secrets'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -35,22 +36,11 @@ const REGIONS: Record<string, { context: string; endpoint: string }> = {
 const FAILOVER_ORDER = ['us', 'eu']
 const SYSTEM_NS = 'shogo-production-system'
 
-// --- Token-shaped secret redaction (kept in sync with apps/api crypto-util) -
-const SECRET_PATTERNS: RegExp[] = [
-  /\bgh[opsu]_[A-Za-z0-9]{20,}\b/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
-  /\bxox[abposr]-[A-Za-z0-9-]{10,}\b/g,
-  /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}\b/g,
-  /\bya29\.[A-Za-z0-9._-]{20,}\b/g,
-  /\bsk-(?:proj-|ant-)?[A-Za-z0-9-]{20,}\b/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
-  /\bBearer\s+[A-Za-z0-9._-]{20,}\b/gi,
-]
+// --- Token-shaped secret redaction (one list, in scripts/lib/redact-secrets.ts) -
+// Imported rather than duplicated: the compaction fixture exporter writes real
+// transcripts too, and a new key format must be covered in both places (SHO-327).
 function redact(text: string): string {
-  let out = text
-  for (const re of SECRET_PATTERNS) out = out.replace(re, '[redacted-secret]')
-  return out
+  return redactSecretText(text)
 }
 
 // --- Failure signature classification (mirrors the eval failure clusters) ---

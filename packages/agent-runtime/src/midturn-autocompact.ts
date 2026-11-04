@@ -91,9 +91,16 @@ export interface MidTurnAutocompactOptions {
   /**
    * Persist the compaction on the session. `splitIndex` is relative to
    * `session.messages`; `replaceSummary` is set when the new summary already
-   * folds in the previous one.
+   * folds in the previous one. Returns what the session now holds — the
+   * persisted summary (which carries the facts block) and its messages after
+   * the compaction — so the memo emits the session rather than a summary of its
+   * own making.
    */
-  apply: (summary: string, splitIndex: number, opts: { replaceSummary: boolean }) => void
+  apply: (
+    summary: string,
+    splitIndex: number,
+    opts: { replaceSummary: boolean },
+  ) => { summary?: string; kept?: Message[] } | void
   /** System prompt + tool schema tokens, counted in the trigger and the event. */
   promptOverheadTokens?: number
   minDeltaTokens?: number
@@ -122,6 +129,12 @@ interface Memo {
   /** Identity of the first surviving message — a cheap "still the same tail". */
   tailFirst: Message | undefined
   tailCount: number
+  /**
+   * The tail as the session holds it after the compaction, when it differs from
+   * the loop array (variant B rewrote some results). `null` when nothing was
+   * rewritten, so the memo slices the live array exactly as before.
+   */
+  keptTail: Message[] | null
 }
 
 export class MidTurnAutocompactor {
@@ -221,19 +234,29 @@ export class MidTurnAutocompactor {
         return { messages: wire, event: null }
       }
       const trigger: 'auto' | 'manual' = this.manualRequested ? 'manual' : 'auto'
-      this.opts.apply(summary, splitIndex - this.baseIndex, { replaceSummary: continuing })
+      const applied = this.opts.apply(summary, splitIndex - this.baseIndex, { replaceSummary: continuing })
+      // The session's summary carries the deterministic facts block; without it
+      // the emitted prefix would differ from `buildHistory` for the same
+      // session (the mid-turn wire used to drop the ground truth).
+      const effectiveSummary = applied?.summary || summary
+      const kept = applied?.kept
+      const tail = messages.slice(splitIndex)
+      // Only a variant that rewrote the tail needs a snapshot; otherwise the
+      // live array stays authoritative (byte-identical to before the feature).
+      const keptTail = kept && kept !== tail && kept.some((m, i) => m !== tail[i]) ? kept : null
 
-      const prefix = buildSummaryPrefixMessages(summary)
+      const prefix = buildSummaryPrefixMessages(effectiveSummary)
       this.memo = {
-        summary,
+        summary: effectiveSummary,
         prefix,
         tailStart: splitIndex,
         tailFirst: messages[splitIndex],
         tailCount: messages.length - splitIndex,
+        keptTail,
       }
       this.baseIndex = splitIndex
 
-      const emitted = [...prefix, ...messages.slice(splitIndex)]
+      const emitted = [...prefix, ...(keptTail ?? messages.slice(splitIndex))]
       const tokensAfter = this.estimate(emitted)
       this.lastCompactionTokens = tokensAfter
       this.manualRequested = false
@@ -247,7 +270,7 @@ export class MidTurnAutocompactor {
           tokensAfter,
           messagesBefore: wire.length,
           messagesAfter: emitted.length,
-          summaryChars: summary.length,
+          summaryChars: effectiveSummary.length,
         },
       }
     } catch (err: any) {
@@ -293,7 +316,10 @@ export class MidTurnAutocompactor {
       const found = memo.tailFirst ? messages.indexOf(memo.tailFirst) : -1
       tailStart = found >= 0 ? found : Math.max(0, messages.length - memo.tailCount)
     }
-    return [...memo.prefix, ...messages.slice(tailStart)]
+    if (!memo.keptTail) return [...memo.prefix, ...messages.slice(tailStart)]
+    // The snapshot holds the first `keptTail.length` messages of the tail as the
+    // session has them; anything the loop appended since is still live.
+    return [...memo.prefix, ...memo.keptTail, ...messages.slice(tailStart + memo.keptTail.length)]
   }
 
   private estimate(messages: Message[]): number {

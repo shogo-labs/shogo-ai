@@ -151,6 +151,23 @@ import { DockerStatsCollector, formatMillicores } from './docker-stats-collector
 const args = process.argv.slice(2)
 
 const trackArg = getArg(args, 'track', 'all')!
+
+// The compaction track is its own runner (SHO-327): it does not execute agent
+// turns, it compacts a recorded session and measures the wire. Delegating keeps
+// one command name (`run-eval --track compaction`) without pretending the
+// agent-loop harness applies.
+if (trackArg === 'compaction') {
+  const { spawnSync } = await import('node:child_process')
+  const passthrough = args.filter((a) => a !== '--track=compaction' && a !== 'compaction')
+  const idx = passthrough.indexOf('--track')
+  if (idx >= 0) passthrough.splice(idx, 2)
+  const run = spawnSync(
+    process.execPath,
+    ['run', `${import.meta.dir}/compaction/run-compaction-eval.ts`, ...passthrough],
+    { stdio: 'inherit' },
+  )
+  process.exit(run.status ?? 1)
+}
 // `reliability-regression` is the combined release-gate track (every
 // WS1-WS9 reproduction + the coding/tool-discipline suites it maps 1:1 to
 // prod-baseline.sql for) — see its definition below. Hoshi is Shogo's
@@ -456,7 +473,7 @@ function getEvals(track: string): AgentEval[] {
     case 'non-agentic': return [...NO_LLM_CACHE_EVALS, ...WORKSPACE_ATTACHMENT_EVALS, ...WORKSPACE_BUILDS_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_SMOKE_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...ROOT_CAUSE_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS]
     case 'all': return [...NO_LLM_CACHE_EVALS, ...WORKSPACE_ATTACHMENT_EVALS, ...WORKSPACE_BUILDS_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...UNIFIED_CONNECT_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...TOOL_DISCIPLINE_EVALS, ...TYPED_BUILD_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...ROOT_CAUSE_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...AGENT_HARDENING_EVALS, ...AUTONOMY_EVALS, ...CHECKPOINT_EVALS, ...ERROR_CONVERGENCE_EVALS, ...SECRET_HYGIENE_EVALS, ...CONTEXT_RETENTION_EVALS, ...SECURE_AUTH_EVALS, ...BACKGROUND_TASK_EVALS, ...ORCHESTRATION_EVALS, ...REACTIVE_EVALS, ...SAMSARA_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: workspace-builds, canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, tool-discipline, typed-build, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, orchestration, reactive, samsara, knowledge-graph, token-budget, plan, root-cause, workspace-attachments, preview-url, truncation, codegen-safety, verification, loops, long-task, background-tasks, test-hygiene, agent-hardening, autonomy, checkpoints, error-convergence, secret-hygiene, context-retention, secure-auth, reliability-regression, cache-efficiency, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
+      console.error(`Unknown track: ${track}. Valid: compaction, workspace-builds, canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, unified-connect, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, tool-discipline, typed-build, subagent, subagent-smoke, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, orchestration, reactive, samsara, knowledge-graph, token-budget, plan, root-cause, workspace-attachments, preview-url, truncation, codegen-safety, verification, loops, long-task, background-tasks, test-hygiene, agent-hardening, autonomy, checkpoints, error-convergence, secret-hygiene, context-retention, secure-auth, reliability-regression, cache-efficiency, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, non-agentic, all`)
       process.exit(1)
   }
 }
