@@ -178,6 +178,16 @@ interface SqlDialect {
   bind(value: unknown): string
   /** `column` truncated to its UTC day, as the text `YYYY-MM-DD`. */
   day(column: string): string
+  /**
+   * `SUM` of a float (money/token) expression, `0` over no rows.
+   *
+   * Not `COALESCE(SUM(x), 0)` on SQLite: `SUM` returns an INTEGER when every
+   * row of the group hits an integer zero, and the driver types the whole
+   * result column from the first row it sees — so one zero-spend group at the
+   * top turns every later fractional spend into `0n`. `TOTAL` always returns a
+   * float (and `0.0` over no rows), so the column stays real (SHO-336).
+   */
+  sumReal(expr: string): string
   /** JSON number at `column.key`; NULL when absent or not a number. */
   jsonNumber(column: string, key: string): string
   /** JSON text at `column.key`; NULL when absent. */
@@ -235,6 +245,7 @@ function sqlDialect(): SqlDialect {
       params,
       bind,
       day: (column) => `strftime('%Y-%m-%d', ${column})`,
+      sumReal: (expr) => `TOTAL(${expr})`,
       jsonNumber: (column, key) =>
         guarded(
           column,
@@ -279,6 +290,7 @@ function sqlDialect(): SqlDialect {
     params,
     bind,
     day: (column) => `TO_CHAR(${column}, 'YYYY-MM-DD')`,
+    sumReal: (expr) => `COALESCE(SUM(${expr}), 0)`,
     jsonNumber: (column, key) =>
       `(CASE WHEN jsonb_typeof(${column}->'${key}') = 'number'`
       + ` THEN (${column}->>'${key}')::numeric ELSE NULL END)`,
@@ -1449,8 +1461,8 @@ export async function getSpendTimeseries(
   const grouped = await prisma.$queryRawUnsafe<any[]>(
     `SELECT ${groupDialect.day('t."createdAt"')} AS "day",
         ${seriesExpr} AS "series",
-        COALESCE(SUM(${measureGroup.cost}), 0) AS "spend",
-        COALESCE(SUM(${measureGroup.tokens}), 0) AS "tokens",
+        ${groupDialect.sumReal(measureGroup.cost)} AS "spend",
+        ${groupDialect.sumReal(measureGroup.tokens)} AS "tokens",
         COUNT(*) AS "requests"
       FROM "usage_events" t
       WHERE ${measureGroup.conditions.join(' AND ')}
@@ -1520,11 +1532,11 @@ export async function getSpendTimeseries(
   const measureTotals = measure(totalDialect)
   const overageCost = `CASE WHEN t."source" = 'overage' THEN ${measureTotals.cost} ELSE 0 END`
   const [totalsRow] = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT COALESCE(SUM(${measureTotals.cost}), 0) AS "spend",
-        COALESCE(SUM(${overageCost}), 0) AS "onDemand",
-        COALESCE(SUM(${measureTotals.modelCost}), 0) AS "modelCost",
-        COALESCE(SUM(${measureTotals.shogoFee}), 0) AS "shogoFee",
-        COALESCE(SUM(${measureTotals.unitemized}), 0) AS "unitemized"
+    `SELECT ${totalDialect.sumReal(measureTotals.cost)} AS "spend",
+        ${totalDialect.sumReal(overageCost)} AS "onDemand",
+        ${totalDialect.sumReal(measureTotals.modelCost)} AS "modelCost",
+        ${totalDialect.sumReal(measureTotals.shogoFee)} AS "shogoFee",
+        ${totalDialect.sumReal(measureTotals.unitemized)} AS "unitemized"
       FROM "usage_events" t
       WHERE ${measureTotals.conditions.join(' AND ')}`,
     ...totalDialect.params,
@@ -2605,10 +2617,10 @@ export async function getQualityTimeseries(
           WHEN t."rawUsd" IS NOT NULL AND t."rawUsd" > 0 THEN t."rawUsd"
           ELSE COALESCE(${d.jsonNumber('t."actionMetadata"', 'rawUsd')}, ${d.jsonNumber('t."actionMetadata"', 'dollarCost')}, 0) END)`
       const sql = `SELECT ${d.day('t."createdAt"')} AS "day",
-          COALESCE(SUM(${d.jsonNumber('t."actionMetadata"', 'cachedInputTokens')}), 0) AS "cached",
-          COALESCE(SUM(${d.jsonNumber('t."actionMetadata"', 'cacheWriteTokens')}), 0) AS "cacheWrite",
-          COALESCE(SUM(${d.jsonNumber('t."actionMetadata"', 'inputTokens')}), 0) AS "input",
-          COALESCE(SUM(${cost}), 0) AS "spend",
+          ${d.sumReal(d.jsonNumber('t."actionMetadata"', 'cachedInputTokens'))} AS "cached",
+          ${d.sumReal(d.jsonNumber('t."actionMetadata"', 'cacheWriteTokens'))} AS "cacheWrite",
+          ${d.sumReal(d.jsonNumber('t."actionMetadata"', 'inputTokens'))} AS "input",
+          ${d.sumReal(cost)} AS "spend",
           COUNT(DISTINCT CASE WHEN t."memberId" <> 'system' THEN t."memberId" END) AS "activeUsers"
         FROM "usage_events" t
         WHERE ${conditions.join(' AND ')}
