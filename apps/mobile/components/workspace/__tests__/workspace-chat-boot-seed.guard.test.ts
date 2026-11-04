@@ -171,3 +171,31 @@ describe('the workspace agent screen opens from the device', () => {
     expect(screen).toContain('rememberWorkspaceChatBoot<PersonalAgentProfile>(bootKey, {')
   })
 })
+
+describe('the landing chat is not rebuilt when the collection answers', () => {
+  const landing = read('app/(app)/index.tsx')
+  const agent = read('app/(app)/agent.tsx')
+
+  test('its key survives loading → first workspace', () => {
+    // `key={workspaceInView?.id ?? 'workspace-loading'}` changed the moment the
+    // collection answered, so the screen was torn down and rebuilt on every
+    // cold start. The rebuilt instance has a fresh single-flight ref, so the
+    // landing minted a SECOND empty chat for the same workspace — CI saw two
+    // empty landing chats 30 ms apart (SHO-309). The key must come from
+    // `useWorkspaceRemountKey`, which only bumps for a genuinely different
+    // workspace (the same fix SHO-298 applied to the phone shell).
+    expect(landing).not.toContain("key={workspaceInView?.id ?? 'workspace-loading'}")
+    expect(landing).toContain('const homeChatMountKey = useWorkspaceRemountKey(workspaceInView?.id)')
+    expect(landing).toMatch(/<WorkspaceAgentChatScreen\s+key=\{homeChatMountKey\}/)
+  })
+
+  test('the agent route keeps its chat across the same window', () => {
+    // Same defect on `/agent`: the remount re-ran the load, and the instance
+    // that mounted before the collection answered had no `chatSessionId` yet,
+    // so it fell back to the primary chat and adopted it — the reopen then
+    // downloaded a page for a chat the device had never seen (SHO-309).
+    expect(agent).not.toContain("key={`${workspace?.id ?? 'workspace-loading'}:${chatSessionId ?? ''}`}")
+    expect(agent).toContain('const mountKey = useWorkspaceRemountKey(workspace?.id)')
+    expect(agent).toContain('key={`${mountKey}:${chatSessionId ?? \'\'}`}')
+  })
+})
