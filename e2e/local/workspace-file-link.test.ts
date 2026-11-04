@@ -294,16 +294,42 @@ test.describe("Workspace file viewer: icon Download and a shareable file link", 
     await opened.goto("/")
     await composer(opened).waitFor({ state: "visible", timeout: 60_000 })
 
-    const stranger = `${new URL(opened.url()).origin}/agent?workspace=11111111-2222-3333-4444-555555555555&file=${encodeURIComponent(
-      `${projectId}/E2E-REPORT.md`,
-    )}`
-    await opened.goto(stranger)
+    // Opening `/` also restores the chat this account last used, and the app
+    // adopts that chat's workspace — an automatic switch with nothing to do
+    // with the link, between two workspaces the person is actually in. Let it
+    // settle, then hold the arrival to its own rule: the stranger must not
+    // change what is on screen.
+    const settled = () =>
+      opened.evaluate(() => localStorage.getItem("shogo:active-workspace-id"))
+    await expect
+      .poll(
+        async () => {
+          const first = await settled()
+          await opened.waitForTimeout(1_500)
+          const second = await settled()
+          // A value that held still across the window is the settled one.
+          return first === second ? second : ""
+        },
+        { timeout: 30_000, message: "the app settles on one of the person's workspaces" },
+      )
+      .not.toBe("")
+    const activeBefore = await settled()
+    expect([workspaceId, otherWorkspaceId]).toContain(activeBefore)
+
+    const stranger = "11111111-2222-3333-4444-555555555555"
+    await opened.goto(
+      `${new URL(opened.url()).origin}/agent?workspace=${stranger}&file=${encodeURIComponent(`${projectId}/E2E-REPORT.md`)}`,
+    )
     await expect(opened.getByTestId("workspace-file-link-denied")).toContainText(
       "You don't have access to this workspace.",
       { timeout: 60_000 },
     )
     await expect(opened.getByTestId("workspace-file-viewer")).toHaveCount(0)
-    expect(await opened.evaluate(() => localStorage.getItem("shogo:active-workspace-id"))).toBe(otherWorkspaceId)
+    // A workspace this account cannot see may not become the active one, and the
+    // link may not move the person off where they already were.
+    const activeAfter = await settled()
+    expect(activeAfter).not.toBe(stranger)
+    expect(activeAfter).toBe(activeBefore)
     await opened.close()
   })
 

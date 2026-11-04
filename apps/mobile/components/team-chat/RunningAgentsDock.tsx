@@ -165,7 +165,7 @@ export function RunningAgentsDock({
       ) : (
         <View
           testID="running-agents-dock"
-          className="overflow-hidden rounded-xl border border-border/60 bg-popover shadow-md"
+          className="overflow-hidden rounded-xl border border-border/60 bg-popover shadow-dock dark:shadow-md"
         >
           {rows}
         </View>
