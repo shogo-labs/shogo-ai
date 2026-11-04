@@ -38,7 +38,7 @@ import {
   shouldShowPlanningStatus,
 } from "./turnShaping"
 import { buildFallbackWorkedLabel } from "./workSummary"
-import { TASK_TOOL_NAMES, extractOrderedParts } from "./messageParts"
+import { TASK_TOOL_NAMES, extractOrderedParts, type PartReuseCache } from "./messageParts"
 import { useChatContextSafe } from "../ChatContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { ChatMarkdown } from "../ChatMarkdown"
@@ -482,6 +482,14 @@ export const AssistantContent = memo(
     }, [])
 
     const toggleCacheRef = useRef<Map<string, () => void>>(new Map())
+
+    // Holding a joined turn costs one object per part it already had, not one
+    // per part per commit (SHO-306). Both caches are plain identity reuse: a
+    // part that is still the same raw object, and a group whose items are still
+    // the same parts, keep the object they had last commit, so the memoised row
+    // they are handed bails out of this commit.
+    const partReuseRef = useRef<PartReuseCache>(new WeakMap())
+    const groupedReuseRef = useRef<GroupedMessagePart[] | undefined>(undefined)
     const getToggle = useCallback(
       (id: string) => {
         let fn = toggleCacheRef.current.get(id)
@@ -508,7 +516,7 @@ export const AssistantContent = memo(
     const throttledMessage = useThrottledWhileStreaming(message, isStreaming)
 
     const orderedParts = useMemo(
-      () => extractOrderedParts(throttledMessage),
+      () => extractOrderedParts(throttledMessage, partReuseRef.current),
       [throttledMessage],
     )
 
@@ -580,10 +588,11 @@ export const AssistantContent = memo(
       }
     }, [bare, orderedParts, todoStateStore, fileChangeStore])
 
-    const groupedParts = useMemo(
-      () => groupWorkParts(orderedParts),
-      [orderedParts],
-    )
+    const groupedParts = useMemo(() => {
+      const next = groupWorkParts(orderedParts, groupedReuseRef.current)
+      groupedReuseRef.current = next
+      return next
+    }, [orderedParts])
 
     const { workLog, finalSegment } = useMemo(
       () => partitionTurn(groupedParts),

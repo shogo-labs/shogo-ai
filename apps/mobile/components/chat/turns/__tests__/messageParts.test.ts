@@ -167,3 +167,77 @@ describe("extractOrderedParts — reasoning coalescing", () => {
     expect(later.find((p) => p.type === "reasoning")?.id).toBe("reasoning-1")
   })
 })
+
+/**
+ * SHO-306. A streamed delta appends to the turn's last message, so the message
+ * and its `parts` array are new on every chunk while the parts already in it
+ * keep their identity. Rebuilding a `MessagePart` for each of them gave every
+ * earlier row a new object, which defeated the row's memo and made a joined
+ * turn cost more on every commit the longer it was.
+ */
+describe("extractOrderedParts — reusing parts across deltas", () => {
+  function toolPart(i: number) {
+    return {
+      type: "dynamic-tool",
+      toolCallId: `call_${i}`,
+      toolName: "read_file",
+      state: "output-available",
+      input: { path: `src/file-${i}.ts` },
+      output: { ok: true },
+    }
+  }
+
+  test("a part that is still the same object yields the same MessagePart", () => {
+    const reuse = new WeakMap()
+    const raw = [toolPart(0), toolPart(1)]
+    const first = extractOrderedParts(asMessage(raw), reuse)
+    // The next delta: the same two raw parts, one more appended.
+    const second = extractOrderedParts(
+      asMessage([...raw, toolPart(2)]),
+      reuse,
+    )
+
+    expect(second[0]).toBe(first[0])
+    expect(second[1]).toBe(first[1])
+    expect(second[2]).not.toBe(first[0])
+  })
+
+  test("a part that changed is rebuilt, not reused", () => {
+    const reuse = new WeakMap()
+    const streaming = {
+      type: "dynamic-tool",
+      toolCallId: "call_0",
+      toolName: "read_file",
+      state: "input-available",
+      input: { path: "src/a.ts" },
+    }
+    const first = extractOrderedParts(asMessage([streaming]), reuse)
+    const finished = { ...streaming, state: "output-available", output: { ok: true } }
+    const second = extractOrderedParts(asMessage([finished]), reuse)
+
+    expect(second[0]).not.toBe(first[0])
+    expect(second[0]).toMatchObject({ type: "tool" })
+    if (second[0].type === "tool") expect(second[0].tool.state).toBe("success")
+  })
+
+  test("a part that moved keeps an id that belongs to its new position", () => {
+    const reuse = new WeakMap()
+    const first = { type: "text", text: "hello" }
+    const second = { type: "text", text: "world" }
+    const before = extractOrderedParts(asMessage([first, second]), reuse)
+    expect(before.map((p) => p.id)).toEqual(["text-0", "text-1"])
+
+    // Something before `second` disappeared, so it is at index 0 now — it must
+    // not keep `text-1`, which would collide with a part that lands there.
+    const after = extractOrderedParts(asMessage([second]), reuse)
+    expect(after).toHaveLength(1)
+    expect(after[0].id).toBe("text-0")
+    expect(after[0]).not.toBe(before[1])
+  })
+
+  test("without a cache every call builds fresh parts", () => {
+    const a = extractOrderedParts(asMessage([toolPart(0)]))
+    const b = extractOrderedParts(asMessage([toolPart(0)]))
+    expect(b[0]).not.toBe(a[0])
+  })
+})
