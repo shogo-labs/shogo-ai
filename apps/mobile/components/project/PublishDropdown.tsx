@@ -30,6 +30,7 @@ import {
   CheckCircle,
   XCircle,
   ChevronDown,
+  ChevronRight,
   History,
   UploadCloud,
   Database,
@@ -42,9 +43,8 @@ import {
   PopoverBody,
   PopoverContent,
 } from '@/components/ui/popover'
-import { api } from '../../lib/api'
+import { api, type CustomDomain } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
-import { CustomDomainsSection } from './CustomDomainsSection'
 import { AlwaysOnSection } from './AlwaysOnSection'
 import { isPublishPlanError, publishErrorMessage } from './publish-errors'
 
@@ -70,9 +70,42 @@ interface PublishDropdownProps {
   projectName: string
   /** Cross-link to the commit graph / checkpoints (IDE Checkpoint activity). */
   onViewHistory?: () => void
+  /**
+   * Imperatively open a section of the project's Settings pane. Custom-domain
+   * setup lives there (Settings → Publishing → Custom domain) rather than in
+   * this popover, so the row here only links to it.
+   */
+  onOpenSettingsItem?: (id: string) => void
 }
 
-export function PublishDropdown({ projectId, projectName, onViewHistory }: PublishDropdownProps) {
+/**
+ * One-line summary of the project's custom domains for the dropdown row —
+ * never the records themselves (that's what the Settings page is for).
+ */
+function describeDomainRow(domains: CustomDomain[]): string {
+  if (domains.length === 0) return 'Add your own domain'
+  // Apex + www are one domain to the user (they share a groupId).
+  const groups = new Map<string, CustomDomain[]>()
+  for (const d of domains) {
+    const key = d.groupId ?? d.id
+    const list = groups.get(key)
+    if (list) list.push(d)
+    else groups.set(key, [d])
+  }
+  const groupCount = groups.size
+  const needingDns = [...groups.values()].filter((g) => g.some((d) => d.status !== 'active')).length
+  const primary = domains.find((d) => d.primary) ?? domains[0]
+  if (groupCount === 1) {
+    if (needingDns === 0) return `${primary.hostname} · Live`
+    return `${primary.hostname} · ${primary.status === 'failed' ? 'Action needed' : 'Setting up'}`
+  }
+  const label = `${groupCount} domains`
+  return needingDns > 0
+    ? `${label} · ${needingDns} need${needingDns === 1 ? 's' : ''} DNS`
+    : `${label} · Live`
+}
+
+export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenSettingsItem }: PublishDropdownProps) {
   const http = useDomainHttp()
   const router = useRouter()
   const [isOpen, setIsOpen] = useState(false)
@@ -102,6 +135,12 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const [error, setError] = useState<string | null>(null)
   const [showAccessPicker, setShowAccessPicker] = useState(false)
 
+  // Custom-domain summary for the row that links out to Settings. `null` means
+  // not loaded / unavailable (feature off, or desktop not signed in to Cloud),
+  // which hides the row exactly like the old embedded section did.
+  const [customDomains, setCustomDomains] = useState<CustomDomain[] | null>(null)
+  const [domainsEnabled, setDomainsEnabled] = useState<boolean | null>(null)
+
   // Bumped after publish/republish/unpublish so the embedded AlwaysOnSection
   // (which self-loads publish state) re-fetches its slot meter + toggle state.
   const [publishStateNonce, setPublishStateNonce] = useState(0)
@@ -122,6 +161,26 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   useEffect(() => {
     loadPublishState()
   }, [isOpen, projectId])
+
+  // The dropdown only summarises the project's custom domains; the records and
+  // inputs live on the Settings → Custom domain page this row links to.
+  useEffect(() => {
+    if (!isOpen || !isPublished) return
+    let cancelled = false
+    api
+      .getCustomDomains(http, projectId)
+      .then((data) => {
+        if (cancelled) return
+        setDomainsEnabled(data.enabled)
+        setCustomDomains(data.domains ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setDomainsEnabled(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isOpen, isPublished, http, projectId])
 
   const loadPublishState = useCallback(async () => {
     try {
@@ -359,6 +418,8 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
       trigger={(triggerProps) => (
         <Pressable
           {...triggerProps}
+          testID="publish-trigger"
+          accessibilityLabel="Publish"
           className="h-8 flex-row items-center gap-1.5 px-3 rounded-md bg-primary active:bg-primary/80"
         >
           <Text className="text-xs font-medium text-primary-foreground">Publish</Text>
@@ -561,12 +622,32 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
             />
           )}
 
-          {/* Custom domains — only meaningful once the app is published.
-              `http` is passed down because this dropdown renders inside a
-              gluestack Popover whose overlay is teleported outside the
-              SDKDomainProvider, so the section can't resolve useDomainHttp()
-              on its own. */}
-          {isPublished && <CustomDomainsSection projectId={projectId} http={http} />}
+          {/* Custom domains — only meaningful once the app is published, and
+              only when the deployment supports them. This is a link, not a
+              panel: the full records/inputs live on the Settings page, so the
+              popover never grows past the bottom of the screen. */}
+          {isPublished && domainsEnabled && (
+            <Pressable
+              onPress={() => {
+                setIsOpen(false)
+                onOpenSettingsItem?.('custom-domains')
+              }}
+              disabled={!onOpenSettingsItem}
+              testID="publish-custom-domain-row"
+              accessibilityRole="button"
+              accessibilityLabel="Custom domain settings"
+              className="mb-4 flex-row items-center gap-3 rounded-lg border border-border p-3 active:bg-muted"
+            >
+              <Globe size={16} className="text-muted-foreground" />
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-foreground">Custom domain</Text>
+                <Text className="text-[11px] text-muted-foreground mt-0.5" numberOfLines={1}>
+                  {describeDomainRow(customDomains ?? [])}
+                </Text>
+              </View>
+              <ChevronRight size={14} className="text-muted-foreground" />
+            </Pressable>
+          )}
 
           {/* Sync dev data to live — only for server-backed apps (a static
               export has no database). Replaces the live database with the
