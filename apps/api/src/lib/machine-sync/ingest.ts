@@ -312,6 +312,82 @@ export class WorkspaceResolver {
  * seconds, forever (PERF-14). Skipping the child lets the snapshot finish; the
  * row comes across the next time it changes.
  */
+/**
+ * The unique key a Prisma P2002 names, as column names. The pg adapter reports
+ * it as `meta.target`, or only in the message (`fields: (`"a"`, `"b"`)`).
+ */
+export function uniqueClashFields(err: unknown): string[] | null {
+  const e = err as { code?: string; meta?: { target?: unknown }; message?: string }
+  if (e?.code !== 'P2002' && !/Unique constraint failed/.test(e?.message ?? '')) return null
+  if (Array.isArray(e.meta?.target) && e.meta.target.length) return e.meta.target.map(String)
+  const match = /fields: \((.*?)\)/.exec(e?.message ?? '')
+  if (!match) return null
+  const fields = match[1].split(',').map((part) => part.replace(/[`"\s]/g, '')).filter(Boolean)
+  return fields.length ? fields : null
+}
+
+/**
+ * Write one row the host sent, resolving a clash with a cloud row that holds
+ * the same natural key under another id: a channel the cloud seeded, or a
+ * session↔project link the cloud made before the host's own arrived.
+ *
+ * The host is the source of truth for a hosted workspace, so the cloud row
+ * takes the host's id (every FK is `ON UPDATE CASCADE`, so its children
+ * follow) and the upsert then lands on it. A key that is a position (`seq`)
+ * names two different rows, so the cloud row moves to the end instead.
+ * A clash that cannot be resolved skips this one row; it never fails the batch,
+ * because a failed batch is retried unchanged and stops every later row from
+ * syncing.
+ */
+export async function upsertHostRow(
+  tx: any,
+  model: string,
+  meta: ModelMeta,
+  recordId: string,
+  row: Record<string, unknown>,
+  mayTake: (holder: Record<string, unknown>) => Promise<boolean>,
+): Promise<'applied' | 'unique_clash' | 'not_hosted'> {
+  const delegate = tx[delegateName(model)]
+  if (typeof tx.$executeRawUnsafe !== 'function') {
+    await delegate.upsert({ where: { id: recordId }, create: row, update: row })
+    return 'applied'
+  }
+  const table = `"${meta.model.table.replace(/"/g, '')}"`
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await tx.$executeRawUnsafe('SAVEPOINT host_row')
+    try {
+      await delegate.upsert({ where: { id: recordId }, create: row, update: row })
+      await tx.$executeRawUnsafe('RELEASE SAVEPOINT host_row')
+      return 'applied'
+    } catch (err) {
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT host_row')
+      const fields = uniqueClashFields(err)
+      if (!fields || fields.includes('id')) throw err
+      const where: Record<string, unknown> = { id: { not: recordId } }
+      for (const field of fields) where[field] = row[field] ?? null
+      const holder = (await delegate.findFirst({ where })) as Record<string, unknown> | null
+      if (!holder) return 'unique_clash'
+      if (!(await mayTake(holder))) return 'not_hosted'
+      const holderId = String(holder.id)
+      if (fields.includes('seq')) {
+        const scope = fields.filter((field) => field !== 'seq')
+        const params = scope.map((field) => holder[field])
+        const match = scope.map((field, i) => `"${field}" = $${i + 2}`).join(' AND ') || 'TRUE'
+        await tx.$executeRawUnsafe(
+          `UPDATE ${table} SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM ${table} WHERE ${match}) WHERE id = $1`,
+          holderId,
+          ...params,
+        )
+        continue
+      }
+      const taken = await delegate.findFirst({ where: { id: recordId }, select: { id: true } })
+      if (taken) return 'unique_clash'
+      await tx.$executeRawUnsafe(`UPDATE ${table} SET id = $1 WHERE id = $2`, recordId, holderId)
+    }
+  }
+  return 'unique_clash'
+}
+
 async function findOrphans(
   tx: any,
   model: string,
@@ -513,11 +589,15 @@ export async function applyBatch(
             })
           }
 
-          await delegate.upsert({
-            where: { id: recordId },
-            create: rewritten,
-            update: rewritten,
+          const outcome = await upsertHostRow(tx, entry.model, modelMeta, recordId, rewritten, async (holder) => {
+            const holderWorkspace = entry.model === 'Workspace' ? String(holder.id) : await resolver.ofRow(entry.model, holder)
+            return mayWrite(holderWorkspace)
           })
+          if (outcome !== 'applied') {
+            console.warn(`[MachineSync] ${instanceId}: skipped ${entry.model}/${recordId} (${outcome})`)
+            skipped++
+            continue
+          }
           applied++
         }
       }
