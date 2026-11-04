@@ -40,6 +40,10 @@ let setPrimaryCustomDomainImpl: (projectId: string, domainId: string) => Promise
 let removeCustomDomainImpl: (projectId: string, domainId: string) => Promise<any>
 let domainCalls: Array<{ fn: string; projectId: string; arg?: string }> = []
 
+// Published-hosting ops wrapper (SHO-308 §5) — mocked so no K8s call is made.
+let publishOpsImpl: (projectId: string, opts: any) => Promise<any>
+let opsCalls: Array<{ projectId: string; opts: any }> = []
+
 mock.module('../internal-api', () => ({
   ...realInternalApi,
   getPublishState: (projectId: string) => getPublishStateImpl(projectId),
@@ -70,6 +74,10 @@ mock.module('../internal-api', () => ({
   removeProjectCustomDomain: (projectId: string, domainId: string) => {
     domainCalls.push({ fn: 'remove', projectId, arg: domainId })
     return removeCustomDomainImpl(projectId, domainId)
+  },
+  publishOps: (projectId: string, opts: any) => {
+    opsCalls.push({ projectId, opts })
+    return publishOpsImpl(projectId, opts)
   },
   createSharedFileLink: (projectId: string, opts: any) => {
     sharedFileCalls.push({ projectId, opts })
@@ -181,6 +189,8 @@ beforeEach(() => {
   sharedFileCalls = []
   workspaceSharedFileCalls = []
   domainCalls = []
+  opsCalls = []
+  publishOpsImpl = async () => ({ ok: true, status: 200, data: { ok: true } })
   getPublishStateImpl = async () => STATE_UNPUBLISHED
   listCustomDomainsImpl = async () => ({ ok: true, status: 200, data: { enabled: true, fallbackOrigin: 'fallback.shogo.one', domains: [] } })
   addCustomDomainImpl = async (_p, hostname) => ({
@@ -383,6 +393,7 @@ describe('publish tool', () => {
         password: 'hunter2',
         siteTitle: 'My Site',
         siteDescription: 'desc',
+        environment: 'production',
       },
     })
     expect(details).toMatchObject({
@@ -923,5 +934,88 @@ describe('share_file on local desktop', () => {
     expect(result.url).toBe('https://api.example/f/signed-token')
     expect(result.expiresAt).toBe('2026-10-03T00:00:00.000Z')
     expect(sharedFileCalls).toHaveLength(1)
+  })
+})
+
+describe('publish ops_action — published hosting (SHO-308)', () => {
+  test('status goes to publishOps and never publishes code', async () => {
+    publishOpsImpl = async () => ({
+      ok: true,
+      status: 200,
+      data: { ok: true, environment: 'production', replicas: { ready: 2, desired: 2 } },
+    })
+
+    const result = await run(baseCtx(), { ops_action: 'status' })
+
+    expect(result).toEqual({
+      ok: true,
+      environment: 'production',
+      replicas: { ready: 2, desired: 2 },
+    })
+    expect(opsCalls).toEqual([
+      { projectId: 'p1', opts: { action: 'status' } },
+    ])
+    // The whole point of ops_action: it is not a deploy.
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('scale forwards the environment and replica bounds in the API shape', async () => {
+    await run(baseCtx(), {
+      ops_action: 'scale',
+      environment: 'staging',
+      min_replicas: 1,
+      max_replicas: 3,
+      size: 'm',
+    })
+
+    expect(opsCalls).toEqual([
+      {
+        projectId: 'p1',
+        opts: {
+          action: 'scale',
+          environment: 'staging',
+          minReplicas: 1,
+          maxReplicas: 3,
+          size: 'm',
+          deploymentId: undefined,
+          since: undefined,
+          replica: undefined,
+        },
+      },
+    ])
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('logs asks for a specific replica, metrics for a window', async () => {
+    await run(baseCtx(), { ops_action: 'logs', replica: 'pod-a' })
+    await run(baseCtx(), { ops_action: 'metrics', since: 1_700_000_000_000 })
+
+    expect(opsCalls[0]!.opts).toMatchObject({ action: 'logs', replica: 'pod-a' })
+    expect(opsCalls[1]!.opts).toMatchObject({ action: 'metrics', since: 1_700_000_000_000 })
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('a refused ops action surfaces the code the agent has to act on', async () => {
+    publishOpsImpl = async () => ({
+      ok: false,
+      status: 403,
+      code: 'plan_limit',
+      error: 'maxReplicas 10 exceeds the plan cap of 5',
+    })
+
+    const result = await run(baseCtx(), { ops_action: 'scale', max_replicas: 10 })
+
+    expect(result).toEqual({
+      error: 'maxReplicas 10 exceeds the plan cap of 5',
+      code: 'plan_limit',
+    })
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('the description tells the agent an ops action never deploys', async () => {
+    const desc = String(publishTool(baseCtx()).description)
+    expect(desc).toContain('ops_action')
+    expect(desc).toContain('NEVER builds or publishes new code')
+    expect(desc).toContain('staging')
   })
 })

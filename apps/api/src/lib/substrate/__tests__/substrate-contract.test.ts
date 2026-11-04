@@ -333,6 +333,23 @@ describe('MetalSubstrate addresses the anchored workspace runtime key', () => {
   })
 })
 
+describe('MetalSubstrate refuses a second environment (SHO-308 §8)', () => {
+  it('throws staging_requires_knative instead of re-pointing production\'s VM', async () => {
+    const { substrate, spies } = metalCase.make()
+    await expect(
+      substrate.publish('p1', { subdomain: 'my-site--staging', serverBacked: true, environment: 'staging' }),
+    ).rejects.toThrow(/not supported on the metal substrate/)
+    // The failure must happen before anything touches the running VM.
+    expect(spies.published).toHaveLength(0)
+  })
+
+  it('keeps publishing production on metal', async () => {
+    const { substrate } = metalCase.make()
+    const res = await substrate.publish('p1', { subdomain: 'my-site', serverBacked: true, environment: 'production' })
+    expect(res.substrate).toBe('metal')
+  })
+})
+
 describe('MetalSubstrate.discardPublishedRuntime', () => {
   it('destroys the published VM and keeps the edge routing to metal', async () => {
     const { substrate, spies } = metalCase.make()

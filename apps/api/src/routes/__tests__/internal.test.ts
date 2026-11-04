@@ -1328,6 +1328,7 @@ describe('POST /projects/:projectId/publish', () => {
       opts: {
         subdomain: 'my-site', accessLevel: 'public', password: undefined,
         siteTitle: 'My Site', siteDescription: 'desc',
+        environment: 'production',
       },
     })
   })

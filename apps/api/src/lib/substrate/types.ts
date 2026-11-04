@@ -90,6 +90,12 @@ export interface PublishOpts {
   subdomain: string
   serverBacked: boolean
   alwaysOn?: boolean
+  /** Which environment this publish targets. Defaults to production. */
+  environment?: 'production' | 'staging'
+  /** Knative autoscale settings for the environment (min/max replicas + size). */
+  scale?: { minReplicas: number; maxReplicas: number; size: 's' | 'm' | 'l' }
+  /** Prebuilt per-commit image to run. Falls back to the shared runtime image. */
+  image?: string
 }
 
 /** Outcome of provisioning a published site. */
@@ -100,6 +106,13 @@ export interface PublishResult {
   substrate: SubstrateKind
   /** Cluster/mesh-routable URL of the published runtime, when one exists. */
   url?: string
+  /** Knative revision this publish created, when the substrate reported one. */
+  revisionName?: string
+  /**
+   * The exact container image the published runtime is serving. Recorded on the
+   * deployment row so rollback/redeploy/promote switch to what actually ran.
+   */
+  imageRef?: string
 }
 
 export interface ProjectSubstrate {

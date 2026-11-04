@@ -439,3 +439,58 @@ export function promoCreditAvailableUsd(
   if (new Date(wallet.promoCreditExpiresAt).getTime() <= now.getTime()) return 0
   return Math.max(0, wallet.promoCreditUsd)
 }
+
+// =============================================================================
+// Published-app plan caps (SHO-308 §9)
+//
+// Published apps run on Knative and are billed for real (see
+// config/published-pricing.ts). These caps bound what a plan may request, so a
+// free app can't ask for 20 replicas of an L pod. They sit next to
+// ALWAYS_ON_SLOTS_PER_SEAT because they are the same kind of rule: a plan
+// entitlement, not a runtime setting.
+// =============================================================================
+
+/** Max replicas a single published environment may request, by plan. */
+export const PUBLISHED_MAX_REPLICAS: Record<PlanId, number | null> = {
+  free: 1,
+  basic: 1,
+  pro: 5,
+  business: 20,
+  enterprise: null, // unlimited
+}
+
+/** Size tiers a plan may select for a published environment. */
+export const PUBLISHED_SIZES: Record<PlanId, ReadonlyArray<'s' | 'm' | 'l'>> = {
+  free: ['s'],
+  basic: ['s'],
+  pro: ['s', 'm'],
+  business: ['s', 'm', 'l'],
+  enterprise: ['s', 'm', 'l'],
+}
+
+/** Whether a plan may create a staging environment at all. */
+export const PUBLISHED_STAGING_ENVS: Record<PlanId, boolean> = {
+  free: false,
+  basic: false,
+  pro: true,
+  business: true,
+  enterprise: true,
+}
+
+export interface PublishedPlanCaps {
+  plan: PlanId
+  /** `null` = unlimited. */
+  maxReplicas: number | null
+  sizes: ReadonlyArray<'s' | 'm' | 'l'>
+  staging: boolean
+}
+
+export function getPublishedPlanCaps(planId: string | null | undefined): PublishedPlanCaps {
+  const plan = normalizePlanId(planId) ?? 'free'
+  return {
+    plan,
+    maxReplicas: PUBLISHED_MAX_REPLICAS[plan],
+    sizes: PUBLISHED_SIZES[plan],
+    staging: PUBLISHED_STAGING_ENVS[plan],
+  }
+}

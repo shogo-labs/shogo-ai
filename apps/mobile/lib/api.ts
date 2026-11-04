@@ -653,6 +653,66 @@ function throwIfBetterAuthErrorPayload(data: unknown): void {
   }
 }
 
+// ─── Published environments (SHO-308) ─────────────────────────
+
+export type PublishedSize = 's' | 'm' | 'l'
+
+export interface PublishedScaleSettings {
+  minReplicas: number
+  maxReplicas: number
+  size: PublishedSize
+}
+
+export interface PublishedPlanCaps {
+  plan: string
+  /** null = unlimited */
+  maxReplicas: number | null
+  sizes: PublishedSize[]
+  staging: boolean
+}
+
+export interface PublishedEnvironmentStatus {
+  environment: {
+    id: string
+    name: string
+    subdomain: string
+    url: string
+    scale: PublishedScaleSettings
+    dbProvider: string | null
+    dbName: string | null
+  }
+  replicas: { ready: number; total: number; desired: number | null }
+  revision: string | null
+  pods: Array<{
+    name: string
+    phase: string
+    ready: boolean
+    restarts: number
+    startedAt: string | null
+    revision: string | null
+  }>
+  currentDeployment: {
+    id: string
+    commitSha: string
+    imageRef: string
+    imageDigest: string | null
+    createdAt: string
+  } | null
+}
+
+export interface PublishedEnvironmentMetrics {
+  environment: string
+  since: string
+  requests: number
+  errors5xx: number
+  p95Ms: number | null
+  podSeconds: number
+  billedUsd: number
+  unbilledUsd: number
+  monthToDateUsd: number
+  projectionUsd: number
+}
+
 export const api = {
   /** POST /api/users/me/attribution (after signup; session cookie / token via HttpClient). */
   async postSignupAttribution(http: HttpClient, body: Record<string, unknown>) {
@@ -1332,6 +1392,111 @@ export const api = {
       publishDomain?: string
     }>(
       `/api/projects/${projectId}/publish`,
+    )
+    return res.data
+  },
+
+  // ─── Published environments / Deployment tab (SHO-308) ────
+
+  /**
+   * Every published environment for a project, with live status (replicas,
+   * revision, current deployment) plus the workspace plan's caps. This is the
+   * data behind Settings → Deployment.
+   */
+  async getPublishedEnvironments(http: HttpClient, projectId: string) {
+    const res = await http.get<{
+      environments: PublishedEnvironmentStatus[]
+      caps: PublishedPlanCaps
+    }>(`/api/projects/${projectId}/published/environments`)
+    return res.data
+  },
+
+  async getPublishedEnvironmentMetrics(
+    http: HttpClient,
+    projectId: string,
+    environment: 'production' | 'staging',
+    sinceMs?: number,
+  ) {
+    const query = sinceMs ? `?since=${sinceMs}` : ''
+    const res = await http.get<PublishedEnvironmentMetrics>(
+      `/api/projects/${projectId}/published/environments/${environment}/metrics${query}`,
+    )
+    return res.data
+  },
+
+  async getPublishedEnvironmentLogs(
+    http: HttpClient,
+    projectId: string,
+    environment: 'production' | 'staging',
+    pod?: string,
+  ) {
+    const query = pod ? `?pod=${encodeURIComponent(pod)}` : ''
+    const res = await http.get<{ logs: string }>(
+      `/api/projects/${projectId}/published/environments/${environment}/logs${query}`,
+    )
+    return res.data
+  },
+
+  async scalePublishedEnvironment(
+    http: HttpClient,
+    projectId: string,
+    environment: 'production' | 'staging',
+    settings: { minReplicas?: number; maxReplicas?: number; size?: 's' | 'm' | 'l' },
+  ) {
+    const res = await http.post<{ environment: unknown; settings: unknown }>(
+      `/api/projects/${projectId}/published/environments/${environment}/scale`,
+      settings,
+    )
+    return res.data
+  },
+
+  async rollbackPublishedEnvironment(
+    http: HttpClient,
+    projectId: string,
+    environment: 'production' | 'staging',
+    deploymentId?: string,
+  ) {
+    const res = await http.post<{ deploymentId: string; imageRef: string }>(
+      `/api/projects/${projectId}/published/environments/${environment}/rollback`,
+      deploymentId ? { deploymentId } : {},
+    )
+    return res.data
+  },
+
+  async redeployPublishedEnvironment(
+    http: HttpClient,
+    projectId: string,
+    environment: 'production' | 'staging',
+  ) {
+    const res = await http.post<{ deploymentId: string; imageRef: string }>(
+      `/api/projects/${projectId}/published/environments/${environment}/redeploy`,
+      {},
+    )
+    return res.data
+  },
+
+  async createPublishedEnvironment(http: HttpClient, projectId: string, name: 'staging') {
+    const res = await http.post<{ environment: unknown }>(
+      `/api/projects/${projectId}/published/environments`,
+      { name },
+    )
+    return res.data
+  },
+
+  async deletePublishedEnvironment(
+    http: HttpClient,
+    projectId: string,
+    name: 'production' | 'staging',
+  ) {
+    await http.request(`/api/projects/${projectId}/published/environments/${name}`, {
+      method: 'DELETE',
+    })
+  },
+
+  async promotePublishedEnvironment(http: HttpClient, projectId: string) {
+    const res = await http.post<{ deploymentId: string; imageRef: string }>(
+      `/api/projects/${projectId}/published/promote`,
+      {},
     )
     return res.data
   },

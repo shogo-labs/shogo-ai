@@ -170,6 +170,7 @@ import {
 import { FoldersPanel } from "../../../../components/project/panels/FoldersPanel";
 import { CustomDomainsSection } from "../../../../components/project/CustomDomainsSection";
 import { AlwaysOnSection } from "../../../../components/project/AlwaysOnSection";
+import { DeploymentSection } from "../../../../components/project/DeploymentSection";
 import { ProjectAgentLookSection } from "../../../../components/settings/ProjectAgentLookSection";
 import { CheckpointGraphNative } from "../../../../components/project/panels/ide/graph/CheckpointGraphNative";
 import {
@@ -200,6 +201,7 @@ import {
   History,
   Zap,
   Users,
+  Boxes,
 } from "lucide-react-native";
 import { ProjectAccessPanel } from "../../../../components/project/ProjectAccessPanel";
 import { usePermissions } from "../../../../hooks/usePermissions";
@@ -4858,6 +4860,20 @@ export default observer(function ProjectLayout() {
                                 render: () => (
                                   <PanelErrorBoundary panelName="Custom domain">
                                     <CustomDomainsSection
+                                      projectId={projectId!}
+                                      http={http}
+                                      embedded={false}
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "deployment",
+                                label: "Deployment",
+                                icon: Boxes,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Deployment">
+                                    <DeploymentSection
                                       projectId={projectId!}
                                       http={http}
                                       embedded={false}

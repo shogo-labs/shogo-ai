@@ -1,6 +1,17 @@
 # Metal publishing — design & rollout plan
 
-Status: **Metal is AUTHORITATIVE for publishing — Knative decommission deferred.**
+> **Superseded for the publish substrate (SHO-308, Russell 2026-11-04).**
+> Published apps run on **Knative**; metal is the substrate for **dev / editing
+> runtimes only**. `isPublishMetalAuthoritative()` is false whenever
+> `PUBLISH_SUBSTRATE` is unset, even with `SHOGO_METAL_ALL_PROJECTS=true`, and
+> `PUBLISH_SUBSTRATE=metal` is the escape hatch the cutover script uses to put a
+> site back. `getProjectSubstrate` (editing/preview routing) is unchanged, so
+> dev stays on metal. Sections 1–2 below describe the metal-authoritative
+> architecture as it was built and are kept for the rollback path; the
+> migration script that moves live sites is now
+> `scripts/migrate-published-to-knative.ts`.
+
+Status (historical): **Metal was AUTHORITATIVE for publishing — Knative decommission deferred.**
 The publishing path runs through the `ProjectSubstrate` seam for BOTH substrates,
 but the **publish** decision is now decoupled from the graduated preview rollout:
 once the metal fleet is enabled, EVERY new/re-publish lands on a `published:{id}`
