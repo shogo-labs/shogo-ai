@@ -86,6 +86,7 @@ mock.module('../services/billing.service', () => ({
   syncFromStripe: async () => {},
   allocateMonthlyIncluded: async () => {},
   hasPaidSubscription: async () => true,
+  resolveBillingWorkspaceId: async (workspaceId: string) => workspaceId,
   canRunTechStackOnInstanceSize: async () => ({
     allowed: true,
     currentSize: 'micro',

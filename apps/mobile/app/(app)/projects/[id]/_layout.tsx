@@ -3882,6 +3882,18 @@ export default observer(function ProjectLayout() {
       !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench
         : undefined,
+    // Imperative jump into a Settings section (the Publish dropdown's
+    // "Custom domain" row). Same nonce pattern the Agents jump uses, so a
+    // second tap after navigating away lands again.
+    onOpenSettingsItem: (id: string) => {
+      setAttentionTab(null)
+      setPreviewTab("settings")
+      setRequestedSettingsItem((prev) => ({
+        id,
+        nonce: (prev?.nonce ?? 0) + 1,
+      }))
+      if (!isWide) setActiveTab("canvas")
+    },
     // Back is the same handler on every platform: a narrow web viewport renders
     // this same phone header, and an arrow that does nothing is worse than no
     // arrow. Wide web and desktop never render it.

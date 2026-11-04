@@ -7,13 +7,14 @@
 import { useCallback, useState } from 'react'
 import { ActivityIndicator, FlatList, Image, Linking, Pressable, Text, TextInput, View } from 'react-native'
 import { Download, MessageSquare, Paperclip, Search, X } from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
 import { SegmentedFilter } from '../phone/SegmentedFilter'
 import { useConversationFiles } from '../../hooks/useConversationFiles'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { formatFileSize } from '../../lib/composer-attachments'
 import { absoluteApiUrl, type ConversationFile, type ConversationFileKind } from '../../lib/team-chat-api'
 import { downloadAttachment } from '../../lib/attachment-download'
-import { parseInAppFileHref } from '../../lib/share-file-links'
+import { parseInAppFileHref, shareFileErrorText } from '../../lib/share-file-links'
 import { useShareFileOpener } from '../chat/share-file-context'
 import { fileTypeMeta } from '../../lib/file-type'
 
@@ -97,16 +98,28 @@ function FileRow({ file, onShowInChat }: { file: ConversationFile; onShowInChat:
   const openShareFile = useShareFileOpener()
   const meta = fileTypeMeta(file.name, file.mimeType)
   const date = new Date(file.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  // A row stored at 0 bytes never really arrived: opening or downloading it
+  // would only produce an empty file, so the row says so and stays inert.
+  const empty = file.size === 0
+  const emptyText = shareFileErrorText('empty_file')
   // The app serves this file itself, so opening it belongs in the app's own
   // viewer — `Linking.openURL` is a new browser tab on the URL (SHO-80).
   const openFile = useCallback(() => {
+    if (empty) return
     const served = parseInAppFileHref(url)
     if (served && openShareFile) openShareFile({ ...served, name: file.name })
     else void Linking.openURL(url)
-  }, [file.name, openShareFile, url])
+  }, [empty, file.name, openShareFile, url])
   return (
     <View className="flex-row items-center gap-3 border-b border-border/60 px-3 py-2" testID={`file-row-${file.id}`}>
-      <Pressable onPress={openFile} accessibilityRole="link" accessibilityLabel={`Open ${file.name}`} className="min-w-0 flex-1 flex-row items-center gap-3">
+      <Pressable
+        onPress={openFile}
+        disabled={empty}
+        accessibilityRole={empty ? undefined : 'link'}
+        accessibilityLabel={empty ? `${file.name} — upload failed, 0 bytes` : `Open ${file.name}`}
+        accessibilityHint={empty ? emptyText : undefined}
+        className="min-w-0 flex-1 flex-row items-center gap-3"
+      >
         {file.kind === 'image' ? (
           <Image source={{ uri: url }} className="rounded border border-border" style={{ width: 36, height: 36 }} resizeMode="cover" />
         ) : (
@@ -116,12 +129,22 @@ function FileRow({ file, onShowInChat }: { file: ConversationFile; onShowInChat:
         )}
         <View className="min-w-0 flex-1">
           <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{file.name}</Text>
-          <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-            {file.uploadedBy.name} · {date} · {formatFileSize(file.size)}
+          <Text className={cn('text-[11px]', empty ? 'text-destructive' : 'text-muted-foreground')} numberOfLines={1}>
+            {empty
+              ? `Upload failed · 0 bytes · ${file.uploadedBy.name} · ${date}`
+              : `${file.uploadedBy.name} · ${date} · ${formatFileSize(file.size)}`}
           </Text>
         </View>
       </Pressable>
-      <Pressable onPress={() => void downloadAttachment(url, file.name)} accessibilityRole="button" accessibilityLabel={`Download ${file.name}`} className="rounded-md p-1.5 active:bg-muted">
+      <Pressable
+        onPress={() => void downloadAttachment(url, file.name)}
+        disabled={empty}
+        accessibilityRole="button"
+        accessibilityLabel={empty ? `Download ${file.name} unavailable` : `Download ${file.name}`}
+        accessibilityHint={empty ? emptyText : undefined}
+        accessibilityState={{ disabled: empty }}
+        className={cn('rounded-md p-1.5 active:bg-muted', empty && 'opacity-40')}
+      >
         <Download size={15} className="text-muted-foreground" />
       </Pressable>
       <Pressable onPress={onShowInChat} accessibilityRole="button" accessibilityLabel={`Show ${file.name} in chat`} className="rounded-md p-1.5 active:bg-muted">

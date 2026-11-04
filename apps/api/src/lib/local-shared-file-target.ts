@@ -13,7 +13,7 @@
  */
 
 import { realpath } from 'fs/promises'
-import { join, resolve, sep } from 'path'
+import { isAbsolute, join, resolve, sep } from 'path'
 import { prisma } from './prisma'
 
 export interface LocalSharedFileTargetInput {
@@ -108,6 +108,63 @@ async function workspaceFileTarget(
   if (!member || member.workspaceId !== workspaceId) return null
   const memberRoot = await realpath(member.root)
   return isWithinRoot(memberRoot, target) ? target : null
+}
+
+export type LocalAbsoluteFileResolution =
+  | { ok: true; target: string }
+  | { ok: false; reason: 'forbidden' | 'not_found' }
+
+async function realpathOrNull(candidate: string): Promise<string | null> {
+  try {
+    return await realpath(candidate)
+  } catch (error: any) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null
+    throw error
+  }
+}
+
+/**
+ * Every root a local file may live in: the workspaces dir (which holds managed
+ * projects and the merged `.workspace-roots` trees) plus the primary folder of
+ * every folder-linked (external) project. Realpath'd, so a symlinked data dir
+ * does not break the comparison.
+ */
+export async function localFileAllowedRoots(workspacesDir: string): Promise<string[]> {
+  const roots = new Set<string>()
+  const dataRoot = await realpathOrNull(workspacesDir)
+  if (dataRoot) roots.add(dataRoot)
+
+  const external = await prisma.project.findMany({
+    where: { workingMode: 'external' },
+    select: { projectFolders: { where: { isPrimary: true }, select: { path: true }, take: 1 } },
+  })
+  for (const project of external) {
+    const path = project.projectFolders[0]?.path
+    if (!path) continue
+    const real = await realpathOrNull(path)
+    if (real) roots.add(real)
+  }
+  return [...roots]
+}
+
+/**
+ * Resolve an absolute path the app asked to read/reveal, and decide whether it
+ * is inside a root the desktop is allowed to serve. The path is realpath'd
+ * first, so a symlink that escapes a root is refused rather than followed.
+ * `forbidden` and `not_found` stay distinct so the caller can answer 403 vs 404.
+ */
+export async function resolveLocalAbsoluteFileTarget(input: {
+  path: string
+  workspacesDir: string
+}): Promise<LocalAbsoluteFileResolution> {
+  if (!input.path || !isAbsolute(input.path)) return { ok: false, reason: 'forbidden' }
+
+  const target = await realpathOrNull(input.path)
+  if (!target) return { ok: false, reason: 'not_found' }
+
+  const roots = await localFileAllowedRoots(input.workspacesDir)
+  if (!roots.some((root) => isWithinRoot(root, target))) return { ok: false, reason: 'forbidden' }
+  return { ok: true, target }
 }
 
 /**

@@ -185,3 +185,51 @@ describe("CollapsibleToolGroup scrollBody", () => {
     expect(screen.queryByTestId("collapsible-scroll-body")).toBeNull()
   })
 })
+
+/**
+ * SHO-306. A window that joins a long turn receives the whole run of work at
+ * once. Mounting every row of it while the group is closed — just so the height
+ * spring has a target — is what froze the screen on rejoin, so a work run opts
+ * out of the eager measurement and is measured when it opens instead.
+ */
+describe("CollapsibleToolGroup measureWhenClosed", () => {
+  test("a closed group measures its body by default", () => {
+    render(
+      <CollapsibleToolGroup label="Thought for 3s" isStreaming={false} isExpanded={false}>
+        <span>measured while closed</span>
+      </CollapsibleToolGroup>,
+    )
+
+    expect(screen.queryByText("measured while closed")).toBeTruthy()
+  })
+
+  test("measureWhenClosed={false} does not mount a closed body at all", () => {
+    render(
+      <CollapsibleToolGroup
+        label="Exploring 240 files"
+        isStreaming
+        isExpanded={false}
+        measureWhenClosed={false}
+      >
+        <span>240 rows nobody can see</span>
+      </CollapsibleToolGroup>,
+    )
+
+    expect(screen.queryByText("240 rows nobody can see")).toBeNull()
+  })
+
+  test("measureWhenClosed={false} still renders the body once it is opened", () => {
+    render(
+      <CollapsibleToolGroup
+        label="Exploring 240 files"
+        isStreaming={false}
+        isExpanded
+        measureWhenClosed={false}
+      >
+        <span>240 rows on demand</span>
+      </CollapsibleToolGroup>,
+    )
+
+    expect(screen.queryAllByText("240 rows on demand").length).toBeGreaterThan(0)
+  })
+})

@@ -23,6 +23,7 @@ import { resolveApiKeyForRequest } from '../lib/api-key-request'
 import {
   getUploadedSiteState,
   publishUploadedSite,
+  resolveHostProject,
   unpublishUploadedSite,
   updateUploadedSiteSettings,
   type UploadedSiteUpload,
@@ -51,6 +52,29 @@ async function authenticate(c: Context): Promise<{ workspaceId: string; userId: 
     )
   }
   return { workspaceId: resolved.workspaceId, userId: resolved.userId }
+}
+
+/**
+ * Resolve the hidden host project that owns this desktop project's published
+ * site, or a JSON error response the desktop can relay as-is.
+ *
+ * Custom domains live on the host project (there are no domain rows on the
+ * desktop's own project), so every domain route goes through here first —
+ * which also means an unpublished desktop project gets `not_published`.
+ */
+async function resolveHost(
+  c: Context,
+  workspaceId: string,
+  sourceProjectId: string,
+): Promise<{ ok: true; hostProjectId: string } | { ok: false; response: Response }> {
+  const resolved = await resolveHostProject(workspaceId, sourceProjectId, { create: false })
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      response: c.json({ error: { code: resolved.code, message: resolved.message } }, resolved.status as any),
+    }
+  }
+  return { ok: true, hostProjectId: resolved.project.id }
 }
 
 export function publishedSitesRoutes() {
@@ -143,6 +167,86 @@ export function publishedSitesRoutes() {
       sourceProjectId: c.req.param('sourceProjectId'),
     })
     return c.json(state)
+  })
+
+  // ── Custom domains (SHO-304) ─────────────────────────────────────────────
+  //
+  // A desktop project's published site is hosted on a hidden host project in
+  // the cloud, and custom domains belong to that host project. These resolve it
+  // first, then reuse the exact handlers the cloud panel's own domain routes
+  // call, so desktop and cloud never diverge.
+
+  router.get('/published-sites/:sourceProjectId/domains', async (c) => {
+    const auth = await authenticate(c)
+    if (auth instanceof Response) return auth
+    const host = await resolveHost(c, auth.workspaceId, c.req.param('sourceProjectId'))
+    if (!host.ok) return host.response
+
+    const { listCustomDomains } = await import('./publish')
+    const result = await listCustomDomains(host.hostProjectId)
+    return c.json(result.body, result.status as any)
+  })
+
+  router.post('/published-sites/:sourceProjectId/domains', async (c) => {
+    const auth = await authenticate(c)
+    if (auth instanceof Response) return auth
+    const host = await resolveHost(c, auth.workspaceId, c.req.param('sourceProjectId'))
+    if (!host.ok) return host.response
+
+    let body: { hostname?: string }
+    try {
+      body = (await c.req.json()) as typeof body
+    } catch {
+      return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const { addCustomDomain } = await import('./publish')
+    const result = await addCustomDomain(host.hostProjectId, typeof body?.hostname === 'string' ? body.hostname : '')
+    return c.json(result.body, result.status as any)
+  })
+
+  router.post('/published-sites/:sourceProjectId/domains/:domainId/verify', async (c) => {
+    const auth = await authenticate(c)
+    if (auth instanceof Response) return auth
+    const host = await resolveHost(c, auth.workspaceId, c.req.param('sourceProjectId'))
+    if (!host.ok) return host.response
+
+    const { verifyCustomDomain } = await import('./publish')
+    const result = await verifyCustomDomain(host.hostProjectId, c.req.param('domainId'))
+    return c.json(result.body, result.status as any)
+  })
+
+  router.post('/published-sites/:sourceProjectId/domains/:domainId/retrigger', async (c) => {
+    const auth = await authenticate(c)
+    if (auth instanceof Response) return auth
+    const host = await resolveHost(c, auth.workspaceId, c.req.param('sourceProjectId'))
+    if (!host.ok) return host.response
+
+    const { retriggerCustomDomain } = await import('./publish')
+    const result = await retriggerCustomDomain(host.hostProjectId, c.req.param('domainId'))
+    return c.json(result.body, result.status as any)
+  })
+
+  router.patch('/published-sites/:sourceProjectId/domains/:domainId/primary', async (c) => {
+    const auth = await authenticate(c)
+    if (auth instanceof Response) return auth
+    const host = await resolveHost(c, auth.workspaceId, c.req.param('sourceProjectId'))
+    if (!host.ok) return host.response
+
+    const { setPrimaryCustomDomain } = await import('./publish')
+    const result = await setPrimaryCustomDomain(host.hostProjectId, c.req.param('domainId'))
+    return c.json(result.body, result.status as any)
+  })
+
+  router.delete('/published-sites/:sourceProjectId/domains/:domainId', async (c) => {
+    const auth = await authenticate(c)
+    if (auth instanceof Response) return auth
+    const host = await resolveHost(c, auth.workspaceId, c.req.param('sourceProjectId'))
+    if (!host.ok) return host.response
+
+    const { deleteCustomDomain } = await import('./publish')
+    const result = await deleteCustomDomain(host.hostProjectId, c.req.param('domainId'))
+    return c.json(result.body, result.status as any)
   })
 
   return router

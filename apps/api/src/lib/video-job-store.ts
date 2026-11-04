@@ -32,6 +32,11 @@ export interface VideoJobRecord {
   requestId?: string
   /** Price captured from `/estimate` at submit — what the completion is billed. */
   estimate?: { rawUsd: number; billedUsd: number; credits?: number }
+  /**
+   * The spend reservation placed for this job's price at submit, released when
+   * it is charged or fails. Absent when nothing was reserved (local mode).
+   */
+  hold?: { billingWorkspaceId: string; holdId: string }
   duration: number
   audio: boolean
   aspectRatio?: string

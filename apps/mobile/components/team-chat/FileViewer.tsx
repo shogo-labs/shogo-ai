@@ -21,6 +21,7 @@ import { AlertCircle, ClipboardCopy, Download, ExternalLink } from 'lucide-react
 import { attachmentDownloadUrl, downloadAttachment } from '../../lib/attachment-download'
 import { formatFileSize } from '../../lib/composer-attachments'
 import { fileTypeMeta } from '../../lib/file-type'
+import { shareFileErrorText } from '../../lib/share-file-links'
 import {
   absoluteApiUrl,
   teamChatApi,
@@ -93,6 +94,10 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
   }
 
   const { file } = state
+  // A file stored at 0 bytes was never really uploaded. There is nothing to
+  // render and nothing to download, so say that instead of offering a button
+  // that saves an empty file (or, worse, the JSON error under its name).
+  if (file.size === 0) return <EmptyFileView file={file} />
   const meta = fileTypeMeta(file.name, file.mimeType)
   const kind = fileViewKind(file.name, file.mimeType)
   // An office document has no renderer, but the server already extracted its
@@ -276,6 +281,28 @@ function DownloadButton({ url, name }: { url: string; name: string }) {
       {busy ? <ActivityIndicator size="small" color="#fff" /> : <Download size={14} color="#fff" />}
       <Text className="text-sm font-semibold text-primary-foreground">Download</Text>
     </Pressable>
+  )
+}
+
+function EmptyFileView({ file }: { file: ConversationFileMeta }) {
+  const meta = fileTypeMeta(file.name, file.mimeType)
+  return (
+    <View className="flex-1 items-center justify-center gap-4 p-6" testID="file-viewer-empty">
+      <View className="h-16 w-16 items-center justify-center rounded-xl opacity-40" style={{ backgroundColor: meta.color }}>
+        <Text className="text-base font-bold text-white" numberOfLines={1}>
+          {meta.glyph}
+        </Text>
+      </View>
+      <View className="items-center gap-1">
+        <Text className="max-w-[420px] text-center text-sm font-semibold text-foreground" numberOfLines={2}>
+          {file.name}
+        </Text>
+        <Text className="text-xs text-muted-foreground">Upload failed · 0 bytes</Text>
+      </View>
+      <Text className="max-w-[380px] text-center text-xs text-muted-foreground">
+        {shareFileErrorText('empty_file')}
+      </Text>
+    </View>
   )
 }
 

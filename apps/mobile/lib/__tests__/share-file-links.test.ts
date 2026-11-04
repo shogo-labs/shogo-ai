@@ -7,7 +7,9 @@
 
 import { describe, expect, test } from "bun:test"
 import {
+  localFileHref,
   parseInAppFileHref,
+  parseLocalFileHref,
   parseShareFileHref,
   parseStoredFileHref,
   shareFileClaims,
@@ -124,6 +126,8 @@ describe("failure text", () => {
     expect(shareFileErrorText("expired")).toContain("expired")
     expect(shareFileErrorText("invalid_link")).toContain("invalid")
     expect(shareFileErrorText("file_not_found")).toBe("File not found")
+    expect(shareFileErrorText("empty_file")).toContain("0 bytes")
+    expect(shareFileErrorText("empty_file")).toContain("attach it again")
     expect(shareFileErrorText("runtime_unavailable")).toContain("retry")
     expect(shareFileErrorText(undefined, "Boom")).toBe("Boom")
     expect(shareFileErrorText(undefined, null)).toBe("Could not open this file")
@@ -136,5 +140,40 @@ describe("failure text", () => {
     })
     expect(shareFileErrorFromBody(null)).toEqual({ code: null, message: null })
     expect(shareFileErrorFromBody("<html>")).toEqual({ code: null, message: null })
+  })
+})
+
+describe("local file links (desktop share_file)", () => {
+  test("a file:// URL becomes a local ref that fetches the local route", () => {
+    const ref = parseLocalFileHref("file:///Users/me/Application%20Support/report.pdf")
+    expect(ref).toEqual({
+      kind: "local",
+      href: "/api/local-files?path=%2FUsers%2Fme%2FApplication%20Support%2Freport.pdf",
+      name: "report.pdf",
+      path: "/Users/me/Application Support/report.pdf",
+    })
+  })
+
+  test("the rewritten /shogo-local-file href parses to the same ref", () => {
+    const ref = parseLocalFileHref(localFileHref("/Users/me/out/report.pdf"))
+    expect(ref?.kind).toBe("local")
+    expect(ref?.path).toBe("/Users/me/out/report.pdf")
+    expect(ref?.name).toBe("report.pdf")
+  })
+
+  test("a Windows file:// URL keeps its drive letter", () => {
+    expect(parseLocalFileHref("file:///C:/Users/me/report.pdf")?.path).toBe("C:/Users/me/report.pdf")
+  })
+
+  test("non-file schemes are rejected", () => {
+    expect(parseLocalFileHref("https://example.com/report.pdf")).toBeNull()
+    expect(parseLocalFileHref("/api/f/abc.def")).toBeNull()
+    expect(parseLocalFileHref("file:")).toBeNull()
+  })
+
+  test("parseInAppFileHref recognises a local file and keeps the other kinds", () => {
+    expect(parseInAppFileHref("file:///Users/me/report.pdf", HOSTS)?.kind).toBe("local")
+    expect(parseInAppFileHref(`/api/f/${token()}`, HOSTS)?.kind).toBe("share")
+    expect(parseInAppFileHref("/api/chat-attachments/k/f.txt", HOSTS)?.kind).toBe("stored")
   })
 })

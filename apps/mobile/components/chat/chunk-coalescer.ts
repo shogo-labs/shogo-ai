@@ -58,7 +58,13 @@ export function coalesceChunks<T extends UIMessageChunk>(chunks: T[]): T[] {
   return out as T[]
 }
 
-const DEFAULT_SLICE_MS = 100
+/**
+ * How long the reader may keep the main thread before it waits a macrotask.
+ * A commit that follows a slice still lands well inside the 200 ms a joined
+ * turn is allowed to block for (SHO-306), and a burst that finishes sooner
+ * than this pays for no yield at all.
+ */
+const DEFAULT_SLICE_MS = 50
 
 const now = (): number => (typeof performance !== "undefined" ? performance.now() : Date.now())
 const nextMacrotask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
@@ -75,10 +81,19 @@ const nextMacrotask = (): Promise<void> => new Promise((resolve) => setTimeout(r
  * it. React counts consecutive commits that leave work pending and throws
  * "Maximum update depth exceeded" at 50 — which the panel treats as a stream
  * error, remounts, and replays into again. A fast machine finishes the run
- * before that; a phone (or a CI runner) does not. Whenever the consumer has
- * spent `sliceMs` processing chunks, the next one waits a macrotask, so the
- * queued render commits with nothing pending behind it and the count resets.
- * `sliceMs` is far above a frame so a fast device never pays for a yield.
+ * before that; a phone (or a CI runner) does not.
+ *
+ * So the reader hands over chunks only until `sliceMs` of **wall clock** has
+ * passed, then waits a macrotask. Wall clock, not the consumer's own apply
+ * time: the apply schedules a React commit that runs in its own task, and
+ * measuring only the gap between two reads left that commit uncounted, so the
+ * next slice started the instant it finished and the main thread ran
+ * apply → commit → apply → commit back to back with no idle time for a scroll,
+ * a click or a keystroke. That is what a window joining a long turn did while
+ * it caught up (SHO-306). Pacing on wall clock bounds the longest unbroken run
+ * to the slice plus one commit, and still yields before React's commit-depth
+ * counter can trip. Idle time is not counted, so a live stream that arrives
+ * slowly pays for nothing.
  */
 export function coalesceChunkBursts<T extends UIMessageChunk>(
   stream: ReadableStream<T>,
@@ -105,8 +120,7 @@ export function coalesceChunkBursts<T extends UIMessageChunk>(
   let wake: (() => void) | null = null
   let batchStartedAt = 0
   let timer: ReturnType<typeof setTimeout> | null = null
-  let lastEnqueueAt: number | null = null
-  let busyMs = 0
+  let lastYieldAt = now()
   const clearTimer = () => {
     if (timer !== null) clearTimeout(timer)
     timer = null
@@ -163,9 +177,6 @@ export function coalesceChunkBursts<T extends UIMessageChunk>(
         })()
       },
       async pull(controller) {
-        // Time since the previous chunk was handed over is the consumer's
-        // processing time (pull only runs once it asks for the next one).
-        if (lastEnqueueAt !== null) busyMs += now() - lastEnqueueAt
         while (readyHead >= ready.length) {
           if (sourceFailed) return controller.error(sourceError)
           if (sourceDone) return controller.close()
@@ -173,14 +184,16 @@ export function coalesceChunkBursts<T extends UIMessageChunk>(
             wake = resolve
           })
           if (cancelled) return
+          // Nothing was queued while we waited, so the time just spent was the
+          // stream being quiet — not work this reader made the page do.
+          lastYieldAt = now()
         }
-        if (busyMs >= sliceMs) {
-          busyMs = 0
+        if (now() - lastYieldAt >= sliceMs) {
+          lastYieldAt = now()
           await yieldToEventLoop()
           if (cancelled) return
         }
         controller.enqueue(ready[readyHead++]!)
-        lastEnqueueAt = now()
       },
       cancel(reason) {
         cancelled = true
@@ -192,8 +205,8 @@ export function coalesceChunkBursts<T extends UIMessageChunk>(
         return reader.cancel(reason)
       },
     },
-    // No read-ahead: `pull` runs only when the consumer asks, which is what
-    // makes the time between pulls a measure of its processing time.
+    // No read-ahead: `pull` runs only when the consumer asks for another
+    // chunk, so nothing is handed over that nobody is ready to apply.
     { highWaterMark: 0 },
   )
 }

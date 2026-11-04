@@ -231,7 +231,11 @@ const IN_APP_FILE_PATH =
  */
 export const OPEN_FILE_EVENT = 'shogo:open-file'
 
-/** True for a chat file link on the local API origin. Other URLs are not. */
+/**
+ * True for a chat file link on the local API origin, or a `file://` link to a
+ * file on this machine (the local desktop's `share_file` result). Other URLs
+ * are not.
+ */
 export function isInAppFileUrl(url: string, apiUrl: string): boolean {
   let target: URL
   let api: URL
@@ -241,6 +245,9 @@ export function isInAppFileUrl(url: string, apiUrl: string): boolean {
   } catch {
     return false
   }
+  // A `file://` link is a local share: the renderer shows it in its own pane,
+  // never the OS and never a new window.
+  if (target.protocol === 'file:') return true
   return target.origin === api.origin && IN_APP_FILE_PATH.test(target.pathname)
 }
 

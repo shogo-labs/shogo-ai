@@ -134,6 +134,11 @@ export interface ProjectTopBarProps {
    */
   onCanvasPrewarm?: () => void;
   onOpenCodeWorkbench?: () => void;
+  /**
+   * Open a section of the project's Settings pane (e.g. the Publish dropdown's
+   * "Custom domain" row jumps to `custom-domains`). The layout owns the nonce.
+   */
+  onOpenSettingsItem?: (id: string) => void;
   /** Native phone only: back to Home (a project never gets a hamburger). */
   onBack?: () => void;
   idePrimarySideBarPosition?: IdePrimarySideBarPosition;

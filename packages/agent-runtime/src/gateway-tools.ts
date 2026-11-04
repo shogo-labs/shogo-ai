@@ -11,10 +11,10 @@
  */
 
 import { getModelTier, resolveModelId, calculateDollarCost, modelSupportsVideoInput } from '@shogo/model-catalog'
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync, realpathSync } from 'fs'
 import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
@@ -188,6 +188,15 @@ import {
   getPublishState as apiGetPublishState,
   publishProject as apiPublishProject,
   publishOps as apiPublishOps,
+  listProjectCustomDomains as apiListProjectCustomDomains,
+  addProjectCustomDomain as apiAddProjectCustomDomain,
+  verifyProjectCustomDomain as apiVerifyProjectCustomDomain,
+  retriggerProjectCustomDomain as apiRetriggerProjectCustomDomain,
+  setPrimaryProjectCustomDomain as apiSetPrimaryProjectCustomDomain,
+  removeProjectCustomDomain as apiRemoveProjectCustomDomain,
+  type CustomDomain,
+  type CustomDomainInstruction,
+  type CustomDomainsList,
   createSharedFileLink as apiCreateSharedFileLink,
   createWorkspaceSharedFileLink as apiCreateWorkspaceSharedFileLink,
   createGitHubPullRequest as apiCreateGitHubPullRequest,
@@ -4784,11 +4793,285 @@ function resolveTargetProjectId(ctx: ToolContext, requested?: string): string | 
   return attached.length === 1 ? attached[0] : undefined
 }
 
+// ---------------------------------------------------------------------------
+// Custom domains — the `publish` tool's `domain_action` (SHO-304)
+//
+// Shogo serves the user's own domain via Cloudflare for SaaS; these helpers let
+// the agent list/add/verify/remove those domains and hand back EVERY DNS record
+// verbatim, so it can create them itself when the user has given it DNS access
+// (cf/wrangler/Route 53) instead of standing up another host.
+// ---------------------------------------------------------------------------
+
+const CUSTOM_DOMAIN_DOCS_URL = 'https://docs.shogo.ai/features/custom-domains'
+const CUSTOM_DOMAIN_SETTINGS_LOCATION = 'Project → Settings → Publishing → Custom domain'
+const CUSTOM_DOMAIN_APEX_NOTE =
+  'For a bare apex domain (example.com), point the CNAME at the record shown only if your DNS provider ' +
+  'supports CNAME flattening (Cloudflare, Route 53, most do). Otherwise add the www record and let Shogo ' +
+  'redirect the apex — never proxy the record through a provider CDN: create it DNS-only.'
+
+/** Whether a required DNS record is already in place, from the server's verdict. */
+function customDomainRecordFound(
+  domain: CustomDomain,
+  record: CustomDomainInstruction,
+): boolean | undefined {
+  if (record.type === 'CNAME') {
+    return domain.dns ? domain.dns.cname === 'ok' : undefined
+  }
+  if (record.purpose === 'ssl-validation') {
+    const match = domain.validation?.find((v) => v.name === record.name)
+    if (match) return match.status === 'active'
+    if (domain.dns) return domain.dns.txt === 'ok'
+  }
+  return undefined
+}
+
+/** Agent-facing view of one domain: status + every DNS record, verbatim. */
+function agentCustomDomain(domain: CustomDomain) {
+  return {
+    hostname: domain.hostname,
+    primary: domain.primary ?? true,
+    redirectsTo:
+      domain.canonicalHostname && domain.canonicalHostname !== domain.hostname
+        ? domain.canonicalHostname
+        : null,
+    status: domain.status,
+    stage: domain.stage ?? null,
+    message: domain.message ?? null,
+    error: domain.error ?? null,
+    records: (domain.instructions ?? []).map((r) => ({
+      type: r.type,
+      name: r.name,
+      value: r.value,
+      purpose: r.purpose,
+      found: customDomainRecordFound(domain, r) ?? null,
+    })),
+  }
+}
+
+function customDomainSuccess(action: string, data: { fallbackOrigin?: string; domains?: CustomDomain[] }) {
+  return {
+    ok: true,
+    action,
+    published: true,
+    fallbackOrigin: data.fallbackOrigin ?? null,
+    domains: (data.domains ?? []).map(agentCustomDomain),
+    apexNote: CUSTOM_DOMAIN_APEX_NOTE,
+    settings: CUSTOM_DOMAIN_SETTINGS_LOCATION,
+    docs: CUSTOM_DOMAIN_DOCS_URL,
+  }
+}
+
+/** Map a domain-route error code onto something the agent can act on. */
+function customDomainFailure(
+  action: string,
+  res: { status?: number; code?: string; error?: string },
+) {
+  const code = res.code ?? 'domain_action_failed'
+  const messages: Record<string, string> = {
+    not_published:
+      'This project has not been published yet, so it has no custom domains. Publish it to a subdomain first (call this tool with `subdomain`), then add the domain.',
+    not_enabled: 'Custom domains are not enabled on this deployment.',
+    invalid_hostname:
+      `${res.error ?? 'That is not a valid domain.'} Pass a hostname like example.com or app.example.com.`,
+    hostname_taken:
+      `${res.error ?? 'This domain is already in use'} — another site is already serving it. Ask the user to confirm the domain or pick a different one; do not retry the same hostname.`,
+    already_added: `${res.error ?? 'That domain is already attached to this project.'} Use domain_action "list" to see its current status.`,
+    cloud_signin_required:
+      'Custom domains need a Shogo Cloud account: tell the user to connect Shogo Cloud in Settings, then retry.',
+    domain_not_found:
+      'No custom domain matches that hostname on this project. Call with domain_action "list" to see the attached domains and their exact hostnames.',
+    not_registered: 'This domain was never registered with Cloudflare — remove it and add it again.',
+    not_grouped: 'That domain has no apex/www companion, so there is no primary to switch.',
+    dns_not_ready:
+      `The DNS records are not all in place yet — create the records returned by domain_action "list", then call "verify" again.`,
+    too_early: `${res.error ?? 'Give it a bit longer, then call "verify" again.'}`,
+    cooldown: `${res.error ?? 'Just retried — wait before retrying again.'}`,
+    already_active: 'This domain is already live.',
+  }
+  return {
+    ok: false,
+    action,
+    code,
+    status: res.status ?? null,
+    error: messages[code] ?? res.error ?? 'The custom-domain request failed.',
+    settings: CUSTOM_DOMAIN_SETTINGS_LOCATION,
+    docs: CUSTOM_DOMAIN_DOCS_URL,
+  }
+}
+
+/** Find the domain row an action targets, from a hostname the user or agent named. */
+function pickCustomDomain(
+  domains: CustomDomain[],
+  hostname?: string,
+): CustomDomain | undefined {
+  const wanted = (hostname ?? '').trim().toLowerCase()
+  if (!wanted) return domains.find((d) => d.primary) ?? domains[0]
+  return (
+    domains.find((d) => d.hostname === wanted) ??
+    domains.find((d) => d.hostname === `www.${wanted}`) ??
+    domains.find((d) => d.canonicalHostname === wanted) ??
+    domains.find((d) => `www.${d.hostname}` === wanted)
+  )
+}
+
+/** Existing custom domains to report after a publish, or the "you can use your own domain" hint. */
+async function publishCustomDomainSummary(projectId: string) {
+  try {
+    const list = await apiListProjectCustomDomains(projectId)
+    if (!list.ok || !list.data?.enabled) {
+      return { customDomains: [] as any[], customDomainHint: null as string | null }
+    }
+    const domains = list.data.domains ?? []
+    if (domains.length === 0) {
+      return {
+        customDomains: [] as any[],
+        customDomainHint:
+          'This site is on a .shogo.one URL. It can also serve on a domain the user owns — call this tool with ' +
+          'domain_action: "add" and their domain, and it returns every DNS record to create.',
+      }
+    }
+    return {
+      customDomains: domains.map((d) => ({
+        hostname: d.hostname,
+        status: d.status,
+        primary: d.primary ?? true,
+        redirectsTo:
+          d.canonicalHostname && d.canonicalHostname !== d.hostname ? d.canonicalHostname : null,
+      })),
+      customDomainHint: null as string | null,
+    }
+  } catch {
+    return { customDomains: [] as any[], customDomainHint: null as string | null }
+  }
+}
+
+async function runPublishDomainAction(
+  projectId: string,
+  action: 'list' | 'add' | 'verify' | 'make_primary' | 'remove',
+  hostname?: string,
+): Promise<AgentToolResult<any>> {
+  if (action === 'add') {
+    if (!hostname?.trim()) {
+      return textResult({
+        ok: false,
+        action,
+        error: 'Pass `domain` (e.g. example.com or app.example.com) with domain_action "add".',
+      })
+    }
+    const res = await apiAddProjectCustomDomain(projectId, hostname.trim().toLowerCase())
+    if (!res.ok) return textResult(customDomainFailure(action, res))
+    return textResult({
+      ...customDomainSuccess(action, res.data ?? { domains: [] }),
+      note:
+        'Domain registered. Create each record below EXACTLY as given (DNS-only, never proxied), then call ' +
+        'domain_action "verify". If you have no DNS access, give the user this records table and point them to ' +
+        `${CUSTOM_DOMAIN_SETTINGS_LOCATION}.`,
+    })
+  }
+
+  const list = await apiListProjectCustomDomains(projectId)
+  if (!list.ok) return textResult(customDomainFailure(action, list))
+  const data = list.data ?? { enabled: false, published: false, domains: [] }
+
+  if (data.published === false) {
+    return textResult(customDomainFailure(action, { code: 'not_published' }))
+  }
+
+  if (!data.enabled) {
+    return textResult({
+      ok: false,
+      action,
+      code: 'not_enabled',
+      error: 'Custom domains are not enabled on this deployment.',
+    })
+  }
+
+  if (action === 'list') {
+    return textResult({
+      ...customDomainSuccess(action, data),
+      note:
+        data.domains.length > 0
+          ? 'Create any record whose `found` is false, then call domain_action "verify".'
+          : 'No custom domains yet. Add one with domain_action "add" and the user\'s domain.',
+    })
+  }
+
+  const target = pickCustomDomain(data.domains, hostname)
+  if (!target) {
+    return textResult({
+      ok: false,
+      action,
+      code: 'domain_not_found',
+      error: `No custom domain matches "${hostname ?? ''}" on this project.`,
+      domains: data.domains.map(agentCustomDomain),
+    })
+  }
+
+  if (action === 'verify') {
+    const res = await apiVerifyProjectCustomDomain(projectId, target.id)
+    let result = res
+    let retriggered = false
+    let retriggerNote: string | null = null
+
+    const afterVerify = res.ok ? res.data?.domains ?? [] : []
+    const targetAfter = afterVerify.find((d) => d.hostname === target.hostname) ?? afterVerify[0]
+    // Stalled / failed with DNS ready: the gate decides; retrigger is the escape
+    // hatch and it refreshes again, so only attempt it when allowed.
+    if (res.ok && targetAfter && targetAfter.status !== 'active' && targetAfter.canRetrigger) {
+      const retry = await apiRetriggerProjectCustomDomain(projectId, target.id)
+      if (retry.ok) {
+        retriggered = true
+        result = retry
+      } else {
+        retriggerNote = customDomainFailure('verify', retry).error
+      }
+    }
+
+    if (!result.ok) return textResult(customDomainFailure(action, result))
+
+    const domains = result.data?.domains ?? []
+    const after = domains.find((d) => d.hostname === target.hostname) ?? domains[0]
+    return textResult({
+      ...customDomainSuccess(action, result.data ?? { domains }),
+      verified: true,
+      retriggered,
+      note: after?.status === 'active'
+        ? `${after.hostname} is live and serving the app now (the DNS check also wrote the routing map, so it serves immediately — no need to wait for a poller or reload anything).`
+        : retriggered
+          ? 'DNS is correct but the certificate had stalled, so issuance was re-triggered. Check again in a few minutes with domain_action "verify".'
+          : retriggerNote ?? after?.message ?? 'DNS is not fully in place yet — add the records shown, then verify again.',
+    })
+  }
+
+  if (action === 'make_primary') {
+    const res = await apiSetPrimaryProjectCustomDomain(projectId, target.id)
+    if (!res.ok) return textResult(customDomainFailure(action, res))
+    return textResult({
+      ...customDomainSuccess(action, res.data ?? { domains: [] }),
+      note: `${target.hostname} is now the canonical address; its companion 308-redirects to it.`,
+    })
+  }
+
+  // remove
+  const res = await apiRemoveProjectCustomDomain(projectId, target.id)
+  if (!res.ok) return textResult(customDomainFailure(action, res))
+  return textResult({
+    ok: true,
+    action,
+    published: true,
+    removed: res.data?.removedIds ?? [],
+    note: `${target.hostname} (and its apex/www companion, if any) was detached. Its Cloudflare hostname, certificate and routing map were deleted.`,
+    settings: CUSTOM_DOMAIN_SETTINGS_LOCATION,
+    docs: CUSTOM_DOMAIN_DOCS_URL,
+  })
+}
+
 function createPublishTool(ctx: ToolContext): AgentTool {
   return {
     name: 'publish',
     description: [
       'Publish the web app to a public, persistent URL at `{subdomain}.shogo.one`. Use this for hosting or permanently sharing the web app. For a single generated file, use `share_file` instead — never use publish to deliver a PDF, DOCX, ZIP, EXE, or other artifact.',
+      'Shogo also serves the app on a domain the user already owns. NEVER stand up another host for it (no Cloudflare Pages, Vercel, Netlify) — use `domain_action` on this tool. When the user asks to point their own domain at their app ("set up mysite.com"), call `domain_action: "add"` with their domain, then create each returned DNS record EXACTLY as given. If you have DNS access (`cf`/`wrangler`/Route 53, or a token the user gave you), create the records yourself — DNS-only, never proxied — then call `domain_action: "verify"`. If you do not, give the user the records table and point them to Project → Settings → Publishing → Custom domain. `domain_action` never publishes.',
       'First publish to a subdomain requires the Pro plan or higher. Say so when the user asks to publish/deploy, or if this call returns `plan_not_allowed` (then point them to Settings > Billing to upgrade) — but do not pitch an upgrade when the user only wants to share what you built: the preview URL is public and anyone can open it.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
@@ -4797,6 +5080,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'In a workspace runtime, pass `project_id` for the mounted project to publish. It defaults to the current project, the workspace anchor, or the only attached project.',
       'Published apps run on Knative and scale past one instance. Pass `environment: "staging"` to deploy to the optional staging site (`{subdomain}--staging.shogo.one`) for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
       'For anything other than a deploy — checking replicas/latency/cost, tailing logs, changing scale, rolling back, redeploying, promoting, creating or deleting staging — pass `ops_action` instead of publishing. An ops action NEVER builds or publishes new code. Get the user\'s confirmation before: raising max replicas or size (real money), rollback, promote to production, and deleting an environment.',
+      'Custom domains: `domain_action` lists/adds/checks/removes the project\'s own domains and returns every DNS record verbatim. Set `domain_action` and it does NOT publish. Actions: "list", "add" (needs `domain`), "verify", "make_primary", "remove". Only remove a domain when the user explicitly asked to remove it.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -4870,6 +5154,27 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       replica: Type.Optional(
         Type.String({ description: 'ops_action "logs": the pod name to tail. Defaults to a ready pod.' }),
       ),
+      domain_action: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal('list'),
+            Type.Literal('add'),
+            Type.Literal('verify'),
+            Type.Literal('make_primary'),
+            Type.Literal('remove'),
+          ],
+          {
+            description:
+              'Manage the project\'s own custom domain instead of publishing. "list" returns each domain\'s status and every DNS record with a `found` flag; "add" registers a domain (pass `domain`) and returns its records; "verify" re-checks DNS/certificate and makes an active domain serve immediately; "make_primary" switches which hostname is canonical; "remove" detaches the domain (only when the user explicitly asked). Setting this never publishes.',
+          },
+        ),
+      ),
+      domain: Type.Optional(
+        Type.String({
+          description:
+            'The custom hostname (e.g. example.com or app.example.com). Required for domain_action "add"; for other actions it picks which domain to act on (defaults to the primary domain).',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const {
@@ -4887,6 +5192,8 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         deployment_id,
         since,
         replica,
+        domain_action,
+        domain,
       } = params as {
         subdomain?: string
         access_level?: 'anyone' | 'authenticated' | 'private' | 'password'
@@ -4902,12 +5209,19 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         deployment_id?: string
         since?: number
         replica?: string
+        domain_action?: 'list' | 'add' | 'verify' | 'make_primary' | 'remove'
+        domain?: string
       }
       const projectId = resolveTargetProjectId(ctx, project_id)
       if (!projectId) {
         return textResult({
           error: 'No project context is available, so the app cannot be published. Pass project_id for the project to publish.',
         })
+      }
+
+      // Domain management never publishes — handle it before any publish work.
+      if (domain_action) {
+        return runPublishDomainAction(projectId, domain_action, domain)
       }
 
       // Ops actions never deploy. They run against an environment and return
@@ -5001,6 +5315,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       const url = res.data?.url ?? `https://${targetSubdomain}.shogo.one`
       const verification = await verifyPublishedSite(url)
       const wasRepublish = currentSubdomain != null && currentSubdomain === targetSubdomain
+      const domainSummary = await publishCustomDomainSummary(projectId)
 
       if (verification.brokenAssets.length > 0) {
         const list = verification.brokenAssets.map((a) => `${a.url} (${a.problem})`).join('; ')
@@ -5012,6 +5327,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
           republished: wasRepublish,
           verified: false,
           brokenAssets: verification.brokenAssets,
+          ...domainSummary,
           note: `Publish deployed to ${url}, but the page will render BLANK: its HTML loads while ${verification.brokenAssets.length} script/stylesheet file(s) it references do not — ${list}. Do NOT tell the user the site is working. This almost always means the build's asset base path does not match the published site root (check \`base\` in vite.config, and any hardcoded \`/p/<id>/\` or absolute asset URLs). Fix it, rebuild, publish again, and only share the URL once publish returns verified: true.`,
         })
       }
@@ -5024,6 +5340,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         subdomain: res.data?.subdomain ?? targetSubdomain,
         republished: wasRepublish,
         verified,
+        ...domainSummary,
         note: verified
           ? `The app is live at ${url}. Share this URL with the user. Static assets use cache-safe headers and the runtime self-heals stale bundles automatically — do not tell the user to hard-refresh or clear their cache.`
           : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load. If they still see an old version after ~30s, distinguish preview from published URL and republish rather than asking them to hard-refresh or clear their cache — the runtime already self-heals stale bundles.`,
@@ -5044,8 +5361,9 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       'Use this whenever the user asks to download, receive, get, or send a generated file such as a PDF, DOCX, ZIP, EXE, image, or other artifact.',
       'This is for individual files, not web apps. Do not invent a localhost or preview URL, and do not use the publish tool for a file download.',
       'Never upload the file to a third-party host (filebin, file.io, transfer.sh, tmpfiles, 0x0.st, or similar) with curl or any other tool; this is the only supported way to hand a user a file.',
-      'After this succeeds, paste the returned URL verbatim and tell the user when it expires. Do not delete or overwrite the shared file before the user downloads it.',
+      'After this succeeds, paste the returned URL verbatim; tell the user when it expires only when the result has an `expiresAt`. Do not delete or overwrite the shared file before the user downloads it.',
       'In a workspace runtime the file decides where the link points: a file inside a mounted project gets a project link, anything else gets a workspace link. `project_id` only picks the project when the path alone is ambiguous.',
+      'On local desktop it returns a `file://` link to the file on disk that does not expire.',
     ].join(' '),
     label: 'Share file',
     parameters: Type.Object({
@@ -5088,6 +5406,30 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
         return textResult({
           error: `File not found: ${path}`,
           ...(hint ? { hint } : {}),
+        })
+      }
+
+      // Local desktop: the file is already on this machine's disk, so the link
+      // is the file itself. No token to sign, nothing to expire, and no
+      // several-hundred-character URL for the model to mistype.
+      if (process.env.SHOGO_LOCAL_MODE === 'true') {
+        let realPath = resolved
+        try {
+          realPath = realpathSync(resolved)
+        } catch {
+          // A path that vanished between stat and realpath is still the file
+          // the caller named; the viewer reports it as missing.
+        }
+        const filename = path.split('/').pop() || path
+        return textResult({
+          ok: true,
+          local: true,
+          url: pathToFileURL(realPath).href,
+          path: realPath,
+          linkPath: path,
+          filename,
+          size: fileSize,
+          note: 'Links straight to the file on disk; it does not expire. Paste url verbatim.',
         })
       }
 

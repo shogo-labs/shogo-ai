@@ -508,6 +508,80 @@ app.post('/projects/:projectId/publish/ops', async (c) => {
 })
 
 /**
+ * Custom domains — the agent's `publish` tool with `domain_action` set.
+ *
+ * Same handlers the publish panel's session routes call (routes/publish.ts), so
+ * the agent reads and writes exactly what the Settings → Custom domain panel
+ * does. Auth: K8s SA token (cluster) OR HMAC-signed `x-runtime-token`.
+ */
+app.get('/projects/:projectId/domains', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const { listCustomDomains } = await import('./publish')
+  const result = await listCustomDomains(projectId)
+  return c.json(result.body, result.status as any)
+})
+
+app.post('/projects/:projectId/domains', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  let body: { hostname?: string }
+  try {
+    body = (await c.req.json()) as typeof body
+  } catch {
+    return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
+  }
+
+  const { addCustomDomain } = await import('./publish')
+  const result = await addCustomDomain(projectId, typeof body?.hostname === 'string' ? body.hostname : '')
+  return c.json(result.body, result.status as any)
+})
+
+app.post('/projects/:projectId/domains/:domainId/verify', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const { verifyCustomDomain } = await import('./publish')
+  const result = await verifyCustomDomain(projectId, c.req.param('domainId'))
+  return c.json(result.body, result.status as any)
+})
+
+app.post('/projects/:projectId/domains/:domainId/retrigger', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const { retriggerCustomDomain } = await import('./publish')
+  const result = await retriggerCustomDomain(projectId, c.req.param('domainId'))
+  return c.json(result.body, result.status as any)
+})
+
+app.patch('/projects/:projectId/domains/:domainId/primary', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const { setPrimaryCustomDomain } = await import('./publish')
+  const result = await setPrimaryCustomDomain(projectId, c.req.param('domainId'))
+  return c.json(result.body, result.status as any)
+})
+
+app.delete('/projects/:projectId/domains/:domainId', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const { deleteCustomDomain } = await import('./publish')
+  const result = await deleteCustomDomain(projectId, c.req.param('domainId'))
+  return c.json(result.body, result.status as any)
+})
+
+/**
  * POST /api/internal/projects/:projectId/shared-files
  *
  * Mint a short-lived capability URL for one file in the project's runtime.
