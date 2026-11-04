@@ -7,6 +7,10 @@
  *   bun run evals:compaction --fixtures real --variants A,B1,D
  *   bun run evals:compaction --max-usd 25 --write-baseline
  *   bun run evals:compaction --report-only --append      # re-render, spend $0
+ *   bun run evals:compaction --tracks context-retention=true,cache-compaction-recovery=true --gate
+ *
+ * `--tracks` is what this run actually executed. A track that is not declared
+ * reads as `not run` and fails the gate — an unrun guard is not a passing one.
  *
  * Prints the report table and the actual spend, writes
  * `evals/compaction-report.md`, and refuses to spend past `--max-usd`
@@ -22,7 +26,7 @@ import { syntheticFixtures } from './fixtures'
 import { createShogoChatClient } from './model-client'
 import { runFixtureVariant, type CompactionEvalDeps, type SummarizeStats } from './runner'
 import { buildBaseline, comparableFixtures, renderCompactionReport, summariseVariant } from './report'
-import { evaluateVariantGate } from './gate'
+import { evaluateVariantGate, parseRequiredTracks } from './gate'
 import type { CompactionFixture, FixtureVariantResult } from './types'
 
 const REPO_ROOT = resolve(import.meta.dir, '../../../../..')
@@ -299,6 +303,10 @@ async function main(): Promise<void> {
     }
   }
   const compareTo = recordedBaseline?.baseline ?? baselineSummary
+  // Only what this run executed is evidence. A track left off the command line
+  // reads as `not run`, which fails the gate — never as a pass inherited from a
+  // baseline recorded on some earlier run.
+  const requiredTracks = parseRequiredTracks(arg('tracks'))
 
   const report = renderCompactionReport({
     fixtures: new Set(scoped.map((r) => r.fixtureId)).size,
@@ -307,6 +315,7 @@ async function main(): Promise<void> {
     variants: summaries,
     results: scoped,
     baseline: compareTo,
+    requiredTracks,
     excludedCells: merged.length - scoped.length,
     spendUsd: totalSpend(),
   })
@@ -322,6 +331,7 @@ async function main(): Promise<void> {
         model,
         summarizerModel,
         spendUsd: totalSpend(),
+        requiredTracks,
         summaries,
         results: merged,
       },
@@ -340,7 +350,7 @@ async function main(): Promise<void> {
   if (flag('write-baseline') && baselineSummary) {
     writeFileSync(
       BASELINE_PATH,
-      `${JSON.stringify(buildBaseline({ model, summarizerModel, fixtures: fixtures.length }, baselineSummary, summaries), null, 2)}\n`,
+      `${JSON.stringify(buildBaseline({ model, summarizerModel, fixtures: fixtures.length, requiredTracks }, baselineSummary, summaries), null, 2)}\n`,
       'utf8',
     )
     console.log(`Baseline recorded: ${BASELINE_PATH}`)
@@ -351,7 +361,7 @@ async function main(): Promise<void> {
   if (flag('gate') && compareTo) {
     const verdicts = summaries
       .filter((s) => s.variantId !== compareTo.variantId)
-      .map((s) => evaluateVariantGate({ summary: s, baseline: compareTo }))
+      .map((s) => evaluateVariantGate({ summary: s, baseline: compareTo, requiredTracks }))
     if (verdicts.every((v) => !v.ok)) {
       console.error('Gate: no variant is eligible to become the default.')
       process.exit(2)

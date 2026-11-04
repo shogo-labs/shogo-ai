@@ -92,8 +92,25 @@ A variant may become the default only if, against the recorded baseline:
 - `reReadRate` rises by at most **10 points**
 - `context-retention` and `cache-compaction-recovery` still pass
 
+Those last two are declared per run, and the check **fails closed**: a track is
+satisfied only by a recorded pass, so leaving one off the command line fails the
+gate rather than passing it by omission. That is deliberate — an unrun track is
+missing evidence, and this check exists precisely to stop a default flip on
+missing evidence.
+
+```bash
+bun run evals:compaction --fixtures synthetic \
+  --tracks context-retention=true,cache-compaction-recovery=true --gate
+```
+
+The report header prints every track as `pass`, `**FAIL**` or `**NOT RUN**`, and
+the recorded baseline stores the same map, so a later run can see which tracks
+the baseline was measured with. An unknown track name or a value that is not
+`true`/`false` is an error, not a silently ignored flag.
+
 Thresholds and the comparison live in `gate.ts` and are unit-tested, including a
-hand-edited baseline (which must fail).
+hand-edited baseline (which must fail) and a run with no tracks recorded (which
+must not pass).
 
 ## Artifacts
 

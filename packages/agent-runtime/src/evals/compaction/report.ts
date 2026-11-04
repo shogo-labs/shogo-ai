@@ -10,7 +10,7 @@
  */
 import type { FixtureVariantResult, VariantSummary } from './types'
 import { mean } from './graders'
-import { evaluateVariantGate, type CompactionBaseline, type GateResult } from './gate'
+import { evaluateVariantGate, trackStatuses, type CompactionBaseline, type GateResult, type TrackStatus } from './gate'
 
 function pct(value: number): string {
   return `${value.toFixed(1)}%`
@@ -18,6 +18,13 @@ function pct(value: number): string {
 
 function usd(value: number): string {
   return `$${value.toFixed(4)}`
+}
+
+/** How a required track reads in the report header — `not run` must be unmissable. */
+const TRACK_LABEL: Record<TrackStatus, string> = {
+  pass: 'pass',
+  fail: '**FAIL**',
+  'not-run': '**NOT RUN**',
 }
 
 /** Collapse one variant's fixture results into the numbers the report and gate use. */
@@ -111,6 +118,14 @@ export function renderCompactionReport(input: ReportInput): string {
   lines.push(`- Model under test: \`${input.model}\``)
   lines.push(`- Summarizer: \`${input.summarizerModel}\``)
   lines.push(`- Spend: ${usd(input.spendUsd)}`)
+  const statuses = trackStatuses(input.requiredTracks)
+  lines.push(
+    `- Required tracks: ${
+      Object.entries(statuses)
+        .map(([name, status]) => `${name}: ${TRACK_LABEL[status]}`)
+        .join(' · ')
+    }`,
+  )
   if (input.excludedCells) {
     lines.push(
       `- Comparison scope: the ${input.fixtures} fixture(s) graded by **every** variant ` +
@@ -171,7 +186,7 @@ export function renderCompactionReport(input: ReportInput): string {
 
 /** The baseline a run records: variant A's summary, per model. */
 export function buildBaseline(
-  input: { model: string; summarizerModel: string; fixtures: number },
+  input: { model: string; summarizerModel: string; fixtures: number; requiredTracks?: Record<string, boolean> },
   summary: VariantSummary,
   variants: VariantSummary[],
   date = new Date().toISOString(),
@@ -182,6 +197,9 @@ export function buildBaseline(
     fixtures: input.fixtures,
     baseline: summary,
     variants: Object.fromEntries(variants.map((v) => [v.variantId, v])),
+    ...(input.requiredTracks && Object.keys(input.requiredTracks).length > 0
+      ? { requiredTracks: input.requiredTracks }
+      : {}),
     notes: `Agent model ${input.model}`,
   }
 }

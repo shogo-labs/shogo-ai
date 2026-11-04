@@ -19,7 +19,7 @@ import {
   matchesExpected,
   reReadRate,
 } from '../evals/compaction/graders'
-import { evaluateVariantGate } from '../evals/compaction/gate'
+import { evaluateVariantGate, parseRequiredTracks, trackStatuses } from '../evals/compaction/gate'
 import { comparableFixtures, renderCompactionReport, summariseVariant } from '../evals/compaction/report'
 import type { FixtureVariantResult, VariantSummary } from '../evals/compaction/types'
 import type { ChatClient } from '../evals/compaction/model-client'
@@ -244,6 +244,54 @@ describe('gate', () => {
     expect(result.reasons).toContain('external-track-failed')
   })
 
+  // QA round 1, SHO-327: the check used to pass when a track was absent, so a
+  // run that executed neither supporting track printed "required tracks pass"
+  // — a false green on the one check that guards the default flip.
+  test('fails closed when a required track never ran', () => {
+    const result = evaluateVariantGate({
+      summary: summary({ variantId: 'B1', meanFreedPct: 90, meanFactRecall: 0.95, meanReReadRate: 0.05 }),
+      baseline,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.reasons).toContain('external-track-not-run')
+    const check = result.checks.find((c) => c.name === 'requiredTracks')!
+    expect(check.ok).toBe(false)
+    expect(check.detail).toContain('not run: context-retention')
+    expect(check.detail).not.toContain('pass')
+  })
+
+  test('one unrun track fails the gate even when the other passed', () => {
+    const result = evaluateVariantGate({
+      summary: summary({ variantId: 'B1', meanFreedPct: 90 }),
+      baseline,
+      requiredTracks: { 'context-retention': true },
+    })
+    expect(result.ok).toBe(false)
+    expect(result.checks.find((c) => c.name === 'requiredTracks')!.detail).toBe('not run: cache-compaction-recovery')
+  })
+
+  test('tracks read as pass, fail or not-run — absence is not a pass', () => {
+    expect(trackStatuses()).toEqual({ 'context-retention': 'not-run', 'cache-compaction-recovery': 'not-run' })
+    expect(trackStatuses({ 'context-retention': true, 'cache-compaction-recovery': false })).toEqual({
+      'context-retention': 'pass',
+      'cache-compaction-recovery': 'fail',
+    })
+    // An extra track a run chose to record is reported alongside the required pair.
+    expect(trackStatuses({ 'my-extra-track': true })['my-extra-track']).toBe('pass')
+  })
+
+  test('--tracks parses explicit results and rejects anything vague', () => {
+    expect(parseRequiredTracks(undefined)).toEqual({})
+    expect(parseRequiredTracks('')).toEqual({})
+    expect(parseRequiredTracks('context-retention=true, cache-compaction-recovery=false')).toEqual({
+      'context-retention': true,
+      'cache-compaction-recovery': false,
+    })
+    expect(() => parseRequiredTracks('context-retention=yes')).toThrow(/true or false/)
+    expect(() => parseRequiredTracks('context-retention')).toThrow(/name=true\|false/)
+    expect(() => parseRequiredTracks('vibes=true')).toThrow(/unknown track/)
+  })
+
   test('a hand-edited baseline cannot make a regression look green', () => {
     // Baseline hand-lowered to "frees nothing": a candidate that frees 5 more
     // points would pass on freed%, but quality is compared against it too.
@@ -312,6 +360,21 @@ describe('report', () => {
     // caller must fall back to the full set rather than report an empty sample.
     expect(comparableFixtures(results, ['A', 'B1', 'D'])).toEqual([])
     expect(comparableFixtures([], ['A'])).toEqual([])
+  })
+
+  test('the report header shows a track that never ran as NOT RUN', () => {
+    const report = renderCompactionReport({
+      fixtures: 1,
+      model: 'mock',
+      summarizerModel: 'mock',
+      variants: [summariseVariant('A', [fakeResult({})])],
+      results: [fakeResult({})],
+      baseline: null,
+      requiredTracks: { 'context-retention': true },
+      spendUsd: 0,
+    })
+    expect(report).toContain('context-retention: pass')
+    expect(report).toContain('cache-compaction-recovery: **NOT RUN**')
   })
 
   test('the report states when partial coverage was excluded', () => {

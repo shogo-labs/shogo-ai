@@ -23,6 +23,51 @@ export const MAX_REREAD_RISE_POINTS = 10
 /** Failing these numbers makes any variant ineligible, however much it frees. */
 export const REQUIRED_TRACKS = ['context-retention', 'cache-compaction-recovery'] as const
 
+/**
+ * What a required track did in this run. `not-run` is not `pass`.
+ *
+ * The whole point of this guard is to stop a default flip on a run where the
+ * supporting tracks never executed, so an absent result has to read as
+ * missing — not as success by omission.
+ */
+export type TrackStatus = 'pass' | 'fail' | 'not-run'
+
+/** Per-track outcome, for the report and the recorded baseline. */
+export function trackStatuses(requiredTracks: Record<string, boolean> = {}): Record<string, TrackStatus> {
+  const names = [...new Set<string>([...REQUIRED_TRACKS, ...Object.keys(requiredTracks)])]
+  return Object.fromEntries(
+    names.map((name) => {
+      const recorded = requiredTracks[name]
+      return [name, recorded === true ? 'pass' : recorded === false ? 'fail' : 'not-run']
+    }),
+  )
+}
+
+/**
+ * Parse `--tracks context-retention=true,cache-compaction-recovery=false`.
+ *
+ * Only names the gate actually requires are accepted, and only `true`/`false`:
+ * an unrecognised name or value throws rather than being dropped, because a
+ * silently ignored flag is how a track ends up "not run" while the run looks
+ * complete.
+ */
+export function parseRequiredTracks(raw: string | undefined, known: readonly string[] = REQUIRED_TRACKS): Record<string, boolean> {
+  if (!raw) return {}
+  const out: Record<string, boolean> = {}
+  for (const entry of raw.split(',')) {
+    const token = entry.trim()
+    if (!token) continue
+    const [name, value, ...rest] = token.split('=')
+    if (!name || !token.includes('=') || rest.length > 0) {
+      throw new Error(`--tracks: expected name=true|false, got "${token}"`)
+    }
+    if (!known.includes(name)) throw new Error(`--tracks: unknown track "${name}" (known: ${known.join(', ')})`)
+    if (value !== 'true' && value !== 'false') throw new Error(`--tracks: "${name}" needs true or false, got "${value ?? ''}"`)
+    out[name] = value === 'true'
+  }
+  return out
+}
+
 export interface CompactionBaseline {
   /** The summarizer model the baseline was recorded on. */
   model: string
@@ -33,6 +78,8 @@ export interface CompactionBaseline {
   /** Variant A's numbers: what any candidate is compared to. */
   baseline: VariantSummary
   variants?: Record<string, VariantSummary>
+  /** Which supporting tracks ran when this baseline was recorded, and how they did. */
+  requiredTracks?: Record<string, boolean>
   notes?: string
 }
 
@@ -42,6 +89,7 @@ export type GateReason =
   | 'reread-rise'
   | 'invented-tools'
   | 'external-track-failed'
+  | 'external-track-not-run'
   | 'no-baseline'
 
 export interface GateCheck {
@@ -63,7 +111,11 @@ export interface GateResult {
 export interface GateInput {
   summary: VariantSummary
   baseline: VariantSummary | null
-  /** Tracks that must still pass, e.g. `{ 'context-retention': true }`. */
+  /**
+   * Tracks that ran in this run, e.g. `{ 'context-retention': true }`. A track
+   * that is absent never ran, and an unrun track fails the gate — the guard
+   * exists to block a flip on evidence nobody collected.
+   */
   requiredTracks?: Record<string, boolean>
 }
 
@@ -134,18 +186,28 @@ export function evaluateVariantGate({ summary, baseline, requiredTracks = {} }: 
   })
   if (summary.inventedTools > 0) reasons.push('invented-tools')
 
-  const failedTracks = REQUIRED_TRACKS.filter((t) => requiredTracks[t] === false)
+  const statuses = trackStatuses(requiredTracks)
+  const notRun = Object.entries(statuses).filter(([, s]) => s === 'not-run').map(([t]) => t)
+  const failed = Object.entries(statuses).filter(([, s]) => s === 'fail').map(([t]) => t)
   checks.push({
     name: 'requiredTracks',
-    ok: failedTracks.length === 0,
+    // Fail closed: a track is satisfied only by a recorded pass.
+    ok: notRun.length === 0 && failed.length === 0,
     baseline: null,
     candidate: null,
     delta: null,
-    detail: failedTracks.length === 0
-      ? `required tracks pass (${REQUIRED_TRACKS.join(', ')})`
-      : `failing: ${failedTracks.join(', ')}`,
+    detail:
+      failed.length > 0 || notRun.length > 0
+        ? [
+            failed.length > 0 ? `failing: ${failed.join(', ')}` : '',
+            notRun.length > 0 ? `not run: ${notRun.join(', ')}` : '',
+          ]
+            .filter(Boolean)
+            .join('; ')
+        : `required tracks pass (${Object.keys(statuses).join(', ')})`,
   })
-  if (failedTracks.length > 0) reasons.push('external-track-failed')
+  if (failed.length > 0) reasons.push('external-track-failed')
+  if (notRun.length > 0) reasons.push('external-track-not-run')
 
   return { ok: checks.every((c) => c.ok), checks, reasons }
 }
