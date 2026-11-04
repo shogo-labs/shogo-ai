@@ -351,7 +351,7 @@
   --surface-agent-panel: 255 255 255;
   --surface-agent-raised: 255 255 255;
   --border-agent-subtle: 231 229 228;
-  --shadow-agent: 0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.04);
+  --shadow-agent: 0 8px 24px rgba(28, 25, 23, 0.04), 0 1px 2px rgba(28, 25, 23, 0.04);
   --radius-agent-control: 12px;
   --radius-agent-panel: 16px;
 
@@ -398,7 +398,7 @@
   --surface-agent-panel: 28 28 27;
   --surface-agent-raised: 35 35 34;
   --border-agent-subtle: 62 62 60;
-  --shadow-agent: 0 1px 2px rgba(0, 0, 0, 0.2), 0 12px 32px rgba(0, 0, 0, 0.18);
+  --shadow-agent: 0 12px 32px rgba(0, 0, 0, 0.18), 0 1px 2px rgba(0, 0, 0, 0.2);
 
   --color-brand-landing: 226 121 39;
 }
