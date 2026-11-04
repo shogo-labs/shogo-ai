@@ -57,10 +57,25 @@ mutation {
 }
 # event is WebhookType: BUILD | SUBMIT. Two webhooks are needed to meter submissions too.
 
-# A signed upload slot. Called by the CLOUD, never by the runner.
+# Signed upload slots. Called by the CLOUD, never by the runner.
+#
+# Two different mutations, and only these two: project sources are NOT app-scoped.
 mutation {
   uploadSession {
-    createAppScopedUploadSession(type: GCS, appID: "<app id>") { url bucketKey }
+    # Unscoped, for a build's source archive and its metadata.
+    createUploadSession(
+      type: EAS_BUILD_GCS_PROJECT_SOURCES   # UploadSessionType
+      filename: "project.tar.gz"
+    ) { url bucketKey }
+  }
+}
+mutation {
+  uploadSession {
+    # Account-scoped, the only route to a workflow's project source.
+    createAccountScopedUploadSession(
+      type: WORKFLOWS_PROJECT_SOURCES       # AccountUploadSessionType
+      accountID: "<org id>"
+    ) { url bucketKey }
   }
 }
 
@@ -71,7 +86,7 @@ mutation {
       appId: "<app id>"
       job: { ...eas-build-job JSON... }
       metadata: { projectMetadataFile: { type: GCS, bucketKey: "<key from uploadSession>" }, ... }
-      buildParams: { resourceClass: DEFAULT | MEDIUM | LARGE, expoTokenRole: DEVELOPER }
+      buildParams: { resourceClass: IOS_MEDIUM, expoTokenRole: DEVELOPER }   # BuildResourceClass, not DEFAULT|MEDIUM|LARGE
     ) { id status }
   }
 }
@@ -98,6 +113,52 @@ submission { createAndroidSubmission(input: {...}) { id } }
 `ProjectArchiveSourceType` is `URL | GCS | NONE | GIT`, and
 `WorkflowProjectSourceInput.projectArchiveBucketKey` means **EAS Workflows do not
 require a git remote** — an uploaded archive is enough.
+
+## Two calls that look right and are not
+
+Recorded because both were in this document's first draft and both pass any check that
+only looks for a name:
+
+- **`uploadSession.createAppScopedUploadSession` cannot upload source.** Its `type` is
+  `AppUploadSessionType`, whose only value is `PROFILE_IMAGE_UPLOAD`. Project sources go
+  through the *unscoped* `createUploadSession(type: EAS_BUILD_GCS_PROJECT_SOURCES |
+  EAS_BUILD_GCS_PROJECT_METADATA | EAS_SUBMIT_GCS_APP_ARCHIVE)`; workflow sources through
+  the *account*-scoped `createAccountScopedUploadSession(type:
+  WORKFLOWS_PROJECT_SOURCES)`.
+- **`resourceClass` is not `DEFAULT | MEDIUM | LARGE`.** It is `BuildResourceClass`, one
+  enum across both platforms with the platform in the name — see below. `BuildParamsInput`
+  and the value the build webhook reports both use it.
+
+## Resource classes are the price list
+
+`BuildResourceClass` is a single enum: `ANDROID_DEFAULT | ANDROID_MEDIUM | ANDROID_LARGE |
+IOS_DEFAULT | IOS_MEDIUM | IOS_LARGE | IOS_M_MEDIUM | IOS_M_LARGE | LEGACY | LINUX_MEDIUM |
+LINUX_LARGE`. The webhook reports exactly one of these per `finished`/`errored` build, so
+**the meter's table is keyed by this enum and must have a row for every value it can
+receive** — an unknown class has to fail loudly rather than silently price at `medium`.
+
+Published flat rates ([expo.dev/pricing.md](https://expo.dev/pricing.md), read 2026-11-04):
+
+| Platform | Worker | Per build |
+| --- | --- | --- |
+| Android | medium | $1 |
+| Android | large | $2 |
+| iOS | medium | $2 |
+| iOS | large | $4 |
+
+Note what that table does **not** cover: the plan's `$2`/`$4` for iOS are the medium and
+large rows only, while the schema exposes **four** billable iOS classes —
+`IOS_MEDIUM`, `IOS_LARGE`, `IOS_M_MEDIUM`, `IOS_M_LARGE` — plus `IOS_DEFAULT`. The `M_`
+variants are the Apple-silicon workers; Expo's public rate card does not price them, so
+either the meter refuses them (with a clear error, not a guess) or Expo confirms their
+rate first. This is Phase 1 work, not a detail: `IOS_M_*` is what a large RN project is
+pushed onto.
+
+Two other numbers from the same page matter to the tenancy choice: **projects per
+account** are 25 (Free) / 50 (Starter) / 100 (Production) / 300 (Enterprise), and build
+jobs are a **flat rate per build**, not per minute — so `native_build` is one price per
+build id, while Maestro/CI jobs are $0.05 per run plus CI minutes ($0.018/min Linux
+medium, $0.075/min macOS medium).
 
 ## The one thing that does not exist
 
@@ -169,7 +230,10 @@ webhook meters. This is what the GraphQL schema actually wants (it is how `eas-c
 itself works), it removes the "user code runs in the same process as `EXPO_TOKEN`"
 threat that forced one org per workspace, and it lets a **single** Shogo Expo account
 hold many projects. Cost: we reimplement ~200 lines of `eas-cli`'s job assembly and must
-track build-job schema changes.
+track build-job schema changes. Its ceiling is the account's project cap (25 on Free, 100
+on Production), so a single account runs out at the same order of magnitude as one org
+per workspace would have — sharding across a handful of Shogo-owned accounts is the
+escape hatch, and it stays inside our own account, so it needs no Expo agreement.
 
 **B. Per-workspace org created out of band.** Keep the plan's tenancy, but
 `ensureExpoOrg` becomes "post an internal provisioning request"; orgs are created by hand

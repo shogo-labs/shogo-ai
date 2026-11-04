@@ -1,0 +1,2851 @@
+{
+ "root": {
+  "__schema": {
+   "mutationType": {
+    "fields": [
+     {
+      "name": "appStoreConnectApp",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppStoreConnectAppMutation"
+       }
+      }
+     },
+     {
+      "name": "userDashboardViewPins",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserDashboardViewPinMutation"
+       }
+      }
+     },
+     {
+      "name": "userPreference",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserPreferenceMutation"
+       }
+      }
+     },
+     {
+      "name": "workflowsInsights",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowsInsightsMutation"
+       }
+      }
+     },
+     {
+      "name": "accessToken",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AccessTokenMutation"
+       }
+      }
+     },
+     {
+      "name": "account",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AccountMutation"
+       }
+      }
+     },
+     {
+      "name": "accountSSOConfiguration",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AccountSSOConfigurationMutation"
+       }
+      }
+     },
+     {
+      "name": "actorExperiment",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ActorExperimentMutation"
+       }
+      }
+     },
+     {
+      "name": "agentProviderConnection",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AgentProviderConnectionMutation"
+       }
+      }
+     },
+     {
+      "name": "androidAppBuildCredentials",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AndroidAppBuildCredentialsMutation"
+       }
+      }
+     },
+     {
+      "name": "androidAppCredentials",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AndroidAppCredentialsMutation"
+       }
+      }
+     },
+     {
+      "name": "androidFcm",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AndroidFcmMutation"
+       }
+      }
+     },
+     {
+      "name": "androidKeystore",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AndroidKeystoreMutation"
+       }
+      }
+     },
+     {
+      "name": "devDomainName",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppDevDomainNameMutation"
+       }
+      }
+     },
+     {
+      "name": "appleAppIdentifier",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppleAppIdentifierMutation"
+       }
+      }
+     },
+     {
+      "name": "appleDevice",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppleDeviceMutation"
+       }
+      }
+     },
+     {
+      "name": "appleDeviceRegistrationRequest",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppleDeviceRegistrationRequestMutation"
+       }
+      }
+     },
+     {
+      "name": "appleDistributionCertificate",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppleDistributionCertificateMutation"
+       }
+      }
+     },
+     {
+      "name": "appleProvisioningProfile",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppleProvisioningProfileMutation"
+       }
+      }
+     },
+     {
+      "name": "applePushKey",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ApplePushKeyMutation"
+       }
+      }
+     },
+     {
+      "name": "appleTeam",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppleTeamMutation"
+       }
+      }
+     },
+     {
+      "name": "app",
+      "type": {
+       "kind": "OBJECT",
+       "name": "AppMutation",
+       "ofType": null
+      }
+     },
+     {
+      "name": "appStoreConnectApiKey",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppStoreConnectApiKeyMutation"
+       }
+      }
+     },
+     {
+      "name": "appVersion",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppVersionMutation"
+       }
+      }
+     },
+     {
+      "name": "asset",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AssetMutation"
+       }
+      }
+     },
+     {
+      "name": "auditLog",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AuditLogMutation"
+       }
+      }
+     },
+     {
+      "name": "userAuditLog",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserAuditLogMutation"
+       }
+      }
+     },
+     {
+      "name": "buildAnnotation",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BuildAnnotationMutation"
+       }
+      }
+     },
+     {
+      "name": "build",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BuildMutation"
+       }
+      }
+     },
+     {
+      "name": "convexProject",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ConvexProjectMutation"
+       }
+      }
+     },
+     {
+      "name": "convexTeamConnection",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ConvexTeamConnectionMutation"
+       }
+      }
+     },
+     {
+      "name": "deployments",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DeploymentsMutation"
+       }
+      }
+     },
+     {
+      "name": "deviceRunSession",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DeviceRunSessionMutation"
+       }
+      }
+     },
+     {
+      "name": "discordUser",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DiscordUserMutation"
+       }
+      }
+     },
+     {
+      "name": "embeddedUpdateAsset",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "EmbeddedUpdateAssetMutation"
+       }
+      }
+     },
+     {
+      "name": "embeddedUpdate",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "EmbeddedUpdateMutation"
+       }
+      }
+     },
+     {
+      "name": "environmentSecret",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "EnvironmentSecretMutation"
+       }
+      }
+     },
+     {
+      "name": "environmentVariable",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "EnvironmentVariableMutation"
+       }
+      }
+     },
+     {
+      "name": "exitInterview",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ExitInterviewMutation"
+       }
+      }
+     },
+     {
+      "name": "fingerprint",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "FingerprintMutation"
+       }
+      }
+     },
+     {
+      "name": "githubAppInstallation",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubAppInstallationMutation"
+       }
+      }
+     },
+     {
+      "name": "githubApp",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubAppMutation"
+       }
+      }
+     },
+     {
+      "name": "githubAppRegistration",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubAppRegistrationMutation"
+       }
+      }
+     },
+     {
+      "name": "githubBuildTrigger",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubBuildTriggerMutation"
+       }
+      }
+     },
+     {
+      "name": "githubJobRunTrigger",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubJobRunTriggerMutation"
+       }
+      }
+     },
+     {
+      "name": "githubRepository",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubRepositoryMutation"
+       }
+      }
+     },
+     {
+      "name": "githubRepositorySettings",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubRepositorySettingsMutation"
+       }
+      }
+     },
+     {
+      "name": "githubUser",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubUserMutation"
+       }
+      }
+     },
+     {
+      "name": "googleServiceAccountKey",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GoogleServiceAccountKeyMutation"
+       }
+      }
+     },
+     {
+      "name": "iosAppBuildCredentials",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IosAppBuildCredentialsMutation"
+       }
+      }
+     },
+     {
+      "name": "iosAppCredentials",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IosAppCredentialsMutation"
+       }
+      }
+     },
+     {
+      "name": "jobRun",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "JobRunMutation"
+       }
+      }
+     },
+     {
+      "name": "keystoreGenerationUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "KeystoreGenerationUrlMutation"
+       }
+      }
+     },
+     {
+      "name": "logRocketOrganization",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "LogRocketOrganizationMutation"
+       }
+      }
+     },
+     {
+      "name": "logRocketProject",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "LogRocketProjectMutation"
+       }
+      }
+     },
+     {
+      "name": "notificationPreference",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "NotificationPreferenceMutation"
+       }
+      }
+     },
+     {
+      "name": "posthogOrganizationConnection",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PostHogOrganizationConnectionMutation"
+       }
+      }
+     },
+     {
+      "name": "posthogProject",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PostHogProjectMutation"
+       }
+      }
+     },
+     {
+      "name": "realtimeLogs",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RealtimeLogsMutation"
+       }
+      }
+     },
+     {
+      "name": "robot",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RobotMutation"
+       }
+      }
+     },
+     {
+      "name": "sandbox",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SandboxMutation"
+       }
+      }
+     },
+     {
+      "name": "sentryInstallation",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SentryInstallationMutation"
+       }
+      }
+     },
+     {
+      "name": "sentryProject",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SentryProjectMutation"
+       }
+      }
+     },
+     {
+      "name": "submission",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SubmissionMutation"
+       }
+      }
+     },
+     {
+      "name": "supabaseConnection",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SupabaseConnectionMutation"
+       }
+      }
+     },
+     {
+      "name": "supabaseProject",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SupabaseProjectMutation"
+       }
+      }
+     },
+     {
+      "name": "tunnels",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "TunnelsMutation"
+       }
+      }
+     },
+     {
+      "name": "turtleBrownfieldArtifacts",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "TurtleBrownfieldArtifactMutation"
+       }
+      }
+     },
+     {
+      "name": "turtleSshSession",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "TurtleSshSessionMutation"
+       }
+      }
+     },
+     {
+      "name": "updateBranch",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UpdateBranchMutation"
+       }
+      }
+     },
+     {
+      "name": "updateChannel",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UpdateChannelMutation"
+       }
+      }
+     },
+     {
+      "name": "update",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UpdateMutation"
+       }
+      }
+     },
+     {
+      "name": "uploadSession",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UploadSession"
+       }
+      }
+     },
+     {
+      "name": "usageBudget",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UsageBudgetMutation"
+       }
+      }
+     },
+     {
+      "name": "userAppPins",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserAppPinMutation"
+       }
+      }
+     },
+     {
+      "name": "userInvitation",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserInvitationMutation"
+       }
+      }
+     },
+     {
+      "name": "me",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "MeMutation"
+       }
+      }
+     },
+     {
+      "name": "vexoAccountConnection",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "VexoAccountConnectionMutation"
+       }
+      }
+     },
+     {
+      "name": "vexoApp",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "VexoAppMutation"
+       }
+      }
+     },
+     {
+      "name": "webhook",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WebhookMutation"
+       }
+      }
+     },
+     {
+      "name": "websiteNotifications",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WebsiteNotificationMutation"
+       }
+      }
+     },
+     {
+      "name": "customDomain",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "CustomDomainMutation"
+       }
+      }
+     },
+     {
+      "name": "workflowCache",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowCacheMutation"
+       }
+      }
+     },
+     {
+      "name": "workflowDeviceTestCaseResult",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowDeviceTestCaseResultMutation"
+       }
+      }
+     },
+     {
+      "name": "workflowJobAppleDeviceRegistrationRequest",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowJobAppleDeviceRegistrationRequestMutation"
+       }
+      }
+     },
+     {
+      "name": "workflowJobApproval",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowJobApprovalMutation"
+       }
+      }
+     },
+     {
+      "name": "workflowRevision",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowRevisionMutation"
+       }
+      }
+     },
+     {
+      "name": "workflowRun",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowRunMutation"
+       }
+      }
+     }
+    ]
+   }
+  }
+ },
+ "types": {
+  "AccessTokenMutation": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "createAccessTokenData",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "CreateAccessTokenInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "createAccessToken",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "CreateAccessTokenResponse",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "id",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "revoked",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "setAccessTokenRevoked",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccessToken",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "AccessTokenMutation"
+  },
+  "AccountUploadSessionType": {
+   "enumValues": [
+    {
+     "name": "WORKFLOWS_PROJECT_SOURCES"
+    },
+    {
+     "name": "PROFILE_IMAGE_UPLOAD"
+    }
+   ],
+   "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
+   "name": "AccountUploadSessionType"
+  },
+  "AndroidJobInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "mode",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildMode",
+      "ofType": null
+     }
+    },
+    {
+     "name": "type",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "BuildWorkflow",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "triggeredBy",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildTrigger",
+      "ofType": null
+     }
+    },
+    {
+     "name": "projectArchive",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "INPUT_OBJECT",
+       "name": "ProjectArchiveSourceInput",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "projectRootDirectory",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "releaseChannel",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "updates",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "BuildUpdatesInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "developmentClient",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "secrets",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "AndroidJobSecretsInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "builderEnvironment",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "AndroidBuilderEnvironmentInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "cache",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "BuildCacheInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "version",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "AndroidJobVersionInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "buildProfile",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "environment",
+     "type": {
+      "kind": "SCALAR",
+      "name": "EnvironmentVariableEnvironment",
+      "ofType": null
+     }
+    },
+    {
+     "name": "gradleCommand",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "artifactPath",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "applicationArchivePath",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "buildArtifactPaths",
+     "type": {
+      "kind": "LIST",
+      "name": null,
+      "ofType": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String"
+       }
+      }
+     }
+    },
+    {
+     "name": "buildType",
+     "type": {
+      "kind": "ENUM",
+      "name": "AndroidBuildType",
+      "ofType": null
+     }
+    },
+    {
+     "name": "username",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "customBuildConfig",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "CustomBuildConfigInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "loggerLevel",
+     "type": {
+      "kind": "ENUM",
+      "name": "WorkerLoggerLevel",
+      "ofType": null
+     }
+    },
+    {
+     "name": "experimental",
+     "type": {
+      "kind": "SCALAR",
+      "name": "JSONObject",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "AndroidJobInput"
+  },
+  "AppInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "accountId",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "projectName",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "appInfo",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "AppInfoInput",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "AppInput"
+  },
+  "AppMutation": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "appInput",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "AppInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "createApp",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "AppMutation"
+  },
+  "AppUploadSessionType": {
+   "enumValues": [
+    {
+     "name": "PROFILE_IMAGE_UPLOAD"
+    }
+   ],
+   "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
+   "name": "AppUploadSessionType"
+  },
+  "BuildMetadataInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "trackingContext",
+     "type": {
+      "kind": "SCALAR",
+      "name": "JSONObject",
+      "ofType": null
+     }
+    },
+    {
+     "name": "appVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "appBuildVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "cliVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "workflow",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildWorkflow",
+      "ofType": null
+     }
+    },
+    {
+     "name": "credentialsSource",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildCredentialsSource",
+      "ofType": null
+     }
+    },
+    {
+     "name": "sdkVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "expoPackageVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "runtimeVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "fingerprintHash",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "fingerprintSource",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "FingerprintSourceInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "reactNativeVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "releaseChannel",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "channel",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "distribution",
+     "type": {
+      "kind": "ENUM",
+      "name": "DistributionType",
+      "ofType": null
+     }
+    },
+    {
+     "name": "iosEnterpriseProvisioning",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildIosEnterpriseProvisioning",
+      "ofType": null
+     }
+    },
+    {
+     "name": "appName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "appIdentifier",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "buildProfile",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "gitCommitHash",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "gitCommitMessage",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "isGitWorkingTreeDirty",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "username",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "message",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "runFromCI",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "runWithNoWaitFlag",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "customWorkflowName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "developmentClient",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "requiredPackageManager",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "customNodeVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "simulator",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "environment",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "projectMetadataFile",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "ProjectMetadataFileInput",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "BuildMetadataInput"
+  },
+  "BuildMutation": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "job",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "AndroidJobInput",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "metadata",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "BuildMetadataInput",
+        "ofType": null
+       }
+      },
+      {
+       "name": "buildParams",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "BuildParamsInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "createAndroidBuild",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "CreateBuildResult",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "job",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "IosJobInput",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "metadata",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "BuildMetadataInput",
+        "ofType": null
+       }
+      },
+      {
+       "name": "buildParams",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "BuildParamsInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "createIosBuild",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "CreateBuildResult",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "BuildMutation"
+  },
+  "BuildParamsInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "resourceClass",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "BuildResourceClass",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "reactNativeVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "sdkVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "expoTokenRole",
+     "type": {
+      "kind": "ENUM",
+      "name": "JobExpoTokenRole",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "BuildParamsInput"
+  },
+  "BuildResourceClass": {
+   "enumValues": [
+    {
+     "name": "ANDROID_DEFAULT"
+    },
+    {
+     "name": "ANDROID_MEDIUM"
+    },
+    {
+     "name": "ANDROID_LARGE"
+    },
+    {
+     "name": "IOS_DEFAULT"
+    },
+    {
+     "name": "IOS_MEDIUM"
+    },
+    {
+     "name": "IOS_LARGE"
+    },
+    {
+     "name": "LEGACY"
+    },
+    {
+     "name": "IOS_M_MEDIUM"
+    },
+    {
+     "name": "IOS_M_LARGE"
+    },
+    {
+     "name": "LINUX_MEDIUM"
+    },
+    {
+     "name": "LINUX_LARGE"
+    }
+   ],
+   "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
+   "name": "BuildResourceClass"
+  },
+  "CreateAccessTokenInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "actorID",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "note",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "scopes",
+     "type": {
+      "kind": "LIST",
+      "name": null,
+      "ofType": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "INPUT_OBJECT",
+        "name": "AccessTokenScopeInput"
+       }
+      }
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "CreateAccessTokenInput"
+  },
+  "CreateAndroidSubmissionInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "appId",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "archiveSource",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "SubmissionArchiveSourceInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "config",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "INPUT_OBJECT",
+       "name": "AndroidSubmissionConfigInput",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "submittedBuildId",
+     "type": {
+      "kind": "SCALAR",
+      "name": "ID",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "CreateAndroidSubmissionInput"
+  },
+  "CreateIosSubmissionInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "appId",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "archiveSource",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "SubmissionArchiveSourceInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "config",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "INPUT_OBJECT",
+       "name": "IosSubmissionConfigInput",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "submittedBuildId",
+     "type": {
+      "kind": "SCALAR",
+      "name": "ID",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "CreateIosSubmissionInput"
+  },
+  "IosJobInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "mode",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildMode",
+      "ofType": null
+     }
+    },
+    {
+     "name": "type",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "BuildWorkflow",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "triggeredBy",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildTrigger",
+      "ofType": null
+     }
+    },
+    {
+     "name": "projectArchive",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "INPUT_OBJECT",
+       "name": "ProjectArchiveSourceInput",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "projectRootDirectory",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "releaseChannel",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "updates",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "BuildUpdatesInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "distribution",
+     "type": {
+      "kind": "ENUM",
+      "name": "DistributionType",
+      "ofType": null
+     }
+    },
+    {
+     "name": "simulator",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "developmentClient",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "secrets",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "IosJobSecretsInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "builderEnvironment",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "IosBuilderEnvironmentInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "cache",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "BuildCacheInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "version",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "IosJobVersionInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "buildProfile",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "environment",
+     "type": {
+      "kind": "SCALAR",
+      "name": "EnvironmentVariableEnvironment",
+      "ofType": null
+     }
+    },
+    {
+     "name": "scheme",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "buildConfiguration",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "artifactPath",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "applicationArchivePath",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "buildArtifactPaths",
+     "type": {
+      "kind": "LIST",
+      "name": null,
+      "ofType": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String"
+       }
+      }
+     }
+    },
+    {
+     "name": "buildType",
+     "type": {
+      "kind": "ENUM",
+      "name": "IosBuildType",
+      "ofType": null
+     }
+    },
+    {
+     "name": "username",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "customBuildConfig",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "CustomBuildConfigInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "loggerLevel",
+     "type": {
+      "kind": "ENUM",
+      "name": "WorkerLoggerLevel",
+      "ofType": null
+     }
+    },
+    {
+     "name": "experimental",
+     "type": {
+      "kind": "SCALAR",
+      "name": "JSONObject",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "IosJobInput"
+  },
+  "JobExpoTokenRole": {
+   "enumValues": [
+    {
+     "name": "RUNNER"
+    },
+    {
+     "name": "DEVELOPER"
+    },
+    {
+     "name": "RELEASE_MANAGER"
+    }
+   ],
+   "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
+   "name": "JobExpoTokenRole"
+  },
+  "Permission": {
+   "enumValues": [
+    {
+     "name": "OWN"
+    },
+    {
+     "name": "ADMIN"
+    },
+    {
+     "name": "PUBLISH_PROTECTED"
+    },
+    {
+     "name": "PUBLISH"
+    },
+    {
+     "name": "RUN"
+    },
+    {
+     "name": "VIEW"
+    }
+   ],
+   "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
+   "name": "Permission"
+  },
+  "ProjectArchiveSourceType": {
+   "enumValues": [
+    {
+     "name": "URL"
+    },
+    {
+     "name": "GCS"
+    },
+    {
+     "name": "NONE"
+    },
+    {
+     "name": "GIT"
+    }
+   ],
+   "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
+   "name": "ProjectArchiveSourceType"
+  },
+  "ProjectMetadataFileInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "type",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "ProjectArchiveSourceType",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "bucketKey",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "ProjectMetadataFileInput"
+  },
+  "RobotDataInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "name",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "RobotDataInput"
+  },
+  "RobotMutation": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "robotData",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "RobotDataInput",
+        "ofType": null
+       }
+      },
+      {
+       "name": "accountID",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "permissions",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "LIST",
+         "name": null,
+         "ofType": {
+          "kind": "ENUM",
+          "name": "Permission"
+         }
+        }
+       }
+      }
+     ],
+     "name": "createRobotForAccount",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Robot",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "RobotMutation"
+  },
+  "SubmissionMutation": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "input",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "CreateIosSubmissionInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "createIosSubmission",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "CreateSubmissionResult",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "input",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "CreateAndroidSubmissionInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "createAndroidSubmission",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "CreateSubmissionResult",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "SubmissionMutation"
+  },
+  "UploadSession": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "type",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "ENUM",
+         "name": "UploadSessionType",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "filename",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "createUploadSession",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "JSONObject",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "type",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "ENUM",
+         "name": "AccountUploadSessionType",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "accountID",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "createAccountScopedUploadSession",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "JSONObject",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "UploadSession"
+  },
+  "UploadSessionType": {
+   "enumValues": [
+    {
+     "name": "EAS_BUILD_GCS_PROJECT_SOURCES"
+    },
+    {
+     "name": "EAS_BUILD_GCS_PROJECT_METADATA"
+    },
+    {
+     "name": "EAS_SUBMIT_GCS_APP_ARCHIVE"
+    },
+    {
+     "name": "EAS_UPDATE_FINGERPRINT"
+    },
+    {
+     "name": "EAS_SHARE_GCS_APP_ARCHIVE"
+    },
+    {
+     "name": "EAS_UPDATE_ASSETS_METADATA"
+    },
+    {
+     "name": "EAS_UPDATE_SOURCE_MAPS"
+    }
+   ],
+   "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
+   "name": "UploadSessionType"
+  },
+  "WebhookInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "url",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "secret",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "event",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "WebhookType",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "WebhookInput"
+  },
+  "WebhookMutation": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "webhookInput",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "WebhookInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "createWebhook",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Webhook",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "WebhookMutation"
+  },
+  "WebhookType": {
+   "enumValues": [
+    {
+     "name": "BUILD"
+    },
+    {
+     "name": "SUBMIT"
+    }
+   ],
+   "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
+   "name": "WebhookType"
+  },
+  "WorkflowProjectSourceInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "type",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "WorkflowProjectSourceType",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "projectArchiveBucketKey",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "easJsonBucketKey",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "packageJsonBucketKey",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "projectRootDirectory",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "WorkflowProjectSourceInput"
+  },
+  "WorkflowProjectSourceType": {
+   "enumValues": [
+    {
+     "name": "GCS"
+    }
+   ],
+   "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
+   "name": "WorkflowProjectSourceType"
+  },
+  "WorkflowRevisionInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "fileName",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "yamlConfig",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "referencedFiles",
+     "type": {
+      "kind": "LIST",
+      "name": null,
+      "ofType": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "INPUT_OBJECT",
+        "name": "WorkflowReferencedFileInput"
+       }
+      }
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "WorkflowRevisionInput"
+  },
+  "WorkflowRunInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "projectSource",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "INPUT_OBJECT",
+       "name": "WorkflowProjectSourceInput",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "inputs",
+     "type": {
+      "kind": "SCALAR",
+      "name": "JSONObject",
+      "ofType": null
+     }
+    },
+    {
+     "name": "ssh",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "WorkflowRunSshInput",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "WorkflowRunInput"
+  },
+  "WorkflowRunMutation": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "workflowRevisionInput",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "WorkflowRevisionInput",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "workflowRunInput",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "WorkflowRunInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "createWorkflowRun",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowRun",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "WorkflowRunMutation"
+  }
+ }
+}

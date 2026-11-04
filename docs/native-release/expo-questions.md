@@ -42,12 +42,18 @@ customer's.
 - If yes, is there a reseller / OEM agreement, and what does it change about support
   (who does a customer's build failure go to)?
 
-## 4. Limits
+## 4. Limits and rate card
 
 - Projects per account: what is the current, enforced number, and what happens at the
   cap? Our model is one EAS project per Shogo project.
 - Builds per hour, and workflow-run limits, for an account operating many projects.
 - Updates: is MAU billing the only meter, and how is it reported per project?
+- **`BuildResourceClass` exposes `IOS_M_MEDIUM` and `IOS_M_LARGE` but the public rate
+  card only prices `medium` and `large`.** What do the Apple-silicon classes cost per
+  build, and what decides which class a build runs on? We meter against the class the
+  build webhook reports, so an unpriced class is an unbillable build for us.
+- Are build rates still flat per build, or is there a per-minute component we should
+  expect on some classes?
 
 ## 5. Robot permissions
 
