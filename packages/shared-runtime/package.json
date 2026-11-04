@@ -20,6 +20,7 @@
     "./interrupted-turn": "./src/interrupted-turn.ts",
     "./child-process": "./src/child-process.ts",
     "./workspace-root-sync": "./src/workspace-root-sync.ts",
+    "./remote-device-call": "./src/remote-device-call.ts",
     "./published-database": "./src/published-database.ts",
     "./published-schema": "./src/published-schema.ts"
   },

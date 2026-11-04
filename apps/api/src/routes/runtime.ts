@@ -18,6 +18,7 @@ import { existsSync } from "fs"
 import { join } from "path"
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager, IProjectRuntime } from "../lib/runtime"
+import { clientRuntimeUrl } from "../lib/host-tunnel"
 
 /**
  * Configuration for runtime routes.
@@ -128,7 +129,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
           port: res.runtime.port,
         })
       }
-      return c.json({ success: true, projectId, status: 'running', url: res.url, port: 0 })
+      return c.json({ success: true, projectId, status: 'running', url: clientRuntimeUrl(res) ?? undefined, mode: res.mode, port: 0 })
     } catch (error: any) {
       console.error("[Runtime] Start error:", error)
       return c.json(
@@ -299,17 +300,22 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       }
 
       // K8s and metal modes both expose the runtime at `res.url`
-      // directly — same URL serves preview, direct, and canvas.
-      const modeLabel = res.mode === 'metal' ? 'Metal' : 'K8s'
+      // directly — same URL serves preview, direct, and canvas. A workspace
+      // hosted on a paired desktop has no client-facing URL at all: its runtime
+      // URL only answers on this process's loopback, so report the mode and let
+      // the client use `agentUrl` / the ordinary preview proxy.
+      const publicUrl = clientRuntimeUrl(res)
+      const modeLabel = res.mode === 'metal' ? 'Metal' : res.mode === 'host-tunnel' ? 'Desktop' : 'K8s'
       log('done', { ready: true, mode: modeLabel })
       return c.json({
-        url: res.url,
-        directUrl: res.url,
+        url: publicUrl ?? undefined,
+        directUrl: publicUrl ?? undefined,
         agentUrl,
-        canvasBaseUrl: res.url,
+        canvasBaseUrl: publicUrl ?? undefined,
         sandbox: SANDBOX_ATTRIBUTES,
         status: 'running',
         ready: true,
+        mode: res.mode,
         message: `Runtime ready (${modeLabel})`,
       })
     } catch (error: any) {
@@ -418,7 +424,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
           port: res.runtime.port,
         })
       }
-      return c.json({ success: true, projectId, status: 'running', url: res.url, port: 0 })
+      return c.json({ success: true, projectId, status: 'running', url: clientRuntimeUrl(res) ?? undefined, mode: res.mode, port: 0 })
     } catch (error: any) {
       console.error("[Runtime] Restart error:", error)
       return c.json(

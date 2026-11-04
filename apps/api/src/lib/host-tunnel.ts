@@ -17,10 +17,15 @@
  *
  * The URL is loopback-only and carries a per-process secret, so nothing outside
  * this API process can use it, and it only names instances that host something.
+ * Both halves are enforced by the route rather than assumed: a request that did
+ * not arrive over loopback (or that an ingress stamped a client IP on) gets the
+ * plain 404 an unknown internal route gives, and the instance named in the path
+ * may only reach a workspace it actually hosts. The URL is never handed to a
+ * client — see `clientRuntimeUrl` — so the secret stays inside this process.
  */
 
 import type { Context } from 'hono'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { prisma } from './prisma'
 import { hostedWorkspacesResolveHere } from './cloud-topology'
 
@@ -80,6 +85,17 @@ export function hostTunnelRuntimeUrl(
   return `http://127.0.0.1:${apiPort()}${HOST_TUNNEL_PREFIX}/${SECRET}/${encodeURIComponent(instanceId)}${base}`
 }
 
+/**
+ * The runtime URL to hand a client, or `null` when there is none it may have.
+ * A hosted workspace's runtime URL is this process's own loopback address plus
+ * the tunnel secret, so it only ever travels between functions in this API —
+ * routes that answer a browser or the mobile app ask this and report `mode`
+ * instead (`host-tunnel`), letting the client use the ordinary agent proxy.
+ */
+export function clientRuntimeUrl(resolved: { mode: string; url?: string | null }): string | null {
+  return resolved.mode === 'host-tunnel' ? null : resolved.url ?? null
+}
+
 export class HostOfflineError extends Error {
   readonly code = 'host_offline'
   constructor(readonly instanceId: string, readonly hostName: string | null) {
@@ -97,15 +113,136 @@ function isStreaming(method: string, path: string, accept: string | undefined): 
   return method === 'POST' && STREAMING_SUFFIXES.some((suffix) => clean.endsWith(suffix))
 }
 
-const FORWARD_HEADERS = ['content-type', 'accept', 'x-chat-session-id', 'x-billing-user-id', 'last-event-id']
+// `x-billing-user-id` is deliberately not forwarded: the only user a hosted
+// workspace may bill is the desktop's owner, which this handler knows, so the
+// caller does not get to name it.
+const FORWARD_HEADERS = ['content-type', 'accept', 'x-chat-session-id', 'last-event-id']
 const DROP_RESPONSE_HEADERS = new Set(['transfer-encoding', 'connection', 'set-cookie', 'content-length', 'content-encoding'])
 
-/** `ALL /api/internal/host-tunnel/:secret/:instanceId/*` — see the module doc. */
-export async function handleHostTunnel(c: Context): Promise<Response> {
-  const match = c.req.path.match(/^\/api\/internal\/host-tunnel\/([^/]+)\/([^/]+)(\/.*)$/)
-  if (!match || match[1] !== SECRET) {
-    return c.json({ error: { code: 'not_found', message: 'Not found' } }, 404)
+/** The only paths a tunnel request may carry: a runtime's own agent proxy. */
+const TUNNEL_TARGET_PATH = /^\/api\/(projects|workspaces)\/([^/]+)\/agent-proxy(\/.*)?$/
+
+/** The desktop-tools call a paired machine makes against its own Personal. */
+const DEVICE_TOOLS_SUFFIX = '/agent/remote/tool'
+
+export interface TunnelTarget {
+  kind: 'project' | 'workspace'
+  id: string
+  /** Whatever the request asks of that proxy (`/agent/chat`, …). */
+  rest: string
+}
+
+/** `null` for any path that is not a runtime agent proxy — never forwarded. */
+export function parseTunnelTarget(base: string): TunnelTarget | null {
+  const m = TUNNEL_TARGET_PATH.exec(base.split('?')[0])
+  if (!m) return null
+  try {
+    return {
+      kind: m[1] === 'projects' ? 'project' : 'workspace',
+      id: decodeURIComponent(m[2]),
+      rest: m[3] ?? '',
+    }
+  } catch {
+    return null
   }
+}
+
+/** The plain-text 404 an unknown `/api/internal/*` route answers with. */
+function unknownRoute(): Response {
+  return new Response('404 Not Found', { status: 404 })
+}
+
+function isLoopbackAddress(address: string | null | undefined): boolean {
+  if (!address) return false
+  const addr = address.trim().toLowerCase()
+  return addr === '::1' || addr.startsWith('127.') || addr.startsWith('::ffff:127.')
+}
+
+/**
+ * The socket's view of who called. A legitimate caller fetched
+ * `http://127.0.0.1:<api port>` — this same process — so it is loopback;
+ * anything else reached the public origin instead.
+ */
+function requestPeerAddress(c: Context): string | null {
+  const server = c.env as { requestIP?: (req: Request) => { address?: string } | null } | undefined
+  try {
+    return server?.requestIP?.(c.req.raw)?.address ?? null
+  } catch {
+    return null
+  }
+}
+
+function secretMatches(given: string): boolean {
+  const a = Buffer.from(given)
+  const b = Buffer.from(SECRET)
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
+}
+
+/** The instance-tunnel transport (the real one lives in `routes/instances`). */
+type TunnelTransport = {
+  ensureTunnelConnected: (instanceId: string, deadlineMs: number) => Promise<boolean>
+  sendTunnelRequest: (instanceId: string, payload: any) => Promise<{ status: number; headers?: Record<string, string>; body?: string }>
+  sendTunnelStreamRequest: (instanceId: string, payload: any, onChunk: (chunk: any) => void) => { cancel: () => void }
+  generateRequestId: () => string
+}
+
+export interface HostTunnelOptions {
+  /** Test seam: the peer address, when there is no socket to ask. */
+  _peerAddress?: string | null
+  /** Test seam: "which desktop hosts this workspace". */
+  _hostOf?: (workspaceId: string) => Promise<string | null>
+  /** Test seam: the instance-tunnel transport. */
+  _tunnel?: TunnelTransport
+}
+
+async function targetWorkspaceId(target: TunnelTarget): Promise<string | null> {
+  if (target.kind === 'workspace') return target.id
+  const project = await prisma.project.findUnique({
+    where: { id: target.id },
+    select: { workspaceId: true },
+  })
+  return project?.workspaceId ?? null
+}
+
+/**
+ * A tunnel URL names one instance; that instance may only reach a workspace it
+ * hosts. The one exception is the device-tools call (SHO-285): a paired machine
+ * runs a tool against its owner's Personal workspace, which is never hosted.
+ */
+async function instanceServesTarget(
+  instanceId: string,
+  instanceUserId: string,
+  target: TunnelTarget,
+  hostOf: (workspaceId: string) => Promise<string | null>,
+): Promise<boolean> {
+  const workspaceId = await targetWorkspaceId(target)
+  if (!workspaceId) return false
+  if ((await hostOf(workspaceId)) === instanceId) return true
+  if (target.kind === 'workspace' && target.rest === DEVICE_TOOLS_SUFFIX) {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { kind: true, personalOwnerId: true },
+    })
+    return workspace?.kind === 'personal' && workspace.personalOwnerId === instanceUserId
+  }
+  return false
+}
+
+/** `ALL /api/internal/host-tunnel/:secret/:instanceId/*` — see the module doc. */
+export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {}): Promise<Response> {
+  // Loopback and no ingress stamps: this route is reachable from the public
+  // origin too, and a request that arrives from there is not one of ours.
+  const peer = opts._peerAddress !== undefined ? opts._peerAddress : requestPeerAddress(c)
+  if (!isLoopbackAddress(peer)) return unknownRoute()
+  if (c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip')) return unknownRoute()
+
+  const match = c.req.path.match(/^\/api\/internal\/host-tunnel\/([^/]+)\/([^/]+)(\/.*)$/)
+  if (!match || !secretMatches(match[1])) return unknownRoute()
+
+  const target = parseTunnelTarget(match[3])
+  if (!target) return unknownRoute()
+
   const instanceId = decodeURIComponent(match[2])
   const path = `${match[3]}${new URL(c.req.url).search}`
 
@@ -113,13 +250,16 @@ export async function handleHostTunnel(c: Context): Promise<Response> {
     where: { id: instanceId },
     select: { id: true, name: true, userId: true },
   })
-  if (!instance?.userId) {
-    return c.json({ error: { code: 'not_found', message: 'Host not found' } }, 404)
+  if (!instance?.userId) return unknownRoute()
+
+  const hostOf = opts._hostOf ?? hostOfWorkspace
+  if (!(await instanceServesTarget(instanceId, instance.userId, target, hostOf))) {
+    return c.json({ error: { code: 'forbidden', message: 'This host does not serve that workspace' } }, 403)
   }
 
-  const { ensureTunnelConnected, sendTunnelRequest, sendTunnelStreamRequest, generateRequestId } = await import(
-    '../routes/instances'
-  )
+  const tunnel: TunnelTransport =
+    opts._tunnel ?? ((await import('../routes/instances')) as unknown as TunnelTransport)
+  const { ensureTunnelConnected, sendTunnelRequest, sendTunnelStreamRequest, generateRequestId } = tunnel
   if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
     const err = new HostOfflineError(instanceId, instance.name)
     return c.json({ error: { code: err.code, message: err.message, instanceId, retryable: true } }, 503)

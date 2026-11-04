@@ -45,6 +45,7 @@ import { projectPreviewUrl } from '../lib/project-preview-url'
 import { rememberPreviewRegion } from '../lib/cloudflare-preview-region-kv'
 import { REMOTE_IMPORT_MAX_BASE64_CHARS, remoteToolPermission } from '../lib/remote-tool-policy'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
+import { getWorkspaceKind } from '../services/workspace.service'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { resolve as resolvePath } from 'path'
 import { searchWorkspaceHistory, renderWorkspaceTranscript, readRuntimeChatTranscript, readWorkspacePlan } from '../lib/history-search'
@@ -68,6 +69,10 @@ import {
 import { projectTrustRoutes } from './internal-project-trust'
 import { signSharedFileToken } from '../lib/shared-file-token'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
+import {
+  REMOTE_DEVICE_CALL_HEADER,
+  REMOTE_DEVICE_REQUESTER_HEADER,
+} from '@shogo/shared-runtime/remote-device-call'
 import { resolveConnectionAuth } from '../services/github-auth'
 import { CREDENTIAL_APPROVAL_HEADER } from '../services/integration-credentials/approvals'
 import {
@@ -2795,10 +2800,17 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const key = await cloudWorkspaceKey(workspaceId).catch(() => null)
     if (!key) return null
     const { copyResponseHeaders, fetchUpstream } = await import('../lib/federated-upstream')
+    // The cloud repeats the checks this API made; it needs the caller's ticket
+    // to do that, and `fetchUpstream` authenticates as the workspace, not as
+    // the person.
+    const ticket = c.req.header(REQUESTER_TICKET_HEADER)
     try {
       const upstream = await fetchUpstream(upstreamPath, {
         method: c.req.method,
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(ticket ? { [REQUESTER_TICKET_HEADER]: ticket } : {}),
+        },
         search: new URL(c.req.url).search,
         body: body === undefined ? undefined : JSON.stringify(body),
         apiKey: key,
@@ -2899,9 +2911,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /**
    * GET /api/internal/devices
    *
-   * The paired desktops of the people in this workspace (SHO-285 Update 2).
+   * The paired desktops of the **requester** (SHO-285 Update 2, SHO-329).
    * Backs the "Your devices" block the Personal agent's context carries, so it
-   * knows which machines it can reach before it tries.
+   * knows which machines it can reach before it tries. Nobody else's devices
+   * are listed, and no filesystem location is part of the answer: a device is
+   * a name, an OS and whether it is reachable.
    */
   app.get('/devices', async (c) => {
     const identity = await authenticate(c)
@@ -2909,16 +2923,30 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const workspaceId = await identityWorkspaceId(identity)
     if (!workspaceId) return c.json({ error: 'Unauthorized' }, 401)
 
-    const members = (await prisma.member.findMany({
-      where: { workspaceId, projectId: null },
-      select: { userId: true },
-    })) as Array<{ userId: string }>
-    const userIds = members.map((member) => member.userId).filter(Boolean)
-    if (!userIds.length) return c.json({ devices: [] })
+    const ticketHeader = c.req.header(REQUESTER_TICKET_HEADER)
+    const ticket = await verifyRequesterTicketInWorkspace(ticketHeader, workspaceId)
+    if (ticketHeader && !ticket) {
+      return c.json(
+        { error: { code: 'invalid_requester_ticket', message: 'The requester ticket is invalid or expired.' } },
+        401,
+      )
+    }
+    let userId = ticket?.userId ?? null
+    if (!userId && (await getWorkspaceKind(workspaceId)) === 'personal') {
+      // A Personal workspace has exactly one member, and a call with no person
+      // behind it (a heartbeat, a schedule) is that member's own work.
+      const owner = (await prisma.member.findFirst({
+        where: { workspaceId, projectId: null },
+        select: { userId: true },
+        orderBy: { createdAt: 'asc' },
+      })) as { userId: string } | null
+      userId = owner?.userId ?? null
+    }
+    if (!userId) return c.json({ devices: [] })
 
     const rows = (await prisma.instance.findMany({
-      where: { userId: { in: userIds } },
-      select: { id: true, name: true, os: true, arch: true, status: true, lastSeenAt: true, metadata: true },
+      where: { userId },
+      select: { id: true, name: true, os: true, arch: true, status: true, lastSeenAt: true },
       orderBy: [{ lastSeenAt: 'desc' }],
     })) as Array<Record<string, any>>
 
@@ -2932,7 +2960,6 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       arch: row.arch ?? null,
       online: row.status === 'online' && row.lastSeenAt ? new Date(row.lastSeenAt).getTime() > freshAfter : false,
       lastSeenAt: row.lastSeenAt ? new Date(row.lastSeenAt).toISOString() : null,
-      homeDir: typeof row.metadata?.homeDir === 'string' ? row.metadata.homeDir : null,
     }))
     return c.json({ devices })
   })
@@ -2941,18 +2968,36 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * POST /api/internal/devices/:instanceId/remote-tool
    *   body: { tool, args? }
    *
-   * Run one allow-listed tool on a paired desktop (SHO-285 Update 2): the same
-   * seam as `project: "<id>"`, with a device as the target. The call goes
-   * caller runtime → this route → the instance tunnel → the desktop's own
-   * `/agent/remote/tool`, where the desktop's permission system decides what is
-   * allowed. A device that is not a member's is refused, and an offline one
-   * answers `device_offline` with its last-seen time rather than hanging.
+   * Run one allow-listed tool on a paired desktop (SHO-285 Update 2,
+   * SHO-329): the same seam as `project: "<id>"`, with a device as the target.
+   * The call goes caller runtime → this route → the instance tunnel → the
+   * desktop's own `/agent/remote/tool`, where that desktop's settings decide
+   * what is allowed.
+   *
+   * Only the person whose device it is reaches it, only from their own
+   * Personal workspace, and only with a signed requester ticket — a turn with
+   * no person behind it (a heartbeat, a schedule, a webhook with no owner) is
+   * refused. An offline device answers `device_offline` with its last-seen
+   * time rather than hanging.
    */
   app.post('/devices/:instanceId/remote-tool', async (c) => {
     const identity = await authenticate(c)
     if (!identity) return c.json({ error: 'Unauthorized' }, 401)
     const workspaceId = await identityWorkspaceId(identity)
     if (!workspaceId) return c.json({ error: 'Unauthorized' }, 401)
+
+    const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), workspaceId)
+    if (!ticket) {
+      return c.json(
+        {
+          error: {
+            code: 'requester_required',
+            message: 'Running tools on a device needs a signed-in requester.',
+          },
+        },
+        401,
+      )
+    }
 
     const instanceId = c.req.param('instanceId')
     const instance = (await prisma.instance.findUnique({
@@ -2962,13 +3007,47 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!instance?.userId) {
       return c.json({ error: { code: 'device_not_found', message: 'No such device' } }, 404)
     }
-    const member = await prisma.member.findFirst({
-      where: { workspaceId, userId: instance.userId, projectId: null },
+    if (instance.userId !== ticket.userId) {
+      return c.json(
+        {
+          error: {
+            code: 'device_not_yours',
+            message: `${instance.name} is someone else's computer. Ask that person to run it there.`,
+            instanceId,
+          },
+        },
+        403,
+      )
+    }
+    if ((await getWorkspaceKind(workspaceId)) !== 'personal') {
+      return c.json(
+        {
+          error: {
+            code: 'device_tools_personal_only',
+            message: 'Device tools run from your Personal workspace only.',
+            instanceId,
+          },
+        },
+        403,
+      )
+    }
+    // The tunnel target below is keyed by this workspace, so the requester has
+    // to be the member it belongs to — a Personal workspace with someone else
+    // in it is not the owner's own workspace and is refused here rather than
+    // trusted.
+    const ownMembership = await prisma.member.findFirst({
+      where: { workspaceId, userId: ticket.userId, projectId: null },
       select: { id: true },
     })
-    if (!member) {
+    if (!ownMembership) {
       return c.json(
-        { error: { code: 'device_not_member', message: 'That device belongs to someone outside this workspace.' } },
+        {
+          error: {
+            code: 'device_not_yours',
+            message: 'That workspace is not yours, so its devices are not reachable from here.',
+            instanceId,
+          },
+        },
         403,
       )
     }
@@ -3031,7 +3110,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       try {
         const response = await fetch(tunnelUrl, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            [REMOTE_DEVICE_CALL_HEADER]: '1',
+            ...(ticket.userId ? { [REMOTE_DEVICE_REQUESTER_HEADER]: ticket.userId } : {}),
+          },
           body: JSON.stringify({ tool: body.tool.trim(), args: body.args ?? {} }),
           signal: AbortSignal.timeout(timeoutMs),
         })

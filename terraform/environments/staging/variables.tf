@@ -116,3 +116,10 @@ variable "nfs_allowed_cidr" {
   description = "CIDR block allowed to mount NFS (typically worker node subnet)"
   type        = string
 }
+
+variable "edge_proxy_secret" {
+  description = "Shared secret the preview-router and subdomain-router Workers send to the API as `x-shogo-edge-auth` on every request they forward to the user-app proxies. The API reads the same value as SHOGO_EDGE_PROXY_SECRET and refuses those routes without it. Set it on both sides in the same rollout (Workers first, then the API secret). Empty sends no header, and the API enforces nothing until its own copy is set."
+  type        = string
+  default     = null
+  sensitive   = true
+}

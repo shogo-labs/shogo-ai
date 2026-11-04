@@ -183,6 +183,7 @@ jobs:
           # ("http2: frame too large") and drops ALL infra metrics/logs. Env-
           # scoped secret; resolves per the job's GH Environment.
           TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
+          TF_VAR_edge_proxy_secret: ${{ secrets.EDGE_PROXY_SECRET }}
         run: |
           set +e
           terraform plan -no-color -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
@@ -323,6 +324,7 @@ jobs:
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
           # SigNoz Cloud ingestion key — see note in pr-plan. Env-scoped secret.
           TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
+          TF_VAR_edge_proxy_secret: ${{ secrets.EDGE_PROXY_SECRET }}
           KUBE_CONFIG_PATH: /home/runner/.kube/config
         run: terraform plan -no-color ${{ inputs.extra_args }}
 
@@ -349,5 +351,6 @@ jobs:
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
           # SigNoz Cloud ingestion key — see note in pr-plan. Env-scoped secret.
           TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
+          TF_VAR_edge_proxy_secret: ${{ secrets.EDGE_PROXY_SECRET }}
           KUBE_CONFIG_PATH: /home/runner/.kube/config
         run: terraform apply -no-color -auto-approve ${{ inputs.extra_args }}
