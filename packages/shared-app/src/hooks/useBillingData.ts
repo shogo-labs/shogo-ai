@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { useSDKDomain, useSDKHttp } from "../domain"
 import type { IDomainStore } from "@shogo/domain-stores"
-import { deriveUsageWindows } from "./usage-windows"
+import { deriveUsageWindows, FIVE_HOUR_MS, SEVEN_DAY_MS } from "./usage-windows"
 
 export interface EffectiveBalance {
   dailyIncludedUsd: number
@@ -356,20 +356,56 @@ export function useBillingData(
     } catch { return undefined }
   }, [usageWallet, effectivePlan, paidTier, walletUpdatedAt, walletOverageHardLimitUsd, walletOverageEnabled, walletOverageAccumulatedUsd])
 
-  // Live-derive the rolling windows from the wallet so the usage bars refresh
-  // on every `refetchUsageWallet()` (e.g. after each completed chat message)
-  // instead of only when the workspace-plan endpoint is re-fetched. The server
-  // snapshot still supplies the authoritative per-window limits (covering
-  // grant/seat overrides); the wallet supplies live usage + window starts.
-  // Falls back to the raw server snapshot until the wallet has loaded.
+  // Live-derive the rolling windows so the usage bars refresh on every
+  // `refetchUsageWallet()` (e.g. after each completed chat message) instead of
+  // only when the workspace-plan endpoint is re-fetched. The server snapshot
+  // supplies the authoritative per-window limits *and* the usage: on a paid plan
+  // the allowance is metered per seat on the Member row, so the wallet no longer
+  // carries live counters for it. The wallet only wins for a window that is
+  // newer than the snapshot (the free tier still writes its counters there), and
+  // we never report less usage than either source. Falls back to the raw server
+  // snapshot until the wallet has loaded.
   const liveUsageWindows = useMemo<UsageWindows | undefined>(() => {
-    if (!usageWallet || !usageWindows) return usageWindows
+    if (!usageWindows) return undefined
+    if (!usageWallet) return usageWindows
+
+    const snapshotStart = (resetsAt: string | null | undefined, durationMs: number) =>
+      resetsAt ? new Date(resetsAt).getTime() - durationMs : NaN
+
+    const pick = (
+      walletStart: Date | string | number | null | undefined,
+      walletUsed: number | null | undefined,
+      view: UsageWindowView | null | undefined,
+      durationMs: number,
+    ) => {
+      const ws = walletStart == null ? NaN : new Date(walletStart as any).getTime()
+      const ss = snapshotStart(view?.resetsAt, durationMs)
+      const snapUsed = view?.usedUsd ?? 0
+      if (Number.isNaN(ws)) return { start: view?.resetsAt ? ss : null, used: snapUsed }
+      if (Number.isNaN(ss)) return { start: ws, used: walletUsed ?? 0 }
+      if (ss > ws) return { start: ss, used: snapUsed }
+      return { start: ws, used: Math.max(walletUsed ?? 0, snapUsed) }
+    }
+
+    const five = pick(
+      usageWallet.fiveHourWindowStart,
+      usageWallet.fiveHourUsedUsd,
+      usageWindows.fiveHour,
+      FIVE_HOUR_MS,
+    )
+    const week = pick(
+      usageWallet.weeklyWindowStart,
+      usageWallet.weeklyUsedUsd,
+      usageWindows.weekly,
+      SEVEN_DAY_MS,
+    )
+
     return deriveUsageWindows({
       wallet: {
-        fiveHourWindowStart: usageWallet.fiveHourWindowStart,
-        fiveHourUsedUsd: usageWallet.fiveHourUsedUsd,
-        weeklyWindowStart: usageWallet.weeklyWindowStart,
-        weeklyUsedUsd: usageWallet.weeklyUsedUsd,
+        fiveHourWindowStart: five.start,
+        fiveHourUsedUsd: five.used,
+        weeklyWindowStart: week.start,
+        weeklyUsedUsd: week.used,
       },
       limits: {
         fiveHourUsd: usageWindows.fiveHour.limitUsd,

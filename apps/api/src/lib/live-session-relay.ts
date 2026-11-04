@@ -105,7 +105,11 @@ async function validatePrimaryStart(state: RelayState, raw: unknown): Promise<bo
     // The normal chat proxy performs this gate before contacting a provider.
     // Live sessions are long-lived, so admit them once at session start.
     const { checkUsageBalance } = await import('../services/billing.service')
-    const balance = await checkUsageBalance(state.data.tokenPayload.workspaceId)
+    const balance = await checkUsageBalance(
+      state.data.tokenPayload.workspaceId,
+      0.001,
+      state.data.tokenPayload.userId ?? undefined,
+    )
     if (!balance.ok) {
       sendError(state.client, 402, 'usage_limit_reached', 'Workspace usage limit reached.')
       closeSocket(state.client)

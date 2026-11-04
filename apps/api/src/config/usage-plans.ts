@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { MARKUP_MULTIPLIER } from '../lib/usage-cost'
 /**
  * Central Usage Plan Configuration
  *
- * Single source of truth for USD usage allocations per plan. The plan ladder
- * is flat and per-seat, modeled on Cursor.com:
+ * Single source of truth for USD usage allocations per plan. The plan ladder is
+ * Slack-shaped: the seat price buys the workspace, every seat carries its own
+ * fixed weekly AI allowance, and usage past the allowance is metered overage.
  *
- *   - Basic    $8/mo   single user, $5 of usage included
- *   - Pro      $20/seat/mo, $20 of usage included per seat
- *   - Business $40/seat/mo, $40 of usage included per seat
+ *   - Basic    $8/mo       1 seat,   $10 of AI/mo ($2.30 weekly)
+ *   - Pro      $20/seat/mo legacy,   $20 of AI/mo ($4.90 weekly) — existing holders
+ *   - Business $16/seat/mo,          $20/seat/mo ($4.60 weekly per seat)
+ *
+ * Both offered tiers include AI worth 125% of the seat price at full burn: the
+ * seat breaks even at 96% allowance utilization and earns a 50% gross margin at
+ * 48%. That is the deliberate Slack bet — see `getBreakEvenUtilization` and
+ * `getUtilizationForMargin`, which the pricing tests pin down.
  *
  * Used by: billing.service.ts (backend allocation), webhook (monthly refills).
  *
@@ -32,11 +39,24 @@ export const MONTHLY_DAILY_CAP_USD = 5.00
  */
 export const SEAT_INCLUDED_USD = {
   free: 0,
-  basic: 5,
+  basic: 10,
   pro: 20,
-  business: 40,
+  business: 20,
   enterprise: 2000,
 } as const
+
+/**
+ * List seat price per month (USD) for each tier, monthly billing. Used only for
+ * the unit-economics assertions (`getBreakEvenUtilization`) and admin
+ * reporting — never for enforcement. `null` = negotiated (enterprise).
+ */
+export const SEAT_PRICE_MONTHLY_USD: Record<PlanId, number | null> = {
+  free: 0,
+  basic: 8,
+  pro: 20,
+  business: 16,
+  enterprise: null,
+}
 
 export type PlanId = keyof typeof SEAT_INCLUDED_USD
 
@@ -223,66 +243,43 @@ export const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000
 export const WEEKS_PER_MONTH = 365.25 / 12 / 7
 
 /**
- * ── How the window limits are sized (don't-lose-money math) ──────────────
+ * ── How the window limits are sized (the Slack bet) ──────────────────────
  *
  * Windows count *marked-up* USD (`billedUsd = providerRawCost × MARKUP`,
  * MARKUP = 1.20). Included usage is covered by the subscription — we don't
  * charge per unit inside a window — so our real cost for a maxed window is the
  * underlying provider COGS = `markedUp / MARKUP`.
  *
- * Worst case is a user who pins their windows continuously for a whole month.
- * Their monthly provider COGS is:
+ * A user who pins their windows continuously for a whole month costs:
  *
  *     monthlyCogsRaw = weeklyUsd × WEEKS_PER_MONTH / MARKUP
  *
- * We size `weeklyUsd` so that this worst case stays at or below
- * `TARGET_COMPUTE_COST_RATIO` of the *list* monthly subscription price,
- * leaving headroom for the ~17% annual discount, ~3% payment fees, infra and
- * margin. Solving for the cap:
+ * Every offered tier is deliberately sized so that allowance ≈ 125% of the seat
+ * price at full burn (basic $2.30/wk ≈ $10/mo of AI on an $8 seat; business
+ * $4.60/wk ≈ $20/mo on a $16 seat). The seat is therefore *underwater* for the
+ * last sliver of its allowance and the return comes from average utilization
+ * plus metered overage past the allowance:
  *
- *     weeklyUsd ≤ TARGET_COMPUTE_COST_RATIO × monthlyPrice × MARKUP / WEEKS_PER_MONTH
+ *   - break-even utilization (margin 0)      = 12 / (weeklyUsd × WEEKS_PER_MONTH)
+ *   - utilization for a 50% gross margin     = half of that
  *
- * At MARKUP 1.20, ratio 0.90, prices basic $8 / pro $20 / business $40 the
- * caps are ≈ $1.99 / $4.97 / $9.94 per seat; the values below round *down* to
- * clean figures (worst-case COGS lands ≈86–90% of list / ≈103–108% of annual
- * revenue — i.e. a user who pins their windows non-stop for a year runs at a
- * slight compute loss). That worst case is accepted deliberately: realized
- * usage is a small fraction of the cap, the served model is cheap, and overage
- * controls backstop abuse. 5-hour windows are sized at 40% of the weekly budget
- * so a single burst can't drain the whole week. `null` = uncapped (enterprise).
- * Values are intended to be tuned operationally — see `TARGET_COMPUTE_COST_RATIO`.
- */
-export const TARGET_COMPUTE_COST_RATIO = 0.90
-
-/**
- * Per-window included USD-of-compute per plan. Within these windows usage is
- * effectively unlimited (no finite monthly pool is drained); when a window is
- * exhausted, usage falls through to metered overage (if enabled) and otherwise
- * blocks until the window's `resetsAt`.
- *
- * `null` means uncapped (truly unlimited) — used by enterprise.
- *
- * For per-seat plans (`pro`, `business`) the limits below are *per seat* and
- * are multiplied by the seat count in `getWindowLimitsForPlan`. `free` and
- * `basic` are single-pool (not scaled by seats). `free` is a deliberate
- * loss-leader (no revenue) capped small.
- *
- * Values are USD of marked-up compute (see `usage-cost.ts`). See the block
- * comment above for the don't-lose-money derivation.
+ * i.e. 96% to break even and 48% for a 50% margin — identical for both tiers
+ * because the ratios match. `getBreakEvenUtilization` /
+ * `getUtilizationForMargin` compute this, and the pricing tests fail if an
+ * allowance change silently breaks it. 5-hour windows are sized at 40% of the
+ * weekly allowance so a single burst can't drain the whole week.
+ * `null` = uncapped (enterprise).
  */
 export const ROLLING_WINDOW_LIMITS: Record<
   PlanId,
   { fiveHourUsd: number; weeklyUsd: number } | null
 > = {
   free: { fiveHourUsd: 0.2, weeklyUsd: 0.5 },
-  basic: { fiveHourUsd: 0.76, weeklyUsd: 1.9 },
+  basic: { fiveHourUsd: 0.92, weeklyUsd: 2.3 },
   pro: { fiveHourUsd: 1.96, weeklyUsd: 4.9 },
-  business: { fiveHourUsd: 3.96, weeklyUsd: 9.9 },
+  business: { fiveHourUsd: 1.84, weeklyUsd: 4.6 },
   enterprise: null,
 }
-
-/** Plans whose window limits scale linearly with the paid seat count. */
-const PER_SEAT_WINDOW_PLANS: ReadonlySet<PlanId> = new Set<PlanId>(['pro', 'business'])
 
 export interface WindowLimits {
   fiveHourUsd: number
@@ -290,54 +287,90 @@ export interface WindowLimits {
 }
 
 /**
- * Resolve the rolling-window limits for a (plan, seats) tuple.
+ * Resolve the rolling-window limits for one seat on `planId`.
  *
- * - Returns `null` for uncapped plans (enterprise) — callers treat `null`
- *   as "unlimited, no window enforcement".
- * - Per-seat plans (`pro`, `business`) multiply the per-seat limits by
- *   `max(1, seats)`. Single-pool plans (`free`, `basic`) ignore seats.
- * - Unknown / unrecognized plan ids fall back to the `free` limits so a
- *   brand-new workspace whose plan hasn't resolved still gets the safety-net
- *   window.
+ * These limits are **per seat**: every member's windows are metered against
+ * their own counters, so one seat can never spend another's allowance. The
+ * seat count is deliberately not accepted here — enforcement must never
+ * multiply — and the workspace total (the sum of seats) lives in
+ * `getMonthlyIncludedEquivalent` for finance / admin reporting only.
+ *
+ * - `null` for uncapped plans (enterprise).
+ * - Unknown / unresolved plans fall back to the free tier's safety-net window.
  */
 export function getWindowLimitsForPlan(
   planId: string | null | undefined,
-  seats: number = 1,
 ): WindowLimits | null {
   const normalized = normalizePlanId(planId) ?? 'free'
   const base = ROLLING_WINDOW_LIMITS[normalized]
   if (base == null) return null
-  if (!PER_SEAT_WINDOW_PLANS.has(normalized)) {
-    return { fiveHourUsd: base.fiveHourUsd, weeklyUsd: base.weeklyUsd }
-  }
-  const safeSeats = Math.max(1, Math.floor(seats || 1))
-  return {
-    fiveHourUsd: base.fiveHourUsd * safeSeats,
-    weeklyUsd: base.weeklyUsd * safeSeats,
-  }
+  return { fiveHourUsd: base.fiveHourUsd, weeklyUsd: base.weeklyUsd }
 }
 
 /**
  * Effective monthly included usage (marked-up USD) implied by the weekly
- * rolling window for a (plan, seats) tuple. The weekly window is the binding
- * monthly constraint, so for back-to-back windows the monthly ceiling is
- * `weeklyUsd × WEEKS_PER_MONTH`.
+ * rolling window for a (plan, seats) tuple — i.e. the workspace total across
+ * seats. The weekly window is the binding monthly constraint, so for
+ * back-to-back windows the monthly ceiling is `weeklyUsd × WEEKS_PER_MONTH`
+ * per seat.
  *
  * This is the *upper bound* of included usage assuming continuous use — pausing
  * pushes each window's reset later, fitting fewer full weekly buckets per
  * month. It is the included/unlimited zone only; usage beyond it falls through
  * to metered overage. Returns `null` for uncapped plans (enterprise).
  *
- * Intended for internal/finance/admin surfaces — the customer UI shows usage
- * relative to the window (utilization %), not this dollar figure.
+ * Reporting only — never enforcement. Enforcement uses the per-seat
+ * `getWindowLimitsForPlan` against each member's own counters. Intended for
+ * internal/finance/admin surfaces; the customer UI shows the seat's usage
+ * relative to its window (utilization %), not this dollar figure.
  */
 export function getMonthlyIncludedEquivalent(
   planId: string | null | undefined,
   seats: number = 1,
 ): number | null {
-  const limits = getWindowLimitsForPlan(planId, seats)
+  const limits = getWindowLimitsForPlan(planId)
   if (limits == null) return null
-  return limits.weeklyUsd * WEEKS_PER_MONTH
+  const normalized = normalizePlanId(planId) ?? 'free'
+  // `basic` and `free` are single-seat tiers; their seat count never multiplies.
+  const safeSeats =
+    normalized === 'basic' || normalized === 'free'
+      ? 1
+      : Math.max(1, Math.floor(seats || 1))
+  return limits.weeklyUsd * WEEKS_PER_MONTH * safeSeats
+}
+
+/**
+ * Fraction of a seat's allowance that has to be consumed for the seat to earn
+ * `margin` (0..1) of its list price. Complements of each other:
+ *
+ *   - `getBreakEvenUtilization('basic')`    → 0.96 (margin 0)
+ *   - `getUtilizationForMargin('basic', .5)` → 0.48 (50% gross margin)
+ *
+ * Cost of a fully consumed allowance is `weeklyUsd × WEEKS_PER_MONTH / MARKUP`;
+ * the seat keeps `price × (1 - margin)`, so
+ * `u = price × (1 - margin) × MARKUP / (weeklyUsd × WEEKS_PER_MONTH)`.
+ *
+ * Returns `null` for uncapped/unpriced tiers (enterprise). A value above 1 means
+ * the seat still makes money at 100% utilization (legacy `pro` at $4.90/wk).
+ */
+export function getUtilizationForMargin(
+  planId: string | null | undefined,
+  margin: number = 0,
+): number | null {
+  const normalized = normalizePlanId(planId) ?? 'free'
+  const limits = getWindowLimitsForPlan(normalized)
+  const price = SEAT_PRICE_MONTHLY_USD[normalized]
+  if (limits == null || price == null || price <= 0) return null
+  const monthlyCogsAtFullBurn = (limits.weeklyUsd * WEEKS_PER_MONTH) / MARKUP_MULTIPLIER
+  if (monthlyCogsAtFullBurn <= 0) return null
+  return (price * (1 - margin)) / monthlyCogsAtFullBurn
+}
+
+/** Utilization at which a seat's gross margin is zero. See `getUtilizationForMargin`. */
+export function getBreakEvenUtilization(
+  planId: string | null | undefined,
+): number | null {
+  return getUtilizationForMargin(planId, 0)
 }
 
 /**

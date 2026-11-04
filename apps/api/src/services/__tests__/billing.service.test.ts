@@ -239,6 +239,10 @@ const prismaApi = {
   },
   member: {
     findFirst: async ({ where, select }: any) => {
+      // Seat-allowance lookup (SHO-312): this suite models a single workspace
+      // allowance, so it seeds no per-seat counters — return no seat and let
+      // billing fall back to the wallet, which is what these tests assert on.
+      if (select?.fiveHourWindowStart) return null
       const rows = members.filter((m: any) => {
         if (where.userId !== undefined && m.userId !== where.userId) return false
         if (where.role !== undefined && m.role !== undefined && m.role !== where.role) return false
@@ -599,7 +603,7 @@ describe('allocateMonthlyIncluded', () => {
   })
   it('basic single user ignores seats > 1', async () => {
     const w = await billing.allocateMonthlyIncluded('w1', 'basic', 5)
-    expect(w.monthlyIncludedUsd).toBe(5)
+    expect(w.monthlyIncludedUsd).toBe(10)
   })
   it('adds grant-conferred seats + USD', async () => {
     grants.set('w1', [{ id: 'g', workspaceId: 'w1', freeSeats: 2, monthlyIncludedUsd: 50, planId: null, startsAt: today, expiresAt: null }])

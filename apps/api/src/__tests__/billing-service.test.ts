@@ -142,6 +142,24 @@ const mockPrisma: any = {
       const all = wsIds.flatMap((id: string) => membersByWs.get(id) ?? [])
       return all.filter((m: any) => (args.where.projectId === null ? m.projectId == null : true))
     },
+    // Per-seat rolling windows live on the Member row (SHO-312).
+    findFirst: async (args: any) => {
+      const all = membersByWs.get(args.where.workspaceId) ?? []
+      return (
+        all.find(
+          (m: any) =>
+            m.userId === args.where.userId &&
+            (args.where.projectId === null ? m.projectId == null : true),
+        ) ?? null
+      )
+    },
+    update: async (args: any) => {
+      const all = [...membersByWs.values()].flat()
+      const target = all.find((m: any) => m.id === args.where.id)
+      if (!target) throw new Error(`member ${args.where.id} not found`)
+      Object.assign(target, args.data)
+      return target
+    },
   },
   workspace: {
     // No parent/child hierarchy in these tests: findUnique returns null so
@@ -192,7 +210,8 @@ mock.module('../config/usage-plans', () => ({
     business: { fiveHourUsd: 20, weeklyUsd: 120 },
     enterprise: null,
   },
-  getWindowLimitsForPlan: (planId: string | null | undefined, seats = 1) => {
+  // Mirrors production: the limits are ONE seat's allowance and never multiply.
+  getWindowLimitsForPlan: (planId: string | null | undefined) => {
     const lc = String(planId ?? 'free').toLowerCase().trim()
     const limits: Record<string, { fiveHourUsd: number; weeklyUsd: number } | null> = {
       free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
@@ -208,10 +227,6 @@ mock.module('../config/usage-plans', () => ({
       : 'free'
     const base = limits[key]
     if (base == null) return null
-    if (key === 'pro' || key === 'business') {
-      const s = Math.max(1, Math.floor(seats || 1))
-      return { fiveHourUsd: base.fiveHourUsd * s, weeklyUsd: base.weeklyUsd * s }
-    }
     return { ...base }
   },
   getDailyIncludedForPlan: (planId: string | null | undefined) => {
@@ -954,6 +969,121 @@ describe('consumeUsage', () => {
 })
 
 // Signup promo credit: spent after the rolling windows and before overage.
+describe('consumeUsage — per-seat allowance (SHO-312)', () => {
+  // pro mock limits are $8 / 5h and $40 / week — per SEAT, never multiplied.
+  function seedTwoSeatPro() {
+    seedWallet('ws-seats')
+    subsByWs.set('ws-seats', [
+      { id: 's-seat', workspaceId: 'ws-seats', status: 'active', stripeCustomerId: 'cus_1', planId: 'pro', seats: 2 },
+    ])
+    membersByWs.set('ws-seats', [
+      { id: 'mem-a', userId: 'user-a', workspaceId: 'ws-seats', projectId: null, fiveHourUsedUsd: 0, weeklyUsedUsd: 0, fiveHourWindowStart: null, weeklyWindowStart: null },
+      { id: 'mem-b', userId: 'user-b', workspaceId: 'ws-seats', projectId: null, fiveHourUsedUsd: 0, weeklyUsedUsd: 0, fiveHourWindowStart: null, weeklyWindowStart: null },
+    ])
+  }
+
+  const seat = (userId: string) =>
+    (membersByWs.get('ws-seats') ?? []).find((m: any) => m.userId === userId)!
+
+  test('one seat exhausting its window leaves the other seat untouched', async () => {
+    seedTwoSeatPro()
+
+    // A spends its whole 5-hour window ($8 of the mock's pro allowance).
+    const a1 = await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'user-a',
+      actionType: 'chat', billedUsd: 8,
+    })
+    expect(a1.success).toBe(true)
+    expect(seat('user-a').fiveHourUsedUsd).toBeCloseTo(8)
+
+    // A is now out of allowance and has no overage: blocked, not subsidised.
+    const a2 = await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'user-a',
+      actionType: 'chat', billedUsd: 0.5,
+    })
+    expect(a2.success).toBe(false)
+    expect(a2.reason).toBe('usage_limit_reached')
+
+    // B's allowance is untouched: same workspace, same plan, its own window.
+    const b1 = await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'user-b',
+      actionType: 'chat', billedUsd: 0.5,
+    })
+    expect(b1.success).toBe(true)
+    expect(b1.source).toBe('window')
+    expect(seat('user-b').fiveHourUsedUsd).toBeCloseTo(0.5)
+    expect(seat('user-b').weeklyUsedUsd).toBeCloseTo(0.5)
+    expect(seat('user-a').weeklyUsedUsd).toBeCloseTo(8)
+  })
+
+  test('the workspace wallet accrues nothing on a paid plan (no pooled bucket)', async () => {
+    seedTwoSeatPro()
+    await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'user-a',
+      actionType: 'chat', billedUsd: 1,
+    })
+    await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'user-b',
+      actionType: 'chat', billedUsd: 2,
+    })
+    const wallet = walletByWs.get('ws-seats')
+    expect(wallet.fiveHourUsedUsd ?? 0).toBe(0)
+    expect(wallet.weeklyUsedUsd ?? 0).toBe(0)
+    expect(seat('user-a').weeklyUsedUsd).toBeCloseTo(1)
+    expect(seat('user-b').weeklyUsedUsd).toBeCloseTo(2)
+  })
+
+  test('seat count does not enlarge one member’s allowance', async () => {
+    seedTwoSeatPro()
+    // A 2-seat pro workspace would have given a pooled $80/week bucket. Per
+    // seat it is $40: A can spend at most $40, and the 5h guard stops it first.
+    const a1 = await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'user-a',
+      actionType: 'chat', billedUsd: 8,
+    })
+    const a2 = await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'user-a',
+      actionType: 'chat', billedUsd: 8,
+    })
+    expect(a1.success).toBe(true)
+    expect(a2.success).toBe(false)
+  })
+
+  test('usage with no seat behind it falls back to the workspace wallet', async () => {
+    seedTwoSeatPro()
+    const res = await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'system',
+      actionType: 'chat', billedUsd: 0.25,
+    })
+    expect(res.success).toBe(true)
+    expect(walletByWs.get('ws-seats').weeklyUsedUsd).toBeCloseTo(0.25)
+    expect(seat('user-a').weeklyUsedUsd).toBe(0)
+  })
+
+  test('getUsageWindows reports the caller’s own seat', async () => {
+    seedTwoSeatPro()
+    await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'user-a',
+      actionType: 'chat', billedUsd: 4,
+    })
+    const windows = await billing.getUsageWindows('ws-seats', 'user-b')
+    expect(windows.fiveHour.usedUsd).toBe(0)
+    expect(windows.fiveHour.limitUsd).toBe(8)
+    const aWindows = await billing.getUsageWindows('ws-seats', 'user-a')
+    expect(aWindows.fiveHour.usedUsd).toBeCloseTo(4)
+  })
+
+  test('checkUsageBalance gates the caller’s own seat, not the workspace', async () => {
+    seedTwoSeatPro()
+    await billing.consumeUsage({
+      workspaceId: 'ws-seats', projectId: null, memberId: 'user-a',
+      actionType: 'chat', billedUsd: 8,
+    })
+    expect((await billing.checkUsageBalance('ws-seats', 0.001, 'user-a')).ok).toBe(false)
+    expect((await billing.checkUsageBalance('ws-seats', 0.001, 'user-b')).ok).toBe(true)
+  })
+})
+
 describe('consumeUsage promo credit', () => {
   const FUTURE = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000)
   const PAST = new Date(Date.now() - 24 * 60 * 60 * 1000)

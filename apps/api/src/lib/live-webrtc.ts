@@ -53,7 +53,11 @@ export async function createLiveWebRtcSession(
   }
 
   if (!isLocalDev) {
-    const balance = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+    const balance = await billingService.checkUsageBalance(
+      tokenPayload.workspaceId,
+      0.001,
+      tokenPayload.userId ?? undefined,
+    )
     if (!balance.ok) {
       const { code, message } = billingService.usageLimitErrorPayload(balance.reason)
       return Response.json(liveErrorBody(message, code), { status: 402 })

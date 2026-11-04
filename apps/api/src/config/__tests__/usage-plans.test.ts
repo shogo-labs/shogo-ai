@@ -8,8 +8,10 @@ import {
   FIVE_HOUR_MS,
   SEVEN_DAY_MS,
   WEEKS_PER_MONTH,
-  TARGET_COMPUTE_COST_RATIO,
   PLAN_INCLUDED_USD,
+  SEAT_PRICE_MONTHLY_USD,
+  getBreakEvenUtilization,
+  getUtilizationForMargin,
   PLAN_VOICE_RATE_OVERRIDES,
   ROLLING_WINDOW_LIMITS,
   SEAT_INCLUDED_USD,
@@ -29,7 +31,7 @@ import { MARKUP_MULTIPLIER } from '../../lib/usage-cost'
 const LIST_MONTHLY_PRICE: Record<'basic' | 'pro' | 'business', number> = {
   basic: 8,
   pro: 20,
-  business: 40,
+  business: 16,
 }
 
 describe('rolling usage windows', () => {
@@ -40,9 +42,9 @@ describe('rolling usage windows', () => {
 
   it('ROLLING_WINDOW_LIMITS covers all tiers with enterprise uncapped', () => {
     expect(ROLLING_WINDOW_LIMITS.free).toEqual({ fiveHourUsd: 0.2, weeklyUsd: 0.5 })
-    expect(ROLLING_WINDOW_LIMITS.basic).toEqual({ fiveHourUsd: 0.76, weeklyUsd: 1.9 })
+    expect(ROLLING_WINDOW_LIMITS.basic).toEqual({ fiveHourUsd: 0.92, weeklyUsd: 2.3 })
     expect(ROLLING_WINDOW_LIMITS.pro).toEqual({ fiveHourUsd: 1.96, weeklyUsd: 4.9 })
-    expect(ROLLING_WINDOW_LIMITS.business).toEqual({ fiveHourUsd: 3.96, weeklyUsd: 9.9 })
+    expect(ROLLING_WINDOW_LIMITS.business).toEqual({ fiveHourUsd: 1.84, weeklyUsd: 4.6 })
     expect(ROLLING_WINDOW_LIMITS.enterprise).toBeNull()
   })
 
@@ -51,30 +53,19 @@ describe('rolling usage windows', () => {
     expect(getWindowLimitsForPlan('???')).toEqual(ROLLING_WINDOW_LIMITS.free!)
   })
 
-  it('does not scale free/basic by seats', () => {
-    expect(getWindowLimitsForPlan('free', 10)).toEqual(ROLLING_WINDOW_LIMITS.free!)
-    expect(getWindowLimitsForPlan('basic', 10)).toEqual(ROLLING_WINDOW_LIMITS.basic!)
+  it('returns the per-seat allowance and never multiplies (per seat, not pooled)', () => {
+    // Enforcement reads one member's own counters, so the limits a caller gets
+    // are that seat's allowance — there is no seat count to multiply by.
+    expect(getWindowLimitsForPlan('free')).toEqual(ROLLING_WINDOW_LIMITS.free!)
+    expect(getWindowLimitsForPlan('basic')).toEqual(ROLLING_WINDOW_LIMITS.basic!)
+    expect(getWindowLimitsForPlan('pro')).toEqual(ROLLING_WINDOW_LIMITS.pro!)
+    expect(getWindowLimitsForPlan('business')).toEqual(ROLLING_WINDOW_LIMITS.business!)
+    // A 5-seat Business workspace does NOT get one $23/week bucket.
+    expect(getWindowLimitsForPlan('business')!.weeklyUsd).toBe(4.6)
   })
 
-  it('scales pro/business per seat', () => {
-    const pro = ROLLING_WINDOW_LIMITS.pro!
-    expect(getWindowLimitsForPlan('pro', 3)).toEqual({
-      fiveHourUsd: pro.fiveHourUsd * 3,
-      weeklyUsd: pro.weeklyUsd * 3,
-    })
-    const biz = ROLLING_WINDOW_LIMITS.business!
-    expect(getWindowLimitsForPlan('business', 2)).toEqual({
-      fiveHourUsd: biz.fiveHourUsd * 2,
-      weeklyUsd: biz.weeklyUsd * 2,
-    })
-  })
-
-  it('clamps seats to a minimum of 1', () => {
-    expect(getWindowLimitsForPlan('pro', 0)).toEqual({ fiveHourUsd: 1.96, weeklyUsd: 4.9 })
-  })
-
-  it('returns null for enterprise regardless of seats', () => {
-    expect(getWindowLimitsForPlan('enterprise', 50)).toBeNull()
+  it('returns null for enterprise', () => {
+    expect(getWindowLimitsForPlan('enterprise')).toBeNull()
   })
 
   it('5-hour window is 40% of the weekly budget for every capped tier', () => {
@@ -84,23 +75,42 @@ describe('rolling usage windows', () => {
     }
   })
 
-  it('window limits keep the worst-case monthly compute COGS within target', () => {
-    // Worst case: a user pins their windows continuously for a whole month.
-    // monthly provider COGS = weeklyUsd × WEEKS_PER_MONTH / MARKUP.
-    for (const plan of ['basic', 'pro', 'business'] as const) {
-      const weekly = getWindowLimitsForPlan(plan, 1)!.weeklyUsd
-      const monthlyCogsRaw = (weekly * WEEKS_PER_MONTH) / MARKUP_MULTIPLIER
-      const ratio = monthlyCogsRaw / LIST_MONTHLY_PRICE[plan]
-      expect(ratio).toBeLessThanOrEqual(TARGET_COMPUTE_COST_RATIO)
+  it('allowance ≈ 125% of the seat price at full burn (the Slack bet)', () => {
+    for (const plan of ['basic', 'business'] as const) {
+      const weekly = getWindowLimitsForPlan(plan)!.weeklyUsd
+      const monthlyIncluded = weekly * WEEKS_PER_MONTH
+      expect(monthlyIncluded / LIST_MONTHLY_PRICE[plan]).toBeCloseTo(1.25, 2)
     }
   })
 
-  it('per-seat windows preserve the COGS ratio at any seat count', () => {
-    const seats = 7
-    const weekly = getWindowLimitsForPlan('pro', seats)!.weeklyUsd
-    const monthlyCogsRaw = (weekly * WEEKS_PER_MONTH) / MARKUP_MULTIPLIER
-    const ratio = monthlyCogsRaw / (LIST_MONTHLY_PRICE.pro * seats)
-    expect(ratio).toBeLessThanOrEqual(TARGET_COMPUTE_COST_RATIO)
+  it('break-even utilization is 96% for every offered tier', () => {
+    // A future allowance bump that pushes this past 1.0 makes the seat lose
+    // money on every fully-spent seat — this is the guard for that.
+    for (const plan of ['basic', 'business'] as const) {
+      expect(getBreakEvenUtilization(plan)).toBeCloseTo(0.96, 3)
+    }
+  })
+
+  it('a 50% gross margin needs 48% average utilization', () => {
+    for (const plan of ['basic', 'business'] as const) {
+      expect(getUtilizationForMargin(plan, 0.5)).toBeCloseTo(0.48, 3)
+    }
+  })
+
+  it('legacy pro still earns money at full burn', () => {
+    // pro keeps its $20 seat and $4.90/week allowance until existing holders
+    // migrate, so it must not be underwater at 100% utilization.
+    expect(getBreakEvenUtilization('pro')!).toBeGreaterThan(1)
+  })
+
+  it('break-even is null for free (no price) and enterprise (unpriced, uncapped)', () => {
+    expect(getBreakEvenUtilization('free')).toBeNull()
+    expect(getBreakEvenUtilization('enterprise')).toBeNull()
+  })
+
+  it('seat prices match the published ladder', () => {
+    expect(SEAT_PRICE_MONTHLY_USD.basic).toBe(8)
+    expect(SEAT_PRICE_MONTHLY_USD.business).toBe(16)
   })
 })
 
@@ -111,12 +121,21 @@ describe('getMonthlyIncludedEquivalent', () => {
 
   it('is weeklyUsd × WEEKS_PER_MONTH for capped plans', () => {
     expect(getMonthlyIncludedEquivalent('pro', 1)).toBeCloseTo(4.9 * WEEKS_PER_MONTH, 10)
-    expect(getMonthlyIncludedEquivalent('basic')).toBeCloseTo(1.9 * WEEKS_PER_MONTH, 10)
+    expect(getMonthlyIncludedEquivalent('basic')).toBeCloseTo(2.3 * WEEKS_PER_MONTH, 10)
+    expect(getMonthlyIncludedEquivalent('basic', 10)).toBeCloseTo(
+      2.3 * WEEKS_PER_MONTH,
+      10,
+    )
+    expect(getMonthlyIncludedEquivalent('business', 1)).toBeCloseTo(4.6 * WEEKS_PER_MONTH, 10)
   })
 
-  it('scales pro/business per seat', () => {
+  it('sums seats for the workspace total (reporting only)', () => {
     expect(getMonthlyIncludedEquivalent('pro', 4)).toBeCloseTo(
       getMonthlyIncludedEquivalent('pro', 1)! * 4,
+      10,
+    )
+    expect(getMonthlyIncludedEquivalent('business', 5)).toBeCloseTo(
+      4.6 * WEEKS_PER_MONTH * 5,
       10,
     )
   })
@@ -143,14 +162,14 @@ describe('constants', () => {
   it('SEAT_INCLUDED_USD covers all five plan tiers', () => {
     expect(SEAT_INCLUDED_USD).toEqual({
       free: 0,
-      basic: 5,
+      basic: 10,
       pro: 20,
-      business: 40,
+      business: 20,
       enterprise: 2000,
     })
   })
 
-  it('PLAN_INCLUDED_USD (deprecated) is exported with legacy business=20', () => {
+  it('PLAN_INCLUDED_USD (deprecated) keeps its legacy values', () => {
     expect(PLAN_INCLUDED_USD.business).toBe(20)
     expect(PLAN_INCLUDED_USD.basic).toBe(5)
   })
@@ -166,10 +185,10 @@ describe('constants', () => {
     expect(PLAN_VOICE_RATE_OVERRIDES).toEqual({})
   })
 
-  it('plan ladder is monotonically non-decreasing free<basic<pro<business<enterprise', () => {
+  it('plan ladder is monotonically non-decreasing free<basic<=pro<=business<enterprise', () => {
     expect(SEAT_INCLUDED_USD.free).toBeLessThan(SEAT_INCLUDED_USD.basic)
-    expect(SEAT_INCLUDED_USD.basic).toBeLessThan(SEAT_INCLUDED_USD.pro)
-    expect(SEAT_INCLUDED_USD.pro).toBeLessThan(SEAT_INCLUDED_USD.business)
+    expect(SEAT_INCLUDED_USD.basic).toBeLessThanOrEqual(SEAT_INCLUDED_USD.pro)
+    expect(SEAT_INCLUDED_USD.pro).toBeLessThanOrEqual(SEAT_INCLUDED_USD.business)
     expect(SEAT_INCLUDED_USD.business).toBeLessThan(SEAT_INCLUDED_USD.enterprise)
   })
 })
@@ -181,10 +200,10 @@ describe('getMonthlyIncludedForPlan — known plans', () => {
     expect(getMonthlyIncludedForPlan('free', 100)).toBe(0)
   })
 
-  it('returns 5 for basic plan and ignores seats (single-user)', () => {
-    expect(getMonthlyIncludedForPlan('basic')).toBe(5)
-    expect(getMonthlyIncludedForPlan('basic', 1)).toBe(5)
-    expect(getMonthlyIncludedForPlan('basic', 50)).toBe(5)
+  it('returns 10 for basic plan and ignores seats (single-user)', () => {
+    expect(getMonthlyIncludedForPlan('basic')).toBe(10)
+    expect(getMonthlyIncludedForPlan('basic', 1)).toBe(10)
+    expect(getMonthlyIncludedForPlan('basic', 50)).toBe(10)
   })
 
   it('multiplies pro plan by seats', () => {
@@ -195,9 +214,9 @@ describe('getMonthlyIncludedForPlan — known plans', () => {
   })
 
   it('multiplies business plan by seats', () => {
-    expect(getMonthlyIncludedForPlan('business', 1)).toBe(40)
-    expect(getMonthlyIncludedForPlan('business', 2)).toBe(80)
-    expect(getMonthlyIncludedForPlan('business', 25)).toBe(1000)
+    expect(getMonthlyIncludedForPlan('business', 1)).toBe(20)
+    expect(getMonthlyIncludedForPlan('business', 2)).toBe(40)
+    expect(getMonthlyIncludedForPlan('business', 25)).toBe(500)
   })
 
   it('multiplies enterprise plan by seats', () => {
@@ -225,7 +244,7 @@ describe('getMonthlyIncludedForPlan — seat coercion', () => {
   })
 
   it('defaults seats to 1 when omitted', () => {
-    expect(getMonthlyIncludedForPlan('business')).toBe(40)
+    expect(getMonthlyIncludedForPlan('business')).toBe(20)
   })
 })
 

@@ -1582,14 +1582,19 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         }
       }
 
-      const balanceCheck = await billingService.checkUsageBalance(project.workspaceId)
+      // The seat that owns this turn — same identity the usage event bills to.
+      const limitUserId = (parsedBody as any)?.userId || c.req.header("X-Billing-User-Id")
+      const balanceCheck = await billingService.checkUsageBalance(
+        project.workspaceId,
+        0.001,
+        limitUserId || undefined,
+      )
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
         chatSpan.setAttribute("error.type", code)
         chatSpan.end()
         // The cap is recorded by buildUsageLimitInfo (firstCapHitAt + hit_cap),
         // the single place every 402 goes through.
-        const limitUserId = (parsedBody as any)?.userId || c.req.header("X-Billing-User-Id")
         const { resetsAt, window } = await buildUsageLimitInfo(project.workspaceId, {
           userId: limitUserId,
           source: 'project-chat',

@@ -41,17 +41,17 @@ export interface WindowLimits {
 }
 
 /**
- * Per-window included USD of compute per plan. `null` = uncapped. Sized so a
- * worst-case (window-pinning) user's monthly provider COGS stays ≈86–90% of
- * list subscription revenue (TARGET_COMPUTE_COST_RATIO 0.90) — see the
- * don't-lose-money derivation in the backend `usage-plans.ts`. Keep these in
- * sync with the backend values.
+ * Per-window included USD of compute for one seat. `null` = uncapped. Slack-
+ * shaped ladder: the seat price buys the workspace and each seat carries its own
+ * fixed weekly allowance (basic $8 → $2.30/wk, business $16 → $4.60/wk/seat),
+ * with metered overage past it. Keep these in sync with the backend values and
+ * with `usage-plans.ts`'s break-even assertions.
  */
 export const ROLLING_WINDOW_LIMITS: Record<PlanId, WindowLimits | null> = {
   free: { fiveHourUsd: 0.2, weeklyUsd: 0.5 },
-  basic: { fiveHourUsd: 0.76, weeklyUsd: 1.9 },
+  basic: { fiveHourUsd: 0.92, weeklyUsd: 2.3 },
   pro: { fiveHourUsd: 1.96, weeklyUsd: 4.9 },
-  business: { fiveHourUsd: 3.96, weeklyUsd: 9.9 },
+  business: { fiveHourUsd: 1.84, weeklyUsd: 4.6 },
   enterprise: null,
 }
 
@@ -59,13 +59,12 @@ export const ROLLING_WINDOW_LIMITS: Record<PlanId, WindowLimits | null> = {
 export const WEEKS_PER_MONTH = 365.25 / 12 / 7
 
 /**
- * Window limits for a (plan, seats) pair. Pro/Business scale per seat; Free
- * and Basic are single-pool; Enterprise is uncapped (`null`). Mirrors the
- * backend `getWindowLimitsForPlan`.
+ * Rolling-window limits for **one seat** on `planId`. The allowance is per seat
+ * and never pooled, so this never multiplies by the workspace's seat count —
+ * mirrors the backend `getWindowLimitsForPlan`.
  */
 export function getWindowLimitsForPlan(
   planId: string | null | undefined,
-  seats: number = 1,
 ): WindowLimits | null {
   const normalized = String(planId ?? 'free').toLowerCase().trim()
   const key: PlanId = normalized.startsWith('enterprise') ? 'enterprise'
@@ -75,25 +74,24 @@ export function getWindowLimitsForPlan(
     : 'free'
   const base = ROLLING_WINDOW_LIMITS[key]
   if (base == null) return null
-  if (key === 'pro' || key === 'business') {
-    const s = Math.max(1, Math.floor(seats || 1))
-    return { fiveHourUsd: base.fiveHourUsd * s, weeklyUsd: base.weeklyUsd * s }
-  }
   return { fiveHourUsd: base.fiveHourUsd, weeklyUsd: base.weeklyUsd }
 }
 
 /**
- * Effective monthly included usage (marked-up USD) implied by the weekly
- * window: `weeklyUsd × WEEKS_PER_MONTH`. Upper bound assuming continuous use.
- * Returns `null` for uncapped (enterprise). Mirrors the backend helper.
+ * Effective monthly included usage (marked-up USD) for the whole workspace:
+ * `weeklyUsd × WEEKS_PER_MONTH × seats`. Reporting only — enforcement is per
+ * seat. Returns `null` for uncapped (enterprise). Mirrors the backend helper.
  */
 export function getMonthlyIncludedEquivalent(
   planId: string | null | undefined,
   seats: number = 1,
 ): number | null {
-  const limits = getWindowLimitsForPlan(planId, seats)
+  const limits = getWindowLimitsForPlan(planId)
   if (limits == null) return null
-  return limits.weeklyUsd * WEEKS_PER_MONTH
+  const normalized = String(planId ?? 'free').toLowerCase().trim()
+  const singleSeat = normalized.startsWith('basic') || !normalized || normalized.startsWith('free')
+  const safeSeats = singleSeat ? 1 : Math.max(1, Math.floor(seats || 1))
+  return limits.weeklyUsd * WEEKS_PER_MONTH * safeSeats
 }
 
 /**
