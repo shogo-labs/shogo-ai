@@ -1392,6 +1392,11 @@ model UsageEvent {
   // row of the workspace (SHO-140).
   @@index([workspaceId, createdAt])
   @@index([projectId, createdAt])
+  // A member's own analytics page, and the per-member workspace tab, read
+  // "one member over a date window" (SHO-311). Without the combination the
+  // planner either scans every event of the window or heap-fetches through
+  // `usage_events_memberId_idx` and sorts (measured: 44 s on one usage log).
+  @@index([memberId, createdAt])
   @@map("usage_events")
 }
 
@@ -1568,6 +1573,9 @@ model ChatMessage {
   @@index([sessionId, agent, createdAt])
   @@index([sessionId, updatedAt])
   @@index([authorUserId, createdAt])
+  // Activity/quality trends count messages per day without a session filter,
+  // so none of the session-leading indexes can serve them (SHO-311).
+  @@index([createdAt])
   @@map("chat_messages")
 }
 
@@ -1761,6 +1769,10 @@ model ToolCallLog {
   @@index([chatSessionId])
   @@index([messageId])
   @@index([userId, createdAt])
+  // Tool-call analytics is a date-window aggregate over the whole table; the
+  // only date-ordered index was `(userId, createdAt)` with no userId bound
+  // (SHO-311, 2M rows).
+  @@index([createdAt])
   @@map("tool_call_logs")
 }
 

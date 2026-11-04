@@ -72,42 +72,151 @@ export default function AdminAIAnalyticsPage() {
 
   const internalParam = excludeInternal ? 'true' : 'false'
 
-  const loadAll = useCallback(async () => {
-    const pParams = { period, excludeInternal: internalParam }
-
+  /**
+   * One loader per panel, each depending only on the params *it* sends.
+   *
+   * The page used to fire all eight requests through a single `loadAll` whose
+   * dependency list held every param, so paging the tool-call table refetched
+   * the spend chart, the quality chart, workspace activity, the usage ledger,
+   * the conversation stats and the distribution breakdown as well — eight
+   * window scans to render one new page of ten rows. Now a param change only
+   * refetches the panel that param belongs to.
+   */
+  const loadSpendTs = useCallback(async () => {
     setSpendTs((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', {
+      period,
+      excludeInternal: internalParam,
+      groupBy: spendGroupBy,
+      metric: spendMetric,
+    })
+    setSpendTs({ data, loading: false })
+  }, [period, internalParam, spendGroupBy, spendMetric])
+
+  const loadQualityTs = useCallback(async () => {
     setQualityTs((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<QualityTimeseriesPoint[]>('/analytics/quality-timeseries', {
+      period,
+      excludeInternal: internalParam,
+    })
+    setQualityTs({ data, loading: false })
+  }, [period, internalParam])
+
+  const loadToolCalls = useCallback(async () => {
     setToolCalls((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<ToolCallAnalyticsData>('/analytics/tool-calls', {
+      period,
+      excludeInternal: internalParam,
+      page: String(toolPage),
+      limit: '10',
+    })
+    setToolCalls({ data, loading: false })
+  }, [period, internalParam, toolPage])
+
+  const loadWorkspaceActivity = useCallback(async () => {
     setWorkspaceActivity((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<WorkspaceActivityData>('/analytics/workspace-activity', {
+      period,
+      excludeInternal: internalParam,
+      page: String(workspacePage),
+      limit: '20',
+    })
+    setWorkspaceActivity({ data, loading: false })
+  }, [period, internalParam, workspacePage])
+
+  const loadUsage = useCallback(async () => {
     setUsage((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<UsageBreakdownData>('/analytics/usage', {
+      period,
+      excludeInternal: internalParam,
+    })
+    setUsage({ data, loading: false })
+  }, [period, internalParam])
+
+  const loadUsageSummary = useCallback(async () => {
     setUsageSummary((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', {
+      period,
+      excludeInternal: internalParam,
+      page: String(summaryPage),
+      limit: '25',
+    })
+    setUsageSummary({ data, loading: false })
+  }, [period, internalParam, summaryPage])
+
+  const loadUsageLog = useCallback(async () => {
     setUsageLog((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<UsageLogData>('/analytics/usage-log', {
+      period,
+      excludeInternal: internalParam,
+      page: String(logPage),
+      limit: '50',
+    })
+    setUsageLog({ data, loading: false })
+  }, [period, internalParam, logPage])
+
+  const loadChatStats = useCallback(async () => {
     setChatStats((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<ChatAnalyticsData>('/analytics/chat', {
+      period,
+      excludeInternal: internalParam,
+    })
+    setChatStats({ data, loading: false })
+  }, [period, internalParam])
 
-    const [sp, qual, tc, wsAct, us, uSum, uLog, ch] = await Promise.all([
-      fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', { ...pParams, groupBy: spendGroupBy, metric: spendMetric }),
-      fetchAdminJson<QualityTimeseriesPoint[]>('/analytics/quality-timeseries', pParams),
-      fetchAdminJson<ToolCallAnalyticsData>('/analytics/tool-calls', { ...pParams, page: String(toolPage), limit: '10' }),
-      fetchAdminJson<WorkspaceActivityData>('/analytics/workspace-activity', { ...pParams, page: String(workspacePage), limit: '20' }),
-      fetchAdminJson<UsageBreakdownData>('/analytics/usage', pParams),
-      fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { ...pParams, page: String(summaryPage), limit: '25' }),
-      fetchAdminJson<UsageLogData>('/analytics/usage-log', { ...pParams, page: String(logPage), limit: '50' }),
-      fetchAdminJson<ChatAnalyticsData>('/analytics/chat', pParams),
+  const loadAll = useCallback(async () => {
+    await Promise.all([
+      loadSpendTs(),
+      loadQualityTs(),
+      loadToolCalls(),
+      loadWorkspaceActivity(),
+      loadUsage(),
+      loadUsageSummary(),
+      loadUsageLog(),
+      loadChatStats(),
     ])
-
-    setSpendTs({ data: sp, loading: false })
-    setQualityTs({ data: qual, loading: false })
-    setToolCalls({ data: tc, loading: false })
-    setWorkspaceActivity({ data: wsAct, loading: false })
-    setUsage({ data: us, loading: false })
-    setUsageSummary({ data: uSum, loading: false })
-    setUsageLog({ data: uLog, loading: false })
-    setChatStats({ data: ch, loading: false })
-  }, [period, logPage, summaryPage, workspacePage, toolPage, spendGroupBy, spendMetric, internalParam])
+  }, [
+    loadSpendTs,
+    loadQualityTs,
+    loadToolCalls,
+    loadWorkspaceActivity,
+    loadUsage,
+    loadUsageSummary,
+    loadUsageLog,
+    loadChatStats,
+  ])
 
   useEffect(() => {
-    loadAll()
-  }, [loadAll])
+    void loadSpendTs()
+  }, [loadSpendTs])
+
+  useEffect(() => {
+    void loadQualityTs()
+  }, [loadQualityTs])
+
+  useEffect(() => {
+    void loadToolCalls()
+  }, [loadToolCalls])
+
+  useEffect(() => {
+    void loadWorkspaceActivity()
+  }, [loadWorkspaceActivity])
+
+  useEffect(() => {
+    void loadUsage()
+  }, [loadUsage])
+
+  useEffect(() => {
+    void loadUsageSummary()
+  }, [loadUsageSummary])
+
+  useEffect(() => {
+    void loadUsageLog()
+  }, [loadUsageLog])
+
+  useEffect(() => {
+    void loadChatStats()
+  }, [loadChatStats])
 
   const onRefresh = async () => {
     setRefreshing(true)

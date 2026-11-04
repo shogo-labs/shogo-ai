@@ -34,6 +34,7 @@ import {
 } from '../services/affiliate-content.service'
 import { prisma } from '../lib/prisma'
 import { RAW_REGION_ID } from '../lib/region'
+import { analyticsCacheKey, withAnalyticsCache } from '../lib/analytics-cache'
 
 /** Human-readable message for a failed {@link payoutAffiliate} outcome. */
 function payoutReasonMessage(reason: Extract<PayoutAffiliateResult, { ok: false }>['reason']): string {
@@ -134,6 +135,26 @@ export function adminRoutes(): Hono {
     router.use(p, requireAnyScope('analytics:read', 'ai:read'))
   }
 
+  /**
+   * Platform-scope admin analytics, memoised for five minutes (SHO-311).
+   *
+   * These are the most expensive reads on the platform and their answer only
+   * changes when the rows underneath do, so a second admin opening the same
+   * panel — or the same panel re-fetched after a paint — must not run the
+   * window scan again. The key carries every query param that changes the
+   * result (`shape`), and the five-minute bucket the request landed in.
+   *
+   * Deliberately not applied to `/analytics/usage-log` (a live log), the AI
+   * digest generation, or the infra snapshot reads.
+   */
+  const ANALYTICS_CACHE_TTL_MS = 5 * 60_000
+  const ANALYTICS_CACHE_BUCKET_MS = 5 * 60_000
+  const cachedAnalytics = <T>(shape: string, params: string, load: () => Promise<T>): Promise<T> => {
+    const at = new Date(Math.floor(Date.now() / ANALYTICS_CACHE_BUCKET_MS) * ANALYTICS_CACHE_BUCKET_MS)
+    const key = analyticsCacheKey({ from: at, to: at, shape: `admin:${shape}|${params}` })
+    return withAnalyticsCache(key, ANALYTICS_CACHE_TTL_MS, load)
+  }
+
   // --------------------------------------------------------------------------
   // Platform Analytics (scope-free = platform-wide)
   // --------------------------------------------------------------------------
@@ -143,7 +164,7 @@ export function adminRoutes(): Hono {
    */
   router.get('/analytics/overview', async (c) => {
     try {
-      const data = await analytics.getOverviewStats()
+      const data = await cachedAnalytics('overview', '', () => analytics.getOverviewStats())
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Analytics overview error:', error)
@@ -157,7 +178,7 @@ export function adminRoutes(): Hono {
   router.get('/analytics/growth', async (c) => {
     try {
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getGrowthTimeSeries({}, period)
+      const data = await cachedAnalytics('growth', `period=${period}`, () => analytics.getGrowthTimeSeries({}, period))
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Analytics growth error:', error)
@@ -171,7 +192,7 @@ export function adminRoutes(): Hono {
   router.get('/analytics/usage', async (c) => {
     try {
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getUsageAnalytics({}, period)
+      const data = await cachedAnalytics('usage', `period=${period}`, () => analytics.getUsageAnalytics({}, period))
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Analytics usage error:', error)
@@ -185,7 +206,7 @@ export function adminRoutes(): Hono {
   router.get('/analytics/active-users', async (c) => {
     try {
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getActiveUsers({}, period)
+      const data = await cachedAnalytics('active-users', `period=${period}`, () => analytics.getActiveUsers({}, period))
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Analytics active users error:', error)
@@ -291,7 +312,7 @@ export function adminRoutes(): Hono {
   router.get('/analytics/chat', async (c) => {
     try {
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getChatAnalytics({}, period)
+      const data = await cachedAnalytics('chat', `period=${period}`, () => analytics.getChatAnalytics({}, period))
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Analytics chat error:', error)
@@ -355,7 +376,11 @@ export function adminRoutes(): Hono {
       const page = parseInt(url.searchParams.get('page') || '1', 10)
       const limit = parseInt(url.searchParams.get('limit') || '25', 10)
       const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
-      const data = await analytics.getUsageSummary({}, period, { page, limit, excludeInternal })
+      const data = await cachedAnalytics(
+        'usage-summary',
+        `period=${period}&page=${page}&limit=${limit}&excludeInternal=${excludeInternal}`,
+        () => analytics.getUsageSummary({}, period, { page, limit, excludeInternal }),
+      )
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Usage summary error:', error)
@@ -377,7 +402,11 @@ export function adminRoutes(): Hono {
       const metric = (url.searchParams.get('metric') || 'spend') as 'spend' | 'tokens' | 'requests'
       const topN = parseInt(url.searchParams.get('topN') || '8', 10)
 
-      const data = await analytics.getSpendTimeseries({}, period, { fromIso, toIso, groupBy, metric, topN })
+      const data = await cachedAnalytics(
+        'spend-timeseries',
+        `period=${period}&from=${fromIso ?? ''}&to=${toIso ?? ''}&groupBy=${groupBy}&metric=${metric}&topN=${topN}`,
+        () => analytics.getSpendTimeseries({}, period, { fromIso, toIso, groupBy, metric, topN }),
+      )
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Spend timeseries error:', error)
@@ -392,7 +421,7 @@ export function adminRoutes(): Hono {
   router.get('/analytics/activity-timeseries', async (c) => {
     try {
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getActivityTimeseries({}, period)
+      const data = await cachedAnalytics('activity-timeseries', `period=${period}`, () => analytics.getActivityTimeseries({}, period))
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Activity timeseries error:', error)
@@ -406,7 +435,11 @@ export function adminRoutes(): Hono {
   router.get('/analytics/active-users-timeseries', async (c) => {
     try {
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getActiveUsersTimeseries({}, period)
+      const data = await cachedAnalytics(
+        'active-users-timeseries',
+        `period=${period}`,
+        () => analytics.getActiveUsersTimeseries({}, period),
+      )
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Active users timeseries error:', error)
@@ -421,7 +454,7 @@ export function adminRoutes(): Hono {
   router.get('/analytics/quality-timeseries', async (c) => {
     try {
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-      const data = await analytics.getQualityTimeseries({}, period)
+      const data = await cachedAnalytics('quality-timeseries', `period=${period}`, () => analytics.getQualityTimeseries({}, period))
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Quality timeseries error:', error)
@@ -439,7 +472,11 @@ export function adminRoutes(): Hono {
       const page = parseInt(url.searchParams.get('page') || '1', 10)
       const limit = parseInt(url.searchParams.get('limit') || '10', 10)
       const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
-      const data = await analytics.getToolCallAnalytics({}, period, { excludeInternal, page, limit })
+      const data = await cachedAnalytics(
+        'tool-calls',
+        `period=${period}&page=${page}&limit=${limit}&excludeInternal=${excludeInternal}`,
+        () => analytics.getToolCallAnalytics({}, period, { excludeInternal, page, limit }),
+      )
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Tool calls analytics error:', error)
@@ -457,7 +494,11 @@ export function adminRoutes(): Hono {
       const page = parseInt(url.searchParams.get('page') || '1', 10)
       const limit = parseInt(url.searchParams.get('limit') || '20', 10)
       const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
-      const data = await analytics.getWorkspaceActivityTable(period, { page, limit, excludeInternal })
+      const data = await cachedAnalytics(
+        'workspace-activity',
+        `period=${period}&page=${page}&limit=${limit}&excludeInternal=${excludeInternal}`,
+        () => analytics.getWorkspaceActivityTable(period, { page, limit, excludeInternal }),
+      )
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Workspace activity error:', error)
@@ -577,7 +618,11 @@ export function adminRoutes(): Hono {
       const url = new URL(c.req.url)
       const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
       const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
-      const data = await analytics.getUserFunnel(period, excludeInternal)
+      const data = await cachedAnalytics(
+        'funnel',
+        `period=${period}&excludeInternal=${excludeInternal}`,
+        () => analytics.getUserFunnel(period, excludeInternal),
+      )
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Funnel error:', error)
@@ -597,7 +642,11 @@ export function adminRoutes(): Hono {
       const limit = parseInt(url.searchParams.get('limit') || '20', 10)
       const sort = url.searchParams.get('sort') || undefined
       const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
-      const data = await analytics.getUserActivityTable(period, { page, limit, sort, excludeInternal })
+      const data = await cachedAnalytics(
+        'user-activity',
+        `period=${period}&page=${page}&limit=${limit}&sort=${sort ?? ''}&excludeInternal=${excludeInternal}`,
+        () => analytics.getUserActivityTable(period, { page, limit, sort, excludeInternal }),
+      )
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] User activity error:', error)
@@ -630,7 +679,11 @@ export function adminRoutes(): Hono {
       const url = new URL(c.req.url)
       const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
       const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
-      const data = await analytics.getSourceBreakdown(period, excludeInternal)
+      const data = await cachedAnalytics(
+        'source-breakdown',
+        `period=${period}&excludeInternal=${excludeInternal}`,
+        () => analytics.getSourceBreakdown(period, excludeInternal),
+      )
       return c.json({ ok: true, data })
     } catch (error: any) {
       console.error('[Admin] Source breakdown error:', error)

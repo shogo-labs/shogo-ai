@@ -153,6 +153,182 @@ function scopeWhere(scope: AnalyticsScope) {
   }
 }
 
+// ============================================================================
+// SQL rollups (SHO-311)
+// ============================================================================
+//
+// Every analytics page used to `findMany` the whole window and count in Node.
+// On production that is 610k tool calls (~754 MB with `result` selected), 926k
+// usage events with their `actionMetadata`, and every chat message of the
+// period — per request, per panel, per admin who opens the page. The rollups
+// below are the answer: one grouped statement per shape, so only the counts
+// travel.
+//
+// Postgres and SQLite disagree about placeholders, date bucketing and JSON
+// access, but not about the arithmetic. Each query is therefore written once
+// against this dialect, so desktop and cloud run the *same* statement shape on
+// the same columns (the golden fixture asserts identical numbers on either
+// engine — `CHANNELS_TEST_PG_URL`), instead of a cloud-only read path that no
+// desktop test can reach.
+
+interface SqlDialect {
+  /** Values bound so far, in placeholder order, for `$queryRawUnsafe`. */
+  readonly params: unknown[]
+  /** Bind `value`, returning its placeholder for this engine. */
+  bind(value: unknown): string
+  /** `column` truncated to its UTC day, as the text `YYYY-MM-DD`. */
+  day(column: string): string
+  /** JSON number at `column.key`; NULL when absent or not a number. */
+  jsonNumber(column: string, key: string): string
+  /** JSON text at `column.key`; NULL when absent. */
+  jsonText(column: string, key: string): string
+  /** 1 when `column.key` is the boolean `true`, else 0. */
+  jsonTrue(column: string, key: string): string
+  /** 1 when `column.key` is the boolean `false`, else 0. */
+  jsonFalse(column: string, key: string): string
+  /** 1 when `column.key` is present and is not `false` (`error != null && != false`). */
+  jsonPresentNotFalse(column: string, key: string): string
+  /** 1 when `column.key` is the string `"error"` (case-insensitive). */
+  jsonTextIsError(column: string, key: string): string
+  /** 1 when `column` holds a JSON string starting with the word "error". */
+  jsonStringStartsWithError(column: string): string
+  /** 1 when `column.key` is a JSON string starting with the word "error". */
+  jsonTextStartsWithError(column: string, key: string): string
+}
+
+/**
+ * A leading "error" word, for a text expression.
+ *
+ * `toolCallFailed` matches `/^\s*error\b/i` on a tool result. Postgres has
+ * regexes; SQLite does not, so the same rule is spelled out as a prefix test
+ * plus a word boundary — `errors` and `error_count` do not count, `error`,
+ * `error: boom` and `error at line 3` do.
+ */
+function startsWithErrorWord(text: string): string {
+  if (!isSqlite) return `(${text} ~* '^\\s*error\\b')`
+  const trimmed = `trim(lower(${text}), char(32) || char(9) || char(10) || char(13))`
+  return `(substr(${trimmed}, 1, 5) = 'error' AND (length(${trimmed}) = 5`
+    + ` OR substr(${trimmed}, 6, 1) NOT GLOB '[a-z0-9_]'))`
+}
+
+function sqlDialect(): SqlDialect {
+  const params: unknown[] = []
+  const sqlite = isSqlite
+  const bind = (value: unknown) => {
+    params.push(value)
+    return sqlite ? '?' : `$${params.length}`
+  }
+
+  if (sqlite) {
+    const path = (key: string) => `'$.${key}'`
+    // The desktop schema stores these columns as TEXT (`result`, `args` and
+    // `actionMetadata` are `String?` there, `Json?` in the cloud), so a row
+    // written by anything other than the JSON writers would make `json_type`
+    // raise and take the whole page down. `json_valid` is the guard; a CASE
+    // evaluates its THEN only when the condition holds.
+    const guarded = (column: string, expression: string, fallback = 'NULL') =>
+      `(CASE WHEN json_valid(${column}) THEN ${expression} ELSE ${fallback} END)`
+    return {
+      params,
+      bind,
+      day: (column) => `strftime('%Y-%m-%d', ${column})`,
+      jsonNumber: (column, key) =>
+        guarded(
+          column,
+          `(CASE WHEN json_type(${column}, ${path(key)}) IN ('integer', 'real')`
+          + ` THEN json_extract(${column}, ${path(key)}) ELSE NULL END)`,
+        ),
+      jsonText: (column, key) => guarded(column, `json_extract(${column}, ${path(key)})`),
+      jsonTrue: (column, key) =>
+        guarded(column, `(CASE WHEN json_type(${column}, ${path(key)}) = 'true' THEN 1 ELSE 0 END)`, '0'),
+      jsonFalse: (column, key) =>
+        guarded(column, `(CASE WHEN json_type(${column}, ${path(key)}) = 'false' THEN 1 ELSE 0 END)`, '0'),
+      jsonPresentNotFalse: (column, key) =>
+        guarded(
+          column,
+          `(CASE WHEN json_type(${column}, ${path(key)}) IS NOT NULL`
+          + ` AND json_type(${column}, ${path(key)}) <> 'false' THEN 1 ELSE 0 END)`,
+          '0',
+        ),
+      jsonTextIsError: (column, key) =>
+        guarded(
+          column,
+          `(CASE WHEN lower(json_extract(${column}, ${path(key)})) = 'error' THEN 1 ELSE 0 END)`,
+          '0',
+        ),
+      jsonStringStartsWithError: (column) =>
+        guarded(
+          column,
+          `(CASE WHEN json_type(${column}) = 'text'`
+          + ` AND COALESCE(${startsWithErrorWord(`json_extract(${column}, '$')`)}, 0) THEN 1 ELSE 0 END)`,
+          '0',
+        ),
+      jsonTextStartsWithError: (column, key) =>
+        guarded(
+          column,
+          `(CASE WHEN COALESCE(${startsWithErrorWord(`json_extract(${column}, ${path(key)})`)}, 0) THEN 1 ELSE 0 END)`,
+          '0',
+        ),
+    }
+  }
+
+  return {
+    params,
+    bind,
+    day: (column) => `TO_CHAR(${column}, 'YYYY-MM-DD')`,
+    jsonNumber: (column, key) =>
+      `(CASE WHEN jsonb_typeof(${column}->'${key}') = 'number'`
+      + ` THEN (${column}->>'${key}')::numeric ELSE NULL END)`,
+    jsonText: (column, key) => `(${column}->>'${key}')`,
+    jsonTrue: (column, key) =>
+      `(CASE WHEN jsonb_typeof(${column}->'${key}') = 'boolean'`
+      + ` AND (${column}->>'${key}')::boolean THEN 1 ELSE 0 END)`,
+    jsonFalse: (column, key) =>
+      `(CASE WHEN jsonb_typeof(${column}->'${key}') = 'boolean'`
+      + ` AND NOT (${column}->>'${key}')::boolean THEN 1 ELSE 0 END)`,
+    jsonPresentNotFalse: (column, key) =>
+      `(CASE WHEN (${column}->'${key}') IS NOT NULL AND (${column}->'${key}') <> 'false'::jsonb`
+      + ` THEN 1 ELSE 0 END)`,
+    jsonTextIsError: (column, key) =>
+      `(CASE WHEN lower(${column}->>'${key}') = 'error' THEN 1 ELSE 0 END)`,
+    jsonStringStartsWithError: (column) =>
+      `(CASE WHEN jsonb_typeof(${column}) = 'string'`
+      + ` AND COALESCE(${startsWithErrorWord(`(${column} #>> '{}')`)}, false) THEN 1 ELSE 0 END)`,
+    jsonTextStartsWithError: (column, key) =>
+      `(CASE WHEN COALESCE(${startsWithErrorWord(`(${column}->>'${key}')`)}, false) THEN 1 ELSE 0 END)`,
+  }
+}
+
+/**
+ * A `day` column as the driver returned it, as `YYYY-MM-DD`.
+ * `TO_CHAR`/`strftime` both yield text; a driver that hands back a Date (or a
+ * test double standing in for one) must not lose the bucket.
+ */
+function asDay(value: unknown): string {
+  return value instanceof Date ? isoDay(value) : String(value).slice(0, 10)
+}
+
+/**
+ * `{ day → COUNT(*) }` for one filtered source, aggregated in the database.
+ *
+ * `source` is a `FROM` body (table alias + joins), `conditions` are already
+ * built with `dialect.bind`, so the window, the scope and the joins all share
+ * one parameter list.
+ */
+async function countByDay(
+  dialect: SqlDialect,
+  source: string,
+  conditions: string[],
+  column = 't."createdAt"',
+): Promise<Map<string, number>> {
+  const sql = `SELECT ${dialect.day(column)} AS "day", COUNT(*) AS "count"`
+    + ` FROM ${source} WHERE ${conditions.join(' AND ')} GROUP BY 1`
+  const rows = await prisma.$queryRawUnsafe<any[]>(sql, ...dialect.params)
+  const byDay = new Map<string, number>()
+  for (const row of rows) byDay.set(asDay(row.day), toNum(row.count))
+  return byDay
+}
+
 /**
  * The action types the Usage tab meters (token / voice usage). Internal,
  * non-billable events (`ai_proxy_internal`, …) are deliberately outside it: the
@@ -569,56 +745,81 @@ export async function getActivityTimeseries(
 ): Promise<ActivityTimeseriesPoint[]> {
   const { from, to } = periodToWindow(period)
 
-  // Session scope fragment shared by messages / sessions / tool calls.
-  const sessionScope: any = {}
-  if (scope.projectId) sessionScope.contextId = scope.projectId
-  else if (scope.workspaceId) sessionScope.project = { workspaceId: scope.workspaceId }
-  const hasSessionScope = Object.keys(sessionScope).length > 0
+  // Each series is one `GROUP BY day` in the database (SHO-311): counting the
+  // period's chat messages and tool calls in Node shipped one row per message
+  // and per tool call for a number the chart renders as a single integer.
+  const window = (d: SqlDialect) => [
+    `t."createdAt" >= ${d.bind(from)}`,
+    `t."createdAt" < ${d.bind(to)}`,
+  ]
+  // Weekly sessions reach the workspace through their project only — the same
+  // relation the Prisma filter used (`session: { project: { workspaceId } }`).
+  const sessionJoin = (d: SqlDialect, on: string) =>
+    scope.projectId
+      ? { join: ` JOIN "chat_sessions" s ON s."id" = ${on}`, condition: `s."contextId" = ${d.bind(scope.projectId)}` }
+      : scope.workspaceId
+        ? {
+            join: ` JOIN "chat_sessions" s ON s."id" = ${on} JOIN "projects" p ON p."id" = s."contextId"`,
+            condition: `p."workspaceId" = ${d.bind(scope.workspaceId)}`,
+          }
+        : null
 
-  const [users, workspaces, projects, messages, sessions, toolCalls, subscriptions] = await Promise.all([
+  const [uM, wM, pM, mM, sM, tM, subscriptions] = await Promise.all([
     // newUsers → platform: signups; workspace: new members
     scope.workspaceId
-      ? prisma.member.findMany({
-          where: { workspaceId: scope.workspaceId, projectId: null, createdAt: { gte: from, lt: to } },
-          select: { createdAt: true },
-        })
-      : prisma.user.findMany({
-          where: { createdAt: { gte: from, lt: to } },
-          select: { createdAt: true },
-        }),
+      ? (() => {
+          const d = sqlDialect()
+          return countByDay(d, '"members" t', [...window(d), `t."workspaceId" = ${d.bind(scope.workspaceId)}`, 't."projectId" IS NULL'])
+        })()
+      : (() => {
+          const d = sqlDialect()
+          return countByDay(d, '"users" t', window(d))
+        })(),
     scope.workspaceId
-      ? Promise.resolve([] as { createdAt: Date }[])
-      : prisma.workspace.findMany({
-          where: { createdAt: { gte: from, lt: to } },
-          select: { createdAt: true },
-        }),
-    prisma.project.findMany({
-      where: {
-        createdAt: { gte: from, lt: to },
-        ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
-      },
-      select: { createdAt: true },
-    }),
-    prisma.chatMessage.findMany({
-      where: {
-        role: 'user',
-        agent: 'technical',
-        createdAt: { gte: from, lt: to },
-        ...(hasSessionScope ? { session: sessionScope } : {}),
-      },
-      select: { createdAt: true },
-    }),
-    prisma.chatSession.findMany({
-      where: { createdAt: { gte: from, lt: to }, ...sessionScope },
-      select: { createdAt: true },
-    }),
-    prisma.toolCallLog.findMany({
-      where: {
-        createdAt: { gte: from, lt: to },
-        ...(hasSessionScope ? { chatSession: sessionScope } : {}),
-      },
-      select: { createdAt: true },
-    }),
+      ? Promise.resolve(new Map<string, number>())
+      : (() => {
+          const d = sqlDialect()
+          return countByDay(d, '"workspaces" t', window(d))
+        })(),
+    (() => {
+      const d = sqlDialect()
+      const conditions = window(d)
+      if (scope.workspaceId) conditions.push(`t."workspaceId" = ${d.bind(scope.workspaceId)}`)
+      return countByDay(d, '"projects" t', conditions)
+    })(),
+    (() => {
+      const d = sqlDialect()
+      const conditions = [...window(d), `t."role" = 'user'`, `t."agent" = 'technical'`]
+      const scoped = sessionJoin(d, 't."sessionId"')
+      return countByDay(
+        d,
+        `"chat_messages" t${scoped?.join ?? ''}`,
+        scoped ? [...conditions, scoped.condition] : conditions,
+      )
+    })(),
+    (() => {
+      const d = sqlDialect()
+      const conditions = window(d)
+      if (scope.projectId) conditions.push(`t."contextId" = ${d.bind(scope.projectId)}`)
+      if (scope.workspaceId) {
+        return countByDay(
+          d,
+          '"chat_sessions" t JOIN "projects" p ON p."id" = t."contextId"',
+          [...conditions, `p."workspaceId" = ${d.bind(scope.workspaceId)}`],
+        )
+      }
+      return countByDay(d, '"chat_sessions" t', conditions)
+    })(),
+    (() => {
+      const d = sqlDialect()
+      const conditions = window(d)
+      const scoped = sessionJoin(d, 't."chatSessionId"')
+      return countByDay(
+        d,
+        `"tool_call_logs" t${scoped?.join ?? ''}`,
+        scoped ? [...conditions, scoped.condition] : conditions,
+      )
+    })(),
     // Currently active/trialing subscriptions (paying subscribers), placed on the
     // timeline by createdAt to approximate the cumulative active count per day.
     prisma.subscription.findMany({
@@ -629,21 +830,6 @@ export async function getActivityTimeseries(
       select: { createdAt: true },
     }),
   ])
-
-  const bucket = (rows: { createdAt: Date }[]): Map<string, number> => {
-    const m = new Map<string, number>()
-    for (const r of rows) {
-      const d = isoDay(r.createdAt)
-      m.set(d, (m.get(d) ?? 0) + 1)
-    }
-    return m
-  }
-  const uM = bucket(users)
-  const wM = bucket(workspaces)
-  const pM = bucket(projects)
-  const mM = bucket(messages)
-  const sM = bucket(sessions)
-  const tM = bucket(toolCalls)
 
   // Cumulative active subscribers: baseline = subs created before the window,
   // then add subs created on each day to a running total.
@@ -1202,31 +1388,77 @@ export async function getSpendTimeseries(
   const metric = options.metric ?? 'spend'
   const topN = options.topN ?? 8
 
-  const where: any = {
-    ...scopeWhere(scope),
-    actionType: {
-      in: [...USAGE_METERED_ACTION_TYPES],
-    },
-    createdAt: { gte: from, lt: to },
+  // One grouped statement returns every (day × series) cell the chart renders —
+  // spend, tokens and request count at once — instead of reading every event of
+  // the window and summing three metrics in Node (SHO-311).
+  const measure = (d: SqlDialect) => {
+    const numOrNull = (key: string) => d.jsonNumber('t."actionMetadata"', key)
+    const metaRaw = `COALESCE(${numOrNull('rawUsd')}, ${numOrNull('dollarCost')}, 0)`
+    const rawKnown = `COALESCE(t."rawUsd", ${numOrNull('rawUsd')}, ${numOrNull('dollarCost')})`
+    // Same per-event split as `splitUsageCost`, so the three lines add up to the
+    // cost the chart draws and the clamp stays per row.
+    const modelCost = `CASE WHEN t."billedUsd" > 0 THEN (CASE WHEN COALESCE(${rawKnown}, 0) < t."billedUsd"`
+      + ` THEN COALESCE(${rawKnown}, 0) ELSE t."billedUsd" END)`
+      + ` WHEN COALESCE(t."rawUsd", 0) > 0 THEN t."rawUsd" ELSE ${metaRaw} END`
+    const shogoFee = `CASE WHEN t."billedUsd" > 0 AND ${rawKnown} IS NOT NULL`
+      + ` THEN t."billedUsd" - (CASE WHEN ${rawKnown} < t."billedUsd" THEN ${rawKnown} ELSE t."billedUsd" END)`
+      + ` ELSE 0 END`
+    const unitemized = `CASE WHEN t."billedUsd" > 0 AND ${rawKnown} IS NULL THEN t."billedUsd" ELSE 0 END`
+    // For "spend" we want the *actual cost incurred* — `billedUsd` is 0 for
+    // events covered by included plan quota or running in local mode, so fall
+    // back to `rawUsd` (the provider cost on the event, else inside
+    // `actionMetadata`), or the chart would show nothing spent.
+    const cost = `CASE WHEN t."billedUsd" > 0 THEN t."billedUsd"`
+      + ` WHEN t."rawUsd" IS NOT NULL AND t."rawUsd" > 0 THEN t."rawUsd"`
+      + ` ELSE COALESCE(${numOrNull('rawUsd')}, ${numOrNull('dollarCost')}, 0) END`
+
+    const conditions = [
+      `t."createdAt" >= ${d.bind(from)}`,
+      `t."createdAt" < ${d.bind(to)}`,
+      `t."actionType" IN (${USAGE_METERED_ACTION_TYPES.map((type) => `'${type}'`).join(', ')})`,
+    ]
+    if (scope.workspaceId) conditions.push(`t."workspaceId" = ${d.bind(scope.workspaceId)}`)
+    if (scope.projectId) conditions.push(`t."projectId" = ${d.bind(scope.projectId)}`)
+    if (scope.userId) conditions.push(`t."memberId" = ${d.bind(scope.userId)}`)
+
+    return {
+      conditions,
+      cost,
+      modelCost,
+      shogoFee,
+      unitemized,
+      rawModel: `COALESCE(${d.jsonText('t."actionMetadata"', 'model')}, ${d.jsonText('t."actionMetadata"', 'modelUsed')}, 'unknown')`,
+      tokens: `COALESCE(${d.jsonNumber('t."actionMetadata"', 'totalTokens')}, 0)`,
+    }
   }
 
-  const events = await prisma.usageEvent.findMany({
-    where,
-    select: {
-      memberId: true,
-      workspaceId: true,
-      billedUsd: true,
-      rawUsd: true,
-      source: true,
-      actionMetadata: true,
-      createdAt: true,
-    },
-  })
+  const groupDialect = sqlDialect()
+  const measureGroup = measure(groupDialect)
+  const seriesExpr =
+    groupBy === 'user'
+      ? 't."memberId"'
+      : groupBy === 'workspace'
+        ? 't."workspaceId"'
+        : groupBy === 'source'
+          ? 't."source"'
+          : measureGroup.rawModel
+
+  const grouped = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT ${groupDialect.day('t."createdAt"')} AS "day",
+        ${seriesExpr} AS "series",
+        COALESCE(SUM(${measureGroup.cost}), 0) AS "spend",
+        COALESCE(SUM(${measureGroup.tokens}), 0) AS "tokens",
+        COUNT(*) AS "requests"
+      FROM "usage_events" t
+      WHERE ${measureGroup.conditions.join(' AND ')}
+      GROUP BY 1, 2`,
+    ...groupDialect.params,
+  )
 
   // Resolve user emails up front for groupBy:user
   let userMap = new Map<string, string>()
   if (groupBy === 'user') {
-    const ids = [...new Set(events.map((e) => e.memberId).filter((id) => id !== 'system'))]
+    const ids = [...new Set(grouped.map((r) => String(r.series)).filter((id) => id !== 'system' && id !== 'null'))]
     const users = await prisma.user.findMany({
       where: { id: { in: ids } },
       select: { id: true, email: true, name: true },
@@ -1237,7 +1469,7 @@ export async function getSpendTimeseries(
   // Resolve workspace names up front for groupBy:workspace
   let workspaceMap = new Map<string, string>()
   if (groupBy === 'workspace') {
-    const ids = [...new Set(events.map((e) => e.workspaceId).filter(Boolean))]
+    const ids = [...new Set(grouped.map((r) => String(r.series)).filter(Boolean))]
     const workspaces = await prisma.workspace.findMany({
       where: { id: { in: ids } },
       select: { id: true, name: true },
@@ -1249,75 +1481,58 @@ export async function getSpendTimeseries(
   // migration the stored ids are UUIDs).
   let modelLabels = new Map<string, string>()
   if (groupBy === 'model') {
-    modelLabels = await resolveModelLabels(
-      events.map((e) => {
-        const m = parseMeta(e.actionMetadata)
-        return (m.model || m.modelUsed || 'unknown') as string
-      }),
-    )
+    modelLabels = await resolveModelLabels(grouped.map((r) => String(r.series)))
   }
 
   // Aggregate {date → {seriesKey → metric value}} and totals
   const byDay = new Map<string, Map<string, number>>()
   const seriesTotals = new Map<string, number>()
-  let totalSpendUsd = 0
-  let totalIncludedUsd = 0
-  let totalOnDemandUsd = 0
-  let modelCostUsd = 0
-  let shogoFeeUsd = 0
-  let unitemizedUsd = 0
 
-  // For "spend" metric we want the *actual cost incurred* — `billedUsd` is 0
-  // for events covered by included plan quota or running in local mode, so we
-  // fall back to `rawUsd` (the underlying provider cost recorded on the event
-  // and inside `actionMetadata`). This way the chart is always meaningful even
-  // when nothing has been charged yet.
-  const eventCostUsd = (event: { billedUsd: number; rawUsd: number | null; actionMetadata: unknown }, meta: Record<string, any>): number => {
-    if (event.billedUsd > 0) return event.billedUsd
-    if (event.rawUsd != null && event.rawUsd > 0) return event.rawUsd
-    const metaRaw = (meta.rawUsd as number | undefined) ?? (meta.dollarCost as number | undefined)
-    return typeof metaRaw === 'number' ? metaRaw : 0
-  }
-
-  for (const event of events) {
-    const meta = parseMeta(event.actionMetadata)
-    const day = isoDay(event.createdAt)
-    const costUsd = eventCostUsd(event, meta)
-
-    const rawModel = meta.model || meta.modelUsed || 'unknown'
+  for (const row of grouped) {
+    const day = asDay(row.day)
+    const rawSeries = String(row.series ?? '')
     const series =
       groupBy === 'user'
-        ? userMap.get(event.memberId) ?? event.memberId
+        ? userMap.get(rawSeries) ?? rawSeries
         : groupBy === 'workspace'
-          ? (workspaceMap.get(event.workspaceId) ?? event.workspaceId)
+          ? (workspaceMap.get(rawSeries) ?? rawSeries)
           : groupBy === 'source'
-            ? event.source
-            : (modelLabels.get(rawModel) ?? rawModel)
+            ? rawSeries
+            : (modelLabels.get(rawSeries) ?? rawSeries)
 
     const value =
       metric === 'tokens'
-        ? meta.totalTokens || 0
+        ? toNum(row.tokens)
         : metric === 'requests'
-          ? 1
-          : costUsd
+          ? toNum(row.requests)
+          : toNum(row.spend)
 
     if (!byDay.has(day)) byDay.set(day, new Map())
     const dayMap = byDay.get(day)!
     dayMap.set(series, (dayMap.get(series) ?? 0) + value)
     seriesTotals.set(series, (seriesTotals.get(series) ?? 0) + value)
-
-    totalSpendUsd += costUsd
-    const split = splitUsageCost({
-      billedUsd: event.billedUsd,
-      rawUsd: event.rawUsd,
-      actionMetadata: meta,
-    })
-    modelCostUsd += split.modelCostUsd
-    shogoFeeUsd += split.shogoFeeUsd
-    unitemizedUsd += split.unitemizedUsd
-    if (event.source === 'overage') totalOnDemandUsd += costUsd
-    else totalIncludedUsd += costUsd
   }
+
+  const totalDialect = sqlDialect()
+  const measureTotals = measure(totalDialect)
+  const overageCost = `CASE WHEN t."source" = 'overage' THEN ${measureTotals.cost} ELSE 0 END`
+  const [totalsRow] = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT COALESCE(SUM(${measureTotals.cost}), 0) AS "spend",
+        COALESCE(SUM(${overageCost}), 0) AS "onDemand",
+        COALESCE(SUM(${measureTotals.modelCost}), 0) AS "modelCost",
+        COALESCE(SUM(${measureTotals.shogoFee}), 0) AS "shogoFee",
+        COALESCE(SUM(${measureTotals.unitemized}), 0) AS "unitemized"
+      FROM "usage_events" t
+      WHERE ${measureTotals.conditions.join(' AND ')}`,
+    ...totalDialect.params,
+  )
+
+  const totalSpendUsd = toNum(totalsRow?.spend)
+  const totalOnDemandUsd = toNum(totalsRow?.onDemand)
+  const totalIncludedUsd = totalSpendUsd - totalOnDemandUsd
+  const modelCostUsd = toNum(totalsRow?.modelCost)
+  const shogoFeeUsd = toNum(totalsRow?.shogoFee)
+  const unitemizedUsd = toNum(totalsRow?.unitemized)
 
   // Pick top-N series by total; collapse the rest into "Other"
   const ranked = [...seriesTotals.entries()].sort((a, b) => b[1] - a[1])
@@ -2276,21 +2491,32 @@ export async function getActiveUsersTimeseries(
   const { from, to } = periodToWindow(period)
   const lookbackFrom = new Date(from.getTime() - 29 * 24 * 60 * 60 * 1000)
 
-  const where: any = { createdAt: { gte: lookbackFrom, lt: to } }
-  if (scope.workspaceId) where.workspaceId = scope.workspaceId
-  if (scope.projectId) where.projectId = scope.projectId
+  // One row per (day, member) instead of one per event: the rolling windows only
+  // ever need to know *who* was active on a day, so the distinct pairs are
+  // computed by the database (SHO-311) — 59 days of events used to cross the
+  // wire to build these sets.
+  const dialect = sqlDialect()
+  const conditions = [
+    `t."createdAt" >= ${dialect.bind(lookbackFrom)}`,
+    `t."createdAt" < ${dialect.bind(to)}`,
+    `t."memberId" <> 'system'`,
+  ]
+  if (scope.workspaceId) conditions.push(`t."workspaceId" = ${dialect.bind(scope.workspaceId)}`)
+  if (scope.projectId) conditions.push(`t."projectId" = ${dialect.bind(scope.projectId)}`)
 
-  const events = await prisma.usageEvent.findMany({
-    where,
-    select: { memberId: true, createdAt: true },
-  })
+  const pairs = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT ${dialect.day('t."createdAt"')} AS "day", t."memberId" AS "memberId"
+      FROM "usage_events" t
+      WHERE ${conditions.join(' AND ')}
+      GROUP BY 1, 2`,
+    ...dialect.params,
+  )
 
   const byDay = new Map<string, Set<string>>()
-  for (const e of events) {
-    if (e.memberId === 'system') continue
-    const d = isoDay(e.createdAt)
+  for (const pair of pairs) {
+    const d = asDay(pair.day)
     if (!byDay.has(d)) byDay.set(d, new Set())
-    byDay.get(d)!.add(e.memberId)
+    byDay.get(d)!.add(String(pair.memberId))
   }
 
   const days: ActiveUsersTimeseriesPoint[] = []
@@ -2335,51 +2561,15 @@ export async function getQualityTimeseries(
 ): Promise<QualityTimeseriesPoint[]> {
   const { from, to } = periodToWindow(period)
 
-  const usageWhere: any = {
-    actionType: {
-      in: ['ai_proxy_completion', 'chat_message'],
-    },
-    createdAt: { gte: from, lt: to },
-  }
-  if (scope.workspaceId) usageWhere.workspaceId = scope.workspaceId
-  if (scope.projectId) usageWhere.projectId = scope.projectId
-
-  const sessionScope: any = {}
-  if (scope.projectId) sessionScope.contextId = scope.projectId
-  else if (scope.workspaceId) sessionScope.project = { workspaceId: scope.workspaceId }
-  const hasSessionScope = Object.keys(sessionScope).length > 0
-
-  const agentWhere: any = { createdAt: { gte: from, lt: to } }
-  if (scope.workspaceId) agentWhere.workspaceId = scope.workspaceId
-  if (scope.projectId) agentWhere.projectId = scope.projectId
-
-  const [events, messages, agentRuns] = await Promise.all([
-    prisma.usageEvent.findMany({
-      where: usageWhere,
-      select: { memberId: true, billedUsd: true, rawUsd: true, actionMetadata: true, createdAt: true },
-    }),
-    prisma.chatMessage.findMany({
-      where: {
-        role: 'user',
-        agent: 'technical',
-        createdAt: { gte: from, lt: to },
-        ...(hasSessionScope ? { session: sessionScope } : {}),
-      },
-      select: { createdAt: true },
-    }),
-    prisma.agentCostMetric.findMany({
-      where: agentWhere,
-      select: { createdAt: true, escalated: true, loopDetected: true, hitMaxTurns: true, metadata: true },
-    }),
-  ])
-
-  // Per-day accumulators.
+  // Three grouped statements instead of three raw scans (SHO-311): the token
+  // sums, the spend and the distinct active members all come back per day, and
+  // the message and agent-run counts are `COUNT(*)`/`SUM(flag)` per day.
   interface Acc {
     cached: number
     cacheWrite: number
     input: number
     spend: number
-    activeUsers: Set<string>
+    activeUsers: number
     messages: number
     runs: number
     escalated: number
@@ -2390,34 +2580,98 @@ export async function getQualityTimeseries(
   const ensure = (d: string): Acc => {
     let a = acc.get(d)
     if (!a) {
-      a = { cached: 0, cacheWrite: 0, input: 0, spend: 0, activeUsers: new Set(), messages: 0, runs: 0, escalated: 0, loop: 0, maxTurns: 0 }
+      a = { cached: 0, cacheWrite: 0, input: 0, spend: 0, activeUsers: 0, messages: 0, runs: 0, escalated: 0, loop: 0, maxTurns: 0 }
       acc.set(d, a)
     }
     return a
   }
 
-  for (const e of events) {
-    const meta = parseMeta(e.actionMetadata)
-    const a = ensure(isoDay(e.createdAt))
-    a.cached += (meta.cachedInputTokens as number) || 0
-    a.cacheWrite += (meta.cacheWriteTokens as number) || 0
-    a.input += (meta.inputTokens as number) || 0
-    const cost = e.billedUsd > 0
-      ? e.billedUsd
-      : (e.rawUsd != null && e.rawUsd > 0)
-        ? e.rawUsd
-        : ((meta.rawUsd as number | undefined) ?? (meta.dollarCost as number | undefined) ?? 0)
-    a.spend += cost
-    if (e.memberId !== 'system') a.activeUsers.add(e.memberId)
+  const [usageDays, messageDays, agentDays] = await Promise.all([
+    (async () => {
+      const d = sqlDialect()
+      const conditions = [
+        `t."createdAt" >= ${d.bind(from)}`,
+        `t."createdAt" < ${d.bind(to)}`,
+        `t."actionType" IN ('ai_proxy_completion', 'chat_message')`,
+      ]
+      if (scope.workspaceId) conditions.push(`t."workspaceId" = ${d.bind(scope.workspaceId)}`)
+      if (scope.projectId) conditions.push(`t."projectId" = ${d.bind(scope.projectId)}`)
+      // Same per-event cost rule as `eventCostUsd`: billed, else the recorded
+      // provider cost, else the cost inside `actionMetadata`.
+      const cost = `(CASE WHEN t."billedUsd" > 0 THEN t."billedUsd"
+          WHEN t."rawUsd" IS NOT NULL AND t."rawUsd" > 0 THEN t."rawUsd"
+          ELSE COALESCE(${d.jsonNumber('t."actionMetadata"', 'rawUsd')}, ${d.jsonNumber('t."actionMetadata"', 'dollarCost')}, 0) END)`
+      const sql = `SELECT ${d.day('t."createdAt"')} AS "day",
+          COALESCE(SUM(${d.jsonNumber('t."actionMetadata"', 'cachedInputTokens')}), 0) AS "cached",
+          COALESCE(SUM(${d.jsonNumber('t."actionMetadata"', 'cacheWriteTokens')}), 0) AS "cacheWrite",
+          COALESCE(SUM(${d.jsonNumber('t."actionMetadata"', 'inputTokens')}), 0) AS "input",
+          COALESCE(SUM(${cost}), 0) AS "spend",
+          COUNT(DISTINCT CASE WHEN t."memberId" <> 'system' THEN t."memberId" END) AS "activeUsers"
+        FROM "usage_events" t
+        WHERE ${conditions.join(' AND ')}
+        GROUP BY 1`
+      return prisma.$queryRawUnsafe<any[]>(sql, ...d.params)
+    })(),
+    (async () => {
+      const d = sqlDialect()
+      const conditions = [
+        `t."createdAt" >= ${d.bind(from)}`,
+        `t."createdAt" < ${d.bind(to)}`,
+        `t."role" = 'user'`,
+        `t."agent" = 'technical'`,
+      ]
+      const scoped = scope.projectId
+        ? { join: ' JOIN "chat_sessions" s ON s."id" = t."sessionId"', condition: `s."contextId" = ${d.bind(scope.projectId)}` }
+        : scope.workspaceId
+          ? {
+              join: ' JOIN "chat_sessions" s ON s."id" = t."sessionId" JOIN "projects" p ON p."id" = s."contextId"',
+              condition: `p."workspaceId" = ${d.bind(scope.workspaceId)}`,
+            }
+          : null
+      return countByDay(
+        d,
+        `"chat_messages" t${scoped?.join ?? ''}`,
+        scoped ? [...conditions, scoped.condition] : conditions,
+      )
+    })(),
+    (async () => {
+      const d = sqlDialect()
+      const conditions = [
+        `t."createdAt" >= ${d.bind(from)}`,
+        `t."createdAt" < ${d.bind(to)}`,
+        // `qualityUnknown` rows are excluded before they count as a run.
+        `NOT ${d.jsonTrue('t."metadata"', 'qualityUnknown')}`,
+      ]
+      if (scope.workspaceId) conditions.push(`t."workspaceId" = ${d.bind(scope.workspaceId)}`)
+      if (scope.projectId) conditions.push(`t."projectId" = ${d.bind(scope.projectId)}`)
+      const flag = (column: string) => `COALESCE(SUM(CASE WHEN t."${column}" THEN 1 ELSE 0 END), 0)`
+      const sql = `SELECT ${d.day('t."createdAt"')} AS "day",
+          COUNT(*) AS "runs",
+          ${flag('escalated')} AS "escalated",
+          ${flag('loopDetected')} AS "loop",
+          ${flag('hitMaxTurns')} AS "maxTurns"
+        FROM "agent_cost_metrics" t
+        WHERE ${conditions.join(' AND ')}
+        GROUP BY 1`
+      return prisma.$queryRawUnsafe<any[]>(sql, ...d.params)
+    })(),
+  ])
+
+  for (const row of usageDays) {
+    const a = ensure(asDay(row.day))
+    a.cached += toNum(row.cached)
+    a.cacheWrite += toNum(row.cacheWrite)
+    a.input += toNum(row.input)
+    a.spend += toNum(row.spend)
+    a.activeUsers += toNum(row.activeUsers)
   }
-  for (const m of messages) ensure(isoDay(m.createdAt)).messages += 1
-  for (const r of agentRuns) {
-    if (parseMeta(r.metadata).qualityUnknown === true) continue
-    const a = ensure(isoDay(r.createdAt))
-    a.runs += 1
-    if (r.escalated) a.escalated += 1
-    if (r.loopDetected) a.loop += 1
-    if (r.hitMaxTurns) a.maxTurns += 1
+  for (const [day, count] of messageDays) ensure(day).messages += count
+  for (const row of agentDays) {
+    const a = ensure(asDay(row.day))
+    a.runs += toNum(row.runs)
+    a.escalated += toNum(row.escalated)
+    a.loop += toNum(row.loop)
+    a.maxTurns += toNum(row.maxTurns)
   }
 
   const pct = (num: number, den: number) => (den > 0 ? (num / den) * 100 : 0)
@@ -2430,7 +2684,7 @@ export async function getQualityTimeseries(
   while (cursor <= last) {
     const key = isoDay(cursor)
     const a = acc.get(key)
-    const activeUsers = a?.activeUsers.size ?? 0
+    const activeUsers = a?.activeUsers ?? 0
     days.push({
       date: key,
       cacheHitRatio: a ? promptCacheHitRatio(a.cached, a.input, a.cacheWrite) : 0,
@@ -2629,34 +2883,61 @@ export async function getUsageSummary(
   const limit = Math.min(Math.max(1, options.limit ?? 25), 1000)
   const excludeInternal = options.excludeInternal ?? false
 
-  const where: any = {
-    actionType: {
-      in: [...USAGE_METERED_ACTION_TYPES],
-    },
-    createdAt: { gte: since },
-  }
-  if (scope.workspaceId) where.workspaceId = scope.workspaceId
-  if (scope.projectId) where.projectId = scope.projectId
-  if (scope.userId) where.memberId = scope.userId
-
   // When excluding internal users, build the set of internal member ids up
   // front so we can skip their events during aggregation.
   const internalIds = excludeInternal ? await getInternalUserIds() : null
 
-  // Fetch all matching events (for in-memory aggregation)
-  const events = await prisma.usageEvent.findMany({
-    where,
-    select: {
-      memberId: true,
-      billedUsd: true,
-      rawUsd: true,
-      actionMetadata: true,
-    },
-  })
+  // The rows this summary needs already exist, rolled up per
+  // (day × member × action type × source × model × provider) by the Usage tab's
+  // one-scan aggregate — and that scan is cached (SHO-140, SHO-311). Reading it
+  // costs a few thousand group rows instead of ~926k events with their
+  // `actionMetadata` (the 7.4 s `/me/analytics/usage-summary`).
+  const groups = await loadUsageGroups(scope, since, new Date())
+  const metered = USAGE_METERED_ACTION_TYPES as readonly string[]
 
-  const { aggregateMap, countedEvents } = aggregateUsageByModel(events, {
-    excludeMemberIds: internalIds,
-  })
+  const aggregateMap = new Map<string, UsageModelAggregate>()
+  let countedEvents = 0
+  for (const group of groups) {
+    if (!metered.includes(group.actionType)) continue
+    if (internalIds?.has(group.memberId)) continue
+    countedEvents += group.requests
+    const key = `${group.memberId}::${group.model}`
+    const existing = aggregateMap.get(key)
+    if (existing) {
+      existing.requestCount += group.requests
+      existing.totalInputTokens += group.inputTokens
+      existing.totalOutputTokens += group.outputTokens
+      existing.totalTokens += group.totalTokens
+      existing.totalBilledUsd += group.billedUsd
+      existing.totalRawUsd += group.rawUsd
+      existing.modelCostUsd += group.modelCostUsd
+      existing.shogoFeeUsd += group.shogoFeeUsd
+      existing.unitemizedUsd += group.unitemizedUsd
+      existing.totalDurationMs += group.durationMs
+      existing.totalCachedInputTokens += group.cachedInputTokens
+      existing.totalCacheWriteTokens += group.cacheWriteTokens
+      existing.unpricedRequests += group.unpricedRequests
+      continue
+    }
+    aggregateMap.set(key, {
+      userId: group.memberId,
+      model: group.model,
+      provider: group.provider,
+      requestCount: group.requests,
+      totalInputTokens: group.inputTokens,
+      totalOutputTokens: group.outputTokens,
+      totalTokens: group.totalTokens,
+      totalBilledUsd: group.billedUsd,
+      totalRawUsd: group.rawUsd,
+      modelCostUsd: group.modelCostUsd,
+      shogoFeeUsd: group.shogoFeeUsd,
+      unitemizedUsd: group.unitemizedUsd,
+      totalDurationMs: group.durationMs,
+      totalCachedInputTokens: group.cachedInputTokens,
+      totalCacheWriteTokens: group.cacheWriteTokens,
+      unpricedRequests: group.unpricedRequests,
+    })
+  }
 
   // Resolve user info
   const userIds = [...new Set([...aggregateMap.values()].map((a) => a.userId).filter((id) => id !== 'system'))]
@@ -2743,6 +3024,7 @@ export async function getUsageSummary(
  */
 function toolCallWhereFor(scope: AnalyticsScope, since?: Date): any {
   const where: any = { status: 'complete' }
+  if (scope.userId) where.userId = scope.userId
   if (scope.projectId) {
     where.chatSession = { contextId: scope.projectId }
   } else if (scope.workspaceId) {
@@ -3462,42 +3744,57 @@ export async function getChatAnalytics(
 ) {
   const since = periodToDate(period)
 
-  // Build where clause for chat sessions
-  const sessionWhere: any = { createdAt: { gte: since } }
-  if (scope.projectId) {
-    sessionWhere.contextId = scope.projectId
-  } else if (scope.workspaceId) {
-    sessionWhere.project = { workspaceId: scope.workspaceId }
-  }
+  // Counted in the database (SHO-311): the page needs four numbers and a daily
+  // series, not one row per session plus a per-session message count.
+  const sessionScope = (d: SqlDialect, alias: string) =>
+    scope.projectId
+      ? `${alias}."contextId" = ${d.bind(scope.projectId)}`
+      : scope.workspaceId
+        ? `EXISTS (SELECT 1 FROM "projects" p WHERE p."id" = ${alias}."contextId" AND p."workspaceId" = ${d.bind(scope.workspaceId)})`
+        : null
 
-  const [sessions, totalMessages, totalToolCalls] = await Promise.all([
-    prisma.chatSession.findMany({
-      where: sessionWhere,
-      select: {
-        id: true,
-        createdAt: true,
-        _count: {
-          select: {
-            messages: { where: { role: 'user', agent: 'technical' } },
-          },
-        },
-      },
-      orderBy: { createdAt: 'asc' },
-    }),
-    prisma.chatMessage.count({
-      where: { role: 'user', agent: 'technical', session: sessionWhere },
-    }),
-    prisma.toolCallLog.count({
-      where: { chatSession: sessionWhere },
-    }),
+  const dayDialect = sqlDialect()
+  const dayConditions = [`t."createdAt" >= ${dayDialect.bind(since)}`]
+  const dayScope = sessionScope(dayDialect, 't')
+  if (dayScope) dayConditions.push(dayScope)
+  const [byDay, totalMessages, totalToolCalls] = await Promise.all([
+    countByDay(dayDialect, '"chat_sessions" t', dayConditions),
+    (() => {
+      const d = sqlDialect()
+      const conditions = [`t."role" = 'user'`, `t."agent" = 'technical'`]
+      const scoped = sessionScope(d, 'cs')
+      if (scoped) conditions.push(scoped)
+      return prisma
+        .$queryRawUnsafe<any[]>(
+          `SELECT COUNT(*) AS "count" FROM "chat_messages" t`
+            + ' JOIN "chat_sessions" cs ON cs."id" = t."sessionId"'
+            + ` WHERE ${conditions.join(' AND ')}`,
+          ...d.params,
+        )
+        .then((rows) => toNum(rows[0]?.count))
+    })(),
+    (() => {
+      const d = sqlDialect()
+      const scoped = sessionScope(d, 'cs')
+      return prisma
+        .$queryRawUnsafe<any[]>(
+          'SELECT COUNT(*) AS "count" FROM "tool_call_logs" t'
+            + ' JOIN "chat_sessions" cs ON cs."id" = t."chatSessionId"'
+            + (scoped ? ` WHERE ${scoped}` : ''),
+          ...d.params,
+        )
+        .then((rows) => toNum(rows[0]?.count))
+    })(),
   ])
 
-  const totalSessions = sessions.length
+  const totalSessions = [...byDay.values()].reduce((sum, count) => sum + count, 0)
   const avgMessagesPerSession =
     totalSessions > 0 ? Math.round((totalMessages / totalSessions) * 10) / 10 : 0
 
   // Sessions created per day
-  const dailySessions = groupByDate(sessions)
+  const dailySessions = [...byDay.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, count]) => ({ date, count }))
 
   return {
     totalSessions,
@@ -4181,18 +4478,28 @@ export interface ToolCallAnalyticsResult {
  * 'complete') we fall back to inspecting the stored `result` JSON for common
  * error markers.
  */
-function toolCallFailed(status: string, result: unknown): boolean {
-  if (status === 'error') return true
-  const r = parseMeta(result)
-  if (r && typeof r === 'object') {
-    if (r.success === false) return true
-    if (r.isError === true) return true
-    if (r.error != null && r.error !== false) return true
-    if (typeof r.state === 'string' && r.state.toLowerCase() === 'error') return true
-    if (typeof r.text === 'string' && /^\s*error\b/i.test(r.text)) return true
-  }
-  if (typeof result === 'string' && /^\s*error\b/i.test(result)) return true
-  return false
+/**
+ * The `toolCallFailed` rule, as a SQL predicate (SHO-311).
+ *
+ * Selecting `result` for every tool call in the window was the single largest
+ * read on the platform — 610k rows, ~754 MB, to count errors — so the rule the
+ * old JS function applied row by row now runs inside the aggregate and `result`
+ * never leaves the database. Every branch is preserved:
+ *
+ *   status = 'error'  ·  success === false  ·  isError === true
+ *   error present and not false  ·  state.toLowerCase() === 'error'
+ *   text starts with the word "error"  ·  a JSON-string result that does
+ */
+function toolCallFailedSql(d: SqlDialect, column = 'tc."result"'): string {
+  return `(CASE`
+    + ` WHEN tc."status" = 'error' THEN 1`
+    + ` WHEN ${d.jsonFalse(column, 'success')} = 1 THEN 1`
+    + ` WHEN ${d.jsonTrue(column, 'isError')} = 1 THEN 1`
+    + ` WHEN ${d.jsonPresentNotFalse(column, 'error')} = 1 THEN 1`
+    + ` WHEN ${d.jsonTextIsError(column, 'state')} = 1 THEN 1`
+    + ` WHEN ${d.jsonTextStartsWithError(column, 'text')} = 1 THEN 1`
+    + ` WHEN ${d.jsonStringStartsWithError(column)} = 1 THEN 1`
+    + ` ELSE 0 END)`
 }
 
 /**
@@ -4209,62 +4516,94 @@ export async function getToolCallAnalytics(
   const page = Math.max(1, options.page ?? 1)
   const limit = Math.min(Math.max(1, options.limit ?? 10), 100)
 
-  const where: any = { createdAt: { gte: from, lt: to } }
-  if (scope.projectId) {
-    where.chatSession = { contextId: scope.projectId }
-  } else if (scope.workspaceId) {
-    where.chatSession = { project: { workspaceId: scope.workspaceId } }
-  }
-  if (options.excludeInternal) {
-    const internal = await getInternalUserIds()
-    if (internal.size > 0) {
-      const existing = where.chatSession ?? {}
-      where.chatSession = {
-        ...existing,
-        project: { ...(existing.project ?? {}), createdBy: { notIn: [...internal] } },
-      }
+  const internal = options.excludeInternal ? await getInternalUserIds() : null
+
+  const from_ = `FROM "tool_call_logs" tc`
+    + ' JOIN "chat_sessions" cs ON cs."id" = tc."chatSessionId"'
+    + ' LEFT JOIN "projects" pj ON pj."id" = cs."contextId"'
+  // Same session scope as `toolCallWhereFor`: a session belongs to a workspace
+  // directly or through its project, and the project-only join silently dropped
+  // the first kind (SHO-140). No `status` filter here — an error row is a call
+  // the page counts *and* classifies.
+  const conditionsFor = (d: SqlDialect) => {
+    const conditions = [
+      `tc."createdAt" >= ${d.bind(from)}`,
+      `tc."createdAt" < ${d.bind(to)}`,
+    ]
+    if (scope.userId) conditions.push(`tc."userId" = ${d.bind(scope.userId)}`)
+    if (scope.projectId) conditions.push(`cs."contextId" = ${d.bind(scope.projectId)}`)
+    else if (scope.workspaceId) {
+      conditions.push(`(cs."workspaceId" = ${d.bind(scope.workspaceId)} OR pj."workspaceId" = ${d.bind(scope.workspaceId)})`)
     }
+    if (internal && internal.size > 0) {
+      conditions.push(`(pj."createdBy" IS NULL OR pj."createdBy" NOT IN (${[...internal].map((id) => d.bind(id)).join(', ')}))`)
+    }
+    return conditions
   }
 
-  const rows = await prisma.toolCallLog.findMany({
-    where,
-    select: { toolName: true, status: true, result: true, duration: true, createdAt: true },
+  const totals = await (async () => {
+    const d = sqlDialect()
+    const [row] = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT COUNT(*) AS "calls", COALESCE(SUM(${toolCallFailedSql(d)}), 0) AS "errors",`
+        + ' COUNT(DISTINCT tc."toolName") AS "tools"'
+        + ` ${from_} WHERE ${conditionsFor(d).join(' AND ')}`,
+      ...d.params,
+    )
+    return {
+      totalCalls: toNum(row?.calls),
+      totalErrors: toNum(row?.errors),
+      toolCount: toNum(row?.tools),
+    }
+  })()
+
+  const paged = await (async () => {
+    const d = sqlDialect()
+    const where = conditionsFor(d).join(' AND ')
+    // Bound after the filters so the `?` order matches the statement.
+    const seen = d.bind(limit)
+    const skip = d.bind((page - 1) * limit)
+    return prisma.$queryRawUnsafe<any[]>(
+      `SELECT tc."toolName" AS "toolName", COUNT(*) AS "total",`
+        + ` COALESCE(SUM(${toolCallFailedSql(d)}), 0) AS "errors",`
+        + ' COALESCE(SUM(tc."duration"), 0) AS "durationSum",'
+        + ' COUNT(tc."duration") AS "durationCount"'
+        + ` ${from_} WHERE ${where}`
+        + ' GROUP BY 1 ORDER BY "total" DESC, "toolName" ASC'
+        + ` LIMIT ${seen} OFFSET ${skip}`,
+      ...d.params,
+    )
+  })()
+
+  const perDay = await (async () => {
+    const d = sqlDialect()
+    const rowsOut = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT ${d.day('tc."createdAt"')} AS "day", COUNT(*) AS "calls",`
+        + ` COALESCE(SUM(${toolCallFailedSql(d)}), 0) AS "errors"`
+        + ` ${from_} WHERE ${conditionsFor(d).join(' AND ')} GROUP BY 1`,
+      ...d.params,
+    )
+    const byDay = new Map<string, { calls: number; errors: number }>()
+    for (const row of rowsOut) {
+      byDay.set(asDay(row.day), { calls: toNum(row.calls), errors: toNum(row.errors) })
+    }
+    return byDay
+  })()
+
+  const totalCalls = totals.totalCalls
+  const totalErrors = totals.totalErrors
+
+  const tools: ToolCallStat[] = paged.map((row) => {
+    const total = toNum(row.total)
+    const errors = toNum(row.errors)
+    const durationCount = toNum(row.durationCount)
+    return {
+      toolName: String(row.toolName),
+      total,
+      errors,
+      successRate: total > 0 ? ((total - errors) / total) * 100 : 100,
+      avgDurationMs: durationCount > 0 ? Math.round(toNum(row.durationSum) / durationCount) : 0,
+    }
   })
-
-  const perTool = new Map<string, { total: number; errors: number; durSum: number; durCount: number }>()
-  const perDay = new Map<string, { calls: number; errors: number }>()
-  let totalCalls = 0
-  let totalErrors = 0
-
-  for (const r of rows) {
-    const failed = toolCallFailed(r.status, r.result)
-    totalCalls += 1
-    if (failed) totalErrors += 1
-
-    const t = perTool.get(r.toolName) ?? { total: 0, errors: 0, durSum: 0, durCount: 0 }
-    t.total += 1
-    if (failed) t.errors += 1
-    if (typeof r.duration === 'number') { t.durSum += r.duration; t.durCount += 1 }
-    perTool.set(r.toolName, t)
-
-    const day = isoDay(r.createdAt)
-    const d = perDay.get(day) ?? { calls: 0, errors: 0 }
-    d.calls += 1
-    if (failed) d.errors += 1
-    perDay.set(day, d)
-  }
-
-  const allTools: ToolCallStat[] = [...perTool.entries()]
-    .map(([toolName, s]) => ({
-      toolName,
-      total: s.total,
-      errors: s.errors,
-      successRate: s.total > 0 ? ((s.total - s.errors) / s.total) * 100 : 100,
-      avgDurationMs: s.durCount > 0 ? Math.round(s.durSum / s.durCount) : 0,
-    }))
-    .sort((a, b) => b.total - a.total)
-
-  const tools = allTools.slice((page - 1) * limit, page * limit)
 
   const daily: { date: string; calls: number; errors: number; successRate: number }[] = []
   const cursor = new Date(from)
@@ -4293,7 +4632,7 @@ export async function getToolCallAnalytics(
       successRate: totalCalls > 0 ? ((totalCalls - totalErrors) / totalCalls) * 100 : 100,
     },
     daily,
-    total: allTools.length,
+    total: totals.toolCount,
     page,
     limit,
   }
@@ -4330,14 +4669,19 @@ export async function getWorkspaceActivityTable(
 
   if (excludeInternal) {
     const internal = await getInternalUserIds()
-    const members = await prisma.member.findMany({
-      where: { workspaceId: { not: null } },
-      select: { workspaceId: true, userId: true },
-    })
-    const realWs = new Set<string>()
-    for (const m of members) {
-      if (m.workspaceId && !internal.has(m.userId)) realWs.add(m.workspaceId)
+    // One `SELECT DISTINCT` instead of every membership row in the platform
+    // (SHO-311): the filter only needs the set of workspaces that have a
+    // non-internal member.
+    const d = sqlDialect()
+    const conditions = ['t.\"workspaceId\" IS NOT NULL']
+    if (internal.size > 0) {
+      conditions.push(`t.\"userId\" NOT IN (${[...internal].map((id) => d.bind(id)).join(', ')})`)
     }
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT DISTINCT t.\"workspaceId\" AS \"workspaceId\" FROM \"members\" t WHERE ${conditions.join(' AND ')}`,
+      ...d.params,
+    )
+    const realWs = new Set(rows.map((row) => String(row.workspaceId)))
     workspaces = workspaces.filter((w) => realWs.has(w.id))
   }
 

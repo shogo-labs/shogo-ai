@@ -169,41 +169,145 @@ export default function AdminMarketingAnalyticsPage() {
 
   const internalParam = excludeInternal ? 'true' : 'false'
 
-  const loadAll = useCallback(async () => {
-    const pParams = { period, excludeInternal: internalParam }
-
+  /**
+   * One loader per panel, each depending only on the params *it* sends (see the
+   * same split in ../ai-analytics.tsx): paging the user-activity table used to
+   * refetch all nine panels, so one page of twenty rows cost a full platform
+   * overview, both timeseries, the funnel, the source breakdown and the digest.
+   */
+  const loadOverview = useCallback(async () => {
     setOverview((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<OverviewData>('/analytics/overview')
+    setOverview({ data, loading: false })
+  }, [])
+
+  const loadActiveUsers = useCallback(async () => {
     setActiveUsers((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<ActiveUsersData>('/analytics/active-users', {
+      period,
+      excludeInternal: internalParam,
+    })
+    setActiveUsers({ data, loading: false })
+  }, [period, internalParam])
+
+  const loadActivityTs = useCallback(async () => {
     setActivityTs((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<ActivityTimeseriesPoint[]>('/analytics/activity-timeseries', {
+      period,
+      excludeInternal: internalParam,
+    })
+    setActivityTs({ data, loading: false })
+  }, [period, internalParam])
+
+  const loadActiveUsersTs = useCallback(async () => {
     setActiveUsersTs((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', {
+      period,
+      excludeInternal: internalParam,
+    })
+    setActiveUsersTs({ data, loading: false })
+  }, [period, internalParam])
+
+  const loadFunnel = useCallback(async () => {
     setFunnel((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<FunnelData>('/analytics/funnel', {
+      period,
+      excludeInternal: internalParam,
+    })
+    setFunnel({ data, loading: false })
+  }, [period, internalParam])
+
+  const loadUserActivity = useCallback(async () => {
     setUserActivity((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<UserActivityData>('/analytics/user-activity', {
+      period,
+      excludeInternal: internalParam,
+      page: String(userPage),
+      limit: '20',
+    })
+    setUserActivity({ data, loading: false })
+  }, [period, internalParam, userPage])
+
+  const loadSourceBreakdown = useCallback(async () => {
     setSourceBreakdown((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<SourceBreakdownData>('/analytics/source-breakdown', {
+      period,
+      excludeInternal: internalParam,
+    })
+    setSourceBreakdown({ data, loading: false })
+  }, [period, internalParam])
+
+  const loadAiDigest = useCallback(async () => {
     setAiDigest((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<AIDigestData>('/analytics/ai-digest')
+    setAiDigest({ data, loading: false })
+  }, [])
+
+  const loadDigestList = useCallback(async () => {
     setDigestList((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<AIDigestListItem[]>('/analytics/ai-digest/list', { limit: '14' })
+    setDigestList({ data, loading: false })
+  }, [])
 
-    const [ov, au, act, auTs, fn, ua, sb, dig, dl] = await Promise.all([
-      fetchAdminJson<OverviewData>('/analytics/overview'),
-      fetchAdminJson<ActiveUsersData>('/analytics/active-users', pParams),
-      fetchAdminJson<ActivityTimeseriesPoint[]>('/analytics/activity-timeseries', pParams),
-      fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', pParams),
-      fetchAdminJson<FunnelData>('/analytics/funnel', pParams),
-      fetchAdminJson<UserActivityData>('/analytics/user-activity', { ...pParams, page: String(userPage), limit: '20' }),
-      fetchAdminJson<SourceBreakdownData>('/analytics/source-breakdown', pParams),
-      fetchAdminJson<AIDigestData>('/analytics/ai-digest'),
-      fetchAdminJson<AIDigestListItem[]>('/analytics/ai-digest/list', { limit: '14' }),
+  const loadAll = useCallback(async () => {
+    await Promise.all([
+      loadOverview(),
+      loadActiveUsers(),
+      loadActivityTs(),
+      loadActiveUsersTs(),
+      loadFunnel(),
+      loadUserActivity(),
+      loadSourceBreakdown(),
+      loadAiDigest(),
+      loadDigestList(),
     ])
+  }, [
+    loadOverview,
+    loadActiveUsers,
+    loadActivityTs,
+    loadActiveUsersTs,
+    loadFunnel,
+    loadUserActivity,
+    loadSourceBreakdown,
+    loadAiDigest,
+    loadDigestList,
+  ])
 
-    setOverview({ data: ov, loading: false })
-    setActiveUsers({ data: au, loading: false })
-    setActivityTs({ data: act, loading: false })
-    setActiveUsersTs({ data: auTs, loading: false })
-    setFunnel({ data: fn, loading: false })
-    setUserActivity({ data: ua, loading: false })
-    setSourceBreakdown({ data: sb, loading: false })
-    setAiDigest({ data: dig, loading: false })
-    setDigestList({ data: dl, loading: false })
-  }, [period, userPage, internalParam])
+  useEffect(() => {
+    void loadOverview()
+  }, [loadOverview])
+
+  useEffect(() => {
+    void loadActiveUsers()
+  }, [loadActiveUsers])
+
+  useEffect(() => {
+    void loadActivityTs()
+  }, [loadActivityTs])
+
+  useEffect(() => {
+    void loadActiveUsersTs()
+  }, [loadActiveUsersTs])
+
+  useEffect(() => {
+    void loadFunnel()
+  }, [loadFunnel])
+
+  useEffect(() => {
+    void loadUserActivity()
+  }, [loadUserActivity])
+
+  useEffect(() => {
+    void loadSourceBreakdown()
+  }, [loadSourceBreakdown])
+
+  useEffect(() => {
+    void loadAiDigest()
+  }, [loadAiDigest])
+
+  useEffect(() => {
+    void loadDigestList()
+  }, [loadDigestList])
 
   const handleGenerateDigest = useCallback(async () => {
     setGenerating(true)
@@ -228,10 +332,6 @@ export default function AdminMarketingAnalyticsPage() {
     const dig = await fetchAdminJson<AIDigestData>('/analytics/ai-digest', { date })
     setAiDigest({ data: dig, loading: false })
   }, [])
-
-  useEffect(() => {
-    loadAll()
-  }, [loadAll])
 
   const onRefresh = async () => {
     setRefreshing(true)
