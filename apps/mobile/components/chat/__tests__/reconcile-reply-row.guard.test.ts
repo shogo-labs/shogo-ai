@@ -64,3 +64,42 @@ describe("the reconcile finds this turn's reply", () => {
     )
   })
 })
+
+/**
+ * The repaint replaces the transcript with saved history, which deletes a reply
+ * that a newer turn has only streamed so far (SHO-325). It is gated in the
+ * helper and wired here; both halves have to stay.
+ */
+describe("the repaint never deletes a newer turn's reply", () => {
+  test("the paint is gated on the helper, with the reconcile's own generation", () => {
+    const block = reconcileBlock()
+    expect(block).toContain("generationAtReconcile = turnGenerationRef.current")
+    expect(block).toContain("shouldPaintReconciledHistory({")
+    expect(block).toContain("generationNow: turnGenerationRef.current")
+    expect(block).toContain("isStreaming: isStreamingRef.current")
+    // The gate decides, not a bare session check.
+    const gate = block.indexOf("shouldPaintReconciledHistory({")
+    const paint = block.indexOf("paintLoadedHistoryRef.current(sessionIdForReconcile")
+    expect(gate).toBeGreaterThan(-1)
+    expect(paint).toBeGreaterThan(gate)
+  })
+
+  test("a turn starting in this window bumps the generation", () => {
+    // A send here.
+    const send = panel.slice(panel.indexOf("const sendMessageInternal = useCallback("))
+    const sendBlock = send.slice(0, send.indexOf("await deliverMessage("))
+    expect(sendBlock).toContain("turnGenerationRef.current += 1")
+    // A `data-turn-start` frame (a turn the server started).
+    const turnStart = panel.slice(panel.indexOf('dataPart.type === "data-turn-start"'))
+    expect(turnStart.slice(0, turnStart.indexOf('data-turn-seq'))).toContain(
+      "turnGenerationRef.current += 1",
+    )
+    // A queued row the server dispatched, which this window attaches to.
+    const queued = panel.slice(panel.indexOf("const resumeQueuedTurn = useCallback("))
+    const queuedBlock = queued.slice(0, queued.indexOf("const serverQueue ="))
+    expect(queuedBlock).toContain("turnGenerationRef.current += 1")
+    expect(queuedBlock.indexOf("turnGenerationRef.current += 1")).toBeLessThan(
+      queuedBlock.indexOf("resumeStreamSingleFlight()"),
+    )
+  })
+})

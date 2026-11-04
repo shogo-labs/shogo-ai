@@ -64,6 +64,39 @@ export function isReplyForTurn(
 }
 
 /**
+ * Whether the end-of-turn repaint may run (SHO-325).
+ *
+ * The repaint replaces the transcript with saved history, which is right for
+ * the turn that just ended — that is how its reply comes back under the
+ * server's canonical id (SHO-85). It is wrong the moment a *newer* turn owns
+ * the screen: that turn's reply exists only in its stream until the server
+ * writes it, so painting older history over it deletes it, and nothing puts it
+ * back (that turn's own reconcile then has no row to find).
+ *
+ * Two ways a newer turn shows up, both of which have to stop the paint:
+ *  - `generation` moved — a turn started (a send here, a `data-turn-start`, a
+ *    queued row the server dispatched and this window attached to);
+ *  - a turn is streaming right now — including one whose start frame this
+ *    window never saw, which is exactly the shape `chat-send-now-leaves-dock`
+ *    mocks.
+ */
+export function shouldPaintReconciledHistory({
+  generationAtReconcile,
+  generationNow,
+  isStreaming,
+}: {
+  /** The turn generation when the `onFinish` reconcile began. */
+  generationAtReconcile: number
+  /** The turn generation just before the paint. */
+  generationNow: number
+  /** Whether a turn is streaming right now. */
+  isStreaming: boolean
+}): boolean {
+  if (isStreaming) return false
+  return generationNow === generationAtReconcile
+}
+
+/**
  * The id of the saved row for this turn, or `null` when the server has not
  * written it yet. `atSend` is the snapshot from {@link assistantRowsAtSend},
  * taken when the send started.
