@@ -1436,6 +1436,486 @@ export async function unpublishProject(projectId: string): Promise<PublishProjec
   }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Custom-domain handlers — one implementation, three entry points
+//
+// The session routes below, the cluster-internal agent routes
+// (`routes/internal.ts`) and the desktop's cloud routes
+// (`routes/published-sites.ts`) all call these. Each returns `{ status, body }`
+// so a caller only has to `c.json(body, status)`; behaviour can't drift between
+// the panel and the agent.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface DomainRouteResult {
+  status: number
+  body: any
+}
+
+/**
+ * Custom domains only make sense on a project that is actually published: the
+ * Worker KV `hostname -> subdomain` mapping is written from
+ * `publishedSubdomain`, so a domain attached to an unpublished project could
+ * never serve. Every handler below starts here, which is what makes
+ * `not_published` hold on cloud as well as on desktop.
+ */
+async function requirePublishedProject(
+  projectId: string,
+): Promise<{ ok: true; publishedSubdomain: string } | { ok: false; result: DomainRouteResult }> {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { publishedSubdomain: true },
+  })
+  if (!project) {
+    return {
+      ok: false,
+      result: { status: 404, body: { error: { code: "project_not_found", message: "Project not found" } } },
+    }
+  }
+  if (!project.publishedSubdomain) {
+    return {
+      ok: false,
+      result: {
+        status: 400,
+        body: {
+          error: {
+            code: "not_published",
+            message: "Publish this project first, then add a custom domain.",
+          },
+        },
+      },
+    }
+  }
+  return { ok: true, publishedSubdomain: project.publishedSubdomain }
+}
+
+/**
+ * List a project's custom domains. `enabled` reflects whether Cloudflare for
+ * SaaS is configured on this deployment; `fallbackOrigin` is the CNAME target.
+ */
+export async function listCustomDomains(projectId: string): Promise<DomainRouteResult> {
+  try {
+    const cfg = getCustomHostnamesConfig()
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { publishedSubdomain: true },
+    })
+    if (!project) {
+      return { status: 404, body: { error: { code: "project_not_found", message: "Project not found" } } }
+    }
+    const domains = (await prisma.customDomain.findMany({
+      where: { projectId },
+      orderBy: { createdAt: "asc" },
+    })) as CustomDomainRowLike[]
+
+    // Opportunistically refresh any non-active row whose persisted status
+    // is stale, so the panel is live (records found / cert issued) without
+    // waiting on the 60s reconciler cron. Bounded by domains-per-project
+    // (a handful) and rate-limited by STALE_READ_MS. Best-effort: a CF/DNS
+    // hiccup just serves the last persisted snapshot.
+    let rows = domains
+    if (cfg && project.publishedSubdomain) {
+      const now = Date.now()
+      const stale = domains.filter(
+        (d) =>
+          d.status !== "active" &&
+          d.cfCustomHostnameId &&
+          (!d.lastCheckedAt || now - new Date(d.lastCheckedAt).getTime() > STALE_READ_MS),
+      )
+      if (stale.length > 0) {
+        const byId = new Map(domains.map((d) => [d.id, d]))
+        for (const s of stale) {
+          try {
+            const { row: updated } = await refreshCustomDomain({
+              row: s,
+              siblings: domains,
+              publishedSubdomain: project.publishedSubdomain ?? null,
+            })
+            byId.set(updated.id, updated)
+          } catch (err: any) {
+            console.warn(
+              `[Publish] stale refresh ${s.hostname} failed (non-fatal):`,
+              err?.message ?? err,
+            )
+          }
+        }
+        rows = domains.map((d) => byId.get(d.id) ?? d)
+      }
+    }
+
+    return {
+      status: 200,
+      body: {
+        enabled: !!cfg,
+        // `published` lets the panel and the agent say "publish first" without
+        // hiding domains already attached (they survive an unpublish so a
+        // republish restores routing, and the user must still be able to
+        // remove them).
+        published: !!project.publishedSubdomain,
+        fallbackOrigin: cfg?.fallbackOrigin,
+        domains: serializeDomains(rows),
+      },
+    }
+  } catch (error: any) {
+    console.error("[Publish] List custom domains error:", error)
+    return { status: 500, body: { error: { code: "list_domains_failed", message: error.message } } }
+  }
+}
+
+/**
+ * Attach a custom domain. Registers a Cloudflare custom hostname and returns
+ * the DNS records the user must add.
+ *
+ * For a bare apex (`acme.com`) or its `www` (`www.acme.com`) we also register
+ * the companion so the user gets both halves of the pair in one step, linked
+ * by a shared `groupId`, with the `www` variant marked primary (canonical).
+ * The other variant 308-redirects to it at the edge. Deeper subdomains
+ * (`app.acme.com`) are added standalone. Returns the full group.
+ */
+export async function addCustomDomain(projectId: string, rawHostname: string): Promise<DomainRouteResult> {
+  try {
+    const guard = await requirePublishedProject(projectId)
+    if (!guard.ok) return guard.result
+
+    const cfg = getCustomHostnamesConfig()
+    if (!cfg) {
+      return { status: 501, body: { error: { code: "not_enabled", message: "Custom domains are not enabled on this deployment" } } }
+    }
+
+    const validation = validateCustomHostname(rawHostname ?? "")
+    if (!validation.valid) {
+      return { status: 400, body: { error: { code: "invalid_hostname", message: validation.reason } } }
+    }
+    const { hostname } = validation
+
+    // Hostnames are globally unique (one app per domain).
+    const existing = await prisma.customDomain.findUnique({ where: { hostname }, select: { projectId: true } })
+    if (existing) {
+      const mine = existing.projectId === projectId
+      return {
+        status: 409,
+        body: {
+          error: {
+            code: mine ? "already_added" : "hostname_taken",
+            message: mine ? "This domain is already attached to this project" : "This domain is already in use",
+          },
+        },
+      }
+    }
+
+    // Work out the apex<->www pairing (null for non-pairable subdomains).
+    const pairing = domainCompanion(hostname)
+    const groupId = pairing ? crypto.randomUUID() : null
+
+    // Register the hostname the user actually typed first — this one must
+    // succeed (its failure is the user's signal).
+    let state: CustomHostnameState
+    try {
+      state = await createCustomHostname(hostname)
+    } catch (err: any) {
+      console.error("[Publish] createCustomHostname failed:", err?.message ?? err)
+      return { status: 502, body: { error: { code: "cloudflare_error", message: err?.message || "Failed to register custom hostname" } } }
+    }
+
+    const primaryHostname = pairing?.primaryHostname ?? hostname
+    const row = await prisma.customDomain.create({
+      data: {
+        projectId,
+        hostname,
+        status: cfStateToStatus(state),
+        cfCustomHostnameId: state.id,
+        sslStatus: state.sslStatus,
+        lastError: state.errors[0] ?? null,
+        groupId,
+        primary: hostname === primaryHostname,
+      },
+    })
+
+    const states = new Map<string, CustomHostnameState | null>([[row.id, state]])
+    const rows = [row]
+
+    // Best-effort companion registration. If it fails (CF hiccup) or the
+    // companion is already taken by another project, we degrade to a
+    // single-row group rather than blocking the user's primary add.
+    if (pairing) {
+      const companionTaken = await prisma.customDomain.findUnique({
+        where: { hostname: pairing.companion },
+        select: { id: true, projectId: true },
+      })
+      if (!companionTaken) {
+        try {
+          const companionState = await createCustomHostname(pairing.companion)
+          const companionRow = await prisma.customDomain.create({
+            data: {
+              projectId,
+              hostname: pairing.companion,
+              status: cfStateToStatus(companionState),
+              cfCustomHostnameId: companionState.id,
+              sslStatus: companionState.sslStatus,
+              lastError: companionState.errors[0] ?? null,
+              groupId,
+              primary: pairing.companion === primaryHostname,
+            },
+          })
+          states.set(companionRow.id, companionState)
+          rows.push(companionRow)
+        } catch (err: any) {
+          console.warn(
+            `[Publish] companion ${pairing.companion} registration failed (non-fatal):`,
+            err?.message ?? err,
+          )
+        }
+      }
+    }
+
+    return { status: 201, body: { fallbackOrigin: cfg.fallbackOrigin, domains: serializeDomains(rows, states) } }
+  } catch (error: any) {
+    console.error("[Publish] Add custom domain error:", error)
+    return { status: 500, body: { error: { code: "add_domain_failed", message: error.message } } }
+  }
+}
+
+/**
+ * Re-poll Cloudflare for the whole apex/www group's validation/SSL status,
+ * persist it, and (once active) write the Worker KV `hostname -> {subdomain,
+ * canonical}` map so the domain serves + redirects. Returns every row in the
+ * group so the UI updates both halves at once.
+ */
+export async function verifyCustomDomain(projectId: string, domainId: string): Promise<DomainRouteResult> {
+  try {
+    const guard = await requirePublishedProject(projectId)
+    if (!guard.ok) return guard.result
+
+    const row = await prisma.customDomain.findUnique({ where: { id: domainId } })
+    if (!row || row.projectId !== projectId) {
+      return { status: 404, body: { error: { code: "domain_not_found", message: "Custom domain not found" } } }
+    }
+    const cfg = getCustomHostnamesConfig()
+    if (!cfg) {
+      return { status: 501, body: { error: { code: "not_enabled", message: "Custom domains are not enabled on this deployment" } } }
+    }
+    if (!row.cfCustomHostnameId) {
+      return { status: 409, body: { error: { code: "not_registered", message: "Custom hostname was never registered with Cloudflare" } } }
+    }
+
+    // Resolve the group (just this row when standalone) and refresh every
+    // member against the project's published subdomain.
+    const groupRows = row.groupId
+      ? await prisma.customDomain.findMany({
+          where: { projectId, groupId: row.groupId },
+          orderBy: { createdAt: "asc" },
+        })
+      : [row]
+
+    const updatedRows: typeof groupRows = []
+    const states = new Map<string, CustomHostnameState | null>()
+    for (const member of groupRows) {
+      const { row: updated, state } = await refreshCustomDomain({
+        row: member,
+        siblings: groupRows,
+        publishedSubdomain: guard.publishedSubdomain,
+      })
+      updatedRows.push(updated as (typeof groupRows)[number])
+      states.set(updated.id, state)
+    }
+
+    return {
+      status: 200,
+      body: { fallbackOrigin: cfg.fallbackOrigin, domains: serializeDomains(updatedRows, states) },
+    }
+  } catch (error: any) {
+    console.error("[Publish] Verify custom domain error:", error)
+    return { status: 500, body: { error: { code: "verify_domain_failed", message: error.message } } }
+  }
+}
+
+/**
+ * Manually re-kick Cloudflare DV validation / certificate issuance for a
+ * domain that's past the stall threshold (default 30m) with correct DNS. This
+ * is the "taking longer than usual" escape hatch (e.g. a slow CA like SSL.com
+ * wedged in `processing`) — it re-triggers WITHOUT regenerating tokens, so the
+ * user never touches DNS again.
+ *
+ * Gated server-side (mirrors the panel's button state): refreshes the group
+ * first for a fresh status + DNS verdict, then requires enabled, not already
+ * active, DNS verified `ok`, age >= stall threshold, and outside the manual
+ * cooldown. Returns 409 (`already_active`/`dns_not_ready`/`too_early`), 429
+ * (`cooldown`), or 502 (`cloudflare_error`).
+ */
+export async function retriggerCustomDomain(projectId: string, domainId: string): Promise<DomainRouteResult> {
+  try {
+    const guard = await requirePublishedProject(projectId)
+    if (!guard.ok) return guard.result
+
+    const cfg = getCustomHostnamesConfig()
+    if (!cfg) {
+      return { status: 501, body: { error: { code: "not_enabled", message: "Custom domains are not enabled on this deployment" } } }
+    }
+
+    const row = (await prisma.customDomain.findUnique({ where: { id: domainId } })) as CustomDomainRowLike | null
+    if (!row || row.projectId !== projectId) {
+      return { status: 404, body: { error: { code: "domain_not_found", message: "Custom domain not found" } } }
+    }
+    if (!row.cfCustomHostnameId) {
+      return { status: 409, body: { error: { code: "not_registered", message: "Custom hostname was never registered with Cloudflare" } } }
+    }
+
+    const groupRows = row.groupId
+      ? ((await prisma.customDomain.findMany({
+          where: { projectId, groupId: row.groupId },
+          orderBy: { createdAt: "asc" },
+        })) as CustomDomainRowLike[])
+      : [row]
+
+    // Refresh first so the gate decides on the freshest status + DNS verdict.
+    const refreshed: CustomDomainRowLike[] = []
+    for (const member of groupRows) {
+      try {
+        const { row: updated } = await refreshCustomDomain({
+          row: member,
+          siblings: groupRows,
+          publishedSubdomain: guard.publishedSubdomain,
+        })
+        refreshed.push(updated)
+      } catch {
+        refreshed.push(member)
+      }
+    }
+    const target = refreshed.find((r) => r.id === row.id) ?? row
+
+    const gate = evaluateRetrigger(target, true)
+    if (!gate.allowed) {
+      const mins = (ms?: number) => Math.max(1, Math.ceil((ms ?? 0) / 60_000))
+      switch (gate.reason) {
+        case "active":
+          return { status: 409, body: { error: { code: "already_active", message: "This domain is already live." } } }
+        case "dns_not_ready":
+          return { status: 409, body: { error: { code: "dns_not_ready", message: "Your DNS records aren't all in place yet. Add the records shown, then retry." } } }
+        case "too_early":
+          return { status: 409, body: { error: { code: "too_early", message: `Give it a bit longer — you can retry in about ${mins(gate.waitMs)} minute(s).` } } }
+        case "cooldown":
+          return { status: 429, body: { error: { code: "cooldown", message: `Just retried — please wait about ${mins(gate.cooldownRemainingMs)} minute(s) before retrying again.` } } }
+        default:
+          return { status: 409, body: { error: { code: "retrigger_not_allowed", message: "Re-trigger isn't available for this domain right now." } } }
+      }
+    }
+
+    // Re-kick every non-active member, bumping the cooldown/backoff counters.
+    const now = new Date()
+    for (const member of refreshed) {
+      if (member.status === "active" || !member.cfCustomHostnameId) continue
+      try {
+        await retriggerCustomHostname(member.cfCustomHostnameId)
+      } catch (err: any) {
+        console.error("[Publish] retriggerCustomHostname failed:", err?.message ?? err)
+        return { status: 502, body: { error: { code: "cloudflare_error", message: err?.message || "Failed to re-trigger certificate issuance" } } }
+      }
+      await prisma.customDomain.update({
+        where: { id: member.id },
+        data: { lastRetriggerAt: now, retriggerCount: { increment: 1 } },
+      })
+    }
+
+    // Reload so the response carries the bumped counters + last snapshot
+    // (issuance won't flip instantly; the cron + UI polling reflect it).
+    const finalRows = (await prisma.customDomain.findMany({
+      where: { id: { in: refreshed.map((r) => r.id) } },
+      orderBy: { createdAt: "asc" },
+    })) as CustomDomainRowLike[]
+
+    return { status: 200, body: { fallbackOrigin: cfg.fallbackOrigin, domains: serializeDomains(finalRows) } }
+  } catch (error: any) {
+    console.error("[Publish] Retrigger custom domain error:", error)
+    return { status: 500, body: { error: { code: "retrigger_domain_failed", message: error.message } } }
+  }
+}
+
+/**
+ * Make this row the canonical (primary) hostname for its apex/www group; the
+ * other variant 308-redirects to it. Re-syncs the group's KV entries so the
+ * redirect direction flips immediately. Returns the updated group.
+ */
+export async function setPrimaryCustomDomain(projectId: string, domainId: string): Promise<DomainRouteResult> {
+  try {
+    const guard = await requirePublishedProject(projectId)
+    if (!guard.ok) return guard.result
+
+    const row = await prisma.customDomain.findUnique({ where: { id: domainId } })
+    if (!row || row.projectId !== projectId) {
+      return { status: 404, body: { error: { code: "domain_not_found", message: "Custom domain not found" } } }
+    }
+    if (!row.groupId) {
+      return { status: 409, body: { error: { code: "not_grouped", message: "This domain has no companion to switch with" } } }
+    }
+
+    // Flip primary within the group atomically.
+    await prisma.$transaction([
+      prisma.customDomain.updateMany({
+        where: { projectId, groupId: row.groupId },
+        data: { primary: false },
+      }),
+      prisma.customDomain.update({ where: { id: row.id }, data: { primary: true } }),
+    ])
+
+    const groupRows = await prisma.customDomain.findMany({
+      where: { projectId, groupId: row.groupId },
+      orderBy: { createdAt: "asc" },
+    })
+
+    // Rewrite KV for every active member so the new canonical takes effect.
+    for (const member of groupRows) {
+      if (member.status !== "active") continue
+      await putHostnameMapping(
+        member.hostname,
+        guard.publishedSubdomain,
+        canonicalForRow(member, groupRows),
+      )
+    }
+
+    return {
+      status: 200,
+      body: { fallbackOrigin: getCustomHostnamesConfig()?.fallbackOrigin, domains: serializeDomains(groupRows) },
+    }
+  } catch (error: any) {
+    console.error("[Publish] Set primary domain error:", error)
+    return { status: 500, body: { error: { code: "set_primary_failed", message: error.message } } }
+  }
+}
+
+/**
+ * Detach a custom domain (and its apex/www companion if grouped): remove the
+ * Cloudflare custom hostname(s) (+ managed cert), the KV mapping(s), and the
+ * DB row(s). Returns `{ success, removedIds }`.
+ */
+export async function deleteCustomDomain(projectId: string, domainId: string): Promise<DomainRouteResult> {
+  try {
+    // Deliberately NOT gated on `publishedSubdomain`: domain rows survive an
+    // unpublish (so a republish restores routing), and removing one is the only
+    // way to free the hostname again — it must work while the site is down.
+    const row = await prisma.customDomain.findUnique({ where: { id: domainId } })
+    if (!row || row.projectId !== projectId) {
+      return { status: 404, body: { error: { code: "domain_not_found", message: "Custom domain not found" } } }
+    }
+
+    const groupRows = row.groupId
+      ? await prisma.customDomain.findMany({ where: { projectId, groupId: row.groupId } })
+      : [row]
+
+    for (const member of groupRows) {
+      if (member.cfCustomHostnameId) {
+        await deleteCustomHostname(member.cfCustomHostnameId)
+      }
+      await deleteHostnameMapping(member.hostname)
+    }
+    const removedIds = groupRows.map((d) => d.id)
+    await prisma.customDomain.deleteMany({ where: { id: { in: removedIds } } })
+
+    return { status: 200, body: { success: true, removedIds } }
+  } catch (error: any) {
+    console.error("[Publish] Delete custom domain error:", error)
+    return { status: 500, body: { error: { code: "delete_domain_failed", message: error.message } } }
+  }
+}
+
 /**
  * Create publish routes
  */
@@ -1917,62 +2397,8 @@ export function publishRoutes() {
    * deployment; `fallbackOrigin` is the CNAME target shown to the user.
    */
   router.get("/projects/:projectId/domains", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
-      const cfg = getCustomHostnamesConfig()
-      const domains = (await prisma.customDomain.findMany({
-        where: { projectId },
-        orderBy: { createdAt: "asc" },
-      })) as CustomDomainRowLike[]
-
-      // Opportunistically refresh any non-active row whose persisted status
-      // is stale, so the panel is live (records found / cert issued) without
-      // waiting on the 60s reconciler cron. Bounded by domains-per-project
-      // (a handful) and rate-limited by STALE_READ_MS. Best-effort: a CF/DNS
-      // hiccup just serves the last persisted snapshot.
-      let rows = domains
-      if (cfg) {
-        const now = Date.now()
-        const stale = domains.filter(
-          (d) =>
-            d.status !== "active" &&
-            d.cfCustomHostnameId &&
-            (!d.lastCheckedAt || now - new Date(d.lastCheckedAt).getTime() > STALE_READ_MS),
-        )
-        if (stale.length > 0) {
-          const project = await prisma.project.findUnique({
-            where: { id: projectId },
-            select: { publishedSubdomain: true },
-          })
-          const byId = new Map(domains.map((d) => [d.id, d]))
-          for (const s of stale) {
-            try {
-              const { row: updated } = await refreshCustomDomain({
-                row: s,
-                siblings: domains,
-                publishedSubdomain: project?.publishedSubdomain ?? null,
-              })
-              byId.set(updated.id, updated)
-            } catch (err: any) {
-              console.warn(
-                `[Publish] stale refresh ${s.hostname} failed (non-fatal):`,
-                err?.message ?? err,
-              )
-            }
-          }
-          rows = domains.map((d) => byId.get(d.id) ?? d)
-        }
-      }
-
-      return c.json({
-        enabled: !!cfg,
-        fallbackOrigin: cfg?.fallbackOrigin,
-        domains: serializeDomains(rows),
-      }, 200)
-    } catch (error: any) {
-      console.error("[Publish] List custom domains error:", error)
-      return c.json({ error: { code: "list_domains_failed", message: error.message } }, 500)
-    }
+    const result = await listCustomDomains(c.req.param("projectId"))
+    return c.json(result.body, result.status as any)
   })
 
   /**
@@ -1987,107 +2413,14 @@ export function publishRoutes() {
    * full group: `{ domains: CustomDomain[] }`.
    */
   router.post("/projects/:projectId/domains", async (c) => {
+    let body: { hostname?: string }
     try {
-      const projectId = c.req.param("projectId")
-
-      if (!getCustomHostnamesConfig()) {
-        return c.json({ error: { code: "not_enabled", message: "Custom domains are not enabled on this deployment" } }, 501)
-      }
-
-      const body = await c.req.json<{ hostname?: string }>()
-      const validation = validateCustomHostname(body.hostname ?? "")
-      if (!validation.valid) {
-        return c.json({ error: { code: "invalid_hostname", message: validation.reason } }, 400)
-      }
-      const { hostname } = validation
-
-      const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } })
-      if (!project) {
-        return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
-      }
-
-      // Hostnames are globally unique (one app per domain).
-      const existing = await prisma.customDomain.findUnique({ where: { hostname }, select: { projectId: true } })
-      if (existing) {
-        const mine = existing.projectId === projectId
-        return c.json({
-          error: {
-            code: mine ? "already_added" : "hostname_taken",
-            message: mine ? "This domain is already attached to this project" : "This domain is already in use",
-          },
-        }, 409)
-      }
-
-      // Work out the apex<->www pairing (null for non-pairable subdomains).
-      const pairing = domainCompanion(hostname)
-      const groupId = pairing ? crypto.randomUUID() : null
-
-      // Register the hostname the user actually typed first — this one must
-      // succeed (its failure is the user's signal).
-      let state: CustomHostnameState
-      try {
-        state = await createCustomHostname(hostname)
-      } catch (err: any) {
-        console.error("[Publish] createCustomHostname failed:", err?.message ?? err)
-        return c.json({ error: { code: "cloudflare_error", message: err?.message || "Failed to register custom hostname" } }, 502)
-      }
-
-      const primaryHostname = pairing?.primaryHostname ?? hostname
-      const row = await prisma.customDomain.create({
-        data: {
-          projectId,
-          hostname,
-          status: cfStateToStatus(state),
-          cfCustomHostnameId: state.id,
-          sslStatus: state.sslStatus,
-          lastError: state.errors[0] ?? null,
-          groupId,
-          primary: hostname === primaryHostname,
-        },
-      })
-
-      const states = new Map<string, CustomHostnameState | null>([[row.id, state]])
-      const rows = [row]
-
-      // Best-effort companion registration. If it fails (CF hiccup) or the
-      // companion is already taken by another project, we degrade to a
-      // single-row group rather than blocking the user's primary add.
-      if (pairing) {
-        const companionTaken = await prisma.customDomain.findUnique({
-          where: { hostname: pairing.companion },
-          select: { id: true, projectId: true },
-        })
-        if (!companionTaken) {
-          try {
-            const companionState = await createCustomHostname(pairing.companion)
-            const companionRow = await prisma.customDomain.create({
-              data: {
-                projectId,
-                hostname: pairing.companion,
-                status: cfStateToStatus(companionState),
-                cfCustomHostnameId: companionState.id,
-                sslStatus: companionState.sslStatus,
-                lastError: companionState.errors[0] ?? null,
-                groupId,
-                primary: pairing.companion === primaryHostname,
-              },
-            })
-            states.set(companionRow.id, companionState)
-            rows.push(companionRow)
-          } catch (err: any) {
-            console.warn(
-              `[Publish] companion ${pairing.companion} registration failed (non-fatal):`,
-              err?.message ?? err,
-            )
-          }
-        }
-      }
-
-      return c.json({ domains: serializeDomains(rows, states) }, 201)
-    } catch (error: any) {
-      console.error("[Publish] Add custom domain error:", error)
-      return c.json({ error: { code: "add_domain_failed", message: error.message } }, 500)
+      body = await c.req.json<{ hostname?: string }>()
+    } catch {
+      return c.json({ error: { code: "invalid_body", message: "Invalid JSON body" } }, 400)
     }
+    const result = await addCustomDomain(c.req.param("projectId"), body?.hostname ?? "")
+    return c.json(result.body, result.status as any)
   })
 
   /**
@@ -2098,51 +2431,8 @@ export function publishRoutes() {
    * every row in the group so the UI updates both halves at once.
    */
   router.post("/projects/:projectId/domains/:domainId/verify", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
-      const domainId = c.req.param("domainId")
-
-      const row = await prisma.customDomain.findUnique({ where: { id: domainId } })
-      if (!row || row.projectId !== projectId) {
-        return c.json({ error: { code: "domain_not_found", message: "Custom domain not found" } }, 404)
-      }
-      if (!getCustomHostnamesConfig()) {
-        return c.json({ error: { code: "not_enabled", message: "Custom domains are not enabled on this deployment" } }, 501)
-      }
-      if (!row.cfCustomHostnameId) {
-        return c.json({ error: { code: "not_registered", message: "Custom hostname was never registered with Cloudflare" } }, 409)
-      }
-
-      // Resolve the group (just this row when standalone) and the project's
-      // published subdomain once, then refresh every member.
-      const groupRows = row.groupId
-        ? await prisma.customDomain.findMany({
-            where: { projectId, groupId: row.groupId },
-            orderBy: { createdAt: "asc" },
-          })
-        : [row]
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { publishedSubdomain: true },
-      })
-
-      const updatedRows: typeof groupRows = []
-      const states = new Map<string, CustomHostnameState | null>()
-      for (const member of groupRows) {
-        const { row: updated, state } = await refreshCustomDomain({
-          row: member,
-          siblings: groupRows,
-          publishedSubdomain: project?.publishedSubdomain ?? null,
-        })
-        updatedRows.push(updated as (typeof groupRows)[number])
-        states.set(updated.id, state)
-      }
-
-      return c.json({ domains: serializeDomains(updatedRows, states) }, 200)
-    } catch (error: any) {
-      console.error("[Publish] Verify custom domain error:", error)
-      return c.json({ error: { code: "verify_domain_failed", message: error.message } }, 500)
-    }
+    const result = await verifyCustomDomain(c.req.param("projectId"), c.req.param("domainId"))
+    return c.json(result.body, result.status as any)
   })
 
   /**
@@ -2162,94 +2452,8 @@ export function publishRoutes() {
    * returns the updated group.
    */
   router.post("/projects/:projectId/domains/:domainId/retrigger", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
-      const domainId = c.req.param("domainId")
-
-      if (!getCustomHostnamesConfig()) {
-        return c.json({ error: { code: "not_enabled", message: "Custom domains are not enabled on this deployment" } }, 501)
-      }
-
-      const row = (await prisma.customDomain.findUnique({ where: { id: domainId } })) as CustomDomainRowLike | null
-      if (!row || row.projectId !== projectId) {
-        return c.json({ error: { code: "domain_not_found", message: "Custom domain not found" } }, 404)
-      }
-      if (!row.cfCustomHostnameId) {
-        return c.json({ error: { code: "not_registered", message: "Custom hostname was never registered with Cloudflare" } }, 409)
-      }
-
-      const groupRows = row.groupId
-        ? ((await prisma.customDomain.findMany({
-            where: { projectId, groupId: row.groupId },
-            orderBy: { createdAt: "asc" },
-          })) as CustomDomainRowLike[])
-        : [row]
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { publishedSubdomain: true },
-      })
-
-      // Refresh first so the gate decides on the freshest status + DNS verdict.
-      const refreshed: CustomDomainRowLike[] = []
-      for (const member of groupRows) {
-        try {
-          const { row: updated } = await refreshCustomDomain({
-            row: member,
-            siblings: groupRows,
-            publishedSubdomain: project?.publishedSubdomain ?? null,
-          })
-          refreshed.push(updated)
-        } catch {
-          refreshed.push(member)
-        }
-      }
-      const target = refreshed.find((r) => r.id === row.id) ?? row
-
-      const gate = evaluateRetrigger(target, true)
-      if (!gate.allowed) {
-        const mins = (ms?: number) => Math.max(1, Math.ceil((ms ?? 0) / 60_000))
-        switch (gate.reason) {
-          case "active":
-            return c.json({ error: { code: "already_active", message: "This domain is already live." } }, 409)
-          case "dns_not_ready":
-            return c.json({ error: { code: "dns_not_ready", message: "Your DNS records aren't all in place yet. Add the records shown, then retry." } }, 409)
-          case "too_early":
-            return c.json({ error: { code: "too_early", message: `Give it a bit longer — you can retry in about ${mins(gate.waitMs)} minute(s).` } }, 409)
-          case "cooldown":
-            return c.json({ error: { code: "cooldown", message: `Just retried — please wait about ${mins(gate.cooldownRemainingMs)} minute(s) before retrying again.` } }, 429)
-          default:
-            return c.json({ error: { code: "retrigger_not_allowed", message: "Re-trigger isn't available for this domain right now." } }, 409)
-        }
-      }
-
-      // Re-kick every non-active member, bumping the cooldown/backoff counters.
-      const now = new Date()
-      for (const member of refreshed) {
-        if (member.status === "active" || !member.cfCustomHostnameId) continue
-        try {
-          await retriggerCustomHostname(member.cfCustomHostnameId)
-        } catch (err: any) {
-          console.error("[Publish] retriggerCustomHostname failed:", err?.message ?? err)
-          return c.json({ error: { code: "cloudflare_error", message: err?.message || "Failed to re-trigger certificate issuance" } }, 502)
-        }
-        await prisma.customDomain.update({
-          where: { id: member.id },
-          data: { lastRetriggerAt: now, retriggerCount: { increment: 1 } },
-        })
-      }
-
-      // Reload so the response carries the bumped counters + last snapshot
-      // (issuance won't flip instantly; the cron + UI polling reflect it).
-      const finalRows = (await prisma.customDomain.findMany({
-        where: { id: { in: refreshed.map((r) => r.id) } },
-        orderBy: { createdAt: "asc" },
-      })) as CustomDomainRowLike[]
-
-      return c.json({ domains: serializeDomains(finalRows) }, 200)
-    } catch (error: any) {
-      console.error("[Publish] Retrigger custom domain error:", error)
-      return c.json({ error: { code: "retrigger_domain_failed", message: error.message } }, 500)
-    }
+    const result = await retriggerCustomDomain(c.req.param("projectId"), c.req.param("domainId"))
+    return c.json(result.body, result.status as any)
   })
 
   /**
@@ -2259,53 +2463,8 @@ export function publishRoutes() {
    * direction flips immediately. Returns the updated group.
    */
   router.patch("/projects/:projectId/domains/:domainId/primary", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
-      const domainId = c.req.param("domainId")
-
-      const row = await prisma.customDomain.findUnique({ where: { id: domainId } })
-      if (!row || row.projectId !== projectId) {
-        return c.json({ error: { code: "domain_not_found", message: "Custom domain not found" } }, 404)
-      }
-      if (!row.groupId) {
-        return c.json({ error: { code: "not_grouped", message: "This domain has no companion to switch with" } }, 409)
-      }
-
-      // Flip primary within the group atomically.
-      await prisma.$transaction([
-        prisma.customDomain.updateMany({
-          where: { projectId, groupId: row.groupId },
-          data: { primary: false },
-        }),
-        prisma.customDomain.update({ where: { id: row.id }, data: { primary: true } }),
-      ])
-
-      const groupRows = await prisma.customDomain.findMany({
-        where: { projectId, groupId: row.groupId },
-        orderBy: { createdAt: "asc" },
-      })
-
-      // Rewrite KV for every active member so the new canonical takes effect.
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { publishedSubdomain: true },
-      })
-      if (project?.publishedSubdomain) {
-        for (const member of groupRows) {
-          if (member.status !== "active") continue
-          await putHostnameMapping(
-            member.hostname,
-            project.publishedSubdomain,
-            canonicalForRow(member, groupRows),
-          )
-        }
-      }
-
-      return c.json({ domains: serializeDomains(groupRows) }, 200)
-    } catch (error: any) {
-      console.error("[Publish] Set primary domain error:", error)
-      return c.json({ error: { code: "set_primary_failed", message: error.message } }, 500)
-    }
+    const result = await setPrimaryCustomDomain(c.req.param("projectId"), c.req.param("domainId"))
+    return c.json(result.body, result.status as any)
   })
 
   /**
@@ -2315,33 +2474,8 @@ export function publishRoutes() {
    * Returns `{ success, removedIds }`.
    */
   router.delete("/projects/:projectId/domains/:domainId", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
-      const domainId = c.req.param("domainId")
-
-      const row = await prisma.customDomain.findUnique({ where: { id: domainId } })
-      if (!row || row.projectId !== projectId) {
-        return c.json({ error: { code: "domain_not_found", message: "Custom domain not found" } }, 404)
-      }
-
-      const groupRows = row.groupId
-        ? await prisma.customDomain.findMany({ where: { projectId, groupId: row.groupId } })
-        : [row]
-
-      for (const member of groupRows) {
-        if (member.cfCustomHostnameId) {
-          await deleteCustomHostname(member.cfCustomHostnameId)
-        }
-        await deleteHostnameMapping(member.hostname)
-      }
-      const removedIds = groupRows.map((d) => d.id)
-      await prisma.customDomain.deleteMany({ where: { id: { in: removedIds } } })
-
-      return c.json({ success: true, removedIds }, 200)
-    } catch (error: any) {
-      console.error("[Publish] Delete custom domain error:", error)
-      return c.json({ error: { code: "delete_domain_failed", message: error.message } }, 500)
-    }
+    const result = await deleteCustomDomain(c.req.param("projectId"), c.req.param("domainId"))
+    return c.json(result.body, result.status as any)
   })
 
   return router
