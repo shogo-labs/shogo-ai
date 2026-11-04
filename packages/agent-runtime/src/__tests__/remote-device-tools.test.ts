@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import { createTools, resetRemoteTargetCache, type ToolContext } from '../gateway-tools'
 import { REMOTE_TOOL_ALLOWLIST } from '../remote-tools'
+import { withIntegrationCredentials } from '../integration-credentials'
 
 const WORKSPACE_ID = 'ws-device-test'
 const PROJECT_ID = 'proj-device'
@@ -106,6 +107,28 @@ describe('device target on the remote tool channel', () => {
     expect(seen[0]!.url).toBe('http://api.test/api/internal/devices/inst-mac/remote-tool')
     expect(seen[0]!.body).toEqual({ tool: 'read_file', args: { path: '/Users/russell/canary.txt' } })
     expect(JSON.stringify(result.content)).toContain('canary')
+  })
+
+  test('the call carries the turn’s requester ticket, so the API can check who is asking', async () => {
+    const headers: Headers[] = []
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/internal/devices')) return Response.json({ devices: DEVICES })
+      headers.push(new Headers(init?.headers))
+      return Response.json({ ok: true, result: { content: [{ type: 'text', text: 'ok' }] } })
+    }) as typeof fetch
+
+    const read = toolNamed(createTools(toolCtx(dir)), 'read_file')
+    // The gateway runs every tool inside this wrapper (SHO-285 Update 2), which
+    // is what puts the ticket on the internal API call.
+    const scoped = withIntegrationCredentials(read, {
+      projectId: PROJECT_ID,
+      requesterTicket: 'signed-ticket-for-russell',
+    } as any)
+    await scoped.execute('r1', { path: 'canary.txt', device: 'inst-mac' })
+
+    expect(headers).toHaveLength(1)
+    expect(headers[0]!.get('X-Requester-Ticket')).toBe('signed-ticket-for-russell')
   })
 
   test('an instance id works too, and a partial name matches', async () => {

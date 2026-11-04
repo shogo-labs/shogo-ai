@@ -179,6 +179,11 @@ import {
 } from './github-workspace-git'
 import { isHostMediatedDurability } from './host-durability'
 import { executeRemoteTool } from './remote-tools'
+import { guardRemoteDeviceCall, remoteDeviceApprovalCategory } from './remote-device-guard'
+import {
+  REMOTE_DEVICE_CALL_HEADER,
+  REMOTE_DEVICE_REQUESTER_HEADER,
+} from '@shogo/shared-runtime/remote-device-call'
 import { executeRemoteImport } from './project-transfer'
 import { clearGitHubCliEnvCache } from './github-cli-credentials'
 import { HistoryIndex } from './history-index'
@@ -4492,6 +4497,7 @@ app.post('/agent/local-access', async (c) => {
     const body = (await c.req.json()) as Record<string, any>
     engine.setLocalAccess({
       apps: body.apps && typeof body.apps === 'object' ? body.apps : undefined,
+      remoteTools: typeof body.remoteTools === 'boolean' ? body.remoteTools : undefined,
       computerUse: typeof body.computerUse === 'boolean' ? body.computerUse : undefined,
       blockedFolders: Array.isArray(body.blockedFolders)
         ? body.blockedFolders.filter((f: unknown): f is string => typeof f === 'string')
@@ -5084,11 +5090,44 @@ app.post('/agent/tools/execute', async (c) => {
 // Remote tool channel (remote-tools.ts): another project of this workspace runs
 // one allow-listed tool against THIS project's root. Reached only through the
 // API (RBAC + wake); auth is the `/agent` runtime-token guard.
+//
+// With `REMOTE_DEVICE_CALL_HEADER` set the caller is one of this computer's own
+// runtimes asking *this* computer to run a tool (SHO-329): the request has to
+// be switched on in Computer & files, and a tool that changes something is
+// approved here before it runs.
 app.post('/agent/remote/tool', async (c) => {
   if (!agentGateway) {
     return c.json({ ok: false, error: 'Agent gateway not running' }, 503)
   }
+
   const body = await c.req.json().catch(() => null)
+  const forThisComputer = c.req.header(REMOTE_DEVICE_CALL_HEADER) === '1'
+  const tool = (body as { tool?: unknown } | null)?.tool
+  const args = (body as { args?: unknown } | null)?.args
+  if (forThisComputer && typeof tool === 'string' && tool) {
+    const engine = agentGateway.getPermissionEngine()
+    const guard = await guardRemoteDeviceCall({
+      tool,
+      args: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : {},
+      policy: engine?.getLocalAccess(),
+      requestApproval: async (name, params) => {
+        if (!engine) return false
+        return engine.requestApproval(
+          `remote-${Date.now()}`,
+          name,
+          remoteDeviceApprovalCategory(name),
+          params,
+          `Another of your runtimes asked to run ${name} on this computer`,
+        )
+      },
+    })
+    const requester = c.req.header(REMOTE_DEVICE_REQUESTER_HEADER) ?? 'unknown'
+    console.log(
+      `[remote-tool] device call tool=${tool} requester=${requester} at=${new Date().toISOString()} allowed=${guard.ok}`,
+    )
+    if (!guard.ok) return c.json({ ok: false, error: guard.message, code: guard.code }, guard.status)
+  }
+
   const outcome = await executeRemoteTool(agentGateway.getRemoteTools(), body)
   return c.json(outcome.body, outcome.status)
 })

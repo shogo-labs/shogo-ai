@@ -21,6 +21,13 @@ export interface LocalAccessPolicy {
   /** Per-app access. A missing app means "not configured" and is unrestricted. */
   apps?: Partial<Record<LocalAppId, AppAccess>>
   /**
+   * Whether this computer runs tools another of the person's runtimes asked
+   * for (`/agent/remote/tool` from the cloud). Off unless the person turns it
+   * on; `undefined` is off, because this is the computer's own answer about
+   * work it did not start.
+   */
+  remoteTools?: boolean
+  /**
    * Whether the `computer-use` MCP server (mouse, keyboard, screenshots) may be
    * used. `undefined` means never configured, which stays allowed so existing
    * installs keep working.
@@ -38,6 +45,7 @@ export interface DictationShortcuts {
 /** What the API stores: the enforced policy plus UI-only dictation shortcuts. */
 export interface LocalAccessPrefs {
   apps: Record<LocalAppId, AppAccess>
+  remoteTools: boolean
   computerUse: boolean
   blockedFolders: string[]
   dictation: DictationShortcuts
@@ -45,6 +53,7 @@ export interface LocalAccessPrefs {
 
 export const DEFAULT_LOCAL_ACCESS_PREFS: LocalAccessPrefs = {
   apps: { mail: 'read', messages: 'read', notes: 'read', whatsapp: 'read' },
+  remoteTools: false,
   computerUse: false,
   blockedFolders: [],
   dictation: { pushToTalk: 'Fn', handsFree: null },
@@ -124,6 +133,7 @@ export function normalizeLocalAccessPrefs(raw: unknown): LocalAccessPrefs {
 
   return {
     apps,
+    remoteTools: typeof input.remoteTools === 'boolean' ? input.remoteTools : base.remoteTools,
     computerUse: typeof input.computerUse === 'boolean' ? input.computerUse : base.computerUse,
     blockedFolders: blocked,
     dictation,
@@ -132,7 +142,12 @@ export function normalizeLocalAccessPrefs(raw: unknown): LocalAccessPrefs {
 
 /** The enforceable subset of the stored preference. */
 export function toLocalAccessPolicy(prefs: LocalAccessPrefs): LocalAccessPolicy {
-  return { apps: { ...prefs.apps }, computerUse: prefs.computerUse, blockedFolders: [...prefs.blockedFolders] }
+  return {
+    apps: { ...prefs.apps },
+    remoteTools: prefs.remoteTools,
+    computerUse: prefs.computerUse,
+    blockedFolders: [...prefs.blockedFolders],
+  }
 }
 
 function expandHome(p: string, home: string): string {
