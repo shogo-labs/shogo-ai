@@ -203,7 +203,8 @@ domain keeps working.
   value — the image can ship ahead of the terraform apply with no visible
   difference.
 - **Deploy runbook.** (1) merge and roll the API image — inert; (2) set
-  `EDGE_PROXY_SECRET` in the GitHub environments; (3) apply terraform so the
+  `EDGE_PROXY_SECRET` (one value) in the `staging`, `edge-global`,
+  `production-us` and `production-eu` GitHub environments; (3) apply terraform so the
   Workers start sending the header (ignored while the API has no secret);
   (4) re-run the deploy so `api-secrets` carries `SHOGO_EDGE_PROXY_SECRET` into
   the pod and enforcement starts, with the Workers already sending it.
@@ -214,3 +215,12 @@ domain keeps working.
   `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups`, so
   it runs on an opaque origin. A self-hosted API on its own domain is trusted
   and unchanged.
+
+## WebSocket upgrades through the per-port proxy
+
+A per-port preview forwards Vite's HMR socket. That branch is built from a
+clone of the incoming request (`new Request(target, request)`) rather than from
+a header bag, so the handshake headers (`Connection`, `Upgrade`,
+`Sec-WebSocket-*`) travel with it, and the edge secret is written onto the
+clone's (mutable) headers. Covered by
+`preview-worker-routing.integration.test.ts`.

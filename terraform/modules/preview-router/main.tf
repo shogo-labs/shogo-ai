@@ -421,10 +421,18 @@ resource "cloudflare_worker_script" "preview_router" {
       const target = base + '/api/preview/' + projectId + '/ports/' + port + '/render' + url.pathname + url.search;
       const headers = edgeAuthHeaders(env, request.headers);
       headers.delete('host');
-      // WebSocket upgrades (Vite hot reload) must be streamed, not buffered —
-      // the upgrade headers ride along on the same header set.
+      // WebSocket upgrades (Vite hot reload) must be streamed, not buffered.
+      // Rebuild from a clone of the incoming request: the constructor copies the
+      // handshake headers (Connection, Upgrade, Sec-WebSocket-*) with it, while a
+      // header bag handed to `new Request()` can have them dropped as names a
+      // script may not set. A constructed Request's headers stay mutable, so the
+      // secret still replaces any copy the client sent.
       if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') {
-        return fetch(new Request(target, { method: request.method, headers: headers, redirect: 'manual' }), withRegionOverride({}, region));
+        const wsRequest = new Request(target, request);
+        wsRequest.headers.delete('host');
+        wsRequest.headers.delete(EDGE_PROXY_HEADER);
+        if (env.EDGE_PROXY_SECRET) wsRequest.headers.set(EDGE_PROXY_HEADER, env.EDGE_PROXY_SECRET);
+        return fetch(wsRequest, withRegionOverride({}, region));
       }
       const init = { method: request.method, headers: headers, redirect: 'manual' };
       if (request.method !== 'GET' && request.method !== 'HEAD') {

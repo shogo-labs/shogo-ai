@@ -526,6 +526,31 @@ describe('preview-router worker — edge proxy header', () => {
     expect(render?.headers.get(EDGE)).toBeNull()
   })
 
+  test('a per-port WebSocket upgrade keeps its handshake headers and still carries the secret', async () => {
+    installFetch((url) => (url.includes('/wake') ? { status: 200, body: '{"ready":true}' } : { status: 101 }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, edgeProxySecret: SECRET })
+    // Built from a Headers instance: the handshake names are ones the fetch spec
+    // forbids a script to set, so they must be carried rather than re-declared.
+    const handshake = new Headers({
+      connection: 'Upgrade',
+      upgrade: 'websocket',
+      'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+      'sec-websocket-version': '13',
+      'sec-websocket-protocol': 'vite-hmr',
+      [EDGE]: 'forged-by-visitor',
+    })
+    await workerModule.fetch(new Request('https://3000--p1.preview.shogo.ai/', { headers: handshake }), env)
+
+    const port = calls.find((c) => c.url.includes('/ports/3000/render'))
+    expect(port?.url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/ports/3000/render/`)
+    expect(port?.headers.get('upgrade')).toBe('websocket')
+    expect(port?.headers.get('connection')).toBe('Upgrade')
+    expect(port?.headers.get('sec-websocket-key')).toBe('dGhlIHNhbXBsZSBub25jZQ==')
+    expect(port?.headers.get('sec-websocket-protocol')).toBe('vite-hmr')
+    expect(port?.headers.get(EDGE)).toBe(SECRET)
+    expect(port?.headers.get('host')).toBeNull()
+  })
+
   test('a Knative preview proxied to the regional anchor gets no API header at all', async () => {
     installFetch((url) =>
       url.includes('/wake') ? { status: 200, body: '{"ready":true}' } : { status: 200, body: '<html>live</html>' },
