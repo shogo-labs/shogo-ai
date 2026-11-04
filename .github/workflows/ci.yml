@@ -1151,6 +1151,16 @@ jobs:
             echo "::endgroup::"
           done
 
+      # SHO-311: the analytics rollups are one SQL statement per series, written
+      # in two dialects. `test` runs the golden file on SQLite only, and a
+      # dialect defect there is invisible: `NOT <integer>` and a `\b` word
+      # boundary both "work" on SQLite and fail on Postgres (42804 on the
+      # quality timeseries, silently undercounted tool-call errors). This is the
+      # only job where the Postgres half of that file actually executes.
+      - name: Analytics rollups (Postgres)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/analytics-rollups.golden.test.ts
+
       # SHO-39: the tracked-call store has to behave identically on both
       # tracks. The `test` job runs this same file on SQLite; here it runs on
       # Postgres, which is the half an API restart in the cloud depends on.

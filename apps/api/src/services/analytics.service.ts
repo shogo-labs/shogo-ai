@@ -205,7 +205,10 @@ interface SqlDialect {
  * `error: boom` and `error at line 3` do.
  */
 function startsWithErrorWord(text: string): string {
-  if (!isSqlite) return `(${text} ~* '^\\s*error\\b')`
+  // Postgres ARE has no `\b`: `\b` there is a backspace and `\y` is the word
+  // boundary. The source needs one backslash each (`\\s`/`\\y` in a template
+  // literal) because the SQL receives exactly what is written.
+  if (!isSqlite) return `(${text} ~* '^\\s*error\\y')`
   const trimmed = `trim(lower(${text}), char(32) || char(9) || char(10) || char(13))`
   return `(substr(${trimmed}, 1, 5) = 'error' AND (length(${trimmed}) = 5`
     + ` OR substr(${trimmed}, 6, 1) NOT GLOB '[a-z0-9_]'))`
@@ -2640,7 +2643,9 @@ export async function getQualityTimeseries(
         `t."createdAt" >= ${d.bind(from)}`,
         `t."createdAt" < ${d.bind(to)}`,
         // `qualityUnknown` rows are excluded before they count as a run.
-        `NOT ${d.jsonTrue('t."metadata"', 'qualityUnknown')}`,
+        // `jsonTrue` is a `CASE … THEN 1 ELSE 0 END`, i.e. an integer: Postgres
+        // rejects `NOT <integer>` (42804), so compare instead of negating.
+        `(${d.jsonTrue('t."metadata"', 'qualityUnknown')} = 0)`,
       ]
       if (scope.workspaceId) conditions.push(`t."workspaceId" = ${d.bind(scope.workspaceId)}`)
       if (scope.projectId) conditions.push(`t."projectId" = ${d.bind(scope.projectId)}`)

@@ -40,6 +40,7 @@ import {
   WorkspaceActivityTable,
 } from '../../components/analytics/SharedAnalytics'
 import { fetchAdminJson, AnalyticsHeader } from './_analytics-shared'
+import { usePanelSequence, SUPERSEDED } from './_panel-sequence'
 
 // =============================================================================
 // Main Page
@@ -82,87 +83,103 @@ export default function AdminAIAnalyticsPage() {
    * window scans to render one new page of ten rows. Now a param change only
    * refetches the panel that param belongs to.
    */
+  const trackSpendTs = usePanelSequence()
   const loadSpendTs = useCallback(async () => {
     setSpendTs((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', {
+    const data = await trackSpendTs(() => fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', {
       period,
       excludeInternal: internalParam,
       groupBy: spendGroupBy,
       metric: spendMetric,
-    })
+    }))
+    if (data === SUPERSEDED) return
     setSpendTs({ data, loading: false })
-  }, [period, internalParam, spendGroupBy, spendMetric])
+  }, [period, internalParam, spendGroupBy, spendMetric, trackSpendTs])
 
+  const trackQualityTs = usePanelSequence()
   const loadQualityTs = useCallback(async () => {
     setQualityTs((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<QualityTimeseriesPoint[]>('/analytics/quality-timeseries', {
+    const data = await trackQualityTs(() => fetchAdminJson<QualityTimeseriesPoint[]>('/analytics/quality-timeseries', {
       period,
       excludeInternal: internalParam,
-    })
+    }))
+    if (data === SUPERSEDED) return
     setQualityTs({ data, loading: false })
-  }, [period, internalParam])
+  }, [period, internalParam, trackQualityTs])
 
+  const trackToolCalls = usePanelSequence()
   const loadToolCalls = useCallback(async () => {
     setToolCalls((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<ToolCallAnalyticsData>('/analytics/tool-calls', {
+    const data = await trackToolCalls(() => fetchAdminJson<ToolCallAnalyticsData>('/analytics/tool-calls', {
       period,
       excludeInternal: internalParam,
       page: String(toolPage),
       limit: '10',
-    })
+    }))
+    if (data === SUPERSEDED) return
     setToolCalls({ data, loading: false })
-  }, [period, internalParam, toolPage])
+  }, [period, internalParam, toolPage, trackToolCalls])
 
+  const trackWorkspaceActivity = usePanelSequence()
   const loadWorkspaceActivity = useCallback(async () => {
     setWorkspaceActivity((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<WorkspaceActivityData>('/analytics/workspace-activity', {
+    const data = await trackWorkspaceActivity(() => fetchAdminJson<WorkspaceActivityData>('/analytics/workspace-activity', {
       period,
       excludeInternal: internalParam,
       page: String(workspacePage),
       limit: '20',
-    })
+    }))
+    if (data === SUPERSEDED) return
     setWorkspaceActivity({ data, loading: false })
-  }, [period, internalParam, workspacePage])
+  }, [period, internalParam, workspacePage, trackWorkspaceActivity])
 
+  const trackUsage = usePanelSequence()
   const loadUsage = useCallback(async () => {
     setUsage((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<UsageBreakdownData>('/analytics/usage', {
+    const data = await trackUsage(() => fetchAdminJson<UsageBreakdownData>('/analytics/usage', {
       period,
       excludeInternal: internalParam,
-    })
+    }))
+    if (data === SUPERSEDED) return
     setUsage({ data, loading: false })
-  }, [period, internalParam])
+  }, [period, internalParam, trackUsage])
 
+  const trackUsageSummary = usePanelSequence()
   const loadUsageSummary = useCallback(async () => {
     setUsageSummary((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', {
+    const data = await trackUsageSummary(() => fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', {
       period,
       excludeInternal: internalParam,
       page: String(summaryPage),
       limit: '25',
-    })
+    }))
+    if (data === SUPERSEDED) return
     setUsageSummary({ data, loading: false })
-  }, [period, internalParam, summaryPage])
+  }, [period, internalParam, summaryPage, trackUsageSummary])
 
+  const trackUsageLog = usePanelSequence()
   const loadUsageLog = useCallback(async () => {
     setUsageLog((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<UsageLogData>('/analytics/usage-log', {
+    const data = await trackUsageLog(() => fetchAdminJson<UsageLogData>('/analytics/usage-log', {
       period,
       excludeInternal: internalParam,
       page: String(logPage),
       limit: '50',
-    })
+    }))
+    if (data === SUPERSEDED) return
     setUsageLog({ data, loading: false })
-  }, [period, internalParam, logPage])
+  }, [period, internalParam, logPage, trackUsageLog])
 
+  const trackChatStats = usePanelSequence()
   const loadChatStats = useCallback(async () => {
     setChatStats((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<ChatAnalyticsData>('/analytics/chat', {
+    const data = await trackChatStats(() => fetchAdminJson<ChatAnalyticsData>('/analytics/chat', {
       period,
       excludeInternal: internalParam,
-    })
+    }))
+    if (data === SUPERSEDED) return
     setChatStats({ data, loading: false })
-  }, [period, internalParam])
+  }, [period, internalParam, trackChatStats])
 
   const loadAll = useCallback(async () => {
     await Promise.all([

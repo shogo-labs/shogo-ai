@@ -203,4 +203,39 @@ describe('the dashboard rollups on Postgres', () => {
     expect(distinct!.sql).toContain('FROM "members"')
     expect(mockPrisma.member.findMany).not.toHaveBeenCalled()
   })
+
+  /**
+   * QA round 1 (SHO-311) shipped two expressions that SQLite accepts and
+   * Postgres rejects or mis-reads, and a text assertion could not see either.
+   * These two invariants are the cheap half of the fix: they need no Postgres,
+   * so the `test` job catches a regression before the `rbac-postgres` job does.
+   */
+  test('the emitted Postgres SQL never negates an integer CASE', async () => {
+    const sqls = [
+      ...(await statements(() => analytics.getQualityTimeseries({ workspaceId: 'ws_1' }, '30d'))),
+      ...(await statements(() => analytics.getToolCallAnalytics({ workspaceId: 'ws_1' }, '30d'))),
+      ...(await statements(() => analytics.getActivityTimeseries({ workspaceId: 'ws_1' }, '30d'))),
+    ]
+
+    expect(sqls.length).toBeGreaterThan(0)
+    for (const { sql } of sqls) {
+      // `jsonTrue`/`jsonFalse` build `CASE … THEN 1 ELSE 0 END`; `NOT` on that
+      // is PG 42804 ("argument of NOT must be type boolean, not type integer").
+      expect(sql).not.toMatch(/NOT\s*\(?\s*CASE/i)
+    }
+  })
+
+  test('the error-word regex is spelled for Postgres ARE', async () => {
+    const sqls = await statements(() => analytics.getToolCallAnalytics({ workspaceId: 'ws_1' }, '30d'))
+    const withRegex = sqls.filter(({ sql }) => sql.includes('~*'))
+
+    expect(withRegex.length).toBeGreaterThan(0)
+    for (const { sql } of withRegex) {
+      // `\b` is a backspace in Postgres ARE (the word boundary is `\y`), and a
+      // double-escaped literal reaches the server as a literal backslash.
+      expect(sql).toContain("~* '^\\s*error\\y'")
+      expect(sql).not.toContain('\\\\s')
+      expect(sql).not.toContain('\\\\y')
+    }
+  })
 })

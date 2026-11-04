@@ -34,6 +34,7 @@ import {
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
+import { usePanelSequence, SUPERSEDED } from './_panel-sequence'
 import {
   nativeTwoColumnCardWidth,
   nativeContentWidth,
@@ -853,77 +854,97 @@ export default function AdminDashboard() {
    */
   const canSeeInfra = isSuperAdmin === true
 
+  const trackOverview = usePanelSequence()
   const loadOverview = useCallback(async () => {
     setOverview((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<OverviewData>('/analytics/overview')
+    const data = await trackOverview(() => fetchAdminJson<OverviewData>('/analytics/overview'))
+    if (data === SUPERSEDED) return
     setOverview({ data, loading: false })
-  }, [])
+  }, [trackOverview])
 
+  const trackActiveUsers = usePanelSequence()
   const loadActiveUsers = useCallback(async () => {
     setActiveUsers((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period })
+    const data = await trackActiveUsers(() => fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period }))
+    if (data === SUPERSEDED) return
     setActiveUsers({ data, loading: false })
-  }, [period])
+  }, [period, trackActiveUsers])
 
+  const trackAppInstalls = usePanelSequence()
   const loadAppInstalls = useCallback(async () => {
     setAppInstalls((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<AppInstallsData>('/analytics/app-installs')
+    const data = await trackAppInstalls(() => fetchAdminJson<AppInstallsData>('/analytics/app-installs'))
+    if (data === SUPERSEDED) return
     setAppInstalls({ data, loading: false })
-  }, [])
+  }, [trackAppInstalls])
 
+  const trackAppDevices = usePanelSequence()
   const loadAppDevices = useCallback(async () => {
     setAppDevices((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<ActiveDevicesData>('/analytics/devices', { dormant: '1', limit: '1000' })
+    const data = await trackAppDevices(() => fetchAdminJson<ActiveDevicesData>('/analytics/devices', { dormant: '1', limit: '1000' }))
+    if (data === SUPERSEDED) return
     setAppDevices({ data, loading: false })
-  }, [])
+  }, [trackAppDevices])
 
+  const trackGrowth = usePanelSequence()
   const loadGrowth = useCallback(async () => {
     setGrowth((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period })
+    const data = await trackGrowth(() => fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period }))
+    if (data === SUPERSEDED) return
     setGrowth({ data, loading: false })
-  }, [period])
+  }, [period, trackGrowth])
 
+  const trackUsage = usePanelSequence()
   const loadUsage = useCallback(async () => {
     setUsage((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period })
+    const data = await trackUsage(() => fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period }))
+    if (data === SUPERSEDED) return
     setUsage({ data, loading: false })
-  }, [period])
+  }, [period, trackUsage])
 
+  const trackActiveUsersTs = usePanelSequence()
   const loadActiveUsersTs = useCallback(async () => {
     setActiveUsersTs((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', { period })
+    const data = await trackActiveUsersTs(() => fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', { period }))
+    if (data === SUPERSEDED) return
     setActiveUsersTs({ data, loading: false })
-  }, [period])
+  }, [period, trackActiveUsersTs])
 
+  const trackSpendTs = usePanelSequence()
   const loadSpendTs = useCallback(async () => {
     setSpendTs((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', {
+    const data = await trackSpendTs(() => fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', {
       period,
       groupBy: spendGroupBy,
       metric: spendMetric,
-    })
+    }))
+    if (data === SUPERSEDED) return
     setSpendTs({ data, loading: false })
-  }, [period, spendGroupBy, spendMetric])
+  }, [period, spendGroupBy, spendMetric, trackSpendTs])
 
+  const trackInfra = usePanelSequence()
   const loadInfra = useCallback(async () => {
     if (!canSeeInfra) {
       setInfra({ data: null, loading: false })
       return
     }
     setInfra((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<InfraLiveData>('/analytics/infra-current')
+    const data = await trackInfra(() => fetchAdminJson<InfraLiveData>('/analytics/infra-current'))
+    if (data === SUPERSEDED) return
     setInfra({ data, loading: false })
-  }, [canSeeInfra])
+  }, [canSeeInfra, trackInfra])
 
+  const trackInfraHistory = usePanelSequence()
   const loadInfraHistory = useCallback(async () => {
     if (!canSeeInfra) {
       setInfraHistory({ data: null, loading: false })
       return
     }
     setInfraHistory((s) => ({ ...s, loading: true }))
-    const data = await fetchAdminJson<InfraHistoryPoint[]>('/analytics/infra-history', { period: '24h' })
+    const data = await trackInfraHistory(() => fetchAdminJson<InfraHistoryPoint[]>('/analytics/infra-history', { period: '24h' }))
+    if (data === SUPERSEDED) return
     setInfraHistory({ data, loading: false })
-  }, [canSeeInfra])
+  }, [canSeeInfra, trackInfraHistory])
 
   const loadData = useCallback(async () => {
     await Promise.all([
