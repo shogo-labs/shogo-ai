@@ -138,7 +138,7 @@ const ECHO_PROJECT = join(ECHO_ROOT, 'project')
 const ECHO_COUNTER = join(ECHO_ROOT, 'export-runs.log')
 const EXPORT_SETTLE_MS = 900
 
-function writeFakeExpo(cwd: string): void {
+function writeFakeExpo(cwd: string, busyWaitMs = 0): void {
   const binDir = join(cwd, 'node_modules', '.bin')
   mkdirSync(binDir, { recursive: true })
   const script = [
@@ -147,9 +147,12 @@ function writeFakeExpo(cwd: string): void {
     'const cwd = process.cwd()',
     "const i = process.argv.indexOf('--output-dir')",
     'const out = path.join(cwd, process.argv[i + 1])',
+    // Counted at start, so a run that is still in flight is visible too.
+    `fs.appendFileSync(${JSON.stringify(ECHO_COUNTER)}, 'export\\n')`,
+    `const until = Date.now() + ${busyWaitMs}`,
+    'while (Date.now() < until) {}',
     'fs.mkdirSync(out, { recursive: true })',
     "fs.writeFileSync(path.join(out, 'index.html'), '<html></html>')",
-    `fs.appendFileSync(${JSON.stringify(ECHO_COUNTER)}, 'export\\n')`,
     '',
   ].join('\n')
   const bin = join(binDir, 'expo')
@@ -243,6 +246,28 @@ describe('PreviewManager.requestWebRebuild — export echo', () => {
     expect(exportRuns()).toBe(2)
     expect(readFileSync(join(ECHO_PROJECT, 'app.json'), 'utf8')).toBe(userEdit)
   })
+
+  test('an edit that lands while an export is running is still exported by the follow-up rebuild', async () => {
+    // The export takes ~1.5 s, so the second edit below lands mid-export. The
+    // digest must describe the tree the export *started* from: recording the
+    // tree as it looks at export end would fold that edit in and silently skip
+    // its rebuild, leaving the preview stale (SHO-332 QA round 1).
+    writeFakeExpo(ECHO_PROJECT, 1500)
+    const pm = makeEchoManager()
+
+    await (pm as any).runExpoExportWeb({}, ECHO_PROJECT)
+    expect(exportRuns()).toBe(1)
+
+    writeFileSync(join(ECHO_PROJECT, 'app', 'index.tsx'), 'export default 11\n')
+    pm.requestWebRebuild()
+    await sleep(1200)
+    expect(exportRuns()).toBe(2)
+
+    writeFileSync(join(ECHO_PROJECT, 'app', 'other.tsx'), 'export default 22\n')
+    pm.requestWebRebuild()
+    await sleep(3000)
+    expect(exportRuns()).toBe(3)
+  }, 20_000)
 
   test('an explicit export (boot / /preview/restart) always runs, unchanged inputs or not', async () => {
     const pm = makeEchoManager()

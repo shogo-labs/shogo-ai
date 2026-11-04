@@ -1130,10 +1130,10 @@ export class PreviewManager {
    * afterwards (`patchExpoAppJsonForBasePath`). Both writes hit a
    * `BUILDABLE_PREFIXES` file, so the file watcher reports them like a user
    * edit and every finished export immediately queued the next one
-   * (SHO-332). The restore leaves the tree byte-identical to what the export
-   * just consumed, so comparing against this digest tells the watcher's echo
-   * apart from a real edit — including any other file a build writes back
-   * into its own tree. Kept in memory rather than in
+   * (SHO-332). The value stored is the digest taken *before* the export
+   * started, and the restore puts `app.json` back byte-identical, so the
+   * watcher's echo matches it while a real edit — including one that lands
+   * while the export is running — does not. Kept in memory rather than in
    * `.shogo/build-input-fingerprint`: that file belongs to the "Update
    * available" toast (`consumeBuildInputChange`), and a fresh manager (a
    * restart) must export whatever it finds.
@@ -4492,6 +4492,16 @@ export class PreviewManager {
     const t0 = Date.now()
     /** Whether this export produced the served output (not a failed run). */
     let landed = false
+    // Hash the inputs BEFORE `patchExpoAppJsonForBasePath` writes the preview
+    // prefix into app.json: this is the tree the export is about to consume.
+    // Capturing it here (rather than re-hashing once the export finishes) is
+    // what keeps a mid-flight edit visible — the edit makes the digest stale
+    // so the follow-up rebuild `requestWebRebuild` queued still runs, instead
+    // of being folded into the recorded value and skipped. The restore in the
+    // `finally` below puts app.json back byte-identical, so the export's own
+    // written-then-reverted file still hashes the same and its watcher echo
+    // is recognised.
+    const startInputs = this.expoExportInputs(cwd, stagingDir)
     const restoreExpoConfig = basePath
       ? patchExpoAppJsonForBasePath(cwd, basePath)
       : () => {}
@@ -4599,15 +4609,15 @@ export class PreviewManager {
       cleanupStagingOutput(cwd, stagingDir)
     }
 
-    // Hash the tree as the user has it on disk — the base-path patch was
-    // restored in the `finally` above — so the watcher-driven rebuild that
-    // this export's own writes will trigger can recognise itself and skip.
-    // Only a landed *preview* export records: a failed one must stay
-    // rebuildable, and a publish export (`promote: false`, base path `/`) must
-    // not vouch for the preview's tree — it would let the watcher skip an edit
-    // the preview has not exported yet.
+    // Record what this export consumed (`startInputs`, hashed before the
+    // base-path patch), never a fresh hash of the current tree: an edit that
+    // landed while the export ran makes the recorded digest stale, which is
+    // exactly what keeps the queued follow-up rebuild alive. Only a landed
+    // *preview* export records — a failed one must stay rebuildable, and a
+    // publish export (`promote: false`, base path `/`) must not vouch for the
+    // preview's tree.
     if (landed && promote) {
-      this.lastExpoExportInputs.set(cwd, this.expoExportInputs(cwd, stagingDir))
+      this.lastExpoExportInputs.set(cwd, startInputs)
     }
 
     timings.expoExport = Date.now() - t0
