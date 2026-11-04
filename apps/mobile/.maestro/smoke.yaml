@@ -11,6 +11,14 @@ name: native-smoke
 ---
 - launchApp:
     clearState: true
+# CallKeep may ask Android for permission to show incoming huddles on the call
+# screen. Dismiss that optional system dialog so the smoke flow can reach the
+# sign-in screen; this conditional is a no-op when the dialog is not shown.
+- runFlow:
+    when:
+      visible: "Allow Shogo to manage calls"
+    commands:
+      - tapOn: "NOT NOW"
 - extendedWaitUntil:
     visible: "Log in or sign up with email"
     timeout: 120000

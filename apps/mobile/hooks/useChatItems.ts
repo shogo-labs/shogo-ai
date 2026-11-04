@@ -164,6 +164,11 @@ export function useDraft(conversationId: string, threadRootId?: string | null) {
     const p = pending.current
     pending.current = null
     if (!p) return
+    // Publish to the shared drafts store only now, when the write actually goes
+    // out — not on every keystroke. `drafts` is a `useSyncExternalStore` source
+    // for the composer, the sidebar's draft dot and the conversation screen, so
+    // publishing per key woke (and re-rendered) all of them per key (SHO-314).
+    setDraftLocal(p.key, p.text)
     const settle = () => {
       if (localDraftWrites.get(p.key)?.text === p.text) guardLocalDraft(p.key, p.text, DRAFT_ECHO_GUARD_MS)
     }
@@ -173,7 +178,9 @@ export function useDraft(conversationId: string, threadRootId?: string | null) {
   useEffect(() => flush, [key, flush])
 
   const save = useCallback((text: string, opts: { immediate?: boolean } = {}) => {
-    setDraftLocal(key, text)
+    // Arm the echo guard on the keystroke (a Map write, no subscribers), so an
+    // in-flight echo of an earlier text is still rejected while the store write
+    // is debounced.
     guardLocalDraft(key, text, DRAFT_SAVE_MS + DRAFT_ECHO_GUARD_MS)
     pending.current = { key, conversationId, threadRootId: threadRootId ?? null, text }
     if (timer.current) clearTimeout(timer.current)

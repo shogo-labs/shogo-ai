@@ -147,6 +147,7 @@ packages/agent-runtime/eval-outputs/
 apps/api/.env
 apps/mobile/.env
 apps/mobile/google-services.json
+apps/mobile/play-store-service-account.json
 apps/mobile/android/
 apps/mobile/ios/
 *.keystore

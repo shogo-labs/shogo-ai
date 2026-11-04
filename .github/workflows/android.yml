@@ -30,7 +30,9 @@
 #   KEYSTORE_PASSWORD           - Keystore password
 #   KEY_ALIAS                   - Key alias within the keystore
 #   KEY_PASSWORD                - Key password
-#   GOOGLE_SERVICES_JSON_BASE64 - Base64-encoded Play Store service account key
+#   FIREBASE_ANDROID_GOOGLE_SERVICES_JSON_BASE64 - Base64-encoded Firebase client config for ai.shogo.mobile
+#   PLAY_STORE_SERVICE_ACCOUNT_JSON_BASE64      - Base64-encoded Play publishing key (preferred name)
+#   GOOGLE_SERVICES_JSON_BASE64                 - Legacy Play key secret; used as a fallback
 # =============================================================================
 
 name: Android Build & Update
@@ -148,6 +150,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Configure Firebase Android client
+        env:
+          FIREBASE_ANDROID_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.FIREBASE_ANDROID_GOOGLE_SERVICES_JSON_BASE64 }}
+        run: bash scripts/ci/configure-android-firebase.sh
+
       - name: Resolve fingerprint
         id: fingerprint
         working-directory: apps/mobile
@@ -222,6 +229,11 @@ jobs:
         run: bun install
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Firebase Android client
+        env:
+          FIREBASE_ANDROID_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.FIREBASE_ANDROID_GOOGLE_SERVICES_JSON_BASE64 }}
+        run: bash scripts/ci/configure-android-firebase.sh
 
       - name: Sync app version
         working-directory: apps/mobile
@@ -459,6 +471,11 @@ jobs:
             fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
             console.log('Set version=' + appJson.expo.version + ' versionCode=' + versionCode);
           "
+
+      - name: Configure Firebase Android client
+        env:
+          FIREBASE_ANDROID_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.FIREBASE_ANDROID_GOOGLE_SERVICES_JSON_BASE64 }}
+        run: bash scripts/ci/configure-android-firebase.sh
 
       - name: Expo Prebuild
         working-directory: apps/mobile
@@ -715,9 +732,11 @@ jobs:
             echo "Submit skipped by user"
           fi
 
-      - name: Decode Google service account key
+      - name: Decode Play Store service account key
         if: steps.submit-decision.outputs.should_submit == 'true'
-        run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > apps/mobile/google-services.json
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT_JSON_BASE64: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON_BASE64 || secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: printf '%s' "$PLAY_STORE_SERVICE_ACCOUNT_JSON_BASE64" | base64 --decode > apps/mobile/play-store-service-account.json
 
       - name: Submit to Play Store
         if: steps.submit-decision.outputs.should_submit == 'true'
