@@ -223,6 +223,88 @@ export function localPublishRoutes(): Hono {
     })
   })
 
+  /**
+   * POST /api/internal/projects/:projectId/publish/ops — the `ops_action` half
+   * of the agent's `publish` tool (SHO-308 §5).
+   *
+   * Desktop publishing has no Knative substrate: the site is built and hosted
+   * by Shogo Cloud, and there is exactly one copy of it. So `status`/`list`
+   * answer from the local publish row (same fields the publish panel reads) and
+   * every action that would need revisions, replicas, environments, logs,
+   * metrics or cost says `cloud_only` instead of 404ing — the agent gets a
+   * reason it can act on rather than a bare "route not found".
+   */
+  router.post('/internal/projects/:projectId/publish/ops', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!(await authorizeRuntime(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    let body: { action?: string; environment?: string }
+    try {
+      body = (await c.req.json()) as typeof body
+    } catch {
+      return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const action = String(body?.action ?? '').trim()
+    const environment = body?.environment === 'staging' ? 'staging' : 'production'
+
+    // Reporting production's state to a caller that asked about staging would
+    // be a lie, so the environment check comes before the action.
+    if (environment === 'staging') {
+      return c.json(
+        {
+          error: {
+            code: 'cloud_only',
+            message:
+              'Staging environments run on the Knative substrate, which this desktop app does not have. Nothing was changed.',
+          },
+        },
+        409,
+      )
+    }
+
+    if (action === 'status' || action === 'list') {
+      const state = await publishStateBody(projectId)
+      if (!state.ok) {
+        return c.json({ error: { code: state.code, message: state.message } }, state.status as any)
+      }
+      const subdomain = state.subdomain ?? null
+      const env = {
+        name: 'production' as const,
+        subdomain,
+        url: subdomain ? `https://${subdomain}.${state.publishDomain}` : null,
+        publishStatus: state.publishStatus ?? null,
+        publishError: state.publishError ?? null,
+        publishedAt: state.publishedAt ?? null,
+      }
+      return c.json({
+        ok: true,
+        substrate: 'local',
+        // One replica by definition: Cloud builds and serves the single copy.
+        environment: env,
+        environments: [env],
+        replicas: { ready: subdomain ? 1 : 0, total: subdomain ? 1 : 0, desired: subdomain ? 1 : null },
+        revision: null,
+        pods: [],
+        currentDeployment: null,
+      })
+    }
+
+    return c.json(
+      {
+        error: {
+          code: 'cloud_only',
+          message: `\`${action || 'this action'}\` acts on the published hosting (replicas, revisions, environments, logs, metrics, cost). This app is published from Shogo Desktop, which serves one copy built by Shogo Cloud, so there is nothing here to ${
+            action === 'scale' || action === 'rollback' || action === 'redeploy' || action === 'promote'
+              ? 'change'
+              : 'read'
+          }. Nothing was changed. To scale it, roll it back, tail its logs or see per-environment cost, sync the project to Shogo Cloud and use the Deployment tab there.`,
+        },
+      },
+      409,
+    )
+  })
+
   return router
 }
 
