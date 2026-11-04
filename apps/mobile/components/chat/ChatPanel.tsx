@@ -111,6 +111,7 @@ import {
 import { decideMessagesPropagation } from "./messages-propagation"
 import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
 import { mergeTranscriptRows, sortTranscriptRows } from "./transcript-merge"
+import { assistantRowsAtSend, findTurnReplyRow, shouldPaintReconciledHistory } from "./reconcile-reply-row"
 import {
   patchSessionFeedbackCache,
   readSessionFeedbackCache,
@@ -2392,6 +2393,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // `extraBody.clientTurnId` so this ref — and therefore the header the
   // server de-dupes on — stays stable across attempts.
   const pendingClientTurnIdRef = useRef<string | undefined>(undefined)
+  // The assistant rows this chat already had when the current send started
+  // (id -> text). The reconcile after the turn compares against this rather
+  // than "an id I had not seen before": the server saves the reply partway
+  // through the turn, so that row can already be on screen by the time the
+  // turn ends (SHO-325).
+  const reconcileAtSendRef = useRef<Map<string, string>>(new Map())
+  // How many turns this window has seen start. The reconcile after a turn
+  // paints saved history, which deletes a *newer* turn's reply while it exists
+  // only on screen — so the paint only runs if no turn has started since that
+  // reconcile began (`shouldPaintReconciledHistory`, SHO-325).
+  const turnGenerationRef = useRef(0)
 
   // Flipped synchronously in `handleStop` so `onFinish` (which fires after
   // `stop()` finalises the in-flight assistant message) can distinguish a
@@ -2979,6 +2991,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
           currentTurnIdRef.current = d.turnId
           turnCompletedRef.current = false
           turnLastSeqRef.current = 0
+          // A turn started, so any reconcile still retrying for the previous
+          // one must not paint saved history over it (SHO-325).
+          turnGenerationRef.current += 1
+          // A turn this window did not start itself — a queued row the server
+          // dispatched, a wake — still needs its own "what was here before"
+          // snapshot, or the reconcile at its end compares against the previous
+          // send's and mistakes that turn's reply for this one (SHO-325).
+          const turnSessionId = currentSessionIdRef.current
+          if (turnSessionId) {
+            reconcileAtSendRef.current = assistantRowsAtSend(
+              (sessionMessages?.all ?? []) as any[],
+              turnSessionId,
+            )
+          }
         }
         // A fresh turn can't already be parked — clear any stale banner from
         // a previous turn (defensive; normally a `reconnected` frame already
@@ -3451,18 +3477,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
           )
 
         if (assistantHasContent) {
-          const priorAssistantIds = new Set(
-            (sessionMessages?.all ?? [])
-              .filter(
-                (m: any) =>
-                  m.sessionId === sessionIdForReconcile &&
-                  m.role === "assistant",
-              )
-              .map((m: any) => m.id),
-          )
           void (async () => {
             const RECONCILE_ATTEMPTS = 5
             const RECONCILE_DELAY_MS = 400
+            // The turn that just ended. A turn that starts while this loop is
+            // retrying owns the screen, and its reply exists only in its stream
+            // until the server writes it (SHO-325).
+            const generationAtReconcile = turnGenerationRef.current
             for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
               await new Promise((resolve) =>
                 setTimeout(resolve, RECONCILE_DELAY_MS),
@@ -3479,18 +3500,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 )
                 continue
               }
-              const appeared = (sessionMessages?.all ?? []).some(
-                (m: any) =>
-                  m.sessionId === sessionIdForReconcile &&
-                  m.role === "assistant" &&
-                  !priorAssistantIds.has(m.id),
-              )
-              if (appeared) {
+              // The reply for THIS turn, not "an id I had not seen before":
+              // the server saves the row partway through the turn, so it can
+              // already be in `sessionMessages` by the time `onFinish` runs
+              // (SHO-325).
+              const replyRowId = findTurnReplyRow({
+                rows: (sessionMessages?.all ?? []) as any[],
+                sessionId: sessionIdForReconcile,
+                atSend: reconcileAtSendRef.current,
+                turnText: assistantText,
+              })
+              if (replyRowId) {
                 // Repaint once now that the row exists. Warming the cache is
                 // not enough: a paint that ran while the row was still missing
                 // dropped the reply from the screen, and this is what brings it
                 // back — with the server's canonical id, exactly once (SHO-85).
-                if (currentSessionIdRef.current === sessionIdForReconcile) {
+                // Never while a newer turn owns the screen: this paint would
+                // replace the transcript with saved history and delete a reply
+                // that only exists in that turn's stream (SHO-325).
+                if (
+                  currentSessionIdRef.current === sessionIdForReconcile &&
+                  shouldPaintReconciledHistory({
+                    generationAtReconcile,
+                    generationNow: turnGenerationRef.current,
+                    isStreaming: isStreamingRef.current,
+                  })
+                ) {
                   paintLoadedHistoryRef.current(sessionIdForReconcile, {
                     requireReply: false,
                   })
@@ -3732,6 +3767,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
         return
       }
+      // This window is joining a turn it did not start: from here the screen
+      // belongs to that turn, not to the one whose reconcile may still be
+      // retrying (SHO-325).
+      turnGenerationRef.current += 1
       void resumeStreamSingleFlight()
     },
     [currentSessionId, projectId, resumeStreamSingleFlight, reportLiveTurnAttachBlocked, sessionMessages],
@@ -3927,6 +3966,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!onScreen) {
         setMessages((prev) => appendQueuedUserMessage(prev, queuedUserMessage))
       }
+      // A turn this window did not start now owns the screen. Bump the
+      // generation before attaching so the previous turn's reconcile — still
+      // retrying, and up to 2 s behind — cannot paint saved history over this
+      // turn's reply, which exists only in the stream until the server writes
+      // it (SHO-325: `chat-send-now-leaves-dock` lost that reply this way).
+      turnGenerationRef.current += 1
       void resumeStreamSingleFlight().catch((error) => {
         console.warn("[ChatPanel] Failed to attach to queued turn:", error)
       })
@@ -7158,6 +7203,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
           "text:",
           trimmedContent.slice(0, 80),
         )
+        // Remember the assistant rows this chat already has, so the reconcile
+        // after the turn can tell this turn's reply from an older one even
+        // though the server may save it mid-turn (SHO-325).
+        // Before the request goes out: everything already saved is "before".
+        reconcileAtSendRef.current = assistantRowsAtSend(
+          (sessionMessages?.all ?? []) as any[],
+          currentSessionId,
+        )
+        // This window is starting a turn: any reconcile still retrying for the
+        // previous one must not paint over it (SHO-325).
+        turnGenerationRef.current += 1
         await deliverMessage(messagePayload, bodyExtra)
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
@@ -7189,6 +7245,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       maybeAutoNameSession,
       releaseStopSnapshot,
       showOptimisticEcho,
+      sessionMessages,
     ],
   )
 
