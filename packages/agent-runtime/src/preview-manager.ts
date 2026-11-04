@@ -26,7 +26,7 @@ import {
   consumeBuildOutputChange,
   pruneStaleBuildOutput,
 } from './build-output-prune'
-import { consumeBuildInputChange } from './build-input-fingerprint'
+import { consumeBuildInputChange, fingerprintBuildInputs } from './build-input-fingerprint'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
@@ -1120,6 +1120,25 @@ export class PreviewManager {
   private webRebuildTimer: ReturnType<typeof setTimeout> | null = null
   private webRebuildRunning = false
   private webRebuildPending = false
+  /**
+   * Digest of the tree each bundler cwd was last successfully exported from,
+   * recorded when an export lands and read by {@link requestWebRebuild}'s
+   * gate.
+   *
+   * A workspace preview has to write the preview prefix into the user's
+   * `app.json` (Expo's exporter has no base-path flag) and restore it
+   * afterwards (`patchExpoAppJsonForBasePath`). Both writes hit a
+   * `BUILDABLE_PREFIXES` file, so the file watcher reports them like a user
+   * edit and every finished export immediately queued the next one
+   * (SHO-332). The restore leaves the tree byte-identical to what the export
+   * just consumed, so comparing against this digest tells the watcher's echo
+   * apart from a real edit — including any other file a build writes back
+   * into its own tree. Kept in memory rather than in
+   * `.shogo/build-input-fingerprint`: that file belongs to the "Update
+   * available" toast (`consumeBuildInputChange`), and a fresh manager (a
+   * restart) must export whatever it finds.
+   */
+  private lastExpoExportInputs = new Map<string, string | null>()
   /**
    * Reentrancy guard for `startApiServer()`, mirroring `expoExportInFlight`
    * above. `startApiServer()` is reachable from many independent entry
@@ -4352,15 +4371,49 @@ export class PreviewManager {
     try {
       do {
         this.webRebuildPending = false
+        // Await any export already running BEFORE hashing: an in-flight export
+        // still has its `app.json` base-path patch applied, so its inputs are
+        // not the tree the user has on disk. Only once it settles (and its
+        // restore has run) does the digest below describe the restored tree.
         await Promise.all([...this.expoExportInFlight.values()].map((promise) => promise.catch(() => {})))
+        const cwd = this.resolveBundlerCwd()
+        if (this.expoInputsUnchanged(cwd)) {
+          // The watcher reported a file the last export itself wrote back —
+          // typically the `app.json` restore of the base-path patch. Nothing
+          // to rebuild; exporting again would rewrite the file and re-arm the
+          // loop (SHO-332).
+          console.log(`[${LOG_PREFIX}] Expo inputs unchanged — skipping re-export`)
+          continue
+        }
         console.log(`[${LOG_PREFIX}] Source changed — re-exporting Expo web bundle`)
-        await this.runExpoExportWeb({}, this.resolveBundlerCwd())
+        await this.runExpoExportWeb({}, cwd)
       } while (this.webRebuildPending)
     } catch (err: any) {
       console.error(`[${LOG_PREFIX}] Expo web rebuild failed: ${err?.message ?? err}`)
     } finally {
       this.webRebuildRunning = false
     }
+  }
+
+  /**
+   * Digest of everything an Expo web export of `cwd` consumes. Output
+   * directories are excluded for the same reason `consumeBuildInputChange`
+   * excludes them — a build that dirties its own inputs looks like an edit.
+   */
+  private expoExportInputs(cwd: string, stagingDir: string = DEFAULT_STAGING_DIR): string | null {
+    return fingerprintBuildInputs(cwd, { ignore: ['dist', stagingDir] })
+  }
+
+  /**
+   * Whether re-exporting `cwd` right now would reproduce the last landed
+   * export. `false` whenever nothing has been recorded yet (first export) or
+   * the tree has no hashable files, so a real change is never swallowed.
+   */
+  private expoInputsUnchanged(cwd: string): boolean {
+    const lastExported = this.lastExpoExportInputs.get(cwd)
+    if (!lastExported) return false
+    const current = this.expoExportInputs(cwd)
+    return current !== null && current === lastExported
   }
 
   private async runExpoExportWeb(
@@ -4437,6 +4490,8 @@ export class PreviewManager {
     })
 
     const t0 = Date.now()
+    /** Whether this export produced the served output (not a failed run). */
+    let landed = false
     const restoreExpoConfig = basePath
       ? patchExpoAppJsonForBasePath(cwd, basePath)
       : () => {}
@@ -4516,6 +4571,7 @@ export class PreviewManager {
         const committed = promote
           ? await commitBuildOutputAsync(cwd, stagingDir)
           : true
+        landed = committed
         if (!committed) {
           console.warn(
             `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
@@ -4541,6 +4597,17 @@ export class PreviewManager {
       // Failed build: drop the partial staging output so it can't poison
       // the next swap.
       cleanupStagingOutput(cwd, stagingDir)
+    }
+
+    // Hash the tree as the user has it on disk — the base-path patch was
+    // restored in the `finally` above — so the watcher-driven rebuild that
+    // this export's own writes will trigger can recognise itself and skip.
+    // Only a landed *preview* export records: a failed one must stay
+    // rebuildable, and a publish export (`promote: false`, base path `/`) must
+    // not vouch for the preview's tree — it would let the watcher skip an edit
+    // the preview has not exported yet.
+    if (landed && promote) {
+      this.lastExpoExportInputs.set(cwd, this.expoExportInputs(cwd, stagingDir))
     }
 
     timings.expoExport = Date.now() - t0
