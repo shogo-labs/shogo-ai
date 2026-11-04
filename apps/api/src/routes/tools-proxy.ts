@@ -514,7 +514,7 @@ export function toolsProxyRoutes() {
     }
 
     if (process.env.SHOGO_LOCAL_MODE !== 'true') {
-      const balanceCheck = await billingService.checkUsageBalance(auth.workspaceId)
+      const balanceCheck = await billingService.checkUsageBalance(auth.workspaceId, 0.001, auth.userId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
         return c.json(

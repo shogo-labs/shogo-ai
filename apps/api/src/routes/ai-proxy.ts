@@ -2894,6 +2894,20 @@ import { invalidateAnalyticsCache } from '../lib/analytics-cache'
 export { buildUsageLimitInfo }
 
 /**
+ * The seat a proxied request meters against. The live AI allowance is per
+ * member (SHO-312), so the balance preflight must resolve the same identity the
+ * UsageEvent is attributed to: the project's bound user when there is one, else
+ * the token's user. `undefined` means there is no seat (internal usage) and the
+ * workspace's free allowance applies.
+ */
+function resolveUsageMemberId(tokenPayload: {
+  projectId: string
+  userId?: string | null
+}): string | undefined {
+  return getProjectUser(tokenPayload.projectId) || tokenPayload.userId || undefined
+}
+
+/**
  * Record token usage for billing.
  *
  * If there's an active billing session for this project (opened by
@@ -4113,9 +4127,12 @@ async function authorizeMediaSpend(
 
   const decision = await withMediaSpendLock(billingWorkspaceId, async () => {
     const heldUsd = await sumMediaHolds(billingWorkspaceId)
+    // The allowance is per seat: price the job against the seat that owns the
+    // spend, not the workspace's (now unused on paid plans) wallet counters.
     const balanceCheck = await billingService.checkUsageBalance(
       tokenPayload.workspaceId,
       price + pendingTurnUsd + heldUsd,
+      resolveUsageMemberId(tokenPayload),
     )
     if (!balanceCheck.ok) return { ok: false as const, reason: balanceCheck.reason }
     await placeMediaHold(billingWorkspaceId, holdId, price, ttlSeconds)
@@ -4629,7 +4646,7 @@ export function aiProxyRoutes() {
     // and for internal, non-billable completions). An already-admitted chat turn
     // that is still in flight is never re-gated mid-message (see isTurnInFlight).
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
         const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
@@ -4960,7 +4977,7 @@ export function aiProxyRoutes() {
     const internalUsage = resolveInternalUsage(c, tokenPayload)
 
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
         const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
@@ -5404,7 +5421,7 @@ export function aiProxyRoutes() {
     // Pre-check usage balance (skip in local dev and for internal usage). An
     // already-admitted chat turn still in flight is never re-gated mid-message.
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
         const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {

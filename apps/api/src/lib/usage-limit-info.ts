@@ -23,7 +23,7 @@ export async function buildUsageLimitInfo(
   let resetsAt: string | null = null
   let retryAfterSeconds: number | null = null
   try {
-    const w = await billingService.getUsageWindows(workspaceId)
+    const w = await billingService.getUsageWindows(workspaceId, hit.userId ?? undefined)
     const exhausted = [w.fiveHour, w.weekly].filter(
       (s) => s.limitUsd != null && s.utilization >= 1 && s.resetsAt != null,
     )

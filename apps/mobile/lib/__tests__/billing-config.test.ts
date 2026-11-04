@@ -39,30 +39,23 @@ describe('getWindowLimitsForPlan', () => {
     expect(getWindowLimitsForPlan('mystery')).toEqual(ROLLING_WINDOW_LIMITS.free!)
   })
 
-  test('does not scale single-pool plans by seats', () => {
-    expect(getWindowLimitsForPlan('basic', 5)).toEqual(ROLLING_WINDOW_LIMITS.basic!)
-  })
-
-  test('scales per-seat plans linearly', () => {
-    const proBase = ROLLING_WINDOW_LIMITS.pro!
-    const pro3 = getWindowLimitsForPlan('pro', 3)
-    expect(pro3).toEqual({ fiveHourUsd: proBase.fiveHourUsd * 3, weeklyUsd: proBase.weeklyUsd * 3 })
-    const bizBase = ROLLING_WINDOW_LIMITS.business!
-    const biz2 = getWindowLimitsForPlan('business', 2)
-    expect(biz2).toEqual({ fiveHourUsd: bizBase.fiveHourUsd * 2, weeklyUsd: bizBase.weeklyUsd * 2 })
-  })
-
-  test('clamps non-positive / fractional seats to at least 1', () => {
-    expect(getWindowLimitsForPlan('pro', 0)).toEqual(ROLLING_WINDOW_LIMITS.pro!)
-    expect(getWindowLimitsForPlan('pro', -4)).toEqual(ROLLING_WINDOW_LIMITS.pro!)
+  test('returns the per-seat allowance and never multiplies (per seat, not pooled)', () => {
+    // The allowance belongs to one seat, so a 5-seat business workspace gets
+    // $4.60/week per member, not one shared $23 bucket.
+    expect(getWindowLimitsForPlan('basic')).toEqual(ROLLING_WINDOW_LIMITS.basic!)
+    expect(getWindowLimitsForPlan('pro')).toEqual(ROLLING_WINDOW_LIMITS.pro!)
+    expect(getWindowLimitsForPlan('business')).toEqual({
+      fiveHourUsd: ROLLING_WINDOW_LIMITS.business!.fiveHourUsd,
+      weeklyUsd: 4.6,
+    })
   })
 
   test('returns null (uncapped) for enterprise', () => {
-    expect(getWindowLimitsForPlan('enterprise', 99)).toBeNull()
+    expect(getWindowLimitsForPlan('enterprise')).toBeNull()
   })
 
   test('matches legacy suffixed plan ids by prefix', () => {
-    expect(getWindowLimitsForPlan('pro_200', 1)).toEqual(ROLLING_WINDOW_LIMITS.pro!)
+    expect(getWindowLimitsForPlan('pro_200')).toEqual(ROLLING_WINDOW_LIMITS.pro!)
   })
 })
 

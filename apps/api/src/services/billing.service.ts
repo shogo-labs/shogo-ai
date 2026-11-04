@@ -818,9 +818,14 @@ export async function getOverageStatus(
  * Compute the current state of a workspace's rolling windows, applying the
  * same lazy reset semantics as `consumeUsage` (without persisting). Returns
  * `null` per-window limit for uncapped plans.
+ *
+ * `memberId` (a userId) reports the caller's own seat allowance, which is what
+ * the customer UI shows on a paid plan — the allowance is per seat and never
+ * pooled. Without it the workspace wallet's free-tier allowance is reported.
  */
 export async function getUsageWindows(
   workspaceId: string,
+  memberId?: string,
 ): Promise<{ fiveHour: UsageWindowSnapshot; weekly: UsageWindowSnapshot }> {
   const now = new Date()
   // Child workspaces read the parent's pooled wallet/windows.
@@ -828,12 +833,14 @@ export async function getUsageWindows(
   let wallet = await prisma.usageWallet.findUnique({ where: { workspaceId: billingWorkspaceId } })
   if (!wallet) wallet = await allocateFreeWallet(billingWorkspaceId)
 
-  const { limits } = await resolveEffectivePlan(prisma, billingWorkspaceId, now)
-  const five = rollWindow(wallet?.fiveHourWindowStart, wallet?.fiveHourUsedUsd ?? 0, now, FIVE_HOUR_MS)
-  const week = rollWindow(wallet?.weeklyWindowStart, wallet?.weeklyUsedUsd ?? 0, now, SEVEN_DAY_MS)
+  const { limits, paidTier } = await resolveEffectivePlan(prisma, billingWorkspaceId, now)
+  const seat = paidTier ? await findSeatWindow(prisma, memberId, billingWorkspaceId) : null
+  const counters = seat ?? wallet
+  const five = rollWindow(counters?.fiveHourWindowStart, counters?.fiveHourUsedUsd ?? 0, now, FIVE_HOUR_MS)
+  const week = rollWindow(counters?.weeklyWindowStart, counters?.weeklyUsedUsd ?? 0, now, SEVEN_DAY_MS)
 
-  const fiveOpened = !!wallet?.fiveHourWindowStart && five.start.getTime() === new Date(wallet.fiveHourWindowStart).getTime()
-  const weekOpened = !!wallet?.weeklyWindowStart && week.start.getTime() === new Date(wallet.weeklyWindowStart).getTime()
+  const fiveOpened = !!counters?.fiveHourWindowStart && five.start.getTime() === new Date(counters.fiveHourWindowStart).getTime()
+  const weekOpened = !!counters?.weeklyWindowStart && week.start.getTime() === new Date(counters.weeklyWindowStart).getTime()
 
   const snapshot = (
     kind: UsageWindowKind,
@@ -880,10 +887,17 @@ function healStaleOverageFlag(billingWorkspaceId: string): void {
  * reason when it can't. True when either rolling window still has room,
  * when the plan is uncapped, or when metered overage is enabled and within
  * its hard cap *and* the paid entitlement behind it is still live.
+ *
+ * `memberId` (a userId) selects the caller's own seat: on a paid plan the
+ * allowance is per member, so the preflight must gate against that member's
+ * windows rather than the workspace wallet. Omit it when there is no seat
+ * behind the request (internal / unattributed usage) and the wallet's free
+ * allowance applies.
  */
 export async function checkUsageBalance(
   workspaceId: string,
   minimumRequiredUsd = 0.001,
+  memberId?: string,
 ): Promise<BalanceCheck> {
   if (isLocalMode) return { ok: true }
 
@@ -915,8 +929,13 @@ export async function checkUsageBalance(
   // Uncapped plan (enterprise): always has balance.
   if (limits == null) return { ok: true };
 
-  const five = rollWindow(wallet.fiveHourWindowStart, wallet.fiveHourUsedUsd, now, FIVE_HOUR_MS);
-  const week = rollWindow(wallet.weeklyWindowStart, wallet.weeklyUsedUsd, now, SEVEN_DAY_MS);
+  // Paid plans meter the caller's own seat; free / unattributed usage uses the
+  // workspace wallet's single allowance.
+  const seat = paidTier ? await findSeatWindow(prisma, memberId, billingWorkspaceId) : null;
+  const counters = seat ?? wallet;
+
+  const five = rollWindow(counters.fiveHourWindowStart, counters.fiveHourUsedUsd, now, FIVE_HOUR_MS);
+  const week = rollWindow(counters.weeklyWindowStart, counters.weeklyUsedUsd, now, SEVEN_DAY_MS);
   const windowRoom = Math.min(limits.fiveHourUsd - five.used, limits.weeklyUsd - week.used);
   if (windowRoom >= minimumRequiredUsd) return { ok: true };
 
@@ -1328,8 +1347,15 @@ async function _consumeUsageTransaction(
 
     // Lazy window reset: a window "opens" on the first action and resets once
     // its full duration has elapsed (fixed-window-from-first-event).
-    const five = rollWindow(wallet.fiveHourWindowStart, wallet.fiveHourUsedUsd, now, FIVE_HOUR_MS);
-    const week = rollWindow(wallet.weeklyWindowStart, wallet.weeklyUsedUsd, now, SEVEN_DAY_MS);
+    //
+    // Paid plans meter the caller's OWN seat: the allowance is per member and
+    // one seat can never spend another's (SHO-312). The workspace wallet holds
+    // the counters for the free tier and for usage with no seat behind it
+    // (`system`, project-only members).
+    const seat = paidTier ? await findSeatWindow(tx, memberId, billingWorkspaceId) : null
+    const counters = seat ?? wallet
+    const five = rollWindow(counters.fiveHourWindowStart, counters.fiveHourUsedUsd, now, FIVE_HOUR_MS);
+    const week = rollWindow(counters.weeklyWindowStart, counters.weeklyUsedUsd, now, SEVEN_DAY_MS);
 
     // Monthly boundary still governs overage bookkeeping. The included USD
     // pools are no longer drained — the rolling windows are the gate — so we
@@ -1471,10 +1497,15 @@ async function _consumeUsageTransaction(
     await tx.usageWallet.update({
       where: { workspaceId: billingWorkspaceId },
       data: {
-        fiveHourWindowStart: five.start,
-        fiveHourUsedUsd: five.used,
-        weeklyWindowStart: week.start,
-        weeklyUsedUsd: week.used,
+        // Window counters belong to the seat on a paid plan, not the wallet.
+        ...(seat
+          ? {}
+          : {
+              fiveHourWindowStart: five.start,
+              fiveHourUsedUsd: five.used,
+              weeklyWindowStart: week.start,
+              weeklyUsedUsd: week.used,
+            }),
         overageAccumulatedUsd,
         // Promo spend is debited from whichever wallet funded it — this one, or
         // (for a personal workspace) the owner's signup-credit wallet.
@@ -1484,6 +1515,18 @@ async function _consumeUsageTransaction(
         ...(needsMonthlyReset ? { lastMonthlyReset: now, overageBilledUsd: 0 } : {}),
       },
     });
+
+    if (seat) {
+      await tx.member.update({
+        where: { id: seat.id },
+        data: {
+          fiveHourWindowStart: five.start,
+          fiveHourUsedUsd: five.used,
+          weeklyWindowStart: week.start,
+          weeklyUsedUsd: week.used,
+        },
+      })
+    }
 
     if (promoCharged > 0 && promoSource && promoSource.walletId !== billingWorkspaceId) {
       await tx.usageWallet.update({
@@ -1544,6 +1587,58 @@ function rollWindow(
     return { start: now, used: 0 }
   }
   return { start: new Date(start), used }
+}
+
+/**
+ * One seat's rolling-window counters. Paid plans keep these on `Member` — the
+ * allowance is per seat and can never be pooled — while the free tier keeps its
+ * single shared allowance on the workspace `UsageWallet`.
+ */
+interface SeatWindowCounters {
+  id: string
+  fiveHourWindowStart: Date | null
+  fiveHourUsedUsd: number
+  weeklyWindowStart: Date | null
+  weeklyUsedUsd: number
+}
+
+/**
+ * Load the caller's own allowance counters. `UsageEvent.memberId` is a userId,
+ * so the seat is the workspace-scoped `Member` row for that user (project
+ * members are a different scope and hold no allowance).
+ *
+ * Returns `null` when there is no seat — unattributed (`system`) usage, a
+ * project-only member, or a user that has left — and callers fall back to the
+ * workspace wallet, which is also what the free tier uses.
+ */
+async function findSeatWindow(
+  client: { member: { findFirst: typeof prisma.member.findFirst } },
+  memberId: string | null | undefined,
+  billingWorkspaceId: string,
+): Promise<SeatWindowCounters | null> {
+  if (!memberId || memberId === 'system') return null
+  try {
+    return await client.member.findFirst({
+      where: { userId: memberId, workspaceId: billingWorkspaceId, projectId: null },
+      select: {
+        id: true,
+        fiveHourWindowStart: true,
+        fiveHourUsedUsd: true,
+        weeklyWindowStart: true,
+        weeklyUsedUsd: true,
+      },
+    })
+  } catch (err) {
+    // The balance preflight runs on every AI request; a lookup failure must not
+    // turn into a 500 for the caller. Falling back to the wallet charges this
+    // call against the free allowance instead of the seat, which is the safe
+    // direction (it never lets a seat exceed its allowance silently).
+    console.warn(
+      `[billing] findSeatWindow failed for member ${memberId} in workspace ${billingWorkspaceId}:`,
+      (err as any)?.message ?? err,
+    )
+    return null
+  }
 }
 
 /**
@@ -1608,15 +1703,14 @@ async function resolveEffectivePlan(
   if (sub) {
     const plan = normalizePlanId(sub.planId) ?? 'free'
     return {
-      limits: getWindowLimitsForPlan(plan, sub.seats),
+      limits: getWindowLimitsForPlan(plan),
       paidTier: PLAN_RANK[plan] >= PLAN_RANK.basic,
     }
   }
   const grant = await getActiveGrantsForWorkspace(workspaceId, now)
   const plan = normalizePlanId(grant.planId) ?? 'free'
-  const seats = Math.max(1, grant.freeSeats || 0)
   return {
-    limits: getWindowLimitsForPlan(plan, seats),
+    limits: getWindowLimitsForPlan(plan),
     paidTier: PLAN_RANK[plan] >= PLAN_RANK.basic,
   }
 }

@@ -7523,7 +7523,7 @@ app.get('/api/billing/workspace-plan', async (c) => {
       billingService.getSubscription(workspaceId),
       billingService.getUsageWallet(workspaceId),
       billingService.getEffectivePlanId(workspaceId),
-      billingService.getUsageWindows(workspaceId),
+      billingService.getUsageWindows(workspaceId, userId ?? undefined),
       billingService.getOverageStatus(workspaceId),
     ])
     // Signup promo credit + trial eligibility for the billing UI. Cloud only
@@ -7626,7 +7626,9 @@ app.get('/api/billing/usage-windows', async (c) => {
     if (!await verifyWorkspaceMembership(c, workspaceId)) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
-    const windows = await billingService.getUsageWindows(workspaceId)
+    // Paid plans meter the caller's own seat, so the polled windows are theirs.
+    const userId = (c.get('auth') as any)?.userId as string | undefined
+    const windows = await billingService.getUsageWindows(workspaceId, userId)
     return c.json({ ok: true, windows })
   } catch (error: any) {
     return c.json({ error: { code: 'usage_windows_failed', message: error.message } }, 500)

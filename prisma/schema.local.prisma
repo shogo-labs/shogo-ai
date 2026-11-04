@@ -1091,6 +1091,11 @@ model Member {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  fiveHourWindowStart DateTime?
+  fiveHourUsedUsd     Float     @default(0)
+  weeklyWindowStart   DateTime?
+  weeklyUsedUsd       Float     @default(0)
+
   user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)

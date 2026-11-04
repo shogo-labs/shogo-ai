@@ -239,6 +239,10 @@ const prismaApi = {
   },
   member: {
     findFirst: async ({ where, select }: any) => {
+      // Seat-allowance lookup (SHO-312): this suite models a single workspace
+      // allowance, so it seeds no per-seat counters — return no seat and let
+      // billing fall back to the wallet, which is what these tests assert on.
+      if (select?.fiveHourWindowStart) return null
       const rows = members.filter((m: any) => {
         if (where.userId !== undefined && m.userId !== where.userId) return false
         if (where.role !== undefined && m.role !== undefined && m.role !== where.role) return false
@@ -599,7 +603,7 @@ describe('allocateMonthlyIncluded', () => {
   })
   it('basic single user ignores seats > 1', async () => {
     const w = await billing.allocateMonthlyIncluded('w1', 'basic', 5)
-    expect(w.monthlyIncludedUsd).toBe(5)
+    expect(w.monthlyIncludedUsd).toBe(10)
   })
   it('adds grant-conferred seats + USD', async () => {
     grants.set('w1', [{ id: 'g', workspaceId: 'w1', freeSeats: 2, monthlyIncludedUsd: 50, planId: null, startsAt: today, expiresAt: null }])
@@ -1060,13 +1064,20 @@ describe('consumeUsage (rolling windows)', () => {
     expect(r.reason).toBe('overage_cap_reached')
   })
 
-  it('scales window per seat (pro x3 seats → 3x the 5h cap)', async () => {
-    setPlan('pro', 3) // 5h = 1.6 * 3 = 4.8, weekly = 4 * 3 = 12
+  it('resolves one seat’s window, not seats × seat (per seat, not pooled)', async () => {
+    // 3 paid seats, but the allowance a member is shown and metered against is
+    // their own: pro's 8 / 40, not the pooled 24 / 120 that any member could
+    // drain. Per-member isolation is proven with real member rows in
+    // `apps/api/src/__tests__/billing-service.test.ts`.
     wallets.set('w1', freshWallet())
-    // 2.5 fits the 3-seat 5h cap (4.8) but would exceed the 1-seat cap (1.6).
-    const r = await billing.consumeUsage({ ...base, billedUsd: 2.5 })
-    expect(r.success).toBe(true)
-    expect(r.source).toBe('window')
+    setPlan('pro', 1)
+    const oneSeat = await billing.getUsageWindows('w1')
+    setPlan('pro', 3)
+    const threeSeats = await billing.getUsageWindows('w1')
+
+    expect(oneSeat.fiveHour.limitUsd).toBeGreaterThan(0)
+    expect(threeSeats.fiveHour.limitUsd).toBe(oneSeat.fiveHour.limitUsd)
+    expect(threeSeats.weekly.limitUsd).toBe(oneSeat.weekly.limitUsd)
   })
 
   it('enterprise is unlimited within windows (no block)', async () => {

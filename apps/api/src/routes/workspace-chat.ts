@@ -677,7 +677,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const workspaceId = c.req.param('workspaceId')
 
     // Usage gate (workspace-level balance) — mirrors project-chat.
-    const balanceCheck = await billingService.checkUsageBalance(workspaceId)
+    const balanceCheck = await billingService.checkUsageBalance(workspaceId, 0.001, auth.userId)
     if (!balanceCheck.ok) {
       const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
       // Records firstCapHitAt + the hit_cap event: this route blocked the most

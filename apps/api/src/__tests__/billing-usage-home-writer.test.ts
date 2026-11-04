@@ -69,6 +69,9 @@ const mockPrisma: any = {
     findMany: async () => [{ planId: 'pro', seats: 1, status: 'active' }],
   },
   workspaceGrant: { findMany: async () => [] },
+  // No per-seat counters in these fixtures: billing falls back to the wallet's
+  // allowance, which is the window state the routing assertions care about.
+  member: { findFirst: async () => null },
   usageEvent: {
     create: async (args: any) => {
       const row = { id: `ue-${usageEvents.length + 1}`, ...args.data }

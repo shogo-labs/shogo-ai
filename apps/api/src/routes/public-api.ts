@@ -209,7 +209,7 @@ async function checkBalance(
   payload: ProxyTokenPayload,
 ): Promise<Response | null> {
   if (isLocalDev) return null
-  const balanceCheck = await billingService.checkUsageBalance(payload.workspaceId)
+  const balanceCheck = await billingService.checkUsageBalance(payload.workspaceId, 0.001, payload.userId ?? undefined)
   if (balanceCheck.ok) return null
   const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
   const usageLimit = await buildUsageLimitInfo(payload.workspaceId, {

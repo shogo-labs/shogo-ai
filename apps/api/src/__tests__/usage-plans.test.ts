@@ -32,13 +32,13 @@ describe('module constants', () => {
 
   test('SEAT_INCLUDED_USD has the documented ladder', () => {
     expect(SEAT_INCLUDED_USD.free).toBe(0)
-    expect(SEAT_INCLUDED_USD.basic).toBe(5)
+    expect(SEAT_INCLUDED_USD.basic).toBe(10)
     expect(SEAT_INCLUDED_USD.pro).toBe(20)
-    expect(SEAT_INCLUDED_USD.business).toBe(40)
+    expect(SEAT_INCLUDED_USD.business).toBe(20)
     expect(SEAT_INCLUDED_USD.enterprise).toBe(2000)
   })
 
-  test('SEAT_INCLUDED_USD ladder is strictly monotonic (free < basic < pro < business < enterprise)', () => {
+  test('SEAT_INCLUDED_USD ladder is monotonically non-decreasing (free < basic <= pro <= business < enterprise)', () => {
     const order: Array<keyof typeof SEAT_INCLUDED_USD> = [
       'free',
       'basic',
@@ -47,16 +47,18 @@ describe('module constants', () => {
       'enterprise',
     ]
     for (let i = 1; i < order.length; i++) {
-      expect(SEAT_INCLUDED_USD[order[i]]).toBeGreaterThan(SEAT_INCLUDED_USD[order[i - 1]])
+      expect(SEAT_INCLUDED_USD[order[i]]).toBeGreaterThanOrEqual(SEAT_INCLUDED_USD[order[i - 1]])
     }
   })
 
   test('PLAN_INCLUDED_USD (deprecated) is preserved for backwards compat', () => {
-    // The deprecated map differs from SEAT_INCLUDED_USD on `business` ($20 vs $40).
-    // This test pins that difference so future "cleanups" don't silently
-    // change grandfathered behavior.
+    // The deprecated map differs from SEAT_INCLUDED_USD on `basic` ($5 vs $10,
+    // the Slack-shaped $8-seat tier). This test pins that difference so future
+    // "cleanups" don't silently change grandfathered behavior.
     expect(PLAN_INCLUDED_USD.business).toBe(20)
-    expect(SEAT_INCLUDED_USD.business).toBe(40)
+    expect(SEAT_INCLUDED_USD.business).toBe(20)
+    expect(PLAN_INCLUDED_USD.basic).toBe(5)
+    expect(SEAT_INCLUDED_USD.basic).toBe(10)
     expect(PLAN_INCLUDED_USD.free).toBe(0)
     expect(PLAN_INCLUDED_USD.basic).toBe(5)
     expect(PLAN_INCLUDED_USD.pro).toBe(20)
@@ -87,10 +89,10 @@ describe('getMonthlyIncludedForPlan — supported plan ids', () => {
   })
 
   test('basic is single-user and ignores seat count', () => {
-    expect(getMonthlyIncludedForPlan('basic')).toBe(5)
-    expect(getMonthlyIncludedForPlan('basic', 1)).toBe(5)
-    expect(getMonthlyIncludedForPlan('basic', 10)).toBe(5)
-    expect(getMonthlyIncludedForPlan('basic', 100)).toBe(5)
+    expect(getMonthlyIncludedForPlan('basic')).toBe(10)
+    expect(getMonthlyIncludedForPlan('basic', 1)).toBe(10)
+    expect(getMonthlyIncludedForPlan('basic', 10)).toBe(10)
+    expect(getMonthlyIncludedForPlan('basic', 100)).toBe(10)
   })
 
   test('pro scales linearly with seats', () => {
@@ -101,9 +103,9 @@ describe('getMonthlyIncludedForPlan — supported plan ids', () => {
   })
 
   test('business scales linearly with seats', () => {
-    expect(getMonthlyIncludedForPlan('business')).toBe(40)
-    expect(getMonthlyIncludedForPlan('business', 2)).toBe(80)
-    expect(getMonthlyIncludedForPlan('business', 25)).toBe(1000)
+    expect(getMonthlyIncludedForPlan('business')).toBe(20)
+    expect(getMonthlyIncludedForPlan('business', 2)).toBe(40)
+    expect(getMonthlyIncludedForPlan('business', 25)).toBe(500)
   })
 
   test('enterprise scales linearly with seats', () => {
@@ -119,13 +121,13 @@ describe('getMonthlyIncludedForPlan — seat-count safety', () => {
 
   test('coerces negative seat counts up to 1', () => {
     expect(getMonthlyIncludedForPlan('pro', -5)).toBe(20)
-    expect(getMonthlyIncludedForPlan('business', -100)).toBe(40)
+    expect(getMonthlyIncludedForPlan('business', -100)).toBe(20)
   })
 
   test('floors fractional seat counts (no fractional billing)', () => {
     expect(getMonthlyIncludedForPlan('pro', 2.9)).toBe(40)
     expect(getMonthlyIncludedForPlan('pro', 3.0001)).toBe(60)
-    expect(getMonthlyIncludedForPlan('business', 1.999)).toBe(40)
+    expect(getMonthlyIncludedForPlan('business', 1.999)).toBe(20)
   })
 
   test('NaN seats collapse to 1', () => {
@@ -173,7 +175,7 @@ describe('getMonthlyIncludedForPlan — legacy credit-tier ids', () => {
     // "pro" matches the SEAT_INCLUDED_USD map BEFORE the regex check runs.
     // This guards against a refactor that runs the regex first and returns 0.
     expect(getMonthlyIncludedForPlan('pro')).toBe(20)
-    expect(getMonthlyIncludedForPlan('business')).toBe(40)
+    expect(getMonthlyIncludedForPlan('business')).toBe(20)
   })
 })
 

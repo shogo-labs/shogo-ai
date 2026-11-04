@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { useSDKDomain, useSDKHttp } from "../domain"
 import type { IDomainStore } from "@shogo/domain-stores"
-import { deriveUsageWindows } from "./usage-windows"
+import { resolveUsageWindows } from "./usage-windows"
 
 export interface EffectiveBalance {
   dailyIncludedUsd: number
@@ -356,36 +356,30 @@ export function useBillingData(
     } catch { return undefined }
   }, [usageWallet, effectivePlan, paidTier, walletUpdatedAt, walletOverageHardLimitUsd, walletOverageEnabled, walletOverageAccumulatedUsd])
 
-  // Live-derive the rolling windows from the wallet so the usage bars refresh
-  // on every `refetchUsageWallet()` (e.g. after each completed chat message)
-  // instead of only when the workspace-plan endpoint is re-fetched. The server
-  // snapshot still supplies the authoritative per-window limits (covering
-  // grant/seat overrides); the wallet supplies live usage + window starts.
-  // Falls back to the raw server snapshot until the wallet has loaded.
-  const liveUsageWindows = useMemo<UsageWindows | undefined>(() => {
-    if (!usageWallet || !usageWindows) return usageWindows
-    return deriveUsageWindows({
-      wallet: {
-        fiveHourWindowStart: usageWallet.fiveHourWindowStart,
-        fiveHourUsedUsd: usageWallet.fiveHourUsedUsd,
-        weeklyWindowStart: usageWallet.weeklyWindowStart,
-        weeklyUsedUsd: usageWallet.weeklyUsedUsd,
-      },
-      limits: {
-        fiveHourUsd: usageWindows.fiveHour.limitUsd,
-        weeklyUsd: usageWindows.weekly.limitUsd,
-      },
-    })
+  // Live-derive the rolling windows so the usage bars refresh on every
+  // `refetchUsageWallet()` (e.g. after each completed chat message) instead of
+  // only when the workspace-plan endpoint is re-fetched. On a paid plan the
+  // allowance is metered per seat on the server, so the snapshot wins outright;
+  // see `resolveUsageWindows` for why merging the wallet there is wrong.
+  const meteredPerSeat = useMemo(() => {
+    const planId = (effectivePlan?.planId ?? "").toLowerCase()
+    return paidTier === true || (planId !== "" && !planId.startsWith("free"))
+  }, [paidTier, effectivePlan])
+
+  const liveUsageWindows = useMemo<UsageWindows | undefined>(
+    () => resolveUsageWindows({ wallet: usageWallet, windows: usageWindows, meteredPerSeat }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    usageWallet,
-    usageWindows,
-    walletUpdatedAt,
-    walletFiveHourUsedUsd,
-    walletWeeklyUsedUsd,
-    walletFiveHourWindowStart,
-    walletWeeklyWindowStart,
-  ])
+    [
+      usageWallet,
+      usageWindows,
+      meteredPerSeat,
+      walletUpdatedAt,
+      walletFiveHourUsedUsd,
+      walletWeeklyUsedUsd,
+      walletFiveHourWindowStart,
+      walletWeeklyWindowStart,
+    ],
+  )
 
   const usageEvents = useMemo(() => {
     if (!workspaceId || !store?.usageEventCollection) return []
