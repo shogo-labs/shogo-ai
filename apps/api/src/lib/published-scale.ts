@@ -123,11 +123,18 @@ export function publishedContainerResources(size: PublishedSize): {
  * Why this environment cannot run more than one replica, or `null` when it can
  * (SHO-308 AC 6).
  *
- * Knative starts each replica with its own `emptyDir`, so anything the app
- * writes into the pod is per-pod state. Until the app has both a Postgres
- * database (one DB shared by every replica) and object-backed uploads, a second
- * replica would diverge — two SQLite files, two upload dirs — and the guard in
- * `setEnvironmentScale` refuses it with `local_state_in_use`.
+ * Knative starts each replica with its own `emptyDir`, so anything the app keeps
+ * in the pod is per-pod state. Postgres is the one that matters for correctness:
+ * two replicas on two SQLite files serve two different databases. Once an
+ * environment's database is provably Postgres (`dbProvider === 'postgres'` with a
+ * database name, which only `prepareEnvironmentDatabase` sets after a successful
+ * schema push), more replicas read the same rows and the guard lifts.
+ *
+ * Uploads are the second per-pod state. `uploadsShared` is only passed when a
+ * caller actually knows the answer; `false` keeps the refusal, while an absent
+ * flag means "not measured yet" rather than "known broken" — object-backed
+ * uploads land with §3, and blocking on a value nothing sets yet would keep the
+ * guard refusing forever.
  */
 export function publishedLocalStateReason(env: {
   dbProvider?: string | null
@@ -135,10 +142,14 @@ export function publishedLocalStateReason(env: {
   uploadsShared?: boolean
 }): string | null {
   const missing: string[] = []
-  if (env.dbProvider !== 'postgres' || !env.dbName) missing.push('its database is a SQLite file inside each pod')
-  if (env.uploadsShared !== true) missing.push('its uploads land in a per-pod directory')
+  if (env.dbProvider !== 'postgres' || !env.dbName) {
+    missing.push('its database is a SQLite file inside each pod')
+  }
+  if (env.uploadsShared === false) {
+    missing.push('its uploads land in a per-pod directory')
+  }
   if (missing.length === 0) return null
-  return `This app still keeps ${missing.join(' and ')}, so a second replica would serve different data. Publishing it to Postgres with object-backed uploads unlocks more replicas.`
+  return `This app still keeps ${missing.join(' and ')}, so a second replica would serve different data. Publishing it to Postgres${env.uploadsShared === false ? ' with object-backed uploads' : ''} unlocks more replicas.`
 }
 
 export type PublishedScaleValidation =

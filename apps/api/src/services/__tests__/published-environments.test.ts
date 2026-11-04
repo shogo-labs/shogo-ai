@@ -147,12 +147,22 @@ describe('setEnvironmentScale', () => {
   it('still refuses local_state_in_use when only the database is shared', async () => {
     envs[0].dbProvider = 'postgres'
     envs[0].dbName = 'project_p1'
+    // Uploads are the remaining per-pod state (§3 moves them to the bucket).
+    envs[0].uploadsShared = false
     const res = await setEnvironmentScale('p1', 'production', { maxReplicas: 2 })
     expect(res.ok).toBe(false)
     if (!res.ok) {
       expect(res.code).toBe('local_state_in_use')
       expect(res.message).toContain('uploads')
     }
+  })
+
+  it('lifts the refusal for a Postgres-backed environment (SHO-308 §1)', async () => {
+    envs[0].dbProvider = 'postgres'
+    envs[0].dbName = 'project_p1'
+    const res = await setEnvironmentScale('p1', 'production', { minReplicas: 1, maxReplicas: 3 })
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.value.environment.maxReplicas).toBe(3)
   })
 
   it('refuses a max above the plan cap with plan_limit', async () => {

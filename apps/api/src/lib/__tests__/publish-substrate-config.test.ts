@@ -4,6 +4,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import {
   isPublishMetalAuthoritative,
+  missingProjectsDatabaseConfig,
+  shouldProvisionPublishedDatabase,
   shouldServeStaticFromEdgeOnly,
 } from '../publish-substrate-config'
 
@@ -13,6 +15,9 @@ const ENV_KEYS = [
   'SHOGO_METAL_ALL_PROJECTS',
   'SHOGO_METAL_DRAIN_MODE',
   'PUBLISH_STATIC_KSVC',
+  'PUBLISH_POSTGRES',
+  'PROJECTS_DB_ADMIN_URL',
+  'PROJECTS_DB_POOLER_HOST',
 ] as const
 
 describe('publish-substrate-config', () => {
@@ -63,6 +68,55 @@ describe('publish-substrate-config', () => {
       expect(isPublishMetalAuthoritative()).toBe(false)
       process.env.SHOGO_METAL_ENABLED = 'true'
       expect(isPublishMetalAuthoritative()).toBe(false)
+    })
+  })
+
+  describe('shouldProvisionPublishedDatabase', () => {
+    it('is off until the cluster is fully configured', () => {
+      // Unknown infrastructure must not turn every server-app publish into a 503.
+      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
+      expect(missingProjectsDatabaseConfig()).toEqual([
+        'PROJECTS_DB_ADMIN_URL',
+        'PROJECTS_DB_POOLER_HOST',
+      ])
+    })
+
+    it('is still off with only the admin URL, because the refusal also needs the pooler', () => {
+      process.env.PROJECTS_DB_ADMIN_URL = 'postgres://admin@projects-pg-rw:5432/postgres'
+      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
+      expect(missingProjectsDatabaseConfig()).toEqual(['PROJECTS_DB_POOLER_HOST'])
+    })
+
+    it('is still off with only the pooler host, because provisioning needs the admin URL', () => {
+      process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local'
+      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
+      expect(missingProjectsDatabaseConfig()).toEqual(['PROJECTS_DB_ADMIN_URL'])
+    })
+
+    it('is on for a Knative publish once both are set', () => {
+      process.env.PROJECTS_DB_ADMIN_URL = 'postgres://admin@projects-pg-rw:5432/postgres'
+      process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local'
+      expect(shouldProvisionPublishedDatabase('knative')).toBe(true)
+      expect(missingProjectsDatabaseConfig()).toEqual([])
+    })
+
+    it('never provisions a database for a metal publish (SQLite archive stays)', () => {
+      process.env.PROJECTS_DB_ADMIN_URL = 'postgres://admin@projects-pg-rw:5432/postgres'
+      process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local'
+      process.env.PUBLISH_POSTGRES = 'on'
+      expect(shouldProvisionPublishedDatabase('metal')).toBe(false)
+    })
+
+    it('PUBLISH_POSTGRES=on forces it even without an admin URL, so a bad config fails loudly', () => {
+      process.env.PUBLISH_POSTGRES = 'on'
+      expect(shouldProvisionPublishedDatabase('knative')).toBe(true)
+    })
+
+    it('PUBLISH_POSTGRES=off takes publishes back to SQLite without unsetting the URLs', () => {
+      process.env.PROJECTS_DB_ADMIN_URL = 'postgres://admin@projects-pg-rw:5432/postgres'
+      process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local'
+      process.env.PUBLISH_POSTGRES = 'off'
+      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
     })
   })
 

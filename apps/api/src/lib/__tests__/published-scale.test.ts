@@ -135,6 +135,13 @@ describe('published-scale', () => {
       expect(reason).not.toContain('per-pod directory')
     })
 
+    it('allows more than one replica on Postgres when uploads are unmeasured', () => {
+      // `uploadsShared` is only set by a caller that knows the answer; absent
+      // means "not instrumented yet", and the database is what decides AC 6
+      // until object-backed uploads land (§3).
+      expect(publishedLocalStateReason({ dbProvider: 'postgres', dbName: 'project_abc' })).toBeNull()
+    })
+
     it('allows more than one replica once both are shared', () => {
       expect(
         publishedLocalStateReason({

@@ -1,0 +1,55 @@
+# =============================================================================
+# PgBouncer Pooler — projects-pg (Staging)
+# =============================================================================
+# Published apps connect through this pooler, never the primary: a published
+# environment can run several replicas, each with its own Prisma pool, and the
+# pooler is what keeps a fleet of them from exhausting projects-pg's
+# max_connections (400).
+#
+# The API's PROJECTS_DB_POOLER_HOST points at this Service, and
+# `toPublishedDatabaseUrl` rewrites each environment's DATABASE_URL onto it with
+# `pgbouncer=true&connection_limit=5`.
+#
+# DDL never goes through here: `prisma db push` and the seed load use the
+# primary's own URL (provisioned as `directUrl`), because transaction-mode
+# pooling can hand consecutive statements to different backends.
+#
+# NOTE: transaction pooling + prepared statements. PgBouncer >= 1.21 tracks
+# protocol-level prepared statements when max_prepared_statements > 0, which is
+# what node-postgres/Prisma need under transaction mode.
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: projects-pg-pooler-rw
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: staging
+spec:
+  cluster:
+    name: projects-pg
+  instances: 2
+  type: rw
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      # Published apps are many, each with few connections: a high client cap
+      # with a small server pool is the whole point of pooling them.
+      max_client_conn: "2000"
+      default_pool_size: "25"
+      min_pool_size: "5"
+      reserve_pool_size: "5"
+      reserve_pool_timeout: "3"
+      max_prepared_statements: "200"
+      server_idle_timeout: "120"
+  monitoring:
+    enablePodMonitor: true
+  template:
+    spec:
+      # Same data-path priority as the cluster itself: PgBouncer sits on every
+      # published request, so it must not be evicted for a runtime burst.
+      priorityClassName: shogo-db-critical
+      nodeSelector:
+        node.kubernetes.io/purpose: system
+      containers: []

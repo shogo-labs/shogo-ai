@@ -885,10 +885,35 @@ async function pushPublishedData(
  * republish never clobbers accumulated end-user writes). Shared by publish +
  * republish.
  */
+/**
+ * A publish-time refusal with a code the caller can act on (SHO-308 §1).
+ *
+ * `configurePublishedService` throws this for a database preflight it cannot
+ * continue past — `destructive_schema_change`, `database_unavailable`,
+ * `schema_push_failed` — so publishProject returns the code instead of folding
+ * every failure into `configure_failed`.
+ */
+class PublishConfigureError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status: number,
+    public readonly details?: Record<string, unknown>,
+  ) {
+    super(message)
+    this.name = 'PublishConfigureError'
+  }
+}
+
 async function configurePublishedService(
   projectId: string,
   subdomain: string,
-  opts?: { alwaysOn?: boolean; serverBacked?: boolean; environment?: "production" | "staging" },
+  opts?: {
+    alwaysOn?: boolean
+    serverBacked?: boolean
+    environment?: "production" | "staging"
+    allowDataLoss?: boolean
+  },
 ): Promise<{ serverBacked: boolean }> {
   // An uploaded bundle (desktop publish) is static by construction: there is no
   // project pod to probe, and the caller already refused server-backed
@@ -921,6 +946,44 @@ async function configurePublishedService(
   // a cutover so a project that was previously elsewhere doesn't leak its runtime.
   const { getPublishSubstrate } = await import("../lib/substrate/router")
   const substrate = await getPublishSubstrate(projectId)
+
+  // Postgres at publish (SHO-308 §1): provision the environment's database,
+  // apply the app's schema and (first deploy only) seed it from `prisma/dev.db`
+  // BEFORE the ksvc exists. The step writes the DATABASE_URL Secret last, so a
+  // pod that boots has a database whose schema is already on it — and a refused
+  // publish leaves no pod running against a half-applied schema.
+  //
+  // Gated, because the `projects-pg` infrastructure is deployed per region: on a
+  // metal publish (the escape hatch, which keeps SQLite) or in a cluster that has
+  // no `PROJECTS_DB_ADMIN_URL` yet, publishing must behave exactly as it does
+  // today rather than refusing every server app with `database_unavailable`.
+  const { shouldProvisionPublishedDatabase, missingProjectsDatabaseConfig } = await import(
+    "../lib/publish-substrate-config"
+  )
+  const usePostgres = serverBacked && shouldProvisionPublishedDatabase(substrate.kind)
+  if (serverBacked && !usePostgres) {
+    const missing = missingProjectsDatabaseConfig()
+    console.log(
+      `[Publish] Keeping ${projectId}/${environmentName} on SQLite ` +
+        `(substrate=${substrate.kind}${missing.length ? `, projects-pg missing ${missing.join(", ")}` : ""})`,
+    )
+  }
+  if (usePostgres) {
+    const { prepareEnvironmentDatabase } = await import("../services/published-schema.service")
+    const prepared = await prepareEnvironmentDatabase(projectId, environmentName, {
+      allowDataLoss: opts?.allowDataLoss === true,
+    })
+    if (!prepared.ok) {
+      throw new PublishConfigureError(prepared.code, prepared.message, prepared.status, prepared.details)
+    }
+    if (prepared.value.seeded) {
+      console.log(
+        `[Publish] Seeded ${environmentName} database for ${projectId} from prisma/dev.db ` +
+          `(${prepared.value.seededRows} rows)`,
+      )
+    }
+  }
+
   const result = await substrate.publish(projectId, {
     subdomain,
     serverBacked,
@@ -1087,6 +1150,12 @@ export interface PublishProjectOptions {
   siteDescription?: string
   /** Target environment. `staging` deploys to the optional staging site. */
   environment?: 'production' | 'staging'
+  /**
+   * Proceed when the app's schema change would destroy data (a dropped column or
+   * model, a narrowed type). Publishing is refused with
+   * `destructive_schema_change` otherwise — AC 2 (SHO-308 §1).
+   */
+  allowDataLoss?: boolean
 }
 
 /**
@@ -1106,6 +1175,8 @@ export interface PublishProjectResult {
   environment?: 'production' | 'staging'
   code?: string
   message?: string
+  /** Machine-actionable context for a refusal (`destructive_schema_change`). */
+  details?: Record<string, unknown>
 }
 
 /**
@@ -1149,7 +1220,7 @@ export async function publishProject(
   // Staging is a separate ksvc + DB at `{sub}--staging`, with its own deploy
   // path. Production's publish flow never touches it.
   if (opts.environment === 'staging') {
-    return deployToStaging(projectId)
+    return deployToStaging(projectId, { allowDataLoss: opts.allowDataLoss })
   }
 
   // Set once this publish takes the per-subdomain in-flight claim, so the
@@ -1309,6 +1380,7 @@ export async function publishProject(
           await withTimeout(
             configurePublishedService(projectId, subdomain, {
               alwaysOn,
+              allowDataLoss: opts.allowDataLoss === true,
               ...(fileSource.kind === 'uploaded' ? { serverBacked: fileSource.serverBacked } : {}),
             }),
             configureTimeoutMs,
@@ -1317,9 +1389,18 @@ export async function publishProject(
         } catch (err: any) {
           console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
           const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
-          const code = isTimeout ? 'configure_timeout' : 'configure_failed'
+          // A database preflight refusal keeps its own code and status: the user
+          // has to know it was their schema (or the cluster), not the deploy.
+          const code =
+            err instanceof PublishConfigureError ? err.code : isTimeout ? 'configure_timeout' : 'configure_failed'
           await setPublishStatus(projectId, 'failed', code)
-          return { ok: false, status: 500, code, message: err.message || "Failed to configure published service" }
+          return {
+            ok: false,
+            status: err instanceof PublishConfigureError ? err.status : 500,
+            code,
+            message: err.message || "Failed to configure published service",
+            ...(err instanceof PublishConfigureError ? { details: err.details } : {}),
+          }
         }
       } finally {
         // Always release the lock, even on a thrown error path. The
@@ -1433,7 +1514,10 @@ export async function publishProject(
  * `dev.db`, never from production. Publishing to production is unaffected, and
  * `promote` ships this exact image to prod without a rebuild.
  */
-export async function deployToStaging(projectId: string): Promise<PublishProjectResult> {
+export async function deployToStaging(
+  projectId: string,
+  opts: { allowDataLoss?: boolean } = {},
+): Promise<PublishProjectResult> {
   try {
     const project = await prisma.project.findUnique({ where: { id: projectId } })
     if (!project) return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
@@ -1501,7 +1585,11 @@ export async function deployToStaging(projectId: string): Promise<PublishProject
 
       await setEnvironmentPublishStatus(staging.id, "configuring")
       const serverBacked = await detectServerBacked(projectId)
-      await configurePublishedService(projectId, subdomain, { serverBacked, environment: "staging" })
+      await configurePublishedService(projectId, subdomain, {
+        serverBacked,
+        environment: "staging",
+        allowDataLoss: opts.allowDataLoss === true,
+      })
 
       // The deployment row is recorded by configurePublishedService, for
       // whichever environment it published — recording again here would write a
@@ -1514,6 +1602,9 @@ export async function deployToStaging(projectId: string): Promise<PublishProject
     }
   } catch (error: any) {
     console.error("[Publish] Deploy to staging failed:", error)
+    if (error instanceof PublishConfigureError) {
+      return { ok: false, status: error.status, code: error.code, message: error.message }
+    }
     return { ok: false, status: 500, code: "staging_publish_failed", message: error.message }
   }
 }
@@ -2184,7 +2275,10 @@ export function publishRoutes() {
 
     const result = await publishProject(projectId, body)
     if (!result.ok) {
-      return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
+      return c.json(
+        { error: { code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) } },
+        result.status as any,
+      )
     }
     return c.json(
       {

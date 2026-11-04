@@ -377,6 +377,8 @@ app.post('/projects/:projectId/publish', async (c) => {
     siteTitle?: string
     siteDescription?: string
     environment?: 'production' | 'staging'
+    /** Proceed when the schema change would destroy data (SHO-308 §1). */
+    allowDataLoss?: boolean
   }
   try {
     body = (await c.req.json()) as typeof body
@@ -397,9 +399,13 @@ app.post('/projects/:projectId/publish', async (c) => {
       siteTitle: body.siteTitle,
       siteDescription: body.siteDescription,
       environment,
+      allowDataLoss: body.allowDataLoss === true,
     })
     if (!result.ok) {
-      return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
+      return c.json(
+        { error: { code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) } },
+        result.status as any,
+      )
     }
     return c.json({
       ok: true,

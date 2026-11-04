@@ -261,12 +261,24 @@ describe('POST /projects/:id/published/environments/:name/scale', () => {
   })
 
   it('refuses a second replica with local_state_in_use on pod-local state', async () => {
+    // The default row is Postgres-backed; the refusal here is the remaining
+    // pod-local half — uploads that live in each replica's own emptyDir.
+    envs[0].uploadsShared = false
     const res = await post('/projects/p1/published/environments/production/scale', {
       maxReplicas: 3,
     })
     expect(res.status).toBe(409)
     expect((await res.json()).error.code).toBe('local_state_in_use')
     expect(envs[0].maxReplicas).toBe(1)
+  })
+
+  it('allows more than one replica once the database is Postgres (SHO-308 §1)', async () => {
+    const res = await post('/projects/p1/published/environments/production/scale', {
+      minReplicas: 1,
+      maxReplicas: 3,
+    })
+    expect(res.status).toBe(200)
+    expect(envs[0].maxReplicas).toBe(3)
   })
 
   it('refuses a scale above the plan cap with plan_limit', async () => {

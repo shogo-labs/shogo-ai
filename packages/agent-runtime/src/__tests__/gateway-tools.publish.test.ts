@@ -394,6 +394,8 @@ describe('publish tool', () => {
         siteTitle: 'My Site',
         siteDescription: 'desc',
         environment: 'production',
+        // Only ever true when the caller confirmed the data loss (SHO-308 §1).
+        allowDataLoss: false,
       },
     })
     expect(details).toMatchObject({
@@ -934,6 +936,57 @@ describe('share_file on local desktop', () => {
     expect(result.url).toBe('https://api.example/f/signed-token')
     expect(result.expiresAt).toBe('2026-10-03T00:00:00.000Z')
     expect(sharedFileCalls).toHaveLength(1)
+  })
+})
+
+describe('publish — destructive schema change (SHO-308 §1)', () => {
+  test('a refused publish tells the agent to ask before accepting data loss', async () => {
+    publishProjectImpl = async () => ({
+      ok: false,
+      status: 409,
+      code: 'destructive_schema_change',
+      error: 'field User.nickname would be dropped, losing every value in it.',
+      details: { changes: [{ kind: 'dropped_field', name: 'User.nickname', message: 'field User.nickname would be dropped' }] },
+    })
+
+    const result = await run(baseCtx(), { subdomain: 'my-site' })
+
+    expect(result.code).toBe('destructive_schema_change')
+    // The agent is told the exact fields and that nothing was deployed, so it asks
+    // the user rather than retrying with allow_data_loss on its own.
+    expect(String(result.error)).toContain('User.nickname')
+    expect(String(result.error)).toContain('allow_data_loss: true')
+    expect(String(result.error)).toContain('Nothing was deployed')
+    expect(publishCalls).toHaveLength(1)
+    // It never re-published with the flag set.
+    expect(publishCalls[0]?.opts.allowDataLoss).toBe(false)
+  })
+
+  test('allow_data_loss is forwarded only when the agent passes it', async () => {
+    publishProjectImpl = async () => ({
+      ok: false,
+      status: 500,
+      code: 'publish_failed',
+      error: 'boom',
+    })
+
+    await run(baseCtx(), { subdomain: 'my-site', allow_data_loss: true })
+
+    expect(publishCalls[0]?.opts.allowDataLoss).toBe(true)
+  })
+
+  test('a hosting-side failure tells the agent not to retry with other arguments', async () => {
+    publishProjectImpl = async () => ({
+      ok: false,
+      status: 503,
+      code: 'database_unavailable',
+      error: 'Publishing to Postgres needs the projects database pooler.',
+    })
+
+    const result = await run(baseCtx(), { subdomain: 'my-site' })
+
+    expect(result.code).toBe('database_unavailable')
+    expect(String(result.error)).toContain('not something to retry')
   })
 })
 

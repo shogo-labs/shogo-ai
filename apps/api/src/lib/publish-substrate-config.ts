@@ -47,3 +47,51 @@ export function isPublishMetalAuthoritative(): boolean {
 export function shouldServeStaticFromEdgeOnly(): boolean {
   return process.env.PUBLISH_STATIC_KSVC !== 'true'
 }
+
+/**
+ * Whether a publish should move the app's data onto Postgres (SHO-308 §1).
+ *
+ * The publish pipeline provisions the environment's database, pushes the app's
+ * schema at it and seeds it from `prisma/dev.db` — which can only work where the
+ * `projects-pg` infrastructure exists. Two conditions, both real configuration
+ * rather than a switch that hides a broken path:
+ *
+ *   1. the site is being published to **Knative**. A metal site keeps its SQLite
+ *      data archive; that is the substrate's contract, and the escape hatch has
+ *      to stay usable.
+ *   2. the cluster is reachable *and* its databases have a pooled address —
+ *      `PROJECTS_DB_ADMIN_URL` and `PROJECTS_DB_POOLER_HOST`. These are exactly
+ *      the two things `ensureEnvironmentDatabase` refuses on (it answers
+ *      `database_unavailable` for a missing pooler or a missing admin URL), so
+ *      the gate and the refusal can never disagree: a region that would 503 is a
+ *      region that this gate keeps on SQLite, publishing exactly as it does
+ *      today. Checking only one of them would let the other turn every
+ *      server-app publish into a 503.
+ *
+ * `PUBLISH_POSTGRES=on|off` forces the decision for a single rollout step —
+ * `on` is how a misconfigured cluster surfaces as `database_unavailable` instead
+ * of silently staying on SQLite, and `off` is how a publish is taken back off
+ * Postgres without unsetting the URLs.
+ */
+export function shouldProvisionPublishedDatabase(substrateKind: 'knative' | 'metal'): boolean {
+  if (substrateKind !== 'knative') return false
+  const override = (process.env.PUBLISH_POSTGRES || '').trim().toLowerCase()
+  if (override === 'off') return false
+  if (override === 'on') return true
+  return !!configuredProjectsDatabase()
+}
+
+/**
+ * The parts of the projects-database configuration that are missing, for the
+ * publish log. Empty when the cluster is fully wired up.
+ */
+export function missingProjectsDatabaseConfig(): string[] {
+  const missing: string[] = []
+  if (!(process.env.PROJECTS_DB_ADMIN_URL || '').trim()) missing.push('PROJECTS_DB_ADMIN_URL')
+  if (!(process.env.PROJECTS_DB_POOLER_HOST || '').trim()) missing.push('PROJECTS_DB_POOLER_HOST')
+  return missing
+}
+
+function configuredProjectsDatabase(): boolean {
+  return missingProjectsDatabaseConfig().length === 0
+}

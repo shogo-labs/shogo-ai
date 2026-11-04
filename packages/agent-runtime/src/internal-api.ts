@@ -679,6 +679,12 @@ export interface PublishOptions {
   siteDescription?: string
   /** Target environment. `staging` deploys to the optional staging site. */
   environment?: 'production' | 'staging'
+  /**
+   * Proceed when the schema change would destroy data (SHO-308 §1 / AC 2).
+   * Without it a destructive change is refused with
+   * `destructive_schema_change`, so the agent has to ask the user first.
+   */
+  allowDataLoss?: boolean
 }
 
 async function publishFetch<T>(
@@ -699,7 +705,15 @@ async function publishFetch<T>(
     if (!res.ok) {
       const err = json?.error
       const message = typeof err === 'string' ? err : err?.message
-      if (message) return { ok: false, status: res.status, error: message, code: err?.code }
+      if (message) {
+        return {
+          ok: false,
+          status: res.status,
+          error: message,
+          code: err?.code,
+          ...(err?.details ? { details: err.details } : {}),
+        }
+      }
       // A 404 with no JSON body means the API in front of us has no publish
       // route at all — an older desktop build, not a publish failure. Saying
       // "HTTP 404" sent agents off retrying subdomains that were never the

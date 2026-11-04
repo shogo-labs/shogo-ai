@@ -153,6 +153,31 @@ spec:
               value: "hoshi-1-0"
             - name: SYSTEM_NAMESPACE
               value: "shogo-staging-system"
+            # ---- Published apps' Postgres (SHO-308 §1) ----------------------
+            # Published server apps get their own database on projects-pg (the
+            # PUBLISHED-app cluster, not platform-pg) and connect through its
+            # PgBouncer. Both values are required for a publish to move an app
+            # onto Postgres: with PROJECTS_DB_POOLER_HOST unset, publish refuses
+            # with `database_unavailable` instead of handing the pod a hostname
+            # nothing resolves.
+            #
+            # Ops steps that cannot be committed (see
+            # docs/runbooks/published-postgres.md): the `projects-pg-superuser`
+            # secret comes from CNPG once projects-cluster.yaml is applied, and
+            # `cnpg-s3-credentials` must exist first or the cluster cannot take
+            # backups.
+            - name: PROJECTS_DB_ADMIN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: projects-pg-superuser
+                  key: uri
+                  optional: true
+            - name: PROJECTS_DB_HOST
+              value: "projects-pg-rw.shogo-staging-system.svc.cluster.local"
+            - name: PROJECTS_DB_PORT
+              value: "5432"
+            - name: PROJECTS_DB_POOLER_HOST
+              value: "projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
             - name: PROJECT_NAMESPACE

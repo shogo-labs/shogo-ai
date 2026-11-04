@@ -1067,6 +1067,7 @@
         "@opentelemetry/sdk-node": "^0.213.0",
         "@opentelemetry/sdk-trace-base": "^2.5.1",
         "@opentelemetry/semantic-conventions": "^1.39.0",
+        "@shogo-ai/db": "workspace:*",
         "@shogo-ai/sdk": "workspace:*",
         "@shogo/model-catalog": "workspace:*",
         "ai": "^6.0.73",

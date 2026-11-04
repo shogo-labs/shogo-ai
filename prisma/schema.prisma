@@ -5956,6 +5956,13 @@ model PublishedEnvironment {
   dbProvider          String?
   /// The Postgres database name on the projects-pg cluster.
   dbName              String?
+  /// The Postgres-provider schema last applied to that database, verbatim. The
+  /// publish path classifies the app's current schema against this one, so a
+  /// destructive change can be refused instead of silently dropping rows.
+  dbSchema            String?
+  /// Hash of `dbSchema` (see shared-runtime/published-schema), so an unchanged
+  /// schema skips the push entirely on republish.
+  dbSchemaHash        String?
   /// The deployment currently serving traffic.
   currentDeploymentId String?
   /// Per-environment deploy state, so a failed staging build never marks
