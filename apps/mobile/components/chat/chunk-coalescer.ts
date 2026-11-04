@@ -60,9 +60,9 @@ export function coalesceChunks<T extends UIMessageChunk>(chunks: T[]): T[] {
 
 /**
  * How long the reader may keep the main thread before it waits a macrotask.
- * Half a frame budget's worth of slack: a commit that follows a slice still
- * lands inside the 200 ms a joined turn is allowed to block for (SHO-306), and
- * a burst that finishes sooner than this pays for no yield at all.
+ * A commit that follows a slice still lands well inside the 200 ms a joined
+ * turn is allowed to block for (SHO-306), and a burst that finishes sooner
+ * than this pays for no yield at all.
  */
 const DEFAULT_SLICE_MS = 50
 
@@ -205,8 +205,8 @@ export function coalesceChunkBursts<T extends UIMessageChunk>(
         return reader.cancel(reason)
       },
     },
-    // No read-ahead: `pull` runs only when the consumer asks, which is what
-    // makes the time between pulls a measure of its processing time.
+    // No read-ahead: `pull` runs only when the consumer asks for another
+    // chunk, so nothing is handed over that nobody is ready to apply.
     { highWaterMark: 0 },
   )
 }

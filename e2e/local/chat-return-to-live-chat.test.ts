@@ -541,10 +541,15 @@ async function sawWatchedText(page: Page): Promise<boolean> {
 }
 
 /**
- * Record every main-thread task over 50 ms from the moment the page loads
- * (SHO-306). `addInitScript` runs on the next navigation, so the reload that
- * starts the reopen is the moment the recording starts — the catch-up is
- * exactly what it captures.
+ * Record every main-thread task over 50 ms (SHO-306). `addInitScript` runs on
+ * the next navigation, so the reload that starts the reopen is the moment the
+ * recording starts.
+ *
+ * This first window is the whole relaunch — Metro's bundle evaluation and the
+ * app's own first paint included — so it is *not* the catch-up budget. The
+ * spec clears it once the rejoin row is on screen (see `resetLongTasks`) and
+ * asserts on what is left, which is the work joining the live turn actually
+ * makes the page do.
  */
 async function watchLongTasks(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -559,6 +564,20 @@ async function watchLongTasks(page: Page): Promise<void> {
     }
   })
 }
+
+/**
+ * Drop everything recorded so far and keep recording: the catch-up window
+ * starts when the panel says it is rejoining, not when the app booted.
+ */
+async function resetLongTasks(page: Page): Promise<number[]> {
+  return page.evaluate(() => {
+    const w = window as unknown as { __longTasks?: number[] }
+    const before = Array.isArray(w.__longTasks) ? w.__longTasks.slice() : []
+    if (w.__longTasks) w.__longTasks.length = 0
+    return before
+  })
+}
+
 
 async function longTasks(page: Page): Promise<number[] | null> {
   return page.evaluate(() => {
@@ -795,6 +814,12 @@ test.describe("rejoining a turn that is still running", () => {
       "the reopen says it is rejoining the live reply",
     ).toBeVisible({ timeout: 60_000 })
 
+    // The relaunch is over and the catch-up is about to start: everything
+    // recorded so far is boot (Metro bundle evaluation, first paint), not the
+    // work this spec is about. Keep it for the log, then start the budget.
+    const bootTasks = await resetLongTasks(page)
+    const catchUpStartedAt = Date.now()
+
     // Type while the client is still catching up. `toHaveValue` polls through
     // the page, so it can only pass once the main thread is free to run the
     // keystroke — a frozen window fails this, not the typing itself.
@@ -812,16 +837,22 @@ test.describe("rejoining a turn that is still running", () => {
       page.getByText(BIG_TURN_MARKER, { exact: false }).first(),
       "the joined turn is on screen",
     ).toBeVisible({ timeout: 60_000 })
+    const catchUpTookMs = Date.now() - catchUpStartedAt
 
     const tasks = await longTasks(page)
     expect(tasks, "the page records long tasks (Chromium only)").not.toBeNull()
     const worst = Math.max(0, ...(tasks ?? []))
     const blocked = (tasks ?? []).reduce((sum, ms) => sum + ms, 0)
+    const bootWorst = Math.max(0, ...bootTasks)
+    const bootBlocked = bootTasks.reduce((sum, ms) => sum + ms, 0)
     // eslint-disable-next-line no-console
     console.log(
-      `[SHO-306] joined ${BIG_TOOL_CALLS} tool calls: worst task ${Math.round(worst)} ms, ` +
+      `[SHO-306] joined ${BIG_TOOL_CALLS} tool calls: catch-up worst task ${Math.round(worst)} ms, ` +
         `${(tasks ?? []).length} long tasks, ${Math.round(blocked)} ms blocked, ` +
-        `keystroke landed in ${keystrokeLandedIn} ms`,
+        `keystroke landed in ${keystrokeLandedIn} ms, ` +
+        `live turn on screen ${catchUpTookMs} ms after the rejoin row ` +
+        `(relaunch before it: worst ${Math.round(bootWorst)} ms, ` +
+        `${bootTasks.length} long tasks, ${Math.round(bootBlocked)} ms blocked)`,
     )
 
     expect(

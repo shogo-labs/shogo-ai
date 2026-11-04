@@ -267,12 +267,19 @@ function CollapsibleToolGroupImpl({
     [],
   )
 
+  // When the body is not measured while closed it is measured on the frame it
+  // opens, so there is no height to animate to yet. Opening towards
+  // `STREAM_MAX_HEIGHT` in that gap springs a short run out to the full cap and
+  // snaps it back; opening from 0 lets it grow once the measurement lands
+  // (SHO-306).
+  const unmountedTarget = scrollBody && measureWhenClosed ? STREAM_MAX_HEIGHT : 0
+
   const heightAnimate = useMemo(
     () => ({
       opacity: 1,
-      height: targetHeight || (scrollBody ? STREAM_MAX_HEIGHT : 0),
+      height: targetHeight || unmountedTarget,
     }),
-    [targetHeight, scrollBody],
+    [targetHeight, unmountedTarget],
   )
 
   const handleHiddenLayout = useCallback((e: LayoutChangeEvent) => {
