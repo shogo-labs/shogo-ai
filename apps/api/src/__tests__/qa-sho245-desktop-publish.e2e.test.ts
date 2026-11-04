@@ -30,6 +30,8 @@ let rows: Record<string, Row> = {}
 let localConfig: Record<string, string> = {}
 const created: Row[] = []
 const s3Keys: string[] = []
+let publishedEnvs: Row[] = []
+let deployments: Row[] = []
 const substratePublishes: Array<{ projectId: string; subdomain: string; serverBacked: boolean }> = []
 
 const prismaApi = {
@@ -79,6 +81,66 @@ const prismaApi = {
       localConfig[where.key] = localConfig[where.key] === undefined ? create.value : update.value
       return { key: where.key, value: localConfig[where.key] }
     },
+  },
+  // SHO-308: a publish now ensures the project's `production` environment row
+  // (and records the deployment it produced), so the fake has to model them
+  // the way the real tables do — one environment per (project, name).
+  publishedEnvironment: {
+    findUnique: async ({ where }: any) => {
+      if (where.projectId_name) {
+        const { projectId, name } = where.projectId_name
+        return publishedEnvs.find((e) => e.projectId === projectId && e.name === name) ?? null
+      }
+      return publishedEnvs.find((e) => e.id === where.id) ?? null
+    },
+    findMany: async ({ where }: any) =>
+      publishedEnvs.filter((e) => !where?.projectId || e.projectId === where.projectId),
+    create: async ({ data }: any) => {
+      const row: Row = {
+        id: `env_${publishedEnvs.length + 1}`,
+        minReplicas: 0,
+        maxReplicas: 1,
+        size: 's',
+        dbProvider: null,
+        dbName: null,
+        currentDeploymentId: null,
+        publishStatus: null,
+        publishError: null,
+        publishStatusAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ...data,
+      }
+      publishedEnvs.push(row)
+      return { ...row }
+    },
+    update: async ({ where, data }: any) => {
+      const row = publishedEnvs.find((e) => e.id === where.id)
+      if (!row) throw new Error(`no environment ${where.id}`)
+      Object.assign(row, data)
+      return { ...row }
+    },
+    delete: async ({ where }: any) => {
+      const idx = publishedEnvs.findIndex((e) => e.id === where.id)
+      const [removed] = publishedEnvs.splice(idx, 1)
+      return removed
+    },
+  },
+  publishedDeployment: {
+    findUnique: async ({ where }: any) => deployments.find((d) => d.id === where.id) ?? null,
+    findFirst: async () => null,
+    findMany: async () => deployments,
+    create: async ({ data }: any) => {
+      const row: Row = { id: `dep_${deployments.length + 1}`, ...data }
+      deployments.push(row)
+      return row
+    },
+    update: async ({ where, data }: any) => {
+      const row = deployments.find((d) => d.id === where.id)
+      if (row) Object.assign(row, data)
+      return row
+    },
+    updateMany: async () => ({ count: 0 }),
   },
 }
 
@@ -230,6 +292,8 @@ function post(path: string, body: any = {}) {
 beforeEach(() => {
   rows = {}
   localConfig = {}
+  publishedEnvs = []
+  deployments = []
   created.length = 0
   s3Keys.length = 0
   substratePublishes.length = 0

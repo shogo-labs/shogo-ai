@@ -888,7 +888,7 @@ async function pushPublishedData(
 async function configurePublishedService(
   projectId: string,
   subdomain: string,
-  opts?: { alwaysOn?: boolean; serverBacked?: boolean },
+  opts?: { alwaysOn?: boolean; serverBacked?: boolean; environment?: "production" | "staging" },
 ): Promise<{ serverBacked: boolean }> {
   // An uploaded bundle (desktop publish) is static by construction: there is no
   // project pod to probe, and the caller already refused server-backed
@@ -900,23 +900,68 @@ async function configurePublishedService(
   // runtime — Knative pod or metal host-side hydration — pulls it on first boot.
   if (serverBacked) await seedPublishedData(subdomain, projectId)
 
-  // Publishing is metal-authoritative fleet-wide (getPublishSubstrate), NOT
-  // gated by the graduated per-project preview rollout — so every new publish
-  // lands on metal once the fleet is enabled. unpublishProjectEverywhere covers
-  // the other substrate on a cutover so a project that was previously on Knative
-  // doesn't leak its old published ksvc.
+  // Every publish has a `production` environment row (SHO-308 §8). It is
+  // created on first publish and carries the Knative scale settings that the
+  // substrate applies to the ksvc.
+  const { ensureProductionEnvironment, getEnvironment, scaleSettingsOf } = await import(
+    "../services/published-environments.service"
+  )
+  const environmentName = opts?.environment ?? "production"
+  const environment =
+    environmentName === "production"
+      ? await ensureProductionEnvironment(projectId, subdomain, { alwaysOn: opts?.alwaysOn })
+      : await getEnvironment(projectId, "staging")
+  if (!environment) {
+    throw new Error("staging environment does not exist — create it before deploying")
+  }
+  const scale = scaleSettingsOf(environment)
+
+  // Published apps run on Knative (getPublishSubstrate). `PUBLISH_SUBSTRATE=metal`
+  // is the escape hatch. unpublishProjectEverywhere covers the other substrate on
+  // a cutover so a project that was previously elsewhere doesn't leak its runtime.
   const { getPublishSubstrate } = await import("../lib/substrate/router")
   const substrate = await getPublishSubstrate(projectId)
   const result = await substrate.publish(projectId, {
     subdomain,
     serverBacked,
     alwaysOn: opts?.alwaysOn,
+    environment: environmentName,
+    scale,
   })
   console.log(
     `[Publish] Published ${projectId} via ${result.substrate} substrate ` +
       `(serverBacked=${result.serverBacked}${result.url ? `, url=${result.url}` : ""})`,
   )
+
+  // Record what this environment is now serving so rollback, redeploy and
+  // promote have a real image to point at (SHO-308 §4/§5). Without this row the
+  // three ops actions have nothing to switch to.
+  const { recordPublishedDeployment } = await import("../services/published-deployments.service")
+  const { resolvePublishedImageRef } = await import("../services/published-ops.service")
+  await recordPublishedDeployment({
+    environmentId: environment.id,
+    commitSha: (await currentPublishedCommitSha(projectId)) ?? "",
+    // Prefer what the substrate reported running; the resolver is the same
+    // precedence, so this can only differ if a substrate chose something else.
+    imageRef: result.imageRef ?? resolvePublishedImageRef(),
+    revisionName: result.revisionName ?? null,
+    status: "ready",
+  })
+
   return { serverBacked: result.serverBacked }
+}
+
+/** The commit the publish is shipping, for the deployment record. */
+async function currentPublishedCommitSha(projectId: string): Promise<string | null> {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { publishedCommitSha: true },
+    })
+    return (project as any)?.publishedCommitSha ?? null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -1040,6 +1085,8 @@ export interface PublishProjectOptions {
   password?: string
   siteTitle?: string
   siteDescription?: string
+  /** Target environment. `staging` deploys to the optional staging site. */
+  environment?: 'production' | 'staging'
 }
 
 /**
@@ -1055,6 +1102,8 @@ export interface PublishProjectResult {
   publishedAt?: number
   accessLevel?: AccessLevel
   hasPassword?: boolean
+  /** Which environment this result is for. Defaults to production. */
+  environment?: 'production' | 'staging'
   code?: string
   message?: string
 }
@@ -1097,6 +1146,12 @@ export async function publishProject(
   opts: PublishProjectOptions,
   fileSource: PublishFileSource = { kind: 'pod' },
 ): Promise<PublishProjectResult> {
+  // Staging is a separate ksvc + DB at `{sub}--staging`, with its own deploy
+  // path. Production's publish flow never touches it.
+  if (opts.environment === 'staging') {
+    return deployToStaging(projectId)
+  }
+
   // Set once this publish takes the per-subdomain in-flight claim, so the
   // `finally` below can release it on every exit path (including a throw).
   let claimedSubdomain: string | null = null
@@ -1367,6 +1422,99 @@ export async function publishProject(
     // Always drop the claim — success (the row is committed by now), a structured
     // failure, or a throw. The TTL is a backstop, not the release mechanism.
     if (claimedSubdomain) releaseSubdomainClaim(claimedSubdomain, projectId)
+  }
+}
+
+/**
+ * Deploy the current commit to the project's staging environment (SHO-308 §8).
+ *
+ * Same build as a production publish, uploaded under the staging subdomain and
+ * provisioned as its own ksvc + DomainMapping. Staging's database is seeded from
+ * `dev.db`, never from production. Publishing to production is unaffected, and
+ * `promote` ships this exact image to prod without a rebuild.
+ */
+export async function deployToStaging(projectId: string): Promise<PublishProjectResult> {
+  try {
+    const project = await prisma.project.findUnique({ where: { id: projectId } })
+    if (!project) return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
+    const baseSubdomain = (project as any).publishedSubdomain as string | null
+    if (!baseSubdomain) {
+      return {
+        ok: false,
+        status: 409,
+        code: "not_published",
+        message: "Publish the app to production before creating a staging environment",
+      }
+    }
+
+    const { createStagingEnvironment, getEnvironment, scaleSettingsOf } = await import(
+      "../services/published-environments.service"
+    )
+    const created = await createStagingEnvironment(projectId)
+    if (!created.ok) {
+      return { ok: false, status: created.status, code: created.code, message: created.message }
+    }
+    const staging = await getEnvironment(projectId, "staging")
+    if (!staging) {
+      return { ok: false, status: 500, code: "staging_missing", message: "Could not create staging" }
+    }
+    const subdomain = staging.subdomain
+
+    // Environments need a substrate that can hold more than one runtime. Metal
+    // keeps a single published microVM per project, so refuse rather than let a
+    // staging publish re-point production's VM (SHO-308 §8).
+    const { getPublishSubstrate } = await import("../lib/substrate/router")
+    const substrate = await getPublishSubstrate(projectId)
+    if (substrate.kind !== "knative") {
+      return {
+        ok: false,
+        status: 409,
+        code: "staging_requires_knative",
+        message:
+          "Staging environments run on Knative. This workspace is set to the metal substrate, which serves one published runtime per project.",
+      }
+    }
+
+    if (!isKubernetes()) {
+      return { ok: true, status: 200, subdomain, environment: "staging" } as PublishProjectResult
+    }
+
+    await acquirePublishLock(projectId)
+    // Staging deploy state lives on the staging row, never on the project: a
+    // failed staging build must not mark production failed (SHO-308 §8).
+    const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
+    try {
+      await setEnvironmentPublishStatus(staging.id, "building")
+      const build = await triggerBuildWithRetry(projectId)
+      if (!build.success) {
+        await setEnvironmentPublishStatus(staging.id, "failed", build.code || "build_failed")
+        return { ok: false, status: 500, code: build.code || "build_failed", message: build.error || "Build failed" }
+      }
+      const files = await downloadDistFiles(projectId)
+      if (files.size === 0) {
+        await setEnvironmentPublishStatus(staging.id, "failed", "no_files")
+        return { ok: false, status: 400, code: "no_files", message: "No files to publish - build may have failed" }
+      }
+      await setEnvironmentPublishStatus(staging.id, "uploading")
+      await uploadToS3(subdomain, files)
+      await purgePublishedCache(subdomain)
+
+      await setEnvironmentPublishStatus(staging.id, "configuring")
+      const serverBacked = await detectServerBacked(projectId)
+      await configurePublishedService(projectId, subdomain, { serverBacked, environment: "staging" })
+
+      // The deployment row is recorded by configurePublishedService, for
+      // whichever environment it published — recording again here would write a
+      // duplicate whose twin is immediately superseded, leaving rollback to
+      // "roll back" to the same image and change nothing.
+      await setEnvironmentPublishStatus(staging.id, "live")
+      return { ok: true, status: 200, subdomain, environment: "staging" } as PublishProjectResult
+    } finally {
+      await releasePublishLock(projectId)
+    }
+  } catch (error: any) {
+    console.error("[Publish] Deploy to staging failed:", error)
+    return { ok: false, status: 500, code: "staging_publish_failed", message: error.message }
   }
 }
 
@@ -2476,6 +2624,162 @@ export function publishRoutes() {
   router.delete("/projects/:projectId/domains/:domainId", async (c) => {
     const result = await deleteCustomDomain(c.req.param("projectId"), c.req.param("domainId"))
     return c.json(result.body, result.status as any)
+  })
+
+  // ===========================================================================
+  // Published environments / Deployment tab (SHO-308 §4, §8, §9)
+  //
+  // One surface for the dashboard and the agent's `publish ops_action`, so the
+  // two can never disagree. Every route goes through published-ops.service.ts.
+  // ===========================================================================
+
+  router.get("/projects/:projectId/published/environments", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const [statuses, caps] = await Promise.all([
+        import("../services/published-ops.service").then((m) => m.listEnvironmentStatuses(projectId)),
+        import("../services/published-environments.service").then((m) => m.getProjectPublishedCaps(projectId)),
+      ])
+      return c.json({ environments: statuses, caps }, 200)
+    } catch (error: any) {
+      console.error("[Publish] List environments error:", error)
+      return c.json({ error: { code: "list_environments_failed", message: error.message } }, 500)
+    }
+  })
+
+  router.post("/projects/:projectId/published/environments", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const body = await c.req.json<{ name?: string }>().catch(() => ({}) as any)
+      const name = body?.name === "staging" ? "staging" : body?.name === "production" ? "production" : null
+      if (!name) return c.json({ error: { code: "invalid_environment", message: "name must be production or staging" } }, 400)
+      const { createEnvironment } = await import("../services/published-ops.service")
+      const res = await createEnvironment(projectId, name)
+      if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+      return c.json({ environment: res.value }, 201)
+    } catch (error: any) {
+      console.error("[Publish] Create environment error:", error)
+      return c.json({ error: { code: "create_environment_failed", message: error.message } }, 500)
+    }
+  })
+
+  router.delete("/projects/:projectId/published/environments/:name", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const name = c.req.param("name")
+      if (name !== "production" && name !== "staging") {
+        return c.json({ error: { code: "invalid_environment", message: "name must be production or staging" } }, 400)
+      }
+      const { deleteEnvironment } = await import("../services/published-ops.service")
+      const res = await deleteEnvironment(projectId, name)
+      if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+      return c.json(res.value, 200)
+    } catch (error: any) {
+      console.error("[Publish] Delete environment error:", error)
+      return c.json({ error: { code: "delete_environment_failed", message: error.message } }, 500)
+    }
+  })
+
+  const envName = (raw: string | undefined) => (raw === "staging" ? "staging" : "production")
+
+  router.get("/projects/:projectId/published/environments/:name/status", async (c) => {
+    try {
+      const { getEnvironmentStatus } = await import("../services/published-ops.service")
+      const res = await getEnvironmentStatus(c.req.param("projectId"), envName(c.req.param("name")))
+      if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+      return c.json(res.value, 200)
+    } catch (error: any) {
+      console.error("[Publish] Environment status error:", error)
+      return c.json({ error: { code: "status_failed", message: error.message } }, 500)
+    }
+  })
+
+  router.get("/projects/:projectId/published/environments/:name/metrics", async (c) => {
+    try {
+      const since = c.req.query("since")
+      const sinceMs = since && Number.isFinite(Number(since)) ? Number(since) : undefined
+      const { getEnvironmentMetrics } = await import("../services/published-ops.service")
+      const res = await getEnvironmentMetrics(c.req.param("projectId"), envName(c.req.param("name")), { sinceMs })
+      if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+      return c.json(res.value, 200)
+    } catch (error: any) {
+      console.error("[Publish] Environment metrics error:", error)
+      return c.json({ error: { code: "metrics_failed", message: error.message } }, 500)
+    }
+  })
+
+  router.get("/projects/:projectId/published/environments/:name/logs", async (c) => {
+    try {
+      const { getEnvironmentLogs } = await import("../services/published-ops.service")
+      const tail = Number(c.req.query("tail"))
+      const res = await getEnvironmentLogs(c.req.param("projectId"), envName(c.req.param("name")), {
+        podName: c.req.query("pod") || undefined,
+        tailLines: Number.isFinite(tail) ? tail : undefined,
+      })
+      if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+      return c.json(res.value, 200)
+    } catch (error: any) {
+      console.error("[Publish] Environment logs error:", error)
+      return c.json({ error: { code: "logs_failed", message: error.message } }, 500)
+    }
+  })
+
+  router.post("/projects/:projectId/published/environments/:name/scale", async (c) => {
+    try {
+      const body = await c.req.json<any>().catch(() => ({}) as any)
+      const { scaleEnvironment } = await import("../services/published-ops.service")
+      const res = await scaleEnvironment(c.req.param("projectId"), envName(c.req.param("name")), {
+        minReplicas: body?.minReplicas ?? body?.min_replicas,
+        maxReplicas: body?.maxReplicas ?? body?.max_replicas,
+        size: body?.size,
+      })
+      if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+      return c.json(res.value, 200)
+    } catch (error: any) {
+      console.error("[Publish] Environment scale error:", error)
+      return c.json({ error: { code: "scale_failed", message: error.message } }, 500)
+    }
+  })
+
+  router.post("/projects/:projectId/published/environments/:name/rollback", async (c) => {
+    try {
+      const body = await c.req.json<any>().catch(() => ({}) as any)
+      const { rollbackEnvironment } = await import("../services/published-ops.service")
+      const res = await rollbackEnvironment(
+        c.req.param("projectId"),
+        envName(c.req.param("name")),
+        body?.deploymentId ?? body?.deployment_id,
+      )
+      if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+      return c.json(res.value, 200)
+    } catch (error: any) {
+      console.error("[Publish] Environment rollback error:", error)
+      return c.json({ error: { code: "rollback_failed", message: error.message } }, 500)
+    }
+  })
+
+  router.post("/projects/:projectId/published/environments/:name/redeploy", async (c) => {
+    try {
+      const { redeployEnvironment } = await import("../services/published-ops.service")
+      const res = await redeployEnvironment(c.req.param("projectId"), envName(c.req.param("name")))
+      if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+      return c.json(res.value, 200)
+    } catch (error: any) {
+      console.error("[Publish] Environment redeploy error:", error)
+      return c.json({ error: { code: "redeploy_failed", message: error.message } }, 500)
+    }
+  })
+
+  router.post("/projects/:projectId/published/promote", async (c) => {
+    try {
+      const { promoteStagingToProduction } = await import("../services/published-ops.service")
+      const res = await promoteStagingToProduction(c.req.param("projectId"))
+      if (!res.ok) return c.json({ error: { code: res.code, message: res.message, ...res.details } }, res.status as any)
+      return c.json(res.value, 200)
+    } catch (error: any) {
+      console.error("[Publish] Promote error:", error)
+      return c.json({ error: { code: "promote_failed", message: error.message } }, 500)
+    }
   })
 
   return router

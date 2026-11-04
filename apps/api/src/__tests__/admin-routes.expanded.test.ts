@@ -3,6 +3,7 @@
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
+import { clearAnalyticsCache } from '../lib/analytics-cache'
 
 const analyticsCalls: Array<[string, any[]]> = []
 const scheduler = {
@@ -165,6 +166,12 @@ let adminRoutes: typeof import('../routes/admin').adminRoutes
 let userAttributionRoute: typeof import('../routes/admin').userAttributionRoute
 
 beforeEach(async () => {
+  // The admin analytics routes are cached for five minutes (SHO-311), so a
+  // suite that reuses one process would see a warmed entry instead of a
+  // service call: `analyticsCalls` would come back empty and the "throws →
+  // 500" case would answer 200 from the cache it had just written. Cold cache
+  // per test keeps every assertion about the handler it names.
+  clearAnalyticsCache()
   analyticsCalls.length = 0
   scheduler.paused = false
   for (const value of Object.values(scheduler)) {

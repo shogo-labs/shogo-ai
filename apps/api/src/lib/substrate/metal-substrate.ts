@@ -13,6 +13,7 @@
  */
 
 import type { ProjectSubstrate, PublishOpts, PublishResult, Resources, RuntimeStatus, RuntimeSummary, WakeOpts } from './types'
+import { SubstrateUnsupportedError as OpUnsupportedError } from './types'
 import { getMetalWarmPoolController, workspaceRuntimeKey, type StopResult } from '../metal-warm-pool-controller'
 
 /**
@@ -116,8 +117,18 @@ export class MetalSubstrate implements ProjectSubstrate {
   // --- publishing surface --------------------------------------------------
 
   async publish(projectId: string, opts: PublishOpts): Promise<PublishResult> {
-    const { subdomain, serverBacked, alwaysOn } = opts
+    const { subdomain, serverBacked, alwaysOn, environment } = opts
     const kv = await this.serverBackedKv()
+
+    // Metal keeps ONE published microVM per project (`published:{projectId}`),
+    // so it has no way to hold a second environment: a staging publish here
+    // would re-point production's VM and its edge placement at the staging
+    // subdomain. Environments require Knative (SHO-308 §8).
+    if (environment === 'staging') {
+      // `publish(environment: 'staging')` — metal holds one published runtime
+      // per project (SHO-308 §8).
+      throw new OpUnsupportedError('publish(staging)', this.kind)
+    }
 
     if (!serverBacked) {
       // Static apps serve entirely from PUBLISH_BUCKET + the Cloudflare Worker —

@@ -614,6 +614,7 @@ model UsageEvent {
   @@index([projectId])
   @@index([memberId])
   @@index([createdAt])
+  @@index([memberId, createdAt])
   @@map("usage_events")
 }
 
@@ -675,6 +676,7 @@ model ChatMessage {
   @@index([sessionId])
   @@index([sessionId, createdAt])
   @@index([sessionId, agent, createdAt])
+  @@index([createdAt])
   @@map("chat_messages")
 }
 
@@ -742,6 +744,7 @@ model ToolCallLog {
 
   @@index([chatSessionId])
   @@index([messageId])
+  @@index([createdAt])
   @@map("tool_call_logs")
 }
 

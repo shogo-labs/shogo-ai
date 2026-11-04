@@ -184,6 +184,9 @@ const NEVER_BILLING = [
   'MarketplaceReview',
   'MarketplaceTransaction',
   'TrialRedemption', // card-backed trial, keyed by Stripe ids
+  // SHO-308: the metered minutes behind `published_hosting` — the input to
+  // consumeUsage, so the cloud's own accounting, never a synced row.
+  'PublishedUsageMinute',
 ] as const
 
 const NEVER_CLOUD_PLATFORM = [
@@ -193,6 +196,12 @@ const NEVER_CLOUD_PLATFORM = [
   'EventDelivery',
   'WorkspaceEvent',
   'CustomDomain', // DNS is issued by the cloud
+  // SHO-308: the published hosting itself — the ksvc's scale/size, the DB the
+  // environment was provisioned, and the image revisions that are running.
+  // Those are cloud facts about a running service; a desktop neither runs them
+  // nor may claim them, so its copy of these tables stays empty.
+  'PublishedEnvironment',
+  'PublishedDeployment',
   'ProjectAuthConfig', // published-site auth, cloud-served
   'ProjectAuthSignIn',
   'PlatformSetting',

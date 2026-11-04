@@ -123,6 +123,9 @@ describe('internal publish auth e2e (real runtime token, production mode)', () =
         password: undefined,
         siteTitle: undefined,
         siteDescription: undefined,
+        // SHO-308 §5: the route now always tells the substrate which
+        // environment to publish, defaulting to production.
+        environment: 'production',
       },
     })
   })
