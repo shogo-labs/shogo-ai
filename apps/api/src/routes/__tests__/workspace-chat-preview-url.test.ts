@@ -20,6 +20,10 @@ const store = {
   podUrl: 'http://10.0.0.9:20011',
   attached: ['proj-1'],
   anchor: 'proj-anchor',
+  runtime: { mode: 'k8s', url: 'http://ws-1.shogo-workspaces.svc.cluster.local:8080' } as {
+    mode: string
+    url: string
+  },
 }
 
 const realWorkspaceService = await import('../../services/workspace.service')
@@ -60,7 +64,7 @@ mock.module('../../lib/resolve-workspace-runtime-url', () => {
   class WorkspaceRuntimeNotEnabledError extends Error {}
   return {
     WorkspaceRuntimeNotEnabledError,
-    resolveWorkspaceRuntimeUrl: async () => ({ mode: 'k8s', url: 'http://ws-1.shogo-workspaces.svc.cluster.local:8080' }),
+    resolveWorkspaceRuntimeUrl: async () => store.runtime,
   }
 })
 
@@ -99,6 +103,7 @@ beforeEach(() => {
   store.podUrl = 'http://10.0.0.9:20011'
   store.attached = ['proj-1']
   store.anchor = 'proj-anchor'
+  store.runtime = { mode: 'k8s', url: 'http://ws-1.shogo-workspaces.svc.cluster.local:8080' }
 })
 
 describe('GET …/preview-url', () => {
@@ -126,5 +131,21 @@ describe('GET …/preview-url', () => {
     const body: any = await res.json()
     expect(body.mode).toBe('k8s')
     expect(body.previewUrl).toBe('http://ws-1.shogo-workspaces.svc.cluster.local:8080/p/proj-1/')
+  })
+
+  test('a workspace hosted on a paired desktop reports no URL at all', async () => {
+    store.metal = false
+    store.runtime = {
+      mode: 'host-tunnel',
+      url: 'http://127.0.0.1:8002/api/internal/host-tunnel/secret/inst-1/api/workspaces/ws-1/agent-proxy',
+    }
+    const res = await previewUrl()
+    expect(res.status).toBe(200)
+    const body: any = await res.json()
+    expect(body.mode).toBe('host-tunnel')
+    expect(body.runtimeUrl).toBeNull()
+    expect(body.previewUrl).toBeNull()
+    expect(JSON.stringify(body)).not.toContain('/api/internal/')
+    expect(JSON.stringify(body)).not.toContain('127.0.0.1')
   })
 })

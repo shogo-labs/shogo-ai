@@ -550,13 +550,19 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       )
     }
 
+    // A workspace hosted on a paired desktop has no URL a person can open: the
+    // resolved URL is the host tunnel's loopback address and its secret
+    // (`lib/host-tunnel`), so only the mode goes back.
+    const { clientRuntimeUrl } = await import('../lib/host-tunnel')
+    const runtimeUrl = clientRuntimeUrl(resolved)
+
     return c.json({
       projectId,
       mode: resolved.mode,
-      runtimeUrl: resolved.url,
+      runtimeUrl,
       // Trailing slash is canonical: the app is built with vite base
       // `/p/<projectId>/`, so its absolute asset URLs resolve under this.
-      previewUrl: metalPreviewUrl ?? `${resolved.url}/p/${projectId}/`,
+      previewUrl: metalPreviewUrl ?? (runtimeUrl ? `${runtimeUrl}/p/${projectId}/` : null),
     })
   })
 
