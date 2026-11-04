@@ -64,12 +64,34 @@ describe('draft sync', () => {
     expect(puts.map((p) => p.text)).toEqual(['hello world', ''])
   })
 
-  test('an echo older than the latest keystroke is ignored while typing', () => {
+  test('an echo older than the latest keystroke is ignored while typing', async () => {
     const { result } = renderDraft()
     act(() => result.current.save('hel'))
     act(() => result.current.save('hello'))
     echo('hel')
+    // The echo was rejected: the store never adopts the older text.
+    expect(result.current.stored).toBe('')
+    // The store is told once the debounced write goes out, not per keystroke
+    // (SHO-314) — then it holds the latest text.
+    await act(async () => {
+      await Bun.sleep(900)
+    })
     expect(result.current.stored).toBe('hello')
+  })
+
+  test('typing does not publish to the shared store on every keystroke', async () => {
+    const { result } = renderDraft()
+    act(() => {
+      for (const text of ['h', 'he', 'hel', 'hell', 'hello']) result.current.save(text)
+    })
+    // Nothing published yet: a per-key publish is what re-rendered every
+    // `useSyncExternalStore` subscriber (the conversation screen) per character.
+    expect(result.current.stored).toBe('')
+    await act(async () => {
+      await Bun.sleep(900)
+    })
+    expect(result.current.stored).toBe('hello')
+    expect(puts.map((p) => p.text)).toEqual(['hello'])
   })
 
   test('drafts from other devices still apply when nothing was saved locally', () => {

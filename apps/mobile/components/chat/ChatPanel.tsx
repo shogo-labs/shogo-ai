@@ -1871,7 +1871,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setRestoreDraftRequest((prev) => (prev ? null : prev))
       return
     }
-    const draft = composerRecord?.draft
+    const draft = composerMemory.readDraft()
     const text = draft?.text ?? ""
     const applied = appliedComposerDraftRef.current
     if (applied?.key === composerChatKey) {
@@ -1892,6 +1892,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     composerReady,
     composerRecord,
     prefillRequest,
+    composerMemory.readDraft,
     composerMemory.saveDraft,
   ])
 
