@@ -53,6 +53,12 @@ import { EmojiPicker, rememberEmoji } from './EmojiPicker'
 
 const api = teamChatApi()
 const MAX_FILE_BYTES = 50 * 1024 * 1024
+/**
+ * How often a typist re-sends the typing signal. The receiving side drops an
+ * indicator after `TYPING_TTL_MS` (5 s) of silence, so this must stay under it
+ * with room for a late frame.
+ */
+const TYPING_SIGNAL_MS = 3000
 
 export interface ComposerProps {
   workspaceId: string
@@ -205,13 +211,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey, draft.stored, candidates.length])
 
+  // Typing signals are a "still here" heartbeat, not a keystroke log: one
+  // WebSocket frame every few seconds while someone types. Sending one per key
+  // put a frame and a server fan-out behind every character (SHO-314).
+  const typingSentAtRef = useRef(0)
   const onTextChange = useCallback(
     (next: string, refs: ChatReference[]) => {
       textRef.current = next
       setText(next)
       saveDraft(next.trim() ? encodeMentions(next, picksFrom(refs)) : '')
       setNotice(null)
-      if (next.trim()) sendTyping(workspaceId, conversationId, threadRootId)
+      if (next.trim()) {
+        const now = Date.now()
+        if (now - typingSentAtRef.current >= TYPING_SIGNAL_MS) {
+          typingSentAtRef.current = now
+          sendTyping(workspaceId, conversationId, threadRootId)
+        }
+      }
     },
     [saveDraft, picksFrom, workspaceId, conversationId, threadRootId],
   )

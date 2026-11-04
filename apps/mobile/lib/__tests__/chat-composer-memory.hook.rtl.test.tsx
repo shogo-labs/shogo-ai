@@ -139,4 +139,42 @@ describe("useChatComposerMemory", () => {
     remounted.unmount()
     rerender({ k: key })
   })
+
+  // SHO-314: the freeze. Typing re-rendered the whole 10k-line ChatPanel because
+  // every keystroke put a new draft record in React state.
+  test("typing 20 characters does not re-render the consumer at all", async () => {
+    const key = mod.composerMemoryKey("rtl-typing")
+    let renders = 0
+    const { result } = renderHook(() => {
+      renders += 1
+      return mod.useChatComposerMemory(key)
+    })
+    await waitFor(() => expect(result.current.ready).toBe(true))
+    const before = renders
+
+    act(() => {
+      for (let i = 1; i <= 20; i++) result.current.saveDraft("x".repeat(i), [])
+    })
+
+    expect(renders).toBe(before)
+    expect(result.current.readDraft()?.text).toBe("x".repeat(20))
+  })
+
+  test("the hook keeps one object identity until the chat or its record changes", async () => {
+    const key = mod.composerMemoryKey("rtl-stable")
+    const { result, rerender } = renderHook(() => mod.useChatComposerMemory(key))
+    await waitFor(() => expect(result.current.ready).toBe(true))
+    const first = result.current
+
+    // A parent re-render (a streaming message, a toolbar toggle) must hand the
+    // same callbacks down, or every memoized child re-renders with it and every
+    // effect that depends on them re-runs.
+    rerender()
+    expect(result.current).toBe(first)
+
+    act(() => result.current.saveDraft("typed", []))
+    expect(result.current).toBe(first)
+    expect(result.current.saveDraft).toBe(first.saveDraft)
+    expect(result.current.readDraft).toBe(first.readDraft)
+  })
 })

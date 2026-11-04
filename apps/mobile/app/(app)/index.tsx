@@ -351,10 +351,11 @@ export const HomeScreen = observer(function HomeScreen({
     if (!homeComposerKey || !homeComposerMemory.ready) return
     if (homeDraftAppliedRef.current === homeComposerKey) return
     homeDraftAppliedRef.current = homeComposerKey
+    const draft = homeComposerMemory.readDraft()
     setHomeDraftRequest({
       nonce: Date.now(),
-      content: homeComposerMemory.record?.draft?.text ?? '',
-      references: homeComposerMemory.record?.draft?.references ?? [],
+      content: draft?.text ?? '',
+      references: draft?.references ?? [],
       focus: false,
     })
   }, [homeComposerKey, homeComposerMemory.ready, homeComposerMemory])
