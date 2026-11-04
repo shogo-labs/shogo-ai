@@ -16,12 +16,14 @@
  */
 
 import type { MiddlewareHandler } from 'hono'
+import { hostname as osHostname } from 'node:os'
 import { prisma } from '../prisma'
 import { getShogoCloudUrl } from '../cloud-urls'
 import { getInstanceId } from '../instance-tunnel'
 import { MachineSyncPusher } from './pusher'
 import { HostSyncPuller } from './puller'
 import { adoptCloudIdentity, fetchCloudIdentity } from './host-identity'
+import { adoptCloudPersonal } from './personal-workspace'
 
 let pusher: MachineSyncPusher | null = null
 let puller: HostSyncPuller | null = null
@@ -121,6 +123,20 @@ export async function startMachineSync(): Promise<void> {
         await adoptCloudIdentity(prisma, identity.id, log, { name: identity.name, email: identity.email }).catch((err) => {
           log(`[HostSync] could not adopt the cloud identity: ${(err as Error)?.message ?? err}`)
         })
+        // One Personal per account (SHO-285 Update 2): this device takes the
+        // account's Personal instead of keeping one of its own, and folds any
+        // Personal it already had into it. Runs after the identity rewrite, so
+        // the member row it creates names the cloud user.
+        if (identity.personal) {
+          await adoptCloudPersonal(prisma, identity.personal, {
+            userId: identity.id,
+            deviceName: process.env.SHOGO_INSTANCE_NAME || osHostname(),
+            instanceId,
+            log,
+          }).catch((err) => {
+            log(`[HostSync] could not adopt the account's Personal: ${(err as Error)?.message ?? err}`)
+          })
+        }
       } else {
         log('[HostSync] cloud identity unavailable; syncing under the local user until it answers')
       }

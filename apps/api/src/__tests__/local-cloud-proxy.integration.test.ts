@@ -106,6 +106,11 @@ let server: ReturnType<typeof Bun.serve>
 let desktop: ReturnType<typeof Bun.serve>
 let app: Hono
 let signedInUser: string | null = 'local-user'
+const defaultLocalRows = () => [
+  { id: 'local-personal', name: 'Personal', kind: 'personal' },
+  { id: 'local-ws', name: 'My Workspace', kind: 'team' },
+]
+let localRows: any[] = defaultLocalRows()
 
 beforeAll(() => {
   server = Bun.serve({
@@ -140,16 +145,7 @@ beforeAll(() => {
     '/api',
     localCloudWorkspaceRoutes({ resolveUserId: async () => signedInUser, resolveUserEmail: async () => 'Local@Desktop.dev' }),
   )
-  app.get('/api/workspaces', (c) =>
-    c.json({
-      ok: true,
-      items: [
-        { id: 'local-personal', name: 'Personal', kind: 'personal' },
-        { id: 'local-ws', name: 'My Workspace', kind: 'team' },
-      ],
-      total: 2,
-    }),
-  )
+  app.get('/api/workspaces', (c) => c.json({ ok: true, items: localRows, total: localRows.length }))
   app.get('/api/workspaces/:id', (c) => c.json({ ok: true, data: { id: c.req.param('id'), source: 'local' } }))
   desktop = Bun.serve({
     port: 0,
@@ -175,6 +171,7 @@ beforeEach(async () => {
   syncCalls = 0
   forbidNext = false
   signedInUser = 'local-user'
+  localRows = defaultLocalRows()
   syncResponse = { ok: true, workspaces: [], removed: [] }
   configRows.clear()
   cloudWorkspaces._resetCloudWorkspacesForTests()
@@ -320,7 +317,13 @@ describe('workspace list and status', () => {
     expect(body.total).toBe(4)
   })
 
-  test('a cloud Personal workspace is listed alongside the local one', async () => {
+  test('the adopted cloud Personal is listed once, not twice', async () => {
+    // A paired desktop holds the account's Personal itself (adopted at pairing,
+    // same id), so the cloud's copy must not be added beside it (SHO-285).
+    localRows = [
+      { id: 'cloud-personal', name: 'Russ Personal', kind: 'personal' },
+      { id: 'local-ws', name: 'My Workspace', kind: 'team' },
+    ]
     await cloudWorkspaces.setCloudWorkspaces({
       user: { id: 'cloud-user', name: 'Russ', email: null },
       workspaces: [
@@ -330,14 +333,31 @@ describe('workspace list and status', () => {
     })
     const body = await (await app.request('/api/workspaces')).json()
     expect(body.items.map((w: any) => [w.id, w.kind, w.source ?? 'local'])).toEqual([
-      ['local-personal', 'personal', 'local'],
+      ['cloud-personal', 'personal', 'local'],
+      ['local-ws', 'team', 'local'],
+      ['ws-acme', 'team', 'cloud'],
+    ])
+    expect(body.total).toBe(3)
+    const status = await (await app.request('/api/local/cloud-workspaces')).json()
+    expect(status.workspaces.map((w: any) => w.kind)).toEqual(['team', 'personal'])
+  })
+
+  test('the cloud Personal is listed before adoption has run', async () => {
+    localRows = [{ id: 'local-ws', name: 'My Workspace', kind: 'team' }]
+    await cloudWorkspaces.setCloudWorkspaces({
+      user: { id: 'cloud-user', name: 'Russ', email: null },
+      workspaces: [
+        { workspace: { id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' }, key: 'shogo_sk_acme' },
+        { workspace: { id: 'cloud-personal', name: 'Russ Personal', slug: 'p', kind: 'personal' }, key: 'shogo_sk_primary' },
+      ],
+    })
+    const body = await (await app.request('/api/workspaces')).json()
+    expect(body.items.map((w: any) => [w.id, w.kind, w.source ?? 'local'])).toEqual([
       ['local-ws', 'team', 'local'],
       ['cloud-personal', 'personal', 'cloud'],
       ['ws-acme', 'team', 'cloud'],
     ])
-    expect(body.total).toBe(4)
-    const status = await (await app.request('/api/local/cloud-workspaces')).json()
-    expect(status.workspaces.map((w: any) => w.kind)).toEqual(['team', 'personal'])
+    expect(body.total).toBe(3)
   })
 
   test('reading one cloud workspace goes to cloud, local ones stay local', async () => {

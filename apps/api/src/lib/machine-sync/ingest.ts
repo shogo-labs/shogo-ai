@@ -363,6 +363,25 @@ function error(code: IngestFailure['code'], message: string, extra?: Record<stri
  *
  * Returns the failure to send back, or what the desktop should record as acked.
  */
+/**
+ * The account's Personal is the cloud's row (SHO-285 Update 2): a device may
+ * write its contents, but not its identity. It keeps the cloud's slug, is never
+ * hosted, and stays the one Personal — whatever the desktop's copy says.
+ */
+export function applyPersonalWorkspaceIdentity(
+  existing: Record<string, unknown> | null | undefined,
+  rewritten: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!existing?.personalOwnerId) return rewritten
+  return {
+    ...rewritten,
+    personalOwnerId: existing.personalOwnerId,
+    hostInstanceId: null,
+    slug: existing.slug,
+    kind: existing.kind,
+  }
+}
+
 export async function applyBatch(
   ctx: IngestContext,
   body: IngestRequest,
@@ -422,7 +441,12 @@ export async function applyBatch(
       const hosted = new Set<string>(
         (
           (await (tx as any).workspace.findMany({
-            where: { hostInstanceId: instanceId },
+            where: {
+              // The workspaces this desktop hosts, plus the account's Personal
+              // (SHO-285 Update 2): the Personal is one row on every surface, so
+              // a device writes to it exactly like a hosted workspace.
+              OR: [{ hostInstanceId: instanceId }, { personalOwnerId: ownerUserId }],
+            },
             select: { id: true },
           })) as Array<{ id: string }>
         ).map((row) => row.id),
@@ -472,7 +496,12 @@ export async function applyBatch(
           const rewritten = applyRewrites(entry.model, row, { instanceId, homeRegion })
 
           if (entry.model === 'Workspace') {
-            if (existing && existing.hostInstanceId !== instanceId) {
+            // The account's Personal (SHO-285 Update 2) is the cloud's row: a
+            // device may write its contents, but not its identity.
+            const identity = applyPersonalWorkspaceIdentity(existing, rewritten)
+            if (existing && existing.personalOwnerId) {
+              Object.assign(rewritten, identity)
+            } else if (existing && existing.hostInstanceId !== instanceId) {
               throw new WorkspaceOwnershipError(`Workspace/${recordId} is not hosted on this machine`)
             }
             if (!existing) newWorkspaces++

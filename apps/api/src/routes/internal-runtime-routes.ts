@@ -2761,6 +2761,140 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * GET /api/internal/devices
+   *
+   * The paired desktops of the people in this workspace (SHO-285 Update 2).
+   * Backs the "Your devices" block the Personal agent's context carries, so it
+   * knows which machines it can reach before it tries.
+   */
+  app.get('/devices', async (c) => {
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const workspaceId = await identityWorkspaceId(identity)
+    if (!workspaceId) return c.json({ error: 'Unauthorized' }, 401)
+
+    const members = (await prisma.member.findMany({
+      where: { workspaceId, projectId: null },
+      select: { userId: true },
+    })) as Array<{ userId: string }>
+    const userIds = members.map((member) => member.userId).filter(Boolean)
+    if (!userIds.length) return c.json({ devices: [] })
+
+    const rows = (await prisma.instance.findMany({
+      where: { userId: { in: userIds } },
+      select: { id: true, name: true, os: true, arch: true, status: true, lastSeenAt: true, metadata: true },
+      orderBy: [{ lastSeenAt: 'desc' }],
+    })) as Array<Record<string, any>>
+
+    // "Online" is the heartbeat's own answer: a tunnel that has not been seen
+    // for two minutes is not reachable, whatever the row still says.
+    const freshAfter = Date.now() - 2 * 60_000
+    const devices = rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      os: row.os ?? null,
+      arch: row.arch ?? null,
+      online: row.status === 'online' && row.lastSeenAt ? new Date(row.lastSeenAt).getTime() > freshAfter : false,
+      lastSeenAt: row.lastSeenAt ? new Date(row.lastSeenAt).toISOString() : null,
+      homeDir: typeof row.metadata?.homeDir === 'string' ? row.metadata.homeDir : null,
+    }))
+    return c.json({ devices })
+  })
+
+  /**
+   * POST /api/internal/devices/:instanceId/remote-tool
+   *   body: { tool, args? }
+   *
+   * Run one allow-listed tool on a paired desktop (SHO-285 Update 2): the same
+   * seam as `project: "<id>"`, with a device as the target. The call goes
+   * caller runtime → this route → the instance tunnel → the desktop's own
+   * `/agent/remote/tool`, where the desktop's permission system decides what is
+   * allowed. A device that is not a member's is refused, and an offline one
+   * answers `device_offline` with its last-seen time rather than hanging.
+   */
+  app.post('/devices/:instanceId/remote-tool', async (c) => {
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const workspaceId = await identityWorkspaceId(identity)
+    if (!workspaceId) return c.json({ error: 'Unauthorized' }, 401)
+
+    const instanceId = c.req.param('instanceId')
+    const instance = (await prisma.instance.findUnique({
+      where: { id: instanceId },
+      select: { id: true, name: true, userId: true, lastSeenAt: true },
+    })) as { id: string; name: string; userId: string | null; lastSeenAt: Date | null } | null
+    if (!instance?.userId) {
+      return c.json({ error: { code: 'device_not_found', message: 'No such device' } }, 404)
+    }
+    const member = await prisma.member.findFirst({
+      where: { workspaceId, userId: instance.userId, projectId: null },
+      select: { id: true },
+    })
+    if (!member) {
+      return c.json(
+        { error: { code: 'device_not_member', message: 'That device belongs to someone outside this workspace.' } },
+        403,
+      )
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body || typeof body.tool !== 'string' || !body.tool.trim()) {
+      return c.json({ error: { code: 'bad_request', message: 'tool is required' } }, 400)
+    }
+    if (body.args !== undefined && (typeof body.args !== 'object' || body.args === null || Array.isArray(body.args))) {
+      return c.json({ error: { code: 'bad_request', message: 'args must be an object' } }, 400)
+    }
+
+    const { ensureTunnelConnected } = await import('../routes/instances')
+    const { hostTunnelRuntimeUrl } = await import('../lib/host-tunnel')
+    const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
+    if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
+      return c.json(
+        {
+          error: {
+            code: 'device_offline',
+            message: `${instance.name} is offline${instance.lastSeenAt ? ` (last seen ${new Date(instance.lastSeenAt).toISOString()})` : ''}`,
+            instanceId,
+            lastSeenAt: instance.lastSeenAt ? new Date(instance.lastSeenAt).toISOString() : null,
+          },
+        },
+        503,
+      )
+    }
+
+    // The desktop's workspace agent proxy, reached through the same host tunnel
+    // every cloud→desktop turn uses: one transport, one auth header, one place
+    // that answers `host_offline`.
+    const tunnelUrl = `${hostTunnelRuntimeUrl(instanceId, { workspaceId })}/agent/remote/tool`
+    const timeoutMs = Math.min(Math.max(Number(body.timeoutMs ?? 5 * 60_000) || 0, 10_000), 20 * 60_000)
+    try {
+      const response = await fetch(tunnelUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tool: body.tool.trim(), args: body.args ?? {} }),
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      const text = await response.text()
+      return new Response(text, {
+        status: response.status,
+        headers: { 'content-type': response.headers.get('content-type') ?? 'application/json' },
+      })
+    } catch (err: any) {
+      const offline = /offline/i.test(err?.message ?? '')
+      return c.json(
+        {
+          error: {
+            code: offline ? 'device_offline' : 'device_tunnel_error',
+            message: err?.message ?? 'The device could not be reached',
+            instanceId,
+          },
+        },
+        offline ? 503 : 502,
+      )
+    }
+  })
+
+  /**
    * POST /api/internal/projects/:projectId/remote-tool
    *   body: { tool, args?, callerProjectId?, timeoutMs? }
    *

@@ -86,7 +86,14 @@ export async function bootstrapLocalDatabase(): Promise<void> {
 
     try {
       const ownedPersonalCount = await getUserOwnedWorkspaceCount(localUserId, 'personal')
-      if (ownedPersonalCount === 0) {
+      // A signed-in desktop never seeds a Personal (SHO-285 Update 2): the
+      // account already has one, and it is adopted at pairing
+      // (`adoptCloudPersonal`). Seeding here is what gave a person a second
+      // Personal on every machine they signed into. An unpaired desktop still
+      // gets a local-only one — local mode is unlimited — and it is merged into
+      // the account's Personal the first time this device pairs.
+      const signedIn = Boolean(process.env.SHOGO_API_KEY)
+      if (ownedPersonalCount === 0 && !signedIn) {
         await createPersonalWorkspace(localUserId, userName)
         console.log('[LocalMode] Seeded personal workspace for local user')
       }

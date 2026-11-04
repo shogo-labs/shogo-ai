@@ -22,6 +22,7 @@ import {
   REMOTE_READONLY_TOOLS,
   REMOTE_TOOL_ALLOWLIST,
   RemoteToolError,
+  callRemoteDeviceTool,
   callRemoteTool,
   currentRuntimeProjectId,
   isMetalRuntime,
@@ -803,6 +804,13 @@ const REMOTE_PROJECT_PARAM_DESCRIPTION =
   'A file tool that ran in another project answers with `project` and `chatPath` (`<projectId>/<path>`); ' +
   'when you mention that file in a reply, write its `chatPath`, not the bare path.'
 
+const REMOTE_DEVICE_PARAM_DESCRIPTION =
+  'Run this tool on one of the user\'s paired desktops (device name or instance id, as listed under ' +
+  '"Your devices"). Paths are resolved by that desktop\'s own runtime — relative to its workspace root; ' +
+  'use an absolute path to reach anywhere else on that machine — and that desktop\'s permission system ' +
+  'decides what is allowed. Omit to run here. An offline device answers `device_offline` with its ' +
+  'last-seen time.'
+
 type RemoteTarget = { local: true } | { local: false; id: string; name: string } | { error: string; code: string }
 
 const REMOTE_TARGET_TTL_MS = 60_000
@@ -1039,6 +1047,77 @@ export function withRemoteProject(tool: AgentTool, ctx: ToolContext): AgentTool 
       }
     },
   }
+}
+
+/**
+ * Add the optional `device` parameter to a remotable tool (SHO-285 Update 2).
+ * Without it the tool runs exactly as before; with one it runs on that paired
+ * desktop, through the API and the instance tunnel.
+ */
+export function withRemoteDevice(tool: AgentTool, ctx: ToolContext): AgentTool {
+  if (!isRemotableTool(tool.name)) return tool
+  const base = tool.parameters as unknown as { properties?: Record<string, any> }
+  return {
+    ...tool,
+    parameters: Type.Object({
+      ...(base.properties ?? {}),
+      device: Type.Optional(Type.String({ description: REMOTE_DEVICE_PARAM_DESCRIPTION })),
+    }),
+    execute: async (toolCallId, params, signal, onUpdate) => {
+      const device = (params as Record<string, unknown> | undefined)?.device
+      if (device === undefined || device === null) return tool.execute(toolCallId, params, signal, onUpdate)
+      if (typeof device !== 'string' || !device.trim()) {
+        return textResult({ error: '`device` must be a device name or instance id.' })
+      }
+      const { device: _device, ...args } = params as Record<string, unknown>
+      const target = await resolveRemoteDevice(ctx, device.trim())
+      if ('error' in target) return textResult({ error: target.error, code: target.code })
+      try {
+        return await callRemoteDeviceTool(target.id, tool.name, args, signal)
+      } catch (err) {
+        const remote = err as RemoteToolError
+        return textResult({
+          error: remote?.message ?? String(err),
+          code: remote?.code ?? 'device_error',
+          device: target.name,
+        })
+      }
+    },
+  }
+}
+
+/**
+ * A device name or instance id → the instance to call. Names are matched
+ * case-insensitively against the devices the API lists for this workspace, so
+ * the agent can use what it read in "Your devices".
+ */
+async function resolveRemoteDevice(
+  ctx: ToolContext,
+  device: string,
+): Promise<{ id: string; name: string } | { error: string; code: string }> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { error: 'No API URL configured', code: 'no_api' }
+  let devices: Array<{ id: string; name: string; online: boolean }> = []
+  try {
+    const res = await fetch(`${apiUrl}/api/internal/devices`, {
+      headers: getInternalHeaders(),
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) return { error: `Could not list devices (HTTP ${res.status})`, code: 'devices_unavailable' }
+    devices = ((await res.json()) as { devices?: typeof devices }).devices ?? []
+  } catch (err: any) {
+    return { error: `Could not list devices: ${err?.message ?? err}`, code: 'devices_unavailable' }
+  }
+  const wanted = device.toLowerCase()
+  const match =
+    devices.find((entry) => entry.id === device) ??
+    devices.find((entry) => entry.name.toLowerCase() === wanted) ??
+    devices.find((entry) => entry.name.toLowerCase().includes(wanted))
+  if (!match) {
+    const known = devices.map((entry) => entry.name).join(', ') || 'none'
+    return { error: `No device matches "${device}". Known devices: ${known}`, code: 'device_not_found' }
+  }
+  return { id: match.id, name: match.name }
 }
 
 /**
@@ -10363,8 +10442,9 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   const pe = ctx.permissionEngine
   const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
   // Inside the gate, so this runtime's permission rules also cover calls it
-  // sends to another project.
-  const r = (tool: AgentTool) => withRemoteProject(tool, ctx)
+  // sends to another project — or to one of the user's paired desktops
+  // (SHO-285 Update 2: `device: "<name>"` on the same allow-listed tools).
+  const r = (tool: AgentTool) => withRemoteDevice(withRemoteProject(tool, ctx), ctx)
 
   const tools: AgentTool[] = [
     g(r(createExecTool(ctx)), 'shell'),

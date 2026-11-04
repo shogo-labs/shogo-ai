@@ -891,6 +891,13 @@ export class AgentGateway {
   private turnPause = new Map<string, WorkspaceAgentsPause | null>()
   /** Current guide registry built during loadBootstrapContext, consumed by tool context */
   private currentGuideRegistry?: Map<string, string>
+  /**
+   * "Your devices" block for the current turn (SHO-285 Update 2). Refreshed
+   * before the prompt is built — the builder is synchronous, so the fetch
+   * happens once per turn and the block is read from here.
+   */
+  private devicesContext: string | null = null
+
   /** Per-section prompt breakdown from the last loadBootstrapContext() call */
   lastPromptBreakdown?: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }>
   /**
@@ -3621,6 +3628,10 @@ export class AgentGateway {
     // video block is only legitimate history for a video-native model) and
     // read_file's video branch.
     const allowVideoInput = modelSupportsVideoInput(modelId)
+
+    // The device list is fetched once per turn, before the (synchronous) prompt
+    // builder runs, so the agent knows which desktops it can reach.
+    this.devicesContext = await this.buildDevicesContext()
 
     let systemPrompt = this.loadBootstrapContext(
       sessionId,
@@ -6472,6 +6483,11 @@ export class AgentGateway {
       if (exposed) pushDynamic('exposed-ports', exposed)
     }
 
+    // The user's paired desktops (SHO-285 Update 2), when this workspace has any.
+    if (this.devicesContext) {
+      pushDynamic('devices', this.devicesContext)
+    }
+
     // Runtime build + console log tails (canvas mode only — Vite preview pipeline)
     if (activeMode === 'canvas') {
       const runtimeLogs = this.buildRuntimeLogsContext()
@@ -6664,6 +6680,55 @@ export class AgentGateway {
       // can. This is what stops localhost reaching the user-facing slot.
       isLocal: this.previewManager?.isLocalMode ?? detectLocalMode(),
     })
+  }
+
+  /**
+   * "Your devices" (SHO-285 Update 2): the paired desktops this workspace can
+   * reach, so the agent knows what it can ask for before it tries. Refreshed
+   * every turn like the runtime logs, and silent when the API cannot answer —
+   * a device list is never worth failing a turn over.
+   */
+  private async buildDevicesContext(): Promise<string | null> {
+    const apiUrl = deriveApiUrl()
+    if (!apiUrl) return null
+    let devices: Array<{
+      id: string
+      name: string
+      os: string | null
+      online: boolean
+      lastSeenAt: string | null
+      homeDir: string | null
+    }> = []
+    try {
+      const res = await fetch(`${apiUrl}/api/internal/devices`, {
+        headers: getInternalHeaders(),
+        signal: AbortSignal.timeout(5_000),
+      })
+      if (!res.ok) return null
+      devices = ((await res.json()) as { devices?: typeof devices }).devices ?? []
+    } catch {
+      return null
+    }
+    if (!devices.length) return null
+    const lines = devices.map((device) => {
+      const state = device.online
+        ? 'online'
+        : `offline${device.lastSeenAt ? `, last seen ${device.lastSeenAt}` : ''}`
+      const where = [device.os, device.homeDir ? `home ${device.homeDir}` : null].filter(Boolean).join(', ')
+      return `- **${device.name}** (${state})${where ? ` — ${where}` : ''}`
+    })
+    return [
+      '## Your devices',
+      '',
+      "These are the user's paired desktops. Pass `device: \"<name>\"` to `exec`, `exec_wait`,",
+      '`exec_list`, `read_file`, `write_file`, `edit_file`, `delete_file` or `search` to run that',
+      "tool on one of them; each desktop resolves paths in its own runtime (use an absolute path to",
+      'reach beyond its workspace) and its permission system decides what is allowed. An offline',
+      'device answers `device_offline` with its last-seen time — say so rather than retrying.',
+      '',
+      ...lines,
+      '',
+    ].join('\n')
   }
 
   /**
