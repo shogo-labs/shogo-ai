@@ -338,3 +338,18 @@ export {
   _resetBuildBufferForTests,
   type BuildErrorEntry,
 } from './diagnostics-build-buffer'
+
+export {
+  publishedDbName,
+  publishedDbSecretName,
+  toPublishedDatabaseUrl,
+  assertPublishedDatabaseUrl,
+  PUBLISHED_DB_CONNECTION_LIMIT,
+  parseSchema,
+  classifySchemaChange,
+  describeDestructiveChanges,
+  type PublishedEnvironmentName,
+  type SchemaField,
+  type ParsedSchema,
+  type DestructiveChange,
+} from './published-database'

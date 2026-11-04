@@ -27,6 +27,9 @@ import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
 import { setPreviewRegion, clearPreviewRegion } from './cloudflare-preview-region-kv'
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
+// Deep import on purpose: the barrel is mocked wholesale in several tests, and
+// this is a pure naming rule, not runtime config.
+import { publishedDbSecretName } from '@shogo/shared-runtime/published-database'
 import { resolvePublishedRuntimeImage } from './published-image'
 import type { InstanceSizeName } from '../config/instance-sizes'
 import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
@@ -2033,7 +2036,7 @@ export class KnativeProjectManager {
       name: "DATABASE_URL",
       valueFrom: {
         secretKeyRef: {
-          name: `published-db-${projectId}-${environment}`,
+          name: publishedDbSecretName(projectId, environment),
           key: "database-url",
           optional: true,
         },

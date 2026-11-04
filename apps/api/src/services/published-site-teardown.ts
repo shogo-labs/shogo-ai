@@ -11,14 +11,17 @@
  *      `published-{id}` ksvc + DomainMapping, metal `published:{id}` microVM +
  *      subdomain placement) — a drain/cutover project can have both;
  *   2. the static bundle in PUBLISH_BUCKET;
- *   3. the published-DATA archive (`{subdomain}/data.tar.gz`) — ONLY when the
+ *   3. every environment's Postgres database + credentials Secret (SHO-308
+ *      §1) — only the environments this project actually provisioned, since a
+ *      project that never got a database has nothing to drop;
+ *   4. the published-DATA archive (`{subdomain}/data.tar.gz`) — ONLY when the
  *      caller asks for it: unpublish keeps it so a republish restores end-user
  *      writes, project delete purges it because nothing can republish again;
- *   4. the site-password gate in the Worker KV;
- *   5. the server-backed flag in the Worker KV (a stale flag would keep the
+ *   5. the site-password gate in the Worker KV;
+ *   6. the server-backed flag in the Worker KV (a stale flag would keep the
  *      Worker proxying `/api/*` at a backend that no longer exists);
- *   6. the custom-domain KV mappings of every domain pointing at the project;
- *   7. the stable `published/<subdomain>` git pointer.
+ *   7. the custom-domain KV mappings of every domain pointing at the project;
+ *   8. the stable `published/<subdomain>` git pointer.
  *
  * Every step is independent and best-effort: one failure is logged and the rest
  * still run, and the caller always gets a per-step outcome it can log/report.
@@ -42,6 +45,7 @@ export interface TeardownStepOutcome {
 
 export type TeardownStep =
   | 'runtime'
+  | 'published-databases'
   | 'static-bundle'
   | 'published-data'
   | 'site-password'
@@ -56,6 +60,7 @@ export type TeardownStep =
  */
 export interface PublishedSiteTeardownDeps {
   unpublishRuntime: (projectId: string, subdomain: string) => Promise<void>
+  dropPublishedDatabases: (projectId: string) => Promise<void>
   deleteStaticBundle: (subdomain: string) => Promise<void>
   deleteDataArchive: (subdomain: string) => Promise<void>
   clearSitePassword: (subdomain: string) => Promise<void>
@@ -86,6 +91,23 @@ const defaultDeps: PublishedSiteTeardownDeps = {
     // hook runs on every project delete (desktop included, where it no-ops).
     const { unpublishProjectEverywhere } = await import('../lib/substrate/router')
     await unpublishProjectEverywhere(projectId, subdomain)
+  },
+  dropPublishedDatabases: async (projectId) => {
+    // Postgres at publish (SHO-308 §1): an unpublished or deleted project must
+    // not leave databases and credentials behind. Only environments that were
+    // actually provisioned are dropped — the row records it (`dbName`), and a
+    // project that never had a database is a no-op.
+    const { dropEnvironmentDatabase } = await import('./published-database.service')
+    const envs = await prisma.publishedEnvironment.findMany({
+      where: { projectId, NOT: { dbName: null } },
+      select: { name: true },
+    })
+    for (const env of envs) {
+      const res = await dropEnvironmentDatabase(projectId, env.name as 'production' | 'staging')
+      if (!res.dropped && res.error) {
+        throw new Error(`${env.name}: ${res.error}`)
+      }
+    }
   },
   deleteStaticBundle: deletePublishedStaticBundle,
   deleteDataArchive: deletePublishedDataArchive,
@@ -131,6 +153,7 @@ export async function teardownPublishedSite(
 
   const steps: Array<[TeardownStep, () => Promise<void>]> = [
     ['runtime', () => deps.unpublishRuntime(projectId, subdomain)],
+    ['published-databases', () => deps.dropPublishedDatabases(projectId)],
     ['static-bundle', () => deps.deleteStaticBundle(subdomain)],
     ...(opts.purgePublishedData
       ? ([['published-data', () => deps.deleteDataArchive(subdomain)]] as Array<[TeardownStep, () => Promise<void>]>)

@@ -484,6 +484,17 @@ export async function deleteEnvironment(
   } catch {
     // Edge KV is best-effort; the row removal is what matters.
   }
+  // The environment's database goes with it (SHO-308 §1): a deleted staging env
+  // must not leave a Postgres database and its credentials Secret behind.
+  // Best-effort — the ksvc is already gone, and a stranded database is
+  // recoverable whereas a failed teardown mid-flight is not.
+  const { dropEnvironmentDatabase } = await import('./published-database.service')
+  const dropped = await dropEnvironmentDatabase(projectId, name)
+  if (!dropped.dropped && dropped.error) {
+    console.warn(
+      `[published-ops] ${projectId}/${name} deleted but its database was not dropped: ${dropped.error}`,
+    )
+  }
   return deleteEnvironmentRow(projectId, name)
 }
 
