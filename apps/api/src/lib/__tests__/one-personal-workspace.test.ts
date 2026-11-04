@@ -10,9 +10,13 @@
  */
 import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { applyRewrites } from '../machine-sync/models.ts'
 import { readHostFeed } from '../machine-sync/feed.ts'
 import { adoptCloudPersonal, mergePersonalWorkspace } from '../machine-sync/personal-workspace.ts'
+import { applyHostFeedPage } from '../machine-sync/puller.ts'
 
 // ─── A Prisma-shaped adapter over a real SQLite database ────────────────────
 
@@ -44,7 +48,10 @@ function adapter(): Adapter {
       const clauses: string[] = []
       const params: unknown[] = []
       for (const [key, value] of Object.entries(where ?? {})) {
-        if (value === null) clauses.push(`"${key}" IS NULL`)
+        if (key === 'NOT') {
+          clauses.push(`"id" <> ?`)
+          params.push((value as any).id)
+        } else if (value === null) clauses.push(`"${key}" IS NULL`)
         else {
           clauses.push(`"${key}" = ?`)
           params.push(value)
@@ -90,7 +97,16 @@ function adapter(): Adapter {
       return where
     },
     deleteMany: async ({ where }: any) => {
-      const result = run(`DELETE FROM "${table}" WHERE "workspaceId" = ?`, [where.workspaceId])
+      const clauses: string[] = []
+      const params: unknown[] = []
+      for (const [key, value] of Object.entries(where ?? {})) {
+        if (value === null) clauses.push(`"${key}" IS NULL`)
+        else {
+          clauses.push(`"${key}" = ?`)
+          params.push(value)
+        }
+      }
+      const result = run(`DELETE FROM "${table}"${clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''}`, params)
       return { count: Number(result.changes) }
     },
     updateMany: async ({ where, data }: any) => {
@@ -252,6 +268,80 @@ describe('adoptCloudPersonal', () => {
     const again = await adoptCloudPersonal(a.prisma, personal, { userId: 'user-1' })
     expect(again).toEqual({ id: 'cloud-personal', created: false, merged: [] })
     expect((a.db.query(`SELECT COUNT(*) AS n FROM "workspaces"`).get() as any).n).toBe(1)
+  })
+})
+
+// ─── The cloud-side merge cannot move a desktop's files ─────────────────────
+
+describe("the cloud's merge does not strand a desktop root", () => {
+  let roots: string
+  let previous: string | undefined
+
+  beforeEach(() => {
+    roots = mkdtempSync(join(tmpdir(), 'sho285-roots-'))
+    previous = process.env.SHOGO_WORKSPACE_ROOTS
+    process.env.SHOGO_WORKSPACE_ROOTS = roots
+  })
+
+  const restore = () => {
+    if (previous === undefined) delete process.env.SHOGO_WORKSPACE_ROOTS
+    else process.env.SHOGO_WORKSPACE_ROOTS = previous
+    rmSync(roots, { recursive: true, force: true })
+  }
+
+  test("a Personal the cloud merged away has its root moved to merged/<device>/", async () => {
+    const a = adapter()
+    seedPersonal(a, { id: 'cloud-personal', name: 'Russell Personal', owner: 'user-1', createdAt: '2026-10-01' })
+    seedPersonal(a, { id: 'desktop-personal', name: 'Local User Personal', createdAt: '2026-10-20' })
+    try {
+      // The files the cloud never had: they only ever existed on this disk.
+      mkdirSync(join(roots, 'desktop-personal'), { recursive: true })
+      writeFileSync(join(roots, 'desktop-personal', 'MEMORY.md'), 'a line only this device wrote\n')
+
+      // What the puller gets when the cloud already merged the duplicate: the
+      // row is gone up there, so the feed carries a delete for it.
+      const result = await applyHostFeedPage(
+        a.prisma,
+        { models: [], deletes: [{ model: 'Workspace', recordId: 'desktop-personal' }] },
+        () => {},
+        { deviceName: 'Samsara' },
+      )
+
+      expect(result.deleted).toBe(1)
+      // AC7: the duplicate's root ends up inside the surviving Personal.
+      expect(readFileSync(join(roots, 'cloud-personal', 'merged', 'Samsara', 'MEMORY.md'), 'utf-8')).toBe(
+        'a line only this device wrote\n',
+      )
+      // ... and the old directory is gone, so the root sync cannot upload it twice.
+      expect(existsSync(join(roots, 'desktop-personal'))).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  test('deleting an ordinary workspace leaves its root where it is', async () => {
+    const a = adapter()
+    seedPersonal(a, { id: 'cloud-personal', name: 'Russell Personal', owner: 'user-1', createdAt: '2026-10-01' })
+    a.db.run(
+      `INSERT INTO "workspaces" ("id","name","slug","kind","personalOwnerId","hostInstanceId","createdAt")
+       VALUES ('team-ws','Team','team','team',NULL,NULL,'2026-10-20')`,
+    )
+    try {
+      mkdirSync(join(roots, 'team-ws'), { recursive: true })
+      writeFileSync(join(roots, 'team-ws', 'AGENTS.md'), 'not a Personal\n')
+
+      await applyHostFeedPage(
+        a.prisma,
+        { models: [], deletes: [{ model: 'Workspace', recordId: 'team-ws' }] },
+        () => {},
+        { deviceName: 'Samsara' },
+      )
+
+      expect(readFileSync(join(roots, 'team-ws', 'AGENTS.md'), 'utf-8')).toBe('not a Personal\n')
+      expect(existsSync(join(roots, 'cloud-personal', 'merged'))).toBe(false)
+    } finally {
+      restore()
+    }
   })
 })
 

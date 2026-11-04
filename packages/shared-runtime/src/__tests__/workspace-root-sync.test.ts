@@ -226,6 +226,75 @@ describe('createWorkspaceRootSync', () => {
     expect(read(a, 'MEMORY.md')).toBe('line written on the mac\n')
   })
 
+  it('keeps a local file when the cloud copy was written before this device ever synced', async () => {
+    // No state file at all: the device is syncing this root for the first time
+    // (a fresh install, or `.shogo/workspace-root-state.json` was lost). There
+    // is no baseline, so the cloud copy is not "newer" — it is just the other
+    // side — and overwriting would delete the line this device wrote.
+    const store = createStore()
+    const other = tempDir()
+    const device = tempDir()
+
+    write(other, 'MEMORY.md', '# Memory\nline from the cloud\n')
+    const syncOther = createWorkspaceRootSync({ dir: other, deviceName: 'macbook', transport: store.transport, fetchImpl: store.fetchImpl })
+    await syncOther.sync()
+    expect(store.objects.has('MEMORY.md')).toBe(true)
+
+    write(device, 'MEMORY.md', '# Memory\nline written here first\n')
+    const syncDevice = createWorkspaceRootSync({ dir: device, deviceName: 'windows', transport: store.transport, fetchImpl: store.fetchImpl })
+    const stats = await syncDevice.sync()
+
+    // The cloud's copy is canonical ...
+    expect(read(device, 'MEMORY.md')).toBe('# Memory\nline from the cloud\n')
+    // ... and the line written here survives beside it.
+    const conflict = stats.conflicts[0]
+    expect(conflict).toMatch(/^MEMORY\.conflict-windows-\d{8}T\d{6}\.md$/)
+    expect(read(device, conflict)).toBe('# Memory\nline written here first\n')
+    expect(store.objects.has(conflict)).toBe(true)
+  })
+
+  it('treats an identical file with no state as the same file, not a conflict', async () => {
+    const store = createStore()
+    const a = tempDir()
+    const b = tempDir()
+
+    write(a, 'MEMORY.md', 'the same line\n')
+    const syncA = createWorkspaceRootSync({ dir: a, deviceName: 'macbook', transport: store.transport, fetchImpl: store.fetchImpl })
+    await syncA.sync()
+
+    // b already holds exactly those bytes and has never synced: nothing to keep.
+    write(b, 'MEMORY.md', 'the same line\n')
+    const syncB = createWorkspaceRootSync({ dir: b, deviceName: 'windows', transport: store.transport, fetchImpl: store.fetchImpl })
+    const first = await syncB.sync()
+    expect(first.conflicts).toEqual([])
+    expect(read(b, 'MEMORY.md')).toBe('the same line\n')
+
+    // ... and the state it recorded means the next pass sends nothing.
+    const writesAfterFirst = store.writes.length
+    const second = await syncB.sync()
+    expect(second.conflicts).toEqual([])
+    expect(second.pushed).toBe(0)
+    expect(store.writes.length).toBe(writesAfterFirst)
+  })
+
+  it('compares the stored bytes when the writer declared no sha', async () => {
+    // A file uploaded before this module existed (or by anything that did not
+    // declare a sha) has no `sha256` in the manifest, so "same file?" can only
+    // be answered by reading it.
+    const store = createStore()
+    const device = tempDir()
+    const cloudBytes = new TextEncoder().encode('cloud line\n')
+    store.objects.set('MEMORY.md', { bytes: cloudBytes, etag: 'etag-cloud', metadata: { sha256: '', instance: '' } })
+
+    write(device, 'MEMORY.md', 'local line\n')
+    const sync = createWorkspaceRootSync({ dir: device, deviceName: 'windows', transport: store.transport, fetchImpl: store.fetchImpl })
+    const stats = await sync.sync()
+
+    expect(read(device, 'MEMORY.md')).toBe('cloud line\n')
+    expect(stats.conflicts.length).toBe(1)
+    expect(read(device, stats.conflicts[0])).toBe('local line\n')
+  })
+
   it('never deletes: a file removed here is not removed there, and back', async () => {
     const store = createStore()
     const a = tempDir()

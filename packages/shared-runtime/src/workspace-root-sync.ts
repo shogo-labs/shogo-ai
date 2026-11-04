@@ -297,6 +297,36 @@ export function createWorkspaceRootSync(options: WorkspaceRootSyncOptions) {
   }
 
   /**
+   * Keep this machine's bytes beside the cloud's as
+   * `<name>.conflict-<device>-<ts>.<ext>`, and share the copy so the other
+   * devices end up holding both versions. A conflict that cannot be shared is
+   * an error on the stats, never a reason to lose the file.
+   */
+  async function keepConflictCopy(
+    filePath: string,
+    localBytes: Uint8Array,
+    stats: WorkspaceRootSyncStats,
+    state: PersistedState,
+  ): Promise<void> {
+    const conflictPath = conflictPathFor(filePath, deviceName)
+    const conflictSha = sha256Of(localBytes)
+    writeFileSync(abs(conflictPath), localBytes)
+    try {
+      await upload(conflictPath, localBytes, conflictSha)
+      stats.conflicts.push(conflictPath)
+      stats.pushed++
+      state.files[conflictPath] = {
+        etag: null,
+        sha256: conflictSha,
+        size: localBytes.byteLength,
+        mtimeMs: statSync(abs(conflictPath)).mtimeMs,
+      }
+    } catch (err: any) {
+      stats.errors.push(`conflict ${conflictPath}: ${err?.message ?? err}`)
+    }
+  }
+
+  /**
    * Bring the local root up to the cloud copy. Runs first in a sync, so a
    * subsequent push only ever sends files the cloud does not already have.
    */
@@ -327,27 +357,37 @@ export function createWorkspaceRootSync(options: WorkspaceRootSyncOptions) {
         // ... unless it is gone, which no sync ever does: restore it.
       }
 
-      const localChanged = !!(known && localSha && known.sha256 !== localSha)
+      // Whether the local copy moved on since this machine last pulled. With no
+      // recorded state for the path — a first sync, or a device whose
+      // `.shogo/workspace-root-state.json` was lost — there is no baseline, so
+      // the cloud copy cannot be assumed to be the newer one: a `MEMORY.md`
+      // written before this device ever synced would be overwritten with
+      // nothing kept. The manifest's declared sha answers "same file?" when the
+      // writer declared one; otherwise the stored bytes are read below, before
+      // anything is written.
+      const noBaseline = known === undefined && !!localBytes && !!localSha && !!file.etag
+      let localChanged = !!(known && localSha && known.sha256 !== localSha)
+      let compareWithDownload = false
+      if (noBaseline) {
+        if (file.sha256 && file.sha256 === localSha) {
+          // The same bytes, and now there is a baseline to compare against.
+          state.files[file.path] = {
+            etag: file.etag,
+            sha256: localSha!,
+            size: localBytes!.byteLength,
+            mtimeMs: statSync(abs(file.path)).mtimeMs,
+          }
+          continue
+        }
+        if (file.sha256) localChanged = true
+        else compareWithDownload = true
+      }
 
       if (localChanged && localBytes) {
-        // Both sides moved since this machine last pulled. The cloud is
-        // canonical; ours survives as a conflict copy.
-        const conflictPath = conflictPathFor(file.path, deviceName)
-        const conflictSha = sha256Of(localBytes)
-        writeFileSync(abs(conflictPath), localBytes)
-        try {
-          await upload(conflictPath, localBytes, conflictSha)
-          stats.conflicts.push(conflictPath)
-          stats.pushed++
-          state.files[conflictPath] = {
-            etag: null,
-            sha256: conflictSha,
-            size: localBytes.byteLength,
-            mtimeMs: statSync(abs(conflictPath)).mtimeMs,
-          }
-        } catch (err: any) {
-          stats.errors.push(`conflict ${conflictPath}: ${err?.message ?? err}`)
-        }
+        // Both sides moved since this machine last pulled, or the cloud copy
+        // cannot be shown to be the same file. The cloud is canonical; ours
+        // survives as a conflict copy.
+        await keepConflictCopy(file.path, localBytes, stats, state)
       }
 
       if (!file.etag) continue
@@ -356,6 +396,25 @@ export function createWorkspaceRootSync(options: WorkspaceRootSyncOptions) {
         const url = signed.urls.find((u) => u.action === 'read' && u.path === file.path)?.url
         if (!url) continue
         const bytes = await download(url)
+
+        if (compareWithDownload && localSha) {
+          const cloudSha = sha256Of(bytes)
+          if (cloudSha === localSha) {
+            // Same file on both sides: not a conflict, and nothing to write.
+            // Recording the state is what stops the scan loop seeing this file
+            // as a local edit on every pass.
+            state.files[file.path] = {
+              etag: file.etag,
+              sha256: cloudSha,
+              size: bytes.byteLength,
+              mtimeMs: statSync(abs(file.path)).mtimeMs,
+            }
+            continue
+          }
+          // Different bytes with no baseline: keep ours beside the cloud's.
+          await keepConflictCopy(file.path, localBytes!, stats, state)
+        }
+
         const target = abs(file.path)
         mkdirSync(dirname(target), { recursive: true })
         writeFileSync(target, bytes)

@@ -190,6 +190,23 @@ function moveWorkspaceRoot(fromId: string, toId: string, deviceName: string): nu
   return moved
 }
 
+/**
+ * A Personal the cloud merged away leaves its root behind on this disk.
+ *
+ * The cloud-side merge (`mergeDuplicatePersonals`) can only delete the row: the
+ * hosted Personal's `MEMORY.md` and the rest are files on the desktop, never in
+ * the cloud, so `moveWorkspaceRoot` there moves nothing. When this desktop then
+ * pulls the cloud's delete, the row goes and `<root>/<dupId>/` would be
+ * stranded — never reaching `merged/<device>/`, which AC7 requires. Folding the
+ * directory into the survivor's root before the row is removed puts those files
+ * where the merge promised, and the root sync shares them from there.
+ *
+ * Returns the number of entries moved; 0 when this device never had that root.
+ */
+export function foldOrphanedPersonalRoot(fromId: string, toId: string, deviceName: string): number {
+  return moveWorkspaceRoot(fromId, toId, deviceName)
+}
+
 function safeSegment(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'device'
 }

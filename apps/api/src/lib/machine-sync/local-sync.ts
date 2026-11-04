@@ -108,6 +108,10 @@ export async function startMachineSync(): Promise<void> {
   if (!process.env.SHOGO_API_KEY) return
   if (pusher || starting) return starting ?? undefined
   const log = (line: string) => console.log(line)
+  // One name for this device, used both when a Personal is adopted here and when
+  // the cloud merges one away and the puller files its root under
+  // `merged/<device>/` — the two must agree or the files land in two folders.
+  const deviceName = process.env.SHOGO_INSTANCE_NAME || osHostname()
   starting = (async () => {
     // The instance row is created by the first heartbeat, so this stays null
     // for the first second or two of a launch.
@@ -130,7 +134,7 @@ export async function startMachineSync(): Promise<void> {
         if (identity.personal) {
           await adoptCloudPersonal(prisma, identity.personal, {
             userId: identity.id,
-            deviceName: process.env.SHOGO_INSTANCE_NAME || osHostname(),
+            deviceName,
             instanceId,
             log,
           }).catch((err) => {
@@ -158,6 +162,7 @@ export async function startMachineSync(): Promise<void> {
       getCloudUrl: () => getShogoCloudUrl(),
       getApiKey: () => process.env.SHOGO_API_KEY ?? null,
       getInstanceId: () => getInstanceId(),
+      deviceName,
       log,
       // A message sent from the cloud while this desktop was off waits on its
       // session's queue; it runs here, now (SHO-285).
