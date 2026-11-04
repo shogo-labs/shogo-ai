@@ -845,72 +845,151 @@ export default function AdminDashboard() {
     return () => { cancelled = true }
   }, [])
 
-  const loadData = useCallback(async () => {
+  /**
+   * One loader per panel (SHO-311), each depending only on the params it
+   * sends. The single `loadData` Promise.all painted nothing until the slowest
+   * of ten requests returned; a spend group/metric change also re-ran the
+   * overview, growth, usage-summary and both install panels for nothing.
+   */
+  const canSeeInfra = isSuperAdmin === true
+
+  const loadOverview = useCallback(async () => {
     setOverview((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<OverviewData>('/analytics/overview')
+    setOverview({ data, loading: false })
+  }, [])
+
+  const loadActiveUsers = useCallback(async () => {
     setActiveUsers((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period })
+    setActiveUsers({ data, loading: false })
+  }, [period])
+
+  const loadAppInstalls = useCallback(async () => {
     setAppInstalls((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<AppInstallsData>('/analytics/app-installs')
+    setAppInstalls({ data, loading: false })
+  }, [])
+
+  const loadAppDevices = useCallback(async () => {
     setAppDevices((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<ActiveDevicesData>('/analytics/devices', { dormant: '1', limit: '1000' })
+    setAppDevices({ data, loading: false })
+  }, [])
+
+  const loadGrowth = useCallback(async () => {
     setGrowth((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period })
+    setGrowth({ data, loading: false })
+  }, [period])
+
+  const loadUsage = useCallback(async () => {
     setUsage((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period })
+    setUsage({ data, loading: false })
+  }, [period])
+
+  const loadActiveUsersTs = useCallback(async () => {
     setActiveUsersTs((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', { period })
+    setActiveUsersTs({ data, loading: false })
+  }, [period])
+
+  const loadSpendTs = useCallback(async () => {
     setSpendTs((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', {
+      period,
+      groupBy: spendGroupBy,
+      metric: spendMetric,
+    })
+    setSpendTs({ data, loading: false })
+  }, [period, spendGroupBy, spendMetric])
 
-    const canSeeInfra = isSuperAdmin === true
-    if (canSeeInfra) {
-      setInfra((s) => ({ ...s, loading: true }))
-      setInfraHistory((s) => ({ ...s, loading: true }))
-    } else {
+  const loadInfra = useCallback(async () => {
+    if (!canSeeInfra) {
       setInfra({ data: null, loading: false })
+      return
+    }
+    setInfra((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<InfraLiveData>('/analytics/infra-current')
+    setInfra({ data, loading: false })
+  }, [canSeeInfra])
+
+  const loadInfraHistory = useCallback(async () => {
+    if (!canSeeInfra) {
       setInfraHistory({ data: null, loading: false })
+      return
     }
+    setInfraHistory((s) => ({ ...s, loading: true }))
+    const data = await fetchAdminJson<InfraHistoryPoint[]>('/analytics/infra-history', { period: '24h' })
+    setInfraHistory({ data, loading: false })
+  }, [canSeeInfra])
 
-    const [
-      overviewData,
-      activeData,
-      appInstallsData,
-      appDevicesData,
-      growthData,
-      usageData,
-      activeUsersTsData,
-      spendTsData,
-      infraData,
-      infraHistoryData,
-    ] = await Promise.all([
-      fetchAdminJson<OverviewData>('/analytics/overview'),
-      fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period }),
-      fetchAdminJson<AppInstallsData>('/analytics/app-installs'),
-      fetchAdminJson<ActiveDevicesData>('/analytics/devices', { dormant: '1', limit: '1000' }),
-      fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period }),
-      fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period }),
-      fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', { period }),
-      fetchAdminJson<SpendTimeseriesData>('/analytics/spend-timeseries', {
-        period,
-        groupBy: spendGroupBy,
-        metric: spendMetric,
-      }),
-      canSeeInfra ? fetchAdminJson<InfraLiveData>('/analytics/infra-current') : Promise.resolve(null),
-      canSeeInfra
-        ? fetchAdminJson<InfraHistoryPoint[]>('/analytics/infra-history', { period: '24h' })
-        : Promise.resolve(null),
+  const loadData = useCallback(async () => {
+    await Promise.all([
+      loadOverview(),
+      loadActiveUsers(),
+      loadAppInstalls(),
+      loadAppDevices(),
+      loadGrowth(),
+      loadUsage(),
+      loadActiveUsersTs(),
+      loadSpendTs(),
+      loadInfra(),
+      loadInfraHistory(),
     ])
-
-    setOverview({ data: overviewData, loading: false })
-    setActiveUsers({ data: activeData, loading: false })
-    setAppInstalls({ data: appInstallsData, loading: false })
-    setAppDevices({ data: appDevicesData, loading: false })
-    setGrowth({ data: growthData, loading: false })
-    setUsage({ data: usageData, loading: false })
-    setActiveUsersTs({ data: activeUsersTsData, loading: false })
-    setSpendTs({ data: spendTsData, loading: false })
-    if (canSeeInfra) {
-      setInfra({ data: infraData, loading: false })
-      setInfraHistory({ data: infraHistoryData, loading: false })
-    }
-  }, [period, isSuperAdmin, spendGroupBy, spendMetric])
+  }, [
+    loadOverview,
+    loadActiveUsers,
+    loadAppInstalls,
+    loadAppDevices,
+    loadGrowth,
+    loadUsage,
+    loadActiveUsersTs,
+    loadSpendTs,
+    loadInfra,
+    loadInfraHistory,
+  ])
 
   useEffect(() => {
-    loadData()
-  }, [loadData])
+    void loadOverview()
+  }, [loadOverview])
+
+  useEffect(() => {
+    void loadActiveUsers()
+  }, [loadActiveUsers])
+
+  useEffect(() => {
+    void loadAppInstalls()
+  }, [loadAppInstalls])
+
+  useEffect(() => {
+    void loadAppDevices()
+  }, [loadAppDevices])
+
+  useEffect(() => {
+    void loadGrowth()
+  }, [loadGrowth])
+
+  useEffect(() => {
+    void loadUsage()
+  }, [loadUsage])
+
+  useEffect(() => {
+    void loadActiveUsersTs()
+  }, [loadActiveUsersTs])
+
+  useEffect(() => {
+    void loadSpendTs()
+  }, [loadSpendTs])
+
+  useEffect(() => {
+    void loadInfra()
+  }, [loadInfra])
+
+  useEffect(() => {
+    void loadInfraHistory()
+  }, [loadInfraHistory])
 
   const onRefresh = async () => {
     setRefreshing(true)
