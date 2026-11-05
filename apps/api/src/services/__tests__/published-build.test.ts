@@ -142,6 +142,42 @@ describe('ensurePublishedImage', () => {
     expect(res.imageRef.startsWith(res.repository)).toBe(true)
   })
 
+  it('retries a create that races the terminating Job of a previous attempt', async () => {
+    let attempts = 0
+    const res = await ensurePublishedImage(
+      input,
+      deps({
+        createJob: async () => {
+          attempts++
+          if (attempts < 3) {
+            const conflict: any = new Error('jobs.batch "x" already exists')
+            conflict.statusCode = 409
+            throw conflict
+          }
+        },
+      }),
+    )
+    expect(res.ok).toBe(true)
+    expect(attempts).toBe(3)
+  })
+
+  it('fails fast on a create error that is not a conflict', async () => {
+    let attempts = 0
+    const res = await ensurePublishedImage(
+      input,
+      deps({
+        createJob: async () => {
+          attempts++
+          throw new Error('forbidden: cannot create jobs')
+        },
+      }),
+    )
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('build_failed')
+    expect(attempts).toBe(1)
+  })
+
   it('reports a failed build with its log tail and cleans the Job up', async () => {
     const deleted: string[] = []
     const res = await ensurePublishedImage(

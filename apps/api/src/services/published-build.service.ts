@@ -178,14 +178,27 @@ export async function ensurePublishedImage(
   // (its pod may still be running) or a crash-looping one. Recreate it rather
   // than joining it: the API's wait is what decides success, and a stale Job
   // that "succeeds" would report an older digest.
+  //
+  // The delete is asynchronous, so a create can still land on the terminating
+  // object — retry briefly instead of failing a publish on that race.
   await deps.deleteJob(jobName, config.k8sNamespace).catch(() => undefined)
-  try {
-    await deps.createJob(job)
-  } catch (err: any) {
+  let created = false
+  let createError: any = null
+  for (let attempt = 0; attempt < 5 && !created; attempt++) {
+    try {
+      await deps.createJob(job)
+      created = true
+    } catch (err: any) {
+      createError = err
+      if (err?.statusCode !== 409 && err?.code !== 409) break
+      await deps.sleep(1000)
+    }
+  }
+  if (!created) {
     return {
       ok: false,
       code: 'build_failed',
-      message: `Could not start the image build: ${err?.message ?? String(err)}`,
+      message: `Could not start the image build: ${createError?.message ?? String(createError)}`,
     }
   }
 
@@ -276,12 +289,22 @@ async function findReusableImage(input: {
   projectId: string
   commitSha: string
 }): Promise<{ imageRef: string; imageDigest: string } | null> {
+  // Deployments hang off environments, and there is no relation from a
+  // deployment back to the project — so resolve the project's environments
+  // first rather than matching another project's commit.
+  const environments = await (prisma as any).publishedEnvironment.findMany({
+    where: { projectId: input.projectId },
+    select: { id: true },
+  })
+  const environmentIds = (environments ?? []).map((row: { id: string }) => row.id)
+  if (environmentIds.length === 0) return null
+
   const row = await (prisma as any).publishedDeployment.findFirst({
     where: {
       commitSha: input.commitSha,
+      environmentId: { in: environmentIds },
       imageDigest: { not: null },
       status: 'ready',
-      environment: { projectId: input.projectId },
     },
     orderBy: { createdAt: 'desc' },
   })
