@@ -54,6 +54,7 @@ import { invitationInfoRoutes } from './routes/invitation-info'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
+import { startChatSweepWorker, stopChatSweepWorker } from './jobs/run-chat-sweep'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { startConversationRelay, stopConversationRelay } from './lib/conversation-relay'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -1715,6 +1716,7 @@ startAgentScheduleWorker(getRuntimeManager())
 startEventDeliveryWorker(getRuntimeManager())
 void import('./services/composio-triggers.service').then((m) => m.startComposioTriggerReconciler()).catch(() => {})
 startChatQueueWorker()
+startChatSweepWorker()
 startChannelWorkers()
 // Forward chat realtime events and presence to sibling regions (no-op in single-region mode).
 startConversationRelay()
@@ -9639,6 +9641,7 @@ async function gracefulShutdown(signal: string) {
   stopAgentScheduleWorker()
   stopEventDeliveryWorker()
   stopChatQueueWorker()
+  stopChatSweepWorker()
   stopChannelWorkers()
   stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)

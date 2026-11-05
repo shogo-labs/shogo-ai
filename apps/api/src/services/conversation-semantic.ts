@@ -29,7 +29,21 @@ const db = prisma as any
 const isLocalMode = () => process.env.SHOGO_LOCAL_MODE === 'true'
 
 const INDEX_BATCH = 64
-const INDEX_WINDOW_MS = 90 * 24 * 60 * 60_000
+/** The full look-back, used by the hourly backstop pass. */
+export const INDEX_WINDOW_MS = 90 * 24 * 60 * 60_000
+/**
+ * The window the every-tick pass reads (SHO-347). Anything older is picked up
+ * by the hourly full pass: a message whose embedding was deleted by an edit or
+ * a re-extracted file, and an agent reply that finished long after it started
+ * (`createdAt` is when the run began, not when its text landed).
+ */
+export const INDEX_FAST_WINDOW_MS = 30 * 60_000
+/**
+ * How long a message whose embedding insert failed is left alone. Without
+ * this, a row that always fails stays "pending" forever: every tick re-fetches
+ * it and pays the provider to re-embed it (SHO-347).
+ */
+const EMBED_FAILURE_RETRY_MS = 60 * 60_000
 const MAX_EMBED_CHARS = 6000
 const MAX_SCAN = 5000
 const ASK_SOURCES = 12
@@ -43,6 +57,13 @@ let providerOverride: EmbeddingProvider | null | undefined
 
 export function _setEmbeddingProviderForTests(provider: EmbeddingProvider | null | undefined): void {
   providerOverride = provider
+}
+
+/** messageId -> earliest time (epoch ms) it may be embedded again. */
+const embedRetryAfter = new Map<string, number>()
+
+export function _resetEmbeddingFailuresForTests(): void {
+  embedRetryAfter.clear()
 }
 
 async function postEmbeddings(
@@ -98,10 +119,18 @@ function documentFor(row: any, names: MentionNames): string {
 
 /**
  * Embed a batch of messages that don't have a vector yet. Returns how many
- * were indexed. Messages with no text are stored with an empty vector so
- * they aren't picked up again.
+ * were stored (not how many were fetched: a row whose insert failed is not
+ * retried for an hour). Messages with no text are stored with an empty vector
+ * so they aren't picked up again.
+ *
+ * `windowMs` is the look-back on `createdAt`; the every-tick pass passes
+ * `INDEX_FAST_WINDOW_MS` and the hourly repair pass the full window.
  */
-export async function indexPendingMessages(now = new Date(), batch = INDEX_BATCH): Promise<number> {
+export async function indexPendingMessages(
+  now = new Date(),
+  batch = INDEX_BATCH,
+  windowMs = INDEX_WINDOW_MS,
+): Promise<number> {
   const provider = embeddingProvider()
   if (!provider) return 0
   // Embeddings are written in the message's home region only (the embeddings
@@ -115,7 +144,7 @@ export async function indexPendingMessages(now = new Date(), batch = INDEX_BATCH
       deletedAt: null,
       authorType: { not: 'system' },
       embedding: { is: null },
-      createdAt: { gte: new Date(now.getTime() - INDEX_WINDOW_MS) },
+      createdAt: { gte: new Date(now.getTime() - windowMs) },
       OR: [{ agentStatus: null }, { agentStatus: { not: 'running' } }],
     },
     orderBy: { createdAt: 'desc' },
@@ -126,9 +155,13 @@ export async function indexPendingMessages(now = new Date(), batch = INDEX_BATCH
     },
   })
   if (!rows.length) return 0
+  // Skip rows that just failed to store. They are re-fetched every tick
+  // otherwise, and each attempt costs an embedding call.
+  const pending = (rows as any[]).filter((r) => (embedRetryAfter.get(r.id) ?? 0) <= now.getTime())
+  if (!pending.length) return 0
 
   const byWorkspace = new Map<string, any[]>()
-  for (const r of rows) byWorkspace.set(r.workspaceId, [...(byWorkspace.get(r.workspaceId) ?? []), r])
+  for (const r of pending) byWorkspace.set(r.workspaceId, [...(byWorkspace.get(r.workspaceId) ?? []), r])
   const docs: { row: any; text: string }[] = []
   for (const [workspaceId, list] of byWorkspace) {
     const names = await loadMentionNames(workspaceId, list.map((r) => String(r.text ?? '')))
@@ -138,10 +171,20 @@ export async function indexPendingMessages(now = new Date(), batch = INDEX_BATCH
   const withText = docs.filter((d) => d.text)
   const vectors = withText.length ? await provider.embed(withText.map((d) => d.text)) : []
   const vectorFor = new Map(withText.map((d, i) => [d.row.id, vectors[i] ?? []]))
+  let stored = 0
   for (const { row } of docs) {
-    await storeEmbedding(row, provider.model, vectorFor.get(row.id) ?? []).catch(() => {})
+    try {
+      await storeEmbedding(row, provider.model, vectorFor.get(row.id) ?? [])
+      stored++
+    } catch (err: any) {
+      embedRetryAfter.set(row.id, now.getTime() + EMBED_FAILURE_RETRY_MS)
+      console.warn(
+        `[Semantic] could not store the embedding for message ${row.id} (retrying in ${EMBED_FAILURE_RETRY_MS / 60_000} min):`,
+        err?.message ?? err,
+      )
+    }
   }
-  return docs.length
+  return stored
 }
 
 const MAX_PG_DIMS = 16_000

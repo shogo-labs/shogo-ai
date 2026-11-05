@@ -14,15 +14,24 @@
  */
 
 import { withGlobalJobLock } from '../lib/global-job-lock'
+import { claimRegionPeriod } from '../lib/region-period-claim'
 import { runDigestPass } from '../services/chat-digest'
 import { fireDueReminders, sendDueScheduledMessages } from '../services/chat-items'
-import { embeddingProvider, indexPendingMessages } from '../services/conversation-semantic'
+import { embeddingProvider, indexPendingMessages, INDEX_FAST_WINDOW_MS, INDEX_WINDOW_MS } from '../services/conversation-semantic'
 import { chunkPendingAttachments, embedPendingChunks } from '../services/conversation-file-index'
 
 const DIGEST_INTERVAL_MS = 10 * 60 * 1000
 const SCHEDULER_INTERVAL_MS = 15_000
 const INDEXER_INTERVAL_MS = 60_000
 const INDEXER_MAX_BATCHES = 5
+/** The hourly backstop that catches what the fast window cannot see. */
+const INDEXER_FULL_PASS_INTERVAL_MS = 60 * 60_000
+/**
+ * The full pass is a repair pass, not the steady-state one, so it does not need
+ * the old per-minute throughput. It is still 5x a minute's worth, which clears a
+ * backlog (a fresh deploy, a provider outage) in hours rather than days.
+ */
+const INDEXER_FULL_PASS_MAX_BATCHES = 25
 
 export async function runChannelEmailDigest(): Promise<void> {
   await withGlobalJobLock('channels-email-digest', async () => {
@@ -37,15 +46,31 @@ export async function runChannelScheduler(): Promise<void> {
   })
 }
 
+/**
+ * The per-region-period claim is what makes this run once a minute rather than
+ * once a pod: `withGlobalJobLock` only serialises pods inside a region, and
+ * every pod's 60 s timer fires at its own boot offset, so each one ran the
+ * whole pass (SHO-347: ~7.8 passes a minute in US, not 1).
+ *
+ * The message query reads a 30 min `createdAt` window on every tick — the
+ * index-backed range — and a full 90-day pass once an hour through a second
+ * claim, for the messages the fast window cannot see: an old message whose
+ * embedding was deleted by an edit or a file re-extract, and an agent reply
+ * that finished more than 30 min after it started.
+ */
 export async function runChannelIndexer(): Promise<void> {
   await withGlobalJobLock('channels-indexer', async () => {
+    if (!(await claimRegionPeriod('channels-indexer', INDEXER_INTERVAL_MS))) return
     // File chunks back reading and keyword search, so they're cut even without an embedding provider.
     for (let i = 0; i < INDEXER_MAX_BATCHES; i++) {
       if (!(await chunkPendingAttachments())) break
     }
     if (!embeddingProvider()) return
-    for (let i = 0; i < INDEXER_MAX_BATCHES; i++) {
-      if (!(await indexPendingMessages())) break
+    const fullPass = await claimRegionPeriod('channels-indexer-full', INDEXER_FULL_PASS_INTERVAL_MS)
+    const windowMs = fullPass ? INDEX_WINDOW_MS : INDEX_FAST_WINDOW_MS
+    const maxBatches = fullPass ? INDEXER_FULL_PASS_MAX_BATCHES : INDEXER_MAX_BATCHES
+    for (let i = 0; i < maxBatches; i++) {
+      if (!(await indexPendingMessages(new Date(), undefined, windowMs))) break
     }
     for (let i = 0; i < INDEXER_MAX_BATCHES; i++) {
       if (!(await embedPendingChunks())) break

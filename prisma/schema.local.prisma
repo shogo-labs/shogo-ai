@@ -3711,6 +3711,14 @@ model ConversationMessage {
   @@index([agentSessionId])
   @@index([externalRef])
   @@index([conversationId, externalThreadRef])
+  // SHO-347: the dead-reply sweep polls for runs that are still 'running'. Only
+  // a handful of rows are ever in that state, so a partial index stays tiny and
+  // costs almost nothing on the hottest insert path in the system.
+  @@index([threadRootId], map: "conversation_messages_running_agent_idx", where: raw("\"agentStatus\" = 'running' AND \"authorType\" = 'agent' AND \"deletedAt\" IS NULL"))
+  // SHO-347: the search indexer reads a recent `createdAt` window. `createdAt`
+  // never changes, so this index is not rewritten by the streaming updates to
+  // an agent reply's text.
+  @@index([createdAt])
   @@map("conversation_messages")
 }
 

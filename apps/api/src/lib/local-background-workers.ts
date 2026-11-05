@@ -12,6 +12,7 @@ import type { RuntimeManager } from '../jobs/agent-turn-runner'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from '../jobs/run-agent-schedule-dispatch'
 import { startEventDeliveryWorker, stopEventDeliveryWorker } from '../jobs/run-event-delivery-dispatch'
 import { startChatQueueWorker, stopChatQueueWorker } from '../jobs/run-chat-queue-drain'
+import { startChatSweepWorker, stopChatSweepWorker } from '../jobs/run-chat-sweep'
 import { startChannelWorkers, stopChannelWorkers } from '../jobs/run-channel-workers'
 import { getLocalHeartbeatScheduler, startLocalHeartbeatScheduler } from './local-heartbeat-scheduler'
 import { startSocialRelayConsumer, stopSocialRelayConsumer } from '../services/social/relay-consumer'
@@ -38,6 +39,7 @@ export async function startLocalBackgroundWorkers({
   // realtime channel.
   startEventDeliveryWorker(runtimeManager)
   startChatQueueWorker()
+  startChatSweepWorker()
   startChannelWorkers()
   // Relayed Zernio events for this machine's local workspaces: the cloud
   // verified and stored them, this applies them locally and acks. A no-op
@@ -55,6 +57,7 @@ export function stopLocalBackgroundWorkers(): void {
   stopAgentScheduleWorker()
   stopEventDeliveryWorker()
   stopChatQueueWorker()
+  stopChatSweepWorker()
   stopChannelWorkers()
   stopSocialRelayConsumer()
   getLocalHeartbeatScheduler().stop()
