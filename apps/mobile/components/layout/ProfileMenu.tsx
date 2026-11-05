@@ -19,6 +19,7 @@ import { useChatSettings } from '../../hooks/useChatPrefs'
 import { useHasAdminAccess } from '../../hooks/useHasAdminAccess'
 import { usePresence } from '../../hooks/usePresence'
 import { EVENTS, trackEvent } from '../../lib/analytics'
+import { usePhoneLayout } from '../../lib/native-phone-layout'
 import { PAUSE_OPTIONS, pauseState } from '../../lib/profile-menu'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { expiryFrom } from '../../lib/team-chat-state'
@@ -57,6 +58,7 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
   const { localMode, shogoKeyConnected } = usePlatformConfig()
   const isSuperAdmin = useHasAdminAccess(user?.id)
   const { theme, setTheme } = useTheme()
+  const phoneLayout = usePhoneLayout()
   // The menu renders in a portal above the app's providers, so everything that
   // comes from context is read here, where the avatar is, and passed down.
   const { settings, update } = useChatSettings(chat.enabled ? chat.workspaceId : null)
@@ -72,6 +74,7 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
     localMode,
     theme,
     setTheme,
+    compactMenus: phoneLayout,
     go: (href) => {
       setOpen(false)
       router.push(href as any)
@@ -114,8 +117,12 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
       )}
     >
       <PopoverBackdrop />
-      <PopoverContent className="w-[280px] p-0">
-        <PopoverBody>
+      <PopoverContent className="w-[280px] p-0 max-h-[80vh]">
+        <PopoverBody
+          className="max-h-[80vh]"
+          showsVerticalScrollIndicator
+          keyboardShouldPersistTaps="handled"
+        >
           <ProfileMenuContent model={model} />
         </PopoverBody>
       </PopoverContent>
@@ -140,6 +147,12 @@ export interface ProfileMenuModel {
   localMode?: boolean
   theme?: ThemePreference
   setTheme?: (theme: ThemePreference) => void
+  /**
+   * True at phone width, where a 200pt side flyout cannot fit beside a 280pt
+   * menu. Submenus then expand inline instead. Read by `ProfileMenu`, not the
+   * content, because the content renders in a portal above the providers.
+   */
+  compactMenus?: boolean
   /** Closes the menu and signs out. Omitted where there is no session. */
   signOut?: () => void
 }
@@ -154,6 +167,10 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
   const [pauseOpen, setPauseOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const pause = pauseState(settings?.dndUntil)
+  const themeChoices =
+    model.theme && model.setTheme ? (
+      <ThemeChoiceList theme={model.theme} onSelect={model.setTheme} variant="popover" />
+    ) : null
 
   return (
     <View role="menu" className="py-1" testID="profile-menu">
@@ -237,18 +254,11 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
         <User size={16} className="text-muted-foreground" />
         <Text className="flex-1 text-sm text-foreground">Profile</Text>
       </Pressable>
-      <Popover
-        placement="right top"
-        offset={8}
-        shouldFlip
-        size="sm"
-        className="h-auto w-auto"
-        isOpen={appearanceOpen}
-        onOpen={() => setAppearanceOpen(true)}
-        onClose={() => setAppearanceOpen(false)}
-        trigger={(triggerProps) => (
+      {model.compactMenus ? (
+        // A 200pt flyout placed beside a 280pt menu cannot fit a 402pt screen:
+        // the flip lands it ~99pt past the left edge. Phone expands in place.
+        <>
           <Pressable
-            {...triggerProps}
             role="menuitem"
             accessibilityLabel="Appearance"
             aria-expanded={appearanceOpen}
@@ -257,18 +267,44 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
           >
             <Monitor size={16} className="text-muted-foreground" />
             <Text className="flex-1 text-sm text-foreground">Appearance</Text>
-            <ChevronRight size={14} className="text-muted-foreground" />
+            {appearanceOpen ? <ChevronDown size={14} className="text-muted-foreground" /> : <ChevronRight size={14} className="text-muted-foreground" />}
           </Pressable>
-        )}
-      >
-        <PopoverContent className="w-[200px] p-0" style={{ width: 200, padding: 0 }}>
-          <PopoverBody>
-            {model.theme && model.setTheme ? (
-              <ThemeChoiceList theme={model.theme} onSelect={model.setTheme} variant="submenu" />
-            ) : null}
-          </PopoverBody>
-        </PopoverContent>
-      </Popover>
+          {appearanceOpen && themeChoices}
+        </>
+      ) : (
+        <Popover
+          placement="right top"
+          offset={8}
+          shouldFlip
+          size="sm"
+          className="h-auto w-auto"
+          isOpen={appearanceOpen}
+          onOpen={() => setAppearanceOpen(true)}
+          onClose={() => setAppearanceOpen(false)}
+          trigger={(triggerProps) => (
+            <Pressable
+              {...triggerProps}
+              role="menuitem"
+              accessibilityLabel="Appearance"
+              aria-expanded={appearanceOpen}
+              onPress={() => setAppearanceOpen((open) => !open)}
+              className={cn(ROW, appearanceOpen && "bg-muted")}
+            >
+              <Monitor size={16} className="text-muted-foreground" />
+              <Text className="flex-1 text-sm text-foreground">Appearance</Text>
+              <ChevronRight size={14} className="text-muted-foreground" />
+            </Pressable>
+          )}
+        >
+          <PopoverContent className="w-[200px] p-0" style={{ width: 200, padding: 0 }}>
+            <PopoverBody>
+              {model.theme && model.setTheme ? (
+                <ThemeChoiceList theme={model.theme} onSelect={model.setTheme} variant="submenu" />
+              ) : null}
+            </PopoverBody>
+          </PopoverContent>
+        </Popover>
+      )}
       <Pressable role="menuitem" accessibilityLabel="Settings" onPress={() => go('/(app)/settings')} className={ROW}>
         <Settings size={16} className="text-muted-foreground" />
         <Text className="flex-1 text-sm text-foreground">Settings</Text>
