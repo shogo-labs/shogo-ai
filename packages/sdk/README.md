@@ -633,6 +633,31 @@ const openai = await generateText({
 })
 ```
 
+### Send a video
+
+Models that can watch video (for example `glm-5-3-flash`) take a `file`
+part with a `video/*` media type. Pass bytes, a base64 string or a
+`data:video/...` URL; the SDK sends it as an OpenAI-style `video_url` block.
+
+```ts
+import { readFile } from 'node:fs/promises'
+import { generateText } from 'ai'
+
+const { text } = await generateText({
+  model: shogo.llm!('glm-5-3-flash'),
+  messages: [{
+    role: 'user',
+    content: [
+      { type: 'file', mediaType: 'video/mp4', data: await readFile('clip.mp4') },
+      { type: 'text', text: 'What happens in this clip?' },
+    ],
+  }],
+})
+```
+
+Keep clips under about 11 MB and send one per request. A model that can't
+watch video returns an error instead of silently ignoring the clip.
+
 List available model ids with `GET /api/ai/v1/models` on Shogo Cloud (or
 any authenticated Shogo backend). This reflects the admin-curated,
 workspace-visible model set (same source as the chat picker) — not the
