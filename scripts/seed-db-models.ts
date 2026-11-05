@@ -746,9 +746,11 @@ const GLM_FLASH_OPENROUTER_MODEL = 'z-ai/glm-5.3-flash'
 /**
  * GLM 5.3 Flash — Z.ai's fast multimodal model on OpenRouter. It is the first
  * model in the catalog that accepts **video** input (`video_url` blocks), which
- * is what lets an agent watch a clip and comment on it. No provider pin: the
- * OpenRouter video filter drops every endpoint that can't take video, so
- * `sort: "price"` picks the cheapest one that can.
+ * is what lets an agent watch a clip and comment on it. Pinned to Friendli then
+ * NextBit (see `capabilities.openrouterProvider` below): OpenRouter's own
+ * routing will happily pick an endpoint that accepts `video_url` and then drops
+ * it, so the two endpoints that pass the 2-clip video test are named explicitly
+ * and fallbacks are off (2026-11-05).
  */
 async function seedGlmFlash(): Promise<void> {
   const openrouterKey = process.env.OPENROUTER_API_KEY
@@ -775,20 +777,23 @@ async function seedGlmFlash(): Promise<void> {
     tier: 'economy',
     family: 'other',
     generation: 'current',
-    maxOutputTokens: 131_072,
+    maxOutputTokens: 128_000,
     contextWindow: 1_048_576,
     enabled: true,
     aliases: ['glm-5-3-flash'],
     description: 'Fast multimodal model that can watch video and describe what happens in it.',
     capabilities: {
       supportsVideoInput: true,
-      openrouterProvider: { sort: 'price' },
+      // Friendli then NextBit: both passed the 2-clip video test 5/5. Venice drops
+      // video, and Morph/Together/DeepInfra accept only one video per prompt (2026-11-05).
+      openrouterProvider: { order: ['Friendli', 'NextBit'], allow_fallbacks: false },
     },
-    // OpenRouter list prices for z-ai/glm-5.3-flash (per 1M tokens).
-    inputPerMillion: 0.0285,
-    cachedInputPerMillion: 0.0285,
-    cacheWritePerMillion: 0.0285,
-    outputPerMillion: 0.0923,
+    // Friendli's OpenRouter list prices (per 1M tokens); the old figures were
+    // Relace's, which cannot take video input at all.
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.03,
+    cacheWritePerMillion: 0.15,
+    outputPerMillion: 0.5,
     updatedBy: SEED_USER,
   }
 

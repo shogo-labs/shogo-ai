@@ -183,6 +183,8 @@ for await (const chunk of result.textStream) process.stdout.write(chunk)
 
 The same provider routes Anthropic and OpenAI model ids server-side based on the model name. Tool calls flow through transparently. If you only need the gateway and are running outside a pod, import \`createShogoLlmProvider({ apiKey })\` directly — no \`createClient\` required. Inside a pod, the equivalent is \`createShogoLlmProvider({ runtimeToken: process.env.RUNTIME_AUTH_SECRET! })\`.
 
+Video input: for a model that can watch video, put \`{ type: 'file', mediaType: 'video/mp4', data: bytes }\` in a user message's \`content\`; the provider sends it as a \`video_url\` block. Do it server-side (\`custom-routes.ts\`), one clip per request, under ~11 MB.
+
 ### Voice & chat (ElevenLabs convai + AI SDK)
 
 \`\`\`typescript

@@ -37,6 +37,7 @@ const OPENROUTER_KEY = 'sk-or-staging-routing-key-abcdef'
 const DEEPSEEK_UUID = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'
 const HOSHI_OPENROUTER_UUID = 'cccccccc-dddd-eeee-ffff-000000000001'
 const OPENROUTER_NATIVE_UUID = 'cccccccc-dddd-eeee-ffff-000000000002'
+const GLM_FLASH_UUID = 'cccccccc-dddd-eeee-ffff-000000000003'
 // The default `OPENROUTER_CATEGORIES` the proxy falls back to.
 const DEFAULT_OPENROUTER_CATEGORIES = ['cloud-agent', 'native-app-builder', 'personal-agent']
 
@@ -115,7 +116,8 @@ function seed() {
       enabled: true,
       sortOrder: 1,
       aliases: ['mimo'],
-      capabilities: null,
+      // A stray routing block on a non-OpenRouter host must never be forwarded.
+      capabilities: { openrouterProvider: { sort: 'price' } },
       inputPerMillion: 1.5,
       cachedInputPerMillion: 0.3,
       cacheWritePerMillion: 2,
@@ -315,6 +317,31 @@ function seed() {
       cacheWritePerMillion: 1.25,
       outputPerMillion: 5,
     },
+    // GLM 5.3 Flash as seeded (SHO-337): a `custom` row on OpenRouter with no
+    // `upstream: 'deepseek'`, so it used to skip the routing block entirely.
+    {
+      id: GLM_FLASH_UUID,
+      provider: 'custom',
+      providerId: 'prov-openrouter',
+      apiModel: 'z-ai/glm-5.3-flash',
+      displayName: 'GLM 5.3 Flash',
+      shortDisplayName: 'GLM 5.3 Flash',
+      tier: 'economy',
+      family: 'other',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 8,
+      aliases: ['glm-5-3-flash'],
+      capabilities: {
+        supportsVideoInput: true,
+        openrouterProvider: { order: ['Friendli', 'NextBit'], allow_fallbacks: false },
+      },
+      inputPerMillion: 0.15,
+      cachedInputPerMillion: 0.03,
+      cacheWritePerMillion: 0.15,
+      outputPerMillion: 0.5,
+    },
   ]
 }
 
@@ -491,6 +518,8 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(lastFetchUrl).toBe('https://api.xiaomimimo.com/v1/chat/completions')
     const auth = (lastFetchInit?.headers as Record<string, string>)?.['Authorization']
     expect(auth).toBe(`Bearer ${MIMO_KEY}`)
+    // The routing block is OpenRouter-only; a non-OpenRouter host never sees it.
+    expect(lastForwardedBody().provider).toBeUndefined()
   })
 
   test('strips Anthropic cache markers before forwarding to a non-Anthropic upstream', async () => {
@@ -623,6 +652,58 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(body.messages[1].reasoning).toBe('look it up')
     expect(body.messages[1].reasoning_content).toBeUndefined()
     expect(body.messages[1].reasoning_details).toEqual([{ type: 'reasoning.text', text: 'look it up' }])
+  })
+
+  // SHO-337: the routing block used to be attached inside the DeepSeek branch
+  // only, so every other OpenRouter-hosted DB row let OpenRouter load-balance
+  // freely — and Venice accepts `video_url` then drops it.
+  test('sends the routing block for a non-DeepSeek OpenRouter model and bridges its video', async () => {
+    const VIDEO = 'data:video/mp4;base64,AAAAIGZ0eXBtcDQy'
+    const res = await postChatBody(buildApp(), {
+      model: GLM_FLASH_UUID,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Describe this clip.' },
+          { type: 'image_url', image_url: { url: VIDEO } },
+        ],
+      }],
+    })
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://openrouter.ai/api/v1/chat/completions')
+    const body = lastForwardedBody()
+    expect(body.model).toBe('z-ai/glm-5.3-flash')
+    expect(body.provider).toEqual({ order: ['Friendli', 'NextBit'], allow_fallbacks: false })
+    expect(body.messages[0].content[1]).toEqual({ type: 'video_url', video_url: { url: VIDEO } })
+  })
+
+  // SHO-337 AC1: "every OpenRouter-hosted DB model" — the GLM row above reaches
+  // OpenRouter as `custom` + baseUrl, so this covers the other half of
+  // `isOpenRouterHost` (a native BYOK `openrouter:` row) and proves the block
+  // is forwarded verbatim, not merged with or replaced by anything else.
+  test('sends the routing block for a native openrouter BYOK row too', async () => {
+    const saved = process.env.OPENROUTER_API_KEY
+    const before = MODELS
+    const routed = { order: ['DeepInfra', 'NextBit'], allow_fallbacks: false, data_collection: 'deny' }
+    process.env.OPENROUTER_API_KEY = OPENROUTER_KEY
+    try {
+      MODELS = MODELS.map((m) =>
+        m.id === OPENROUTER_NATIVE_UUID ? { ...m, capabilities: { openrouterProvider: routed } } : m,
+      )
+      await primeModelRegistry()
+      const res = await postChatBody(buildApp(), {
+        model: OPENROUTER_NATIVE_UUID,
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      expect(res.status).toBe(200)
+      expect(lastFetchUrl).toBe('https://openrouter.ai/api/v1/chat/completions')
+      expect(lastForwardedBody().provider).toEqual(routed)
+    } finally {
+      MODELS = before
+      if (saved === undefined) delete process.env.OPENROUTER_API_KEY
+      else process.env.OPENROUTER_API_KEY = saved
+      await primeModelRegistry()
+    }
   })
 
   test('lets env override the OpenRouter attribution headers', async () => {

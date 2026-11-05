@@ -24,6 +24,23 @@
  *   prompt: 'Hello, Shogo!',
  * })
  * ```
+ *
+ * Video: pass a `file` part with a `video/*` media type to a model that can
+ * watch video (e.g. `glm-5-3-flash`). It goes out as an OpenAI-style
+ * `video_url` block, which the proxy forwards upstream.
+ *
+ * ```ts
+ * await generateText({
+ *   model: shogo.llm!('glm-5-3-flash'),
+ *   messages: [{
+ *     role: 'user',
+ *     content: [
+ *       { type: 'file', mediaType: 'video/mp4', data: await readFile('clip.mp4') },
+ *       { type: 'text', text: 'What happens in this clip?' },
+ *     ],
+ *   }],
+ * })
+ * ```
  */
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
@@ -101,7 +118,7 @@ export function createShogoLlmProvider(
     )
   }
   const root = (opts.baseUrl ?? DEFAULT_SHOGO_CLOUD_URL).replace(/\/$/, '')
-  return createOpenAICompatible({
+  const base = createOpenAICompatible({
     name: 'shogo',
     baseURL: `${root}/api/ai/v1`,
     // Both credentials ride as `Authorization: Bearer <token>`. The Shogo
@@ -111,5 +128,104 @@ export function createShogoLlmProvider(
     headers: opts.headers,
     fetch: opts.fetch,
     includeUsage: opts.includeUsage ?? true,
+    transformRequestBody: videoMarkersToVideoUrl,
   })
+  const chatModel = (modelId: string) => withVideoParts(base.chatModel(modelId))
+  return Object.assign((modelId: string) => chatModel(modelId), base, {
+    languageModel: chatModel,
+    chatModel,
+  }) as ShogoLlmProvider
+}
+
+// ---------------------------------------------------------------------------
+// Video input
+//
+// @ai-sdk/openai-compatible only maps image/audio/pdf/text file parts and
+// throws `UnsupportedFunctionalityError` for `video/*` before any request is
+// made. So a video part is disguised as an image part whose URL is the video
+// itself (a `data:video/...` URL, or the caller's URL), tagged through the
+// part's `openaiCompatible` metadata, which the provider copies onto the wire
+// block. `transformRequestBody` then turns every tagged `image_url` block into
+// a real `video_url` block and drops the tag.
+// ---------------------------------------------------------------------------
+
+type ShogoChatModel = ReturnType<ShogoLlmProvider['chatModel']>
+type CallOptions = Parameters<ShogoChatModel['doGenerate']>[0]
+
+const VIDEO_MARKER = 'shogoVideo'
+
+function withVideoParts(model: ShogoChatModel): ShogoChatModel {
+  return new Proxy(model, {
+    get(target, prop) {
+      if (prop === 'doGenerate' || prop === 'doStream') {
+        return (options: CallOptions) => target[prop](rewriteVideoParts(options) as never)
+      }
+      const value = Reflect.get(target, prop, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
+
+/** @internal exported for tests */
+export function rewriteVideoParts(options: CallOptions): CallOptions {
+  let changed = false
+  const prompt = options.prompt.map((message) => {
+    if (message.role !== 'user') return message
+    let touched = false
+    const content = message.content.map((part) => {
+      if (part.type !== 'file' || !part.mediaType.toLowerCase().startsWith('video/')) return part
+      touched = true
+      const url =
+        part.data instanceof URL
+          ? part.data
+          : new URL(
+              `data:${part.mediaType};base64,${
+                typeof part.data === 'string' ? part.data : bytesToBase64(part.data)
+              }`,
+            )
+      return {
+        ...part,
+        mediaType: 'image/*',
+        data: url,
+        providerOptions: {
+          ...part.providerOptions,
+          openaiCompatible: { ...part.providerOptions?.openaiCompatible, [VIDEO_MARKER]: true },
+        },
+      }
+    })
+    if (!touched) return message
+    changed = true
+    return { ...message, content }
+  })
+  return changed ? ({ ...options, prompt } as CallOptions) : options
+}
+
+/** @internal exported for tests */
+export function videoMarkersToVideoUrl(body: Record<string, any>): Record<string, any> {
+  if (!Array.isArray(body.messages)) return body
+  let changed = false
+  const messages = body.messages.map((message: any) => {
+    if (!Array.isArray(message?.content)) return message
+    let touched = false
+    const content = message.content.map((block: any) => {
+      if (block?.type !== 'image_url' || block[VIDEO_MARKER] !== true) return block
+      touched = true
+      const { [VIDEO_MARKER]: _marker, image_url, type: _type, ...rest } = block
+      return { ...rest, type: 'video_url', video_url: { url: image_url.url } }
+    })
+    if (!touched) return message
+    changed = true
+    return { ...message, content }
+  })
+  return changed ? { ...body, messages } : body
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64')
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
 }

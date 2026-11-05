@@ -2332,6 +2332,14 @@ function buildOpenAICompatibleBody(
     return body
   }
 
+  // Every OpenRouter-hosted row must send its routing block, not only the
+  // DeepSeek-shaped ones. Without it OpenRouter load-balances across every
+  // endpoint that advertises the model and picks one that accepts a field and
+  // then drops it (Venice takes `video_url` and returns no video).
+  if (isOpenRouterHost(modelConfig) && modelConfig.openrouterProvider) {
+    body.provider = modelConfig.openrouterProvider
+  }
+
   const isDeepSeek =
     modelConfig.upstream === 'deepseek' ||
     (modelConfig.provider === 'custom' && modelConfig.baseUrl?.includes('api.deepseek.com') === true)
@@ -2373,9 +2381,6 @@ function buildOpenAICompatibleBody(
       : reasoningEffort
         ? { effort: reasoningEffort }
         : { enabled: true }
-    if (modelConfig.openrouterProvider) {
-      body.provider = modelConfig.openrouterProvider
-    }
     if (Array.isArray(body.messages)) {
       body.messages = body.messages.map((message: any) => {
         const normalized: any = { ...stripCacheMarkersFromMessage(message) }
