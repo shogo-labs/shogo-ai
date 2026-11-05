@@ -24,6 +24,25 @@
  * the turn lock is never reaped, however long it has been quiet — a long tool
  * call, a slow model or an `exec` that buffers nothing for minutes is a real
  * turn, and killing it would be worse than the bug this fixes.
+ *
+ * Why there is no guest-side model-fetch timeout
+ * =============================================
+ * The plan for SHO-348 also asked to bound the model fetch so a dead socket
+ * after a restore cannot hang forever. Two layers already bound the part that
+ * can be bounded:
+ *   - the API's AI proxy has a byte-level idle watchdog (`MAX_IDLE_MS`, 120 s in
+ *     `apps/api/src/routes/ai-proxy.ts`): no upstream bytes for two minutes and
+ *     it emits a retryable `idle_timeout` and cancels, which the loop retries;
+ *   - `abortCurrentTurn` aborts the turn's controller, which the SDK's fetch
+ *     honours whenever the socket is still healthy enough to receive the abort.
+ * The residual case — a half-open guest↔API socket after a snapshot restore,
+ * where the proxy's error frame can never reach the guest — cannot be bounded
+ * from the guest's event iterator: pi-ai owns the transport, and the only thing
+ * visible there is parsed events, not bytes. An event-level watchdog would kill
+ * every legitimately long "thinking" pause (upstream silence is normal while
+ * the model reasons), which is a worse failure than the wedge. The reaper below
+ * therefore IS the bound for that case: deterministic, TTL-based, and it leaves
+ * a locked (genuinely running) turn alone.
  */
 
 export interface RegisteredStream {
