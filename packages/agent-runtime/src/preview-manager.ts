@@ -58,6 +58,20 @@ const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.OTEL_SERVICE_NAME === 'shogo-
 export const PUBLISH_STAGING_DIR = 'dist.publish.staging'
 
 /**
+ * Whether this process is running a per-commit published image (SHO-308 §2).
+ *
+ * Such an image was built from a commit's artifact and carries `node_modules`,
+ * the generated Prisma client and the root-based `dist/` already, so the boot
+ * path must not install, generate or rebuild — only start `server.tsx`. The
+ * flag is set by the generated Dockerfile (`published-dockerfile.ts`), so it is
+ * true in a published pod and false everywhere else, including the editing
+ * runtime of the same project.
+ */
+function isPrebuiltPublishedImage(): boolean {
+  return (process.env.SHOGO_PREBUILT_IMAGE || '').trim().toLowerCase() === 'true'
+}
+
+/**
  * Matches the "disk is full" build failure mode (09-21 prod pain point:
  * a workspace `emptyDir` reported "14GB/14GB"). vite/esbuild/bun all
  * surface this the same way in stderr regardless of which step hit it.
@@ -2439,15 +2453,24 @@ export class PreviewManager {
     }
 
     if (superseded()) return
-    await this.installDepsIfNeeded(timings)
-    if (superseded()) return
-    await this.runPrismaIfNeeded(timings)
-    if (superseded()) return
+    // A published image bakes dependencies, the generated Prisma client and the
+    // root-based `dist/` in at build time (SHO-308 §2), so boot is a process
+    // start: no install, no prisma, and no file watcher — a published
+    // revision's source is immutable, and rebuilding it here would replace the
+    // baked root-based bundle with a canvas-prefixed one.
+    if (!isPrebuiltPublishedImage()) {
+      await this.installDepsIfNeeded(timings)
+      if (superseded()) return
+      await this.runPrismaIfNeeded(timings)
+      if (superseded()) return
+    }
 
     if (!startedWithPrebuiltDist) {
       this._phase = 'building'
     }
-    await this.startBuildWatch()
+    if (!isPrebuiltPublishedImage()) {
+      await this.startBuildWatch()
+    }
     timings.buildWatch = 0
     if (superseded()) return
 

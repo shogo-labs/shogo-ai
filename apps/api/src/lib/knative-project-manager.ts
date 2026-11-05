@@ -31,6 +31,7 @@ import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 // this is a pure naming rule, not runtime config.
 import { publishedDbSecretName } from '@shogo/shared-runtime/published-database'
 import { resolvePublishedRuntimeImage } from './published-image'
+import { isDigestPinnedImageRef } from '@shogo/shared-runtime/published-image-ref'
 import type { InstanceSizeName } from '../config/instance-sizes'
 import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
 import { fnv1a64 } from './advisory-lock'
@@ -2089,7 +2090,11 @@ export class KnativeProjectManager {
               {
                 name: RUNTIME_CONFIG.containerName,
                 image: runtimeImage,
-                imagePullPolicy: "Always",
+                // A digest-pinned image is immutable: pulling `Always` only adds
+                // a registry round-trip to every cold start (and lets a registry
+                // hiccup block a boot). The shared fallback image is a mutable
+                // tag, so it keeps pulling.
+                imagePullPolicy: isDigestPinnedImageRef(runtimeImage) ? "IfNotPresent" : "Always",
                 ports: [{ containerPort: 8080, name: "http1" }],
                 env,
                 resources: publishedContainerResources(scale.size),

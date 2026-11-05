@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+//
+// SHO-308 §2 — one image per commit.
+//
+// The interesting behaviour is not "does the Job run" (that needs a cluster)
+// but the decisions around it, which is why they take their cluster, S3 and
+// runtime work as injected deps: reuse a commit's existing digest, refuse a
+// publish that cannot build instead of shipping an unpinned image, and carry
+// the build's failure tail back to the Deployment tab.
+
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+
+// `published-build.service` imports the shared prisma client at module load;
+// nothing here reads it (the default dep is always overridden).
+mock.module('../../lib/prisma', () => ({ prisma: {} }))
+
+const { ensurePublishedImage } = await import('../published-build.service')
+const { buildPublishedImageJob, buildJobName, buildLogTail, digestFromTerminationMessage } = await import(
+  '../../lib/published-build-job'
+)
+const { publishedBuildSetup, shouldBuildPublishedImage } = await import('../../lib/published-build-config')
+
+const BUILD_ENV = {
+  PUBLISH_BUILD_REGISTRY: 'us-ashburn-1.ocir.io',
+  PUBLISH_BUILD_NAMESPACE: 'ax9example',
+  PUBLISH_BUILD_IMAGE: 'moby/buildkit:v0.16-rootless',
+}
+
+const originalEnv = { ...process.env }
+
+beforeEach(() => {
+  process.env = { ...originalEnv, ...BUILD_ENV }
+})
+
+afterEach(() => {
+  process.env = { ...originalEnv }
+})
+
+const input = {
+  projectId: 'proj-1',
+  environmentId: 'env-prod',
+  subdomain: 'acme',
+  commitSha: 'abc123def4567890',
+}
+
+/** Every dep overridden, so a test states only what it cares about. */
+function deps(overrides: Record<string, any> = {}) {
+  return {
+    findReusableImage: async () => null,
+    uploadArtifact: async () => ({ url: 'https://s3.internal/acme/artifacts/abc.tar.gz' }),
+    createJob: async () => {},
+    readJob: async () => ({ status: 'succeeded' as const, message: '{"containerimage.digest":"sha256:' + 'a'.repeat(64) + '"}' }),
+    deleteJob: async () => {},
+    sleep: async () => {},
+    log: () => {},
+    ...overrides,
+  }
+}
+
+describe('publishedBuildSetup', () => {
+  it('is disabled, not an error, when the build vars are absent', () => {
+    delete process.env.PUBLISH_BUILD_REGISTRY
+    delete process.env.PUBLISH_BUILD_NAMESPACE
+    delete process.env.PUBLISH_BUILD_IMAGE
+    const setup = publishedBuildSetup()
+    expect(setup.ok).toBe(false)
+    expect(setup.missing).toEqual(
+      expect.arrayContaining(['PUBLISH_BUILD_REGISTRY', 'PUBLISH_BUILD_NAMESPACE', 'PUBLISH_BUILD_IMAGE']),
+    )
+    expect(shouldBuildPublishedImage('knative')).toBe(false)
+  })
+
+  it('never builds on the metal substrate, which boots a VM image', () => {
+    expect(shouldBuildPublishedImage('metal')).toBe(false)
+  })
+
+  it('honours PUBLISH_BUILD_IMAGES=off even when fully configured', () => {
+    process.env.PUBLISH_BUILD_IMAGES = 'off'
+    expect(shouldBuildPublishedImage('knative')).toBe(false)
+  })
+})
+
+describe('ensurePublishedImage', () => {
+  it('refuses with build_not_configured rather than publishing an unpinned image', async () => {
+    delete process.env.PUBLISH_BUILD_IMAGE
+    const res = await ensurePublishedImage(input, deps())
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('build_not_configured')
+    expect(res.message).toContain('PUBLISH_BUILD_IMAGE')
+  })
+
+  it("reuses a commit's existing digest without uploading or building", async () => {
+    let created = 0
+    let uploaded = 0
+    const digest = `sha256:${'b'.repeat(64)}`
+    const res = await ensurePublishedImage(
+      input,
+      deps({
+        findReusableImage: async () => ({ imageRef: `repo@${digest}`, imageDigest: digest }),
+        createJob: async () => {
+          created++
+        },
+        uploadArtifact: async () => {
+          uploaded++
+          return { url: 'x' }
+        },
+      }),
+    )
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.reused).toBe(true)
+    expect(res.imageDigest).toBe(digest)
+    expect(created).toBe(0)
+    expect(uploaded).toBe(0)
+  })
+
+  it('fails artifact_missing when the runtime cannot produce the context', async () => {
+    const res = await ensurePublishedImage(
+      input,
+      deps({ uploadArtifact: async () => ({ error: 'no dist' }) }),
+    )
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('artifact_missing')
+    expect(res.message).toContain('no dist')
+  })
+
+  it('pins the built digest onto the repository', async () => {
+    const digest = `sha256:${'c'.repeat(64)}`
+    const res = await ensurePublishedImage(
+      input,
+      deps({ readJob: async () => ({ status: 'succeeded' as const, message: `sha256:${'c'.repeat(64)}` }) }),
+    )
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.reused).toBe(false)
+    expect(res.imageDigest).toBe(digest)
+    expect(res.imageRef).toBe(`${res.repository}@${digest}`)
+    // The tag it pushed to and the digest it runs are the same repository.
+    expect(res.imageRef.startsWith(res.repository)).toBe(true)
+  })
+
+  it('reports a failed build with its log tail and cleans the Job up', async () => {
+    const deleted: string[] = []
+    const res = await ensurePublishedImage(
+      input,
+      deps({
+        readJob: async () => ({
+          status: 'failed' as const,
+          message: 'BackoffLimitExceeded',
+          logTail: 'error: failed to solve: bun install exited 1',
+        }),
+        deleteJob: async (name: string) => {
+          deleted.push(name)
+        },
+      }),
+    )
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('build_failed')
+    expect(res.logTail).toContain('bun install exited 1')
+    expect(deleted.length).toBeGreaterThan(0)
+  })
+
+  it('times out instead of waiting forever on a stuck build', async () => {
+    const res = await ensurePublishedImage(
+      { ...input, timeoutMs: 0 },
+      deps({ readJob: async () => ({ status: 'running' as const }) }),
+    )
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('build_timeout')
+  })
+
+  it('refuses a build that reports no digest', async () => {
+    const res = await ensurePublishedImage(
+      input,
+      deps({ readJob: async () => ({ status: 'succeeded' as const, message: 'done' }) }),
+    )
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('build_digest_missing')
+  })
+})
+
+describe('buildPublishedImageJob', () => {
+  const job = buildPublishedImageJob({
+    projectId: 'proj-1',
+    commitSha: 'abc123def4567890',
+    imageRef: 'us-ashburn-1.ocir.io/ax9example/shogo/published/proj-1:abc123de',
+    artifactUrl: 'https://s3.internal/a.tar.gz',
+    namespace: 'shogo-builds',
+    builderImage: 'moby/buildkit:v0.16-rootless',
+    dockerfile: 'FROM scratch',
+    activeDeadlineSeconds: 900,
+  })
+
+  it('writes the digest to the termination log, which the API reads back', () => {
+    const args = (job.spec as any).template.spec.containers[0].args as string[]
+    expect(args).toContain('--metadata-file')
+    expect(args[args.indexOf('--metadata-file') + 1]).toBe('/dev/termination-log')
+  })
+
+  it('pushes to the image ref it was given, with push enabled', () => {
+    const args = (job.spec as any).template.spec.containers[0].args as string[]
+    const output = args[args.indexOf('--output') + 1]
+    expect(output).toContain('push=true')
+    expect(output).toContain('name=us-ashburn-1.ocir.io/ax9example/shogo/published/proj-1:abc123de')
+  })
+
+  it('delivers the Dockerfile with the Job so a project cannot change how it is built', () => {
+    const fetch = (job.spec as any).template.spec.initContainers[0]
+    const env = Object.fromEntries(fetch.env.map((e: any) => [e.name, e.value]))
+    expect(env.DOCKERFILE).toBe('FROM scratch')
+    expect(env.DOCKERFILE_NAME).toBe('Dockerfile.published')
+  })
+
+  it('carries the registry push credentials as a docker config secret', () => {
+    const spec = (job.spec as any).template.spec
+    const mount = spec.containers[0].volumeMounts.find((m: any) => m.mountPath === '/home/user/.docker')
+    expect(mount).toBeTruthy()
+    const volume = spec.volumes.find((v: any) => v.name === mount.name)
+    expect(volume.secret.items[0].path).toBe('config.json')
+  })
+
+  it('never retries a failed build into a digest nobody asked for', () => {
+    expect((job.spec as any).backoffLimit).toBe(0)
+  })
+
+  it('names the Job per commit so a re-publish joins rather than duplicates', () => {
+    expect(buildJobName('proj-1', 'abc123def4567890')).toBe(buildJobName('proj-1', 'abc123def4567890'))
+    // Kubernetes names must be DNS-1123.
+    expect(buildJobName('Proj_1/x', 'ABCDEF12')).toMatch(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/)
+  })
+})
+
+describe('digestFromTerminationMessage', () => {
+  const digest = `sha256:${'d'.repeat(64)}`
+
+  it('reads the metadata file JSON', () => {
+    expect(digestFromTerminationMessage(JSON.stringify({ 'containerimage.digest': digest }))).toBe(digest)
+  })
+
+  it('falls back to any digest in plain text', () => {
+    expect(digestFromTerminationMessage(`pushed ${digest}`)).toBe(digest)
+  })
+
+  it('returns null for a truncated stack trace rather than throwing', () => {
+    expect(digestFromTerminationMessage('panic: runtime error')).toBeNull()
+    expect(digestFromTerminationMessage(null)).toBeNull()
+  })
+})
+
+describe('buildLogTail', () => {
+  it('keeps the last lines, where the failure is', () => {
+    const log = ['noise 1', 'noise 2', 'error: the real problem'].join('\n')
+    expect(buildLogTail(log)).toBe('noise 1\nnoise 2\nerror: the real problem')
+  })
+
+  it('is empty for an empty log rather than "undefined"', () => {
+    expect(buildLogTail(null)).toBe('')
+  })
+})

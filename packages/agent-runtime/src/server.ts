@@ -6120,6 +6120,71 @@ app.get('/agent/dist-files', (c) => {
 })
 
 /**
+ * The build context a published image is built from (SHO-308 §2), as a gzipped
+ * tar, base64-encoded.
+ *
+ * Publishing used to build on boot: the pod hydrated source and then ran
+ * `bun install`, `prisma generate` and a Vite build before it could answer.
+ * Now the image is built once per commit, in a BuildKit Job, from this
+ * artifact — so a published pod only has to start. What goes in it:
+ *
+ *   - the project's source at its current commit, minus `node_modules`, `.git`
+ *     and the caches a build regenerates anyway;
+ *   - the root-based `dist/` that `buildForPublish()` just produced, since a
+ *     published bundle must be served from `/` rather than `/p/<id>/`.
+ *
+ * Called by `apps/api/src/services/published-build.service.ts` right after
+ * `POST /agent/publish-build`, under the runtime-owned `/agent/*` namespace
+ * (so `x-runtime-token` gated like `/agent/dist-files`).
+ */
+app.get('/agent/publish-artifact', async (c) => {
+  const projectId = c.req.query('projectId')
+  const projectDir = getProjectWorkspaceDir(projectId)
+  if (!projectDir) {
+    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
+  }
+  const outputRoot = getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir
+  const stagingDir = join(outputRoot, PUBLISH_STAGING_DIR)
+  if (!existsSync(stagingDir)) {
+    return c.json(
+      { error: 'dist_not_found', message: 'No publish build output — run /agent/publish-build first' },
+      404,
+    )
+  }
+
+  // Directories that are either rebuilt inside the image (`node_modules`), not
+  // part of the artifact (`.git`, `.shogo`), or a stale build of the canvas
+  // preview (`dist`, which is path-prefixed and must not leak into the image).
+  const SKIP = new Set(['node_modules', '.git', '.shogo', 'dist', PUBLISH_STAGING_DIR, '.tmp'])
+
+  const { cp, mkdtemp, readFile, rm } = await import('fs/promises')
+  const os = await import('os')
+  const tar = await import('tar')
+  const tmpDir = await mkdtemp(join(os.tmpdir(), 'shogo-publish-artifact-'))
+  const contextDir = join(tmpDir, 'context')
+  const archivePath = join(tmpDir, 'artifact.tar.gz')
+  try {
+    await cp(projectDir, contextDir, {
+      recursive: true,
+      filter: (src) => {
+        const rel = src.slice(projectDir.length + 1)
+        if (!rel) return true
+        return !SKIP.has(rel.split(/[\\/]/)[0])
+      },
+    })
+    await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
+    await tar.create({ gzip: true, file: archivePath, cwd: contextDir, portable: true }, ['.'])
+    const buf = await readFile(archivePath)
+    cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
+    return c.json({ archive: buf.toString('base64'), bytes: buf.length })
+  } catch (err: any) {
+    return c.json({ error: 'artifact_failed', message: err?.message ?? String(err) }, 500)
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+/**
  * Build the requested project for publishing. Workspace previews need a
  * `/p/<projectId>/` Vite base, but published artifacts are served from the
  * root of their own hostname. The PreviewManager keeps this root-based
