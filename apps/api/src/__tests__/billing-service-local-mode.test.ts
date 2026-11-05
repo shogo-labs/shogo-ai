@@ -51,6 +51,12 @@ mock.module('../config/usage-plans', () => ({
     return lc.startsWith('free') || lc === '' ? 1 : 0
   },
   getMonthlyIncludedForPlan: () => 0,
+  getMonthlyIncludedForPlanAndPrice: () => 0,
+  getPlanAllowance: () => ({
+    windowLimits: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+    monthlyIncludedUsdPerSeat: 0,
+    legacy: false,
+  }),
   normalizePlanId: (p: string | null | undefined) => (p ?? null),
   comparePlanRank: () => 0,
   getAlwaysOnAllowance: () => 0,
