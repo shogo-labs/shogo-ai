@@ -1191,6 +1191,40 @@ export class KnativeProjectManager {
     })
   }
 
+  /**
+   * Ready-pod count per published service, from ONE namespace-wide pod list.
+   *
+   * The metering cron used to call `listPublishedPods` once per published
+   * environment (~725 on prod, of which ~250 have a ksvc), which is one API
+   * round-trip per row per minute per region. This returns the same numbers —
+   * `published-{projectId}` (production) and `published-{projectId}-staging` —
+   * keyed by service name so a caller can look each environment up.
+   *
+   * `serving.knative.dev/service` is present on every pod a ksvc owns, which
+   * is why the selector is on that label and not `shogo.io/component`: running
+   * pods do not carry the component label, only the service does.
+   */
+  async listPublishedPodCounts(): Promise<Map<string, number>> {
+    const coreApi = getCoreApi()
+    const res = await coreApi.listNamespacedPod({
+      namespace: this.namespace,
+      labelSelector: 'serving.knative.dev/service',
+    })
+    const items = ((res as any).items ?? []) as any[]
+    const counts = new Map<string, number>()
+    for (const pod of items) {
+      const service: string | undefined = pod.metadata?.labels?.['serving.knative.dev/service']
+      // Only published services; every other ksvc in the namespace (preview /
+      // workspace runtimes) is metered elsewhere.
+      if (!service || !service.startsWith('published-')) continue
+      const statuses = (pod.status?.containerStatuses ?? []) as any[]
+      const ready = statuses.length > 0 && statuses.every((s) => s.ready === true)
+      if (!ready) continue
+      counts.set(service, (counts.get(service) ?? 0) + 1)
+    }
+    return counts
+  }
+
   /** Tail a published environment's `user-container` logs. */
   async readPublishedLogs(
     projectId: string,

@@ -235,6 +235,20 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
+    fn: 'runPublishedUsageCollect',
+    file: 'apps/api/src/jobs/published-usage.ts',
+    reason:
+      'Each region samples only published environments whose project workspace is homed here (homeRegionWorkspaceWhere()); published traffic is pinned to the home region, so only that region can see the real replica count. The write set is therefore disjoint per (environmentId,minute) and the replicated unique never collides across regions. The region-local advisory lock plus the per-region `published-usage:last-collected:<REGION_ID>` PlatformSetting claim only de-duplicate the pods inside one region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
+    fn: 'runPublishedUsageBill',
+    file: 'apps/api/src/jobs/published-usage.ts',
+    reason:
+      'Each region bills and stamps billedAt only on the PublishedUsageMinute rows of environments it collected, i.e. workspaces homed here (homeRegionWorkspaceWhere()). The two regions read disjoint row sets, so the hourly charge cannot be applied twice for one row even though both regions tick.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runGrantMonthlyRefill',
     file: 'apps/api/src/jobs/grant-monthly-refill.ts',
     reason:
@@ -1024,10 +1038,10 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
   },
   {
     key: 'PublishedUsageMinute.(environmentId,minute)',
-    category: 'cron_locked',
+    category: 'cron_home_partitioned',
     reason:
-      'Replication metering rows are written only by jobs/published-usage.ts, which runs under withGlobalJobLock(published-usage-collect). One lock holder per tick means one row per (environment, minute) regardless of how many regions tick; the biller reads the same key under published-usage-bill and only ever updates billedAt.',
-    writer: 'published-usage-collect',
+      'Rows are written only by jobs/published-usage.ts, and runPublishedUsageCollect samples only environments whose workspace is homed in the writing region (homeRegionWorkspaceWhere), so the two regions write disjoint (environmentId, minute) sets — the peer never inserts a key the other one already has. Within a region the advisory lock plus the per-region PlatformSetting claim let exactly one pod write each minute. runPublishedUsageBill bills and stamps billedAt only on its own region\'s environments.',
+    writer: 'runPublishedUsageCollect',
   },
 ]
 

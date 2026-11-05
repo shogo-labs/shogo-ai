@@ -80,6 +80,15 @@ import { createHash } from 'node:crypto'
 // the same reason. See the `HOME_REGION_PARTITIONED` allowlist in
 // `scripts/check-multiregion-cron-locks.ts` and the docstring on
 // `runGrantMonthlyRefill`.
+//
+// NOTE (SHO-345): `published-usage-collect` / `published-usage-bill` are
+// home-region *partitioned* too. They stay here because the lock is still
+// useful — but only as a serialiser between the pods inside ONE region, not
+// across regions: the lock lives on the local database, so US and EU each hold
+// their own copy of it. Cross-region safety comes from the workspace
+// homeRegion partition (and a region-scoped minute claim), never from this
+// lock. Do not treat a `KNOWN_JOB_IDS` entry as proof that a job runs once per
+// tick across the mesh.
 export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   'storage-recalculate-all': jobNameToLockId('storage-recalculate-all'),
   'voice-monthly-rebill': jobNameToLockId('voice-monthly-rebill'),
