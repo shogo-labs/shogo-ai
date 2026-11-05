@@ -2721,7 +2721,7 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // Preview Manager (app mode — lazy init)
 // ---------------------------------------------------------------------------
 
-import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
+import { PreviewManager, PUBLISH_STAGING_DIR, publishedBootPlan } from './preview-manager'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
@@ -6156,6 +6156,10 @@ app.get('/agent/publish-artifact', async (c) => {
   // part of the artifact (`.git`, `.shogo`), or a stale build of the canvas
   // preview (`dist`, which is path-prefixed and must not leak into the image).
   const SKIP = new Set(['node_modules', '.git', '.shogo', 'dist', PUBLISH_STAGING_DIR, '.tmp'])
+  // SQLite's write-ahead log belongs to a live process: a `-wal` captured
+  // mid-write and replayed against the image's DB is how a published app starts
+  // up with a corrupt table. The DB file itself is a valid snapshot.
+  const SKIP_SUFFIX = /-(wal|shm)$/
 
   const { cp, mkdtemp, readFile, rm } = await import('fs/promises')
   const os = await import('os')
@@ -6164,11 +6168,27 @@ app.get('/agent/publish-artifact', async (c) => {
   const contextDir = join(tmpDir, 'context')
   const archivePath = join(tmpDir, 'artifact.tar.gz')
   try {
+    // Fold the WAL back into the DB before copying it. Otherwise the tarball
+    // would skip `-wal` (see SKIP_SUFFIX) and lose the writes it still holds —
+    // a published app booting with a DB that is behind its own last write.
+    for (const rel of ['prisma/dev.db', 'dev.db']) {
+      const dbPath = join(projectDir, rel)
+      if (!existsSync(dbPath)) continue
+      try {
+        const { Database } = await import('bun:sqlite')
+        const db = new Database(dbPath, { readonly: false })
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+        db.close()
+      } catch (err: any) {
+        console.warn(`[agent-runtime] publish-artifact: checkpoint of ${rel} failed: ${err?.message ?? err}`)
+      }
+    }
     await cp(projectDir, contextDir, {
       recursive: true,
       filter: (src) => {
         const rel = src.slice(projectDir.length + 1)
         if (!rel) return true
+        if (SKIP_SUFFIX.test(rel)) return false
         return !SKIP.has(rel.split(/[\\/]/)[0])
       },
     })
@@ -7632,46 +7652,58 @@ async function checkoutPublishedTag(subdomain: string): Promise<void> {
 async function initializePublished(): Promise<void> {
   logTiming(`Published mode: initializing for subdomain=${PUBLISHED_SUBDOMAIN}`)
 
-  // 1. Seed template files (idempotent) so a brand-new emptyDir has the base
-  //    layout; git/S3 hydration below overlays the real published app.
-  ensureWorkspaceFiles()
+  // A per-commit image (SHO-308 §2) already carries the source tree, the seed
+  // DB at that commit, `node_modules`, the generated Prisma client and the
+  // root-based `dist/`. Restoring the durable repo on top would overwrite all
+  // of it — and pay a full clone on every cold start, which is exactly the boot
+  // cost the image exists to remove. The writable-state overlay below still
+  // runs: the image is the commit, the overlay is what users have written since.
+  const boot = publishedBootPlan()
 
-  // 2. Hydrate source read-only. Prefer the durable git repo (carries the
-  //    published tag + the builder's seed DB); fall back to the S3 project
-  //    archive. We deliberately do NOT start any source uploader/watcher —
-  //    published source is immutable for the life of the pod.
-  let hydrated = false
-  const repoCfg = repoStoreConfigFromEnv()
-  if (repoCfg) {
-    try {
-      const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
-      hydrated = res.restored
-      if (hydrated) {
-        await checkoutPublishedTag(PUBLISHED_SUBDOMAIN)
-        logTiming('Published mode: source restored from git repo store')
+  if (boot.hydrateSource) {
+    // 1. Seed template files (idempotent) so a brand-new emptyDir has the base
+    //    layout; git/S3 hydration below overlays the real published app.
+    ensureWorkspaceFiles()
+
+    // 2. Hydrate source read-only. Prefer the durable git repo (carries the
+    //    published tag + the builder's seed DB); fall back to the S3 project
+    //    archive. We deliberately do NOT start any source uploader/watcher —
+    //    published source is immutable for the life of the pod.
+    let hydrated = false
+    const repoCfg = repoStoreConfigFromEnv()
+    if (repoCfg) {
+      try {
+        const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
+        hydrated = res.restored
+        if (hydrated) {
+          await checkoutPublishedTag(PUBLISHED_SUBDOMAIN)
+          logTiming('Published mode: source restored from git repo store')
+        }
+      } catch (err: any) {
+        console.error('[agent-runtime] Published mode: git restore failed:', err?.message ?? err)
       }
-    } catch (err: any) {
-      console.error('[agent-runtime] Published mode: git restore failed:', err?.message ?? err)
     }
-  }
-  if (!hydrated && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
-    try {
-      const sync = createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
-        watchEnabled: false,
-        syncInterval: 0,
-        suppressProjectArchive: true,
-      })
-      if (sync) {
-        const stats = await sync.downloadAll()
-        hydrated = stats.errors.length === 0
-        logTiming(`Published mode: source restored from S3 (downloaded=${stats.downloaded}, errors=${stats.errors.length})`)
+    if (!hydrated && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
+      try {
+        const sync = createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
+          watchEnabled: false,
+          syncInterval: 0,
+          suppressProjectArchive: true,
+        })
+        if (sync) {
+          const stats = await sync.downloadAll()
+          hydrated = stats.errors.length === 0
+          logTiming(`Published mode: source restored from S3 (downloaded=${stats.downloaded}, errors=${stats.errors.length})`)
+        }
+      } catch (err: any) {
+        console.error('[agent-runtime] Published mode: S3 restore failed:', err?.message ?? err)
       }
-    } catch (err: any) {
-      console.error('[agent-runtime] Published mode: S3 restore failed:', err?.message ?? err)
     }
-  }
-  if (!hydrated) {
-    console.error('[agent-runtime] Published mode: NO source hydrated — the published app will not serve correctly')
+    if (!hydrated) {
+      console.error('[agent-runtime] Published mode: NO source hydrated — the published app will not serve correctly')
+    }
+  } else {
+    logTiming('Published mode: prebuilt image — source and dist serve from the image, no hydrate')
   }
 
   // 3. Overlay durable writable state (end-user writes accumulated since the

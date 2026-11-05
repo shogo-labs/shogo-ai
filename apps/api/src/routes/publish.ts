@@ -1005,7 +1005,18 @@ async function configurePublishedService(
       if (!image.ok) {
         // A publish must never ship a runtime it could not build: the ksvc
         // would boot the shared image and serve the wrong commit.
-        throw new PublishConfigureError(image.code, image.message, 503, { logTail: image.logTail })
+        //
+        // The code alone is not actionable — a build failure is a BuildKit log.
+        // Park it on the environment row (which is what the Deployment tab
+        // reads) before refusing, so the reason survives the HTTP response.
+        const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
+        const detail = image.logTail
+          ? `${image.code}: ${image.message}\n\n${image.logTail}`
+          : `${image.code}: ${image.message}`
+        await setEnvironmentPublishStatus(environment.id, "failed", detail).catch((err: any) => {
+          console.warn(`[Publish] could not record the build failure: ${err?.message ?? err}`)
+        })
+        throw new PublishConfigureError(image.code, detail, 503, { logTail: image.logTail })
       }
       publishedImageRef = image.imageRef
       publishedImageDigest = image.imageDigest
@@ -1626,11 +1637,21 @@ export async function deployToStaging(
 
       await setEnvironmentPublishStatus(staging.id, "configuring")
       const serverBacked = await detectServerBacked(projectId)
-      await configurePublishedService(projectId, subdomain, {
-        serverBacked,
-        environment: "staging",
-        allowDataLoss: opts.allowDataLoss === true,
-      })
+      try {
+        await configurePublishedService(projectId, subdomain, {
+          serverBacked,
+          environment: "staging",
+          allowDataLoss: opts.allowDataLoss === true,
+        })
+      } catch (err: any) {
+        // Without this the row stays on "configuring" forever and the panel
+        // shows a publish that never finished — including a refused per-commit
+        // image build (§2), whose detail is already on the row.
+        const detail =
+          err instanceof PublishConfigureError ? err.message : `configuring: ${err?.message ?? String(err)}`
+        await setEnvironmentPublishStatus(staging.id, "failed", detail).catch(() => undefined)
+        throw err
+      }
 
       // The deployment row is recorded by configurePublishedService, for
       // whichever environment it published — recording again here would write a

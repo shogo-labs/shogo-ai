@@ -32,6 +32,29 @@ Boot with `SHOGO_PREBUILT_IMAGE=true` (set by the generated Dockerfile) skips
 install / prisma / build-watch in the runtime: the image carries `node_modules`,
 the generated Prisma client and `dist/`, so boot is `bun server.tsx`.
 
+## What the image is, and what it is not
+
+| Layer | Carried by | Changes when |
+| --- | --- | --- |
+| Source at the commit | the image | the commit changes |
+| `node_modules` + generated Prisma client | the image (`bun install`, `prisma generate`) | the commit changes |
+| Root-based `dist/` | the image (the runtime's publish build) | the commit changes |
+| Seed DB (`prisma/dev.db`) | the image | the commit changes |
+| What end users have written since | durable overlay (`PublishedDataSync`) | every request |
+
+So the boot path does **not** install, generate, build, or restore the durable
+git repo: restoring it would overwrite the baked source and pay a clone on every
+cold start. `publishedBootPlan()` is the single place that decides this — the
+source hydration in `initializePublished()` and the install/generate/watch step
+in `backgroundSetup()` both read it. The writable-state overlay still runs, so
+the image is the commit and the overlay is the data.
+
+The artifact excludes `-wal` / `-shm` beside the DB: replaying a write-ahead log
+captured mid-write is how a published app starts up with a corrupt table. The
+runtime checkpoints first (`PRAGMA wal_checkpoint(TRUNCATE)`), so the image's
+`dev.db` is a complete snapshot rather than one that is behind its own last
+write.
+
 ## Cluster prerequisites
 
 These are per region and must exist **before** enabling the feature.

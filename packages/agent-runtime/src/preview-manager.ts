@@ -67,8 +67,33 @@ export const PUBLISH_STAGING_DIR = 'dist.publish.staging'
  * true in a published pod and false everywhere else, including the editing
  * runtime of the same project.
  */
-function isPrebuiltPublishedImage(): boolean {
-  return (process.env.SHOGO_PREBUILT_IMAGE || '').trim().toLowerCase() === 'true'
+export function isPrebuiltPublishedImage(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.SHOGO_PREBUILT_IMAGE || '').trim().toLowerCase() === 'true'
+}
+
+/**
+ * What a published pod's boot has to do for itself.
+ *
+ * Split out from the two call sites (source hydration in the runtime's
+ * `initializePublished`, and install/generate/build in `backgroundSetup`) so the
+ * contract is one testable function: an image carries source, deps, the Prisma
+ * client and `dist/`, so neither of them may redo that work. Everything else a
+ * published pod does — the writable-state overlay, the `server.tsx` process —
+ * still happens either way.
+ */
+export function publishedBootPlan(env: NodeJS.ProcessEnv = process.env): {
+  fromImage: boolean
+  hydrateSource: boolean
+  installDeps: boolean
+  watchFiles: boolean
+} {
+  const fromImage = isPrebuiltPublishedImage(env)
+  return {
+    fromImage,
+    hydrateSource: !fromImage,
+    installDeps: !fromImage,
+    watchFiles: !fromImage,
+  }
 }
 
 /**
@@ -2477,7 +2502,8 @@ export class PreviewManager {
     // start: no install, no prisma, and no file watcher — a published
     // revision's source is immutable, and rebuilding it here would replace the
     // baked root-based bundle with a canvas-prefixed one.
-    if (!isPrebuiltPublishedImage()) {
+    const bootPlan = publishedBootPlan()
+    if (bootPlan.installDeps) {
       await this.installDepsIfNeeded(timings)
       if (superseded()) return
       await this.runPrismaIfNeeded(timings)
@@ -2487,7 +2513,7 @@ export class PreviewManager {
     if (!startedWithPrebuiltDist) {
       this._phase = 'building'
     }
-    if (!isPrebuiltPublishedImage()) {
+    if (bootPlan.watchFiles) {
       await this.startBuildWatch()
     }
     timings.buildWatch = 0
