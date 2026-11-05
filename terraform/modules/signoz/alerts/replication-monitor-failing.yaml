@@ -1,4 +1,4 @@
-# SigNoz alert: cross-region replication monitor failing / not reporting
+# SigNoz alert: cross-region replication monitor reporting a failure
 #
 # Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
 # README (builder queries not PromQL, v2alpha1, real channel).
@@ -6,8 +6,9 @@
 # Why: `k8s/cnpg/logical-replication/replication-monitor.yaml` is a per-region
 # CronJob (every 5 min) that exits NON-ZERO on any replication-health failure
 # class — stopped apply worker, disabled subscription, inactive/bloated slot,
-# unpublished table, stale subscription, or a missing _prisma_migrations REPLICA
-# trigger. It correctly turns the K8s Job red on those conditions.
+# apply lag > 5 min, unpublished table, stale subscription, or a missing
+# _prisma_migrations REPLICA trigger. It correctly turns the K8s Job red on
+# those conditions.
 #
 # BUT nothing paged on that red Job. The deploy.yml and warm-pool-monitor
 # comments referred to "the existing kube_job_status_failed alert" that was never
@@ -16,23 +17,27 @@
 # three regions without paging anyone — the exact "ran 15 hours undetected"
 # failure the monitor was built to prevent (incident 2026-05-26).
 #
-# Signal: page when a region has had no SUCCESSFUL run for 3 polling intervals
-# (15 min). This catches (a) the Job failing repeatedly, (b) the Job not being
-# scheduled at all, and (c) a stuck Job — and it auto-clears the moment a green
-# run lands, unlike alerting on failed Jobs (which linger under
-# failedJobsHistoryLimit and would leave the alert stuck firing after recovery).
+# 2026-11-05 (SHO-344): the mesh was down 3.5h and this alert stayed `inactive`
+# the whole time. The old rule alerted on the ABSENCE of a green run
+# (`count(exit=0) below 1`, `alertOnAbsent: true`, grouped by cluster). That
+# shape cannot fire for a single broken region: a cluster with zero green runs
+# produces NO series, so it is never "below 1"; and because another cluster
+# (staging/EU) still had green series, the rule was not "absent" either. The
+# broken region was invisible.
 #
-# WHY A LOG QUERY AND NOT A CRONJOB METRIC: "time since last success" needs
-# kube_cronjob_status_last_successful_time, and kube-state-metrics is not
-# deployed here — the OTel k8s-infra collector emits no equivalent. The available
-# k8s.job.successful_pods is unusable for freshness because completed Jobs keep
-# reporting 1 for as long as successfulJobsHistoryLimit retains them, so the
-# signal stays green after the CronJob stops running. The script's own terminal
-# line is the honest freshness signal: a green run prints
-# `=== Monitor complete (exit=0) ===` exactly once, and both prod regions emit it
-# once per 5-minute bucket today (288/day each).
+# So this rule now alerts on the PRESENCE of a failure marker per cluster:
+# `Monitor complete (exit=1)` or any `CRITICAL:` line. A failing region always
+# emits one of those, so it always has a series, and `in_total > 0` over the
+# 15-minute window fires. `alertOnAbsent` is deliberately OFF — a healthy
+# cluster emits no failure marker, and treating that as "absent" would page on
+# every green region.
 #
-# The pod-name filter matters: k8s/base/warm-pool-monitor.yaml prints the
+# Trade-off: a monitor that stops running entirely emits no failure marker, so
+# this rule does not catch "the CronJob is gone". That case is covered by the
+# K8s Job-failed signal and by the fact that a dead monitor cannot hide a
+# broken mesh for long — but it is a known gap, not an oversight.
+#
+# The pod-name filter matters: k8s/base/warm-pool-monitor.yaml prints a
 # byte-identical completion line, so matching on the body alone would stay green
 # on warm-pool-monitor runs while replication-monitor was dead.
 
@@ -53,27 +58,26 @@ condition:
           aggregations:
             - expression: count()
           filter:
-            expression: "k8s.pod.name LIKE 'replication-monitor%' AND body LIKE '%Monitor complete (exit=0)%'"
+            expression: "k8s.pod.name LIKE 'replication-monitor%' AND (body LIKE '%Monitor complete (exit=1)%' OR body LIKE '%CRITICAL:%')"
           groupBy:
             - name: k8s.cluster.name
               fieldContext: resource
               fieldDataType: string
-          legend: "{{k8s.cluster.name}} green_runs"
-          # One bucket per scheduled run, so 3 empty buckets == 3 missed runs.
+          legend: "{{k8s.cluster.name}} failing_runs"
+          # One bucket per scheduled run.
           stepInterval: 300s
   selectedQueryName: A
   thresholds:
     kind: basic
     spec:
       - name: critical
-        op: below
-        matchType: all_the_times
-        target: 1
+        op: above
+        matchType: in_total
+        target: 0
         channels: [platform-oncall]
-  # A region whose Jobs stop running (or stop logging) produces no series at all
-  # rather than a zero, and that is the case this alert exists for.
-  alertOnAbsent: true
-  absentFor: 15
+  # OFF on purpose: a healthy cluster emits no failure marker, so "absent" would
+  # page on every green region. See the header note.
+  alertOnAbsent: false
 evaluation:
   kind: rolling
   spec:
@@ -90,22 +94,22 @@ notificationSettings:
     interval: 4h
     alertStates: [firing]
 annotations:
-  summary: "replication-monitor has not succeeded in 15+ min (a region's mesh may be broken)"
+  summary: "replication-monitor reported a failure in a region (the mesh may be broken)"
   description: |
-    A region's cross-region replication-monitor CronJob has not had a
-    successful run in 15+ minutes. The monitor fails (exits non-zero) on any
-    of: a subscription apply worker stopped, an inactive/bloated replication
-    slot, a public table missing from the publication, a subscription trailing
-    the local publication (missing REFRESH), or the _prisma_migrations REPLICA
-    trigger being absent. A failing/absent monitor means one of those is
-    happening OR the monitor isn't running — either way the mesh is unobserved.
+    A region's cross-region replication-monitor CronJob exited non-zero (or
+    printed a CRITICAL line) in the last 15 minutes. The monitor fails on any
+    of: a subscription apply worker stopped or disabled, an inactive/bloated
+    replication slot, apply lag over 5 minutes, a public table missing from the
+    publication, a subscription trailing the local publication (missing
+    REFRESH), or the _prisma_migrations REPLICA trigger being absent.
 
     Triage:
     1. Find the failing region + read the last run:
        kubectl get jobs -n shogo-production-system | grep replication-monitor
        kubectl logs -n shogo-production-system job/<newest replication-monitor job>
     2. The log names the exact failing class (STOPPED sub, inactive slot,
-       >100MB WAL lag, unpublished table, stale sub, missing prisma trigger).
+       >100MB WAL lag, apply lag, unpublished table, stale sub, missing prisma
+       trigger).
     3. Check every region's subscriptions:
        kubectl exec -n shogo-production-system <platform-pg pod> -c postgres -- \
          psql -U postgres -d shogo -c \

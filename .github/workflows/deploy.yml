@@ -2343,6 +2343,44 @@ jobs:
               || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on EU (subscription may not exist yet)"
           done
 
+      # A REFRESH PUBLICATION with the default copy_data = true makes EU COPY
+      # every row of a newly-published table from US. If EU already wrote rows
+      # into that table — a migration backfill that ran in both regions, the
+      # 2026-11-05 SHO-308 outage — the COPY dies on a duplicate key and the
+      # tablesync worker leaves the relation in 'd' (data copy) or 'i'
+      # (initialize) forever, with sub_from_us disabled. Nothing paged for 3.5h
+      # while US writes never reached EU. Fail the deploy loudly instead of
+      # leaving the mesh silently broken.
+      - name: Verify EU tablesync is not stuck
+        run: |
+          set -euo pipefail
+          DEADLINE=$(( $(date +%s) + 180 ))
+          while :; do
+            STUCK=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -tAc "
+                SELECT count(*) FROM pg_subscription_rel WHERE srsubstate IN ('d','i');
+              ")
+            if [ "$STUCK" = "0" ]; then
+              echo "✓ every replicated relation on EU is past tablesync (no 'd'/'i')"
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::$STUCK relation(s) on EU are stuck in tablesync ('d'/'i') after 180s — sub_from_us will not stream. A duplicate key in the initial COPY is the usual cause (a migration wrote rows in both regions)."
+              kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+                psql -U postgres -d shogo -c "
+                  SELECT srsubid::regclass AS relation, srsubstate
+                  FROM pg_subscription_rel WHERE srsubstate IN ('d','i');
+                "
+              kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+                psql -U postgres -d shogo -c "
+                  SELECT subname, subenabled, apply_error_count, sync_error_count
+                  FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
+                "
+              exit 1
+            fi
+            sleep 5
+          done
+
       # Tables this deploy created are now published on EU, but the US
       # subscription only learns about them on a REFRESH. It must not copy
       # data: EU's initial copy above already pulled US's rows, so a US copy

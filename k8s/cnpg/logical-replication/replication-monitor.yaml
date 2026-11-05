@@ -11,6 +11,7 @@
 #
 # Conditions that fail the job:
 #   - any subscription with pid IS NULL (apply worker not streaming)
+#   - any streaming subscription more than 5 minutes behind (apply lag)
 #   - any subscription with apply_error_count > 0 (PG 18 conflict log)
 #   - any inactive logical replication slot
 #   - any logical slot with > 100 MB WAL lag (down from 1 GB)
@@ -124,6 +125,30 @@ spec:
 
                   if [ "$STOPPED" -gt 0 ]; then
                     echo "CRITICAL: $STOPPED subscription(s) not streaming!"
+                    EXIT_RC=1
+                  fi
+
+                  # Apply lag: a streaming subscription whose last applied
+                  # transaction is more than 5 minutes old is not keeping up.
+                  # The 2026-11-05 outage (SHO-344) had EU 7.6 GB behind while
+                  # the sub was briefly re-enabled between watchdog cycles. WAL
+                  # lag on the publisher's slot (below) catches a stuck worker;
+                  # this catches a slow one, and it is the direct signal the
+                  # incident lacked.
+                  APPLY_LAG=$(psql -X -t -A -F'|' -c "
+                    SELECT subname,
+                           EXTRACT(EPOCH FROM (now() - latest_end_time))::int AS lag_seconds
+                    FROM pg_stat_subscription
+                    WHERE subname LIKE 'sub_from_%'
+                      AND pid IS NOT NULL
+                      AND latest_end_time IS NOT NULL
+                      AND now() - latest_end_time > interval '5 minutes'
+                    ORDER BY subname;
+                  ")
+
+                  if [ -n "$APPLY_LAG" ]; then
+                    echo "CRITICAL: subscription(s) applying more than 5 minutes behind:"
+                    echo "$APPLY_LAG"
                     EXIT_RC=1
                   fi
 
