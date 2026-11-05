@@ -664,6 +664,15 @@ spec:
                   optional: true
             - name: WARM_POOL_MIN_PODS
               value: "5"
+            # Compaction variant for every runtime pod (SHO-327, forwarded by
+            # build-workspace-env / build-project-env / the warm-pool controller).
+            # B1 drops already-consumed tool-result bodies from the tail during a
+            # compaction while protecting the last tool round, which roughly
+            # doubled the context freed against the shipped default (A) with recall
+            # unchanged. Staging mirrors production so a regression shows up here
+            # first. Unset/unknown falls back to A in agent-runtime.
+            - name: COMPACTION_VARIANT
+              value: "B1"
             # Warm-pool memory is intentionally OVERCOMMITTED (request << limit):
             # most pool pods idle near ~768Mi and only a few actively bundle at
             # multi-GB at any instant, so a low request lets us bin-pack ~25
