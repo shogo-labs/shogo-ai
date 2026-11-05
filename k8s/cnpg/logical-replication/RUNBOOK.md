@@ -485,10 +485,10 @@ duplicate key value violates unique constraint "<table>_pkey"
 ```
 
 The `conflict-watchdog` **cannot** recover from this. It can skip a
-*transaction*; it cannot skip a *tablesync COPY*, so it re-disables the
-subscription every few minutes until someone repairs the publication and
-subscription by hand. Both regions also lose the ability to converge, because
-each holds a row the other will never accept.
+*transaction*; it cannot skip a *tablesync COPY*, so it does not re-enable the
+subscription — it exits non-zero and pages, and the subscription stays disabled
+until someone repairs the rows and re-enables it by hand. Both regions also lose
+the ability to converge, because each holds a row the other will never accept.
 
 Use the model's `@default(cuid())` — omit `"id"` from the statement and let the
 default fire — or a `gen_random_uuid()` expression that references no column.
@@ -540,8 +540,8 @@ differed, but the `subdomain` unique index did not. EU's tablesync `COPY` of
 US's rows died on `published_environments_subdomain_key`, `sub_from_us` was
 disabled, and US→EU replication was down 3.5 hours.
 
-`bun run check:migration-ids` now rejects any `INSERT`/`UPDATE`/`DELETE`
-against a published table in a migration at or after `DML_GUARD_EPOCH`
+`bun run check:migration-ids` now rejects any `INSERT`/`UPDATE`/`DELETE`/
+`TRUNCATE` against a published table in a migration at or after `DML_GUARD_EPOCH`
 (`20261105120000`). Earlier migrations are applied history and are exempt as a
 block — there are ~30 of them, so a per-entry ledger would be unmaintainable.
 

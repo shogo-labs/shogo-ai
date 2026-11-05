@@ -2330,6 +2330,20 @@ jobs:
             < k8s/cnpg/logical-replication/exclude-region-local-tables.sql \
             || { echo "::error::region-local publication exclusion failed on EU"; exit 1; }
 
+      # Capture the cumulative sync_error_count BEFORE the REFRESH, so a COPY
+      # that fails during this deploy shows up as an increase. Capturing it after
+      # the REFRESH would already include the new failure, and the fast path in
+      # the verify step would never fire.
+      - name: Capture EU tablesync error baseline
+        run: |
+          BASE_ERR=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT COALESCE(sum(sync_error_count), 0)
+              FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
+            ")
+          echo "BASE_ERR=$BASE_ERR" >> "$GITHUB_ENV"
+          echo "EU tablesync sync_error_count baseline: $BASE_ERR"
+
       # ENABLE first: see the US job. This is the common case — US migrates
       # first, so its new columns reach EU before EU has run the migration.
       - name: Refresh logical replication subscriptions
@@ -2354,14 +2368,8 @@ jobs:
       - name: Verify EU tablesync is not stuck
         run: |
           set -euo pipefail
-          # sync_error_count is cumulative and never resets, so a past failure
-          # would make every future deploy fail immediately. Capture a baseline
-          # and only treat an INCREASE as a new tablesync error.
-          BASE_ERR=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo -tAc "
-              SELECT COALESCE(sum(sync_error_count), 0)
-              FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
-            ")
+          # BASE_ERR was captured before the REFRESH (see the step above).
+          BASE_ERR="${BASE_ERR:-0}"
           DEADLINE=$(( $(date +%s) + 180 ))
           while :; do
             STUCK=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
