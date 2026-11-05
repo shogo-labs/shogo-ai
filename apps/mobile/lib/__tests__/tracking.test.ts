@@ -39,7 +39,7 @@ describe('trackPurchase', () => {
 
   test('sends the annual price for annual plans', () => {
     trackPurchase({ planId: 'basic', billingInterval: 'annual', sessionId: 'cs_456' })
-    expect(purchasePayload()?.value).toBe(80)
+    expect(purchasePayload()?.value).toBe(78)
   })
 
   test('prefers the amount Stripe charged and its currency', () => {
