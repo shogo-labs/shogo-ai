@@ -775,20 +775,23 @@ async function seedGlmFlash(): Promise<void> {
     tier: 'economy',
     family: 'other',
     generation: 'current',
-    maxOutputTokens: 131_072,
+    maxOutputTokens: 128_000,
     contextWindow: 1_048_576,
     enabled: true,
     aliases: ['glm-5-3-flash'],
     description: 'Fast multimodal model that can watch video and describe what happens in it.',
     capabilities: {
       supportsVideoInput: true,
-      openrouterProvider: { sort: 'price' },
+      // Friendli then NextBit: both passed the 2-clip video test 5/5. Venice drops
+      // video, and Morph/Together/DeepInfra accept only one video per prompt (2026-11-05).
+      openrouterProvider: { order: ['Friendli', 'NextBit'], allow_fallbacks: false },
     },
-    // OpenRouter list prices for z-ai/glm-5.3-flash (per 1M tokens).
-    inputPerMillion: 0.0285,
-    cachedInputPerMillion: 0.0285,
-    cacheWritePerMillion: 0.0285,
-    outputPerMillion: 0.0923,
+    // Friendli's OpenRouter list prices (per 1M tokens); the old figures were
+    // Relace's, which cannot take video input at all.
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.03,
+    cacheWritePerMillion: 0.15,
+    outputPerMillion: 0.5,
     updatedBy: SEED_USER,
   }
 
