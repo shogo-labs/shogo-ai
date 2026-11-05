@@ -2364,8 +2364,31 @@ jobs:
               echo "✓ every replicated relation on EU is past tablesync (no 'd'/'i')"
               exit 0
             fi
+            # A sync_error_count > 0 is definitive: the COPY failed, it will not
+            # recover on its own, and waiting out the deadline only delays the
+            # page. A relation still in 'd' with no sync error is a large copy
+            # in progress, so keep waiting for it.
+            SYNC_ERR=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -tAc "
+                SELECT COALESCE(sum(sync_error_count), 0)
+                FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
+              ")
+            if [ "$SYNC_ERR" != "0" ]; then
+              echo "::error::tablesync COPY failed on EU (sync_error_count=$SYNC_ERR) — a duplicate key in the initial copy. sub_from_us will not stream until the rows are reconciled."
+              kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+                psql -U postgres -d shogo -c "
+                  SELECT srsubid::regclass AS relation, srsubstate
+                  FROM pg_subscription_rel WHERE srsubstate IN ('d','i');
+                "
+              kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+                psql -U postgres -d shogo -c "
+                  SELECT subname, subenabled, apply_error_count, sync_error_count
+                  FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
+                "
+              exit 1
+            fi
             if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-              echo "::error::$STUCK relation(s) on EU are stuck in tablesync ('d'/'i') after 180s — sub_from_us will not stream. A duplicate key in the initial COPY is the usual cause (a migration wrote rows in both regions)."
+              echo "::error::$STUCK relation(s) on EU are still in tablesync ('d'/'i') after 180s with no sync error — either a very large initial copy or a stuck worker. sub_from_us may not be streaming."
               kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
                 psql -U postgres -d shogo -c "
                   SELECT srsubid::regclass AS relation, srsubstate

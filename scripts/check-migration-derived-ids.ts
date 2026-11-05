@@ -140,9 +140,10 @@ const DERIVED_ID_FUNCS = /\b(md5|sha1|sha256|sha512|digest|encode)\s*\(/i
  */
 export const DML_GUARD_EPOCH = '20261105120000'
 
-const DML_INSERT_RE = /^INSERT\s+INTO\s+(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
-const DML_UPDATE_RE = /^UPDATE\s+(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
-const DML_DELETE_RE = /^DELETE\s+FROM\s+(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
+const DML_INSERT_RE = /^INSERT\s+INTO\s+(?:ONLY\s+)?(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
+const DML_UPDATE_RE = /^UPDATE\s+(?:ONLY\s+)?(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
+const DML_DELETE_RE = /^DELETE\s+FROM\s+(?:ONLY\s+)?(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
+const DML_TRUNCATE_RE = /^TRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
 
 export interface MigrationSource {
   /** Migration directory name, e.g. `20261021120000_add_device_version_events`. */
@@ -556,20 +557,67 @@ function isPublished(table: string): boolean {
 
 export interface DmlWrite {
   table: string
-  kind: 'INSERT' | 'UPDATE' | 'DELETE'
+  kind: 'INSERT' | 'UPDATE' | 'DELETE' | 'TRUNCATE'
   /** 1-based line in the SQL this was scanned from. */
   line: number
 }
 
+/**
+ * A `WITH … INSERT/UPDATE/DELETE/TRUNCATE` statement hides its DML behind the
+ * CTE definitions, so an anchored regex would miss it entirely — a migration
+ * could bypass the guard with a CTE. Return the statement from its first
+ * top-level DML keyword onward.
+ */
+function stripWithClause(text: string): string {
+  if (!/^WITH\b/i.test(text)) return text
+  let depth = 0
+  let inSingle = false
+  let inDouble = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inSingle) {
+      if (ch === "'") {
+        if (text[i + 1] === "'") {
+          i++
+          continue
+        }
+        inSingle = false
+      }
+      continue
+    }
+    if (inDouble) {
+      if (ch === '"') inDouble = false
+      continue
+    }
+    if (ch === "'") {
+      inSingle = true
+      continue
+    }
+    if (ch === '"') {
+      inDouble = true
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') depth = Math.max(0, depth - 1)
+    else if (depth === 0 && /[A-Za-z]/.test(ch) && (i === 0 || !/[A-Za-z0-9_]/.test(text[i - 1]))) {
+      const rest = text.slice(i)
+      if (/^(INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE)\b/i.test(rest)) return rest
+    }
+  }
+  return text
+}
+
 /** The table a statement writes rows into, or null when it writes none. */
 export function dmlOf(statement: string): { table: string; kind: DmlWrite['kind'] } | null {
-  const text = statement.trim()
+  const text = stripWithClause(statement.trim())
   let m = DML_INSERT_RE.exec(text)
   if (m) return { table: m[1], kind: 'INSERT' }
   m = DML_UPDATE_RE.exec(text)
   if (m) return { table: m[1], kind: 'UPDATE' }
   m = DML_DELETE_RE.exec(text)
   if (m) return { table: m[1], kind: 'DELETE' }
+  m = DML_TRUNCATE_RE.exec(text)
+  if (m) return { table: m[1], kind: 'TRUNCATE' }
   return null
 }
 

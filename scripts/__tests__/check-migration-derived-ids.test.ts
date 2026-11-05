@@ -422,6 +422,19 @@ describe('row writes into a published table (SHO-344)', () => {
     expect(violations).toHaveLength(1)
     expect(violations[0].expression).toBe('INSERT things')
   })
+
+  test('a WITH … INSERT cannot bypass the guard', () => {
+    const violations = check(
+      `WITH src AS (SELECT "id" FROM "projects") INSERT INTO "published_environments" ("id") SELECT "id" FROM src;`,
+      POST_EPOCH,
+    )
+    expect(violations.map((v) => v.expression)).toEqual(['INSERT published_environments'])
+  })
+
+  test('a TRUNCATE of a published table fails', () => {
+    const violations = check(`TRUNCATE TABLE "published_usage_minutes";`, POST_EPOCH)
+    expect(violations.map((v) => v.expression)).toEqual(['TRUNCATE published_usage_minutes'])
+  })
 })
 
 describe('dmlOf / collectDml', () => {
@@ -429,7 +442,22 @@ describe('dmlOf / collectDml', () => {
     expect(dmlOf('INSERT INTO "a" ("id") VALUES (1)')).toEqual({ table: 'a', kind: 'INSERT' })
     expect(dmlOf('UPDATE public."b" SET "x" = 1')).toEqual({ table: 'b', kind: 'UPDATE' })
     expect(dmlOf('DELETE FROM "c" WHERE 1=1')).toEqual({ table: 'c', kind: 'DELETE' })
-    expect(dmlOf('CREATE TABLE "d" ("id" TEXT)')).toBeNull()
+    expect(dmlOf('TRUNCATE TABLE "d"')).toEqual({ table: 'd', kind: 'TRUNCATE' })
+    expect(dmlOf('CREATE TABLE "e" ("id" TEXT)')).toBeNull()
+  })
+
+  test('INSERT INTO ONLY names the table, not the ONLY keyword', () => {
+    expect(dmlOf('INSERT INTO ONLY "published_environments" ("id") VALUES (1)')).toEqual({
+      table: 'published_environments',
+      kind: 'INSERT',
+    })
+  })
+
+  test('a WITH clause is stripped to its DML', () => {
+    expect(dmlOf('WITH x AS (SELECT 1) UPDATE "projects" SET "a" = 1')).toEqual({
+      table: 'projects',
+      kind: 'UPDATE',
+    })
   })
 
   test('finds writes inside a DO block and reports their line', () => {

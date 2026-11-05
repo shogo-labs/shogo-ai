@@ -178,6 +178,13 @@ spec:
                       # outage). A tablesync error cannot be SKIPped, and
                       # re-enabling just retries the same COPY and disables again
                       # seconds later. Do NOT re-enable; page a human.
+                      #
+                      # Two signals: sync_error_count is a PERSISTENT counter
+                      # (survives the log window), and the log gives the relation
+                      # name. Either one means a tablesync failure.
+                      SYNC_ERR=$(psql_primary -c \
+                        "SELECT sync_error_count FROM pg_stat_subscription_stats WHERE subname = '$SUB';" \
+                        2>/dev/null | tr -d '[:space:]')
                       SYNC=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
                         | grep -F 'COPY ' \
                         | jq -rc '
@@ -185,9 +192,9 @@ spec:
                             | select((($r.context // "") | test("COPY .*, line [0-9]+")))
                             | (($r.context // "") | (capture("COPY (?<t>[^,]+), line").t) // "?")
                           ' 2>/dev/null | tail -1)
-                      if [ -n "$SYNC" ]; then
-                        echo "WATCHDOG_TABLESYNC_ERROR sub=$SUB relation=$SYNC — initial COPY failed (duplicate key?); a tablesync error cannot be SKIPped"
-                        echo "CRITICAL: $SUB disabled by a tablesync error on $SYNC — NOT re-enabling. Reconcile the rows, then ALTER SUBSCRIPTION $SUB ENABLE."
+                      if [ -n "$SYNC" ] || { [ -n "$SYNC_ERR" ] && [ "$SYNC_ERR" != "0" ]; }; then
+                        echo "WATCHDOG_TABLESYNC_ERROR sub=$SUB relation=${SYNC:-?} sync_error_count=${SYNC_ERR:-0} — initial COPY failed; a tablesync error cannot be SKIPped"
+                        echo "CRITICAL: $SUB disabled by a tablesync error (relation ${SYNC:-?}, sync_error_count ${SYNC_ERR:-0}) — NOT re-enabling. Reconcile the rows, then ALTER SUBSCRIPTION $SUB ENABLE."
                         EXIT_RC=1
                         continue
                       fi
