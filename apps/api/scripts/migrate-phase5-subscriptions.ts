@@ -47,6 +47,7 @@ import {
   LEGACY_PLAN_PRICES,
   STRIPE_PRICES_PRODUCTION,
   STRIPE_PRICES_STAGING,
+  getOveragePriceConfig,
   planFromPriceId,
   type BillingInterval,
   type PlanType,
@@ -104,6 +105,115 @@ export interface Phase5Row {
 
 function planItemOf(sub: Phase5Candidate['stripeSub']) {
   return selectPlanItem(sub as any)
+}
+
+type ScheduleItemLike = {
+  id?: string
+  quantity?: number | null
+  price?:
+    | string
+    | { id?: string | null; recurring?: { usage_type?: string | null } | null }
+    | null
+}
+
+type SchedulePhaseParam = { price: string; quantity?: number }
+
+function priceIdOfItem(item: ScheduleItemLike): string | null {
+  const price = item.price
+  if (!price) return null
+  return typeof price === 'string' ? price : (price.id ?? null)
+}
+
+function isMeteredItem(item: ScheduleItemLike): boolean {
+  const price = item.price
+  if (price && typeof price === 'object' && price.recurring?.usage_type === 'metered') return true
+  const priceId = priceIdOfItem(item)
+  const overagePriceId = getOveragePriceConfig().priceId
+  return !!overagePriceId && priceId === overagePriceId
+}
+
+/**
+ * The item list for one schedule phase.
+ *
+ * `phases[].items` REPLACES the subscription's items, so a phase that lists
+ * only the plan item deletes the metered overage item (and any licensed
+ * add-on) the moment the schedule is applied. Every current item is carried
+ * into both phases; only the plan item's price changes, and only in phase 2.
+ * Metered items take no `quantity` — Stripe rejects one on a usage-priced item.
+ */
+export function phaseItems(
+  sub: Phase5Candidate['stripeSub'],
+  phase: { priceId: string; seats: number },
+): SchedulePhaseParam[] {
+  const planItem = planItemOf(sub) as ScheduleItemLike | null
+  const allItems = (sub.items?.data ?? []) as ScheduleItemLike[]
+  const items: SchedulePhaseParam[] = []
+  let planIncluded = false
+
+  for (const item of allItems) {
+    const priceId = priceIdOfItem(item)
+    if (!priceId) continue
+    if (planItem && item === (planItem as ScheduleItemLike)) {
+      planIncluded = true
+      items.push({ price: phase.priceId, quantity: phase.seats })
+      continue
+    }
+    if (isMeteredItem(item)) items.push({ price: priceId })
+    else items.push({ price: priceId, quantity: Math.max(1, Math.floor(item.quantity ?? 1)) })
+  }
+
+  if (!planIncluded) items.unshift({ price: phase.priceId, quantity: phase.seats })
+  return items
+}
+
+function idOfRef(value: unknown): string | null {
+  if (!value) return null
+  if (typeof value === 'string') return value
+  const id = (value as { id?: string | null }).id
+  return id ?? null
+}
+
+/** `discounts` back into the shape the schedule update accepts. */
+function normalizeDiscounts(discounts: unknown): Array<Record<string, string>> | undefined {
+  if (!Array.isArray(discounts) || discounts.length === 0) return undefined
+  const out: Array<Record<string, string>> = []
+  for (const entry of discounts) {
+    const d = entry as { coupon?: unknown; promotion_code?: unknown } | string | null
+    if (typeof d === 'string') {
+      out.push({ coupon: d })
+      continue
+    }
+    const promotionCode = idOfRef(d?.promotion_code)
+    if (promotionCode) {
+      out.push({ promotion_code: promotionCode })
+      continue
+    }
+    const coupon = idOfRef(d?.coupon)
+    if (coupon) out.push({ coupon })
+  }
+  return out.length > 0 ? out : undefined
+}
+
+function normalizeTaxRates(rates: unknown): string[] | undefined {
+  if (!Array.isArray(rates) || rates.length === 0) return undefined
+  const out = rates.map(idOfRef).filter((id): id is string => !!id)
+  return out.length > 0 ? out : undefined
+}
+
+/**
+ * Phase-level settings that a schedule update must restate, because omitting
+ * them is not "leave unchanged" — it resets them. Taken from the phase that
+ * `from_subscription` created, i.e. the subscription's real configuration.
+ */
+function carriedPhaseFields(phase: Record<string, unknown> | null): Record<string, unknown> {
+  if (!phase) return {}
+  const carried: Record<string, unknown> = {}
+  const discounts = normalizeDiscounts(phase.discounts)
+  if (discounts) carried.discounts = discounts
+  const taxRates = normalizeTaxRates(phase.default_tax_rates)
+  if (taxRates) carried.default_tax_rates = taxRates
+  if (typeof phase.collection_method === 'string') carried.collection_method = phase.collection_method
+  return carried
 }
 
 function priceIdOfSub(sub: Phase5Candidate['stripeSub']): string | null {
@@ -246,7 +356,12 @@ export interface Phase5Stripe {
     update(id: string, params: Record<string, unknown>): Promise<unknown>
   }
   subscriptionSchedules: {
-    create(params: Record<string, unknown>): Promise<{ id: string; current_phase?: { start_date?: number } | null }>
+    create(params: Record<string, unknown>): Promise<{
+      id: string
+      current_phase?: { start_date?: number } | null
+      /** `from_subscription` copies the sub's real phase settings here. */
+      phases?: Array<Record<string, unknown>> | null
+    }>
     update(id: string, params: Record<string, unknown>): Promise<unknown>
   }
 }
@@ -301,6 +416,13 @@ export async function applyPhase5Row(
   // schedule
   const schedule = await stripe.subscriptionSchedules.create({ from_subscription: sub.id })
   const phaseStart = schedule.current_phase?.start_date ?? Math.floor(opts.now.getTime() / 1000)
+  // `from_subscription` copies the subscription's real phase settings into the
+  // schedule's first phase — including discounts, tax rates and the collection
+  // method. A schedule update that omits them resets them, so a customer with a
+  // coupon would silently lose it at the next invoice.
+  const sourcePhase = (schedule.phases?.[0] ?? schedule.current_phase ?? null) as Record<string, unknown> | null
+  const carried = carriedPhaseFields(sourcePhase)
+  const currentPlanPrice = priceIdOfSub(sub) ?? targetPriceId
   await stripe.subscriptionSchedules.update(schedule.id, {
     end_behavior: 'release',
     metadata: migratedMetadata,
@@ -308,14 +430,16 @@ export async function applyPhase5Row(
       {
         start_date: phaseStart,
         end_date: Math.floor(row.switchDate!.getTime() / 1000),
-        items: [{ price: row.fromPriceId, quantity: row.seats }],
+        items: phaseItems(sub, { priceId: currentPlanPrice, seats: row.seats }),
         proration_behavior: 'none',
         metadata: { ...metadata, phase: 'legacy-price' },
+        ...carried,
       },
       {
-        items: [{ price: targetPriceId, quantity: row.seats }],
+        items: phaseItems(sub, { priceId: targetPriceId, seats: row.seats }),
         proration_behavior: 'none',
         metadata: { ...migratedMetadata, phase: 'v2.5.0' },
+        ...carried,
       },
     ],
   })

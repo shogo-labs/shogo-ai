@@ -91,8 +91,19 @@ function candidate(overrides: {
   }
 }
 
-function fakeStripe() {
+function fakeStripe(options: {
+  phaseDiscounts?: unknown[]
+  phaseTaxRates?: unknown[]
+  collectionMethod?: string
+} = {}) {
   const calls: Array<{ method: string; id?: string; params?: any }> = []
+  const phase: Record<string, unknown> = {
+    start_date: 1_800_000_000,
+    items: [{ id: 'si_plan', price: { id: LEGACY_BUSINESS_MONTHLY } }],
+  }
+  if (options.phaseDiscounts !== undefined) phase.discounts = options.phaseDiscounts
+  if (options.phaseTaxRates !== undefined) phase.default_tax_rates = options.phaseTaxRates
+  if (options.collectionMethod !== undefined) phase.collection_method = options.collectionMethod
   const stripe: Phase5Stripe = {
     subscriptions: {
       update: async (id, params) => {
@@ -103,7 +114,7 @@ function fakeStripe() {
     subscriptionSchedules: {
       create: async (params) => {
         calls.push({ method: 'subscriptionSchedules.create', params })
-        return { id: 'sub_sched_1', current_phase: { start_date: 1_800_000_000 } }
+        return { id: 'sub_sched_1', current_phase: { start_date: 1_800_000_000 }, phases: [phase] }
       },
       update: async (id, params) => {
         calls.push({ method: 'subscriptionSchedules.update', id, params })
@@ -278,6 +289,62 @@ describe('applyPhase5Row', () => {
     expect(phases[1].items[0]).toEqual({ price: NEW_BUSINESS_MONTHLY, quantity: 3 })
     expect(phases[1].proration_behavior).toBe('none')
     expect(phases[1].metadata.planId).toBe('business')
+  })
+
+  it('keeps every non-plan item, the coupon and the tax rates in both phases', async () => {
+    // `phases[].items` replaces the subscription's items: listing only the plan
+    // item would delete the metered overage item as soon as the schedule is
+    // applied, and omitting `discounts` would drop a customer's coupon.
+    const { stripe, calls } = fakeStripe({
+      phaseDiscounts: [{ id: 'di_1', coupon: { id: 'coupon_50_off' } }],
+      phaseTaxRates: [{ id: 'txr_gst' }],
+      collectionMethod: 'send_invoice',
+    })
+    const c = candidate({
+      currentPeriodEnd: '2026-11-08T00:00:00.000Z',
+      extraItems: [
+        { id: 'si_overage', quantity: 0, price: { id: OVERAGE_PRICE_STAGING.priceId } },
+        { id: 'si_addon', quantity: 2, price: { id: 'price_addon_seat' } },
+      ],
+    })
+    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE })
+
+    const update = calls.find((call) => call.method === 'subscriptionSchedules.update')!
+    const phases = update.params.phases
+    expect(phases).toHaveLength(2)
+
+    for (const phase of phases) {
+      expect(phase.items).toHaveLength(3)
+      // Metered: carried with no quantity — Stripe rejects one on a usage item.
+      expect(phase.items.find((item: any) => item.price === OVERAGE_PRICE_STAGING.priceId)).toEqual({
+        price: OVERAGE_PRICE_STAGING.priceId,
+      })
+      // Licensed add-on: carried with its own quantity.
+      expect(phase.items.find((item: any) => item.price === 'price_addon_seat')).toEqual({
+        price: 'price_addon_seat',
+        quantity: 2,
+      })
+      expect(phase.discounts).toEqual([{ coupon: 'coupon_50_off' }])
+      expect(phase.default_tax_rates).toEqual(['txr_gst'])
+      expect(phase.collection_method).toBe('send_invoice')
+    }
+
+    // Only the plan item's price differs between the phases.
+    expect(phases[0].items[0]).toEqual({ price: LEGACY_BUSINESS_MONTHLY, quantity: 3 })
+    expect(phases[1].items[0]).toEqual({ price: NEW_BUSINESS_MONTHLY, quantity: 3 })
+  })
+
+  it('invents no discount or tax rate when the subscription has neither', async () => {
+    const { stripe, calls } = fakeStripe()
+    const c = candidate({ currentPeriodEnd: '2026-11-08T00:00:00.000Z' })
+    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE })
+
+    const phases = calls.find((call) => call.method === 'subscriptionSchedules.update')!.params.phases
+    for (const phase of phases) {
+      expect(phase.discounts).toBeUndefined()
+      expect(phase.default_tax_rates).toBeUndefined()
+      expect(phase.collection_method).toBeUndefined()
+    }
   })
 
   it('writes metadata only for a Basic monthly sub', async () => {
