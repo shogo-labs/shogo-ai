@@ -281,6 +281,24 @@ describe('GET /pod-config/:projectId', () => {
     const res = await app.request('/pod-config/p4', { headers: SA })
     expect(res.status).toBe(500)
   })
+
+  // SHO-348: a metal guest has no ServiceAccount file, so its refresh loop must
+  // authenticate with the runtime's own token — otherwise it 401'd every tick
+  // and its AI_PROXY_TOKEN never rotated.
+  test('200 for a valid x-runtime-token (metal guest)', async () => {
+    store.runtimeVerify = { ok: true, projectId: 'p5', format: 'v1' }
+    store.warmPoolEnv = { AI_PROXY_TOKEN: 'fresh' }
+    const res = await app.request('/pod-config/p5', { headers: { 'x-runtime-token': 'rt_v1_p5_x' } })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toEqual({ projectId: 'p5', env: { AI_PROXY_TOKEN: 'fresh' } })
+  })
+
+  test('401 for a wrong x-runtime-token', async () => {
+    store.runtimeVerify = { ok: false, reason: 'bad_hmac' }
+    const res = await app.request('/pod-config/p6', { headers: { 'x-runtime-token': 'rt_v1_p6_bad' } })
+    expect(res.status).toBe(401)
+  })
 })
 
 // ─── GET /whoami/:serviceName ───────────────────────────────────────────────

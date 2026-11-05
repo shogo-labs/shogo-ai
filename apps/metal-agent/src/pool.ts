@@ -386,6 +386,8 @@ export interface ProjectStatus {
   lastRealActivityAt?: number
   realIdleMs?: number
   activeStreams?: number
+  /** The guest's own verdict on whether real agent work is running. */
+  busy?: boolean
   /** Rootfs the running guest booted from (assigned) or the local snapshot was taken on (suspended). */
   snapshotRootfsIdentity?: string
   /** A pre-warmed snapshot on the staged rootfs is held for this key (see `stagedSuspended`). */
@@ -451,6 +453,18 @@ export interface AssignedVm {
    * snapshot the VM away (it would kill the turn). Refreshed each pollActivity.
    */
   activeStreams?: number
+  /**
+   * What the guest itself says about being busy: real agent work is running
+   * (`activeTurns + activeTasks + live` streams). Set by `/pool/activity` when
+   * the guest reports it; `undefined` for older guests, in which case the raw
+   * `activeStreams` counter is used.
+   *
+   * This is what the idle reaper, the recycler and `isBusy` gate on. Trusting
+   * `activeStreams` alone is how a stream whose turn was stopped or frozen
+   * pinned a guest busy for hours: it was never suspended, never resumed, and
+   * so never got a fresh AI_PROXY_TOKEN — the Odin incident (SHO-348).
+   */
+  busy?: boolean
   /**
    * Wall-clock (ms) of the last request the guest classified as *app usage* —
    * an end-user hitting the built app's `/api/*` sidecar. Together with
@@ -5166,7 +5180,7 @@ export class MetalWarmPool {
       if (a.apiUnhealthySince === undefined) continue
       const forMs = now - a.apiUnhealthySince
       if (forMs < this.cfg.apiUnhealthyRecycleMs) continue
-      if ((a.activeStreams ?? 0) > 0) continue
+      if (this.vmBusy(a)) continue
       const reason = `api unhealthy for ${Math.round(forMs / 60_000)}m (${(a.apiUnhealthyProjects ?? []).join(', ')})`
       if (mode === 'observe') {
         if (!a.apiWatchdogObserved) {
@@ -5246,6 +5260,7 @@ export class MetalWarmPool {
           const body = (await res.json()) as {
             lastRequestAt?: number
             activeStreams?: number
+            busy?: boolean
             lastAppRequestAt?: number | null
             appRequestCount?: number
             lastAgentRequestAt?: number | null
@@ -5259,7 +5274,11 @@ export class MetalWarmPool {
           // Cache live-stream count so reapIdle can skip a project mid-generation
           // even when no new HTTP request has bumped lastRequestAt for a while.
           a.activeStreams = typeof body.activeStreams === 'number' ? body.activeStreams : 0
-          if (a.activeStreams > 0) {
+          // The guest's own busy verdict, when it reports one. `activeStreams`
+          // alone can outlive its turn (a stopped or frozen stream), which is
+          // what pinned guests busy for hours (SHO-348).
+          a.busy = typeof body.busy === 'boolean' ? body.busy : undefined
+          if (this.vmBusy(a)) {
             a.lastTouchedAt = now // an active turn is activity
             a.lastRealActivityAt = now
           }
@@ -5332,6 +5351,7 @@ export class MetalWarmPool {
           // as busy forever while the guest is mute. Expire it.
           if (now - a.activityPollFailedAt >= STALE_STREAM_TTL_MS) {
             a.activeStreams = 0
+            a.busy = undefined
           }
         }
       }),
@@ -5346,6 +5366,20 @@ export class MetalWarmPool {
    * on an unknown state); a clean 404 (guest opts out) or `activeStreams:0` →
    * not busy. Only assigned (running) projects can be busy.
    */
+  /**
+   * Whether this guest is doing real work, as far as the last activity poll can
+   * tell. The guest's own `busy` verdict wins when it reports one; older guests
+   * fall back to the raw `activeStreams` counter, which is what this used to be.
+   *
+   * Every idle/lifecycle gate (reaper, rootfs rotation, API watchdog, recycle)
+   * goes through here, so a stream that outlived its turn can no longer keep a
+   * VM resident forever — that pin is why an expired AI_PROXY_TOKEN never
+   * refreshed on metal (SHO-348).
+   */
+  private vmBusy(a: AssignedVm): boolean {
+    return a.busy ?? (a.activeStreams ?? 0) > 0
+  }
+
   async isBusy(projectId: string): Promise<boolean> {
     const a = this.assigned.get(projectId)
     if (!a) return false
@@ -5355,8 +5389,10 @@ export class MetalWarmPool {
       })
       if (res.status === 404) return false // guest opts out of activity reporting
       if (!res.ok) return true // unknown state → don't risk killing a live turn
-      const body = (await res.json()) as { activeStreams?: number }
-      return (body.activeStreams ?? 0) > 0
+      const body = (await res.json()) as { activeStreams?: number; busy?: boolean }
+      // `busy` is the guest's own verdict and excludes a leaked stream counter;
+      // older guests only report `activeStreams`.
+      return body.busy ?? (body.activeStreams ?? 0) > 0
     } catch {
       const now = Date.now()
       a.lastHealthOk = false
@@ -5392,7 +5428,7 @@ export class MetalWarmPool {
     // activity poll saw mid-stream — never snapshot away an active agent
     // message. (The reaper timer polls activity immediately before this.)
     const stale = [...this.assigned.values()]
-      .filter((a) => !a.alwaysOn && idleFor(a) >= idleMs && (a.activeStreams ?? 0) === 0)
+      .filter((a) => !a.alwaysOn && idleFor(a) >= idleMs && !this.vmBusy(a))
       .sort((x, y) => idleFor(y) - idleFor(x))
     const cap = opts.maxPerPass ?? this.cfg.reapMaxPerPass ?? 0
     if (cap > 0 && stale.length > cap) {
@@ -5435,7 +5471,7 @@ export class MetalWarmPool {
     for (const id of this.rotateRetryAt.keys()) if (!staleIds.has(id)) this.rotateRetryAt.delete(id)
 
     const due = stale.filter((a) => {
-      if ((a.activeStreams ?? 0) > 0) return false
+      if (this.vmBusy(a)) return false
       if (now < (this.rotateRetryAt.get(a.projectId) ?? 0)) return false
       const idleFor = now - (a.lastRealActivityAt ?? a.assignedAt)
       return idleFor >= this.cfg.rolloutIdleMs || now - this.staleSince.get(a.projectId)! >= this.cfg.rolloutDeadlineMs
@@ -6384,8 +6420,8 @@ export class MetalWarmPool {
     console.log(`[pool] recycle ${runtimeKey} requested (state=${state}, force=${force}, reason=${opts.reason ?? 'none'})`)
 
     let a = this.assigned.get(runtimeKey)
-    if (a && (a.activeStreams ?? 0) > 0 && !force) {
-      steps.push({ step: 'idle', ok: false, detail: `${a.activeStreams} agent turn(s) in flight` })
+    if (a && this.vmBusy(a) && !force) {
+      steps.push({ step: 'idle', ok: false, detail: `${a.activeStreams ?? 0} agent turn(s) in flight` })
       return report(true)
     }
     let resumed = false
@@ -6543,6 +6579,7 @@ export class MetalWarmPool {
         lastRealActivityAt: a.lastRealActivityAt ?? a.assignedAt,
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
         activeStreams: a.activeStreams ?? 0,
+        busy: this.vmBusy(a),
         snapshotRootfsIdentity: this.bootRootfsIdentity(a),
         ...(staged ? { stagedSnapshotIdentity: staged.rootfsIdentity } : {}),
       }
@@ -6619,8 +6656,10 @@ export class MetalWarmPool {
         // idleMs by however much routing polls / fail-open have touched the VM.
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
         // Per-class liveness (see AssignedVm). `*IdleMs: null` = no request of
-        // that class observed yet; `activeStreams>0` = an agent turn in flight.
+        // that class observed yet; `busy` (or `activeStreams>0` for an older
+        // guest) = an agent turn in flight.
         activeStreams: a.activeStreams ?? 0,
+        busy: this.vmBusy(a),
         appIdleMs: a.lastAppRequestAt ? now - a.lastAppRequestAt : null,
         appRequestCount: a.appRequestCount ?? 0,
         agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,

@@ -8,6 +8,8 @@
 import { describe, test, expect } from 'bun:test'
 import {
   classifyRetryability,
+  classifyTurnFailure,
+  buildTurnFailureMessage,
   parseStreamErrorMarker,
   stripStreamErrorMarker,
 } from '../retry-classifier'
@@ -134,5 +136,33 @@ describe('classifyRetryability — structured proxy marker propagation', () => {
   test('a 413 wrapped as a 500 by the proxy is not retryable', () => {
     const message = '500 custom API error (413): Failed to buffer the request body: length limit exceeded'
     expect(classifyRetryability({ message })).toEqual({ retryable: false, reason: 'invalid_request' })
+  })
+})
+
+/**
+ * SHO-348: a deleted model id reached the proxy as `400 model_not_found` and was
+ * reported to the person as "rejected as malformed" — a dead end with no hint
+ * that the model (not the message) was the problem.
+ */
+describe('a model that no longer exists', () => {
+  test('is its own class, not invalid_request', () => {
+    expect(classifyTurnFailure({ rawError: 'model_not_found: e484818f-1234' })).toBe('model_not_found')
+    expect(classifyTurnFailure({ rawError: '400 unknown model: e484818f' })).toBe('model_not_found')
+    expect(
+      classifyTurnFailure({ rawError: 'The model `e484818f` does not exist' }),
+    ).toBe('model_not_found')
+  })
+
+  test('the message names the model and never says "malformed"', () => {
+    const text = buildTurnFailureMessage('model_not_found', 0, { modelName: 'e484818f-1234' })
+    expect(text).toContain('e484818f-1234')
+    expect(text).toContain('no longer available')
+    expect(text).not.toContain('malformed')
+  })
+
+  test('without a known name it still gives the actionable line', () => {
+    const text = buildTurnFailureMessage('model_not_found', 2)
+    expect(text).toContain('no longer available')
+    expect(text).toContain('I completed 2 steps')
   })
 })

@@ -36,8 +36,10 @@ function notFound(): never {
   throw e
 }
 
-mock.module('../../lib/prisma', () => withPrismaExports({
-  prisma: {
+// Agents that name a model: deleting a model must reset these to `auto`.
+let agents: Map<string, { projectId: string; modelName: string }>
+
+const prismaApi: any = {
     modelProvider: {
       findMany: async () => [...providers.values()],
       findUnique: async ({ where }: any) => providers.get(where.id) ?? null,
@@ -119,8 +121,23 @@ mock.module('../../lib/prisma', () => withPrismaExports({
         return row
       },
     },
+  agentConfig: {
+    updateMany: async ({ where, data }: any) => {
+      let count = 0
+      for (const [projectId, row] of agents) {
+        if (where?.modelName != null && row.modelName !== where.modelName) continue
+        agents.set(projectId, { ...row, ...data })
+        count++
+      }
+      return { count }
+    },
   },
-}))
+}
+
+// Both writes in `DELETE /models/:id` share one transaction.
+prismaApi.$transaction = async (fn: (tx: any) => unknown) => fn(prismaApi)
+
+mock.module('../../lib/prisma', () => withPrismaExports({ prisma: prismaApi }))
 
 mock.module('../../services/model-registry.service', () => ({
   invalidateModelRegistry: async () => {},
@@ -155,6 +172,7 @@ beforeEach(() => {
   providers = new Map()
   models = new Map()
   settings = new Map()
+  agents = new Map()
   providerSeq = 0
 })
 
@@ -301,6 +319,30 @@ describe('admin models CRUD', () => {
     const data = await res.json() as any
     expect(data.model.displayName).toBe('Now OpenAI')
     expect(data.model.providerId).toBeNull()
+  })
+
+  // SHO-348: a deleted model must not leave agents pointing at it. That was the
+  // Odin failure — `model_not_found` surfaced as "rejected as malformed" and the
+  // stale `AgentConfig.modelName` was never repaired.
+  test('deleting a model resets every agent that named it to auto', async () => {
+    const created = models.size // models seeded per test via POSTs
+    const res = await post('/models', { provider: 'anthropic', apiModel: 'claude-sonnet-4-6', displayName: 'Gone soon' })
+    expect(res.status).toBe(200)
+    const { model } = await res.json()
+    void created
+
+    agents.set('proj-a', { projectId: 'proj-a', modelName: model.id })
+    agents.set('proj-b', { projectId: 'proj-b', modelName: model.id })
+    agents.set('proj-c', { projectId: 'proj-c', modelName: 'claude-opus-4-7' })
+
+    const delRes = await del(`/models/${model.id}`)
+    expect(delRes.status).toBe(200)
+    const body = await delRes.json()
+    expect(body.resetAgents).toBe(2)
+    expect(agents.get('proj-a')!.modelName).toBe('auto')
+    expect(agents.get('proj-b')!.modelName).toBe('auto')
+    // An agent on a different model is untouched.
+    expect(agents.get('proj-c')!.modelName).toBe('claude-opus-4-7')
   })
 
   test('update/delete return 404 for an unknown id', async () => {

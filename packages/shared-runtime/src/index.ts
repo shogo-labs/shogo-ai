@@ -251,6 +251,13 @@ export {
 } from './server-framework'
 
 export {
+  notifyProxyAuthFailure,
+  startTokenRefreshLoop,
+  type TokenRefreshHandle,
+  type TokenRefreshOptions,
+} from './token-refresh'
+
+export {
   RUNTIME_CONFIG,
   buildRuntimeEnv,
   type RuntimeTypeConfig,

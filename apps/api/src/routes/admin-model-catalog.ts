@@ -864,12 +864,31 @@ export function adminModelCatalogRoutes() {
   })
 
   // DELETE /models/:id — remove a DB-defined model.
+  //
+  // Also reset every `AgentConfig.modelName` that still points at it. Deleting
+  // the row used to leave those agents naming a model the registry no longer
+  // has: the proxy answered `400 model_not_found`, which reached the person as
+  // the meaningless "rejected as malformed", and nothing ever repaired the
+  // config (the Odin incident, SHO-348). Both writes share one transaction so a
+  // model can never be gone while agents still point at it.
   router.delete('/models/:id', async (c) => {
     try {
       const id = c.req.param('id')
-      await (prisma as any).modelDefinition.delete({ where: { id } })
+      const { deletedModel, resetAgents } = await prisma.$transaction(async (tx) => {
+        const deletedModel = await (tx as any).modelDefinition.delete({ where: { id } })
+        const reset = await (tx as any).agentConfig.updateMany({
+          where: { modelName: id },
+          data: { modelName: 'auto' },
+        })
+        return { deletedModel, resetAgents: reset.count as number }
+      })
       await invalidateModelRegistry()
-      return c.json({ ok: true })
+      if (resetAgents > 0) {
+        console.warn(
+          `[admin/model-catalog] deleted model ${id} (${deletedModel?.name ?? 'unnamed'}) — reset ${resetAgents} agent config(s) to auto`,
+        )
+      }
+      return c.json({ ok: true, resetAgents })
     } catch (err: any) {
       if (err?.code === 'P2025') return c.json({ error: 'model not found' }, 404)
       return c.json({ error: err.message }, 500)

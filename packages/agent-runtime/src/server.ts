@@ -18,6 +18,7 @@ import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
+import { StreamRegistry, DEFAULT_STREAM_ORPHAN_TTL_MS } from './stream-registry'
 import { describeTurn } from './turn-status'
 import { RepoAdoptGate, isWorkspaceNeutralRequest } from './repo-adopt-gate'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
@@ -929,10 +930,19 @@ const { app, state, logTiming } = await createRuntimeApp({
       state.poolAssignedAt ?? state.serverStartTime
     )
     const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0, children: 0 }
+    // Busy is real work, not a raw counter: a registered stream that no longer
+    // holds its turn lock and has gone quiet past the TTL is an orphan the
+    // reaper will close, and it must not keep a guest pinned as "busy" — that
+    // pin is what stopped an expired AI-proxy token from ever refreshing on
+    // metal (SHO-348).
+    const liveStreams = streamRegistry.liveCount()
+    const busy = work.turns + work.tasks + liveStreams > 0
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
-      activeStreams,
+      activeStreams: streamRegistry.size,
+      liveStreams,
+      busy,
       activeTurns: work.turns,
       activeTasks: work.tasks,
       activeChildren: work.children ?? 0,
@@ -1354,12 +1364,38 @@ function startWorkspaceDepsInstall(opts: { afterS3Restore?: boolean } = {}): Pro
 
 const streamBufferStore = new StreamBufferStore()
 const liveTurnGate = new LiveTurnGate(streamBufferStore)
+
+// Live buffered turns, owned. `activeStreams` is this registry's size — a turn
+// that never settles is reaped instead of pinning the runtime (and the VM that
+// hosts it) busy forever, which is what stopped an expired AI-proxy token from
+// ever being refreshed on metal (SHO-348).
+const streamRegistry = new StreamRegistry({
+  isTurnLocked: (sessionId: string) => !!agentGateway?.hasTurnLock?.(sessionId),
+  orphanTtlMs: Number(process.env.STREAM_ORPHAN_TTL_MS) > 0
+    ? Number(process.env.STREAM_ORPHAN_TTL_MS)
+    : DEFAULT_STREAM_ORPHAN_TTL_MS,
+})
+
 const bufferedTurns = createBufferedTurns({
   store: streamBufferStore,
   gate: liveTurnGate,
-  onStreamStart: () => trackStreamStart(),
-  onStreamEnd: () => trackStreamEnd(),
+  abortTurn: (sessionId: string) => { agentGateway?.abortCurrentTurn?.(sessionId) },
+  onStreamStart: (handle) => streamRegistry.register(handle),
+  onStreamProgress: (turnId) => streamRegistry.touch(turnId),
+  onStreamEnd: (turnId) => streamRegistry.end(turnId),
 })
+
+// Orphan reaper. Cheap (a map walk) and unref'd so it never holds the process
+// open; a wedged turn is closed within one tick of its TTL.
+const STREAM_REAP_INTERVAL_MS = 30_000
+const streamReaperTimer = setInterval(() => {
+  try {
+    streamRegistry.reapOrphans()
+  } catch (err: any) {
+    console.warn('[agent-runtime] orphan stream reap failed:', err?.message ?? err)
+  }
+}, STREAM_REAP_INTERVAL_MS)
+if (typeof (streamReaperTimer as any)?.unref === 'function') (streamReaperTimer as any).unref()
 
 // Hono app, CORS, auth middleware, /health, /pool/activity, /pool/assign are
 // provided by createRuntimeApp(). Agent-specific routes follow below.
@@ -3251,7 +3287,7 @@ async function flushGitBeforeExport(dir: string): Promise<void> {
   if (!gitSyncInstance || dir !== WORKSPACE_DIR) return
   // Mid-turn edits are committed at turn-complete; committing here would
   // create a checkpoint for each tool call during a host-driven export.
-  if (!shouldFlushGitBeforeExport(activeStreams)) return
+  if (!shouldFlushGitBeforeExport(streamRegistry.size)) return
   const sync = gitSyncInstance
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -3448,7 +3484,7 @@ app.post('/pool/repo-hydrated', async (c) => {
       body?.ifIdle === true
         ? await repoAdoptGate.adoptIfIdle(adopt, () => {
             const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0 }
-            return activeStreams > 0 || work.turns > 0 || work.tasks > 0
+            return streamRegistry.hasLiveStreams() || work.turns > 0 || work.tasks > 0
           })
         : await adopt()
     if (!res) {
@@ -7635,11 +7671,7 @@ async function initializePublished(): Promise<void> {
 // In-Flight Request Tracking
 // =============================================================================
 
-let activeStreams = 0
 let isShuttingDown = false
-
-function trackStreamStart(): void { activeStreams++ }
-function trackStreamEnd(): void { activeStreams = Math.max(0, activeStreams - 1) }
 
 // =============================================================================
 // Graceful Shutdown
@@ -7650,16 +7682,16 @@ const DRAIN_TIMEOUT_MS = 30_000
 async function gracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) return
   isShuttingDown = true
-  console.log(`[agent-runtime] ${signal} received — draining ${activeStreams} active stream(s) (max ${DRAIN_TIMEOUT_MS / 1000}s)`)
+  console.log(`[agent-runtime] ${signal} received — draining ${streamRegistry.size} active stream(s) (max ${DRAIN_TIMEOUT_MS / 1000}s)`)
 
-  if (activeStreams > 0) {
+  if (streamRegistry.size > 0) {
     const drainStart = Date.now()
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {
-        if (activeStreams <= 0 || Date.now() - drainStart > DRAIN_TIMEOUT_MS) {
+        if (streamRegistry.size <= 0 || Date.now() - drainStart > DRAIN_TIMEOUT_MS) {
           clearInterval(check)
-          if (activeStreams > 0) {
-            console.warn(`[agent-runtime] Drain timeout — ${activeStreams} stream(s) still active, proceeding with shutdown`)
+          if (streamRegistry.size > 0) {
+            console.warn(`[agent-runtime] Drain timeout — ${streamRegistry.size} stream(s) still active, proceeding with shutdown`)
           } else {
             console.log(`[agent-runtime] All streams drained in ${Date.now() - drainStart}ms`)
           }
@@ -7680,6 +7712,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
   }
 
   streamBufferStore.dispose()
+  clearInterval(streamReaperTimer)
+  streamRegistry.clear()
 
   // Published mode: flush the writable-state archive (the SQLite DB + upload
   // dirs) before exit so end-user writes survive scale-to-zero / redeploys.

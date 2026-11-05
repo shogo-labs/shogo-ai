@@ -67,21 +67,29 @@ app.get('/pod-config/:projectId', async (c) => {
     return c.json({ error: 'Rate limit exceeded' }, 429)
   }
 
-  // Validate K8s SA token
+  // Auth: a K8s ServiceAccount token (cloud pods), or the runtime's own
+  // HMAC-signed `x-runtime-token` (metal guests, which have no ServiceAccount
+  // file at all). Without the second path a metal guest's refresh loop 401'd on
+  // every tick and its AI_PROXY_TOKEN never rotated — the Odin incident
+  // (SHO-348). Same credential the neighbouring `/projects/:id/*` routes accept.
   const authHeader = c.req.header('Authorization')
-  if (!authHeader?.startsWith('Bearer ')) {
+  const hasBearer = authHeader?.startsWith('Bearer ') ?? false
+  if (!hasBearer && !c.req.header('x-runtime-token')) {
     return c.json({ error: 'Missing or invalid Authorization header' }, 401)
   }
 
-  const token = authHeader.slice(7)
-  const identity = await validatePodToken(token)
-  if (!identity) {
-    return c.json({ error: 'Invalid or unauthorized service account token' }, 403)
+  if (hasBearer) {
+    const identity = await validatePodToken(authHeader!.slice(7))
+    if (identity) {
+      console.log(
+        `[Internal] Pod config requested for ${projectId} by ${identity.serviceAccountName} in ${identity.namespace}`
+      )
+    } else if (!(await validateAuth(c, projectId))) {
+      return c.json({ error: 'Invalid or unauthorized service account token' }, 403)
+    }
+  } else if (!(await validateAuth(c, projectId))) {
+    return c.json({ error: 'Missing or invalid Authorization header' }, 401)
   }
-
-  console.log(
-    `[Internal] Pod config requested for ${projectId} by ${identity.serviceAccountName} in ${identity.namespace}`
-  )
 
   // Build project env vars (reuses the same logic as warm pool assignment)
   try {
