@@ -69,6 +69,17 @@ export function buildJobName(projectId: string, commitSha: string): string {
 }
 
 /**
+ * Where buildctl writes the metadata JSON that carries the pushed digest.
+ *
+ * Deliberately NOT `/dev/termination-log`: the build container runs as uid 1000
+ * and that path is created root-owned, so the write fails with EACCES and the
+ * build "succeeds" with no digest. `/tmp` is writable by the worker, and the
+ * container also points `terminationMessagePath` here so the kubelet reads it
+ * back as the terminated message.
+ */
+export const BUILD_METADATA_PATH = '/tmp/build-metadata.json'
+
+/**
  * The Job that takes a commit's artifact tarball to an image.
  *
  * One container is enough: BuildKit's rootless entrypoint takes the tarball
@@ -102,7 +113,7 @@ export function buildPublishedImageJob(input: BuildKitJobSpecInput): BuildKitJob
     '--output',
     `type=image,name=${input.imageRef},push=true`,
     '--metadata-file',
-    '/dev/termination-log',
+    BUILD_METADATA_PATH,
   ]
 
   return {
@@ -165,9 +176,18 @@ export function buildPublishedImageJob(input: BuildKitJobSpecInput): BuildKitJob
               name: 'buildkit',
               image: input.builderImage,
               // The -rootless image's entrypoint is `rootlesskit buildkitd`, so
-              // it needs overriding: see buildkitArgs above.
-              command: ['/usr/bin/buildctl-daemonless.sh'],
-              args: buildkitArgs,
+              // it needs overriding: see buildkitArgs above. The wrapper exists
+              // so the metadata JSON also lands in the container log — the
+              // digest is then recoverable even if the kubelet reads back an
+              // empty termination message.
+              command: ['/bin/sh', '-c'],
+              args: [
+                '/usr/bin/buildctl-daemonless.sh "$@"; rc=$?; ' +
+                  `cat ${BUILD_METADATA_PATH} 2>/dev/null || true; exit $rc`,
+                'buildctl-daemonless.sh',
+                ...buildkitArgs,
+              ],
+              terminationMessagePath: BUILD_METADATA_PATH,
               env: [
                 { name: 'BUILDKITD_FLAGS', value: '--oci-worker-no-process-sandbox' },
                 { name: 'HOME', value: '/home/user' },

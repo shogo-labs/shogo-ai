@@ -238,7 +238,14 @@ export async function ensurePublishedImage(
     }
   }
 
-  const digest = digestFromTerminationMessage(last.message) ?? digestOfImageRef(last.message)
+  // The metadata JSON normally arrives as the termination message, but the
+  // wrapper also echoes it to the log, so a build that reported its digest but
+  // whose message was dropped still pins correctly instead of failing.
+  const digest =
+    digestFromTerminationMessage(last.message) ??
+    digestFromTerminationMessage(last.logTail) ??
+    digestOfImageRef(last.message) ??
+    digestOfImageRef(last.logTail)
   if (!digest) {
     return {
       ok: false,
@@ -421,7 +428,17 @@ async function readJobStatus(
 
   const job = await batch.readNamespacedJob({ name, namespace })
   const status = (job as any)?.status ?? {}
-  if (status.succeeded && status.succeeded > 0) return { status: 'succeeded' }
+  if (status.succeeded && status.succeeded > 0) {
+    // The digest lives in the build container's termination message, so a
+    // "succeeded" read that carries no message is useless: the caller would
+    // treat every finished build as `build_digest_missing`.
+    const pod = await firstJobPod(core, namespace, name)
+    return {
+      status: 'succeeded',
+      message: terminationMessageOf(pod) ?? null,
+      logTail: await podLogTail(core, namespace, name),
+    }
+  }
   if ((status.failed ?? 0) > 0) {
     return { status: 'failed', message: failureReason(job), logTail: await podLogTail(core, namespace, name) }
   }
@@ -448,6 +465,29 @@ function failureReason(job: any): string | null {
   const deadline = conditions.find((c: any) => c.reason === 'DeadlineExceeded')
   if (deadline) return 'the build exceeded its deadline'
   return null
+}
+
+async function firstJobPod(core: any, namespace: string, jobName: string): Promise<any | null> {
+  try {
+    const pods = await core.listNamespacedPod({ namespace, labelSelector: `job-name=${jobName}` })
+    return (pods as any)?.items?.[0] ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The build container's termination message.
+ *
+ * `terminationMessagePath` is the metadata JSON (see published-build-job.ts),
+ * so this is normally the digest document itself; a container that never
+ * started leaves it empty and the caller falls back to the log.
+ */
+function terminationMessageOf(pod: any): string | null {
+  const statuses = pod?.status?.containerStatuses ?? []
+  const buildkit = statuses.find((c: any) => c?.name === 'buildkit') ?? statuses[0]
+  const message = buildkit?.state?.terminated?.message
+  return typeof message === 'string' && message.trim() ? message : null
 }
 
 async function podLogTail(core: any, namespace: string, jobName: string): Promise<string | null> {

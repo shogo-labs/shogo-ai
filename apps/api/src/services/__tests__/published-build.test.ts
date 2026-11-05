@@ -142,6 +142,26 @@ describe('ensurePublishedImage', () => {
     expect(res.imageRef.startsWith(res.repository)).toBe(true)
   })
 
+  it('recovers the digest from the build log when the termination message is empty', async () => {
+    const digest = `sha256:${'e'.repeat(64)}`
+    const res = await ensurePublishedImage(
+      input,
+      deps({
+        // A container that exits before the kubelet can read the message still
+        // echoed the metadata to its log.
+        readJob: async () => ({
+          status: 'succeeded' as const,
+          message: null,
+          logTail: `#12 pushing layers...\n{"containerimage.digest":"${digest}"}\n`,
+        }),
+      }),
+    )
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.imageDigest).toBe(digest)
+    expect(res.imageRef).toBe(`${res.repository}@${digest}`)
+  })
+
   it('retries a create that races the terminating Job of a previous attempt', async () => {
     let attempts = 0
     const res = await ensurePublishedImage(
@@ -233,10 +253,40 @@ describe('buildPublishedImageJob', () => {
     activeDeadlineSeconds: 900,
   })
 
-  it('writes the digest to the termination log, which the API reads back', () => {
+  it('drives the dockerfile frontend, so the generated Dockerfile is what gets built', () => {
     const args = (job.spec as any).template.spec.containers[0].args as string[]
-    expect(args).toContain('--metadata-file')
-    expect(args[args.indexOf('--metadata-file') + 1]).toBe('/dev/termination-log')
+    const flag = (name: string) => args[args.indexOf(name) + 1]
+    expect(flag('--frontend')).toBe('dockerfile.v0')
+    // The Dockerfile and the context are separate locals; passing the file's
+    // contents as a local (as the old argv did) builds nothing.
+    expect(flag('--local')).toBe('context=/src')
+    expect(args[args.indexOf('--local', args.indexOf('--local') + 1) + 1]).toBe('dockerfile=/src')
+    expect(flag('--opt')).toBe('filename=Dockerfile.published')
+  })
+
+  it('writes the digest where the non-root build container can actually write it', () => {
+    const container = (job.spec as any).template.spec.containers[0]
+    const args = container.args as string[]
+    const metadataPath = args[args.indexOf('--metadata-file') + 1]
+    // /dev/termination-log is root-owned, so uid 1000 cannot write it and the
+    // build finishes with no digest.
+    expect(metadataPath).not.toBe('/dev/termination-log')
+    expect(metadataPath).toBe(container.terminationMessagePath)
+    // ...and the wrapper echoes it to the log as a second way to read it back.
+    expect(args[0]).toContain(`cat ${metadataPath}`)
+    expect(container.command).toEqual(['/bin/sh', '-c'])
+    expect((job.spec as any).template.spec.securityContext?.runAsUser).toBeUndefined()
+    expect(container.securityContext.runAsUser).toBe(1000)
+  })
+
+  it('runs the rootless worker the way its entrypoint expects', () => {
+    const container = (job.spec as any).template.spec.containers[0]
+    const env = Object.fromEntries(container.env.map((e: any) => [e.name, e.value]))
+    expect(container.args[0]).toContain('buildctl-daemonless.sh "$@"')
+    expect(env.BUILDKITD_FLAGS).toBe('--oci-worker-no-process-sandbox')
+    // The mounted docker config is resolved through HOME.
+    expect(env.HOME).toBe('/home/user')
+    expect(container.securityContext.seccompProfile.type).toBe('Unconfined')
   })
 
   it('pushes to the image ref it was given, with push enabled', () => {
