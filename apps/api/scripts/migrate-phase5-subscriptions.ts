@@ -76,6 +76,7 @@ export interface Phase5Candidate {
   stripeSub: StripeSubscriptionLike & {
     status?: string
     current_period_end?: number | null
+    default_payment_method?: string | { id?: string | null } | null
     metadata?: Record<string, string> | null
   }
   /** Id of a Subscription Schedule already attached, if any. */
@@ -110,13 +111,37 @@ function planItemOf(sub: Phase5Candidate['stripeSub']) {
 type ScheduleItemLike = {
   id?: string
   quantity?: number | null
+  tax_rates?: unknown
+  discounts?: unknown
+  metadata?: Record<string, string> | null
   price?:
     | string
     | { id?: string | null; recurring?: { usage_type?: string | null } | null }
     | null
 }
 
-type SchedulePhaseParam = { price: string; quantity?: number }
+type SchedulePhaseParam = {
+  price: string
+  quantity?: number
+  tax_rates?: string[]
+  discounts?: Array<Record<string, string>>
+  metadata?: Record<string, string>
+}
+
+/**
+ * Per-item settings that `phases[].items` also resets when omitted. Only
+ * included when the item actually has them, so an empty list never becomes an
+ * invalid parameter.
+ */
+function carriedItemFields(item: ScheduleItemLike): Partial<SchedulePhaseParam> {
+  const carried: Partial<SchedulePhaseParam> = {}
+  const taxRates = normalizeTaxRates(item.tax_rates)
+  if (taxRates) carried.tax_rates = taxRates
+  const discounts = normalizeDiscounts(item.discounts)
+  if (discounts) carried.discounts = discounts
+  if (item.metadata && Object.keys(item.metadata).length > 0) carried.metadata = item.metadata
+  return carried
+}
 
 function priceIdOfItem(item: ScheduleItemLike): string | null {
   const price = item.price
@@ -153,13 +178,14 @@ export function phaseItems(
   for (const item of allItems) {
     const priceId = priceIdOfItem(item)
     if (!priceId) continue
+    const carriedItem = carriedItemFields(item)
     if (planItem && item === (planItem as ScheduleItemLike)) {
       planIncluded = true
-      items.push({ price: phase.priceId, quantity: phase.seats })
+      items.push({ ...carriedItem, price: phase.priceId, quantity: phase.seats })
       continue
     }
-    if (isMeteredItem(item)) items.push({ price: priceId })
-    else items.push({ price: priceId, quantity: Math.max(1, Math.floor(item.quantity ?? 1)) })
+    if (isMeteredItem(item)) items.push({ ...carriedItem, price: priceId })
+    else items.push({ ...carriedItem, price: priceId, quantity: Math.max(1, Math.floor(item.quantity ?? 1)) })
   }
 
   if (!planIncluded) items.unshift({ price: phase.priceId, quantity: phase.seats })
@@ -213,6 +239,12 @@ function carriedPhaseFields(phase: Record<string, unknown> | null): Record<strin
   const taxRates = normalizeTaxRates(phase.default_tax_rates)
   if (taxRates) carried.default_tax_rates = taxRates
   if (typeof phase.collection_method === 'string') carried.collection_method = phase.collection_method
+  // `default_payment_method` is phase-level. Every live Shogo subscription
+  // pins its card on the subscription and leaves the customer's own default
+  // empty, so a phase that omits it has no payment method at all and the
+  // renewal invoice cannot be charged.
+  const paymentMethod = idOfRef(phase.default_payment_method)
+  if (paymentMethod) carried.default_payment_method = paymentMethod
   return carried
 }
 
@@ -447,6 +479,10 @@ export async function applyPhase5Row(
   // coupon would silently lose it at the next invoice.
   const sourcePhase = (schedule.phases?.[0] ?? schedule.current_phase ?? null) as Record<string, unknown> | null
   const carried = carriedPhaseFields(sourcePhase)
+  if (!carried.default_payment_method) {
+    const pinnedPaymentMethod = idOfRef((sub as any).default_payment_method)
+    if (pinnedPaymentMethod) carried.default_payment_method = pinnedPaymentMethod
+  }
   const currentPlanPrice = priceIdOfSub(sub) ?? targetPriceId
   await stripe.subscriptionSchedules.update(schedule.id, {
     end_behavior: 'release',

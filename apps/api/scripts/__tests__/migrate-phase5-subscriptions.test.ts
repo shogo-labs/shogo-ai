@@ -311,6 +311,20 @@ describe('applyPhase5Row', () => {
     expect(phases[1].metadata.planId).toBe('business')
   })
 
+  it('carries the subscription-pinned card into both phases', async () => {
+    // Every live Shogo sub pins its card on the subscription and leaves the
+    // customer default empty, so a phase without `default_payment_method` has
+    // no card at all and the renewal invoice cannot be charged.
+    const { stripe, calls } = fakeStripe()
+    const c = candidate({ currentPeriodEnd: '2026-11-08T00:00:00.000Z' })
+    c.stripeSub.default_payment_method = 'pm_1Pinned'
+    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE })
+
+    const phases = calls.filter((call) => call.method === 'subscriptionSchedules.update')[0].params.phases
+    expect(phases[0].default_payment_method).toBe('pm_1Pinned')
+    expect(phases[1].default_payment_method).toBe('pm_1Pinned')
+  })
+
   it('keeps every non-plan item, the coupon and the tax rates in both phases', async () => {
     // `phases[].items` replaces the subscription's items: listing only the plan
     // item would delete the metered overage item as soon as the schedule is
