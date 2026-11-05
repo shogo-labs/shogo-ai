@@ -82,10 +82,15 @@ export function buildPublishedImageJob(input: BuildKitJobSpecInput): BuildKitJob
   const deadline = Math.max(60, Math.floor(input.activeDeadlineSeconds ?? 900))
   const ttl = Math.max(0, Math.floor(input.ttlSecondsAfterFinished ?? 3600))
 
+  // `buildctl-daemonless.sh` (which ships in the -rootless image) starts
+  // `rootlesskit buildkitd $BUILDKITD_FLAGS --addr=…` in the background, waits
+  // for the socket, then execs `buildctl --addr=… "$@"`. That is why `--addr`
+  // must NOT be in these args: the script supplies it as a global flag, and a
+  // second one after the `build` subcommand is rejected. Without `command` the
+  // job would run the image's entrypoint (`rootlesskit buildkitd`) with these
+  // args, i.e. hand buildkitd the *client's* flags and never start a daemon.
   const buildkitArgs = [
     'build',
-    '--addr',
-    'unix:///run/user/1000/buildkit/buildkitd.sock',
     '--frontend',
     'dockerfile.v0',
     '--local',
@@ -159,6 +164,9 @@ export function buildPublishedImageJob(input: BuildKitJobSpecInput): BuildKitJob
             {
               name: 'buildkit',
               image: input.builderImage,
+              // The -rootless image's entrypoint is `rootlesskit buildkitd`, so
+              // it needs overriding: see buildkitArgs above.
+              command: ['/usr/bin/buildctl-daemonless.sh'],
               args: buildkitArgs,
               env: [
                 { name: 'BUILDKITD_FLAGS', value: '--oci-worker-no-process-sandbox' },
