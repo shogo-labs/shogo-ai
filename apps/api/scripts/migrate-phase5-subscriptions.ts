@@ -118,7 +118,7 @@ export interface Phase5Row {
  * it (which Stripe rejects on a usage-priced item) and move the real plan item
  * onto the overage price.
  */
-function overagePriceIdOf(opts: Phase5Options): string {
+function overagePriceIdOf(opts: Pick<Phase5Options, 'env'>): string {
   return getOveragePriceConfig(opts.env).priceId
 }
 
