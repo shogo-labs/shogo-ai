@@ -67,7 +67,7 @@ function candidate(overrides: {
   dbBillingInterval?: string | null
   workspaceId?: string | null
   existingScheduleId?: string | null
-  extraItems?: Array<{ id: string; quantity: number; price: { id: string } }>
+  extraItems?: Array<{ id: string; quantity: number; price: { id: string; recurring?: { usage_type?: string } } }>
   /** Stripe 2025-03-31.basil+ shape: the period end lives on the item only. */
   periodEndOnItemOnly?: boolean
 }): Phase5Candidate {
@@ -239,6 +239,10 @@ describe('planPhase5Row', () => {
   it('skips a sub that already has a schedule', () => {
     const row = planPhase5Row(candidate({ existingScheduleId: 'sub_sched_9' }), OPTS)
     expect(row.action).toBe('skip-has-schedule')
+    // A schedule with no `phase5MigratedAt` may be a half-applied run (created,
+    // then the phase update threw); the report must not read like a healthy skip.
+    expect(row.reason).toContain('not marked phase5MigratedAt')
+    expect(row.reason).toContain('sub_sched_9')
   })
 
   it('skips a sub already marked migrated', () => {
@@ -325,10 +329,11 @@ describe('applyPhase5Row', () => {
     expect(phases[1].default_payment_method).toBe('pm_1Pinned')
   })
 
-  it('keeps every non-plan item, the coupon and the tax rates in both phases', async () => {
-    // `phases[].items` replaces the subscription's items: listing only the plan
-    // item would delete the metered overage item as soon as the schedule is
-    // applied, and omitting `discounts` would drop a customer's coupon.
+  it('rebuilds each phase as the subscription\'s own item list with only the plan price swapped', async () => {
+    // `phases[].items` replaces the subscription's items, and an omitted
+    // `discounts` is a reset, not "leave unchanged". Equality against the items
+    // the sub already has is the assertion that matters: a presence check would
+    // still let the *next* item type vanish exactly the same way (QA, round 1).
     const { stripe, calls } = fakeStripe({
       phaseDiscounts: [{ id: 'di_1', coupon: { id: 'coupon_50_off' } }],
       phaseTaxRates: [{ id: 'txr_gst' }],
@@ -337,35 +342,38 @@ describe('applyPhase5Row', () => {
     const c = candidate({
       currentPeriodEnd: '2026-11-08T00:00:00.000Z',
       extraItems: [
+        // The metered overage item, identified by the price our config knows.
         { id: 'si_overage', quantity: 0, price: { id: OVERAGE_PRICE_STAGING.priceId } },
+        // A metered item at a price our config does NOT know: only
+        // `recurring.usage_type` identifies it, and it must not get a quantity.
+        { id: 'si_usage_extra', quantity: 0, price: { id: 'price_unknown_metered', recurring: { usage_type: 'metered' } } },
+        // A licensed add-on.
         { id: 'si_addon', quantity: 2, price: { id: 'price_addon_seat' } },
       ],
     })
     await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE })
 
-    const update = calls.find((call) => call.method === 'subscriptionSchedules.update')!
-    const phases = update.params.phases
+    const phases = calls.filter((call) => call.method === 'subscriptionSchedules.update')[0].params.phases
     expect(phases).toHaveLength(2)
 
+    const before = c.stripeSub.items!.data as any[]
+    const expected = (planPriceId: string) =>
+      before.map((item) =>
+        item.id === 'si_plan'
+          ? { price: planPriceId, quantity: item.quantity }
+          : item.price.recurring?.usage_type === 'metered' || item.price.id === OVERAGE_PRICE_STAGING.priceId
+            ? { price: item.price.id }
+            : { price: item.price.id, quantity: item.quantity },
+      )
+
+    expect(phases[0].items).toEqual(expected(LEGACY_BUSINESS_MONTHLY))
+    expect(phases[1].items).toEqual(expected(NEW_BUSINESS_MONTHLY))
+
     for (const phase of phases) {
-      expect(phase.items).toHaveLength(3)
-      // Metered: carried with no quantity — Stripe rejects one on a usage item.
-      expect(phase.items.find((item: any) => item.price === OVERAGE_PRICE_STAGING.priceId)).toEqual({
-        price: OVERAGE_PRICE_STAGING.priceId,
-      })
-      // Licensed add-on: carried with its own quantity.
-      expect(phase.items.find((item: any) => item.price === 'price_addon_seat')).toEqual({
-        price: 'price_addon_seat',
-        quantity: 2,
-      })
       expect(phase.discounts).toEqual([{ coupon: 'coupon_50_off' }])
       expect(phase.default_tax_rates).toEqual(['txr_gst'])
       expect(phase.collection_method).toBe('send_invoice')
     }
-
-    // Only the plan item's price differs between the phases.
-    expect(phases[0].items[0]).toEqual({ price: LEGACY_BUSINESS_MONTHLY, quantity: 3 })
-    expect(phases[1].items[0]).toEqual({ price: NEW_BUSINESS_MONTHLY, quantity: 3 })
   })
 
   it('invents no discount or tax rate when the subscription has neither', async () => {

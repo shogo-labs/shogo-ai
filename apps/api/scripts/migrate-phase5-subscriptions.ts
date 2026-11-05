@@ -358,7 +358,19 @@ export function planPhase5Row(candidate: Phase5Candidate, opts: Phase5Options): 
     return { ...base, action: 'skip-already-migrated', reason: `migrated ${sub.metadata.phase5MigratedAt}` }
   }
   if (candidate.existingScheduleId) {
-    return { ...base, action: 'skip-has-schedule', reason: `schedule ${candidate.existingScheduleId}` }
+    // Nothing stamps `phase5MigratedAt` before an existing schedule is checked,
+    // so a schedule here means either a run already migrated it and the stamp
+    // was lost, or a previous run created the schedule and then failed before
+    // the phase update — leaving an empty one-phase schedule that sweeps this
+    // sub into a "healthy" skip on every future run. Say which, so the report
+    // does not read like success.
+    return {
+      ...base,
+      action: 'skip-has-schedule',
+      reason:
+        `schedule ${candidate.existingScheduleId} exists but the subscription is not marked ` +
+        'phase5MigratedAt — check its phases in Stripe before trusting it',
+    }
   }
 
   // Trial: swap now. A trial has no consumed paid period to protect, and it
