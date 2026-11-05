@@ -112,6 +112,35 @@ describe('check-multiregion-cron-locks (e2e, current repo state)', () => {
     expect(fns.has('runGrantMonthlyRefill')).toBe(true)
   })
 
+  // SHO-345: the published-usage cron used to claim a GLOBAL lock, but the lock
+  // is per-region, so both regions collected the same (environmentId, minute)
+  // and disabled US↔EU replication with insert_exists. Both cron bodies are now
+  // home-region partitioned, and the unique key they write is classified with
+  // them rather than as `cron_locked`.
+  test('published-usage collect + bill are registered as home-region partitioned', () => {
+    const fns = new Set(HOME_REGION_PARTITIONED.map((r) => r.fn))
+    expect(fns.has('runPublishedUsageCollect')).toBe(true)
+    expect(fns.has('runPublishedUsageBill')).toBe(true)
+    for (const fn of ['runPublishedUsageCollect', 'runPublishedUsageBill']) {
+      const entry = HOME_REGION_PARTITIONED.find((r) => r.fn === fn)!
+      expect(entry.file).toBe('apps/api/src/jobs/published-usage.ts')
+      expect(entry.partitionKeyColumn).toBe('Workspace.homeRegion')
+    }
+    // The partition is only real if the guard sees these as cron entries at all.
+    const discovered = new Set(enumerateCronEntries().map((e) => e.fn))
+    expect(discovered.has('runPublishedUsageCollect')).toBe(true)
+    expect(discovered.has('runPublishedUsageBill')).toBe(true)
+  })
+
+  test('PublishedUsageMinute.(environmentId,minute) is classified cron_home_partitioned', () => {
+    const rule = ACCEPTED_UNIQUE_KEYS.find(
+      (r) => r.key === 'PublishedUsageMinute.(environmentId,minute)',
+    )
+    expect(rule).toBeDefined()
+    expect(rule!.category).toBe('cron_home_partitioned')
+    expect(rule!.writer).toBe('runPublishedUsageCollect')
+  })
+
   test('every wrapped cron resolves to a known job id (cross-registry)', () => {
     const ids = readKnownJobIds()
     const entries = enumerateCronEntries()
