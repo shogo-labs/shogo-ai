@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import * as realStripePrices from '../config/stripe-prices'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 process.env.SHOGO_LOCAL_MODE = 'true'
@@ -63,6 +64,7 @@ mock.module('../config/usage-plans', () => ({
 }))
 
 mock.module('../config/stripe-prices', () => ({
+  ...realStripePrices,
   getOveragePriceConfig: () => ({ priceId: 'price_overage_metered' }),
 }))
 

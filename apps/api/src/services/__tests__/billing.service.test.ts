@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test'
+import * as realStripePrices from '../../config/stripe-prices'
 
 // ============================================================================
 // In-memory prisma mock
@@ -304,6 +305,7 @@ mock.module('../../lib/prisma', () => ({
 // stripe-prices mock
 // ============================================================================
 mock.module('../../config/stripe-prices', () => ({
+  ...realStripePrices,
   getOveragePriceConfig: () => ({ priceId: 'price_overage_x' }),
 }))
 

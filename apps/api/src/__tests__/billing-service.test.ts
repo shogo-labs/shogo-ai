@@ -8,6 +8,7 @@
  */
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import * as realStripePrices from '../config/stripe-prices'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 delete process.env.SHOGO_LOCAL_MODE
@@ -329,6 +330,7 @@ mock.module('../config/usage-plans', () => ({
 }))
 
 mock.module('../config/stripe-prices', () => ({
+  ...realStripePrices,
   getOveragePriceConfig: () => ({ priceId: 'price_overage_metered' }),
 }))
 
