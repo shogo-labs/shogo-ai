@@ -115,6 +115,10 @@ const IGNORED_PATH_PREFIXES = [
   // exclude list in github-workspace-git.ts.
   '.shogo/logs',
   '.shogo/tasks',
+  // Written by every build (`build-input-fingerprint.ts`). A build that
+  // rebuilds itself must not look like a user edit, and the file is only
+  // ever read by the runtime.
+  '.shogo/build-input-fingerprint',
   '.shogo/local',
   '.shogo/install-marker',
   '.shogo/agent-state.json',
@@ -141,6 +145,9 @@ const IGNORED_PATH_PREFIXES = [
   '.next',
   '.turbo',
   '.cache',
+  // Expo's managed state and dev logs (`expo export` appends
+  // `.expo/dev/logs/export.log` on every run). Never source.
+  '.expo',
   'src/generated',
   // Python convention. These are bytecode/virtualenv dirs that no
   // user ever edits — same rationale as `node_modules` for JS. Both
@@ -275,6 +282,12 @@ function buildIgnoreGlobs(
     '__pycache__',
     '.venv',
     'venv',
+    // Runtime/build state that appears inside every workspace member folder
+    // (`<projectId>/.shogo/logs`, `<projectId>/.expo/dev/logs`), not only at
+    // the root. Emitted as `**/<p>/**` so chokidar never recurses into a
+    // member's build logs or Expo state (SHO-332).
+    '.shogo/logs',
+    '.expo',
   ])
   const globs: string[] = []
   for (const p of IGNORED_PATH_PREFIXES) {
@@ -569,8 +582,16 @@ export class CanvasFileWatcher {
     // Windows path.relative() returns backslashes, so nested paths under an
     // ignored prefix never matched and were watched anyway (SHOG-749).
     const withinBase = normalizeRelativePath(relative(mount?.root ?? this.workspaceDir, absPath))
-    if (shouldIgnore(withinBase)) return
     const path = mount ? `${mount.mount}/${withinBase}` : withinBase
+    // Ignore checks must run on the path as the *project* sees it. For a
+    // workspace member the root-relative path is `<projectId>/.shogo/logs/…`,
+    // which matches none of the root-anchored `IGNORED_PATH_PREFIXES` entries
+    // — so a member's build logs and Expo state were broadcast as
+    // `file.changed` and re-triggered a rebuild on every export (SHO-332).
+    // `resolveRebuildTarget` already stripped the member segment; both paths
+    // use {@link splitMemberPath} so they cannot drift apart again.
+    const member = this.splitMemberPath(path)
+    if (shouldIgnore(member ? member.inner : withinBase)) return
     // Downstream consumers (LSP) were configured with merged-root paths.
     if (mount) absPath = joinPath(this.workspaceDir, mount.mount, ...withinBase.split('/'))
 
@@ -604,15 +625,30 @@ export class CanvasFileWatcher {
    * `null` when it isn't a buildable source file.
    */
   resolveRebuildTarget(path: string): RebuildTarget | null {
-    const slash = path.indexOf('/')
-    if (slash > 0 && this.workspaceMemberIds) {
-      const head = path.slice(0, slash)
-      if (this.workspaceMemberIds().includes(head)) {
-        const inner = path.slice(slash + 1)
-        return !shouldIgnore(inner) && isBuildableFile(inner) ? { projectId: head, path: inner } : null
-      }
+    const member = this.splitMemberPath(path)
+    if (member) {
+      return !shouldIgnore(member.inner) && isBuildableFile(member.inner)
+        ? { projectId: member.projectId, path: member.inner }
+        : null
     }
     return isBuildableFile(path) ? { path } : null
+  }
+
+  /**
+   * Split a merged-root path into its workspace member and the path inside
+   * that member, or `null` when the first segment is not a member id.
+   *
+   * Members are top-level folders of the merged root (`<projectId>/src/…`),
+   * while every ignore rule and `BUILDABLE_PREFIXES` entry is anchored on the
+   * project's own tree — so both the rebuild target and the event filter have
+   * to strip the segment. One helper keeps the two call sites in step.
+   */
+  private splitMemberPath(path: string): { projectId: string; inner: string } | null {
+    const slash = path.indexOf('/')
+    if (slash <= 0 || !this.workspaceMemberIds) return null
+    const projectId = path.slice(0, slash)
+    if (!this.workspaceMemberIds().includes(projectId)) return null
+    return { projectId, inner: path.slice(slash + 1) }
   }
 
   private maybeRebuild(path: string): void {

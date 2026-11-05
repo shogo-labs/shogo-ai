@@ -656,6 +656,82 @@ describe('workspace member routing', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// A member's build artefacts are not file events (SHO-332)
+// ---------------------------------------------------------------------------
+//
+// `shouldIgnore` runs on the root-relative path, so `<projectId>/.shogo/logs/
+// build.log` matched nothing: every Expo export flooded the member's client
+// with `file.changed` for its own logs, fingerprint and patched app.json, and
+// each event asked for another export. The ignore check now runs on the
+// project-relative path, the same stripping `resolveRebuildTarget` does.
+
+describe('workspace member build artefacts (SHO-332)', () => {
+  const MEMBER = '6692ddbf-80c8-48d1-b58e-4a231d06c4d5'
+
+  function memberWatcher(): {
+    watcher: CanvasFileWatcher
+    events: CanvasEvent[]
+    targets: RebuildTarget[]
+  } {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    const events: CanvasEvent[] = []
+    const targets: RebuildTarget[] = []
+    watcher.setWorkspaceMembers(() => [MEMBER])
+    watcher.subscribe((e) => { events.push(e) })
+    watcher.setOnRebuild((t) => { targets.push(t) })
+    return { watcher, events, targets }
+  }
+
+  test.each([
+    '.shogo/logs/build.log',
+    '.shogo/build-input-fingerprint',
+    '.expo/dev/logs/export.log',
+  ])('a chokidar event for %s is neither broadcast nor rebuilt', (relative) => {
+    const { watcher, events, targets } = memberWatcher()
+    // @ts-expect-error — private, exercised directly to avoid real fs timing
+    watcher.handleChokidarFileEvent('change', join(tmpDir, MEMBER, ...relative.split('/')))
+    expect(events).toEqual([])
+    expect(targets).toEqual([])
+  })
+
+  test('a member app.json change is still broadcast and rebuilt', () => {
+    const { watcher, events, targets } = memberWatcher()
+    // @ts-expect-error — private, exercised directly to avoid real fs timing
+    watcher.handleChokidarFileEvent('change', join(tmpDir, MEMBER, 'app.json'))
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'file.changed', path: `${MEMBER}/app.json`, source: 'fs' }),
+    ])
+    expect(targets).toEqual([{ projectId: MEMBER, path: 'app.json' }])
+  })
+
+  test('a member source edit is still broadcast and rebuilt', () => {
+    const { watcher, events, targets } = memberWatcher()
+    // @ts-expect-error — private, exercised directly to avoid real fs timing
+    watcher.handleChokidarFileEvent('change', join(tmpDir, MEMBER, 'src', 'foo.ts'))
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'file.changed', path: `${MEMBER}/src/foo.ts`, source: 'fs' }),
+    ])
+    expect(targets).toEqual([{ projectId: MEMBER, path: 'src/foo.ts' }])
+  })
+
+  test('root-level build artefacts are still ignored', () => {
+    const { watcher, events, targets } = memberWatcher()
+    // @ts-expect-error — private, exercised directly to avoid real fs timing
+    watcher.handleChokidarFileEvent('change', join(tmpDir, '.shogo', 'logs', 'build.log'))
+    expect(events).toEqual([])
+    expect(targets).toEqual([])
+  })
+})
+
+describe('buildIgnoreGlobs (member build state)', () => {
+  test('covers .expo and member .shogo/logs at any depth', () => {
+    const globs = buildIgnoreGlobs(tmpDir)
+    expect(globs).toContain('**/.expo/**')
+    expect(globs).toContain('**/.shogo/logs/**')
+  })
+})
+
 describe('NativeWind / ESM config files are buildable', () => {
   test.each([
     'postcss.config.mjs',
