@@ -677,6 +677,35 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(body.messages[0].content[1]).toEqual({ type: 'video_url', video_url: { url: VIDEO } })
   })
 
+  // SHO-337 AC1: "every OpenRouter-hosted DB model" — the GLM row above reaches
+  // OpenRouter as `custom` + baseUrl, so this covers the other half of
+  // `isOpenRouterHost` (a native BYOK `openrouter:` row) and proves the block
+  // is forwarded verbatim, not merged with or replaced by anything else.
+  test('sends the routing block for a native openrouter BYOK row too', async () => {
+    const saved = process.env.OPENROUTER_API_KEY
+    const before = MODELS
+    const routed = { order: ['DeepInfra', 'NextBit'], allow_fallbacks: false, data_collection: 'deny' }
+    process.env.OPENROUTER_API_KEY = OPENROUTER_KEY
+    try {
+      MODELS = MODELS.map((m) =>
+        m.id === OPENROUTER_NATIVE_UUID ? { ...m, capabilities: { openrouterProvider: routed } } : m,
+      )
+      await primeModelRegistry()
+      const res = await postChatBody(buildApp(), {
+        model: OPENROUTER_NATIVE_UUID,
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      expect(res.status).toBe(200)
+      expect(lastFetchUrl).toBe('https://openrouter.ai/api/v1/chat/completions')
+      expect(lastForwardedBody().provider).toEqual(routed)
+    } finally {
+      MODELS = before
+      if (saved === undefined) delete process.env.OPENROUTER_API_KEY
+      else process.env.OPENROUTER_API_KEY = saved
+      await primeModelRegistry()
+    }
+  })
+
   test('lets env override the OpenRouter attribution headers', async () => {
     const saved = {
       referer: process.env.OPENROUTER_HTTP_REFERER,
