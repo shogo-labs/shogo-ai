@@ -54,17 +54,52 @@ describe("subagentStreamStore", () => {
     expect(subagentStreamStore.get("tool-1")!.parts).toEqual(parts)
   })
 
-  test("setParts is a no-op when length unchanged", () => {
+  test("setParts stores an in-place update of the last part", () => {
+    subagentStreamStore.init("tool-1", baseData)
+    subagentStreamStore.setParts("tool-1", [{ type: "text" as const, text: "a", id: "p1" }])
+
+    // Same length, the last part grew: this used to be dropped, so a tool
+    // going streaming → success never reached the store.
+    subagentStreamStore.setParts("tool-1", [{ type: "text", text: "ab", id: "p1" }])
+    const parts = subagentStreamStore.get("tool-1")!.parts
+    expect(parts).toHaveLength(1)
+    expect(parts[0].type).toBe("text")
+    if (parts[0].type === "text") expect(parts[0].text).toBe("ab")
+  })
+
+  test("setParts is a no-op for an identical transcript", () => {
     subagentStreamStore.init("tool-1", baseData)
     const parts = [{ type: "text" as const, text: "a", id: "p1" }]
     subagentStreamStore.setParts("tool-1", parts)
     const versionBefore = subagentStreamStore.getVersion()
-    subagentStreamStore.setParts("tool-1", [{ type: "text", text: "b", id: "p2" }])
+
+    subagentStreamStore.setParts("tool-1", parts)
+    subagentStreamStore.setParts("tool-1", [{ type: "text", text: "a", id: "p1" }])
     expect(subagentStreamStore.getVersion()).toBe(versionBefore)
-    expect(subagentStreamStore.get("tool-1")!.parts[0].type).toBe("text")
-    if (subagentStreamStore.get("tool-1")!.parts[0].type === "text") {
-      expect(subagentStreamStore.get("tool-1")!.parts[0].text).toBe("a")
-    }
+  })
+
+  test("subscribeTool only wakes listeners for that sub-agent", () => {
+    subagentStreamStore.init("tool-1", baseData)
+    subagentStreamStore.init("tool-2", { ...baseData, agentId: "agent-2" })
+
+    let calls = 0
+    const unsub = subagentStreamStore.subscribeTool("tool-1", () => calls++)
+    subagentStreamStore.setParts("tool-2", [{ type: "text", text: "b", id: "p2" }])
+    expect(calls).toBe(0)
+
+    subagentStreamStore.setParts("tool-1", [{ type: "text", text: "a", id: "p1" }])
+    expect(calls).toBe(1)
+
+    unsub()
+    subagentStreamStore.setParts("tool-1", [{ type: "text", text: "ab", id: "p1" }])
+    expect(calls).toBe(1)
+  })
+
+  test("init does not notify when nothing changed", () => {
+    subagentStreamStore.init("tool-1", baseData)
+    const versionBefore = subagentStreamStore.getVersion()
+    subagentStreamStore.init("tool-1", baseData)
+    expect(subagentStreamStore.getVersion()).toBe(versionBefore)
   })
 
   test("appendPart and updateStatus", () => {

@@ -8746,6 +8746,119 @@ export function subagentToolResult(
 }
 
 /**
+ * Display caps for the sub-agent transcript the runtime streams to the chat.
+ *
+ * `parts` is display-only: the parent model gets `subagentToolResult`'s capped
+ * report and a per-tool count. Re-sending a whole browser `snapshot` (an
+ * accessibility tree) or a `write_file` argument (a whole file) in every frame
+ * made each frame megabytes and saturated the client's main thread while a
+ * `browser_qa` run streamed (SHO-340).
+ */
+const SUBAGENT_PART_FIELD_MAX_CHARS = 2048
+const SUBAGENT_PART_MAX_CHARS = 8192
+const SUBAGENT_SNAPSHOT_MAX_CHARS = 256 * 1024
+/** Tools whose parts carry a file chip the UI keeps showing, whatever the size. */
+const SUBAGENT_PINNED_PART_TOOLS = new Set(['generate_image', 'generate_video', 'share_file'])
+
+interface DisplayPart {
+  /** The capped copy emitted for this part. */
+  part: any
+  size: number
+  /** What an over-budget part degrades to (older parts, oldest first). */
+  collapsed: any
+  collapsedSize: number
+}
+
+function truncationNote(dropped: number): string {
+  return `…[${dropped} chars truncated]`
+}
+
+function capStrings(value: any, limit: number, dropped: { chars: number }): any {
+  if (typeof value === 'string') {
+    if (value.length <= limit) return value
+    dropped.chars += value.length - limit
+    return value.slice(0, limit) + truncationNote(value.length - limit)
+  }
+  if (Array.isArray(value)) {
+    const out = new Array(value.length)
+    for (let i = 0; i < value.length; i++) out[i] = capStrings(value[i], limit, dropped)
+    return out
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, any> = {}
+    for (const key of Object.keys(value)) out[key] = capStrings(value[key], limit, dropped)
+    return out
+  }
+  return value
+}
+
+function jsonSize(value: unknown): number {
+  if (value === undefined) return 0
+  try {
+    return JSON.stringify(value)?.length ?? 0
+  } catch {
+    return 0
+  }
+}
+
+function jsonPreview(value: unknown): string {
+  try {
+    return (JSON.stringify(value) ?? '').slice(0, SUBAGENT_PART_FIELD_MAX_CHARS)
+  } catch {
+    return ''
+  }
+}
+
+function buildDisplayPart(p: any): DisplayPart {
+  if (p?.type === 'tool' && p.tool) {
+    const dropped = { chars: 0 }
+    const tool = {
+      ...p.tool,
+      args: capStrings(p.tool.args, SUBAGENT_PART_FIELD_MAX_CHARS, dropped),
+      result: capStrings(p.tool.result, SUBAGENT_PART_FIELD_MAX_CHARS, dropped),
+    }
+    let part: any = dropped.chars > 0 ? { ...p, tool, truncated: true } : { ...p, tool }
+    if (jsonSize(part) > SUBAGENT_PART_MAX_CHARS) {
+      // Many short strings (a whole accessibility tree, a long diff): keep the
+      // tool's identity and a preview of the bulk, not the bulk itself.
+      part = {
+        ...part,
+        tool: {
+          ...p.tool,
+          args: { truncated: true, preview: jsonPreview(p.tool.args) },
+          result: { truncated: true, preview: jsonPreview(p.tool.result) },
+        },
+        truncated: true,
+      }
+    }
+    const collapsed = {
+      type: 'tool',
+      id: p.id,
+      tool: {
+        id: p.tool.id ?? p.id,
+        toolName: p.tool.toolName,
+        state: p.tool.state,
+        args: undefined,
+        result: undefined,
+      },
+      truncated: true,
+      collapsed: true,
+    }
+    return { part, size: jsonSize(part), collapsed, collapsedSize: jsonSize(collapsed) }
+  }
+  const dropped = { chars: 0 }
+  const text = typeof p?.text === 'string' ? capStrings(p.text, SUBAGENT_PART_MAX_CHARS, dropped) : p?.text
+  const part = dropped.chars > 0 ? { ...p, text, truncated: true } : p
+  const collapsed = {
+    ...p,
+    text: typeof p?.text === 'string' ? p.text.slice(0, 200) : '',
+    truncated: true,
+    collapsed: true,
+  }
+  return { part, size: jsonSize(part), collapsed, collapsedSize: jsonSize(collapsed) }
+}
+
+/**
  * Build sub-agent stream callbacks that accumulate content into an internal
  * parts[] array and periodically emit it as a preliminary tool output.
  *
@@ -8777,7 +8890,43 @@ export function buildSpawnCallbacks(
   let model: string | null = null
   let lastEmitTime = 0
   let pendingEmit: ReturnType<typeof setTimeout> | null = null
-  const THROTTLE_MS = 150
+  const THROTTLE_MS = 250
+  // Display copies are built once per part state (a tool part changes twice:
+  // args, then result) instead of on every emit.
+  const displayCache = new WeakMap<object, DisplayPart>()
+
+  function displayPart(p: any): DisplayPart {
+    const cached = displayCache.get(p)
+    if (cached) return cached
+    const entry = buildDisplayPart(p)
+    displayCache.set(p, entry)
+    return entry
+  }
+
+  /**
+   * The transcript snapshot sent to the client: every part capped, and the
+   * oldest parts collapsed once the snapshot would exceed the budget — so a
+   * frame's size depends on the newest activity, not on how long the run has
+   * been going.
+   */
+  function snapshotParts(): any[] {
+    const out: any[] = new Array(parts.length)
+    // Every part costs at least its collapsed stub, so reserve those first and
+    // spend what is left on keeping parts whole — oldest parts lose first.
+    let reserved = 0
+    for (const part of parts) reserved += displayPart(part).collapsedSize
+    let budget = Math.max(0, SUBAGENT_SNAPSHOT_MAX_CHARS - reserved)
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const part = parts[i]
+      const entry = displayPart(part)
+      const pinned = part?.type === 'tool' && SUBAGENT_PINNED_PART_TOOLS.has(part.tool?.toolName)
+      const extra = Math.max(0, entry.size - entry.collapsedSize)
+      const keep = pinned || extra <= budget
+      out[i] = keep ? entry.part : entry.collapsed
+      if (keep) budget = Math.max(0, budget - extra)
+    }
+    return out
+  }
 
   function emitPreliminary(force?: boolean) {
     const now = Date.now()
@@ -8801,7 +8950,7 @@ export function buildSpawnCallbacks(
     w.write({
       type: 'tool-output-available',
       toolCallId: spawnToolCallId,
-      output: { agentId, instance_id: instanceId, model, parts: [...parts] },
+      output: { agentId, instance_id: instanceId, model, parts: snapshotParts() },
       dynamic: true,
       preliminary: true,
     })
@@ -8813,7 +8962,7 @@ export function buildSpawnCallbacks(
     },
     onModelResolved: (m: string) => {
       model = m
-      emitPreliminary(true)
+      emitPreliminary()
     },
     onEnd: (_name: string) => {
       // Flush any pending throttled emit so the last snapshot arrives
@@ -8827,6 +8976,7 @@ export function buildSpawnCallbacks(
       const last = parts[parts.length - 1]
       if (last?.type === 'text') {
         last.text += delta
+        displayCache.delete(last)
       } else {
         parts.push({
           type: 'text',
@@ -8851,8 +9001,11 @@ export function buildSpawnCallbacks(
     },
     onThinkingEnd: () => {
       const last = parts[parts.length - 1]
-      if (last?.type === 'reasoning') last.isStreaming = false
-      emitPreliminary(true)
+      if (last?.type === 'reasoning') {
+        last.isStreaming = false
+        displayCache.delete(last)
+      }
+      emitPreliminary()
     },
     onToolCallStart: (toolName: string, toolCallId: string) => {
       parts.push({
@@ -8890,7 +9043,8 @@ export function buildSpawnCallbacks(
       } else {
         p.tool.args = args
       }
-      emitPreliminary(true)
+      displayCache.delete(p)
+      emitPreliminary()
     },
     onAfterToolCall: async (_toolName: string, _args: any, result: any, isError: boolean, toolCallId: string) => {
       const parsed =
@@ -8911,14 +9065,15 @@ export function buildSpawnCallbacks(
             }
           : (parsed ?? { success: true })
         p.tool.state = isError ? 'error' : 'success'
+        displayCache.delete(p)
       }
-      emitPreliminary(true)
+      emitPreliminary()
     },
   }
 
   return {
     callbacks,
-    getAccumulatedOutput: () => ({ agentId, parts: [...parts], model }),
+    getAccumulatedOutput: () => ({ agentId, parts: snapshotParts(), model }),
     setInstanceId: (id: string) => {
       instanceId = id
       scLog(`[screencast] buildSpawnCallbacks.setInstanceId toolCallId=${spawnToolCallId} ` + `instanceId=${id}`)

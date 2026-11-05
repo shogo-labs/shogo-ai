@@ -40,6 +40,12 @@ export interface LiveTurnReplayOptions {
   stepFrames: number
   /** Lines of the answer the turn has written, streamed a few characters at a time. */
   answerLines: number
+  /**
+   * Tool calls in the running sub-agent's transcript. Each one carries a
+   * browser-snapshot-sized result, so the last preliminary frame is hundreds of
+   * kilobytes — the shape a long `browser_qa` run produces (SHO-340).
+   */
+  subagentSteps?: number
 }
 
 function sseFrame(event: Record<string, unknown>): string {
@@ -72,7 +78,7 @@ function completedTurn(text: string): string {
  * last one is the sub-agent's current text (starting with
  * `SUBAGENT_LIVE_MARKER`).
  */
-export function liveTurnReplay({ stepFrames, answerLines }: LiveTurnReplayOptions): {
+export function liveTurnReplay({ stepFrames, answerLines, subagentSteps = 0 }: LiveTurnReplayOptions): {
   body: string
   lastSeq: number
 } {
@@ -137,14 +143,42 @@ export function liveTurnReplay({ stepFrames, answerLines }: LiveTurnReplayOption
     input: { type: "browser_qa", description: "check the app" },
     dynamic: true,
   })
-  const update = (text: string) =>
+  const update = (text: string) => updateParts([{ type: "text", text, id: "sa-text-0" }])
+  const updateParts = (parts: unknown[]) =>
     push({
       type: "tool-output-available",
       toolCallId: spawn,
-      output: { agentId: "qa", instance_id: "qa-1", model: "sonnet", parts: [{ type: "text", text, id: "sa-text-0" }] },
+      output: { agentId: "qa", instance_id: "qa-1", model: "sonnet", parts },
       dynamic: true,
       preliminary: true,
     })
+
+  if (subagentSteps > 0) {
+    // A long browser_qa run: every step is a snapshot with a large result, and
+    // each preliminary frame repeats the whole transcript. The card shows only
+    // the latest activity, so the transcript itself is display-only payload.
+    const parts: unknown[] = [{ type: "text", text: `${SUBAGENT_LIVE_MARKER} checking the canvas`, id: "sa-text-0" }]
+    for (let step = 0; step < subagentSteps; step++) {
+      parts.push({
+        type: "tool",
+        id: `sa-tool-${step}`,
+        tool: {
+          id: `sa-tool-${step}`,
+          toolName: "browser",
+          state: "success",
+          args: { action: "snapshot" },
+          result: {
+            ok: true,
+            snapshot: Array.from({ length: 40 }, (_, i) => `- [${i}] link "row ${step}.${i}"`).join("\n"),
+          },
+        },
+      })
+      // Frames, not steps, are what the client pays for: one update per four
+      // steps is still a 40-frame burst for a 160-step run.
+      if (step % 4 === 3 || step === subagentSteps - 1) updateParts([...parts])
+    }
+    return { body: frames.join(""), lastSeq: seq }
+  }
 
   const subagent = [`${SUBAGENT_LIVE_MARKER} checking the canvas `]
   for (let i = 0; i < Math.max(1, Math.round(answerLines / 4)); i++) subagent.push(`step ${i} `)
