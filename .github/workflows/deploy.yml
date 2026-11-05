@@ -2336,6 +2336,7 @@ jobs:
       # the verify step would never fire.
       - name: Capture EU tablesync error baseline
         run: |
+          set -euo pipefail
           BASE_ERR=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
             psql -U postgres -d shogo -tAc "
               SELECT COALESCE(sum(sync_error_count), 0)
