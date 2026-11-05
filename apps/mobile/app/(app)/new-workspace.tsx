@@ -395,7 +395,7 @@ export default function NewWorkspacePage() {
                       onChange={setProSeats}
                       min={1}
                       max={500}
-                      label={`$${SEAT_INCLUDED_USD.pro} / seat / month`}
+                      label={`$${proPricing.monthly} / seat / month`}
                     />
                   </View>
 
@@ -471,7 +471,7 @@ export default function NewWorkspacePage() {
                       onChange={setBusinessSeats}
                       min={1}
                       max={500}
-                      label={`$${SEAT_INCLUDED_USD.business} / seat / month`}
+                      label={`$${businessPricing.monthly} / seat / month`}
                     />
                   </View>
 

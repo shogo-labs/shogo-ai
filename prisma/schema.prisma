@@ -1582,6 +1582,11 @@ model Subscription {
   stripeSubscriptionId String             @unique
   stripeCustomerId     String
   planId               String
+  // Stripe price id of the licensed (plan) item on the subscription. Tells
+  // `getPlanAllowance` whether the seat was sold before or after v2.5.0:
+  // a legacy Business price (or null, for a row that predates the backfill)
+  // keeps the $40/seat allowance until the next renewal moves it.
+  stripePriceId        String?
   // Number of paying seats. Basic is always 1; Pro/Business are per-seat.
   seats                Int                @default(1)
   status               SubscriptionStatus

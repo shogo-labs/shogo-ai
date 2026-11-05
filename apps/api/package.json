@@ -15,7 +15,9 @@
     "stripe:sync-copy": "bun --env-file=../../.env.local scripts/update-stripe-product-copy.ts",
     "stripe:migrate-tiers": "bun --env-file=../../.env.local scripts/migrate-tier-subscriptions.ts",
     "worker:huddle-notes": "bun run src/workers/huddle-notes-agent.ts",
-    "smoke:huddle-notes": "bun run scripts/smoke-huddle-notes.ts"
+    "smoke:huddle-notes": "bun run scripts/smoke-huddle-notes.ts",
+    "stripe:create-phase5-prices": "bun --env-file=../../.env.local scripts/create-phase5-prices.ts",
+    "stripe:migrate-phase5": "bun --env-file=../../.env.local scripts/migrate-phase5-subscriptions.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.37",

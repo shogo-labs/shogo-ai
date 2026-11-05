@@ -4,11 +4,24 @@
  * Stripe Price Configuration
  *
  * The product is on a simple per-seat ladder modeled on Cursor.com:
- *   - Basic: $8/mo single user, $5 of usage included.
- *   - Pro:      $20/seat/mo, $20 of usage included per seat.
- *   - Business: $40/seat/mo, $40 of usage included per seat.
+ *   - Basic: $8/mo single user ($78/yr), $10 of usage included.
+ *   - Pro:      $20/seat/mo legacy,   $20 of usage included per seat.
+ *   - Business: $16/seat/mo ($156/seat/yr), $20/seat/mo of usage included.
  * Every request is billed at provider cost * 1.20. See `usage-cost.ts` and
  * `usage-plans.ts`.
+ *
+ * v2.5.0 (SHO-312 Phase 5) moved Business from $40 to $16 and Basic annual
+ * from $80 to $78. The old prices still exist and still resolve — they live in
+ * `LEGACY_PLAN_PRICES` — because every subscription that predates the switch
+ * keeps its old allowance until its next renewal moves it (see
+ * `getPlanAllowance` in `usage-plans.ts`). Basic monthly is unchanged and is
+ * the same price id in both maps.
+ *
+ * New price ids are created by `scripts/create-phase5-prices.ts` (idempotent on
+ * `lookup_key`) and supplied through `STRIPE_PRICE_*` env vars, so a deploy can
+ * be re-pointed without a code change. Until a v2 price id is configured,
+ * `resolvePlanPriceId()` finds it by lookup key at checkout time rather than
+ * silently falling back to the old (more expensive) price.
  *
  * Canonical product copy lives in `STRIPE_PRODUCT_COPY.md`. Keep these IDs
  * in sync with that file.
@@ -29,44 +42,75 @@ export interface StripePriceConfig {
 }
 
 /**
- * Staging (Test) environment Stripe price IDs.
+ * Staging (Test) environment Stripe price ids used for NEW checkouts.
  * Pro and Business are per-seat (`recurring.usage_type=licensed`,
  * checkout passes `quantity` = number of seats).
+ *
+ * `business.*` and `basic.annual` are the v2.5.0 prices. Their ids arrive from
+ * `scripts/create-phase5-prices.ts`; an empty string means "not configured
+ * here yet" and `resolvePlanPriceId()` resolves the id by lookup key instead.
  */
 export const STRIPE_PRICES_STAGING: StripePriceConfig = {
   basic: {
     monthly: "price_1TRH5XAp5PDuxitp1Uqkjbcx",
-    annual: "price_1TRH5XAp5PDuxitptfGAK6PB",
+    annual: envPrice("STRIPE_PRICE_BASIC_ANNUAL_V2"),
   },
   pro: {
     monthly: "price_1TRH5kAp5PDuxitpwN3MHPhD",
     annual: "price_1TRH5kAp5PDuxitpyUIn1Fh6",
   },
   business: {
-    monthly: "price_1TRH5lAp5PDuxitpCRkOKz4h",
-    annual: "price_1TRH5lAp5PDuxitpM51P3JNm",
+    monthly: envPrice("STRIPE_PRICE_BUSINESS_MONTHLY_V2"),
+    annual: envPrice("STRIPE_PRICE_BUSINESS_ANNUAL_V2"),
   },
 }
 
 /**
- * Production (Live) environment Stripe price IDs.
+ * Production (Live) environment Stripe price ids used for NEW checkouts.
  * Created 2026-05-04 as part of the v1.5.0 rollout (see
- * `scripts/gate1-stripe-setup` in the release notes).
+ * `scripts/gate1-stripe-setup` in the release notes); the v2.5.0 Business and
+ * Basic-annual ids are set from `STRIPE_PRICE_*` env vars.
  */
 export const STRIPE_PRICES_PRODUCTION: StripePriceConfig = {
   basic: {
     monthly: "price_1TEdi4ADDMNd95Ggym2MWpEQ",
-    annual: "price_1TEdi6ADDMNd95GgYZaoUHiQ",
+    annual: envPrice("STRIPE_PRICE_BASIC_ANNUAL_V2"),
   },
   pro: {
     monthly: "price_1TTIOfADDMNd95GgDyGQlaqH",
     annual: "price_1TTIOgADDMNd95GgwQGlpBLa",
   },
   business: {
-    monthly: "price_1TTIOgADDMNd95Gg5DgR006y",
-    annual: "price_1TTIOhADDMNd95Gg6JaJzKzZ",
+    monthly: envPrice("STRIPE_PRICE_BUSINESS_MONTHLY_V2"),
+    annual: envPrice("STRIPE_PRICE_BUSINESS_ANNUAL_V2"),
   },
 }
+
+/** Read a price id from the environment. `""` means "not configured". */
+function envPrice(name: string): string {
+  return (process.env[name] ?? "").trim()
+}
+
+/**
+ * `lookup_key`s of the v2.5.0 prices. `scripts/create-phase5-prices.ts`
+ * creates the prices with these keys and is idempotent on them, and
+ * `resolvePlanPriceId()` falls back to a lookup by key when no static id is
+ * configured for the environment.
+ */
+export const PLAN_PRICE_LOOKUP_KEYS = {
+  basic: {
+    monthly: "shogo_basic_monthly_v2",
+    annual: "basic_annual_v2",
+  },
+  pro: {
+    monthly: "shogo_pro_monthly_v2",
+    annual: "shogo_pro_annual_v2",
+  },
+  business: {
+    monthly: "business_seat_monthly_v2",
+    annual: "business_seat_annual_v2",
+  },
+} as const satisfies StripePriceConfig
 
 export function getStripePrices(): StripePriceConfig {
   const isProduction = process.env.NODE_ENV === "production"
@@ -76,6 +120,11 @@ export function getStripePrices(): StripePriceConfig {
 /**
  * Get the Stripe price id for a flat plan + billing interval.
  *
+ * Returns `null` when the price has not been configured for this environment
+ * yet (the v2.5.0 Business prices and Basic annual before
+ * `scripts/create-phase5-prices.ts` has run and its ids were deployed).
+ * Callers that need a usable id should use `resolvePlanPriceId()`.
+ *
  * @param plan - One of `basic`, `pro`, `business`. Free is not a paid plan.
  * @param interval - `monthly` or `annual`.
  */
@@ -84,7 +133,148 @@ export function getPriceId(
   interval: BillingInterval
 ): string | null {
   const prices = getStripePrices()
-  return prices[plan]?.[interval] ?? null
+  return prices[plan]?.[interval] || null
+}
+
+export function getPriceLookupKey(
+  plan: PlanType,
+  interval: BillingInterval
+): string {
+  return PLAN_PRICE_LOOKUP_KEYS[plan][interval]
+}
+
+/**
+ * Resolve the price id to put on a new Checkout session.
+ *
+ * Prefers the statically configured id; otherwise looks the price up by
+ * `lookup_key` through the supplied Stripe client (results are cached, so the
+ * lookup costs one API call per environment). Returns `null` if no such price
+ * exists yet — the caller must fail the checkout rather than charge the
+ * legacy (higher) price.
+ */
+export async function resolvePlanPriceId(
+  plan: PlanType,
+  interval: BillingInterval,
+  lookup: (lookupKey: string) => Promise<string | null>,
+): Promise<string | null> {
+  const configured = getPriceId(plan, interval)
+  if (configured) return configured
+  return lookup(getPriceLookupKey(plan, interval))
+}
+
+// =============================================================================
+// LEGACY PLAN PRICES (read-only)
+// =============================================================================
+// The v1.5.0 flat ladder that v2.5.0 replaced:
+//   - Basic $8/mo, $80/yr      ($80 annual replaced by $78)
+//   - Pro   $20/seat/mo, $200  (unchanged; no longer offered at checkout)
+//   - Business $40/seat/mo, $400  (replaced by $16 / $156)
+//
+// A subscription sitting on one of these keeps the allowance it was sold at
+// (Business: $9.90/wk, $3.96/5h, $40/mo per seat) until its next renewal has
+// been moved to the v2.5.0 price by `scripts/migrate-phase5-subscriptions.ts`.
+// Kept in a separate map from the current prices so "is this sub still on the
+// old price?" stays answerable even after the current map is re-pointed.
+
+export const LEGACY_PLAN_PRICES: Record<"staging" | "production", StripePriceConfig> = {
+  staging: {
+    basic: {
+      monthly: "price_1TRH5XAp5PDuxitp1Uqkjbcx",
+      annual: "price_1TRH5XAp5PDuxitptfGAK6PB",
+    },
+    pro: {
+      monthly: "price_1TRH5kAp5PDuxitpwN3MHPhD",
+      annual: "price_1TRH5kAp5PDuxitpyUIn1Fh6",
+    },
+    business: {
+      monthly: "price_1TRH5lAp5PDuxitpCRkOKz4h",
+      annual: "price_1TRH5lAp5PDuxitpM51P3JNm",
+    },
+  },
+  production: {
+    basic: {
+      monthly: "price_1TEdi4ADDMNd95Ggym2MWpEQ",
+      annual: "price_1TEdi6ADDMNd95GgYZaoUHiQ",
+    },
+    pro: {
+      monthly: "price_1TTIOfADDMNd95GgDyGQlaqH",
+      annual: "price_1TTIOgADDMNd95GgwQGlpBLa",
+    },
+    business: {
+      monthly: "price_1TTIOgADDMNd95Gg5DgR006y",
+      annual: "price_1TTIOhADDMNd95Gg6JaJzKzZ",
+    },
+  },
+}
+
+function priceMapFor(label: "legacy" | "current"): StripePriceConfig {
+  const env: "staging" | "production" =
+    process.env.NODE_ENV === "production" ? "production" : "staging"
+  return label === "legacy" ? LEGACY_PLAN_PRICES[env] : (env === "production" ? STRIPE_PRICES_PRODUCTION : STRIPE_PRICES_STAGING)
+}
+
+/**
+ * True when `priceId` is one of the prices that predate v2.5.0 — i.e. the
+ * subscription was sold the old allowance and must keep it until its next
+ * renewal.
+ *
+ * `null` counts as legacy for a `business` subscription: every Business sub
+ * that exists before this deploy is on $40, and the deploy→backfill gap must
+ * not drop anyone to the smaller allowance. (New checkouts always write the
+ * price id, so only pre-deploy rows can be `null`.)
+ */
+export function isLegacyPlanPriceId(
+  priceId: string | null | undefined,
+  opts: { plan?: PlanType; nullIsLegacy?: boolean } = {},
+): boolean {
+  if (!priceId) return opts.nullIsLegacy === true
+  const legacy = priceMapFor("legacy")
+  const current = priceMapFor("current")
+  for (const plan of ["basic", "pro", "business"] as const) {
+    const l = legacy[plan]
+    const c = current[plan]
+    if (priceId === l.monthly || priceId === l.annual) {
+      // Basic monthly is the same price before and after v2.5.0 — it is not a
+      // legacy allowance. Any other current+v2 match wins over the legacy map.
+      if (priceId === c.monthly || priceId === c.annual) return false
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * True when the price is the legacy (pre-v2.5.0) **Business** price. That is
+ * the one tier whose included AI shrank, so it is the only one that keeps the
+ * old allowance until it moves.
+ */
+export function isLegacyBusinessPriceId(priceId: string | null | undefined): boolean {
+  if (!priceId) return true
+  const legacy = priceMapFor("legacy").business
+  const current = priceMapFor("current").business
+  if (priceId === current.monthly || priceId === current.annual) return false
+  return priceId === legacy.monthly || priceId === legacy.annual
+}
+
+/**
+ * Map a Stripe price id to the plan it sells.
+ *
+ * Covers the current prices, the legacy flat ladder, and the deprecated
+ * tiered ladder (`decodeLegacyPriceId`). Returns `null` for anything we do not
+ * recognise — a price from another product, an instance/capacity add-on, or a
+ * metered overage item.
+ */
+export function planFromPriceId(priceId: string | null | undefined): PlanType | null {
+  if (!priceId) return null
+  const current = priceMapFor("current")
+  for (const plan of ["basic", "pro", "business"] as const) {
+    if (priceId === current[plan].monthly || priceId === current[plan].annual) return plan
+  }
+  const legacy = priceMapFor("legacy")
+  for (const plan of ["basic", "pro", "business"] as const) {
+    if (priceId === legacy[plan].monthly || priceId === legacy[plan].annual) return plan
+  }
+  return decodeLegacyPriceId(priceId)?.planType ?? null
 }
 
 // =============================================================================

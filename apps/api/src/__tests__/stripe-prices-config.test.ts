@@ -78,7 +78,8 @@ describe('getPriceId()', () => {
     ['business', 'monthly'],
     ['business', 'annual'],
   ] as const)('returns staging price id for %s/%s', (plan, interval) => {
-    expect(getPriceId(plan, interval)).toBe(STRIPE_PRICES_STAGING[plan][interval])
+    // An unset v2.5.0 id is "" in the config and null from getPriceId().
+    expect(getPriceId(plan, interval)).toBe(STRIPE_PRICES_STAGING[plan][interval] || null)
   })
 
   test.each([
@@ -90,7 +91,7 @@ describe('getPriceId()', () => {
     ['business', 'annual'],
   ] as const)('returns production price id for %s/%s', (plan, interval) => {
     process.env.NODE_ENV = 'production'
-    expect(getPriceId(plan, interval)).toBe(STRIPE_PRICES_PRODUCTION[plan][interval])
+    expect(getPriceId(plan, interval)).toBe(STRIPE_PRICES_PRODUCTION[plan][interval] || null)
   })
 
   test('returns null for an unknown plan key', () => {
@@ -101,10 +102,13 @@ describe('getPriceId()', () => {
     expect(getPriceId('pro', 'lifetime' as any)).toBe(null)
   })
 
-  test('every returned id starts with "price_"', () => {
+  test('every configured id starts with "price_"', () => {
     for (const plan of ['basic', 'pro', 'business'] as const) {
       for (const interval of ['monthly', 'annual'] as const) {
-        expect(getPriceId(plan, interval)).toMatch(/^price_/)
+        const id = getPriceId(plan, interval)
+        // v2.5.0 ids are env-provided; unset means null, never the legacy id.
+        if (id === null) continue
+        expect(id).toMatch(/^price_/)
       }
     }
   })
@@ -314,7 +318,9 @@ describe('config shape invariants', () => {
       for (const plan of ['basic', 'pro', 'business'] as const) {
         expect(map[plan].monthly).toBeDefined()
         expect(map[plan].annual).toBeDefined()
-        expect(map[plan].monthly).not.toBe(map[plan].annual)
+        if (map[plan].monthly && map[plan].annual) {
+          expect(map[plan].monthly).not.toBe(map[plan].annual)
+        }
       }
     }
   })

@@ -43,8 +43,8 @@ const STAGING_PRODUCTS: ProductCopy[] = [
   {
     id: 'prod_UD3oRbXK7sLA8p',
     name: 'Shogo Basic',
-    description: '$5 of monthly AI usage. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.',
-    metadata: { plan: 'basic', included_usd: '5', per_seat: 'false', markup: '0.20' },
+    description: '$10 of monthly AI usage. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.',
+    metadata: { plan: 'basic', included_usd: '10', per_seat: 'false', markup: '0.20' },
   },
   {
     id: 'prod_TnJUJPgKdcWPUD',
@@ -55,8 +55,8 @@ const STAGING_PRODUCTS: ProductCopy[] = [
   {
     id: 'prod_TnJUouAXCoO5ke',
     name: 'Shogo Business',
-    description: "Includes $40 of AI usage per seat per month. Team analytics, SSO, audit logs, per-member spending limits, and unlimited workspaces for better organization. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.",
-    metadata: { plan: 'business', included_usd_per_seat: '40', per_seat: 'true', markup: '0.20' },
+    description: "$16 per seat per month, including $20 of AI usage per seat per month ($4.60 a week). Team analytics, SSO, audit logs, per-member spending limits, and unlimited workspaces for better organization. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.",
+    metadata: { plan: 'business', included_usd_per_seat: '20', seat_price_usd: '16', per_seat: 'true', markup: '0.20' },
   },
   {
     id: 'prod_UOfGeWglG4weLp',
@@ -67,20 +67,20 @@ const STAGING_PRODUCTS: ProductCopy[] = [
 ]
 
 const STAGING_PRICES: PriceCopy[] = [
-  { id: 'price_1TRH5XAp5PDuxitp1Uqkjbcx', nickname: 'Basic (monthly)',                lookupKey: 'shogo_basic_monthly_v2',    metadata: { plan: 'basic',    interval: 'monthly', included_usd: '5',  per_seat: 'false' } },
-  { id: 'price_1TRH5XAp5PDuxitptfGAK6PB', nickname: 'Basic (annual)',                 lookupKey: 'shogo_basic_annual_v2',     metadata: { plan: 'basic',    interval: 'annual',  included_usd: '5',  per_seat: 'false' } },
+  { id: 'price_1TRH5XAp5PDuxitp1Uqkjbcx', nickname: 'Basic (monthly)',                lookupKey: 'shogo_basic_monthly_v2',    metadata: { plan: 'basic',    interval: 'monthly', included_usd: '10', per_seat: 'false' } },
+  { id: 'price_1TRH5XAp5PDuxitptfGAK6PB', nickname: 'Basic (annual, legacy $80)',    lookupKey: 'shogo_basic_annual_v2',     metadata: { plan: 'basic',    interval: 'annual',  included_usd: '10', per_seat: 'false' } },
   { id: 'price_1TRH5kAp5PDuxitpwN3MHPhD', nickname: 'Pro (monthly per seat)',         lookupKey: 'shogo_pro_monthly_v2',      metadata: { plan: 'pro',      interval: 'monthly', included_usd_per_seat: '20', per_seat: 'true' } },
   { id: 'price_1TRH5kAp5PDuxitpyUIn1Fh6', nickname: 'Pro (annual per seat)',          lookupKey: 'shogo_pro_annual_v2',       metadata: { plan: 'pro',      interval: 'annual',  included_usd_per_seat: '20', per_seat: 'true' } },
-  { id: 'price_1TRH5lAp5PDuxitpCRkOKz4h', nickname: 'Business (monthly per seat)',    lookupKey: 'shogo_business_monthly_v2', metadata: { plan: 'business', interval: 'monthly', included_usd_per_seat: '40', per_seat: 'true' } },
-  { id: 'price_1TRH5lAp5PDuxitpM51P3JNm', nickname: 'Business (annual per seat)',     lookupKey: 'shogo_business_annual_v2',  metadata: { plan: 'business', interval: 'annual',  included_usd_per_seat: '40', per_seat: 'true' } },
+  { id: 'price_1TRH5lAp5PDuxitpCRkOKz4h', nickname: 'Business (monthly per seat, legacy $40)', lookupKey: 'shogo_business_monthly_v2', metadata: { plan: 'business', interval: 'monthly', included_usd_per_seat: '40', per_seat: 'true' } },
+  { id: 'price_1TRH5lAp5PDuxitpM51P3JNm', nickname: 'Business (annual per seat, legacy $400)',  lookupKey: 'shogo_business_annual_v2',  metadata: { plan: 'business', interval: 'annual',  included_usd_per_seat: '40', per_seat: 'true' } },
 ]
 
 const PRODUCTION_PRODUCTS: ProductCopy[] = [
   {
     id: 'prod_UD3pguoX3NJ9Q6',
     name: 'Shogo Basic',
-    description: '$5 of monthly AI usage. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.',
-    metadata: { plan: 'basic', included_usd: '5', per_seat: 'false', markup: '0.20' },
+    description: '$10 of monthly AI usage. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.',
+    metadata: { plan: 'basic', included_usd: '10', per_seat: 'false', markup: '0.20' },
   },
   {
     id: 'prod_U4QkVZtCUtKWOw',
@@ -91,8 +91,8 @@ const PRODUCTION_PRODUCTS: ProductCopy[] = [
   {
     id: 'prod_U4QkWE1XUGKOvb',
     name: 'Shogo Business',
-    description: "Includes $40 of AI usage per seat per month. Team analytics, SSO, audit logs, per-member spending limits, and unlimited workspaces for better organization. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.",
-    metadata: { plan: 'business', included_usd_per_seat: '40', per_seat: 'true', markup: '0.20' },
+    description: "$16 per seat per month, including $20 of AI usage per seat per month ($4.60 a week). Team analytics, SSO, audit logs, per-member spending limits, and unlimited workspaces for better organization. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.",
+    metadata: { plan: 'business', included_usd_per_seat: '20', seat_price_usd: '16', per_seat: 'true', markup: '0.20' },
   },
   {
     id: 'prod_USCo7QeG0HkY8s',
@@ -103,12 +103,12 @@ const PRODUCTION_PRODUCTS: ProductCopy[] = [
 ]
 
 const PRODUCTION_PRICES: PriceCopy[] = [
-  { id: 'price_1TEdi4ADDMNd95Ggym2MWpEQ', nickname: 'Basic (monthly)',                lookupKey: 'shogo_basic_monthly_v2',    metadata: { plan: 'basic',    interval: 'monthly', included_usd: '5',  per_seat: 'false' } },
-  { id: 'price_1TEdi6ADDMNd95GgYZaoUHiQ', nickname: 'Basic (annual)',                 lookupKey: 'shogo_basic_annual_v2',     metadata: { plan: 'basic',    interval: 'annual',  included_usd: '5',  per_seat: 'false' } },
+  { id: 'price_1TEdi4ADDMNd95Ggym2MWpEQ', nickname: 'Basic (monthly)',                lookupKey: 'shogo_basic_monthly_v2',    metadata: { plan: 'basic',    interval: 'monthly', included_usd: '10', per_seat: 'false' } },
+  { id: 'price_1TEdi6ADDMNd95GgYZaoUHiQ', nickname: 'Basic (annual, legacy $80)',    lookupKey: 'shogo_basic_annual_v2',     metadata: { plan: 'basic',    interval: 'annual',  included_usd: '10', per_seat: 'false' } },
   { id: 'price_1TTIOfADDMNd95GgDyGQlaqH', nickname: 'Pro (monthly per seat)',         lookupKey: 'shogo_pro_monthly_v2',      metadata: { plan: 'pro',      interval: 'monthly', included_usd_per_seat: '20', per_seat: 'true' } },
   { id: 'price_1TTIOgADDMNd95GgwQGlpBLa', nickname: 'Pro (annual per seat)',          lookupKey: 'shogo_pro_annual_v2',       metadata: { plan: 'pro',      interval: 'annual',  included_usd_per_seat: '20', per_seat: 'true' } },
-  { id: 'price_1TTIOgADDMNd95Gg5DgR006y', nickname: 'Business (monthly per seat)',    lookupKey: 'shogo_business_monthly_v2', metadata: { plan: 'business', interval: 'monthly', included_usd_per_seat: '40', per_seat: 'true' } },
-  { id: 'price_1TTIOhADDMNd95Gg6JaJzKzZ', nickname: 'Business (annual per seat)',     lookupKey: 'shogo_business_annual_v2',  metadata: { plan: 'business', interval: 'annual',  included_usd_per_seat: '40', per_seat: 'true' } },
+  { id: 'price_1TTIOgADDMNd95Gg5DgR006y', nickname: 'Business (monthly per seat, legacy $40)', lookupKey: 'shogo_business_monthly_v2', metadata: { plan: 'business', interval: 'monthly', included_usd_per_seat: '40', per_seat: 'true' } },
+  { id: 'price_1TTIOhADDMNd95Gg6JaJzKzZ', nickname: 'Business (annual per seat, legacy $400)',  lookupKey: 'shogo_business_annual_v2',  metadata: { plan: 'business', interval: 'annual',  included_usd_per_seat: '40', per_seat: 'true' } },
 ]
 
 interface Cli {

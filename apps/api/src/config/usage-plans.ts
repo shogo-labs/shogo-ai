@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { MARKUP_MULTIPLIER } from '../lib/usage-cost'
+import { isLegacyBusinessPriceId, isLegacyPlanPriceId } from './stripe-prices'
 /**
  * Central Usage Plan Configuration
  *
@@ -281,6 +282,25 @@ export const ROLLING_WINDOW_LIMITS: Record<
   enterprise: null,
 }
 
+/**
+ * The allowance a Business seat was sold at *before* v2.5.0 (SHO-312 Phase 5):
+ * $40 of AI per seat per month at $40/seat, i.e. $9.90/week and $3.96 per
+ * 5-hour window.
+ *
+ * Every subscription still sitting on the legacy $40 price — or on no price at
+ * all, which means it predates the price backfill — keeps this allowance until
+ * its next renewal moves it to the $16 price. Without it, merging the new
+ * allowances would silently halve what 5 paying workspaces bought. See
+ * `getPlanAllowance` and `scripts/migrate-phase5-subscriptions.ts`.
+ */
+export const LEGACY_BUSINESS_ROLLING_WINDOW_LIMITS = {
+  fiveHourUsd: 3.96,
+  weeklyUsd: 9.9,
+} as const
+
+/** Included USD per seat per month on the legacy $40 Business price. */
+export const LEGACY_BUSINESS_SEAT_INCLUDED_USD = 40
+
 export interface WindowLimits {
   fiveHourUsd: number
   weeklyUsd: number
@@ -305,6 +325,77 @@ export function getWindowLimitsForPlan(
   const base = ROLLING_WINDOW_LIMITS[normalized]
   if (base == null) return null
   return { fiveHourUsd: base.fiveHourUsd, weeklyUsd: base.weeklyUsd }
+}
+
+export interface PlanAllowance {
+  /** Per-seat rolling-window limits. `null` = uncapped (enterprise). */
+  windowLimits: WindowLimits | null
+  /** Included USD per seat per month. */
+  monthlyIncludedUsdPerSeat: number
+  /**
+   * True when the allowance comes from a price the subscription was sold
+   * before v2.5.0 and has not been moved off yet.
+   */
+  legacy: boolean
+}
+
+/**
+ * The allowance a (plan, price) pair is entitled to.
+ *
+ * Allowances follow the price, not just the plan name: a Business seat sold at
+ * $40 keeps $9.90/week ($3.96/5h, $40/mo) until its next renewal moves it to
+ * the $16 price, at which point the same `business` plan resolves to
+ * $4.60/week ($1.84/5h, $20/mo). Everything else — Basic ($8 either way), Pro,
+ * Enterprise, grants — resolves straight off today's ladder.
+ *
+ * A `null`/missing price on a Business subscription counts as legacy: those
+ * rows predate the `stripePriceId` backfill and every one of them is on $40,
+ * so the deploy→backfill gap can never drop a paying customer to the smaller
+ * allowance. New checkouts always write the price id.
+ */
+export function getPlanAllowance(
+  planId: string | null | undefined,
+  stripePriceId?: string | null,
+): PlanAllowance {
+  const normalized = normalizePlanId(planId) ?? 'free'
+  const legacy = normalized === 'business'
+    ? isLegacyBusinessPriceId(stripePriceId)
+    : isLegacyPlanPriceId(stripePriceId)
+  if (legacy && normalized === 'business') {
+    return {
+      windowLimits: { ...LEGACY_BUSINESS_ROLLING_WINDOW_LIMITS },
+      monthlyIncludedUsdPerSeat: LEGACY_BUSINESS_SEAT_INCLUDED_USD,
+      legacy: true,
+    }
+  }
+  return {
+    windowLimits: getWindowLimitsForPlan(normalized),
+    monthlyIncludedUsdPerSeat: SEAT_INCLUDED_USD[normalized],
+    legacy: false,
+  }
+}
+
+/**
+ * Monthly included USD for a (plan, seats, price) tuple — the allocation the
+ * wallet gets. Legacy tiered ids (`business_1200`, …) are delegated to
+ * `getMonthlyIncludedForPlan` unchanged, since their credit count is a
+ * workspace total rather than a per-seat amount.
+ */
+export function getMonthlyIncludedForPlanAndPrice(
+  planId: string,
+  seats: number = 1,
+  stripePriceId?: string | null,
+): number {
+  if (/^(basic|pro|business)_\d+$/.test(planId)) {
+    return getMonthlyIncludedForPlan(planId, seats)
+  }
+  const normalized = normalizePlanId(planId) ?? 'free'
+  const allowance = getPlanAllowance(planId, stripePriceId)
+  if (normalized === 'free' || normalized === 'basic') {
+    return allowance.monthlyIncludedUsdPerSeat
+  }
+  const safeSeats = Math.max(1, Math.floor(seats || 1))
+  return allowance.monthlyIncludedUsdPerSeat * safeSeats
 }
 
 /**

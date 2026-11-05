@@ -18,9 +18,11 @@ export interface RegionalPlanUsd {
 
 export const REGIONAL_PLAN_USD_BASE: Record<RegionalPlanId, RegionalPlanUsd> = {
   free: { monthly: 0, annual: 0 },
-  basic: { monthly: 8, annual: 80 },
+  basic: { monthly: 8, annual: 78 },
+  // Pro is no longer offered at checkout (v2.5.0); kept so existing holders and
+  // any older client still resolve a price.
   pro: { monthly: 20, annual: 200 },
-  business: { monthly: 40, annual: 400 },
+  business: { monthly: 16, annual: 156 },
 }
 
 /**

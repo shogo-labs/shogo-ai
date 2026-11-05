@@ -26,9 +26,9 @@ describe('buildRegionalPlans', () => {
     const convert = (usd: number) => Math.round(usd * rate)
     const plans = buildRegionalPlans(convert)
 
-    expect(plans.basic).toEqual({ monthly: 8 * rate, annual: 80 * rate })
+    expect(plans.basic).toEqual({ monthly: 8 * rate, annual: 78 * rate })
     expect(plans.pro).toEqual({ monthly: 20 * rate, annual: 200 * rate })
-    expect(plans.business).toEqual({ monthly: 40 * rate, annual: 400 * rate })
+    expect(plans.business).toEqual({ monthly: 16 * rate, annual: 156 * rate })
   })
 
   test('free plan is always zero regardless of conversion rate', () => {
@@ -36,13 +36,13 @@ describe('buildRegionalPlans', () => {
     expect(plans.free).toEqual({ monthly: 0, annual: 0 })
   })
 
-  test('USD base prices match the per-seat plan ladder ($8/$20/$40 monthly)', () => {
+  test('USD base prices match the v2.5.0 per-seat ladder ($8/$20/$16 monthly)', () => {
     expect(REGIONAL_PLAN_USD_BASE.basic.monthly).toBe(8)
     expect(REGIONAL_PLAN_USD_BASE.pro.monthly).toBe(20)
-    expect(REGIONAL_PLAN_USD_BASE.business.monthly).toBe(40)
-    expect(REGIONAL_PLAN_USD_BASE.basic.annual).toBe(80)
+    expect(REGIONAL_PLAN_USD_BASE.business.monthly).toBe(16)
+    expect(REGIONAL_PLAN_USD_BASE.basic.annual).toBe(78)
     expect(REGIONAL_PLAN_USD_BASE.pro.annual).toBe(200)
-    expect(REGIONAL_PLAN_USD_BASE.business.annual).toBe(400)
+    expect(REGIONAL_PLAN_USD_BASE.business.annual).toBe(156)
   })
 
   test('applies the convert function independently to monthly and annual', () => {

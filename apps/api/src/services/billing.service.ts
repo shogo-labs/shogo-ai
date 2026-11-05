@@ -4,9 +4,11 @@
  * Billing Service — USD usage wallet + Stripe metered overage.
  *
  * The product sells flat per-seat plans modeled on Cursor.com:
- *   - Basic    $8/mo   single user, $5 of usage included
- *   - Pro      $20/seat/mo, $20 of usage included per seat
- *   - Business $40/seat/mo, $40 of usage included per seat
+ *   - Basic    $8/mo ($78/yr) single user, $10 of usage included
+ *   - Pro      $20/seat/mo legacy, $20 of usage included per seat
+ *   - Business $16/seat/mo ($156/yr), $20 of usage included per seat
+ * A Business seat still on the pre-v2.5.0 $40 price keeps its $40 allowance
+ * until its next renewal moves it (`getPlanAllowance` in `usage-plans.ts`).
  * Every action charges `provider_raw_cost * MARKUP_MULTIPLIER` (1.20).
  * Deduction order: daily included -> monthly included -> overage.
  *
@@ -28,6 +30,8 @@ import {
   getAlwaysOnAllowance,
   getDailyIncludedForPlan,
   getMonthlyIncludedForPlan,
+  getMonthlyIncludedForPlanAndPrice,
+  getPlanAllowance,
   getWindowLimitsForPlan,
   normalizePlanId,
   promoCreditAvailableUsd,
@@ -545,20 +549,23 @@ export async function allocateMonthlyIncluded(
   workspaceId: string,
   planId: string,
   seats: number = 1,
+  stripePriceId?: string | null,
 ) {
   const routed = await routeWalletProvision(workspaceId, {
     op: 'allocateMonthlyIncluded',
     planId,
     seats,
+    stripePriceId,
   })
   if (routed.handled) return routed.wallet
-  return allocateMonthlyIncludedLocal(workspaceId, planId, seats)
+  return allocateMonthlyIncludedLocal(workspaceId, planId, seats, stripePriceId)
 }
 
 export async function allocateMonthlyIncludedLocal(
   workspaceId: string,
   planId: string,
   seats: number = 1,
+  stripePriceId?: string | null,
 ) {
   const now = new Date();
   const [grant, existing] = await Promise.all([
@@ -568,10 +575,20 @@ export async function allocateMonthlyIncludedLocal(
       select: { overageHardLimitUsd: true, overageAccumulatedUsd: true, overageBilledUsd: true },
     }),
   ])
+  // Allowances follow the price. Callers that know the price pass it; the rest
+  // (grant refills, seat syncs, the AI proxy) read it off the subscription row
+  // so no path can accidentally hand a legacy Business seat the smaller
+  // allowance. `undefined` means "look it up"; an explicit `null` is honoured.
+  const priceId = stripePriceId === undefined
+    ? (await prisma.subscription.findFirst({
+        where: { workspaceId, status: { in: ['active', 'trialing'] } },
+        select: { stripePriceId: true },
+      }))?.stripePriceId ?? null
+    : stripePriceId
   // Free seats from a grant get the same per-seat plan included USD.
   const totalSeats = Math.max(1, Math.floor(seats || 1)) + grant.freeSeats
   const monthlyIncludedUsd =
-    getMonthlyIncludedForPlan(planId, totalSeats) + grant.monthlyIncludedUsd;
+    getMonthlyIncludedForPlanAndPrice(planId, totalSeats, priceId) + grant.monthlyIncludedUsd;
 
   return prisma.usageWallet.upsert({
     where: { workspaceId },
@@ -1075,7 +1092,7 @@ async function resolveWorkspaceHomeRegion(billingWorkspaceId: string): Promise<s
  */
 type WalletProvisionOp =
   | { op: 'allocateFreeWallet' }
-  | { op: 'allocateMonthlyIncluded'; planId: string; seats: number }
+  | { op: 'allocateMonthlyIncluded'; planId: string; seats: number; stripePriceId?: string | null }
   | { op: 'applyGrantMonthlyAllocation' }
   | { op: 'setUsageBasedPricing'; overageEnabled: boolean; overageHardLimitUsd: number | null }
   | { op: 'markOverageInvoicePaid'; invoiceId: string; invoiceUrl?: string }
@@ -1698,12 +1715,14 @@ async function resolveEffectivePlan(
 ): Promise<EffectivePlan> {
   const sub = await tx.subscription.findFirst({
     where: { workspaceId, status: { in: ['active', 'trialing'] } },
-    select: { planId: true, seats: true },
+    select: { planId: true, seats: true, stripePriceId: true },
   })
   if (sub) {
     const plan = normalizePlanId(sub.planId) ?? 'free'
     return {
-      limits: getWindowLimitsForPlan(plan),
+      // Allowances follow the price: a Business seat still on the legacy $40
+      // price keeps $9.90/week until its next renewal moves it (SHO-339).
+      limits: getPlanAllowance(plan, sub.stripePriceId).windowLimits,
       paidTier: PLAN_RANK[plan] >= PLAN_RANK.basic,
     }
   }
@@ -2015,6 +2034,12 @@ export async function syncFromStripe(data: {
   planId: string;
   /** Number of paying seats. Defaults to 1. Basic is always 1. */
   seats?: number;
+  /**
+   * Price id of the licensed (plan) item. Omitted by callers that do not know
+   * it (mobile IAP, admin repair) — omission leaves any stored value intact
+   * rather than clearing it.
+   */
+  stripePriceId?: string | null;
   status: SubscriptionStatus;
   billingInterval: BillingInterval;
   currentPeriodStart: Date;
@@ -2022,6 +2047,8 @@ export async function syncFromStripe(data: {
   cancelAtPeriodEnd?: boolean;
 }) {
   const seats = Math.max(1, Math.floor(data.seats ?? 1));
+  const priceFields =
+    data.stripePriceId === undefined ? {} : { stripePriceId: data.stripePriceId };
   const subscription = await prisma.subscription.upsert({
     where: { workspaceId: data.workspaceId },
     create: {
@@ -2029,6 +2056,7 @@ export async function syncFromStripe(data: {
       stripeSubscriptionId: data.stripeSubscriptionId,
       stripeCustomerId: data.stripeCustomerId,
       planId: data.planId,
+      stripePriceId: data.stripePriceId ?? null,
       seats,
       status: data.status,
       billingInterval: data.billingInterval,
@@ -2040,6 +2068,7 @@ export async function syncFromStripe(data: {
       stripeSubscriptionId: data.stripeSubscriptionId,
       stripeCustomerId: data.stripeCustomerId,
       planId: data.planId,
+      ...priceFields,
       seats,
       status: data.status,
       billingInterval: data.billingInterval,
