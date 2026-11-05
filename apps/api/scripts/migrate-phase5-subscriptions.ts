@@ -223,6 +223,32 @@ function priceIdOfSub(sub: Phase5Candidate['stripeSub']): string | null {
   return typeof price === 'string' ? price : (price.id ?? null)
 }
 
+/** The plan item's price in USD per billing interval, when Stripe expands it. */
+function currentAmountUsd(sub: Phase5Candidate['stripeSub']): number | null {
+  const price = (planItemOf(sub) as any)?.price
+  const amount = typeof price === 'object' ? price?.unit_amount : null
+  return typeof amount === 'number' ? amount / 100 : null
+}
+
+/**
+ * The end of the current billing period, in seconds.
+ *
+ * Stripe moved `current_period_end` off the subscription and onto its items in
+ * API version 2025-03-31.basil — the version this script pins
+ * (`2025-09-30.clover`), so the top-level field is always absent on a real
+ * response. Reading only the top level made every paid subscription look like
+ * it had no renewal date and the whole run planned zero schedules.
+ */
+function periodEndSecondsOf(sub: Phase5Candidate['stripeSub']): number | null {
+  if (typeof sub.current_period_end === 'number') return sub.current_period_end
+  const planItem = planItemOf(sub) as any
+  if (typeof planItem?.current_period_end === 'number') return planItem.current_period_end
+  for (const item of ((sub as any)?.items?.data ?? []) as any[]) {
+    if (typeof item?.current_period_end === 'number') return item.current_period_end
+  }
+  return null
+}
+
 function intervalOf(
   sub: Phase5Candidate['stripeSub'],
   dbInterval: string | null,
@@ -324,9 +350,8 @@ export function planPhase5Row(candidate: Phase5Candidate, opts: Phase5Options): 
     return { ...base, action: 'metadata-only', reason: 'Basic monthly is unchanged' }
   }
 
-  const currentPeriodEnd = sub.current_period_end
-    ? new Date(sub.current_period_end * 1000)
-    : null
+  const periodEndSeconds = periodEndSecondsOf(sub)
+  const currentPeriodEnd = periodEndSeconds ? new Date(periodEndSeconds * 1000) : null
   if (!currentPeriodEnd) {
     return { ...base, action: 'skip-unresolved', reason: 'subscription has no current_period_end' }
   }
@@ -616,17 +641,40 @@ async function main() {
 
   // Email notice: render + (on --apply --send-notice) send, once per workspace.
   const notices: Array<{ to: string; subject: string; html: string }> = []
+  const targetAmountCache = new Map<string, number | null>()
+  const targetAmountUsd = async (priceId: string | null): Promise<number | null> => {
+    if (!priceId) return null
+    if (targetAmountCache.has(priceId)) return targetAmountCache.get(priceId) ?? null
+    let amount: number | null = null
+    try {
+      const price = await stripe.prices.retrieve(priceId)
+      amount = typeof price.unit_amount === 'number' ? price.unit_amount / 100 : null
+    } catch (err: any) {
+      console.error(`  ✗ cannot read price ${priceId} for the notice email: ${err.message}`)
+    }
+    targetAmountCache.set(priceId, amount)
+    return amount
+  }
   if (cli.sendNotice) {
     for (const p of plans) {
       if (p.row.action.startsWith('skip-')) continue
       if (p.candidate.stripeSub.metadata?.priceChangeNoticeAt) continue
+      // Amounts come from the real prices, never a default: the notice must say
+      // $40 → $16 for a Business seat, $20 → $16 for Pro, and "same price" for
+      // Basic monthly ($8 both sides). A hardcoded 40/16 wrote all three wrong.
+      const fromPriceUsd =
+        currentAmountUsd(p.candidate.stripeSub) ?? 40
+      const toPriceUsd =
+        (await targetAmountUsd(p.row.toPriceId)) ??
+        (p.row.toPriceId === p.row.fromPriceId ? fromPriceUsd : null) ??
+        16
       const contacts = await loadBillingContacts(p.row.workspaceId)
       for (const contact of contacts) {
         const rendered = renderPriceChangeEmail({
           workspaceName: contact.workspaceName,
           planName: (p.row.planId ?? 'business').replace(/^./, (c) => c.toUpperCase()),
-          fromPriceUsd: contact.fromPriceUsd ?? 40,
-          toPriceUsd: contact.toPriceUsd ?? 16,
+          fromPriceUsd,
+          toPriceUsd,
           interval: p.row.interval === 'annual' ? 'year' : 'month',
           switchDate: (p.row.switchDate ?? cli.noticeSentAt).toISOString().slice(0, 10),
           weeklyAllowanceUsd: p.row.planId === 'basic' ? 2.3 : 4.6,

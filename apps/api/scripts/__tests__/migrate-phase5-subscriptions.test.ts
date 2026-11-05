@@ -68,7 +68,12 @@ function candidate(overrides: {
   workspaceId?: string | null
   existingScheduleId?: string | null
   extraItems?: Array<{ id: string; quantity: number; price: { id: string } }>
+  /** Stripe 2025-03-31.basil+ shape: the period end lives on the item only. */
+  periodEndOnItemOnly?: boolean
 }): Phase5Candidate {
+  const periodEnd = Math.floor(
+    new Date(overrides.currentPeriodEnd ?? '2026-11-20T00:00:00.000Z').getTime() / 1000,
+  )
   return {
     workspaceId: overrides.workspaceId === undefined ? 'ws-1' : overrides.workspaceId,
     dbPlanId: overrides.dbPlanId === undefined ? 'business' : overrides.dbPlanId,
@@ -78,12 +83,15 @@ function candidate(overrides: {
       id: 'sub_1',
       status: overrides.status ?? 'active',
       metadata: overrides.metadata ?? { workspaceId: 'ws-1', planId: 'business' },
-      current_period_end: Math.floor(
-        new Date(overrides.currentPeriodEnd ?? '2026-11-20T00:00:00.000Z').getTime() / 1000,
-      ),
+      ...(overrides.periodEndOnItemOnly ? {} : { current_period_end: periodEnd }),
       items: {
         data: [
-          { id: 'si_plan', quantity: overrides.quantity ?? 3, price: { id: overrides.priceId ?? LEGACY_BUSINESS_MONTHLY } },
+          {
+            id: 'si_plan',
+            quantity: overrides.quantity ?? 3,
+            price: { id: overrides.priceId ?? LEGACY_BUSINESS_MONTHLY },
+            ...(overrides.periodEndOnItemOnly ? { current_period_end: periodEnd } : {}),
+          },
           ...(overrides.extraItems ?? []),
         ],
       },
@@ -157,6 +165,18 @@ describe('planPhase5Row', () => {
     expect(row.action).toBe('schedule')
     expect(row.fromPriceId).toBe(LEGACY_BUSINESS_MONTHLY)
     expect(row.toPriceId).toBe(NEW_BUSINESS_MONTHLY)
+    expect(row.switchDate?.toISOString()).toBe('2026-12-08T00:00:00.000Z')
+  })
+
+  it('schedules from the item period end when Stripe puts it on the item only', () => {
+    // 2025-03-31.basil and later (the version this script pins) drop the
+    // top-level `current_period_end`; reading only the top level planned zero
+    // schedules against the live account.
+    const row = planPhase5Row(
+      candidate({ currentPeriodEnd: '2026-11-08T00:00:00.000Z', periodEndOnItemOnly: true }),
+      OPTS,
+    )
+    expect(row.action).toBe('schedule')
     expect(row.switchDate?.toISOString()).toBe('2026-12-08T00:00:00.000Z')
   })
 
