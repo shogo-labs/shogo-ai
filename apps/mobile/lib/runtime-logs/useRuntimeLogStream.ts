@@ -10,16 +10,18 @@
  * The hook is intentionally narrow: it doesn't render, it doesn't filter,
  * it doesn't format. Callers consume `entries` and decide what to do.
  *
- * Why poll *and* SSE: SSE works in 99% of cases but a few hostile
- * intermediaries (corp proxies, some mobile carriers) break it. We
- * polling-fallback the moment the EventSource hits an error and never
- * recover automatically — once on poll, stay on poll for the life of
- * the hook to avoid churn.
+ * Why poll at all: SSE works in 99% of cases but a few hostile
+ * intermediaries (corp proxies, some mobile carriers) break it. Polling is a
+ * bridge for that outage only — the stream is always retried (2→30 s) and a
+ * successful open stops the poll and restores SSE. A healthy stream costs
+ * zero polling requests, and a hidden tab costs nothing at all. The shared
+ * policy lives in `../stream-fallback`.
  */
 
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { agentFetch } from '../agent-fetch'
 import { createAuthedEventSource } from '../authed-event-source'
+import { appVisibility, createStreamFallback } from '../stream-fallback'
 import { extractExecEntries, type ExecEntry } from '../../components/project/panels/extractExecEntries'
 import {
   getCursor,
@@ -30,8 +32,6 @@ import {
   subscribe,
   type RuntimeLogEntry,
 } from './runtime-log-store'
-
-const POLL_INTERVAL_MS = 3000
 
 type EventSourceFactory = (url: string) => EventSource
 
@@ -105,86 +105,87 @@ export function useRuntimeLogStream(
     const baseUrl = `${agentUrl}/agent/runtime-logs`
     const fetchImpl = fetcher ?? agentFetch
     const esFactory = eventSourceFactory ?? createAuthedEventSource
+    const visibility = appVisibility()
 
     let alive = true
     let es: EventSource | null = null
-    let pollTimer: ReturnType<typeof setTimeout> | null = null
 
-    const startPolling = (): void => {
-      if (!alive) return
-      transportRef.current = 'poll'
-      const tick = async (): Promise<void> => {
-        if (!alive) return
-        try {
-          const since = getCursor(projectId)
-          const url =
-            since > 0
-              ? `${baseUrl}?since=${since}`
-              : baseUrl
-          const res = await fetchImpl(url)
-          if (!res.ok) throw new Error(`HTTP ${res.status}`)
-          const body = (await res.json()) as { entries?: RuntimeLogEntry[] }
-          if (body.entries && body.entries.length > 0) {
-            pushEntries(
-              projectId,
-              body.entries.map((e) => ({ ...e, origin: 'poll' })),
-            )
-          }
-          readyRef.current = true
-        } catch {
-          // Swallow transient failures; keep polling.
-        } finally {
-          if (alive) pollTimer = setTimeout(tick, POLL_INTERVAL_MS)
-        }
+    const poll = async (): Promise<void> => {
+      const since = getCursor(projectId)
+      const url = since > 0 ? `${baseUrl}?since=${since}` : baseUrl
+      const res = await fetchImpl(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const body = (await res.json()) as { entries?: RuntimeLogEntry[] }
+      if (body.entries && body.entries.length > 0) {
+        pushEntries(
+          projectId,
+          body.entries.map((e) => ({ ...e, origin: 'poll' })),
+        )
       }
-      void tick()
+      readyRef.current = true
     }
 
-    const startSse = (): void => {
-      try {
+    // SSE is the transport; the poll only bridges an outage (see
+    // `lib/stream-fallback`). A dropped stream is retried at 2→30 s and the
+    // hook goes back to SSE the moment a retry opens.
+    const fallback = createStreamFallback({
+      isVisible: visibility.isVisible,
+      subscribeVisibility: visibility.subscribe,
+      onTransportChange: (t) => {
+        transportRef.current = t
+      },
+      poll,
+      connect: (hooks) => {
+        if (!alive) return () => {}
         const since = getCursor(projectId)
         const url =
           since > 0
             ? `${baseUrl}/stream?since=${since}`
             : `${baseUrl}/stream`
-        es = esFactory(url)
-      } catch {
-        startPolling()
-        return
-      }
-      transportRef.current = 'sse'
-      es.onmessage = (ev) => {
-        if (!alive) return
         try {
-          const entry = JSON.parse(ev.data) as RuntimeLogEntry
-          pushEntry(projectId, { ...entry, origin: 'sse' })
-          readyRef.current = true
+          es = esFactory(url)
         } catch {
-          // Malformed event — drop.
+          // Let the fallback schedule a retry instead of settling on poll.
+          hooks.onError()
+          return () => {}
         }
-      }
-      es.onerror = () => {
-        if (!alive) return
-        try {
-          es?.close()
-        } catch {
-          // Already closed.
+        const current = es
+        current.onopen = () => {
+          if (alive) hooks.onOpen()
         }
-        es = null
-        startPolling()
-      }
-    }
+        current.onmessage = (ev) => {
+          if (!alive) return
+          // A delivered event is proof the stream is healthy — mark it open
+          // so the retry ladder resets even if `onopen` never fired.
+          hooks.onOpen()
+          try {
+            const entry = JSON.parse(ev.data) as RuntimeLogEntry
+            pushEntry(projectId, { ...entry, origin: 'sse' })
+            readyRef.current = true
+          } catch {
+            // Malformed event — drop.
+          }
+        }
+        current.onerror = () => {
+          if (alive) hooks.onError()
+        }
+        return () => {
+          try {
+            current.close()
+          } catch {
+            // Already closed.
+          }
+          if (es === current) es = null
+        }
+      },
+    })
 
-    startSse()
+    fallback.start()
 
     return () => {
       alive = false
-      try {
-        es?.close()
-      } catch {
-        // Best-effort.
-      }
-      if (pollTimer) clearTimeout(pollTimer)
+      fallback.stop()
+      es = null
       transportRef.current = 'idle'
     }
   }, [agentUrl, projectId, fetcher, eventSourceFactory])

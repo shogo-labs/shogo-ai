@@ -857,3 +857,109 @@ describe('AgentClient — default fetch wiring', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// conditional reads (ETag / 304)
+// ---------------------------------------------------------------------------
+
+describe('AgentClient — readFileIfChanged', () => {
+  test('sends If-None-Match and returns notModified for a 304', async () => {
+    const calls: Call[] = []
+    const f = makeFetch(
+      () => new Response(null, { status: 304, headers: { ETag: 'W/"7-3"' } }),
+      calls,
+    )
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+
+    const res = await c.readFileIfChanged('a.ts', 'W/"7-3"')
+
+    expect(calls[0]!.url).toBe('http://x.test/agent/workspace/files/a.ts')
+    const sent = calls[0]!.init!.headers as Record<string, string>
+    expect(sent['If-None-Match']).toBe('W/"7-3"')
+    expect(res).toEqual({ notModified: true, etag: 'W/"7-3"' })
+  })
+
+  test('returns the content and the new ETag on a 200', async () => {
+    const calls: Call[] = []
+    const f = makeFetch(
+      () =>
+        new Response(JSON.stringify({ path: 'a.ts', content: 'let a = 1', encoding: 'utf-8', bytes: 9 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: 'W/"9-9"' },
+        }),
+      calls,
+    )
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+
+    const res = await c.readFileIfChanged('a.ts', 'W/"7-3"')
+
+    expect(res).toEqual({ notModified: false, content: 'let a = 1', etag: 'W/"9-9"' })
+    expect((calls[0]!.init!.headers as Record<string, string>)['If-None-Match']).toBe('W/"7-3"')
+  })
+
+  test('omits If-None-Match when no ETag is known yet', async () => {
+    const calls: Call[] = []
+    const f = makeFetch(
+      () => new Response(JSON.stringify({ content: 'x', encoding: 'utf-8' }), { status: 200 }),
+      calls,
+    )
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    await c.readFileIfChanged('a.ts')
+    expect((calls[0]!.init!.headers as Record<string, string>)['If-None-Match']).toBeUndefined()
+  })
+
+  test('refuses binary content like readFile does', async () => {
+    const f = makeFetch(
+      () => new Response(JSON.stringify({ contentBase64: 'AAE=', encoding: 'base64' }), { status: 200 }),
+    )
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    await expect(c.readFileIfChanged('a.png')).rejects.toThrow(/binary file/)
+  })
+
+  test('surfaces non-ok, non-304 as an error', async () => {
+    const f = makeFetch(() => new Response('gone', { status: 410 }))
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    await expect(c.readFileIfChanged('a.ts', 'W/"1-1"')).rejects.toThrow(/Agent readFileIfChanged 410: gone/)
+  })
+
+  test('appends scope=project when the client is scoped to the project', async () => {
+    const calls: Call[] = []
+    const f = makeFetch(
+      () => new Response(JSON.stringify({ path: 'a.ts', content: '', encoding: 'utf-8' }), { status: 200 }),
+      calls,
+    )
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f, workspaceScope: 'project' })
+    await c.readFileIfChanged('a.ts')
+    expect(calls[0]!.url).toBe('http://x.test/agent/workspace/files/a.ts?scope=project')
+  })
+})
+
+describe('AgentClient — subscribeToWorkspace status', () => {
+  test('reports open on connect and down on error', () => {
+    const c = new AgentClient({ baseUrl: 'http://x.test' })
+    const statuses: string[] = []
+    const dispose = c.subscribeToWorkspace(() => {}, { onStatus: (s) => statuses.push(s) })
+    const es = esInstances[0]!
+
+    es.onopen?.({} as Event)
+    es.emitError()
+
+    expect(statuses).toEqual(['open', 'down'])
+    dispose()
+  })
+
+  test('a reconnect resets the backoff and reports open again', async () => {
+    const c = new AgentClient({ baseUrl: 'http://x.test' })
+    const statuses: string[] = []
+    const dispose = c.subscribeToWorkspace(() => {}, { onStatus: (s) => statuses.push(s) })
+    const first = esInstances[0]!
+    first.onopen?.({} as Event)
+    first.emitError()
+
+    await new Promise((r) => setTimeout(r, 1_100))
+    expect(esInstances.length).toBe(2)
+    esInstances[1]!.onopen?.({} as Event)
+    expect(statuses).toEqual(['open', 'down', 'open'])
+    dispose()
+  })
+})

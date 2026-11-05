@@ -7,13 +7,14 @@
  *
  *   1. SSE push (primary). Subscribes to `WorkspaceService.subscribe()` and
  *      applies each `file.changed` / `file.deleted` event immediately.
- *   2. Initial resync. When the subscription first opens (or the IDE tab
- *      re-mounts), every open agent-tracked file is re-read from disk so we
- *      catch anything written while the subscription was down.
- *   3. Polling fallback. Every `POLL_INTERVAL_MS` we re-read the currently-
- *      active agent file and apply any diff. This is the safety net for
- *      environments where SSE is proxied through infra that buffers or drops
- *      the stream (ngrok, some CDNs, aggressive corporate proxies).
+ *   2. Resync on (re)connect. Every time the stream opens — the first time and
+ *      each reconnect — every open agent-tracked file is re-read (conditionally,
+ *      so unchanged files cost a 304) to catch writes made while it was down.
+ *   3. Polling fallback, only while the stream is down. One conditional read of
+ *      the currently-active agent file every 15 s (30 s once the reconnect
+ *      ladder is capped). With a healthy stream this hook makes no requests at
+ *      all, and a hidden tab makes none either — that was ~28.8k proxied
+ *      reads/day before PERF-10. Policy lives in `lib/stream-fallback`.
  *
  * Per-file behaviour is identical across all three paths:
  *
@@ -42,9 +43,10 @@ import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 
 import type { EditorGroup, OpenFile } from "./types";
-import type { WorkspaceService } from "./workspace/types";
+import type { WorkspaceFsEvent, WorkspaceService } from "./workspace/types";
 import { upsertModelFromContent } from "./monaco/workspaceModels";
 import { isBinaryFilePath } from "@shogo-ai/sdk/file-types";
+import { appVisibility, createStreamFallback, POLL_INTERVAL_MS } from "../../../../lib/stream-fallback";
 
 /** True when `path` should NOT be round-tripped through the text readFile
  *  API — reading it as utf-8 produces U+FFFD replacement chars and a
@@ -56,9 +58,6 @@ const isBinaryPath = isBinaryFilePath;
 
 const AGENT_ROOT_ID = "agent";
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
-
-/** How often to poll the active file for changes when SSE is flaky. */
-const POLL_INTERVAL_MS = 2000;
 
 /**
  * If the user typed or clicked inside the IDE within this window, an
@@ -133,10 +132,10 @@ export interface UseLiveAgentEditsArgs {
   /**
    * Whether the IDE pane is visible to the user. The hook stays mounted
    * across tab switches (the SSE subscription must survive so live edits
-   * still flow into the buffers), but the 2s polling fallback only runs
-   * while the user is actually looking at the Workbench. Defaults to
-   * `true` so callers that don't care about visibility (tests, embedded
-   * uses) keep their existing behaviour.
+   * still flow into the buffers), but the fallback poll only runs while the
+   * user is actually looking at the Workbench. Defaults to `true` so callers
+   * that don't care about visibility (tests, embedded uses) keep their
+   * existing behaviour.
    */
   visible?: boolean;
 }
@@ -197,6 +196,10 @@ export function useLiveAgentEdits({
 
   const serviceRef = useRef(service);
   serviceRef.current = service;
+
+  /** Polling is gated on the pane being on screen; the stream is not. */
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
 
   /**
    * Apply an incoming content update for `path` to the open-tab state.
@@ -335,52 +338,129 @@ export function useLiveAgentEdits({
   applyIncomingRef.current = applyIncoming;
 
   // -----------------------------------------------------------------------
-  // SSE push subscription
+  // Live edits: SSE push, a conditional poll only while the stream is down,
+  // and one resync per (re)connect. The retry/poll policy is shared with the
+  // runtime-log stream — see `lib/stream-fallback`.
+  //
+  // The subscription survives the IDE pane being off screen (the hook stays
+  // mounted across tab switches and the buffers must keep up); only the
+  // fallback poll is gated on `visible` and on the document being on screen.
   // -----------------------------------------------------------------------
   useEffect(() => {
     if (!enabled) return;
-    if (!service || typeof service.subscribe !== "function") return;
+    if (!service) return;
 
     let cancelled = false;
+    const visibility = appVisibility();
 
-    // Initial resync: re-read every currently-open agent file in case writes
-    // happened while the subscription was down (e.g. user just switched to
-    // the IDE tab, or the SSE connection was briefly interrupted).
-    const openAgentFiles = new Set<string>();
-    for (const g of groupsRef.current) {
-      for (const f of g.files) {
-        // Skip image / video / audio / pdf / font / generic-binary tabs —
-        // their content is either a blob: URL (preview tabs) or simply not
-        // text, and running readFile() on them would corrupt the buffer
-        // (binary → utf-8 decode produces U+FFFD replacement chars). For
-        // preview tabs that would also clobber the blob: URL.
-        if (
-          f.rootId === AGENT_ROOT_ID &&
-          !f.loading &&
-          !f.error &&
-          f.language !== "image" &&
-          !isBinaryPath(f.path)
-        ) {
-          openAgentFiles.add(f.path);
+    /** Open agent text tabs we may re-read. */
+    const readableOpenFiles = (): string[] => {
+      const paths = new Set<string>();
+      for (const g of groupsRef.current) {
+        for (const f of g.files) {
+          // Skip image / video / audio / pdf / font / generic-binary tabs —
+          // their content is either a blob: URL (preview tabs) or simply not
+          // text, and running readFile() on them would corrupt the buffer
+          // (binary → utf-8 decode produces U+FFFD replacement chars). For
+          // preview tabs that would also clobber the blob: URL.
+          if (
+            f.rootId === AGENT_ROOT_ID &&
+            !f.loading &&
+            !f.error &&
+            f.language !== "image" &&
+            !isBinaryPath(f.path)
+          ) {
+            paths.add(f.path);
+          }
         }
       }
-    }
-    for (const path of openAgentFiles) {
-      void (async () => {
+      return [...paths];
+    };
+
+    /**
+     * Read a file, but only pay for the body when it actually changed: the
+     * runtime answers a matching ETag with 304, which comes back as `null`.
+     * Backends without a conditional read fall back to a plain `readFile`
+     * (the content comparison in `applyIncoming` still no-ops it).
+     */
+    const readIfChanged = async (
+      svc: WorkspaceService,
+      path: string,
+    ): Promise<{ content: string; mtime: number } | null> => {
+      if (typeof svc.readFileIfChanged === "function") {
+        const file = await svc.readFileIfChanged(path);
+        return file ? { content: file.content, mtime: file.mtime } : null;
+      }
+      const file = await svc.readFile(path);
+      return { content: file.content, mtime: file.mtime };
+    };
+
+    /**
+     * Catch up every open agent file. Runs on the first connect and on every
+     * reconnect, so writes made while the stream was down still land.
+     */
+    const resyncOpenFiles = async (): Promise<void> => {
+      const svc = serviceRef.current;
+      if (!svc) return;
+      for (const path of readableOpenFiles()) {
         try {
-          const file = await service.readFile(path);
-          if (cancelled) return;
-          applyIncomingRef.current(path, file.content, file.mtime, false);
+          const changed = await readIfChanged(svc, path);
+          if (cancelled || !changed) continue;
+          applyIncomingRef.current(path, changed.content, changed.mtime, false);
           // Keep Monaco's background model in sync too, so cross-file
           // IntelliSense reflects what's on disk after a reconnect.
-          upsertModelFromContent(AGENT_ROOT_ID, path, file.content);
+          upsertModelFromContent(AGENT_ROOT_ID, path, changed.content);
         } catch {
-          /* transient — poller or next SSE event will retry */
+          /* transient — the poller or the next SSE event will retry */
         }
-      })();
+      }
+    };
+
+    /**
+     * Fallback poll — the active file only, and only while the stream is down.
+     * Polling every open tab would stampede reads on a large project.
+     */
+    const pollActiveFile = async (): Promise<void> => {
+      if (!visibleRef.current) return;
+      const svc = serviceRef.current;
+      if (!svc) return;
+
+      const gs = groupsRef.current;
+      const activeGroup = gs[Math.min(Math.max(0, activeGroupIdxRef.current), gs.length - 1)];
+      const active = activeGroup?.files.find((f) => f.id === activeGroup.activeId);
+      if (
+        !active ||
+        active.rootId !== AGENT_ROOT_ID ||
+        active.loading ||
+        active.error ||
+        active.dirty ||
+        active.language === "image" ||
+        isBinaryPath(active.path)
+      ) {
+        return;
+      }
+
+      try {
+        const changed = await readIfChanged(svc, active.path);
+        if (cancelled || !changed) return;
+        if (changed.content === active.content) return;
+        applyIncomingRef.current(active.path, changed.content, changed.mtime, false);
+      } catch {
+        /* transient — next tick will retry */
+      }
+    };
+
+    if (typeof service.subscribe !== "function") {
+      // No live stream on this backend (local folders): the slow conditional
+      // poll is the only source, and it costs one local read per tick.
+      const timer = setInterval(() => { void pollActiveFile(); }, POLL_INTERVAL_MS);
+      return () => {
+        cancelled = true;
+        clearInterval(timer);
+      };
     }
 
-    const dispose = service.subscribe((evt) => {
+    const handleEvent = (evt: WorkspaceFsEvent): void => {
       if (evt.type === "file.deleted") {
         const id = fileId(AGENT_ROOT_ID, evt.path);
         setGroups((prev) =>
@@ -450,71 +530,31 @@ export function useLiveAgentEdits({
         const touched = applyIncomingRef.current(path, content, mtime, autoOpen);
         if (touched) refreshTree(path);
       })();
+    };
+
+    const fallback = createStreamFallback({
+      isVisible: visibility.isVisible,
+      subscribeVisibility: visibility.subscribe,
+      poll: pollActiveFile,
+      connect: (hooks) =>
+        service.subscribe!(handleEvent, {
+          onStatus: (status) => {
+            if (status === "open") {
+              hooks.onOpen();
+              // First open and every reconnect: pull whatever we missed.
+              void resyncOpenFiles();
+            } else {
+              hooks.onError();
+            }
+          },
+        }),
     });
+
+    fallback.start();
 
     return () => {
       cancelled = true;
-      try { dispose(); } catch { /* best effort */ }
+      fallback.stop();
     };
   }, [service, enabled, setGroups, setConflicts, refreshTree]);
-
-  // -----------------------------------------------------------------------
-  // Polling fallback — checks the currently-active agent file every
-  // POLL_INTERVAL_MS. Catches writes the SSE stream drops (proxies that
-  // buffer SSE, corporate firewalls, temporary network blips).
-  //
-  // Skipped when the IDE pane is not visible. The Workbench stays mounted
-  // (display:none) across tab switches so the SSE subscription survives,
-  // but polling a hidden panel just floods the network tab with
-  // GET /agent/workspace/files/<path> every 2s after the chat agent
-  // edits a file. The SSE handler's initial-resync block already re-reads
-  // every open agent file when the subscription (re)opens, which is enough
-  // to catch up anything missed while polling was paused.
-  // -----------------------------------------------------------------------
-  useEffect(() => {
-    if (!enabled) return;
-    if (!visible) return;
-    if (!service) return;
-
-    let stopped = false;
-
-    const tick = async () => {
-      if (stopped) return;
-      const svc = serviceRef.current;
-      if (!svc) return;
-
-      // Only poll the currently-active file; polling every open tab would
-      // stampede `readFile` on a large project. The active file is what the
-      // user is actually looking at, so it's what matters for "see live".
-      const gs = groupsRef.current;
-      const activeGroup = gs[Math.min(Math.max(0, activeGroupIdxRef.current), gs.length - 1)];
-      const active = activeGroup?.files.find((f) => f.id === activeGroup.activeId);
-      if (
-        !active ||
-        active.rootId !== AGENT_ROOT_ID ||
-        active.loading ||
-        active.error ||
-        active.dirty ||
-        active.language === "image" ||
-        isBinaryPath(active.path)
-      ) {
-        return;
-      }
-
-      try {
-        const file = await svc.readFile(active.path);
-        if (stopped) return;
-        if (file.content === active.content) return;
-        applyIncomingRef.current(active.path, file.content, file.mtime, false);
-      } catch {
-        /* transient — next tick will retry */
-      }
-    };
-
-    const interval = window.setInterval(() => { void tick() }, POLL_INTERVAL_MS);
-    return () => {
-      stopped = true;
-      window.clearInterval(interval);
-    };
-  }, [service, enabled, visible]);
 }

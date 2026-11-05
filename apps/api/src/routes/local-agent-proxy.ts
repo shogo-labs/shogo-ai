@@ -78,7 +78,7 @@ export function localAgentProxyRoutes(config: { runtimeManager: IRuntimeManager 
       const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
       const target = `${resolved.url.replace(/\/$/, '')}${path}${new URL(c.req.url).search}`
       const headers = new Headers()
-      for (const name of ['content-type', 'accept', 'x-chat-session-id']) {
+      for (const name of ['content-type', 'accept', 'x-chat-session-id', 'if-none-match']) {
         const value = c.req.header(name)
         if (value) headers.set(name, value)
       }
@@ -108,7 +108,7 @@ export function localAgentProxyRoutes(config: { runtimeManager: IRuntimeManager 
         ...(streamUpload ? { duplex: 'half' } : {}),
       } as RequestInit)
 
-      return new Response(upstream.body, {
+      return new Response(upstream.status === 304 ? null : upstream.body, {
         status: upstream.status,
         headers: copyResponseHeaders(upstream.headers, c.req.header('origin')),
       })

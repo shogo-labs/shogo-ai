@@ -17,6 +17,13 @@ import {
   type RuntimeLogSource,
 } from './runtime-log-dispatcher'
 
+/**
+ * SSE keepalive cadence for `/agent/runtime-logs/stream`. A quiet project emits
+ * no logs for minutes, and an idle proxy (Cloudflare cuts at 100 s) would close
+ * the connection; a comment line every 25 s keeps it alive and costs 1 line.
+ */
+export const RUNTIME_LOGS_PING_INTERVAL_MS = 25_000
+
 const ALLOWED_SOURCES: ReadonlyArray<RuntimeLogSource> = [
   'console',
   'build',
@@ -87,9 +94,22 @@ export function runtimeLogsRoutes(): Hono {
           send(entry)
         })
 
+        // Keepalive: a comment line every 25 s so an idle connection is never
+        // mistaken for a dead one. If the enqueue throws the consumer is gone,
+        // so tear the subscription down here rather than waiting for abort.
+        const ping = setInterval(() => {
+          if (closed) return
+          try {
+            controller.enqueue(encoder.encode(': ping\n\n'))
+          } catch {
+            onAbort()
+          }
+        }, RUNTIME_LOGS_PING_INTERVAL_MS)
+
         const onAbort = (): void => {
           if (closed) return
           closed = true
+          clearInterval(ping)
           unsubscribe()
           try {
             controller.close()

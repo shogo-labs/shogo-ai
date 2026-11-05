@@ -38,6 +38,7 @@ import type {
   SearchResponse,
   WorkspaceFsEvent,
   WorkspaceService,
+  WorkspaceSubscribeOptions,
   WsFile,
   WsNode,
 } from './types'
@@ -239,8 +240,12 @@ export class DesktopFs implements WorkspaceService {
     return this.sdkFs.rename(from, to)
   }
 
-  subscribe(onEvent: (event: WorkspaceFsEvent) => void): () => void {
-    return this.sdkFs.subscribe(onEvent)
+  subscribe(onEvent: (event: WorkspaceFsEvent) => void, opts?: WorkspaceSubscribeOptions): () => void {
+    return opts ? this.sdkFs.subscribe(onEvent, opts) : this.sdkFs.subscribe(onEvent)
+  }
+
+  readFileIfChanged(path: string): Promise<WsFile | null> {
+    return this.sdkFs.readFileIfChanged(path)
   }
 
   /**
