@@ -130,13 +130,17 @@ export function createStreamFallback(options: StreamFallbackOptions): StreamFall
   const retryDelay = (): number =>
     delays[Math.min(Math.max(0, failures - 1), delays.length - 1)] ?? capDelay
 
+  // Read through a call so a narrowing from an earlier guard can't leak into a
+  // timer callback that runs after `transport` has changed.
+  const streamIsUp = (): boolean => transport === 'sse'
+
   const startPolling = (): void => {
     if (pollTimer !== null || !started) return
-    if (transport === 'sse' || !isVisible()) return
+    if (streamIsUp() || !isVisible()) return
     const delay = retryDelay() >= capDelay ? pollDelayCapped : pollDelay
     pollTimer = setTimeout(() => {
       pollTimer = null
-      if (!started || transport === 'sse' || !isVisible()) return
+      if (!started || streamIsUp() || !isVisible()) return
       void (async () => {
         try {
           await options.poll()
@@ -144,7 +148,7 @@ export function createStreamFallback(options: StreamFallbackOptions): StreamFall
           /* transient — the next tick retries */
         }
         // Re-arm after the poll resolves so a slow request can't stack up.
-        if (started && transport !== 'sse' && isVisible()) startPolling()
+        if (started && !streamIsUp() && isVisible()) startPolling()
       })()
     }, delay)
   }

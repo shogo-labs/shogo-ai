@@ -452,11 +452,19 @@ export function useLiveAgentEdits({
 
     if (typeof service.subscribe !== "function") {
       // No live stream on this backend (local folders): the slow conditional
-      // poll is the only source, and it costs one local read per tick.
-      const timer = setInterval(() => { void pollActiveFile(); }, POLL_INTERVAL_MS);
+      // poll is the only source, and it costs one local read per tick. Park it
+      // on a hidden tab like the streaming path does, and catch up on return.
+      const visibility = appVisibility();
+      const tick = (): void => {
+        if (!visibility.isVisible()) return;
+        void pollActiveFile();
+      };
+      const timer = setInterval(tick, POLL_INTERVAL_MS);
+      const unsubscribeVisibility = visibility.subscribe(tick);
       return () => {
         cancelled = true;
         clearInterval(timer);
+        unsubscribeVisibility();
       };
     }
 

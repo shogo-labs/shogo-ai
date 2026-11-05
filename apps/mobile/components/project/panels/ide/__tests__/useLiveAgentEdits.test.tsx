@@ -307,4 +307,47 @@ describe("useLiveAgentEdits stream health", () => {
     view.unmount()
     jest.useRealTimers()
   })
+
+  test("a local folder with no stream parks on a hidden tab and catches up when visible", async () => {
+    jest.useFakeTimers()
+    const reads: string[] = []
+    const service = {
+      id: "local",
+      label: "local",
+      readFile: async (p: string) => {
+        reads.push(p)
+        return { content: "x", mtime: 1 }
+      },
+      readFileIfChanged: async (p: string) => {
+        reads.push(p)
+        return null
+      },
+    } as unknown as WorkspaceService
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    })
+    const view = mount(service)
+    await flush()
+
+    await act(async () => {
+      jest.advanceTimersByTime(5 * 60_000)
+      await Promise.resolve()
+    })
+    expect(reads).toEqual([])
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    })
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(reads).toEqual(["src/a.ts"])
+    view.unmount()
+    jest.useRealTimers()
+  })
 })
