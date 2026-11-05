@@ -177,6 +177,11 @@ export function liveTurnReplay({ stepFrames, answerLines, subagentSteps = 0 }: L
       // steps is still a 40-frame burst for a 160-step run.
       if (step % 4 === 3 || step === subagentSteps - 1) updateParts([...parts])
     }
+    // The card labels the run from its *newest* part, so the marker has to be
+    // the last thing the sub-agent says: a trailing text part after the tool
+    // loop, exactly as a real run reports back once the sweep is done.
+    parts.push({ type: "text", text: `${SUBAGENT_LIVE_MARKER} finished the sweep`, id: "sa-text-1" })
+    updateParts([...parts])
     return { body: frames.join(""), lastSeq: seq }
   }
 
