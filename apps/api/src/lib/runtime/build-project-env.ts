@@ -397,6 +397,12 @@ export async function buildProjectEnv(
   // AI proxy URLs use — both endpoints live on the API service.
   env.SHOGO_API_URL = apiBase
 
+  // Compaction variant (SHO-327). `A` is the agent-runtime default; forward the
+  // API's own value so a release can select B1/B0 for project runtimes too.
+  if (process.env.COMPACTION_VARIANT) {
+    env.COMPACTION_VARIANT = process.env.COMPACTION_VARIANT
+  }
+
   // Public-facing URLs the guest needs for browser-reachable contexts. The
   // Knative pod template injects both (knative-project-manager.ts); metal
   // microVMs are assigned solely from this builder, so forward them here too:

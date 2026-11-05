@@ -458,6 +458,13 @@ export async function buildWorkspaceEnv(
   // constructing an invalid `undefined/serper/search` URL.
   env.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
 
+  // Compaction variant (SHO-327). `A` is the agent-runtime default; forwarding
+  // the API's own value is how a release selects B1/B0 for every runtime pod
+  // without hardcoding a variant into code (and without a code change per flip).
+  if (process.env.COMPACTION_VARIANT) {
+    env.COMPACTION_VARIANT = process.env.COMPACTION_VARIANT
+  }
+
   // Public preview URLs. The anchor's `{id}.preview.{env}.shogo.ai` subdomain
   // routes to this runtime, which serves every member under `/p/<id>/`. Without
   // these the guest's PreviewManagers and `preview_project` fall back to
