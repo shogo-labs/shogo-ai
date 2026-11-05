@@ -8,6 +8,15 @@ to keep the Stripe Dashboard in sync with the codebase.
 usage in dollars; every AI request is billed at the raw provider cost plus a
 flat 20% markup. No credits, no unit conversions.
 
+**v2.5.0 (SHO-339)**: Business moved **$40 → $16/seat/mo** ($400 → $156/yr) and
+Basic annual moved **$80 → $78**; Basic monthly stays $8. Business seats now
+include **$20/seat/mo** of AI ($4.60 a week, $1.84 per 5-hour window) instead of
+$40 — so the *price* and the *allowance* both change, and a seat that predates
+the switch keeps the old $40 allowance until its next renewal moves it (see
+`LEGACY_PLAN_PRICES` in `stripe-prices.ts`). Pro ($20/$200) is unchanged and is
+no longer offered at checkout; existing Pro subscriptions move to Business $16
+at their next renewal.
+
 ---
 
 ## Products
@@ -15,10 +24,10 @@ flat 20% markup. No credits, no unit conversions.
 ### Shogo Basic — `prod_UD3oRbXK7sLA8p` (staging)
 
 - **Name**: `Shogo Basic`
-- **Description**: `$5 of monthly AI usage. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.`
+- **Description**: `$10 of monthly AI usage. All usage billed at raw provider cost plus a flat 20% markup. Single user — no seats. No credits, no unit conversions.`
 - **Metadata**:
   - `plan`: `basic`
-  - `included_usd`: `5`
+  - `included_usd`: `10`
   - `per_seat`: `false`
   - `markup`: `0.20`
 
@@ -35,10 +44,11 @@ flat 20% markup. No credits, no unit conversions.
 ### Shogo Business — `prod_TnJUouAXCoO5ke` (staging)
 
 - **Name**: `Shogo Business`
-- **Description**: `Includes $40 of AI usage per seat per month. Team analytics, SSO, audit logs, per-member spending limits. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.`
+- **Description**: `$16 per seat per month, including $20 of AI usage per seat per month ($4.60 a week). Team analytics, SSO, audit logs, per-member spending limits. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.`
 - **Metadata**:
   - `plan`: `business`
-  - `included_usd_per_seat`: `40`
+  - `included_usd_per_seat`: `20`
+  - `seat_price_usd`: `16`
   - `per_seat`: `true`
   - `markup`: `0.20`
 
@@ -60,9 +70,12 @@ flat 20% markup. No credits, no unit conversions.
 | Lookup key                  | Interval | Amount | Per-seat | Staging price ID                   |
 |-----------------------------|----------|--------|----------|------------------------------------|
 | `shogo_basic_monthly_v2`    | month    | $8     | no       | `price_1TRH5XAp5PDuxitp1Uqkjbcx`   |
-| `shogo_basic_annual_v2`     | year     | $80    | no       | `price_1TRH5XAp5PDuxitptfGAK6PB`   |
+| `basic_annual_v2`           | year     | $78    | no       | created by `create-phase5-prices.ts` |
 
 Nicknames: `Basic (monthly)` / `Basic (annual)`.
+
+`shogo_basic_annual_v2` ($80) is **legacy** — kept so existing annual holders
+resolve until their next renewal moves them to $78.
 
 ### Pro
 
@@ -77,10 +90,15 @@ Nicknames: `Pro (monthly per seat)` / `Pro (annual per seat)`.
 
 | Lookup key                       | Interval | Amount       | Per-seat | Staging price ID                   |
 |----------------------------------|----------|--------------|----------|------------------------------------|
-| `shogo_business_monthly_v2`      | month    | $40 / seat   | yes      | `price_1TRH5lAp5PDuxitpCRkOKz4h`   |
-| `shogo_business_annual_v2`       | year     | $400 / seat  | yes      | `price_1TRH5lAp5PDuxitpM51P3JNm`   |
+| `business_seat_monthly_v2`       | month    | $16 / seat   | yes      | created by `create-phase5-prices.ts` |
+| `business_seat_annual_v2`        | year     | $156 / seat  | yes      | created by `create-phase5-prices.ts` |
 
 Nicknames: `Business (monthly per seat)` / `Business (annual per seat)`.
+
+**Legacy Business** (`shogo_business_monthly_v2` $40 = `price_1TRH5lAp5PDuxitpCRkOKz4h`,
+`shogo_business_annual_v2` $400 = `price_1TRH5lAp5PDuxitpM51P3JNm`) stays active
+until `migrate-phase5-subscriptions.ts` has moved every subscriber with a
+Subscription Schedule. Archive them after that run verifies.
 
 ### Overage (metered)
 
@@ -116,11 +134,14 @@ Names/descriptions/metadata match the Staging entries above verbatim; see
 | Lookup key                    | Interval | Amount       | Per-seat | Live price ID                      |
 |-------------------------------|----------|--------------|----------|------------------------------------|
 | `shogo_basic_monthly_v2`      | month    | $8           | no       | `price_1TEdi4ADDMNd95Ggym2MWpEQ`   |
-| `shogo_basic_annual_v2`       | year     | $80          | no       | `price_1TEdi6ADDMNd95GgYZaoUHiQ`   |
+| `basic_annual_v2`             | year     | $78          | no       | created by `create-phase5-prices.ts` |
+| `shogo_basic_annual_v2`       | year     | $80 (legacy) | no       | `price_1TEdi6ADDMNd95GgYZaoUHiQ`   |
 | `shogo_pro_monthly_v2`        | month    | $20 / seat   | yes      | `price_1TTIOfADDMNd95GgDyGQlaqH`   |
 | `shogo_pro_annual_v2`         | year     | $200 / seat  | yes      | `price_1TTIOgADDMNd95GgwQGlpBLa`   |
-| `shogo_business_monthly_v2`   | month    | $40 / seat   | yes      | `price_1TTIOgADDMNd95Gg5DgR006y`   |
-| `shogo_business_annual_v2`    | year     | $400 / seat  | yes      | `price_1TTIOhADDMNd95Gg6JaJzKzZ`   |
+| `business_seat_monthly_v2`    | month    | $16 / seat   | yes      | created by `create-phase5-prices.ts` |
+| `business_seat_annual_v2`     | year     | $156 / seat  | yes      | created by `create-phase5-prices.ts` |
+| `shogo_business_monthly_v2`   | month    | $40 / seat (legacy) | yes | `price_1TTIOgADDMNd95Gg5DgR006y` |
+| `shogo_business_annual_v2`    | year     | $400 / seat (legacy) | yes | `price_1TTIOhADDMNd95Gg6JaJzKzZ` |
 | `shogo_usage_overage_v2`      | month    | $0.01 / unit | metered  | `price_1TTIP5ADDMNd95GgJ1GcpCVA`   |
 
 ### Overage meter (live)

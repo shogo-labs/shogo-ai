@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import * as realStripePrices from '../config/stripe-prices'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 process.env.SHOGO_LOCAL_MODE = 'true'
@@ -51,12 +52,19 @@ mock.module('../config/usage-plans', () => ({
     return lc.startsWith('free') || lc === '' ? 1 : 0
   },
   getMonthlyIncludedForPlan: () => 0,
+  getMonthlyIncludedForPlanAndPrice: () => 0,
+  getPlanAllowance: () => ({
+    windowLimits: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+    monthlyIncludedUsdPerSeat: 0,
+    legacy: false,
+  }),
   normalizePlanId: (p: string | null | undefined) => (p ?? null),
   comparePlanRank: () => 0,
   getAlwaysOnAllowance: () => 0,
 }))
 
 mock.module('../config/stripe-prices', () => ({
+  ...realStripePrices,
   getOveragePriceConfig: () => ({ priceId: 'price_overage_metered' }),
 }))
 

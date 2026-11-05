@@ -15,6 +15,8 @@ import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'fs'
 import { auth } from './auth'
 import type { PaidInstanceSize } from './config/stripe-prices'
+import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
+import { resolveCheckoutPriceId } from './services/stripe-price-lookup.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
 import * as workspaceService from './services/workspace.service'
@@ -150,7 +152,7 @@ import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
-import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, promoCreditAvailableUsd } from './config/usage-plans'
+import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
 import { projectAttachmentRoutes } from './routes/project-attachments'
@@ -7432,10 +7434,14 @@ app.post('/api/billing/checkout', async (c) => {
     // Basic is single-user, always 1 seat. Pro/Business default to 1, can be more.
     const seats = planId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
 
-    const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
+    // Resolved from the configured id, or by `lookup_key` when the v2.5.0
+    // price's id has not been deployed as an env var yet (SHO-339). Never
+    // falls back to the legacy price — a checkout either gets the new price
+    // or fails loudly.
+    const priceId = await resolveCheckoutPriceId(stripe, planId, billingInterval as 'monthly' | 'annual')
 
     if (!priceId) {
-      return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
+      return c.json({ error: { code: 'price_not_provisioned', message: `The ${planId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
     }
 
     const metadata: Record<string, string> = {
@@ -7679,9 +7685,9 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     }
     const seats = planId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
 
-    const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
+    const priceId = await resolveCheckoutPriceId(stripe, planId, billingInterval as 'monthly' | 'annual')
     if (!priceId) {
-      return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
+      return c.json({ error: { code: 'price_not_provisioned', message: `The ${planId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
     }
 
     // Create workspace + owner membership immediately (bypasses hook limit)
@@ -8475,14 +8481,22 @@ app.post('/api/webhooks/stripe', async (c) => {
         })
 
         // Plan-changes & seat-quantity changes show up here. We re-sync the
-        // local Subscription row + UsageWallet when this is a Shogo plan
-        // subscription (identified by metadata.workspaceId + planId).
-        const wsId = subscription.metadata?.workspaceId
-        const metaPlanId = subscription.metadata?.planId
-        if (wsId && metaPlanId && metaPlanId !== 'instance' && metaPlanId !== 'capacity') {
+        // local Subscription row + UsageWallet for anything that resolves to a
+        // Shogo plan. Resolution is price-first (see
+        // `resolveSubscriptionContext`) so a scheduled price flip reaches a
+        // subscription whose metadata is stale or missing.
+        const resolved = await resolveSubscriptionContext(subscription, async (stripeSubscriptionId) => {
+          const row = await prisma.subscription.findUnique({
+            where: { stripeSubscriptionId },
+            select: { workspaceId: true, planId: true },
+          })
+          return row
+        })
+        const wsId = resolved?.workspaceId
+        const metaPlanId = resolved?.planId
+        if (wsId && metaPlanId) {
           try {
-            const item = subscription.items?.data?.[0]
-            const quantity = Math.max(1, Math.floor(item?.quantity ?? 1))
+            const quantity = resolved.seats
             const billingInterval = (subscription.metadata?.billingInterval as 'monthly' | 'annual') || 'monthly'
 
             // Free trial: enforce one trial per card/user before provisioning.
@@ -8518,6 +8532,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               workspaceId: wsId,
               planId: metaPlanId,
               seats: quantity,
+              stripePriceId: resolved.priceId,
               status: subscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval,
               currentPeriodStart: new Date(currentPeriodStart),
@@ -8535,7 +8550,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               // overage start with the first paid invoice (refill below).
               await billingService.allocateFreeWallet(wsId)
             } else if (event.type === 'customer.subscription.created') {
-              await billingService.allocateMonthlyIncluded(wsId, metaPlanId, quantity)
+              await billingService.allocateMonthlyIncluded(wsId, metaPlanId, quantity, resolved.priceId)
             } else {
               // Stack any active super-admin grants on top of the plan's
               // per-seat included USD, mirroring `allocateMonthlyIncluded`.
@@ -8545,7 +8560,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               const grant = await billingService.getActiveGrantsForWorkspace(wsId)
               const totalSeats = Math.max(1, Math.floor(quantity || 1)) + grant.freeSeats
               const includedUsd =
-                (await import('./config/usage-plans')).getMonthlyIncludedForPlan(metaPlanId, totalSeats) +
+                getMonthlyIncludedForPlanAndPrice(metaPlanId, totalSeats, resolved.priceId) +
                 grant.monthlyIncludedUsd
               await prisma.usageWallet.updateMany({
                 where: { workspaceId: wsId },
@@ -8721,7 +8736,14 @@ app.post('/api/webhooks/stripe', async (c) => {
               current_period_start?: number
               current_period_end?: number
             }
-            const checkoutSeats = Math.max(1, Math.floor(Number(seatsRaw) || stripeSubscription.items?.data?.[0]?.quantity || 1))
+            // The licensed (plan) item's price — never the metered overage
+            // item. Stored on the Subscription row so `getPlanAllowance`
+            // knows whether this seat was sold before or after v2.5.0.
+            const planItem = selectPlanItem(stripeSubscription as any)
+            const checkoutPriceId = planItem?.price && typeof planItem.price !== 'string'
+              ? (planItem.price.id ?? null)
+              : (typeof planItem?.price === 'string' ? planItem.price : null)
+            const checkoutSeats = Math.max(1, Math.floor(Number(seatsRaw) || planItem?.quantity || 1))
 
             const now = Date.now()
             const currentPeriodStart = stripeSubscription.current_period_start
@@ -8759,6 +8781,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               workspaceId,
               planId,
               seats: checkoutSeats,
+              stripePriceId: checkoutPriceId,
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
               currentPeriodStart: new Date(currentPeriodStart),
@@ -8773,7 +8796,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               await billingService.allocateFreeWallet(workspaceId)
               console.log('[Webhook] Trial started for workspace:', workspaceId, 'plan:', planId, 'seats:', checkoutSeats)
             } else {
-              await billingService.allocateMonthlyIncluded(workspaceId, planId, checkoutSeats)
+              await billingService.allocateMonthlyIncluded(workspaceId, planId, checkoutSeats, checkoutPriceId)
               console.log('[Webhook] Subscription created + monthly included USD allocated for workspace:', workspaceId, 'plan:', planId, 'seats:', checkoutSeats)
             }
 
@@ -8787,7 +8810,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               if (ownerEmail) {
                 const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
                 const baseUrl = getFrontendUrl()
-                const includedUsd = (await import('./config/usage-plans')).getMonthlyIncludedForPlan(planId, checkoutSeats)
+                const includedUsd = getMonthlyIncludedForPlanAndPrice(planId, checkoutSeats, checkoutPriceId)
                 sendPlanUpgradedEmail({
                   to: ownerEmail,
                   workspaceName: workspace!.name,
@@ -8841,8 +8864,17 @@ app.post('/api/webhooks/stripe', async (c) => {
         if (customerId && subscriptionId) {
           try {
             const sub = await stripe!.subscriptions.retrieve(subscriptionId)
-            const wsId = sub.metadata?.workspaceId
-            const planId = sub.metadata?.planId
+            // Price-first resolution: an invoice on a subscription with no
+            // `metadata.workspaceId` must still refill the right workspace.
+            const resolved = await resolveSubscriptionContext(sub as any, async (stripeSubscriptionId) => {
+              const row = await prisma.subscription.findUnique({
+                where: { stripeSubscriptionId },
+                select: { workspaceId: true, planId: true },
+              })
+              return row
+            })
+            const wsId = resolved?.workspaceId
+            const planId = resolved?.planId
             if (wsId && planId) {
               // Refill monthly included USD on every successful subscription
               // payment cycle. `subscription_create` already allocates via the
@@ -8854,8 +8886,8 @@ app.post('/api/webhooks/stripe', async (c) => {
               const trialing = sub.status === 'trialing'
               if (!trialing && (reason === 'subscription_cycle' || reason === 'subscription_update')) {
                 try {
-                  const cycleSeats = Math.max(1, Math.floor(sub.items?.data?.[0]?.quantity ?? 1))
-                  await billingService.allocateMonthlyIncluded(wsId, planId, cycleSeats)
+                  const cycleSeats = Math.max(1, Math.floor(resolved.seats ?? 1))
+                  await billingService.allocateMonthlyIncluded(wsId, planId, cycleSeats, resolved.priceId)
                   console.log('[Webhook] Monthly USD refilled for workspace:', wsId, 'plan:', planId, 'seats:', cycleSeats, 'reason:', reason)
                   if (reason === 'subscription_cycle') {
                     // First paid cycle after a trial (no-op for non-trial workspaces).
@@ -8959,11 +8991,18 @@ app.post('/api/webhooks/stripe', async (c) => {
         if (customerId && subscriptionId) {
           try {
             const sub = await stripe!.subscriptions.retrieve(subscriptionId)
-            const wsId = sub.metadata?.workspaceId
+            const resolved = await resolveSubscriptionContext(sub as any, async (stripeSubscriptionId) => {
+              const row = await prisma.subscription.findUnique({
+                where: { stripeSubscriptionId },
+                select: { workspaceId: true, planId: true },
+              })
+              return row
+            })
+            const wsId = resolved?.workspaceId
             if (wsId) {
               // In-app notification + email to all billing admins, deduped
               // on the invoice id.
-              const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
+              const planLabel = (resolved.planId || 'Pro').charAt(0).toUpperCase() + (resolved.planId || 'pro').slice(1)
               notify(wsId, planLabel)
             }
           } catch (err: any) {

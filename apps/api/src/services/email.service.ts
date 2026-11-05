@@ -8,6 +8,7 @@
  */
 
 import { createEmail, createEmailOptional, type IEmailService } from '@shogo-ai/sdk/email/server'
+import { renderPriceChangeEmail, type PriceChangeEmailParams } from './email-templates/price-change'
 
 const APP_NAME = process.env.APP_NAME || 'Shogo'
 
@@ -287,6 +288,59 @@ export async function sendPaymentReceiptEmail(params: {
     ...(params.invoiceUrl ? { invoiceUrl: params.invoiceUrl } : {}),
   })
 }
+
+/**
+ * Send the v2.5.0 price-change notice (SHO-339).
+ *
+ * One email per workspace owner / billing admin, sent by
+ * `scripts/migrate-phase5-subscriptions.ts --send-notice`. Rendered by
+ * `renderPriceChangeEmail` so the copy is snapshot-tested and can be previewed
+ * to `.tmp/` on a dry run without sending anything.
+ */
+export async function sendPriceChangeEmail(
+  params: PriceChangeEmailParams & { to: string },
+): Promise<{ success: boolean; error?: string }> {
+  const { subject, html, text } = renderPriceChangeEmail(params)
+  return sendRenderedEmail({ to: params.to, subject, html, text })
+}
+
+/**
+ * Send an already-rendered email body. Used by the migration script, which
+ * renders its notices once (for the `.tmp/` preview) and then sends exactly
+ * those.
+ */
+export async function sendRenderedEmail(params: {
+  to: string
+  subject: string
+  html: string
+  text?: string
+}): Promise<{ success: boolean; error?: string }> {
+  const email = getEmailService()
+  if (!email) {
+    console.warn('[Email] price-change email skipped - email not configured')
+    return { success: false, error: 'Email service not configured' }
+  }
+  try {
+    const result = await email.send({
+      to: params.to,
+      subject: params.subject,
+      html: params.html,
+      ...(params.text ? { text: params.text } : {}),
+    })
+    if (result.success) {
+      console.log(`[Email] price-change sent to ${params.to}`)
+    } else {
+      console.error(`[Email] Failed to send price-change to ${params.to}:`, result.error)
+    }
+    return result
+  } catch (error: any) {
+    console.error(`[Email] Exception sending price-change to ${params.to}:`, error)
+    return { success: false, error: error.message }
+  }
+}
+
+/** Backwards-compatible alias used by the migration script. */
+export const sendEmailNotice = sendRenderedEmail
 
 /**
  * Send a payment failed email

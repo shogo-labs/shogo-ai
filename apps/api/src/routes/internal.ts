@@ -730,6 +730,7 @@ app.post('/billing/provision', async (c) => {
           body.workspaceId,
           body.planId,
           typeof body.seats === 'number' ? body.seats : 1,
+          typeof body.stripePriceId === 'string' ? body.stripePriceId : undefined,
         )
         break
       case 'applyGrantMonthlyAllocation':

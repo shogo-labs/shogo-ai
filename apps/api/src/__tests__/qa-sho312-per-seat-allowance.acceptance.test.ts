@@ -33,11 +33,20 @@ const { prisma } = await import('../lib/prisma')
 delete process.env.SHOGO_LOCAL_MODE
 
 const billing = await import('../services/billing.service')
+const { LEGACY_BUSINESS_ROLLING_WINDOW_LIMITS } = await import('../config/usage-plans')
 const db = prisma as any
 
 /** Business is $4.60/week per seat and $1.84 per 5 hours (usage-plans.ts). */
 const BUSINESS_WEEKLY_USD = 4.6
 const BUSINESS_FIVE_HOUR_USD = 1.84
+
+/**
+ * The v2.5.0 Business seat price. The allowance follows the price, so a seat
+ * only sees today's $4.60/$1.84 once the subscription carries this id — a
+ * Business row with no price at all is a pre-v2.5.0 $40 seat (see
+ * `getPlanAllowance`), which is what the legacy test below pins down.
+ */
+const NEW_BUSINESS_MONTHLY = 'price_business_seat_monthly_v2'
 
 interface Seeded {
   workspaceId: string
@@ -51,8 +60,14 @@ let seq = 0
 /**
  * A 3-seat Business workspace with overage *off*, so an exhausted window is a
  * hard block and the assertions are about the allowance, not about billing.
+ *
+ * `stripePriceId` is the price the workspace pays: the v2.5.0 $16 seat id a new
+ * checkout writes, or `null` for a row that predates the `stripePriceId`
+ * column (i.e. a $40 seat that has not reached its next renewal yet).
  */
-async function seedPaidWorkspace(): Promise<Seeded> {
+async function seedPaidWorkspace(
+  stripePriceId: string | null = NEW_BUSINESS_MONTHLY,
+): Promise<Seeded> {
   const suffix = `${crypto.randomUUID().slice(0, 8)}-${++seq}`
   const ws = await db.workspace.create({
     data: { name: `Seats ${suffix}`, slug: `seats-${suffix}`, kind: 'team' },
@@ -79,6 +94,7 @@ async function seedPaidWorkspace(): Promise<Seeded> {
       seats: 3,
       status: 'active',
       billingInterval: 'monthly',
+      stripePriceId,
       currentPeriodStart: new Date(now.getTime() - 24 * 60 * 60 * 1000),
       currentPeriodEnd: new Date(now.getTime() + 29 * 24 * 60 * 60 * 1000),
     },
@@ -194,5 +210,21 @@ describe('SHO-312 per-seat allowance (real database)', () => {
     const wallet = await db.usageWallet.findUnique({ where: { workspaceId } })
     expect(wallet.weeklyUsedUsd).toBeCloseTo(0.25)
     for (const id of memberIds) expect((await memberRow(id)).weeklyUsedUsd).toBe(0)
+  })
+
+  test('a Business sub with no price keeps the $40 seat allowance until it renews', async () => {
+    const { workspaceId, userIds } = await seedPaidWorkspace(null)
+    const windows = await billing.getUsageWindows(workspaceId, userIds[0])
+    expect(windows.fiveHour.limitUsd).toBeCloseTo(LEGACY_BUSINESS_ROLLING_WINDOW_LIMITS.fiveHourUsd)
+    expect(windows.weekly.limitUsd).toBeCloseTo(LEGACY_BUSINESS_ROLLING_WINDOW_LIMITS.weeklyUsd)
+
+    // Same row, after the renewal writes the v2.5.0 price id.
+    await db.subscription.updateMany({
+      where: { workspaceId },
+      data: { stripePriceId: NEW_BUSINESS_MONTHLY },
+    })
+    const after = await billing.getUsageWindows(workspaceId, userIds[0])
+    expect(after.fiveHour.limitUsd).toBeCloseTo(BUSINESS_FIVE_HOUR_USD)
+    expect(after.weekly.limitUsd).toBeCloseTo(BUSINESS_WEEKLY_USD)
   })
 })

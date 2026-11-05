@@ -46,15 +46,17 @@ processes a message or runs an action.
 
 ### Basic — $8/month
 
-- Standard 5-hour & weekly usage windows
+- Standard 5-hour & weekly usage windows — **$2.30 of AI a week**
 - Fast (economy) AI model
 - Unlimited domains
 - **Single user — no seats**
-- Annual billing: $80/year
+- Annual billing: $78/year
 
-### Pro — $20 / seat / month
+### Pro — $20 / seat / month (grandfathered)
 
-Per-seat plan for individuals and small teams.
+Pro is no longer sold. Existing Pro subscriptions keep their plan and their
+$20/seat allowance until their next renewal, when they move to Business at
+**$16 per seat** — a lower price with the same included AI.
 
 - ~2.5x the usage windows of Basic, **per seat**
 - All AI models (basic + advanced)
@@ -64,11 +66,12 @@ Per-seat plan for individuals and small teams.
 
 Add or remove seats at any time; we prorate the change automatically.
 
-### Business — $40 / seat / month
+### Business — $16 / seat / month
 
 Per-seat plan for teams running Shogo in production. Includes everything
 in Pro, plus team-grade controls.
 
+- **$4.60 of AI a week per seat** ($1.84 per 5-hour window, $20/month)
 - ~5x the usage windows of Basic, **per seat**
 - Team analytics & usage reporting
 - SSO authentication
@@ -77,7 +80,7 @@ in Pro, plus team-grade controls.
 - Per-member spending limits
 - Unlimited workspaces for better organization
 - Priority support
-- Annual billing: $400/seat/year
+- Annual billing: $156/seat/year
 
 ### Enterprise
 
@@ -87,7 +90,13 @@ onboarding services, custom connections, group-based access control,
 SCIM provisioning, and custom design systems.
 
 :::info Annual billing
-Annual billing on every paid plan saves about 17% versus monthly.
+Annual billing on every paid plan saves about 19% versus monthly.
+:::
+
+:::info Already a customer?
+Your price only changes at your next renewal, and we email you before it does.
+Business seats that were sold at $40 keep their larger $40/seat allowance
+until that switch — nothing included is withdrawn mid-period.
 :::
 
 ## Compute (instance size)

@@ -4,10 +4,14 @@
  * Billing Configuration — single source of truth for the per-seat plan
  * ladder and usage constants on mobile.
  *
- * Pricing model (Cursor.com style):
- *   - Basic    $8/mo   single user, $5 of usage included
- *   - Pro      $20/seat/mo, $20 of usage included per seat
- *   - Business $40/seat/mo, $40 of usage included per seat
+ * Pricing model (Cursor.com style), v2.5.0:
+ *   - Basic    $8/mo ($78/yr) single user, $10 of usage included
+ *   - Pro      $20/seat/mo legacy — $20 of usage included per seat
+ *   - Business $16/seat/mo ($156/yr), $20 of usage included per seat
+ *
+ * Pro is no longer offered at checkout: existing Pro subscriptions move to
+ * Business $16 at their next renewal. The `pro` entry stays so an older client
+ * build still resolves a price.
  *
  * Every request is billed at provider raw cost + 20% markup; see
  * `usage-cost.ts` and `usage-plans.ts` on the backend.
@@ -20,9 +24,9 @@ export type PlanId = 'free' | 'basic' | 'pro' | 'business' | 'enterprise'
 /** Included USD per seat per month. Free has no monthly pool; daily-only. */
 export const SEAT_INCLUDED_USD: Record<PlanId, number> = {
   free: 0,
-  basic: 5,
+  basic: 10,
   pro: 20,
-  business: 40,
+  business: 20,
   enterprise: 2000,
 }
 
@@ -271,11 +275,14 @@ export interface PlanPricing {
 export const PLAN_PRICING: Record<'basic' | 'pro' | 'business', PlanPricing> = {
   basic: {
     monthly: 8,
-    annual: 80,
+    annual: 78,
     perSeat: false,
     monthlyLookupKey: 'shogo_basic_monthly_v2',
-    annualLookupKey: 'shogo_basic_annual_v2',
+    annualLookupKey: 'basic_annual_v2',
   },
+  // Pro is no longer offered at checkout (v2.5.0): every existing Pro
+  // subscription moves to Business $16 at its next renewal. The entry stays so
+  // an older client build or an existing holder still resolves a price.
   pro: {
     monthly: 20,
     annual: 200,
@@ -284,11 +291,11 @@ export const PLAN_PRICING: Record<'basic' | 'pro' | 'business', PlanPricing> = {
     annualLookupKey: 'shogo_pro_annual_v2',
   },
   business: {
-    monthly: 40,
-    annual: 400,
+    monthly: 16,
+    annual: 156,
     perSeat: true,
-    monthlyLookupKey: 'shogo_business_monthly_v2',
-    annualLookupKey: 'shogo_business_annual_v2',
+    monthlyLookupKey: 'business_seat_monthly_v2',
+    annualLookupKey: 'business_seat_annual_v2',
   },
 }
 

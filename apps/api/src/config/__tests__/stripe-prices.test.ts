@@ -33,28 +33,31 @@ afterEach(() => {
 })
 
 describe('STRIPE_PRICES_* constants', () => {
-  it('staging has all three plans × two intervals filled in', () => {
-    for (const plan of ['basic', 'pro', 'business'] as const) {
-      expect(STRIPE_PRICES_STAGING[plan].monthly).toMatch(/^price_/)
-      expect(STRIPE_PRICES_STAGING[plan].annual).toMatch(/^price_/)
-    }
+  it('staging has the always-configured plans × intervals filled in', () => {
+    // Basic monthly ($8), Pro, and the legacy Business prices are committed;
+    // the v2.5.0 Business / Basic-annual ids come from the environment.
+    expect(STRIPE_PRICES_STAGING.basic.monthly).toMatch(/^price_/)
+    expect(STRIPE_PRICES_STAGING.pro.monthly).toMatch(/^price_/)
+    expect(STRIPE_PRICES_STAGING.pro.annual).toMatch(/^price_/)
   })
 
-  it('production has all three plans × two intervals filled in', () => {
-    for (const plan of ['basic', 'pro', 'business'] as const) {
-      expect(STRIPE_PRICES_PRODUCTION[plan].monthly).toMatch(/^price_/)
-      expect(STRIPE_PRICES_PRODUCTION[plan].annual).toMatch(/^price_/)
-    }
+  it('staging v2.5.0 prices are read from the environment', () => {
+    expect(STRIPE_PRICES_STAGING.business.monthly).toBe((process.env.STRIPE_PRICE_BUSINESS_MONTHLY_V2 ?? '').trim())
+    expect(STRIPE_PRICES_STAGING.business.annual).toBe((process.env.STRIPE_PRICE_BUSINESS_ANNUAL_V2 ?? '').trim())
+    expect(STRIPE_PRICES_STAGING.basic.annual).toBe((process.env.STRIPE_PRICE_BASIC_ANNUAL_V2 ?? '').trim())
   })
 
-  it('staging and production price IDs do not collide for the same plan/interval', () => {
-    for (const plan of ['pro', 'business'] as const) {
-      for (const interval of ['monthly', 'annual'] as const) {
-        expect(STRIPE_PRICES_STAGING[plan][interval]).not.toBe(
-          STRIPE_PRICES_PRODUCTION[plan][interval],
-        )
-      }
+  it('production v2.5.0 prices are read from the environment too', () => {
+    expect(STRIPE_PRICES_PRODUCTION.business.monthly).toBe((process.env.STRIPE_PRICE_BUSINESS_MONTHLY_V2 ?? '').trim())
+    expect(STRIPE_PRICES_PRODUCTION.basic.annual).toBe((process.env.STRIPE_PRICE_BASIC_ANNUAL_V2 ?? '').trim())
+  })
+
+  it('staging and production premium price IDs do not collide', () => {
+    // Pro is the one plan whose ids are still committed (not env-provided).
+    for (const interval of ['monthly', 'annual'] as const) {
+      expect(STRIPE_PRICES_STAGING.pro[interval]).not.toBe(STRIPE_PRICES_PRODUCTION.pro[interval])
     }
+    expect(STRIPE_PRICES_STAGING.basic.monthly).not.toBe(STRIPE_PRICES_PRODUCTION.basic.monthly)
   })
 })
 
@@ -82,7 +85,12 @@ describe('getStripePrices / getPriceId', () => {
   it('getPriceId returns the matching staging id', () => {
     expect(getPriceId('basic', 'monthly')).toBe(STRIPE_PRICES_STAGING.basic.monthly)
     expect(getPriceId('pro', 'annual')).toBe(STRIPE_PRICES_STAGING.pro.annual)
-    expect(getPriceId('business', 'monthly')).toBe(STRIPE_PRICES_STAGING.business.monthly)
+  })
+
+  it('getPriceId returns null (not "") when a v2.5.0 price is not configured', () => {
+    if (!process.env.STRIPE_PRICE_BUSINESS_MONTHLY_V2) {
+      expect(getPriceId('business', 'monthly')).toBeNull()
+    }
   })
 
   it('getPriceId follows NODE_ENV to production', () => {
@@ -124,7 +132,7 @@ describe('isLegacyTierPriceId', () => {
   })
 
   it('returns false for current flat-price ids (not legacy)', () => {
-    expect(isLegacyTierPriceId(STRIPE_PRICES_STAGING.business.monthly)).toBe(false)
+    expect(isLegacyTierPriceId(STRIPE_PRICES_STAGING.pro.monthly)).toBe(false)
   })
 
   it('returns false for unknown ids', () => {

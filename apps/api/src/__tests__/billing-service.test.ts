@@ -8,6 +8,7 @@
  */
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import * as realStripePrices from '../config/stripe-prices'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 delete process.env.SHOGO_LOCAL_MODE
@@ -250,6 +251,48 @@ mock.module('../config/usage-plans', () => ({
     if (plan === 'enterprise') return 2000 * seats
     return 0
   },
+  // Mirrors config/usage-plans getPlanAllowance: a Business plan with no price
+  // id counts as legacy ($9.90/wk, $40/seat) — see SHO-339.
+  getPlanAllowance: (planId: string | null | undefined, stripePriceId?: string | null) => {
+    const lc = String(planId ?? 'free').toLowerCase().trim()
+    const key = lc.startsWith('enterprise') ? 'enterprise'
+      : lc.startsWith('business') ? 'business'
+      : lc.startsWith('pro') ? 'pro'
+      : lc.startsWith('basic') ? 'basic'
+      : 'free'
+    if (key === 'business' && !stripePriceId) {
+      return { windowLimits: { fiveHourUsd: 3.96, weeklyUsd: 9.9 }, monthlyIncludedUsdPerSeat: 40, legacy: true }
+    }
+    const limits: Record<string, { fiveHourUsd: number; weeklyUsd: number } | null> = {
+      free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+      basic: { fiveHourUsd: 2, weeklyUsd: 10 },
+      pro: { fiveHourUsd: 8, weeklyUsd: 40 },
+      business: { fiveHourUsd: 20, weeklyUsd: 120 },
+      enterprise: null,
+    }
+    const perSeat: Record<string, number> = { free: 0, basic: 5, pro: 20, business: 40, enterprise: 2000 }
+    return {
+      windowLimits: limits[key] ? { ...(limits[key] as any) } : null,
+      monthlyIncludedUsdPerSeat: perSeat[key] ?? 0,
+      legacy: false,
+    }
+  },
+  getMonthlyIncludedForPlanAndPrice: (plan: string, seats = 1, stripePriceId?: string | null) => {
+    if (/^(basic|pro|business)_\d+$/.test(plan)) {
+      if (plan.startsWith('basic')) return 5
+      if (plan.startsWith('pro')) return 20 * seats
+      return 40 * seats
+    }
+    const lc = String(plan ?? 'free').toLowerCase().trim()
+    if (lc.startsWith('basic')) return 5
+    if (lc.startsWith('pro')) return 20 * Math.max(1, Math.floor(seats || 1))
+    if (lc.startsWith('enterprise')) return 2000 * Math.max(1, Math.floor(seats || 1))
+    if (lc.startsWith('business')) {
+      const perSeat = !stripePriceId ? 40 : 40
+      return perSeat * Math.max(1, Math.floor(seats || 1))
+    }
+    return 0
+  },
   normalizePlanId: (planId: string | null | undefined) => {
     if (!planId) return null
     const lc = String(planId).toLowerCase().trim()
@@ -287,6 +330,7 @@ mock.module('../config/usage-plans', () => ({
 }))
 
 mock.module('../config/stripe-prices', () => ({
+  ...realStripePrices,
   getOveragePriceConfig: () => ({ priceId: 'price_overage_metered' }),
 }))
 

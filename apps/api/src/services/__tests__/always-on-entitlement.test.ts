@@ -7,6 +7,7 @@
 // has no `project` model).
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test'
+import * as realStripePrices from '../../config/stripe-prices'
 
 // Ensure the real (non-local) code path runs — local mode short-circuits to
 // Infinity / always-allowed.
@@ -75,6 +76,7 @@ mock.module('../../lib/prisma', () => ({
   BillingInterval: { monthly: 'monthly', annual: 'annual' },
 }))
 mock.module('../../config/stripe-prices', () => ({
+  ...realStripePrices,
   getOveragePriceConfig: () => ({ priceId: 'price_overage_x' }),
 }))
 mock.module('../billing-alerts.service', () => ({
