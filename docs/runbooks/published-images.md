@@ -34,14 +34,24 @@ the generated Prisma client and `dist/`, so boot is `bun server.tsx`.
 
 ## Cluster prerequisites
 
-These are per region and must exist **before** enabling the feature:
+These are per region and must exist **before** enabling the feature.
+`k8s/published-builds/builds.yaml` declares items 1–2 plus a `LimitRange` /
+`ResourceQuota` (so a runaway build cannot evict a published pod); items 3–4 are
+manual.
 
 1. Namespace `shogo-builds` (or `PUBLISH_BUILD_K8S_NAMESPACE`).
 2. ServiceAccount `shogo-builds` in that namespace — the Job does not talk to
    the API, so it needs no RBAC beyond running a Pod.
 3. Push credentials as a `kubernetes.io/dockerconfigjson` Secret named
    `ocir-push` (or `PUBLISH_BUILD_REGISTRY_SECRET`) in that namespace, with
-   `key: .dockerconfigjson`. The Job mounts it at `/home/user/.docker/config.json`.
+   `key: .dockerconfigjson`. The Job mounts it at `/home/user/.docker/config.json`:
+
+   ```sh
+   kubectl -n shogo-builds create secret docker-registry ocir-push \
+     --docker-server=us-ashburn-1.ocir.io \
+     --docker-username='<tenancy>/<user>' \
+     --docker-password='<auth-token>'
+   ```
 4. Network egress from the namespace to OCIR and to the S3 endpoint that the
    presigned artifact URL points at (the API signs with the **internal** client,
    so a Job in-cluster never needs the public endpoint).
