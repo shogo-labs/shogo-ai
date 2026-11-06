@@ -298,4 +298,66 @@ describe('a media line reaches the read paths', () => {
       .filter((row: any) => row.model === 'unknown')
     expect(broken).toEqual([])
   })
+
+  /**
+   * QA's round-3 nit: the model-grouped chart called a model-less chat row
+   * "Chat" while the dashboard beside it said `unknown`. Both now go through
+   * `usageLabelFor`, so the two surfaces cannot disagree again.
+   */
+  test('the model-grouped chart agrees with the table on the `unknown` sentinel', async () => {
+    const suffix = crypto.randomUUID().slice(0, 8)
+    const workspace = await db.workspace.create({
+      data: { name: 'Sentinel Usage', slug: `media-sentinel-${suffix}`, kind: 'team' },
+    })
+    const scope2 = { workspaceId: workspace.id }
+    await db.usageEvent.createMany({
+      data: [
+        {
+          workspaceId: workspace.id,
+          projectId: null,
+          memberId,
+          actionType: 'ai_proxy_completion',
+          source: 'daily',
+          billedUsd: 0.05,
+          rawUsd: 0.04,
+          balanceBefore: 0,
+          balanceAfter: 0,
+          createdAt: new Date(),
+          // A completion whose model we failed to record.
+          actionMetadata: { model: 'unknown', totalTokens: 1_000 },
+        },
+        {
+          workspaceId: workspace.id,
+          projectId: null,
+          memberId,
+          actionType: 'published_hosting',
+          source: 'daily',
+          billedUsd: 0.02,
+          rawUsd: 0.02,
+          balanceBefore: 0,
+          balanceAfter: 0,
+          createdAt: new Date(),
+          actionMetadata: { model: 'unknown', podSeconds: 600 },
+        },
+      ],
+    })
+
+    // An explicit window: this test is about the label, and a period-relative
+    // boundary makes the row timestamps race the clock.
+    const chart = await analytics.getSpendTimeseries(scope2, PERIOD, {
+      groupBy: 'model',
+      fromIso: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+      toIso: new Date(Date.now() + 3 * 60 * 60_000).toISOString(),
+    })
+
+    // The chat row keeps the sentinel, exactly like the dashboard summary.
+    expect(chart.models).toContain('unknown')
+    expect(chart.models).not.toContain('Chat')
+    // The hosting row is named, exactly like the dashboard summary.
+    expect(chart.models).toContain('Published hosting')
+
+    const summary = await analytics.getUsageSummary(scope2, PERIOD)
+    expect(summary.summaries.find((r: any) => r.category === 'chat')!.model).toBe('unknown')
+    expect(summary.summaries.find((r: any) => r.category === 'hosting')!.model).toBe('Published hosting')
+  })
 })

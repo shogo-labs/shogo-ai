@@ -1804,8 +1804,11 @@ ${mediaColumns}
           ? (workspaceMap.get(rawSeries) ?? rawSeries)
           : groupBy === 'source'
             ? rawSeries
+            // Through the resolver, so a model-less row reads the same here as
+            // it does in the log and the table: the type's name for a media
+            // row, and `unknown` for a chat row whose model went missing.
             : isUnknownModel(rawSeries)
-              ? usageActionLabel(String(row.actionType ?? ''))
+              ? usageLabelFor(String(row.actionType ?? ''), { model: rawSeries }).model
               : (modelLabels.get(rawSeries) ?? rawSeries)
 
     const media = mediaOf(row)
