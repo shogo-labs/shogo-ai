@@ -45,6 +45,9 @@ export const PROJECT_ROUTE_RULES: readonly ProjectRouteRule[] = [
   // and cost expose what the project is billed.
   { methods: 'write', paths: ['/published/*'], permission: 'project:publish' },
   { methods: ['GET'], paths: ['/published/*'], permission: 'project:publish' },
+  // Native release (SHO-323). A release spends real money on a paid EAS build
+  // and ships to a store, so both reads and writes take `project:publish`.
+  { methods: 'any', paths: ['/native/*'], permission: 'project:publish' },
   { methods: 'write', paths: ['/members', '/members/*', '/visibility'], permission: 'project.members:manage' },
   {
     methods: 'write',
