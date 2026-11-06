@@ -210,6 +210,11 @@ import {
 } from "../../lib/workspace-store"
 import { shouldRestoreChatWorkspace } from "../../lib/switch-workspace"
 import {
+  nextDrainableMessage,
+  replaceQueuedMessage,
+  shouldReleaseServerEdit,
+} from "../../lib/queued-message-edit"
+import {
   hasAcceptedAiConsent,
   acceptAiConsent,
   revokeAiConsent,
@@ -7372,9 +7377,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
     // The row the composer is editing is not ready to send: the person is
     // still changing it, so the drain takes the next one (SHO-356).
-    const nextMessage = messageQueue.find(
-      (message) => message.id !== editingQueuedId,
-    )
+    const nextMessage = nextDrainableMessage(messageQueue, editingQueuedId)
     if (!nextMessage) {
       isProcessingQueueRef.current = false
       return
@@ -7727,7 +7730,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!id) return
     editingQueuedIdRef.current = null
     setEditingQueuedId(null)
-    void serverQueue.releaseEdit(id).catch(() => {})
+    // Only a server row has a hold parked on it; a local row is held by this
+    // window alone (SHO-356, QA round 1).
+    if (shouldReleaseServerEdit(id, serverQueue.isServerQueued)) {
+      void serverQueue.releaseEdit(id).catch(() => {})
+    }
     // Only a session change ends an edit; `editingQueuedId` itself is read from
     // the ref so this does not fire on every keystroke of an edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -7768,6 +7775,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!id) return
       setEditingQueuedId(null)
       if (!release) return
+      // A local `queue-…` row has no server hold: releasing it PATCHes an id
+      // the store does not hold ("Item not found") and paints that on a row
+      // that is still queued (SHO-356, QA round 1).
+      if (!shouldReleaseServerEdit(id, serverQueue.isServerQueued)) return
       void serverQueue.releaseEdit(id).catch((error) => {
         setQueuedActionError(
           id,
@@ -8187,13 +8198,31 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setEditingQueuedId((current) => (current === id ? null : current))
         releaseStopSnapshot()
       } catch (error) {
+        const status = (error as { status?: number } | null)?.status
+        if (status !== 404 && status !== 409) {
+          // Anything else — offline, a 5xx, an expired session — did not refuse
+          // the edit: the row is still queued with its old text, and enqueueing
+          // it as new would duplicate the message. Keep the edit open, put the
+          // text back in the composer so Send retries the same edit, and say
+          // what happened on the row (SHO-356, QA round 1).
+          setQueuedActionError(
+            id,
+            queueActionMessage(error, "Couldn't save your change — try again"),
+          )
+          setRestoreDraftRequest({ nonce: Date.now(), content, files })
+          console.warn(
+            "[ChatPanel] Could not edit the queued message in place:",
+            error,
+          )
+          return
+        }
         setEditingQueuedId((current) => (current === id ? null : current))
         setQueuedActionError(
           id,
           "This message was already sent, so your edit is queued as a new message",
         )
         console.warn(
-          "[ChatPanel] Could not edit the queued message in place:",
+          "[ChatPanel] The queued message could not be edited in place:",
           error,
         )
         await enqueueServerMessage(trimmedContent, files, perMsgModel, references)
@@ -8204,6 +8233,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       clearQueuedActionError,
       enqueueServerMessage,
       queuedEnrich,
+      queueActionMessage,
       releaseStopSnapshot,
       selectedModel,
       serverQueue,
@@ -8247,17 +8277,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         if (editingLocal) {
           clearOptimisticEcho(trimmedContent)
           setMessageQueue((queue) =>
-            queue.map((message) =>
-              message.id === editingQueuedId
-                ? {
-                    ...message,
-                    content: trimmedContent,
-                    files,
-                    selectedModel: perMsgModel,
-                    references,
-                  }
-                : message,
-            ),
+            replaceQueuedMessage(queue, editingQueuedId, {
+              content: trimmedContent,
+              files,
+              selectedModel: perMsgModel,
+              references,
+            }),
           )
           setEditingQueuedId(null)
           return
