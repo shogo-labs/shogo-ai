@@ -10254,19 +10254,29 @@ export function socialMediaToolEnabled(config: import('./gateway').GatewayConfig
   return config.socialMediaEnabled === true || config.socialManagementEnabled === true
 }
 
-/** Platforms the `social_media` tool may call. Empty when lookups are off. */
-export function enabledSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
-  if (config.socialMediaEnabled !== true) return []
+/**
+ * Platforms whose per-platform switch is on. Management work (the inbox, posting)
+ * is gated by these alone: a workspace that turned paid lookups off still owns
+ * and reads its own connected inboxes.
+ */
+function managedSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
   const platforms: SocialPlatformName[] = []
   if (config.socialInstagramEnabled !== false) platforms.push('instagram')
   if (config.socialTiktokEnabled !== false) platforms.push('tiktok')
   return platforms
 }
 
-function socialPlatformSchema(platforms: SocialPlatformName[]) {
-  if (platforms.length === 1) return Type.Literal(platforms[0])
+/** Platforms the `social_media` tool may call. Empty when lookups are off. */
+export function enabledSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
+  if (config.socialMediaEnabled !== true) return []
+  return managedSocialPlatforms(config)
+}
+
+function socialPlatformSchema(platforms: SocialPlatformName[], description?: string) {
   const listed = platforms.length > 0 ? platforms : (['instagram', 'tiktok'] as SocialPlatformName[])
-  return Type.Union(listed.map((platform) => Type.Literal(platform)))
+  const options = description ? { description } : {}
+  if (listed.length === 1) return Type.Literal(listed[0], options)
+  return Type.Union(listed.map((platform) => Type.Literal(platform)), options)
 }
 
 /**
@@ -10562,7 +10572,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       `"post" publishes or schedules one post to one or more accounts (content, account_ids, media, scheduled_for/publish_now/draft); ` +
       `"posts" lists posts, "calendar" the schedule and "analytics" the numbers; ` +
       `"delete" takes a post_id and removes a draft, a scheduled or failed post, or a published one — it unpublishes each target the provider can remove, and returns the ones the person has to remove in the Instagram / TikTok / Snapchat app with their links; ` +
-      `"inbox" lists DM threads (kind "dms") or comments (kind "comments"); ` +
+      `"inbox" lists DM threads (kind "dms", optionally narrowed to one platform) or comments (kind "comments"); ` +
       `"reply" takes conversation_id + text; "comment_reply" takes comment_id + text; ` +
       `"automate" manages comment→DM automations (automation_action create/list/pause/resume/delete). ` +
       `Media for a post is a public https URL or a workspace file path, which is uploaded for you. ` +
@@ -10592,7 +10602,12 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | delete | calendar | analytics',
         },
       ),
-      platform: Type.Optional(socialPlatformSchema(platforms)),
+      platform: Type.Optional(
+        socialPlatformSchema(
+          platforms,
+          'Required for profile/recent_posts. For action "inbox" with kind "dms", narrows the threads to that platform; omit it to list every platform.',
+        ),
+      ),
       handle: Type.Optional(Type.String({ description: 'Account handle, with or without a leading @. Required for profile/recent_posts.' })),
       limit: Type.Optional(Type.Number({
         description: 'How many posts or inbox rows to return (1-50, default 20).',
@@ -11124,6 +11139,11 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             return textResult({
               kind,
               count: comments.length,
+              ...(params.platform
+                ? {
+                    note: 'Comments are not filtered by platform — GET /social/comments has no platform filter, so this list covers every platform. Read the platform on each comment.',
+                  }
+                : {}),
               comments: comments.map((comment: any) => ({
                 comment_id: comment.id,
                 platform: comment.platform,
@@ -11135,12 +11155,24 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
               })),
             })
           }
-          const unread = params.unread_only === true ? '&unread=true' : ''
-          const result = await socialInternalCall(ctx, 'GET', `/social/inbox?limit=${limit}${unread}`)
+          const query = new URLSearchParams({ limit: String(limit) })
+          if (params.unread_only === true) query.set('unread', 'true')
+          const platform = String(params.platform ?? '').trim().toLowerCase()
+          if (platform) {
+            const managed = managedSocialPlatforms(ctx.config)
+            if (!managed.includes(platform as SocialPlatformName)) {
+              return textResult({
+                error: `Platform "${platform}" is not enabled. Enabled platforms: ${managed.join(', ') || 'none'}.`,
+              })
+            }
+            query.set('platform', platform)
+          }
+          const result = await socialInternalCall(ctx, 'GET', `/social/inbox?${query.toString()}`)
           if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
           const conversations = Array.isArray(result.data?.conversations) ? result.data.conversations : []
           return textResult({
             kind,
+            ...(platform ? { platform } : {}),
             count: conversations.length,
             unread: result.data?.unread ?? 0,
             conversations: conversations.map((conversation: any) => ({
