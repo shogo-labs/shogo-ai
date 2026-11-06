@@ -31,7 +31,7 @@
  *   - No Prisma reads. All policy comes from the spawn config.
  *   - No security policy build. Cloud signs the policy and sends it.
  */
-import { type ChildProcess, spawn, spawnSync } from './child-process.ts';
+import { type ChildProcess, execFile, spawn, spawnSync } from './child-process.ts';
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, rmSync, unwatchFile, watch, watchFile } from 'node:fs';
 import { createConnection } from 'node:net';
@@ -125,6 +125,15 @@ const ACTIVITY_PROBE_TIMEOUT_MS = 3000;
  * instead of only counting it (Samsara had 13 unexplained exits in 24h).
  */
 const STDERR_TAIL_LINES = 8;
+
+/**
+ * The child's own words when it loses the bind race for its port. `Bun.serve`
+ * reports `Failed to start server. Is port 37404 in use?` followed by an
+ * `EADDRINUSE` code, and the runtime's health gate then reports
+ * `agent-runtime exited … before becoming healthy`. Matching either lets
+ * {@link WorkerRuntimeManager.logPortHolder} name the holder.
+ */
+const PORT_CONFLICT_RE = /EADDRINUSE|Is port \d+ in use/;
 
 /** Restart backoff bounds. */
 const RESTART_BACKOFF_BASE_MS = 1_000;
@@ -576,6 +585,12 @@ interface InternalRuntime {
   activity?: ActivitySample | null;
   /** Last few stderr lines, logged when the process exits unrequested. */
   stderrTail?: string[];
+  /**
+   * Set once the current incarnation has reported an `EADDRINUSE` on its own
+   * port, so the holder lookup runs once per spawn instead of once per stderr
+   * line (the child repeats the error when it exits).
+   */
+  portConflictDiagnosed?: boolean;
 }
 
 /**
@@ -1517,6 +1532,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     // one.
     slot.activity = null;
     slot.stderrTail = [];
+    slot.portConflictDiagnosed = false;
     const openAttemptId = slot.spawnConfig.extraEnv?.SHOGO_OPEN_ID;
     perfLog('agent-spawned', slot.projectId, openAttemptId, {
       pid: slot.pid,
@@ -1585,6 +1601,12 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         this.log.error(`${prefix} ${line}`);
         tail.push(line);
         if (tail.length > STDERR_TAIL_LINES) tail.splice(0, tail.length - STDERR_TAIL_LINES);
+        // A child that cannot bind its port stays alive for seconds printing
+        // this, then exits — name the holder while it is still a question.
+        if (!slot.portConflictDiagnosed && PORT_CONFLICT_RE.test(line)) {
+          slot.portConflictDiagnosed = true;
+          void this.logPortHolder(slot);
+        }
       }
     });
 
@@ -2113,6 +2135,16 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     this.reapChildLedgerFor(slot.projectId, slot.spawnConfig.projectDir);
     slot.pid = null;
 
+    // Hand the block back before the restart. `doStart` only allocates when
+    // `agentPort` is 0, so keeping it would re-boot the SAME port for every
+    // attempt in the loop — up to MAX_CONSECUTIVE_RESTARTS times on a port
+    // that is already somebody else's (SHO-335: block 37404-37419 allocated,
+    // EADDRINUSE 2s later, then eight boots of the same dead port). Releasing
+    // makes the next doStart() re-probe and move on.
+    this.releasePort(slot.agentPort);
+    slot.agentPort = 0;
+    slot.apiServerPort = 0;
+
     const now = Date.now();
     const withinWindow = now - slot.lastFailureAt <= RESTART_FAILURE_WINDOW_MS;
     slot.consecutiveFailures = withinWindow ? slot.consecutiveFailures + 1 : 1;
@@ -2429,6 +2461,49 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   }
 
   /**
+   * Name whoever holds the port the child failed to bind.
+   *
+   * The child's own `EADDRINUSE` says nothing about who won, and the block was
+   * reserved from a pool that no in-process allocator can duplicate, so the
+   * only remaining candidates are: a leaked child of an earlier incarnation, a
+   * neighbouring process on the host, or the runtime itself binding twice
+   * (SHO-335 QA round 1 could not tell these apart from the CI log alone).
+   * Best-effort: a missing `lsof`/`ss` is not worth a failure.
+   */
+  private async logPortHolder(slot: InternalRuntime): Promise<void> {
+    const port = slot.agentPort;
+    if (!port) return;
+    const label = `[WorkerRuntimeManager] port ${port} (${slot.projectId})`;
+    for (const [command, args] of this.portHolderCommands(port)) {
+      const result = await runDiagnostic(command, args);
+      if (!result) continue;
+      const holders = result.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.includes(String(port)));
+      if (holders.length) {
+        this.log.error(`${label} is held by:\n  ${holders.join('\n  ')}`);
+      } else {
+        this.log.error(
+          `${label} has no listener now — the bind failure came from this runtime's own tree ` +
+            `(or the holder exited with it), not from a neighbouring process`,
+        );
+      }
+      return;
+    }
+    this.log.warn(`${label}: no port-listing tool available, holder unknown`);
+  }
+
+  /** Host tools that can name a TCP listener's owner, best first. */
+  private portHolderCommands(port: number): Array<[string, string[]]> {
+    if (process.platform === 'win32') return [['netstat', ['-ano', '-p', 'tcp']]];
+    return [
+      ['lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN']],
+      ['ss', ['-ltnp', `sport = :${port}`]],
+    ];
+  }
+
+  /**
    * Kernel-level TCP-accept probe. Resolves `true` if a TCP connection
    * to `127.0.0.1:port` succeeds within {@link TCP_CONNECT_TIMEOUT_MS},
    * `false` for any failure mode (refused, timed out, host unreachable).
@@ -2641,4 +2716,19 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       lastError: r.lastError,
     };
   }
+}
+
+/**
+ * Run a short-lived listing command. `null` means the tool is not installed
+ * (ENOENT) — try the next one; `{ stdout: '' }` means it ran and found
+ * nothing, which is itself an answer. Never throws: this only runs on an
+ * already-failing path.
+ */
+function runDiagnostic(command: string, args: string[]): Promise<{ stdout: string } | null> {
+  return new Promise((resolve) => {
+    execFile(command, args, { timeout: 3_000 }, (err: any, stdout: string) => {
+      if (err?.code === 'ENOENT') return resolve(null);
+      resolve({ stdout: stdout ?? '' });
+    });
+  });
 }

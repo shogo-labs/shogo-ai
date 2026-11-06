@@ -24,12 +24,16 @@ import { WorkerRuntimeManager } from '../runtime-manager.ts';
 
 const RUNTIME_PORT_BLOCK = 16;
 
-/** A manager whose pool draws candidates from `random`. */
+/** A manager whose pool draws candidates from `random`; every level is logged. */
 function managerWithPool(pool: PortPool, logs: string[] = []): any {
   return new WorkerRuntimeManager({
     env: {} as NodeJS.ProcessEnv,
     ports: pool,
-    logger: { log: (line: string) => logs.push(line), warn: () => {}, error: () => {} },
+    logger: {
+      log: (line: string) => logs.push(line),
+      warn: (line: string) => logs.push(line),
+      error: (line: string) => logs.push(line),
+    },
   }) as any;
 }
 
@@ -197,5 +201,85 @@ describe('WorkerRuntimeManager.allocatePort — shared pool', () => {
     for (let offset = 0; offset < RUNTIME_PORT_BLOCK; offset++) {
       expect(pool.isReserved(block + offset)).toBe(false);
     }
+  });
+});
+
+describe('WorkerRuntimeManager.handleExit — the dead port is not reused', () => {
+  /** A running slot holding `block`, with no live process behind it. */
+  function runningSlot(mgr: any, projectId: string, block: number): any {
+    const slot = mgr.makeSlot(projectId, {});
+    slot.agentPort = block;
+    slot.apiServerPort = block + 1;
+    slot.status = 'running';
+    slot.pid = null;
+    slot.startedAt = Date.now() - 1_000;
+    mgr.runtimes.set(projectId, slot);
+    return slot;
+  }
+
+  it('hands the block back on a non-clean exit so the restart must re-probe', async () => {
+    const pool = new PortPool({ probe: async () => 'free' });
+    const mgr = managerWithPool(pool);
+    const block = await mgr.allocatePort();
+    const slot = runningSlot(mgr, 'proj-crash', block);
+
+    mgr.handleExit(slot, 1, null);
+    if (slot.restartTimer) clearTimeout(slot.restartTimer);
+
+    // `doStart` only allocates when `agentPort` is 0 — keeping the block here
+    // is what re-booted the same stolen port for every attempt in the loop.
+    expect(slot.agentPort).toBe(0);
+    expect(slot.apiServerPort).toBe(0);
+    expect(pool.isReserved(block)).toBe(false);
+    expect(pool.isReserved(block + RUNTIME_PORT_BLOCK - 1)).toBe(false);
+  });
+
+  it('moves to a fresh block when the next boot finds the old one taken', async () => {
+    const taken = new Set<number>();
+    const pool = new PortPool({ probe: async () => 'free' });
+    const mgr = managerWithPool(pool);
+    const block = await mgr.allocatePort();
+    const slot = runningSlot(mgr, 'proj-stolen', block);
+
+    mgr.handleExit(slot, 1, null);
+    if (slot.restartTimer) clearTimeout(slot.restartTimer);
+
+    // Something outside the pool grabbed the block between probe and bind.
+    for (let offset = 0; offset < RUNTIME_PORT_BLOCK; offset++) taken.add(block + offset);
+    (pool as any).probe = async (port: number) => (taken.has(port) ? 'in-use' : 'free');
+
+    const next = await mgr.allocatePort();
+    expect(next).not.toBe(block);
+    expect(pool.isReserved(next)).toBe(true);
+  });
+});
+
+describe('WorkerRuntimeManager.logPortHolder — attributing an EADDRINUSE', () => {
+  it('names the process holding the port', async () => {
+    const logs: string[] = [];
+    const mgr = managerWithPool(new PortPool(), logs);
+    const busyPort = await parkSilentListenerInRange();
+    const slot = mgr.makeSlot('proj-held', {});
+    slot.agentPort = busyPort;
+
+    await mgr.logPortHolder(slot);
+
+    const holderLine = logs.find((line) => line.includes(`port ${busyPort}`));
+    expect(holderLine).toBeDefined();
+    expect(holderLine).toContain('is held by');
+    // The listener is this very test process — a real PID, not a placeholder.
+    expect(holderLine).toContain(String(process.pid));
+  });
+
+  it('says nothing holds the port when the bind failed for another reason', async () => {
+    const logs: string[] = [];
+    const mgr = managerWithPool(new PortPool(), logs);
+    const free = await freeCandidateAwayFrom(DEFAULT_PORT_RANGE_START - RUNTIME_PORT_BLOCK);
+    const slot = mgr.makeSlot('proj-free', {});
+    slot.agentPort = free;
+
+    await mgr.logPortHolder(slot);
+
+    expect(logs.some((line) => line.includes(`port ${free}`) && line.includes('no listener now'))).toBe(true);
   });
 });
