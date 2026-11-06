@@ -357,6 +357,8 @@ describe.skipIf(!integration)('remote tool channel across two runtimes', () => {
   let bUrl = ''
   let tools: AgentTool[] = []
   const forwarded: Array<{ tool: string; status: number }> = []
+  const shareRequests: Array<{ projectId: string; path: string }> = []
+  const sharedLinks = new Map<string, string>()
 
   async function freePort(): Promise<number> {
     const probe = Bun.serve({ port: 0, fetch: () => new Response('') })
@@ -395,21 +397,8 @@ describe.skipIf(!integration)('remote tool channel across two runtimes', () => {
       if (v === undefined || k.startsWith('WORKSPACE_') || k === 'PROJECT_ID') continue
       childEnv[k] = v
     }
-    runtimeB = Bun.spawn([process.execPath, '--conditions=development', 'src/server.ts'], {
-      cwd: resolve(import.meta.dir, '../..'),
-      env: {
-        ...childEnv,
-        WORKSPACE_DIR: bDir,
-        PORT: String(bPort),
-        PROJECT_ID: PROJECT_B,
-        WORKSPACE_ID,
-        RUNTIME_AUTH_SECRET: TOKEN_B,
-        SHOGO_API_URL: 'http://127.0.0.1:9',
-      },
-      stdout: 'ignore',
-      stderr: 'ignore',
-    })
-
+    // The stub API comes first: B mints its own download links against
+    // SHOGO_API_URL (share_file), so it has to be told this port at spawn.
     api = Bun.serve({
       port: 0,
       fetch: async (req) => {
@@ -441,8 +430,50 @@ describe.skipIf(!integration)('remote tool channel across two runtimes', () => {
           forwarded.push({ tool: 'copy_to_project', status: res.status })
           return new Response(await res.text(), { status: res.status, headers: { 'Content-Type': 'application/json' } })
         }
+        // share_file inside B signs its own project-relative path here; the
+        // returned URL serves the bytes back, as the real API's /api/f/:token does.
+        const share = url.pathname.match(/^\/api\/internal\/projects\/([^/]+)\/shared-files$/)
+        if (req.method === 'POST' && share) {
+          if (share[1] !== PROJECT_B) return Response.json({ error: { code: 'not_found', message: 'Project not found' } }, { status: 404 })
+          const body = (await req.json()) as { path: string; expiresInDays?: number }
+          const token = `tok-${sharedLinks.size + 1}`
+          sharedLinks.set(token, body.path)
+          shareRequests.push({ projectId: share[1], path: body.path })
+          return Response.json({
+            url: `${new URL(req.url).origin}/api/f/${token}`,
+            expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+            path: body.path,
+          })
+        }
+        const link = url.pathname.match(/^\/api\/f\/([^/]+)$/)
+        if (req.method === 'GET' && link) {
+          const signedPath = sharedLinks.get(link[1])
+          if (!signedPath) return new Response('not found', { status: 404 })
+          try {
+            return new Response(readFileSync(join(bDir, signedPath)))
+          } catch {
+            return new Response('not found', { status: 404 })
+          }
+        }
         return Response.json({ error: { code: 'not_found', message: url.pathname } }, { status: 404 })
       },
+    })
+
+    runtimeB = Bun.spawn([process.execPath, '--conditions=development', 'src/server.ts'], {
+      cwd: resolve(import.meta.dir, '../..'),
+      env: {
+        ...childEnv,
+        WORKSPACE_DIR: bDir,
+        PORT: String(bPort),
+        PROJECT_ID: PROJECT_B,
+        WORKSPACE_ID,
+        RUNTIME_AUTH_SECRET: TOKEN_B,
+        SHOGO_API_URL: `http://127.0.0.1:${api.port}`,
+        // A project runtime is never the desktop app: share_file mints a link.
+        SHOGO_LOCAL_MODE: 'false',
+      },
+      stdout: 'ignore',
+      stderr: 'ignore',
     })
 
     process.env.PROJECT_ID = PROJECT_A
@@ -503,6 +534,25 @@ describe.skipIf(!integration)('remote tool channel across two runtimes', () => {
     expect(existsSync(join(aDir, 'notes'))).toBe(false)
     expect(existsSync(join(aDir, PROJECT_B))).toBe(false)
     expect(readdirSync(aDir).filter((f) => !f.startsWith('.'))).toEqual([])
+  })
+
+  test('share_file with project mints the link in B, and the URL serves B\'s file (SHO-353)', async () => {
+    const shared = await run('share_file', { path: 'notes/remote.txt', project: PROJECT_B })
+    const result = details(shared)
+    expect(result.error).toBeUndefined()
+    expect(result.filename).toBe('remote.txt')
+    expect(result.expiresAt).toBeTruthy()
+    // The link is signed by B, against B's own project root — no copy crossed runtimes.
+    expect(shareRequests.at(-1)).toEqual({ projectId: PROJECT_B, path: 'notes/remote.txt' })
+    expect(result.url).toContain('/api/f/')
+    const res = await fetch(result.url)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('edited by A\n')
+    // It places like the other file tools, so the chat renders a file chip (SHO-80).
+    expect(result.project).toEqual({ id: PROJECT_B, name: 'Beta' })
+    expect(result.chatPath).toBe(`${PROJECT_B}/notes/remote.txt`)
+    // And nothing was copied into A to make it work.
+    expect(existsSync(join(aDir, 'notes'))).toBe(false)
   })
 
   test('exec soft timeout comes back running and exec_wait finishes it over the channel', async () => {
