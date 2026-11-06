@@ -121,6 +121,9 @@ function categoryDefaultProvider(category: UsageCategory | null): string {
       return 'shogo'
     case 'social':
       return 'meta.platform'
+    case 'native':
+      // EAS builds and test runs are Expo's; the meter charges on their behalf.
+      return 'expo'
     case 'chat':
       return 'anthropic'
     default:

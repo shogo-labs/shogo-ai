@@ -17,8 +17,12 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   BILLED_USAGE_ACTION_TYPES,
+  BILLED_USAGE_ACTION_TYPE_LIST,
   NON_BILLED_USAGE_ACTION_TYPES,
   USAGE_CATEGORY_LABELS,
+  USAGE_CATEGORY_ORDER,
+  isNonBilledUsageActionType,
+  usageActionLabel,
   usageCategoryFor,
 } from '../usage-action-types'
 
@@ -85,5 +89,25 @@ describe('usage action-type registry', () => {
     ]) {
       expect(usageCategoryFor(actionType)).not.toBeNull()
     }
+  })
+
+  /**
+   * SHO-323's native-release meters arrived on main after this registry was
+   * written, and the literal scan above is what caught them in the merge queue.
+   * They are billed (each debits a wallet), so they must be `billed`, and they
+   * must not be folded into `hosting` — an EAS build is not "Published hosting".
+   */
+  test('the native release meters are billed in their own category', () => {
+    for (const actionType of ['native_build', 'native_test_run', 'native_update_mau']) {
+      expect(usageCategoryFor(actionType), actionType).toBe('native')
+      expect(BILLED_USAGE_ACTION_TYPE_LIST, actionType).toContain(actionType)
+      expect(isNonBilledUsageActionType(actionType), actionType).toBe(false)
+    }
+    expect(USAGE_CATEGORY_LABELS.native).toBe('Native')
+    expect(USAGE_CATEGORY_ORDER).toContain('native')
+    // Per-type names, so a test run is not drawn as a build.
+    expect(usageActionLabel('native_build')).toBe('EAS build')
+    expect(usageActionLabel('native_test_run')).toBe('EAS test run')
+    expect(usageActionLabel('native_update_mau')).toBe('Native update MAU')
   })
 })

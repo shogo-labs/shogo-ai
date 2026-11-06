@@ -93,7 +93,7 @@ export interface UsageSummaryEntry {
   userImage: string | null
   model: string
   provider: string
-  /** What the row was: chat, image, video, 3d, music, transcription, voice, hosting, social. */
+  /** What the row was: chat, image, video, 3d, music, transcription, voice, hosting, social, native. */
   category?: string | null
   requestCount: number
   totalInputTokens: number
@@ -145,7 +145,7 @@ export interface UsageLogEntry {
   userImage: string | null
   model: string
   provider: string
-  /** What the row was: chat, image, video, 3d, music, transcription, voice, hosting, social. */
+  /** What the row was: chat, image, video, 3d, music, transcription, voice, hosting, social, native. */
   category?: string | null
   inputTokens: number
   outputTokens: number
@@ -839,6 +839,7 @@ const USAGE_CATEGORY_LABELS: Record<string, string> = {
   voice: 'Voice',
   hosting: 'Hosting',
   social: 'Social',
+  native: 'Native',
 }
 
 export function UsageEventLogView({

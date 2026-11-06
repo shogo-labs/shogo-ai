@@ -28,6 +28,7 @@ export type UsageCategory =
   | 'voice'
   | 'hosting'
   | 'social'
+  | 'native'
 
 /** Billed action type → the dashboard category it rolls up into. */
 export const BILLED_USAGE_ACTION_TYPES = {
@@ -49,6 +50,11 @@ export const BILLED_USAGE_ACTION_TYPES = {
   social_dm: 'social',
   social_x_api: 'social',
   social_media_lookup: 'social',
+  // Native release meters (SHO-323). Billed: each one debits the wallet, so
+  // folding them into `hosting` would draw an EAS build as "Published hosting".
+  native_build: 'native',
+  native_test_run: 'native',
+  native_update_mau: 'native',
 } as const satisfies Record<string, UsageCategory>
 
 export type BilledUsageActionType = keyof typeof BILLED_USAGE_ACTION_TYPES
@@ -101,6 +107,10 @@ export const USAGE_CATEGORY_LABELS: Record<UsageCategory, string> = {
   voice: 'Voice',
   hosting: 'Hosting',
   social: 'Social',
+  // The series label, not the charges: this category holds builds, test runs and
+  // update MAU, so "Native build" would misname two of the three. The per-type
+  // names below are what the rows show.
+  native: 'Native',
 }
 
 /** Chart legend / dropdown order — chat first, then media, then the rest. */
@@ -114,6 +124,7 @@ export const USAGE_CATEGORY_ORDER: UsageCategory[] = [
   'voice',
   'hosting',
   'social',
+  'native',
 ]
 
 export function usageCategoryLabel(category: UsageCategory): string {
@@ -139,6 +150,9 @@ export const USAGE_ACTION_LABELS: Partial<Record<BilledUsageActionType, string>>
   voice_media_usage: 'Voice: media',
   voice_number_setup: 'Voice: number setup',
   voice_number_monthly: 'Voice: number rental',
+  native_build: 'EAS build',
+  native_test_run: 'EAS test run',
+  native_update_mau: 'Native update MAU',
 }
 
 /**
