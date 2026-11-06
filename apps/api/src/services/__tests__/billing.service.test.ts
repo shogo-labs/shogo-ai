@@ -656,6 +656,16 @@ describe('plan helpers (no local mode)', () => {
       expect(await billing.canPublishSubdomain(ws)).toBe(true)
     }
   })
+  // SHO-323: a native release costs real money on Shogo's Expo account, so it
+  // is paid-plans-only — and the floor is `basic`, one tier below publishing a
+  // web app to a subdomain.
+  it('canUseNativeRelease is false for free and true from basic up', async () => {
+    expect(await billing.canUseNativeRelease('w1')).toBe(false)
+    for (const [ws, plan] of [['wnb', 'basic'], ['wnp', 'pro'], ['wne', 'enterprise']] as const) {
+      subs.set(ws, [{ id: `s_${ws}`, workspaceId: ws, stripeSubscriptionId: 's', stripeCustomerId: 'c', planId: plan, seats: 1, status: 'active', billingInterval: 'monthly', currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today }])
+      expect(await billing.canUseNativeRelease(ws)).toBe(true)
+    }
+  })
 })
 
 // ============================================================================

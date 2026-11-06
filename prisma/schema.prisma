@@ -297,6 +297,9 @@ model Workspace {
   socialAccounts         SocialAccount[]
   socialPosts            SocialPost[]
   socialRelayedEvents    SocialRelayedEvent[]
+  nativeApps             NativeApp[]
+  nativeAppCredentials   NativeAppCredential[]
+  nativeReleases         NativeRelease[]
   socialConversations    SocialConversation[]
   socialMessages         SocialMessage[]
   socialComments         SocialComment[]
@@ -737,6 +740,7 @@ model Project {
   attachedTo             ProjectAttachment[]             @relation("ProjectAttachmentTarget")
   customDomains          CustomDomain[]
   agentTasks             AgentTask[]
+  nativeApp              NativeApp?
 
   @@index([workspaceId])
   @@index([workspaceId, hidden])
@@ -6032,4 +6036,183 @@ model PublishedUsageMinute {
   @@unique([environmentId, minute])
   @@index([billedAt])
   @@map("published_usage_minutes")
+}
+
+// ── Native release (SHO-323) ────────────────────────────────────────────────
+// Shipping an Expo project to the App Store / Google Play. These rows are the
+// *Shogo* side of a release: the EAS project it maps to, the customer's store
+// credentials, and the build/test/submission state we meter from.
+//
+// There is deliberately no `ExpoOrg` model. Russell's 2026-11-06 decision is one
+// Shogo Expo account with every project on it, and a token that never leaves the
+// API process, so a per-workspace organisation would be a tenancy boundary we
+// neither need nor can create (see docs/native-release/eas-graphql.md).
+
+/// One Expo project on the configured account, one per Shogo project.
+model NativeApp {
+  id          String   @id @default(uuid())
+  workspaceId String
+  projectId   String   @unique
+  /// managed (Shogo's Expo account) | byok (the workspace's own EXPO_TOKEN)
+  mode        String   @default("byok")
+  /// The Expo account this app lives on. Stored so sharding across Shogo-owned
+  /// accounts later is a data change, not a code change.
+  easAccountId String?
+  easAppId     String?  @unique
+  bundleIdentifier     String?
+  androidPackage       String?
+  ascAppId             String?
+  /// Set by the first store upload. From then on the bundle id / package are
+  /// immutable — changing them would publish to a different app record.
+  idsLockedAt          DateTime?
+  firstPlaySubmissionAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace  Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project    Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  signing    NativeSigningCredential[]
+  usageMonths NativeUsageMonth[]
+
+  @@index([workspaceId])
+  @@map("native_apps")
+}
+
+/// A customer's Apple / Google / Expo credential, encrypted at rest.
+model NativeAppCredential {
+  id           String    @id @default(uuid())
+  workspaceId  String
+  /// asc_api_key | play_service_account | expo_token
+  kind         String
+  /// `encryptSecret` output. Never returned by any route.
+  encryptedPayload String
+  /// `maskSecret` of one identifying field, for the settings UI.
+  maskedHint   String
+  validatedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, kind])
+  @@map("native_app_credentials")
+}
+
+/// A distribution certificate, provisioning profile or keystore we generated or
+/// the user uploaded. Sent to Expo only inside a single build job payload, never
+/// stored in Expo's credential vault on our account.
+model NativeSigningCredential {
+  id          String    @id @default(uuid())
+  nativeAppId String
+  /// ios | android
+  platform    String
+  /// ios_distribution_cert | ios_provisioning_profile | android_keystore
+  kind        String
+  encryptedPayload String
+  /// The Apple certificate / profile id, so a re-run reuses instead of duplicating.
+  appleResourceId String?
+  expiresAt   DateTime?
+  /// generated | uploaded
+  source      String    @default("generated")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  nativeApp NativeApp @relation(fields: [nativeAppId], references: [id], onDelete: Cascade)
+
+  @@index([nativeAppId, platform, kind])
+  @@map("native_signing_credentials")
+}
+
+/// One `publish({ target: 'native' })` invocation and everything it produced.
+model NativeRelease {
+  id          String   @id @default(uuid())
+  workspaceId String
+  projectId   String
+  /// ios | android — what *this* release targets. SQLite has no scalar lists,
+  /// so the desktop track stores the same value JSON-encoded (see `tags`).
+  platforms   String[]  @default([])
+  /// internal | testflight | production
+  track       String   @default("internal")
+  /// @expo/fingerprint of the project as released. An unchanged fingerprint for
+  /// the same platform + track turns a build into an OTA update.
+  fingerprint String
+  /// build | update
+  kind        String
+  /// queued | testing | building | submitting | done | failed | canceled
+  status      String   @default("queued")
+  /// The step inside `status`, for the UI and the agent's reply.
+  step        String?
+  error       String?
+  /// The uploaded source archive, so the store build reuses the exact tree the
+  /// test workflow ran against instead of asking the runner to upload again.
+  sourceBucketKey String?
+  /// The EAS workflow run that builds the simulator/emulator app and runs Maestro.
+  workflowRunId String? @unique
+  /// passed | failed | skipped
+  testOutcome String?
+  /// Watermark for the `native_test_run` meter.
+  testMeteredAt DateTime?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  builds    NativeBuild[]
+
+  @@index([projectId, createdAt])
+  @@index([workspaceId, status])
+  @@index([status, updatedAt])
+  @@map("native_releases")
+}
+
+/// One EAS build (the test build or the store build) and its submission.
+model NativeBuild {
+  id            String    @id @default(uuid())
+  releaseId     String
+  /// EAS's build id. Unique so a redelivered webhook lands on the same row.
+  easBuildId    String    @unique
+  /// ios | android
+  platform      String
+  /// test | store
+  purpose       String
+  /// BuildResourceClass exactly as EAS reports it. The price table is keyed by
+  /// this and a class with no row is never billed at a guessed price.
+  resourceClass String?
+  status        String    @default("in_progress")
+  /// Short-lived signed artifact/log URL, proxied server-side.
+  artifactKey   String?
+  submissionId  String?
+  submissionStatus String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  /// Watermark for the `native_build` meter: set before the charge so a
+  /// redelivered webhook collapses onto one charge; reverted if the charge fails.
+  meteredAt     DateTime?
+  /// metered | unpriced | skipped
+  meterStatus   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  release NativeRelease @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+
+  @@index([releaseId, purpose])
+  @@map("native_builds")
+}
+
+/// Updates MAU per app per month — the claim row for the monthly sweep, the same
+/// shape `SocialAccount.monthlyRateDebitedFor` gives the social meter.
+model NativeUsageMonth {
+  id          String    @id @default(uuid())
+  nativeAppId String
+  /// `YYYY-MM`
+  month       String
+  mau         Int       @default(0)
+  meteredAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  nativeApp NativeApp @relation(fields: [nativeAppId], references: [id], onDelete: Cascade)
+
+  @@unique([nativeAppId, month])
+  @@map("native_usage_months")
 }

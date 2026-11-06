@@ -96,6 +96,11 @@ import { agentWakeRoutes } from './routes/agent-wakes'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { socialRelayRoutes, socialRoutes, socialWebhookRoutes } from './routes/social'
 import {
+  nativeReleaseRelayRoutes,
+  nativeReleaseRoutes,
+  nativeWebhookRoutes,
+} from './routes/native-release'
+import {
   generateTitleCompletion,
   setTitleGenerationModelId,
   TITLE_MODEL_SETTING_KEY,
@@ -9109,6 +9114,11 @@ app.route('/api', socialRelayRoutes())
 // Zernio's webhooks (comments, DMs, account health). Cloud only: the desktop
 // half of the relay applies local-scope events in its own DB.
 app.route('/api', socialWebhookRoutes())
+// Native release (App Store / Google Play). The runner holds no Expo token, so
+// every EAS call is made here; the webhook is how a build's outcome reaches us.
+app.route('/api', nativeReleaseRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', nativeReleaseRelayRoutes())
+app.route('/api', nativeWebhookRoutes())
 
 // EZ Mode / voice translator routes (session-auth'd via authMiddleware
 // above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
@@ -10590,6 +10600,42 @@ setTimeout(async () => {
     } catch (err: any) {
       console.error(
         '[PollCustomDomains] failed to schedule reconciler (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Native release — the poller is the only way a test stage's result and a
+// BYOK build ever reach us (EAS webhooks carry BUILD and SUBMIT only), and its
+// meter sweep is what closes a charge the webhook dropped. Both native crons
+// no-op outside `cloud` mode and take withGlobalJobLock internally.
+{
+  ;(async () => {
+    try {
+      const { startNativeReleasePollCron } = await import(
+        './jobs/native-release-poll'
+      )
+      startNativeReleasePollCron()
+    } catch (err: any) {
+      console.error(
+        '[NativeReleasePoll] failed to schedule poller (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+{
+  ;(async () => {
+    try {
+      const { startNativeUpdateMonthlyCron } = await import(
+        './jobs/native-update-monthly'
+      )
+      startNativeUpdateMonthlyCron()
+    } catch (err: any) {
+      console.error(
+        '[NativeUpdateMonthly] failed to schedule meter (non-fatal):',
         err?.message ?? err,
       )
     }

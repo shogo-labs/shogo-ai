@@ -521,6 +521,59 @@ export interface CustomDomainsResponse {
   domains: CustomDomain[]
 }
 
+/** ─── Native release (App Store / Google Play) ─────────────
+ *  Mirrors `apps/api/src/services/native-release/`. The `mode` decides what the
+ *  settings page asks for: `cloud` needs nothing from the user, `byok` needs an
+ *  Expo token, `relay` runs the build from their own machine. */
+
+export type NativeReleaseMode = 'cloud' | 'byok' | 'relay'
+
+/** The project's store app mapping (`NativeApp`). */
+export interface NativeApp {
+  id: string
+  projectId: string
+  bundleIdentifier: string | null
+  androidPackage: string | null
+  ascAppId: string | null
+  easAppId: string | null
+  /** Set once we have sent the ids to Expo; after that they cannot be renamed. */
+  idsLockedAt: string | null
+}
+
+export type NativeCredentialKind = 'asc_api_key' | 'play_service_account' | 'expo_token'
+
+/** A stored credential — never the secret, only a mask of what identifies it. */
+export interface NativeCredential {
+  kind: NativeCredentialKind
+  maskedHint: string
+  validatedAt: string | null
+}
+
+export interface NativeBuildRow {
+  id: string
+  platform: string
+  purpose: string
+  status: string
+  resourceClass: string | null
+  submissionStatus: string | null
+  meterStatus: string | null
+  error: string | null
+}
+
+export interface NativeReleaseRow {
+  id: string
+  kind: 'build' | 'update'
+  track: string
+  status: string
+  step: string | null
+  mode: string
+  platforms: string[]
+  testOutcome: string | null
+  error: string | null
+  createdAt: string
+  builds: NativeBuildRow[]
+}
+
 /** Content-sync state for a cloud-linked project (header pill). Mirrors
  *  `CloudSyncStatus` in `apps/api/src/lib/runtime/cloud-content-sync.ts`. */
 export type CloudSyncState =
@@ -1647,6 +1700,71 @@ export const api = {
   async removeCustomDomain(http: HttpClient, projectId: string, domainId: string) {
     const res = await http.delete<{ success: boolean; removedIds: string[] }>(`/api/projects/${projectId}/domains/${domainId}`)
     return res.data?.removedIds ?? []
+  },
+
+  // ─── Native release (App Store / Google Play) ────────────
+
+  /** The project's store app mapping, plus what the deployment supports. */
+  async getNativeApp(http: HttpClient, projectId: string) {
+    const res = await http.get<{ mode: NativeReleaseMode; app: NativeApp | null }>(
+      `/api/projects/${projectId}/native/app`,
+    )
+    return res.data
+  },
+
+  /**
+   * Set the bundle id / Android package (and an optional App Store Connect app
+   * id). Rejected with `ids_locked` once a build has been sent to Expo, because
+   * renaming an id then would ship a different app.
+   */
+  async saveNativeApp(
+    http: HttpClient,
+    projectId: string,
+    ids: { bundleIdentifier?: string; androidPackage?: string; ascAppId?: string },
+  ) {
+    const res = await http.put<{ app: NativeApp }>(`/api/projects/${projectId}/native/app`, ids)
+    return res.data.app
+  },
+
+  /** Store credentials for the workspace. Returns masks only. */
+  async getNativeCredentials(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ mode: NativeReleaseMode; credentials: NativeCredential[] }>(
+      `/api/workspaces/${workspaceId}/native/credentials`,
+    )
+    return res.data
+  },
+
+  /**
+   * Save one credential. The API validates it against Apple / Google before
+   * storing it, so a rejected key throws with the provider's own reason.
+   */
+  async saveNativeCredential(
+    http: HttpClient,
+    workspaceId: string,
+    kind: NativeCredentialKind,
+    payload: Record<string, unknown>,
+  ) {
+    const res = await http.put<{ credential: NativeCredential }>(
+      `/api/workspaces/${workspaceId}/native/credentials/${kind}`,
+      payload,
+    )
+    return res.data.credential
+  },
+
+  async deleteNativeCredential(http: HttpClient, workspaceId: string, kind: NativeCredentialKind) {
+    await http.delete(`/api/workspaces/${workspaceId}/native/credentials/${kind}`)
+  },
+
+  async listNativeReleases(http: HttpClient, projectId: string) {
+    const res = await http.get<{ releases: NativeReleaseRow[] }>(`/api/projects/${projectId}/native/releases`)
+    return res.data?.releases ?? []
+  },
+
+  async getNativeRelease(http: HttpClient, projectId: string, releaseId: string) {
+    const res = await http.get<{ release: NativeReleaseRow }>(
+      `/api/projects/${projectId}/native/releases/${releaseId}`,
+    )
+    return res.data.release
   },
 
   // ─── Integrations ────────────────────────────────────────

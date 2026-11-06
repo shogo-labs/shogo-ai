@@ -4879,6 +4879,19 @@ function resolveTargetProjectId(ctx: ToolContext, requested?: string): string | 
   return attached.length === 1 ? attached[0] : undefined
 }
 
+/**
+ * Where a native release reads the project from.
+ *
+ * A workspace runtime mounts each project at `<workspaceDir>/<projectId>`; a pod
+ * whose working directory *is* the project has no such folder, so the workspace
+ * dir is already the project. Checking beats assuming: guessing projectId as a
+ * subfolder would tar the wrong tree.
+ */
+function nativeProjectDir(ctx: ToolContext, projectId: string): string {
+  const scoped = join(ctx.workspaceDir, projectId)
+  return existsSync(join(scoped, 'package.json')) || existsSync(join(scoped, 'app.json')) ? scoped : ctx.workspaceDir
+}
+
 // ---------------------------------------------------------------------------
 // Custom domains — the `publish` tool's `domain_action` (SHO-304)
 //
@@ -5167,6 +5180,9 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'Published apps run on Knative and scale past one instance. Pass `environment: "staging"` to deploy to the optional staging site (`{subdomain}--staging.shogo.one`) for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
       'For anything other than a deploy — checking replicas/latency/cost, tailing logs, changing scale, rolling back, redeploying, promoting, creating or deleting staging — pass `ops_action` instead of publishing. An ops action NEVER builds or publishes new code. Get the user\'s confirmation before: raising max replicas or size (real money), rollback, promote to production, and deleting an environment.',
       'Custom domains: `domain_action` lists/adds/checks/removes the project\'s own domains and returns every DNS record verbatim. Set `domain_action` and it does NOT publish. Actions: "list", "add" (needs `domain`), "verify", "make_primary", "remove". Only remove a domain when the user explicitly asked to remove it.',
+      'Native apps: pass `target: "ios"` / `"android"` (or `"native"` for both) to ship an Expo project to the App Store / Google Play instead of the web. It builds a test app and runs the project\'s Maestro flows first, and only builds for the store if they pass — so a broken flow costs nothing. Paid plans only (`plan_not_allowed` → point to Settings > Billing).',
+      'Every native response carries `next_action` and a `user_message` to say: follow `next_action` instead of guessing at the flow. `confirm_bundle_id` → show the ids and get them confirmed, they lock after the first upload. `publish_web` → this app calls its own backend, so the web version has to be published first; publish it, then ship. `connect_play` → the user invites the publisher email it returns in Play Console; they never handle a JSON key. `connect_asc` → they add their own App Store Connect key, which Apple cannot delegate to Shogo. `play_first_upload` → they upload one build by hand in Play Console (link included) so Google creates the app record. `asc_app_record` → they create the app in App Store Connect. `needs_icon` → ask for a logo and pass `icon`. Then `building` → `testing` → `submitted` → `live`, or `test_failed` with the failing flow.',
+      'The release is asynchronous: this returns a `release_id` immediately and never waits on a build — never start a background process, a sleep, or a watcher for it. Call this tool again with `release_id` (no `target`) when you are asked to check, and report the failing Maestro step when the test failed. Never tell the user an app shipped before a poll says `live`.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -5204,6 +5220,36 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         Type.Boolean({
           description:
             'Only after the user explicitly confirms: proceed even though the schema change destroys data (a dropped table/column, a narrowed type, or a new required column with no default). Publishing is refused with `destructive_schema_change` otherwise — show the user exactly which fields would lose data first.',
+        }),
+      ),
+      target: Type.Optional(
+        Type.Union(
+          [Type.Literal('web'), Type.Literal('ios'), Type.Literal('android'), Type.Literal('native')],
+          {
+            description:
+              'What to publish. Defaults to "web" (a `{subdomain}.shogo.one` site). "ios" / "android" / "native" ship an Expo project to the App Store / Google Play, which requires the user\'s store accounts to be connected first. Does not combine with `ops_action` or `domain_action`.',
+          },
+        ),
+      ),
+      track: Type.Optional(
+        Type.Union(
+          [Type.Literal('internal'), Type.Literal('testflight'), Type.Literal('production')],
+          {
+            description:
+              'Native only: which store track to release to. "internal" (default) is TestFlight/Play internal testing, "production" is a public release. An unchanged native fingerprint publishes an OTA update instead of a new build.',
+          },
+        ),
+      ),
+      release_id: Type.Optional(
+        Type.String({
+          description:
+            'Poll a native release instead of starting one: pass the id a `target` call returned. Reports the current step, the failing Maestro flow when the test failed, and the store submission status. Poll every minute or two; do not poll in a loop.',
+        }),
+      ),
+      icon: Type.Optional(
+        Type.String({
+          description:
+            'Native store artwork: a project-relative path to the user\'s logo (PNG, 8-bit RGB or RGBA, not interlaced). Shogo generates the 1024 iOS icon, the Android adaptive icon, the splash icon and the 512 Play icon from it, and lists them under .shogo/store-assets/ so the user can commit them. Ask the user for a logo when a release returns `next_action: needs_icon`.',
         }),
       ),
       ops_action: Type.Optional(
@@ -5287,6 +5333,10 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         replica,
         domain_action,
         domain,
+        target,
+        track,
+        release_id,
+        icon,
       } = params as {
         subdomain?: string
         access_level?: 'anyone' | 'authenticated' | 'private' | 'password'
@@ -5305,12 +5355,45 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         replica?: string
         domain_action?: 'list' | 'add' | 'verify' | 'make_primary' | 'remove'
         domain?: string
+        target?: 'web' | 'ios' | 'android' | 'native'
+        track?: 'internal' | 'testflight' | 'production'
+        release_id?: string
       }
       const projectId = resolveTargetProjectId(ctx, project_id)
       if (!projectId) {
         return textResult({
           error: 'No project context is available, so the app cannot be published. Pass project_id for the project to publish.',
         })
+      }
+
+      // Native release (App Store / Google Play). A `target` of ios/android/native
+      // — or a `release_id` poll — never touches the web publish path, and the
+      // web-only arguments are refused rather than silently ignored.
+      const nativeTarget = target && target !== 'web' ? target : undefined
+      if (nativeTarget || release_id) {
+        if (ops_action || domain_action) {
+          return textResult({
+            error:
+              '`ops_action` and `domain_action` are for published web apps. A native release takes `target` and `track` only.',
+            code: 'native_arg_conflict',
+          })
+        }
+        const { hasMaestroFlows, runNativeRelease, nativeReleaseStatus } = await import('./native-release-runner')
+        if (release_id) {
+          return textResult(await nativeReleaseStatus(projectId, release_id))
+        }
+        const projectDir = nativeProjectDir(ctx, projectId)
+        const platforms: ('ios' | 'android')[] =
+          nativeTarget === 'native' ? ['ios', 'android'] : [nativeTarget as 'ios' | 'android']
+        const result = await runNativeRelease({
+          projectId,
+          projectDir,
+          platforms,
+          track: track ?? 'internal',
+          hasMaestroFlows: await hasMaestroFlows(projectDir),
+          iconPath: icon,
+        })
+        return textResult(result as unknown as Record<string, unknown>)
       }
 
       // Domain management never publishes — handle it before any publish work.

@@ -105,6 +105,11 @@ export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   'social-account-monthly': jobNameToLockId('social-account-monthly'),
   'published-usage-collect': jobNameToLockId('published-usage-collect'),
   'published-usage-bill': jobNameToLockId('published-usage-bill'),
+  // Native release: the poller starts store builds (which cost money), and the
+  // monthly sweep charges Updates MAU — two regions doing either would double
+  // the work or double-charge.
+  'native-release-poll': jobNameToLockId('native-release-poll'),
+  'native-update-monthly': jobNameToLockId('native-update-monthly'),
 }) as Record<string, bigint>
 
 export type GlobalJobLockResult<T> =

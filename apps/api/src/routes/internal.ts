@@ -8,6 +8,7 @@
  */
 
 import { Hono } from 'hono'
+import { NativeReleaseError as NativeReleaseHttpError } from '../services/native-release/client'
 import { timingSafeEqual } from 'node:crypto'
 import { validatePodToken } from '../lib/k8s-auth'
 import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
@@ -973,5 +974,205 @@ function hasNotesWorkerToken(c: { req: { header(name: string): string | undefine
   const b = Buffer.from(provided)
   return a.length === b.length && timingSafeEqual(a, b)
 }
+
+// ---------------------------------------------------------------------------
+// Native release (SHO-323). The agent's `publish` tool, with `target: 'ios' |
+// 'android' | 'native'`, drives these. Same auth as every other internal route
+// (K8s SA token or HMAC runtime token); the Expo token lives in the API process
+// and never reaches the pod, so this is where a release is actually started.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/internal/projects/:projectId/native/state — what the runner needs
+ * before it builds anything: the mode, the app row, and the bundle id it should
+ * confirm with the user when none is set yet.
+ */
+app.get('/projects/:projectId/native/state', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  try {
+    const [{ prisma }, native] = await Promise.all([
+      import('../lib/prisma'),
+      import('../services/native-release'),
+    ])
+    const [project, appRow] = await Promise.all([
+      (prisma as any).project.findUnique({
+        where: { id: projectId },
+        select: {
+          workspaceId: true,
+          name: true,
+          slug: true,
+          publishedSubdomain: true,
+          publishStatus: true,
+        },
+      }),
+      (prisma as any).nativeApp.findUnique({ where: { projectId } }),
+    ])
+    if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+
+    const slug = project.slug ?? project.name ?? 'app'
+
+    // What the store connections can actually do right now, so the agent can say
+    // "invite this email" instead of starting a build that cannot be submitted.
+    // Nothing here calls Apple or Google — a probe costs a token and a round trip,
+    // and `startRelease` runs the real one before any credit is reserved.
+    const [playKey, ascKey] = await Promise.all([
+      native.resolvePlayCredentialsFor(project.workspaceId),
+      native.readAscKey(project.workspaceId),
+    ])
+
+    return c.json({
+      mode: native.nativeReleaseMode(),
+      app: appRow
+        ? {
+            bundleIdentifier: appRow.bundleIdentifier,
+            androidPackage: appRow.androidPackage,
+            easAppId: appRow.easAppId,
+            ascAppId: appRow.ascAppId,
+            idsLockedAt: appRow.idsLockedAt,
+            firstPlaySubmissionAt: appRow.firstPlaySubmissionAt,
+          }
+        : null,
+      needsBundleId: !appRow?.bundleIdentifier,
+      defaultSlug: slug,
+      defaultBundleIdentifier: native.defaultBundleIdentifier(slug),
+      defaultAndroidPackage: native.defaultBundleIdentifier(slug),
+      pinnedResourceClass: native.easJsonResourceClass(),
+      connections: {
+        play: {
+          // Shogo's publisher account, or the workspace's own uploaded key.
+          keyAvailable: Boolean(playKey),
+          publisherEmail: playKey?.clientEmail ?? native.playPublisherEmail(),
+          firstUploadDone: Boolean(appRow?.firstPlaySubmissionAt),
+          packageName: appRow?.androidPackage ?? native.defaultBundleIdentifier(slug),
+        },
+        asc: {
+          keyAvailable: Boolean(ascKey),
+          appRecord: Boolean(appRow?.ascAppId),
+          bundleIdentifier: appRow?.bundleIdentifier ?? native.defaultBundleIdentifier(slug),
+        },
+      },
+      backend: {
+        // The published web URL, when there is one: a native app that calls
+        // relative `/api/...` is dead on a device, so this is what the runner puts
+        // in `EXPO_PUBLIC_API_URL`.
+        published: project.publishStatus === 'live' && Boolean(project.publishedSubdomain),
+        url:
+          project.publishStatus === 'live' && project.publishedSubdomain
+            ? `https://${project.publishedSubdomain}.${process.env.PUBLISH_DOMAIN || 'shogo.one'}`
+            : null,
+      },
+    })
+  } catch (err: any) {
+    return c.json({ error: { code: 'native_state_failed', message: err?.message ?? 'failed' } }, 500)
+  }
+})
+
+/** POST /api/internal/projects/:projectId/native/releases — plan gate,
+ * preflight, `ensureNativeApp`, and the signed upload slots. Nothing is built
+ * until the archive is uploaded and `/sources` is called. */
+app.post('/projects/:projectId/native/releases', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  let body: {
+    platforms?: ('ios' | 'android')[]
+    track?: 'internal' | 'testflight' | 'production'
+    fingerprint?: string
+    hasMaestroFlows?: boolean
+    jobDraft?: Record<string, unknown>
+  }
+  try {
+    body = (await c.req.json()) as typeof body
+  } catch {
+    return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
+  }
+  if (!body.fingerprint) {
+    return c.json({ error: { code: 'missing_fingerprint', message: 'fingerprint is required' } }, 400)
+  }
+
+  try {
+    const [{ prisma }, native] = await Promise.all([
+      import('../lib/prisma'),
+      import('../services/native-release'),
+    ])
+    const project = await (prisma as any).project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+
+    const result = await native.startRelease({
+      workspaceId: project.workspaceId,
+      projectId,
+      memberId: 'native-runtime',
+      platforms: body.platforms?.length ? body.platforms : ['ios'],
+      track: body.track ?? 'internal',
+      fingerprint: body.fingerprint,
+      hasMaestroFlows: body.hasMaestroFlows ?? false,
+      jobDraft: body.jobDraft,
+      apiBaseUrl: process.env.SHOGO_API_BASE_URL ?? 'https://api.shogo.ai',
+    })
+    return c.json(result, 201)
+  } catch (err) {
+    if (err instanceof NativeReleaseHttpError) {
+      return c.json(err.toJSON(), err.status as any)
+    }
+    console.error('[Internal] native release start failed', err)
+    return c.json({ error: { code: 'native_release_failed', message: String((err as Error)?.message ?? err) } }, 500)
+  }
+})
+
+/** POST …/releases/:releaseId/sources — the archive is up; start the test
+ * workflow (or publish the update). This is the call that spends money. */
+app.post('/projects/:projectId/native/releases/:releaseId/sources', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  let body: { bucketKey?: string; jobDraft?: Record<string, unknown> }
+  try {
+    body = (await c.req.json()) as typeof body
+  } catch {
+    return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
+  }
+  if (!body.bucketKey) {
+    return c.json({ error: { code: 'missing_bucket_key', message: 'bucketKey is required' } }, 400)
+  }
+
+  try {
+    const native = await import('../services/native-release')
+    const result = await native.sourcesUploaded({
+      releaseId: c.req.param('releaseId'),
+      bucketKey: body.bucketKey,
+      jobDraft: body.jobDraft,
+    })
+    return c.json(result, 202)
+  } catch (err) {
+    if (err instanceof NativeReleaseHttpError) {
+      return c.json(err.toJSON(), err.status as any)
+    }
+    console.error('[Internal] native release sources failed', err)
+    return c.json({ error: { code: 'native_release_failed', message: String((err as Error)?.message ?? err) } }, 500)
+  }
+})
+
+/** GET …/releases/:releaseId — what the agent polls with `release_id`. */
+app.get('/projects/:projectId/native/releases/:releaseId', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const { prisma } = await import('../lib/prisma')
+  const release = await (prisma as any).nativeRelease.findFirst({
+    where: { id: c.req.param('releaseId'), projectId },
+    include: { builds: true },
+  })
+  if (!release) return c.json({ error: { code: 'not_found', message: 'Release not found' } }, 404)
+  return c.json({ release })
+})
 
 export default app
