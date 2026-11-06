@@ -155,6 +155,9 @@ interface BillingSession {
   imageBilledUsd: number
   imageGenerationCount: number
   imageModels: string[]
+  videoModels: string[]
+  threeDModels: string[]
+  musicModels: string[]
   videoRawUsd: number
   videoBilledUsd: number
   videoGenerationCount: number
@@ -191,8 +194,8 @@ function redisOrNull() {
 function redisHashKey(key: string): string {
   return `billing-session:${key}`
 }
-function redisModelsKey(key: string): string {
-  return `billing-session-models:${key}`
+function redisModelsKey(key: string, kind: 'image' | 'video' | '3d' | 'music' = 'image'): string {
+  return `billing-session-models:${key}:${kind}`
 }
 /** Per-project index of open composite keys — lets `hasActiveSession` avoid a
  * cluster-wide SCAN on the hot per-call path (every AI proxy request). */
@@ -217,6 +220,9 @@ function emptySession(projectId: string, chatSessionId: string | null, workspace
     imageBilledUsd: 0,
     imageGenerationCount: 0,
     imageModels: [],
+    videoModels: [],
+    threeDModels: [],
+    musicModels: [],
     videoRawUsd: 0,
     videoBilledUsd: 0,
     videoGenerationCount: 0,
@@ -233,7 +239,10 @@ function emptySession(projectId: string, chatSessionId: string | null, workspace
   }
 }
 
-function parseSessionHash(hash: Record<string, string>, imageModels: string[]): BillingSession | null {
+function parseSessionHash(
+  hash: Record<string, string>,
+  models: { image: string[]; video: string[]; threeD: string[]; music: string[] },
+): BillingSession | null {
   if (!hash || Object.keys(hash).length === 0) return null
   return {
     projectId: hash.projectId,
@@ -250,7 +259,10 @@ function parseSessionHash(hash: Record<string, string>, imageModels: string[]): 
     imageRawUsd: Number(hash.imageRawUsd || 0),
     imageBilledUsd: Number(hash.imageBilledUsd || 0),
     imageGenerationCount: Number(hash.imageGenerationCount || 0),
-    imageModels,
+    imageModels: models.image,
+    videoModels: models.video,
+    threeDModels: models.threeD,
+    musicModels: models.music,
     videoRawUsd: Number(hash.videoRawUsd || 0),
     videoBilledUsd: Number(hash.videoBilledUsd || 0),
     videoGenerationCount: Number(hash.videoGenerationCount || 0),
@@ -316,8 +328,12 @@ redis.call('HINCRBYFLOAT', KEYS[1], 'videoRawUsd', ARGV[1])
 redis.call('HINCRBYFLOAT', KEYS[1], 'videoBilledUsd', ARGV[2])
 redis.call('HINCRBYFLOAT', KEYS[1], 'videoSeconds', ARGV[3])
 redis.call('HINCRBY', KEYS[1], 'videoGenerationCount', 1)
-redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[4])
-redis.call('PEXPIRE', KEYS[1], ARGV[5])
+if ARGV[4] ~= '' then
+  redis.call('SADD', KEYS[2], ARGV[4])
+  redis.call('PEXPIRE', KEYS[2], ARGV[6])
+end
+redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[5])
+redis.call('PEXPIRE', KEYS[1], ARGV[6])
 return 1
 `
 
@@ -328,8 +344,12 @@ end
 redis.call('HINCRBYFLOAT', KEYS[1], 'threeDRawUsd', ARGV[1])
 redis.call('HINCRBYFLOAT', KEYS[1], 'threeDBilledUsd', ARGV[2])
 redis.call('HINCRBY', KEYS[1], 'threeDGenerationCount', 1)
-redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[3])
-redis.call('PEXPIRE', KEYS[1], ARGV[4])
+if ARGV[3] ~= '' then
+  redis.call('SADD', KEYS[2], ARGV[3])
+  redis.call('PEXPIRE', KEYS[2], ARGV[5])
+end
+redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[4])
+redis.call('PEXPIRE', KEYS[1], ARGV[5])
 return 1
 `
 
@@ -340,8 +360,12 @@ end
 redis.call('HINCRBYFLOAT', KEYS[1], 'musicRawUsd', ARGV[1])
 redis.call('HINCRBYFLOAT', KEYS[1], 'musicBilledUsd', ARGV[2])
 redis.call('HINCRBY', KEYS[1], 'musicGenerationCount', 1)
-redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[3])
-redis.call('PEXPIRE', KEYS[1], ARGV[4])
+if ARGV[3] ~= '' then
+  redis.call('SADD', KEYS[2], ARGV[3])
+  redis.call('PEXPIRE', KEYS[2], ARGV[5])
+end
+redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[4])
+redis.call('PEXPIRE', KEYS[1], ARGV[5])
 return 1
 `
 
@@ -423,6 +447,7 @@ function accumulateImageUsageLocal(
 
 function accumulateVideoUsageLocal(
   projectId: string,
+  model: string,
   seconds: number,
   rawUsd: number,
   billedUsd: number,
@@ -434,12 +459,14 @@ function accumulateVideoUsageLocal(
   session.videoBilledUsd += billedUsd
   session.videoSeconds += seconds
   session.videoGenerationCount += 1
+  if (model && !session.videoModels.includes(model)) session.videoModels.push(model)
   session.lastActivityAt = Date.now()
   return true
 }
 
 function accumulateMusicUsageLocal(
   projectId: string,
+  model: string,
   rawUsd: number,
   billedUsd: number,
   chatSessionId?: string | null,
@@ -449,12 +476,14 @@ function accumulateMusicUsageLocal(
   session.musicRawUsd += rawUsd
   session.musicBilledUsd += billedUsd
   session.musicGenerationCount += 1
+  if (model && !session.musicModels.includes(model)) session.musicModels.push(model)
   session.lastActivityAt = Date.now()
   return true
 }
 
 function accumulate3dUsageLocal(
   projectId: string,
+  model: string,
   rawUsd: number,
   billedUsd: number,
   chatSessionId?: string | null,
@@ -464,6 +493,7 @@ function accumulate3dUsageLocal(
   session.threeDRawUsd += rawUsd
   session.threeDBilledUsd += billedUsd
   session.threeDGenerationCount += 1
+  if (model && !session.threeDModels.includes(model)) session.threeDModels.push(model)
   session.lastActivityAt = Date.now()
   return true
 }
@@ -500,7 +530,7 @@ async function getPendingBilledUsdRedis(
   for (const key of keys) {
     const hash = await r.hgetall(redisHashKey(key))
     if (!hash || Object.keys(hash).length === 0) continue
-    const session = parseSessionHash(hash, [])
+    const session = parseSessionHash(hash, { image: [], video: [], threeD: [], music: [] })
     if (session) return sessionBilledUsd(session)
   }
   return 0
@@ -612,6 +642,7 @@ async function accumulateImageUsageRedis(
 async function accumulateVideoUsageRedis(
   r: NonNullable<ReturnType<typeof redisOrNull>>,
   projectId: string,
+  model: string,
   seconds: number,
   rawUsd: number,
   billedUsd: number,
@@ -622,8 +653,8 @@ async function accumulateVideoUsageRedis(
   const now = Date.now()
   for (const key of composite ? [composite, legacy] : [legacy]) {
     const result = await r.eval(
-      ACCUMULATE_VIDEO_SCRIPT, 1, redisHashKey(key),
-      String(rawUsd), String(billedUsd), String(seconds), String(now), String(REDIS_TTL_MS),
+      ACCUMULATE_VIDEO_SCRIPT, 2, redisHashKey(key), redisModelsKey(key, 'video'),
+      String(rawUsd), String(billedUsd), String(seconds), model ?? '', String(now), String(REDIS_TTL_MS),
     )
     if (result === 1) return true
   }
@@ -633,6 +664,7 @@ async function accumulateVideoUsageRedis(
 async function accumulate3dUsageRedis(
   r: NonNullable<ReturnType<typeof redisOrNull>>,
   projectId: string,
+  model: string,
   rawUsd: number,
   billedUsd: number,
   chatSessionId?: string | null,
@@ -642,8 +674,8 @@ async function accumulate3dUsageRedis(
   const now = Date.now()
   for (const key of composite ? [composite, legacy] : [legacy]) {
     const result = await r.eval(
-      ACCUMULATE_3D_SCRIPT, 1, redisHashKey(key),
-      String(rawUsd), String(billedUsd), String(now), String(REDIS_TTL_MS),
+      ACCUMULATE_3D_SCRIPT, 2, redisHashKey(key), redisModelsKey(key, '3d'),
+      String(rawUsd), String(billedUsd), model ?? '', String(now), String(REDIS_TTL_MS),
     )
     if (result === 1) return true
   }
@@ -653,6 +685,7 @@ async function accumulate3dUsageRedis(
 async function accumulateMusicUsageRedis(
   r: NonNullable<ReturnType<typeof redisOrNull>>,
   projectId: string,
+  model: string,
   rawUsd: number,
   billedUsd: number,
   chatSessionId?: string | null,
@@ -662,8 +695,8 @@ async function accumulateMusicUsageRedis(
   const now = Date.now()
   for (const key of composite ? [composite, legacy] : [legacy]) {
     const result = await r.eval(
-      ACCUMULATE_MUSIC_SCRIPT, 1, redisHashKey(key),
-      String(rawUsd), String(billedUsd), String(now), String(REDIS_TTL_MS),
+      ACCUMULATE_MUSIC_SCRIPT, 2, redisHashKey(key), redisModelsKey(key, 'music'),
+      String(rawUsd), String(billedUsd), model ?? '', String(now), String(REDIS_TTL_MS),
     )
     if (result === 1) return true
   }
@@ -708,7 +741,7 @@ async function openSessionRedis(
   const fresh = emptySession(projectId, chatSessionId ?? null, workspaceId, userId)
   await r
     .multi()
-    .del(redisModelsKey(key))
+    .del(redisModelsKey(key, 'image'), redisModelsKey(key, 'video'), redisModelsKey(key, '3d'), redisModelsKey(key, 'music'))
     .hset(redisHashKey(key), {
       projectId: fresh.projectId,
       chatSessionId: fresh.chatSessionId ?? '',
@@ -748,15 +781,26 @@ async function popSessionRedisAtKey(
   const results = await r
     .multi()
     .hgetall(redisHashKey(key))
-    .smembers(redisModelsKey(key))
+    .smembers(redisModelsKey(key, 'image'))
+    .smembers(redisModelsKey(key, 'video'))
+    .smembers(redisModelsKey(key, '3d'))
+    .smembers(redisModelsKey(key, 'music'))
     .del(redisHashKey(key))
-    .del(redisModelsKey(key))
+    .del(redisModelsKey(key, 'image'), redisModelsKey(key, 'video'), redisModelsKey(key, '3d'), redisModelsKey(key, 'music'))
     .srem(redisIndexKey(projectId), key)
     .exec()
   if (!results) return null
   const [, hashRes] = results[0] as [Error | null, Record<string, string>]
-  const [, modelsRes] = results[1] as [Error | null, string[]]
-  return parseSessionHash(hashRes, modelsRes || [])
+  const [, imageRes] = results[1] as [Error | null, string[]]
+  const [, videoRes] = results[2] as [Error | null, string[]]
+  const [, threeDRes] = results[3] as [Error | null, string[]]
+  const [, musicRes] = results[4] as [Error | null, string[]]
+  return parseSessionHash(hashRes, {
+    image: imageRes || [],
+    video: videoRes || [],
+    threeD: threeDRes || [],
+    music: musicRes || [],
+  })
 }
 
 async function popSessionRedis(
@@ -957,6 +1001,7 @@ export async function accumulateImageUsage(
  */
 export async function accumulateVideoUsage(
   projectId: string,
+  model: string,
   seconds: number,
   rawUsd: number,
   billedUsd: number,
@@ -965,12 +1010,12 @@ export async function accumulateVideoUsage(
   const r = redisOrNull()
   if (r) {
     try {
-      return await withRedisTimeout(accumulateVideoUsageRedis(r, projectId, seconds, rawUsd, billedUsd, chatSessionId))
+      return await withRedisTimeout(accumulateVideoUsageRedis(r, projectId, model, seconds, rawUsd, billedUsd, chatSessionId))
     } catch (err) {
       console.warn(`[BillingSession] Redis accumulateVideoUsage failed, falling back to local map:`, (err as Error).message)
     }
   }
-  return accumulateVideoUsageLocal(projectId, seconds, rawUsd, billedUsd, chatSessionId)
+  return accumulateVideoUsageLocal(projectId, model, seconds, rawUsd, billedUsd, chatSessionId)
 }
 
 /**
@@ -980,6 +1025,7 @@ export async function accumulateVideoUsage(
  */
 export async function accumulateMusicUsage(
   projectId: string,
+  model: string,
   rawUsd: number,
   billedUsd: number,
   chatSessionId?: string | null,
@@ -987,12 +1033,12 @@ export async function accumulateMusicUsage(
   const r = redisOrNull()
   if (r) {
     try {
-      return await withRedisTimeout(accumulateMusicUsageRedis(r, projectId, rawUsd, billedUsd, chatSessionId))
+      return await withRedisTimeout(accumulateMusicUsageRedis(r, projectId, model, rawUsd, billedUsd, chatSessionId))
     } catch (err) {
       console.warn(`[BillingSession] Redis accumulateMusicUsage failed, falling back to local map:`, (err as Error).message)
     }
   }
-  return accumulateMusicUsageLocal(projectId, rawUsd, billedUsd, chatSessionId)
+  return accumulateMusicUsageLocal(projectId, model, rawUsd, billedUsd, chatSessionId)
 }
 
 /**
@@ -1002,6 +1048,7 @@ export async function accumulateMusicUsage(
  */
 export async function accumulate3dUsage(
   projectId: string,
+  model: string,
   rawUsd: number,
   billedUsd: number,
   chatSessionId?: string | null,
@@ -1009,12 +1056,12 @@ export async function accumulate3dUsage(
   const r = redisOrNull()
   if (r) {
     try {
-      return await withRedisTimeout(accumulate3dUsageRedis(r, projectId, rawUsd, billedUsd, chatSessionId))
+      return await withRedisTimeout(accumulate3dUsageRedis(r, projectId, model, rawUsd, billedUsd, chatSessionId))
     } catch (err) {
       console.warn(`[BillingSession] Redis accumulate3dUsage failed, falling back to local map:`, (err as Error).message)
     }
   }
-  return accumulate3dUsageLocal(projectId, rawUsd, billedUsd, chatSessionId)
+  return accumulate3dUsageLocal(projectId, model, rawUsd, billedUsd, chatSessionId)
 }
 
 /**
@@ -1302,12 +1349,18 @@ export async function closeSession(
         imageRawUsd: session.imageRawUsd,
         imageBilledUsd: session.imageBilledUsd,
         imageModels: session.imageModels,
+        // The first model of each kind is also recorded as a single field: the
+        // Usage dashboard's grouped scan can only carry one model per group, and
+        // an array cannot be summed (SHO-355).
+        ...(session.imageModels[0] ? { imageModel: session.imageModels[0] } : {}),
         ...(session.videoGenerationCount > 0
           ? {
               videoGenerationCount: session.videoGenerationCount,
               videoSeconds: session.videoSeconds,
               videoRawUsd: session.videoRawUsd,
               videoBilledUsd: session.videoBilledUsd,
+              videoModels: session.videoModels,
+              ...(session.videoModels[0] ? { videoModel: session.videoModels[0] } : {}),
             }
           : {}),
         ...(session.threeDGenerationCount > 0
@@ -1315,6 +1368,8 @@ export async function closeSession(
               threeDGenerationCount: session.threeDGenerationCount,
               threeDRawUsd: session.threeDRawUsd,
               threeDBilledUsd: session.threeDBilledUsd,
+              threeDModels: session.threeDModels,
+              ...(session.threeDModels[0] ? { threeDModel: session.threeDModels[0] } : {}),
             }
           : {}),
         ...(session.musicGenerationCount > 0
@@ -1322,6 +1377,8 @@ export async function closeSession(
               musicGenerationCount: session.musicGenerationCount,
               musicRawUsd: session.musicRawUsd,
               musicBilledUsd: session.musicBilledUsd,
+              musicModels: session.musicModels,
+              ...(session.musicModels[0] ? { musicModel: session.musicModels[0] } : {}),
             }
           : {}),
         durationMs,

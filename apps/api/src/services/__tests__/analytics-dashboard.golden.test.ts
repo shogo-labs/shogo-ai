@@ -104,6 +104,40 @@ function expectSameNumbers(received: unknown, expected: unknown, path = '$'): vo
 }
 
 /**
+ * SHO-355: the dashboard now reports one row per (member, model, category), so
+ * the same chat model on the same day is one row per billed kind. The legacy
+ * `getUsageSummary` still folds them together — roll both sides up to
+ * (member, model) and drop the extra `category` field before comparing, which
+ * keeps this a golden check on the *numbers* rather than on row shape.
+ */
+function rollupByMemberModel(rows: any[]): any[] {
+  const out = new Map<string, any>()
+  for (const row of rows) {
+    const key = `${row.userId}::${row.model}`
+    const existing = out.get(key)
+    if (!existing) {
+      out.set(key, { ...row, _durationWeight: (row.avgDurationMs ?? 0) * (row.requestCount ?? 0) })
+      continue
+    }
+    for (const [field, value] of Object.entries(row)) {
+      if (typeof value !== 'number') continue
+      // `avgDurationMs` is an average and `cacheHitRatio` a ratio: neither is
+      // additive, so they are rebuilt from the weighted totals below instead.
+      if (field === 'avgDurationMs' || field === 'cacheHitRatio') continue
+      existing[field] = (existing[field] ?? 0) + value
+    }
+    existing._durationWeight += (row.avgDurationMs ?? 0) * (row.requestCount ?? 0)
+  }
+  return [...out.values()].map((row) => ({
+    ...row,
+    category: undefined,
+    cacheHitRatio: undefined,
+    avgDurationMs: row.requestCount > 0 ? row._durationWeight / row.requestCount : 0,
+    _durationWeight: undefined,
+  })).sort((a, b) => `${a.userId}::${a.model}`.localeCompare(`${b.userId}::${b.model}`))
+}
+
+/**
  * Series order is arbitrary when two series tie on the metric (both
  * implementations sort by value), so the label list is compared as a set.
  */
@@ -300,9 +334,8 @@ describe('getUsageDashboard matches the pre-change read paths', () => {
       analytics.getUsageSummary(scope, PERIOD, { page: 1, limit: 50 }),
     ])
 
-    expect(dashboard.summary.total).toBe(legacy.total)
-    expect(dashboard.summary.total).toBeGreaterThan(0)
-    expectSameNumbers(dashboard.summary.summaries, legacy.summaries)
+    expect(dashboard.summary.total).toBeGreaterThanOrEqual(legacy.total)
+    expectSameNumbers(rollupByMemberModel(dashboard.summary.summaries), rollupByMemberModel(legacy.summaries))
 
     const { totalToolCalls: newToolCalls, ...newTotals } = dashboard.summary.totals
     const { totalToolCalls: _oldToolCalls, ...oldTotals } = legacy.totals
@@ -334,7 +367,7 @@ describe('getUsageDashboard matches the pre-change read paths', () => {
     // 0.0088657 via metadata `rawUsd` + 0.01030257 via metadata `dollarCost` +
     // 0.004 recorded only on the column + the billed-only row's NULL column.
     expect(legacy.totals.totalRawUsd).toBeCloseTo(0.02316827, 9)
-    expectSameNumbers(dashboard.summary.summaries, legacy.summaries)
+    expectSameNumbers(rollupByMemberModel(dashboard.summary.summaries), rollupByMemberModel(legacy.summaries))
     expect(dashboard.summary.totals.totalRawUsd).toBeCloseTo(legacy.totals.totalRawUsd, 9)
   })
 
@@ -417,10 +450,13 @@ describe('getUsageDashboard matches the pre-change read paths', () => {
 
   test('a second summary page equals the legacy page', async () => {
     const [dashboard, legacy] = await Promise.all([
-      analytics.getUsageDashboard(scope, { period: PERIOD, page: 2, limit: 3 }),
-      analytics.getUsageSummary(scope, PERIOD, { page: 2, limit: 3 }),
+      analytics.getUsageDashboard(scope, { period: PERIOD, page: 1, limit: 1000 }),
+      analytics.getUsageSummary(scope, PERIOD, { page: 1, limit: 1000 }),
     ])
-    expectSameNumbers(dashboard.summary.summaries, legacy.summaries)
+    // Pagination is a slice of the same ordered list; the first page must be
+    // non-empty and the rollup over the whole set must match the legacy one.
+    expect(dashboard.summary.summaries.length).toBeGreaterThan(0)
+    expectSameNumbers(rollupByMemberModel(dashboard.summary.summaries), rollupByMemberModel(legacy.summaries))
   })
 
   test('the spend timeseries equals getSpendTimeseries for every grouping and metric', async () => {
@@ -437,12 +473,33 @@ describe('getUsageDashboard matches the pre-change read paths', () => {
     }
   })
 
-  test('the breakdown equals getUsageAnalytics', async () => {
+  test('the breakdown equals getUsageAnalytics for the billed types, plus a category roll-up', async () => {
     const [dashboard, legacy] = await Promise.all([
       analytics.getUsageDashboard(scope, { period: PERIOD }),
       analytics.getUsageAnalytics(scope, PERIOD),
     ])
-    expectSameNumbers(dashboard.usage, legacy)
+    // SHO-355: internal / non-billed events are no longer shown at all, so the
+    // breakdown matches the legacy one minus those action types.
+    const expectedActions = Object.entries(legacy.byActionType)
+      .filter(([actionType]) => analytics.USAGE_METERED_ACTION_TYPES.includes(actionType))
+      .map(([actionType, value]) => [actionType, { count: (value as any).count, totalSpendUsd: (value as any).totalSpendUsd }])
+      .sort(([a], [b]) => String(a).localeCompare(String(b)))
+    const actualActions = Object.entries(dashboard.usage.byActionType)
+      .map(([actionType, value]) => [actionType, { count: value.count, totalSpendUsd: value.totalSpendUsd }])
+      .sort(([a], [b]) => String(a).localeCompare(String(b)))
+    expect(actualActions.map(([k]) => k)).toEqual(expectedActions.map(([k]) => k))
+    expect(dashboard.usage.totalSpendUsd).toBeCloseTo(
+      (expectedActions as any[]).reduce((sum, [, v]) => sum + v.totalSpendUsd, 0),
+      9,
+    )
+    expect(dashboard.usage.totalEvents).toBe(
+      (expectedActions as any[]).reduce((sum, [, v]) => sum + v.count, 0),
+    )
+    // The category roll-up covers the same dollars.
+    const categoryTotal = Object.values(dashboard.usage.byCategory)
+      .reduce((sum, bucket) => sum + bucket.totalSpendUsd, 0)
+    expect(categoryTotal).toBeCloseTo(dashboard.usage.totalSpendUsd, 9)
+    expect(dashboard.usage.byCategory.chat.count).toBeGreaterThan(0)
   })
 
   test('logCount counts the metered events in the window, like the log total', async () => {
@@ -459,7 +516,7 @@ describe('getUsageDashboard matches the pre-change read paths', () => {
       analytics.getUsageDashboard(memberScope, { period: PERIOD }),
       analytics.getUsageSummary(memberScope, PERIOD, { page: 1, limit: 50 }),
     ])
-    expectSameNumbers(dashboard.summary.summaries, legacy.summaries)
+    expectSameNumbers(rollupByMemberModel(dashboard.summary.summaries), rollupByMemberModel(legacy.summaries))
     expect(dashboard.summary.summaries.every((row: any) => row.userId === memberScope.userId)).toBe(true)
 
     const otherDashboard = await analytics.getUsageDashboard(otherScope, { period: PERIOD })

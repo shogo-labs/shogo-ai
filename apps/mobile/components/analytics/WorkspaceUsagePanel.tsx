@@ -77,7 +77,7 @@ interface SpendTimeseriesPayload {
     uniqueModels: number;
   };
   models: string[];
-  groupBy: "model" | "user" | "source";
+  groupBy: "model" | "user" | "source" | "category";
   metric: "spend" | "tokens" | "requests";
 }
 
@@ -427,7 +427,7 @@ export function WorkspaceUsagePanel() {
           onMetricChange={setMetric}
           title="Team Usage"
           subtitle="Team usage per day across this billing period"
-          groupByOptions={["model", "user", "source"]}
+          groupByOptions={["model", "user", "source", "category"]}
           showTotals={false}
         />
       </Section>

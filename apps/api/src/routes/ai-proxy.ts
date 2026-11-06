@@ -3514,11 +3514,11 @@ async function recordMediaUsage(tokenPayload: ProxyTokenPayload, charge: MediaCh
     // instead of an extra per-media row.
     if (billingProjectId) {
       const accumulated = kind === 'video'
-        ? await accumulateVideoUsage(billingProjectId, charge.seconds ?? 0, rawUsd, billedUsd, chatSessionId)
+        ? await accumulateVideoUsage(billingProjectId, model, charge.seconds ?? 0, rawUsd, billedUsd, chatSessionId)
         : kind === '3d'
-          ? await accumulate3dUsage(billingProjectId, rawUsd, billedUsd, chatSessionId)
+          ? await accumulate3dUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)
           : kind === 'music'
-            ? await accumulateMusicUsage(billingProjectId, rawUsd, billedUsd, chatSessionId)
+            ? await accumulateMusicUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)
             : await accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)
       if (accumulated) {
         console.log(`[AI Proxy] 🎨 Accumulated ${charge.actionType} for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId}${chatSessionId ? `, chat: ${chatSessionId}` : ''})`)
