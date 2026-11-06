@@ -5,6 +5,45 @@ Status: web profile captured 2026-05-02. iOS / Android pending — see
 containment fix landed 2026-05-02 (PR 1)** — see
 [Phase 1 results](#phase-1-results-css-containment) below.
 
+## 2026-11-06 — SHO-354: windowed transcript
+
+The May run already pointed at this: with 180 real messages mounted, React
+commit cost stayed **flat (0.82 ms mean)** while **total CPU tripled (~10% →
+~30%)** — the added cost was browser layout / paint / style recalc over the
+whole mounted document, not React rendering. Every turn stayed in the tree for
+the life of the chat, so that cost grew without bound.
+
+`TurnList` now mounts a bounded window (`useTurnWindow`):
+`TURN_WINDOW_SIZE = 30` turns at the tail, grown by `TURN_WINDOW_STEP = 20`
+when the scroll position comes within `TURN_WINDOW_TOP_EDGE = 600 px` of the
+top, and shrunk back to the tail window within `TURN_WINDOW_BOTTOM_EDGE =
+240 px` of the bottom. Turns above the window collapse into one spacer sized
+from their measured `onLayout` heights (estimate `280 px` for a turn that has
+never been laid out).
+
+Measured here (jsdom, `components/chat/turns/__tests__/`):
+
+| | before | after |
+| --- | --- | --- |
+| `TurnGroup`s mounted, 300-turn chat | 300 | 30 |
+| `TurnGroup`s mounted after scrolling to the top | 300 | 50 |
+| historical `TurnGroup` renders over 50 streamed chunks (19-turn history) | 0 | 0 |
+| React commits per streamed chunk | 1 | 1 |
+
+What is **not** measured here: browser layout/paint and scroll FPS. The
+harness for those (`/dev/profiler-chat`, `lib/profiler-scenarios.ts`) needs a
+real browser and could not run in the sandbox that made this change. To finish
+AC 1, run the long-history scenario on `main` and on this branch and fill in
+the layout/paint and long-task columns; nothing else in this document changes.
+
+Keeping the reading position: the topmost mounted turn is the anchor, and its
+measured `y` inside the list is the reference. Anything that changes the height
+of content above it — a page of older turns mounting, an estimate being
+replaced by the real height — shifts that `y` by exactly the amount the visible
+content moved, and `ChatPanel.handleTurnWindowContentShift` scrolls back by the
+same delta. Estimates therefore never produce a jump; they only shape the
+scrollbar until the turn is really measured.
+
 ## TL;DR
 
 - Web streaming at 30 fps spends **~20% of one CPU core** in React render +
