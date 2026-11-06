@@ -23,7 +23,7 @@
 import {
   describe, test, expect, beforeEach, afterEach, mock,
 } from 'bun:test'
-import { startTokenRefreshLoop, readJwtExpMs } from '../token-refresh'
+import { startTokenRefreshLoop, readJwtExpMs, notifyProxyAuthFailure, __resetTokenRefreshGlobals } from '../token-refresh'
 
 const ORIGINAL_FETCH = globalThis.fetch
 const ORIGINAL_ENV = { ...process.env }
@@ -388,6 +388,85 @@ describe('startTokenRefreshLoop', () => {
       expect(fetchCount).toBeGreaterThanOrEqual(1)
     } finally {
       handle.stop()
+    }
+  })
+})
+
+/**
+ * SHO-348 (Odin): a metal guest has no ServiceAccount token file, so the
+ * SA-only refresh call 401'd on every tick and its AI_PROXY_TOKEN never
+ * rotated — every model call failed for ~10 h. The loop now sends the runtime's
+ * own `x-runtime-token`, and an auth failure forces one immediate rotation
+ * instead of waiting for the 12 h tick.
+ */
+describe('startTokenRefreshLoop — metal (runtime token) auth', () => {
+  test('sends x-runtime-token and no Authorization when there is no SA token', async () => {
+    // No SA token file: point the seam at a path that does not exist.
+    process.env.K8S_SA_TOKEN_OVERRIDE = ''
+    delete process.env.K8S_SA_TOKEN_OVERRIDE
+    process.env.RUNTIME_AUTH_SECRET = 'rt-secret-1'
+    process.env.SHOGO_API_URL = 'http://api.test.svc.cluster.local'
+
+    const calls: Array<Record<string, string>> = []
+    const fresh = makeJwt({ exp: Math.floor(Date.now() / 1000) + 86400 })
+    globalThis.fetch = mock(async (_url: string, init: any) => {
+      calls.push(init?.headers ?? {})
+      return new Response(JSON.stringify({ projectId: 'p1', env: { AI_PROXY_TOKEN: fresh } }), { status: 200 })
+    }) as any
+
+    const handle = startTokenRefreshLoop({ getProjectId: () => 'p1', intervalMs: 10_000, jitterMs: 0 })
+    try {
+      await handle.refreshNow()
+    } finally {
+      handle.stop()
+    }
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]['x-runtime-token']).toBe('rt-secret-1')
+    expect(calls[0]['Authorization']).toBeUndefined()
+    expect(process.env.AI_PROXY_TOKEN).toBe(fresh)
+  })
+
+  test('an auth failure with an expired token forces exactly one refresh', async () => {
+    const expired = makeJwt({ exp: Math.floor(Date.now() / 1000) - 60 })
+    process.env.AI_PROXY_TOKEN = expired
+    process.env.RUNTIME_AUTH_SECRET = 'rt-secret-2'
+
+    const fresh = makeJwt({ exp: Math.floor(Date.now() / 1000) + 86400 })
+    let fetches = 0
+    globalThis.fetch = mock(async () => {
+      fetches++
+      return new Response(JSON.stringify({ projectId: 'p1', env: { AI_PROXY_TOKEN: fresh } }), { status: 200 })
+    }) as any
+
+    __resetTokenRefreshGlobals()
+    const handle = startTokenRefreshLoop({ getProjectId: () => 'p1', intervalMs: 60 * 60_000, jitterMs: 0 })
+    try {
+      // Two 401s in a burst: single-flight + the debounce collapse them.
+      expect(notifyProxyAuthFailure()).toBe(true)
+      expect(notifyProxyAuthFailure()).toBe(false)
+      // Let the single in-flight refresh settle.
+      await handle.refreshNow()
+      expect(fetches).toBe(1)
+      expect(process.env.AI_PROXY_TOKEN).toBe(fresh)
+    } finally {
+      handle.stop()
+      __resetTokenRefreshGlobals()
+    }
+  })
+
+  test('a still-valid local token does not trigger a rotation on 401', () => {
+    process.env.AI_PROXY_TOKEN = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
+    const fetchSpy = mock(async () => new Response('{}', { status: 200 }))
+    globalThis.fetch = fetchSpy as any
+    __resetTokenRefreshGlobals()
+    const handle = startTokenRefreshLoop({ getProjectId: () => 'p1', intervalMs: 60 * 60_000, jitterMs: 0 })
+    try {
+      expect(notifyProxyAuthFailure()).toBe(false)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      handle.stop()
+      __resetTokenRefreshGlobals()
     }
   })
 })

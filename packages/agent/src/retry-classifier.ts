@@ -61,6 +61,7 @@ export type TurnFailureClass =
   | 'refusal'
   | 'content_filter'
   | 'upstream_400'
+  | 'model_not_found'
   | 'invalid_request'
   | 'network'
   | 'unknown'
@@ -115,6 +116,15 @@ const CONTENT_FILTER_FAILURE =
   /content[_\s-]?(policy|filter)|moderation|safety (system|filter)|content exists risk|sensitive content|flagged/i
 
 /**
+ * The proxy refused because the model id does not exist (an admin deleted it,
+ * or the catalog renamed it). Distinct from a malformed request: retrying and
+ * rephrasing cannot help, and only the person can pick another model. Odin hit
+ * this after the token outage was repaired and read it as "malformed" (SHO-348).
+ */
+const MODEL_NOT_FOUND_FAILURE =
+  /model[_\s-]?not[_\s-]?found|unknown model|no such model|model\b[^.\n]{0,80}\b(?:does not exist|not found|is not available|no longer exists)/i
+
+/**
  * A 400 the *upstream provider* returned, with or without a specific cause.
  * A bare `400` / `invalid_request_error` is our own malformed payload — every
  * family rejects it the same way, so it is not failover-eligible.
@@ -149,6 +159,7 @@ export function classifyTurnFailure(input: TurnFailureInput): TurnFailureClass {
   if (TOO_LARGE_FAILURE.test(raw)) return 'too_large'
   if (stopReason === 'refusal' || stopReason === 'sensitive' || REFUSAL_FAILURE.test(raw)) return 'refusal'
   if (CONTENT_FILTER_FAILURE.test(raw)) return 'content_filter'
+  if (MODEL_NOT_FOUND_FAILURE.test(raw)) return 'model_not_found'
 
   const { reason } = classifyRetryability({ message: raw, stopReason: input.stopReason })
   if (reason === 'network' || reason === 'timeout' || reason === 'idle_timeout' || reason === 'truncated') {
@@ -168,7 +179,11 @@ export function classifyTurnFailure(input: TurnFailureInput): TurnFailureClass {
  * The one line a person sees when a turn could not be finished and nothing
  * better applies. Never contains provider text.
  */
-export function buildTurnFailureMessage(cls: TurnFailureClass | undefined, toolCallCount: number): string {
+export function buildTurnFailureMessage(
+  cls: TurnFailureClass | undefined,
+  toolCallCount: number,
+  opts: { modelName?: string | null } = {},
+): string {
   const steps =
     toolCallCount > 0
       ? ` I completed ${toolCallCount} step${toolCallCount === 1 ? '' : 's'} and saved that work.`
@@ -178,6 +193,11 @@ export function buildTurnFailureMessage(cls: TurnFailureClass | undefined, toolC
   }
   if (cls === 'content_filter') {
     return `The model provider's content filter blocked this request.${steps} Try rephrasing it, or continue with a different model.`
+  }
+  if (cls === 'model_not_found') {
+    const name = (opts.modelName ?? '').trim()
+    const subject = name ? `The agent's model "${name}"` : "This agent's model"
+    return `${subject} is no longer available — pick another one in Settings.${steps}`
   }
   if (cls === 'invalid_request') {
     return `The request to the model was rejected as malformed.${steps} Send another message to pick up from here; if it keeps happening, start a new conversation.`

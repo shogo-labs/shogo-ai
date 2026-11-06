@@ -258,6 +258,50 @@ describe('/pool/activity', () => {
     expect(body.previewHealth).toEqual(previewHealth)
   })
 
+  test('a leaked stream counter alone does not make the runtime busy', async () => {
+    // The Odin failure: `activeStreams: 1` with no turn, task or live stream.
+    // The guest reports its own `busy:false`, so a host reaps/idles it normally
+    // and its expired AI_PROXY_TOKEN can be refreshed (SHO-348).
+    const fixed = Date.now() - 60_000
+    const { app, state } = await buildApp({
+      config: {
+        getActivityStats: () => ({
+          activeSessions: 0,
+          lastActivityAt: fixed,
+          // Deliberately an earlier request so idleSeconds is computable.
+          activeStreams: 1,
+          liveStreams: 0,
+          activeTurns: 0,
+          activeTasks: 0,
+          busy: false,
+        }),
+      },
+    })
+    state.lastRequestAt = fixed
+    const body = await (await app.request('/pool/activity')).json()
+    expect(body.busy).toBe(false)
+    expect(body.activeStreams).toBe(1)
+    expect(body.idleSeconds).toBeGreaterThan(30)
+  })
+
+  test('busy is derived from turns/tasks/live streams when the runtime does not say', async () => {
+    const fixed = Date.now() - 60_000
+    const { app, state } = await buildApp({
+      config: {
+        getActivityStats: () => ({
+          activeSessions: 0,
+          lastActivityAt: fixed,
+          activeStreams: 1,
+          liveStreams: 0,
+        }),
+      },
+    })
+    state.lastRequestAt = fixed
+    const body = await (await app.request('/pool/activity')).json()
+    expect(body.busy).toBe(false)
+    expect(body.idleSeconds).toBeGreaterThan(30)
+  })
+
   test('idleSeconds reflects elapsed time when no streams', async () => {
     const past = Date.now() - 10_000
     const { app } = await buildApp({

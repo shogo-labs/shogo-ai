@@ -333,3 +333,81 @@ describe('reapIdle under the two-tier window', () => {
     expect(await pool.reapIdle(IDLE_MS, { maxPerPass: 1 })).toEqual(['quiet'])
   })
 })
+
+/**
+ * SHO-348: `activeStreams` is a counter the guest can leak — a turn that was
+ * stopped or frozen keeps it at 1 with nothing running behind it. The guest now
+ * reports its own `busy`, and every lifecycle gate trusts that instead, so a
+ * leaked counter can no longer keep a VM resident (and its expired AI-proxy
+ * token unrefreshed) forever.
+ */
+describe('reapIdle gates on the guest\'s own busy verdict, not a leaked stream counter', () => {
+  let dir: string
+  const realFetch = globalThis.fetch
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-busy-verdict-'))
+  })
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a guest that reports busy:false with activeStreams:1 is suspended', async () => {
+    const pool = makePool(dir)
+    const old = Date.now() - 10 * IDLE_MS
+    const a = pool.seed('wedged', { lastTouchedAt: old, lastRealActivityAt: old, assignedAt: old })
+
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ lastRequestAt: 1, activeStreams: 1, busy: false, lastAppRequestAt: null, lastAgentRequestAt: null }),
+          { status: 200 },
+        ),
+      )) as any
+    await pool.pollActivity()
+
+    expect(a.busy).toBe(false)
+    expect(a.activeStreams).toBe(1)
+    expect(await pool.reapIdle(IDLE_MS)).toEqual(['wedged'])
+  })
+
+  test('a guest that reports busy:true is kept even with no streams counted', async () => {
+    const pool = makePool(dir)
+    const old = Date.now() - 10 * IDLE_MS
+    pool.seed('really-busy', { lastTouchedAt: old, lastRealActivityAt: old, assignedAt: old })
+
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ lastRequestAt: 1, activeStreams: 0, busy: true }), { status: 200 }),
+      )) as any
+    await pool.pollActivity()
+
+    expect(await pool.reapIdle(IDLE_MS)).toEqual([])
+  })
+
+  test('isBusy follows the guest\'s busy verdict', async () => {
+    const pool = makePool(dir)
+    pool.seed('wedged', { assignedAt: Date.now() })
+
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response(JSON.stringify({ activeStreams: 1, busy: false }), { status: 200 }))) as any
+    expect(await pool.isBusy('wedged')).toBe(false)
+
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response(JSON.stringify({ activeStreams: 0, busy: true }), { status: 200 }))) as any
+    expect(await pool.isBusy('wedged')).toBe(true)
+  })
+
+  test('an older guest with no busy field still uses activeStreams', async () => {
+    const pool = makePool(dir)
+    const old = Date.now() - 10 * IDLE_MS
+    const a = pool.seed('legacy', { lastTouchedAt: old, lastRealActivityAt: old, assignedAt: old })
+
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response(JSON.stringify({ lastRequestAt: 1, activeStreams: 1 }), { status: 200 }))) as any
+    await pool.pollActivity()
+
+    expect(a.busy).toBeUndefined()
+    expect(await pool.reapIdle(IDLE_MS)).toEqual([])
+  })
+})

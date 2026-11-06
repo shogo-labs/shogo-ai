@@ -67,8 +67,13 @@ mock.module('../services/workspace-models.service', () => ({
   isModelVisibleForWorkspace: async () => true,
 }))
 
+// `knownModels === null` means "the registry knows every id" (the pre-existing
+// cases). A set restricts it, standing in for a model an admin has deleted.
+let knownModels: Set<string> | null = null
+
 mock.module('../services/model-registry.service', () => ({
-  getMergedModelEntrySync: (id: string) => (id ? { id, displayName: id } : undefined),
+  getMergedModelEntrySync: (id: string) =>
+    id && (knownModels === null || knownModels.has(id)) ? { id, displayName: id } : undefined,
   resolveModelLabel: async (id: string) => id,
 }))
 
@@ -112,6 +117,7 @@ function seedProject(id: string, workspaceId: string) {
 
 beforeEach(() => {
   advancedAccess = true
+  knownModels = null
   workspaceDefaultModel = null
   accessibilityCalls.length = 0
   storedProjectModel.clear()
@@ -169,5 +175,50 @@ describe('the API snapshot the runtime caches cannot carry the 403-bound model',
 
     const merged = mergeAgentModelIntoConfig({ model: { provider: 'anthropic', name: 'auto' } }, config.agent)
     expect(merged.config.model.name).toBe(PREMIUM)
+  })
+})
+
+
+/**
+ * SHO-348: an admin can delete a model that agents still name. The proxy then
+ * answers `400 model_not_found`, which used to reach the person as the useless
+ * "rejected as malformed". A missing model must now fall back to Auto — loudly —
+ * both for the per-run resolution and for the snapshot the runtime caches.
+ */
+describe('resolveAgentRunModel — a model that no longer exists', () => {
+  it('runs on Auto and says so, instead of handing the dead id to the proxy', async () => {
+    knownModels = new Set(['claude-opus-4-7'])
+    storedProjectModel.set('proj_1', 'e484818f-deleted')
+
+    const warnings: string[] = []
+    const realWarn = console.warn
+    console.warn = (...args: any[]) => warnings.push(args.join(' '))
+    try {
+      expect(await resolveAgentRunModel('proj_1', 'ws_pro')).toBe('auto')
+    } finally {
+      console.warn = realWarn
+    }
+
+    expect(warnings.join('\n')).toContain('e484818f-deleted')
+    expect(warnings.join('\n')).toContain('no longer exists')
+    // The dead id never reached the entitlement check either.
+    expect(accessibilityCalls).toEqual([])
+  })
+
+  it('a still-existing model is returned unchanged', async () => {
+    knownModels = new Set([PREMIUM])
+    storedProjectModel.set('proj_1', PREMIUM)
+    expect(await resolveAgentRunModel('proj_1', 'ws_pro')).toBe(PREMIUM)
+  })
+
+  it('the cached config snapshot cannot carry the dead id', async () => {
+    knownModels = new Set(['claude-opus-4-7'])
+    seedProject('proj_1', 'ws_pro')
+    agentConfigs.set('proj_1', { ...agentConfigs.get('proj_1'), modelName: 'e484818f-deleted' })
+
+    const config = await readProjectConfig('proj_1')
+    expect(config.agent?.modelName).toBe('auto')
+    const merged = mergeAgentModelIntoConfig({ model: { provider: 'anthropic', name: 'auto' } }, config.agent)
+    expect(JSON.stringify(merged.config)).not.toContain('e484818f-deleted')
   })
 })
