@@ -228,4 +228,48 @@ describe('a media line reaches the read paths', () => {
     // A billed completion with no recorded model has no better name than this.
     expect(analytics.usageLabelFor('ai_proxy_completion', {}).model).toBe('unknown')
   })
+
+  test('hosting and social rows are named, never `unknown`', () => {
+    // These record no model at all, so `unknown` was the only label the rewrite
+    // could give them — the reason SHO-355 came back from QA.
+    const hosting = analytics.usageLabelFor('published_hosting', { podSeconds: 3600 })
+    expect(hosting.model).toBe('Published hosting')
+    expect(hosting.provider).toBe('shogo')
+    expect(hosting.category).toBe('hosting')
+
+    for (const actionType of ['social_account_monthly', 'social_dm', 'social_x_api', 'social_media_lookup']) {
+      const label = analytics.usageLabelFor(actionType, {})
+      expect(label.model, actionType).not.toBe('unknown')
+      expect(label.model.startsWith('Social'), actionType).toBe(true)
+      expect(label.provider, actionType).not.toBe('anthropic')
+      expect(label.category).toBe('social')
+    }
+
+    // A chat completion whose model we failed to record stays honest: guessing
+    // "Chat" would hide the missing metadata instead of surfacing it.
+    expect(analytics.usageLabelFor('ai_proxy_completion', {}).model).toBe('unknown')
+  })
+
+  test('the spend chart draws folded media in its own series, not under chat', async () => {
+    const byCategory = await analytics.getSpendTimeseries(scope, PERIOD, {
+      groupBy: 'category',
+      metric: 'spend',
+    })
+    expect(byCategory.models).toEqual(expect.arrayContaining(['Chat', 'Image', 'Video']))
+
+    const image = byCategory.days.reduce((sum, day) => sum + (day.byModel.Image ?? 0), 0)
+    const chat = byCategory.days.reduce((sum, day) => sum + (day.byModel.Chat ?? 0), 0)
+    const video = byCategory.days.reduce((sum, day) => sum + (day.byModel.Video ?? 0), 0)
+    expect(image).toBeCloseTo(0.12, 6)
+    // The chat line keeps only its tokens: 0.52 total - 0.12 image.
+    expect(chat).toBeCloseTo(0.4, 6)
+    expect(video).toBeCloseTo(0.75, 6)
+    // The split moves dollars; it never creates or loses them.
+    expect(chat + image + video).toBeCloseTo(0.4 + 0.12 + 0.75, 6)
+
+    // Grouping by model names the media model instead of the chat model.
+    const byModel = await analytics.getSpendTimeseries(scope, PERIOD, { groupBy: 'model' })
+    expect(byModel.models).toEqual(expect.arrayContaining(['gpt-image-1', 'veo-3']))
+    expect(byModel.days.reduce((sum, day) => sum + (day.byModel['gpt-image-1'] ?? 0), 0)).toBeCloseTo(0.12, 6)
+  })
 })

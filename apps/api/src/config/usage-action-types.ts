@@ -120,6 +120,35 @@ export function usageCategoryLabel(category: UsageCategory): string {
   return USAGE_CATEGORY_LABELS[category]
 }
 
+/**
+ * A human name for a type that records **no model** — hosting and every social
+ * charge. Without this those rows were labelled `unknown` even though we know
+ * exactly what they are (SHO-355 AC3).
+ *
+ * Only the model-less types are listed: where a row carries a model, that id (or
+ * its catalog display name) is the honest label, and a per-type name would hide
+ * it. `usageActionLabel` therefore falls back to the category label.
+ */
+export const USAGE_ACTION_LABELS: Partial<Record<BilledUsageActionType, string>> = {
+  published_hosting: 'Published hosting',
+  social_account_monthly: 'Social: account',
+  social_dm: 'Social: DM',
+  social_x_api: 'Social: X API',
+  social_media_lookup: 'Social: media lookup',
+  ai_audio_transcription: 'Audio transcription',
+  voice_media_usage: 'Voice: media',
+  voice_number_setup: 'Voice: number setup',
+  voice_number_monthly: 'Voice: number rental',
+}
+
+/** The best human name for an action type: its own, else its category's. */
+export function usageActionLabel(actionType: string): string {
+  const own = USAGE_ACTION_LABELS[actionType as BilledUsageActionType]
+  if (own) return own
+  const category = usageCategoryFor(actionType)
+  return category ? USAGE_CATEGORY_LABELS[category] : actionType
+}
+
 /** Categories whose spend is "model" spend (tokens), not media credits. */
 export function isTokenCategory(category: UsageCategory): boolean {
   return category === 'chat'
