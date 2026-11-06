@@ -19,6 +19,7 @@ import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
 import {
+  REMOTE_PROJECT_ONLY_TOOLS,
   REMOTE_READONLY_TOOLS,
   REMOTE_TOOL_ALLOWLIST,
   RemoteToolError,
@@ -924,11 +925,11 @@ function remoteFailure(err: unknown, project: { id: string; name: string }): Age
 }
 
 /**
- * File tools whose result names one file the caller may want to open. Only
- * these are in `REMOTE_TOOL_ALLOWLIST`; `share_file` is not remotable, so its
- * result never needs placing.
+ * File tools whose result names one file the caller may want to open. All of
+ * them are in `REMOTE_TOOL_ALLOWLIST`; `share_file`'s `path` is the target
+ * project's relative path it signed, so it places the same way.
  */
-const REMOTE_FILE_PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'delete_file'])
+const REMOTE_FILE_PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'delete_file', 'share_file'])
 
 /**
  * The fields that say which project a remote file result belongs to.
@@ -1067,6 +1068,24 @@ export function withRemoteProject(tool: AgentTool, ctx: ToolContext): AgentTool 
  */
 export function withRemoteDevice(tool: AgentTool, ctx: ToolContext): AgentTool {
   if (!isRemotableTool(tool.name)) return tool
+  // Project-only tools never gain `device`: the answer would name a file on
+  // that desktop's disk, which the user's cloud chat cannot open (SHO-353).
+  if (REMOTE_PROJECT_ONLY_TOOLS.has(tool.name)) {
+    return {
+      ...tool,
+      execute: async (toolCallId, params, signal, onUpdate) => {
+        if ((params as Record<string, unknown> | undefined)?.device !== undefined) {
+          return textResult({
+            error:
+              `\`${tool.name}\` runs inside a project's runtime, not on a paired desktop. ` +
+              'Pass `project` to reach another project, or omit both to run here.',
+            code: 'device_not_supported',
+          })
+        }
+        return tool.execute(toolCallId, params, signal, onUpdate)
+      },
+    }
+  }
   const base = tool.parameters as unknown as { properties?: Record<string, any> }
   return {
     ...tool,
@@ -5626,6 +5645,7 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       'Never upload the file to a third-party host (filebin, file.io, transfer.sh, tmpfiles, 0x0.st, or similar) with curl or any other tool; this is the only supported way to hand a user a file.',
       'After this succeeds, paste the returned URL verbatim; tell the user when it expires only when the result has an `expiresAt`. Do not delete or overwrite the shared file before the user downloads it.',
       'In a workspace runtime the file decides where the link points: a file inside a mounted project gets a project link, anything else gets a workspace link. `project_id` only picks the project when the path alone is ambiguous.',
+      'On cloud, other projects run in their own runtimes: to give the user a file from another project, call `share_file` with `project: "<id or name>"` and the path relative to that project. Never copy it through the shell, into a static/public folder, or to a preview URL.',
       'On local desktop it returns a `file://` link to the file on disk that does not expire.',
     ].join(' '),
     label: 'Share file',
@@ -5640,7 +5660,7 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       project_id: Type.Optional(
         Type.String({
           description:
-            'Optional tiebreaker. The project that owns the file is taken from the path itself (a file under `<projectId>/…` belongs to that project); pass this only when the path sits at the workspace root and you want a particular project named, or to be explicit. A value that contradicts where the file actually lives is ignored and reported in the result.',
+            'Optional tiebreaker for a file that is already on this runtime\'s disk. The project that owns the file is taken from the path itself (a file under `<projectId>/…` belongs to that project); pass this only when the path sits at the workspace root and you want a particular project named, or to be explicit. A value that contradicts where the file actually lives is ignored and reported in the result. This is not `project`: `project` runs the whole call in that project\'s own runtime, `project_id` only names a tiebreaker here.',
         }),
       ),
     }),
@@ -5665,10 +5685,18 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
         }
         fileSize = file.size
       } catch {
-        const hint = bogusPathPrefixHint(ctx.workspaceDir, path)
+        const hints: string[] = []
+        const prefix = bogusPathPrefixHint(ctx.workspaceDir, path)
+        if (prefix) hints.push(prefix)
+        if (isWorkspaceRuntimeMode() && isMetalRuntime()) {
+          hints.push(
+            'If the file is in another project, call share_file again with `project: "<id or name>"` and the path ' +
+              'relative to that project.',
+          )
+        }
         return textResult({
           error: `File not found: ${path}`,
-          ...(hint ? { hint } : {}),
+          ...(hints.length ? { hint: hints.join(' ') } : {}),
         })
       }
 
@@ -11253,7 +11281,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createAskUserTool(ctx),
     createCheckpointTool(ctx),
     createPublishTool(ctx),
-    createShareFileTool(ctx),
+    r(createShareFileTool(ctx)),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
     createChannelDisconnectTool(ctx),
