@@ -264,6 +264,73 @@ describe("TurnList — mounted window (AC 3)", () => {
     view.unmount()
   })
 
+  test("a scroll at the bottom never mounts older turns", async () => {
+    const scroll = createTranscriptScrollSignal()
+    const view = render(
+      createElement(TurnList as any, {
+        messages: longChat(300),
+        scrollSignal: scroll,
+      }),
+    )
+
+    // The spacer sits *above* the window, so a bottom-of-chat position is
+    // farther from the top than the spacer is tall — it must not read as
+    // "near the top of history". Five reports, as scrolling/autoscroll gives.
+    for (let index = 0; index < 5; index++) {
+      act(() => {
+        scroll.report({
+          y: 119_200 - index * 200,
+          viewportHeight: 800,
+          contentHeight: 120_000,
+        })
+      })
+    }
+
+    // Past the expansion throttle and its retry timer.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+
+    const rows = mountedRows(view.container)
+    expect(rows).toHaveLength(TURN_WINDOW_SIZE)
+    expect(rows[0]).toBe("turn-row-turn-u270")
+
+    view.unmount()
+  })
+
+  test("one top scroll mounts one page and then stops", async () => {
+    const scroll = createTranscriptScrollSignal()
+    const view = render(
+      createElement(TurnList as any, {
+        messages: longChat(300),
+        scrollSignal: scroll,
+      }),
+    )
+
+    scrollToWindowTop(scroll, 270)
+    expect(mountedRows(view.container)).toHaveLength(
+      TURN_WINDOW_SIZE + TURN_WINDOW_STEP,
+    )
+
+    // The viewport has not moved, so the next page is not due: the retry timer
+    // must not walk the window back through the whole history on its own.
+    await new Promise((resolve) => setTimeout(resolve, 700))
+
+    expect(mountedRows(view.container)).toHaveLength(
+      TURN_WINDOW_SIZE + TURN_WINDOW_STEP,
+    )
+
+    // A further upward scroll mounts exactly one more page.
+    scrollToWindowTop(scroll, 250)
+    expect(mountedRows(view.container)).toHaveLength(
+      TURN_WINDOW_SIZE + TURN_WINDOW_STEP * 2,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(mountedRows(view.container)).toHaveLength(
+      TURN_WINDOW_SIZE + TURN_WINDOW_STEP * 2,
+    )
+
+    view.unmount()
+  })
+
   test("opening the in-place editor mounts the turn that owns the divider", () => {
     const view = render(
       createElement(
