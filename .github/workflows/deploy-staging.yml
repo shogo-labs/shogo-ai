@@ -140,6 +140,10 @@ jobs:
           if [ -n "${{ secrets.EXPO_ACCOUNT_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=EXPO_ACCOUNT_TOKEN="${{ secrets.EXPO_ACCOUNT_TOKEN }}"); fi
           if [ -n "${{ secrets.EXPO_ACCOUNT_ID }}" ]; then SECRET_ARGS+=(--from-literal=EXPO_ACCOUNT_ID="${{ secrets.EXPO_ACCOUNT_ID }}"); fi
           if [ -n "${{ secrets.EAS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=EAS_WEBHOOK_SECRET="${{ secrets.EAS_WEBHOOK_SECRET }}"); fi
+          # Shogo's Google Play publisher service account: the API falls back to
+          # it when a workspace has no Play key of its own. Unset, Play refuses
+          # with the connect-a-key message rather than an uninvitable one.
+          if [ -n "${{ secrets.SHOGO_PLAY_PUBLISHER_SA }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_PLAY_PUBLISHER_SA="${{ secrets.SHOGO_PLAY_PUBLISHER_SA }}"); fi
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
