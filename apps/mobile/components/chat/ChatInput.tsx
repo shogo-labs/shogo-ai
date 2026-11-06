@@ -398,6 +398,10 @@ export interface ChatInputProps {
     direction: "up" | "down"
   ) => void;
   onEditQueuedMessage?: (messageId: string) => void;
+  /** The queued row the composer is editing, if any (SHO-356). */
+  queuedEditingId?: string | null;
+  /** Why a queue action was refused, per row id, shown on the row. */
+  queuedMessageErrors?: Record<string, string>;
   onSendQueuedMessageNow?: (messageId: string) => void;
   /** Send a team-chat wake now (its own queue, its own route). The dock's row
    *  awaits this so the server's refusal is shown on the row itself. */
@@ -566,6 +570,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
   onEditQueuedMessage,
+  queuedEditingId,
+  queuedMessageErrors,
   onSendQueuedMessageNow,
   onSendAgentWakeNow,
   onRemoveAgentWake,
@@ -2044,6 +2050,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           itself lives in QueueDockPanel. */}
       <QueueDockPanel
         queuedMessages={queuedMessages}
+        editingId={queuedEditingId ?? null}
+        messageErrors={queuedMessageErrors}
         onRemoveQueuedMessage={onRemoveQueuedMessage}
         onReorderQueuedMessage={onReorderQueuedMessage}
         onEditQueuedMessage={onEditQueuedMessage}
