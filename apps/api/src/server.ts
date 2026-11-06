@@ -180,6 +180,7 @@ import { createRuntimeManager, resolveRuntimeMaxCount, setRuntimeManager, type I
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
+import { isMidCutoverStatus } from './services/published-cutover.service'
 import { deployedAppVersionOrUnknown } from './lib/app-version'
 // Auth middleware for generated routes
 import {
@@ -2210,6 +2211,20 @@ async function pinPublishedToHomeRegion(c: any, projectId: string, subdomain: st
   })
 }
 
+/**
+ * True while a site's production environment is frozen for a metal → Knative
+ * cutover (SHO-308 §7). Both the wake probe and the published proxy consult it:
+ * resuming the microVM mid-freeze would let it write past the export that is
+ * being copied, which is the one thing the freeze exists to prevent.
+ */
+async function isPublishedMidCutover(projectId: string): Promise<boolean> {
+  const env = await prisma.publishedEnvironment.findFirst({
+    where: { projectId, name: 'production' },
+    select: { publishStatus: true },
+  })
+  return isMidCutoverStatus(env?.publishStatus)
+}
+
 // Wake a published, server-backed app ({subdomain}.shogo.one -> published-{id}).
 app.get('/api/published/:subdomain/wake', async (c) => {
   const subdomain = (c.req.param('subdomain') || '').toLowerCase()
@@ -2220,6 +2235,14 @@ app.get('/api/published/:subdomain/wake', async (c) => {
     })
     if (!project) {
       return c.json({ ready: false, error: 'not_found' }, 404, WAKE_RESPONSE_HEADERS)
+    }
+    // Never resolve the runtime during a cutover: the Worker turns this into its
+    // loading page, which polls until the switch finishes.
+    if (await isPublishedMidCutover(project.id)) {
+      return c.json({ ready: false, maintenance: true }, 503, {
+        ...WAKE_RESPONSE_HEADERS,
+        'Retry-After': '30',
+      })
     }
     const pinned = await pinPublishedToHomeRegion(c, project.id, subdomain)
     if (pinned) return pinned
@@ -2585,6 +2608,18 @@ app.all('/api/preview/:projectId/ports/:port/render/*', previewPortRenderHandler
 // `published:{id}` microVM and proxy to `${url}/api/<path>` at the root — exactly
 // as Kourier→published-{id} did on Knative. The password gate / canonical
 // redirect stay at the edge (Worker), unchanged.
+// Shown to a visitor whose server-backed site is mid-cutover. Deliberately
+// self-contained: the app's own bundle may be the thing being replaced.
+const MAINTENANCE_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Back in a moment</title>
+<style>html,body{margin:0;height:100%;background:#0b0b0f;color:#e7e7ea;font:16px/1.5 ui-sans-serif,system-ui,sans-serif}
+main{display:flex;min-height:100%;align-items:center;justify-content:center;padding:24px;text-align:center}
+h1{font-size:20px;margin:0 0 8px}p{margin:0;color:#9a9aa2}</style></head>
+<body><main><div><h1>This site is being updated</h1>
+<p>It will be back in less than a minute. This page retries on its own.</p></div></main>
+<script>setTimeout(function(){location.reload()},15000)</script></body></html>`
+
 const publishedApiHandler = async (c: any) => {
   const subdomain = (c.req.param('subdomain') || '').toLowerCase()
   try {
@@ -2594,6 +2629,24 @@ const publishedApiHandler = async (c: any) => {
     })
     if (!project) return c.json({ error: { code: 'not_found' } }, 404)
     if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
+
+    // Maintenance window during a metal → Knative cutover (SHO-308 §7). The site
+    // is being frozen so its database can be exported and copied; waking the
+    // microVM here would resume it mid-freeze and let it write past the export.
+    // Answer without touching the runtime at all.
+    if (await isPublishedMidCutover(project.id)) {
+      return new Response(MAINTENANCE_HTML, {
+        status: 503,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          // Short enough that a visitor retries automatically, long enough that a
+          // page load cannot hammer the proxy while the copy runs.
+          'retry-after': '30',
+        },
+      })
+    }
+
     const pinned = await pinPublishedToHomeRegion(c, project.id, subdomain)
     if (pinned) return pinned
 

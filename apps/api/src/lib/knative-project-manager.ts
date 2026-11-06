@@ -1155,6 +1155,50 @@ export class KnativeProjectManager {
   }
 
   /**
+   * In-cluster URL of any ksvc in this manager's namespace, by name. The
+   * cutover rehearsal's service has no environment, so `publishedServiceUrl`
+   * (which derives a name from one) cannot address it.
+   */
+  serviceUrlForName(name: string): string {
+    return `http://${name}.${this.namespace}.svc.cluster.local`
+  }
+
+  /** `/ready` probe of a ksvc addressed by name (rehearsal services). */
+  async healthCheckServiceName(name: string, timeoutMs: number = 5000): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.serviceUrlForName(name)}/ready`, {
+        method: "GET",
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      return response.ok
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Delete a ksvc by name. The rehearsal's service is not any environment's, so
+   * `deletePublishedService(projectId, environment)` cannot reach it and a
+   * leftover would keep a pod (and its traffic-free DomainMapping) around.
+   */
+  async deleteServiceByName(name: string): Promise<void> {
+    const api = getCustomApi()
+    try {
+      await api.deleteNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: "services",
+        name,
+      })
+    } catch (err: any) {
+      const statusCode = err?.response?.statusCode || err?.statusCode || err?.body?.code
+      if (statusCode === 404) return
+      throw err
+    }
+  }
+
+  /**
    * The pods currently backing a published environment. This is the source of
    * truth for the Deployment tab's replica count (SHO-308 §4) — not metal VM
    * state, and not a cached number.
@@ -1967,10 +2011,16 @@ export class KnativeProjectManager {
       environment?: PublishedEnvironmentName
       /** Prebuilt per-commit image. Falls back to the shared runtime image. */
       image?: string
+      /**
+       * Override the ksvc name. Used by the cutover rehearsal, which needs a
+       * warm copy of the exact image that serves no traffic and owns no
+       * environment (`published-<id>-rehearsal`).
+       */
+      serviceName?: string
     },
   ): Promise<string> {
     const environment = opts?.environment ?? 'production'
-    const serviceName = publishedServiceName(projectId, environment)
+    const serviceName = opts?.serviceName ?? publishedServiceName(projectId, environment)
     const scale: PublishedScaleSettings = {
       minReplicas: opts?.minScale ?? 0,
       maxReplicas: opts?.maxScale ?? 1,

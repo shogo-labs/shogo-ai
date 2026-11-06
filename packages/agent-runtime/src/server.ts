@@ -145,6 +145,7 @@ import {
 import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
 import { sweepExecCwdMarkers } from './exec-cwd'
 import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
+import { createPublishedArtifactFilter } from './publish-artifact-filter'
 import { handleExportHome, handleHydrateHome } from './home-state-routes'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
@@ -6152,14 +6153,14 @@ app.get('/agent/publish-artifact', async (c) => {
     )
   }
 
-  // Directories that are either rebuilt inside the image (`node_modules`), not
-  // part of the artifact (`.git`, `.shogo`), or a stale build of the canvas
-  // preview (`dist`, which is path-prefixed and must not leak into the image).
-  const SKIP = new Set(['node_modules', '.git', '.shogo', 'dist', PUBLISH_STAGING_DIR, '.tmp'])
-  // SQLite's write-ahead log belongs to a live process: a `-wal` captured
-  // mid-write and replayed against the image's DB is how a published app starts
-  // up with a corrupt table. The DB file itself is a valid snapshot.
-  const SKIP_SUFFIX = /-(wal|shm)$/
+  // What may enter the image is decided in one place, and it is exercised by
+  // `publish-artifact-filter.test.ts`: matching only the first path segment let
+  // a nested `apps/*/node_modules` (and `.env` files) into the context, which
+  // `COPY . /app` lays down *before* `bun install`.
+  const filter = createPublishedArtifactFilter({
+    projectDir,
+    stagingDirName: PUBLISH_STAGING_DIR,
+  })
 
   const { cp, mkdtemp, readFile, rm } = await import('fs/promises')
   const os = await import('os')
@@ -6169,8 +6170,9 @@ app.get('/agent/publish-artifact', async (c) => {
   const archivePath = join(tmpDir, 'artifact.tar.gz')
   try {
     // Fold the WAL back into the DB before copying it. Otherwise the tarball
-    // would skip `-wal` (see SKIP_SUFFIX) and lose the writes it still holds —
-    // a published app booting with a DB that is behind its own last write.
+    // would skip `-wal` (see publish-artifact-filter) and lose the writes it
+    // still holds — a published app booting with a DB that is behind its own
+    // last write.
     for (const rel of ['prisma/dev.db', 'dev.db']) {
       const dbPath = join(projectDir, rel)
       if (!existsSync(dbPath)) continue
@@ -6183,15 +6185,7 @@ app.get('/agent/publish-artifact', async (c) => {
         console.warn(`[agent-runtime] publish-artifact: checkpoint of ${rel} failed: ${err?.message ?? err}`)
       }
     }
-    await cp(projectDir, contextDir, {
-      recursive: true,
-      filter: (src) => {
-        const rel = src.slice(projectDir.length + 1)
-        if (!rel) return true
-        if (SKIP_SUFFIX.test(rel)) return false
-        return !SKIP.has(rel.split(/[\\/]/)[0])
-      },
-    })
+    await cp(projectDir, contextDir, { recursive: true, filter })
     await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
     await tar.create({ gzip: true, file: archivePath, cwd: contextDir, portable: true }, ['.'])
     const buf = await readFile(archivePath)

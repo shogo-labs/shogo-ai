@@ -25,6 +25,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "create", "delete"]
+  # `pods/log` is NOT implied by `pods` (SHO-308 §2/§7): the API reads a
+  # published build Job's log for `publishError`, the Deployment tab's log view
+  # and a cutover that has to explain a failed step. Without this rule every tail
+  # is empty and the only diagnostic a user gets is a bare failure code.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "create", "delete"]
