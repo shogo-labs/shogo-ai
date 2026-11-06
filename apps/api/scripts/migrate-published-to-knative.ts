@@ -43,7 +43,10 @@
  *   --yes            Apply the real migration (required to mutate).
  *   --project <id>   Only this project (repeatable).
  *   --limit <n>      Cap how many sites are processed.
- *   --max-downtime <seconds>  Abort threshold for the switch (default 60).
+ *   --max-downtime <seconds>  Bound on the switch window (default 60).
+ *   --max-failures <n>  Stop the batch after this many failed sites (default 3).
+ *   --readiness-timeout <seconds>  Phase 1's wait for the ksvc to answer /ready
+ *                    (default 300). Outside the downtime window.
  *   --archive-timeout <seconds>  How long to wait for the final export (default 90).
  *   --to metal       Rollback direction: put a site back on metal from the kept
  *                    archive and flip its flag back.
@@ -70,6 +73,8 @@ interface Cli {
   projectIds: string[]
   limit?: number
   maxDowntimeMs: number
+  maxFailures: number
+  readinessTimeoutMs: number
   archiveTimeoutMs: number
   to: Target
 }
@@ -80,6 +85,8 @@ function parseArgs(argv: string[]): Cli {
     rehearse: false,
     projectIds: [],
     maxDowntimeMs: 60_000,
+    maxFailures: 3,
+    readinessTimeoutMs: 300_000,
     archiveTimeoutMs: 90_000,
     to: 'knative',
   }
@@ -91,12 +98,14 @@ function parseArgs(argv: string[]): Cli {
     else if (a === '--project') cli.projectIds.push(argv[++i])
     else if (a === '--limit') cli.limit = Number(argv[++i])
     else if (a === '--max-downtime') cli.maxDowntimeMs = Number(argv[++i]) * 1000
+    else if (a === '--max-failures') cli.maxFailures = Number(argv[++i])
+    else if (a === '--readiness-timeout') cli.readinessTimeoutMs = Number(argv[++i]) * 1000
     else if (a === '--archive-timeout') cli.archiveTimeoutMs = Number(argv[++i]) * 1000
     else if (a === '--to') cli.to = argv[++i] === 'metal' ? 'metal' : 'knative'
     else if (a === '--help' || a === '-h') {
       console.log(
         'Usage: migrate-published-to-knative.ts [--dry-run|--rehearse|--yes] [--project <id>] [--limit <n>] ' +
-          '[--max-downtime <s>] [--archive-timeout <s>] [--to metal]',
+          '[--max-downtime <s>] [--max-failures <n>] [--readiness-timeout <s>] [--archive-timeout <s>] [--to metal]',
       )
       process.exit(0)
     }
@@ -122,7 +131,9 @@ async function main() {
 
   console.log(`\n=== published sites → ${cli.to} (${mode}) ===\n`)
   console.log(`  max downtime per site: ${cli.maxDowntimeMs / 1000}s`)
-  console.log(`  archive wait per site: ${cli.archiveTimeoutMs / 1000}s\n`)
+  console.log(`  readiness wait per site: ${cli.readinessTimeoutMs / 1000}s (outside the window)`)
+  console.log(`  archive wait per site: ${cli.archiveTimeoutMs / 1000}s`)
+  console.log(`  stop the batch after ${cli.maxFailures} failure(s)\n`)
 
   const where: any = { publishedSubdomain: { not: null } }
   if (cli.projectIds.length) where.id = { in: cli.projectIds }
@@ -137,8 +148,19 @@ async function main() {
 
   const deps = defaultCutoverDeps()
   const results: CutoverResult[] = []
+  let failures = 0
 
   for (const p of projects) {
+    // A batch that keeps going after a run of failures is how one bad image or a
+    // region-wide database problem takes every site down in an afternoon. Stop
+    // while the operator can still see what the first failures had in common.
+    if (failures >= cli.maxFailures) {
+      console.log(
+        `\nStopping: ${failures} site(s) failed with --max-failures ${cli.maxFailures} still in the list.` +
+          ' Nothing else was touched.',
+      )
+      break
+    }
     const site: CutoverSite = {
       projectId: p.id,
       subdomain: p.publishedSubdomain,
@@ -161,15 +183,19 @@ async function main() {
 
     if (cli.to === 'metal') {
       const restored = await restoreSiteToMetal(site, deps)
-      restored.outcome === 'restored'
-        ? ok(`restored to metal in ${formatSeconds(restored.downtimeMs)}`)
-        : bad(`restore failed (${restored.code})`, restored.message)
+      if (restored.outcome === 'restored') {
+        ok(`restored to metal in ${formatSeconds(restored.downtimeMs)}`)
+      } else {
+        failures++
+        bad(`restore failed (${restored.code})`, restored.message)
+      }
       results.push(restored)
       continue
     }
 
-    const prepared = await prepareCutoverSite(site, deps)
+    const prepared = await prepareCutoverSite(site, deps, { readinessTimeoutMs: cli.readinessTimeoutMs })
     if (!prepared.ok) {
+      failures++
       bad(`prepare failed (${prepared.code})`, prepared.message)
       results.push({
         projectId: site.projectId,
@@ -186,7 +212,7 @@ async function main() {
     ok(`prepare finished in ${formatSeconds(prepared.value.prepareMs)}`)
 
     const result = cli.rehearse
-      ? await rehearseCutoverSite(prepared.value, deps, { archiveTimeoutMs: cli.archiveTimeoutMs })
+      ? await rehearseCutoverSite(prepared.value, deps, { readinessTimeoutMs: cli.readinessTimeoutMs })
       : await switchCutoverSite(prepared.value, deps, {
           maxDowntimeMs: cli.maxDowntimeMs,
           archiveTimeoutMs: cli.archiveTimeoutMs,
@@ -195,6 +221,7 @@ async function main() {
     if (result.outcome === 'migrated' || result.outcome === 'rehearsed' || result.outcome === 'restored') {
       ok(`${result.outcome} in ${formatSeconds(result.downtimeMs)}`)
     } else {
+      failures++
       bad(`${result.outcome} (${result.code})`, result.message)
       for (const m of result.mismatches ?? []) {
         info(`${m.table}: sqlite ${m.sqlite} → postgres ${m.postgres}${m.reason === 'missing_table' ? ' (missing)' : ''}`)

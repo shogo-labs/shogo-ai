@@ -63,11 +63,15 @@ const ENV: CutoverEnvironment = {
 interface Harness {
   deps: CutoverDeps
   calls: string[]
+  /** Fake clock: `sleep` advances it, so a budget test is deterministic. */
+  clock: { t: number }
   /** When set, the next archive head returns this instead of a fresh object. */
   archive: ArchiveObject | null
   /** Edge value children read back after a flip. */
   edge: 'knative' | 'metal' | null
   healthy: boolean
+  /** Phase 1's readiness result. */
+  ready: boolean
   importResult: any
   cloneFailure?: string
 }
@@ -76,15 +80,21 @@ function harness(overrides: Partial<CutoverDeps> = {}): Harness {
   const calls: string[] = []
   const state: Harness = {
     calls,
+    clock: { t: 1_000_000 },
     archive: null,
     edge: 'metal',
     healthy: true,
+    ready: true,
     importResult: { ok: true, value: { rows: 7 } },
     deps: {} as CutoverDeps,
   }
   const base: CutoverDeps = {
-    now: () => Date.now(),
-    sleep: async () => {},
+    now: () => state.clock.t,
+    // Time moves only when something sleeps, which is what makes "the window ran
+    // out of budget" a fact about the code rather than about the machine.
+    sleep: async (ms) => {
+      state.clock.t += ms
+    },
     log: () => {},
     async ensureEnvironment() {
       calls.push('ensureEnvironment')
@@ -107,6 +117,13 @@ function harness(overrides: Partial<CutoverDeps> = {}): Harness {
     async healthCheck(_site, opts) {
       calls.push(`healthCheck:${opts?.serviceName ?? 'production'}`)
       return state.healthy
+    },
+    async waitForServiceReady(_site, opts) {
+      calls.push(`waitForServiceReady:${opts.serviceName ?? 'production'}:timeout=${opts.timeoutMs}`)
+      return state.ready
+    },
+    async markDatabaseLocal(_site, envId) {
+      calls.push(`markDatabaseLocal:${envId}`)
     },
     async headArchive() {
       calls.push('headArchive')
@@ -322,10 +339,48 @@ describe('prepareCutoverSite', () => {
       'prepareDatabase',
       'ensureImage',
       'ensureWarmService:production:min=1',
+      'waitForServiceReady:production:timeout=300000',
     ])
     // Nothing here may flip the edge or touch the metal runtime: the site keeps
     // serving from metal until phase 2.
     expect(h.calls.some((c) => c.startsWith('setEdgeBackend'))).toBe(false)
+    expect(h.calls).not.toContain('freezeMetal')
+  })
+
+  // Round-16 blocker 1: POSTing the ksvc is not having a pod. The image pull and
+  // the init-container's S3 sync happen on the first start, and if phase 1 does
+  // not wait for them they land inside the downtime window.
+  it('waits for the ksvc to be Ready, so the cold start is not part of the window', async () => {
+    const h = harness()
+    h.deps.waitForServiceReady = async (_site, opts) => {
+      h.calls.push(`waitForServiceReady:${opts.timeoutMs}`)
+      // A realistic first start: two minutes of pull + init container.
+      h.clock.t += 120_000
+      return true
+    }
+    const prepared = await preparedSite(h.deps)
+
+    const warm = h.calls.indexOf('ensureWarmService:production:min=1')
+    const ready = h.calls.findIndex((c) => c.startsWith('waitForServiceReady'))
+    expect(warm).toBeGreaterThanOrEqual(0)
+    expect(ready).toBeGreaterThan(warm)
+    // The wait is phase 1's cost, and phase 1 is what `prepareMs` measures.
+    expect(prepared.prepareMs).toBeGreaterThanOrEqual(120_000)
+  })
+
+  it('refuses to hand the switch a ksvc that never became ready', async () => {
+    const h = harness()
+    h.ready = false
+    const result = await prepareCutoverSite(SITE, h.deps, { readinessTimeoutMs: 30_000 })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('prepare_not_ready')
+      expect(result.message).toContain('30s')
+      expect(result.message).toContain('untouched on metal')
+    }
+    // A switch must never be attempted on a cold revision.
+    expect(h.calls).not.toContain('setMaintenance:on')
     expect(h.calls).not.toContain('freezeMetal')
   })
 
@@ -346,6 +401,7 @@ describe('prepareCutoverSite', () => {
     const result = await prepareCutoverSite(SITE, h.deps)
     expect(result.ok).toBe(false)
     expect(h.calls).not.toContain('ensureWarmService:production:min=1')
+    expect(h.calls.some((c) => c.startsWith('waitForServiceReady'))).toBe(false)
   })
 })
 
@@ -356,7 +412,7 @@ describe('prepareCutoverSite', () => {
 const BUDGET = { maxDowntimeMs: 60_000, archiveTimeoutMs: 500 }
 
 describe('switchCutoverSite', () => {
-  it('freezes, imports, flips the edge and only then releases the VM', async () => {
+  it('freezes, imports, proves the ksvc serves, flips the edge and only then releases the VM', async () => {
     const h = harness()
     const prepared = await preparedSite(h.deps)
     h.calls.length = 0
@@ -369,6 +425,9 @@ describe('switchCutoverSite', () => {
       'headArchive',
       'downloadArchive',
       'importArchive',
+      // Ready BEFORE the edge points at it: a cold or crash-looping pod costs no
+      // visitor a write.
+      'healthCheck:production',
       'setEdgeBackend:knative',
       'healthCheck:production',
       'setMaintenance:off',
@@ -434,7 +493,7 @@ describe('switchCutoverSite', () => {
     expect(h.calls).toContain('resumeMetal')
   })
 
-  it('aborts when the ksvc never answers /ready, and puts the site back on metal', async () => {
+  it('never flips the edge to a service that does not answer before the window ends', async () => {
     const h = harness()
     h.healthy = false
     const prepared = await preparedSite(h.deps)
@@ -442,9 +501,74 @@ describe('switchCutoverSite', () => {
     const result = await switchCutoverSite(prepared, h.deps, BUDGET)
 
     expect(result.outcome).toBe('rolled-back')
-    expect(result.code).toBe('health_check_failed')
+    // A pod that never comes up spends the budget: that IS the amount of downtime
+    // the site took, so it is reported as such rather than as a bare health error.
+    expect(result.code).toBe('over_downtime_budget')
+    // The edge never pointed at it, so no visitor write was served and discarded.
+    expect(h.calls).not.toContain('setEdgeBackend:knative')
     expect(h.calls).toContain('setEdgeBackend:metal')
     expect(h.calls).toContain('resumeMetal')
+    expect(h.calls).not.toContain('releaseMetal')
+    expect(h.calls).toContain('setMaintenance:off:error')
+  })
+
+  // Round-16 blocker 2: the budget has to bound the wait, not judge it afterwards.
+  it('bounds the readiness wait by the budget instead of polling on past it', async () => {
+    const h = harness()
+    h.healthy = false
+    const prepared = await preparedSite(h.deps)
+    h.calls.length = 0
+    const result = await switchCutoverSite(prepared, h.deps, { maxDowntimeMs: 20_000, archiveTimeoutMs: 500 })
+
+    expect(result.code).toBe('over_downtime_budget')
+    const probes = h.calls.filter((c) => c === 'healthCheck:production').length
+    // 20s budget at 1.5s between probes: nowhere near the old 20-probe loop that
+    // could run ~130s regardless of the budget.
+    expect(probes).toBeLessThanOrEqual(14)
+    expect(result.downtimeMs).toBeLessThan(20_000 + 5_000)
+  })
+
+  it('checks the budget BEFORE the window closes, so an over-budget switch never serves traffic', async () => {
+    const h = harness()
+    const prepared = await preparedSite(h.deps)
+    h.calls.length = 0
+    // Healthy, and every clock read jumps 30s: the confirm succeeds but the window
+    // is already past a 10s budget when it is measured.
+    let t = 0
+    h.deps.now = () => (t += 30_000)
+    h.deps.healthCheck = async (_site, opts) => {
+      h.calls.push(`healthCheck:${opts?.serviceName ?? 'production'}`)
+      return true
+    }
+    const result = await switchCutoverSite(prepared, h.deps, { maxDowntimeMs: 10_000, archiveTimeoutMs: 500 })
+
+    expect(result.outcome).toBe('rolled-back')
+    expect(result.code).toBe('over_downtime_budget')
+    // The only maintenance-off is the rollback's, carrying the reason: there is no
+    // successful close, so the site was never handed to visitors and then pulled.
+    expect(h.calls).not.toContain('setMaintenance:off')
+    expect(h.calls).toContain('setMaintenance:off:error')
+    expect(h.calls).toContain('setEdgeBackend:metal')
+    expect(h.calls).not.toContain('releaseMetal')
+  })
+
+  it('rolls back when the routed service stops answering after the flip', async () => {
+    const h = harness()
+    const prepared = await preparedSite(h.deps)
+    h.calls.length = 0
+    // Ready before the flip, silent after it — the case the confirm probe exists for.
+    let probes = 0
+    h.deps.healthCheck = async (_site, opts) => {
+      h.calls.push(`healthCheck:${opts?.serviceName ?? 'production'}`)
+      probes++
+      return probes === 1
+    }
+    const result = await switchCutoverSite(prepared, h.deps, BUDGET)
+
+    expect(result.outcome).toBe('rolled-back')
+    expect(result.code).toBe('health_check_failed')
+    expect(h.calls).toContain('setEdgeBackend:knative')
+    expect(h.calls).toContain('setEdgeBackend:metal')
     expect(h.calls).not.toContain('releaseMetal')
   })
 
@@ -494,11 +618,14 @@ describe('rehearseCutoverSite', () => {
     expect(result.outcome).toBe('rehearsed')
     const scratch = rehearsalDatabaseName('project_x')
     expect(h.calls).toEqual([
+      // Warm and Ready BEFORE anything is timed: that start is phase 1's cost in a
+      // real switch, and counting it here would inflate the number this exists for.
+      `ensureWarmService:${rehearsalServiceName(PROJECT_ID)}:min=1`,
+      `waitForServiceReady:${rehearsalServiceName(PROJECT_ID)}:timeout=300000`,
       'headArchive',
       'downloadArchive',
       `cloneDatabase:${scratch}`,
       'importArchive',
-      `ensureWarmService:${rehearsalServiceName(PROJECT_ID)}:min=1`,
       `healthCheck:${rehearsalServiceName(PROJECT_ID)}`,
       `deleteService:${rehearsalServiceName(PROJECT_ID)}`,
       `dropClone:${scratch}`,
@@ -513,16 +640,49 @@ describe('rehearseCutoverSite', () => {
     expect(h.calls).not.toContain('setMaintenance:on')
   })
 
-  it('fails when /ready never answers, and still cleans up', async () => {
+  it('fails when the rehearsal service never becomes ready, and still cleans up', async () => {
     const h = harness()
-    h.healthy = false
+    h.archive = { key: cutoverArchiveKey(SUBDOMAIN), bytes: 12, lastModifiedMs: Date.now() }
+    const prepared = await preparedSite(h.deps)
+    // Phase 1's ksvc was warm; the rehearsal service is the one that never comes up.
+    h.deps.waitForServiceReady = async () => false
+    h.calls.length = 0
+    const result = await rehearseCutoverSite(prepared, h.deps, { readinessTimeoutMs: 30_000 })
+    expect(result.outcome).toBe('failed')
+    expect(result.code).toBe('health_check_failed')
+    // Nothing was timed, because nothing could have served.
+    expect(result.downtimeMs).toBeNull()
+    expect(h.calls).not.toContain('importArchive')
+    expect(h.calls).toContain(`deleteService:${rehearsalServiceName(PROJECT_ID)}`)
+    // No copy was ever made, so there is none to drop — and the service is gone.
+    expect(h.calls).not.toContain(`dropClone:${rehearsalDatabaseName('project_x')}`)
+  })
+
+  it('does not count the warm-up in the reported downtime', async () => {
+    const h = harness()
+    h.archive = { key: cutoverArchiveKey(SUBDOMAIN), bytes: 12, lastModifiedMs: Date.now() }
+    h.deps.waitForServiceReady = async () => {
+      // A cold first start, exactly what production pays in phase 1.
+      h.clock.t += 180_000
+      return true
+    }
+    const prepared = await preparedSite(h.deps)
+    const result = await rehearseCutoverSite(prepared, h.deps)
+    expect(result.outcome).toBe('rehearsed')
+    // The number the prod decision rests on is the copy, not the cold start.
+    expect(result.downtimeMs).toBeLessThan(5_000)
+  })
+
+  it('fails when the load leaves the warmed service unable to answer', async () => {
+    const h = harness()
     h.archive = { key: cutoverArchiveKey(SUBDOMAIN), bytes: 12, lastModifiedMs: Date.now() }
     const prepared = await preparedSite(h.deps)
     h.calls.length = 0
-    const result = await rehearseCutoverSite(prepared, h.deps, { archiveTimeoutMs: 500 })
+    h.deps.healthCheck = async () => false
+    const result = await rehearseCutoverSite(prepared, h.deps)
     expect(result.outcome).toBe('failed')
     expect(result.code).toBe('health_check_failed')
-    expect(h.calls).toContain(`deleteService:${rehearsalServiceName(PROJECT_ID)}`)
+    expect(result.message).toContain('after the load')
     expect(h.calls).toContain(`dropClone:${rehearsalDatabaseName('project_x')}`)
   })
 
@@ -541,7 +701,7 @@ describe('rehearseCutoverSite', () => {
     h.archive = { key: cutoverArchiveKey(SUBDOMAIN), bytes: 12, lastModifiedMs: Date.now() }
     h.cloneFailure = 'template_busy: "project_x" still has open sessions'
     const prepared = await preparedSite(h.deps)
-    const result = await rehearseCutoverSite(prepared, h.deps, { archiveTimeoutMs: 500 })
+    const result = await rehearseCutoverSite(prepared, h.deps)
     expect(result.outcome).toBe('failed')
     expect(result.code).toBe('rehearsal_failed')
     expect(result.message).toContain('template_busy')
@@ -567,7 +727,24 @@ describe('restoreSiteToMetal', () => {
     h.edge = 'knative'
     const result = await restoreSiteToMetal(SITE, h.deps)
     expect(result.outcome).toBe('restored')
-    expect(h.calls).toEqual(['headArchive', 'setEdgeBackend:metal', 'resumeMetal', 'healthCheck:production'])
+    expect(h.calls).toEqual([
+      'headArchive',
+      'setEdgeBackend:metal',
+      'resumeMetal',
+      'ensureEnvironment',
+      'markDatabaseLocal:env_1',
+      'healthCheck:production',
+    ])
+  })
+
+  // The site is on SQLite again. `dbProvider` is what `publishedLocalStateReason()`
+  // reads to allow more than one replica, and local SQLite must never pass it.
+  it('clears dbProvider so a restored site cannot be scaled past one replica', async () => {
+    const h = harness({ ensureEnvironment: async () => ({ ...ENV, dbProvider: 'postgres' }) })
+    h.archive = { key: cutoverArchiveKey(SUBDOMAIN), bytes: 5, lastModifiedMs: Date.now() }
+    h.edge = 'knative'
+    await restoreSiteToMetal(SITE, h.deps)
+    expect(h.calls).toContain('markDatabaseLocal:env_1')
   })
 
   it('refuses when there is no archive to restore from', async () => {

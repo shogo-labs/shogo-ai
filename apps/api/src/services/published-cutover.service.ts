@@ -433,6 +433,13 @@ export interface CutoverDeps {
   ): Promise<void>
   deleteService(site: CutoverSite, serviceName: string): Promise<void>
   healthCheck(site: CutoverSite, opts?: { serviceName?: string; timeoutMs?: number }): Promise<boolean>
+  /**
+   * Phase 1: block until the warm ksvc answers `/ready`. POSTing the Knative
+   * service is not the same as having a pod — the image pull and the
+   * init-container's S3 sync happen on the first start — and both belong to
+   * phase 1, where nobody is waiting.
+   */
+  waitForServiceReady(site: CutoverSite, opts: { serviceName?: string; timeoutMs: number }): Promise<boolean>
 
   headArchive(subdomain: string): Promise<ArchiveObject | null>
   downloadArchive(key: string): Promise<Buffer>
@@ -449,6 +456,9 @@ export interface CutoverDeps {
 
   /** Maintenance window: the published proxy refuses to wake the microVM. */
   setMaintenance(site: CutoverSite, envId: string, on: boolean, detail?: string | null): Promise<void>
+
+  /** Put an environment back on SQLite: `dbProvider` null. */
+  markDatabaseLocal(site: CutoverSite, envId: string): Promise<void>
 
   /** A throwaway copy of an environment's database for a rehearsal. */
   cloneDatabase(sourceName: string, targetName: string): Promise<{ directUrl: string }>
@@ -495,8 +505,60 @@ export interface SwitchOptions {
 
 const DEFAULT_ARCHIVE_TIMEOUT_MS = 90_000
 const DEFAULT_ARCHIVE_POLL_MS = 2_000
-const HEALTH_CHECK_ATTEMPTS = 20
+const HEALTH_PROBE_TIMEOUT_MS = 5_000
 const HEALTH_CHECK_INTERVAL_MS = 1_500
+/**
+ * A backstop against a clock that does not advance, not a real limit: in phase 2
+ * the deadline is the downtime budget, and in phase 1 it is the readiness
+ * timeout. Both are far shorter than this.
+ */
+const HEALTH_CHECK_MAX_PROBES = 2_000
+/** Phase 1's readiness wait: image pull + the init-container's S3 sync. Not downtime. */
+const DEFAULT_READINESS_TIMEOUT_MS = 300_000
+const READINESS_POLL_MS = 2_000
+
+export type ReadyOutcome = 'ready' | 'not_ready' | 'out_of_budget'
+
+/**
+ * Poll `/ready` until the service answers or the deadline passes.
+ *
+ * The deadline is the whole point. In phase 2 it is the downtime budget, so a pod
+ * that is still pulling its image cannot hold the maintenance window open past
+ * what the operator allowed; in phase 1 it is the readiness timeout, which is
+ * generous because phase 1 costs no one any downtime. Each probe's own timeout is
+ * clipped to whatever is left, so the wait ends on the deadline rather than one
+ * request later.
+ */
+export async function waitForReadyWithinBudget(
+  deps: Pick<CutoverDeps, 'now' | 'sleep' | 'healthCheck'>,
+  site: CutoverSite,
+  opts: {
+    deadlineMs: number
+    serviceName?: string
+    probeTimeoutMs?: number
+    intervalMs?: number
+    maxProbes?: number
+  },
+): Promise<ReadyOutcome> {
+  const probeTimeoutMs = opts.probeTimeoutMs ?? HEALTH_PROBE_TIMEOUT_MS
+  const intervalMs = opts.intervalMs ?? HEALTH_CHECK_INTERVAL_MS
+  const maxProbes = opts.maxProbes ?? HEALTH_CHECK_MAX_PROBES
+
+  for (let probe = 0; probe < maxProbes; probe++) {
+    const remainingMs = opts.deadlineMs - deps.now()
+    if (remainingMs <= 0) return 'out_of_budget'
+    const healthy = await deps
+      .healthCheck(site, {
+        timeoutMs: Math.min(probeTimeoutMs, remainingMs),
+        ...(opts.serviceName ? { serviceName: opts.serviceName } : {}),
+      })
+      .catch(() => false)
+    if (healthy) return 'ready'
+    if (deps.now() >= opts.deadlineMs) return 'out_of_budget'
+    await deps.sleep(Math.min(intervalMs, opts.deadlineMs - deps.now()))
+  }
+  return 'not_ready'
+}
 
 /**
  * Phase 1 of the cutover. The site keeps serving from metal throughout: the ksvc
@@ -506,8 +568,10 @@ const HEALTH_CHECK_INTERVAL_MS = 1_500
 export async function prepareCutoverSite(
   site: CutoverSite,
   deps: CutoverDeps,
+  opts: { readinessTimeoutMs?: number } = {},
 ): Promise<CutoverOk<PreparedSite> | CutoverFailure> {
   const startedAt = deps.now()
+  const readinessTimeoutMs = opts.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS
   const env = await deps.ensureEnvironment(site)
   deps.log(`environment row: ${env.name} (${env.id})`)
 
@@ -522,10 +586,28 @@ export async function prepareCutoverSite(
   await deps.ensureWarmService(site, {
     env,
     imageRef: image.value.imageRef,
-    // Warm, but with no traffic: min 1 means the pod is already started when the
-    // flag flips, so a cold start is not part of the downtime budget.
     minScale: 1,
   })
+
+  // POSTing the Knative service returns as soon as the object exists. The first
+  // start is where the image is pulled and the init-container syncs the artifact
+  // from S3, and that is minutes on a large app. Waiting here is what makes
+  // `min-scale: 1` mean "already started when the flag flips": without it the
+  // cold start lands inside the downtime window and every rehearsal number is
+  // measured against a pod that was still pulling.
+  deps.log(`waiting up to ${Math.round(readinessTimeoutMs / 1000)}s for the ksvc to answer /ready`)
+  const ready = await deps.waitForServiceReady(site, { timeoutMs: readinessTimeoutMs })
+  if (!ready) {
+    return {
+      ok: false,
+      code: 'prepare_not_ready',
+      message:
+        `The Knative service did not answer /ready within ${Math.round(readinessTimeoutMs / 1000)}s of ` +
+        'being created, so switching now would spend the downtime budget on a cold start. ' +
+        'The site is untouched on metal; raise --readiness-timeout or check the image and its init container.',
+    }
+  }
+  deps.log('ksvc is ready — a cold start is no longer part of the window')
 
   return {
     ok: true,
@@ -669,27 +751,48 @@ export async function switchCutoverSite(
     reloaded = true
     deps.log(`loaded ${loaded.value.rows} rows into ${database.databaseName}`)
 
-    // 4. Flip the edge and health-check the ksvc before the window closes.
+    // 4. Prove the ksvc serves BEFORE the edge points at it. While the flag still
+    //    says metal the only reader is this probe, so a pod that is cold or
+    //    crash-looping costs nobody a write. The alternative — flip, wait, then
+    //    roll back — serves real traffic on Knative and throws those writes away.
+    //    The budget bounds the wait: this is the downtime window.
+    const budgetDeadlineMs = switchStartedAt + opts.maxDowntimeMs
+    const preflip = await waitForReadyWithinBudget(deps, site, { deadlineMs: budgetDeadlineMs })
+    if (preflip !== 'ready') {
+      return await rollback(
+        preflip === 'out_of_budget' ? 'over_downtime_budget' : 'health_check_failed',
+        preflip === 'out_of_budget'
+          ? `The Knative service was not ready within the ${(opts.maxDowntimeMs / 1000).toFixed(1)}s ` +
+            'budget. The edge was never pointed at it, so the site is back on metal with its data intact.'
+          : 'The Knative service did not answer /ready while the site was still on metal. ' +
+            'Nothing was routed to it, so no write was served and discarded.',
+      )
+    }
+
+    // 5. Flip the edge. From here to the budget deadline a visitor can be served
+    //    by the new revision, which is why the deadline — not a probe count — is
+    //    what ends this window.
     const flipped = await deps.setEdgeBackend(site.subdomain, 'knative')
     if (!flipped) {
       return await rollback('edge_flip_failed', 'The edge flag could not be flipped to knative.')
     }
-    let healthy = false
-    for (let attempt = 0; attempt < HEALTH_CHECK_ATTEMPTS && !healthy; attempt++) {
-      healthy = await deps.healthCheck(site, { timeoutMs: 5_000 }).catch(() => false)
-      if (!healthy) await deps.sleep(HEALTH_CHECK_INTERVAL_MS)
-    }
-    if (!healthy) {
+
+    // 6. One confirming probe through the routed path, inside whatever is left.
+    const confirmed = await waitForReadyWithinBudget(deps, site, { deadlineMs: budgetDeadlineMs, maxProbes: 2 })
+    if (confirmed !== 'ready') {
       return await rollback(
-        'health_check_failed',
-        'The Knative service did not answer /ready after the switch, so the site was returned to metal.',
+        confirmed === 'out_of_budget' ? 'over_downtime_budget' : 'health_check_failed',
+        confirmed === 'out_of_budget'
+          ? `The switch reached the ${(opts.maxDowntimeMs / 1000).toFixed(1)}s budget before the routed ` +
+            'service answered, so the site was returned to metal.'
+          : 'The Knative service did not answer /ready after the edge flip, so the site was returned to metal.',
       )
     }
 
-    // 5. Close the window.
-    await deps.setMaintenance(site, env.id, false, null)
-    maintenanceOn = false
-
+    // 7. The budget is a bound, not a verdict: it is checked BEFORE the window
+    //    closes, so an over-budget switch goes back to metal while visitors are
+    //    still on the maintenance page instead of being served by a revision that
+    //    is about to be abandoned.
     const downtimeMs = deps.now() - switchStartedAt
     if (downtimeMs > opts.maxDowntimeMs) {
       return await rollback(
@@ -699,7 +802,11 @@ export async function switchCutoverSite(
       )
     }
 
-    // 6. The site is serving from the ksvc: record it and release the VM. Both
+    // 8. Close the window.
+    await deps.setMaintenance(site, env.id, false, null)
+    maintenanceOn = false
+
+    // 9. The site is serving from the ksvc: record it and release the VM. Both
     //    are after the window — a failure here cannot take the site down, and
     //    the next publish reconciles a missing deployment row.
     await deps.recordDeployment(site, env.id, image).catch((err: any) => {
@@ -732,16 +839,42 @@ export async function switchCutoverSite(
 export async function rehearseCutoverSite(
   prepared: PreparedSite,
   deps: CutoverDeps,
-  opts: { archiveTimeoutMs?: number } = {},
+  opts: { readinessTimeoutMs?: number } = {},
 ): Promise<CutoverResult> {
   const { site, env, database, image } = prepared
   const base = { projectId: site.projectId, subdomain: site.subdomain, prepareMs: prepared.prepareMs }
   const rehearsalService = rehearsalServiceName(site.projectId)
   const scratchDb = rehearsalDatabaseName(database.databaseName)
-  const startedAt = deps.now()
+  const readinessTimeoutMs = opts.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS
 
   let clone: { directUrl: string } | null = null
+  /** Set once the timed section starts; null while still warming. */
+  let timedFrom: number | null = null
   try {
+    // Stand the rehearsal ksvc up and wait for it OUTSIDE the timed section. In a
+    // real switch that start is phase 1's cost, so counting it here would inflate
+    // the only number this command exists to produce.
+    await deps.ensureWarmService(site, { env, imageRef: image.imageRef, serviceName: rehearsalService, minScale: 1 })
+    const warmed = await deps.waitForServiceReady(site, {
+      serviceName: rehearsalService,
+      timeoutMs: readinessTimeoutMs,
+    })
+    if (!warmed) {
+      return {
+        ...base,
+        dbBytes: 0,
+        downtimeMs: null,
+        outcome: 'failed',
+        code: 'health_check_failed',
+        message:
+          `The rehearsal service did not answer /ready within ${Math.round(readinessTimeoutMs / 1000)}s, ` +
+          'so this image would not have served. Nothing was timed.',
+      }
+    }
+
+    const startedAt = deps.now()
+    timedFrom = startedAt
+
     // The current archive, as it stands. No freeze: this measures the copy, not
     // the export, and the export wait is bounded separately by the archive
     // timeout in a real switch.
@@ -766,13 +899,9 @@ export async function rehearseCutoverSite(
       }
     }
 
-    // Prove the exact image boots, on a service that owns no traffic.
-    await deps.ensureWarmService(site, { env, imageRef: image.imageRef, serviceName: rehearsalService, minScale: 1 })
-    let healthy = false
-    for (let attempt = 0; attempt < HEALTH_CHECK_ATTEMPTS && !healthy; attempt++) {
-      healthy = await deps.healthCheck(site, { serviceName: rehearsalService, timeoutMs: 5_000 }).catch(() => false)
-      if (!healthy) await deps.sleep(HEALTH_CHECK_INTERVAL_MS)
-    }
+    // A warmed service must still answer after the load — the cheap confirmation
+    // that the copy did not leave the app unable to boot.
+    const healthy = await deps.healthCheck(site, { serviceName: rehearsalService, timeoutMs: 5_000 }).catch(() => false)
     const downtimeMs = deps.now() - startedAt
     if (!healthy) {
       return {
@@ -781,7 +910,7 @@ export async function rehearseCutoverSite(
         downtimeMs,
         outcome: 'failed',
         code: 'health_check_failed',
-        message: 'The rehearsal service never answered /ready, so this image would not have served.',
+        message: 'The rehearsal service stopped answering /ready after the load, so this image would not have served.',
       }
     }
 
@@ -804,7 +933,8 @@ export async function rehearseCutoverSite(
     return {
       ...base,
       dbBytes: 0,
-      downtimeMs: deps.now() - startedAt,
+      // Null when the failure was the warm-up itself: nothing was timed.
+      downtimeMs: timedFrom == null ? null : deps.now() - timedFrom,
       outcome: 'failed',
       code: 'rehearsal_failed',
       message: err?.message ?? String(err),
@@ -856,6 +986,16 @@ export async function restoreSiteToMetal(
     }
     await deps.setEdgeBackend(site.subdomain, 'metal')
     await deps.resumeMetal(site)
+
+    // The site is on SQLite again, so the environment row must stop claiming a
+    // Postgres database: `publishedLocalStateReason()` reads `dbProvider` to
+    // decide whether a second replica shares its data, and a metal runtime with
+    // local SQLite must never pass that check.
+    const env = await deps.ensureEnvironment(site)
+    await deps.markDatabaseLocal(site, env.id).catch((err: any) => {
+      deps.log(`WARNING: could not clear dbProvider: ${err?.message ?? err}`)
+    })
+
     const healthy = await deps.healthCheck(site, { timeoutMs: 10_000 }).catch(() => false)
     const downtimeMs = deps.now() - startedAt
     if (!healthy) {
@@ -990,6 +1130,18 @@ export function defaultCutoverDeps(): CutoverDeps {
         : manager.healthCheckPublished(site.projectId, opts?.timeoutMs ?? 5_000, 'production')
     },
 
+    async waitForServiceReady(site, opts) {
+      // The same bounded poll phase 2 uses, with the readiness timeout as its
+      // deadline: one definition of "how long may this wait", two deadlines.
+      const outcome = await waitForReadyWithinBudget(deps, site, {
+        deadlineMs: deps.now() + opts.timeoutMs,
+        intervalMs: READINESS_POLL_MS,
+        maxProbes: HEALTH_CHECK_MAX_PROBES,
+        ...(opts.serviceName ? { serviceName: opts.serviceName } : {}),
+      })
+      return outcome === 'ready'
+    },
+
     async headArchive(subdomain) {
       const { publishS3Client, PUBLISH_DATA_BUCKET } = await import('../lib/publish-storage')
       if (!PUBLISH_DATA_BUCKET) return null
@@ -1052,6 +1204,14 @@ export function defaultCutoverDeps(): CutoverDeps {
           : { publishStatus: detail ? FAILED_ENV_STATUS : LIVE_ENV_STATUS, publishError: detail ?? null, publishStatusAt: new Date() },
       })
       console.log(`[Cutover] ${site.subdomain} maintenance ${on ? 'on' : `off${detail ? ` (${detail})` : ''}`}`)
+    },
+
+    async markDatabaseLocal(_site, envId) {
+      const { prisma } = await import('../lib/prisma')
+      await prisma.publishedEnvironment.update({
+        where: { id: envId },
+        data: { dbProvider: null },
+      })
     },
 
     async cloneDatabase(sourceName, targetName) {
