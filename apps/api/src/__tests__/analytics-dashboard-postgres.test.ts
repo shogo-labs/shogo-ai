@@ -39,7 +39,7 @@ mock.module('../services/model-registry.service', () => ({
   resolveModelLabels: async () => new Map<string, string>(),
 }))
 
-const { getUsageDashboard } = await import('../services/analytics.service')
+const { getUsageDashboard, USAGE_MEDIA_META_KEYS, USAGE_MEDIA_KINDS } = await import('../services/analytics.service')
 const { clearAnalyticsCache } = await import('../lib/analytics-cache')
 
 beforeEach(() => {
@@ -155,5 +155,78 @@ describe('getUsageDashboard on Postgres', () => {
     const first = data.timeseries.days.find((d) => d.date === '2026-10-01')
     expect(first).toBeDefined()
     expect(first?.total).toBe(1)
+  })
+
+  /**
+   * SHO-355: media folded into a `chat_message` row is re-attributed on the
+   * cloud path too.
+   *
+   * The SQL columns and the Node scan are both generated from
+   * `USAGE_MEDIA_META_KEYS`, so they cannot drift — but the row *mapping* can.
+   * `3d` becomes `threeDBilledUsd` in the statement, and a mismatch between that
+   * transform and the one that reads the row back would silently zero 3D spend
+   * on Postgres only, which no desktop test could catch.
+   */
+  test('folded media comes back out of the aggregated row', async () => {
+    mockPrisma.$queryRawUnsafe.mockImplementationOnce(() => Promise.resolve([{
+      day: new Date('2026-10-01T00:00:00.000Z'),
+      memberId: 'u_1',
+      actionType: 'chat_message',
+      source: 'daily',
+      model: 'claude-opus-4-1',
+      provider: 'anthropic',
+      requests: 1,
+      billedUsd: 0.52,
+      rawUsd: 0.5,
+      metaRawUsd: 0.5,
+      costUsd: 0.52,
+      modelCostUsd: 0.5,
+      shogoFeeUsd: 0.02,
+      unitemizedUsd: 0,
+      inputTokens: 120_000,
+      outputTokens: 4_000,
+      totalTokens: 124_000,
+      totalTokensField: 124_000,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      durationMs: 0,
+      unpricedRequests: 0,
+      // Postgres returns `numeric` aggregates as strings — the mapping coerces.
+      imageBilledUsd: '0.12',
+      imageRawUsd: '0.10',
+      imageRequests: '1',
+      imageModel: 'gpt-image-1',
+      threeDBilledUsd: '0.30',
+      threeDRawUsd: '0.25',
+      threeDRequests: '2',
+      threeDModel: 'tripo-v3',
+      videoBilledUsd: '0',
+      videoRawUsd: '0',
+      videoRequests: '0',
+      videoModel: null,
+      musicBilledUsd: '0',
+      musicRawUsd: '0',
+      musicRequests: '0',
+      musicModel: null,
+    }]))
+
+    const data = await getUsageDashboard(
+      { workspaceId: 'ws_1' },
+      {
+        period: '7d',
+        fromIso: '2026-09-30T00:00:00.000Z',
+        toIso: '2026-10-03T00:00:00.000Z',
+      },
+    )
+
+    // The image and 3D dollars left the chat line for their own categories.
+    expect(data.usage.byCategory.image?.totalSpendUsd).toBeCloseTo(0.12, 9)
+    expect(data.usage.byCategory['3d']?.totalSpendUsd).toBeCloseTo(0.30, 9)
+    expect(data.usage.byCategory.chat?.totalSpendUsd).toBeCloseTo(0.10, 9)
+    expect(data.usage.byActionType.ai_image_generation?.count).toBe(1)
+    // Two generations billed in one row, not one.
+    expect(data.usage.byActionType.ai_3d_generation?.count).toBe(2)
+    // Nothing lost in the split.
+    expect(data.usage.totalSpendUsd).toBeCloseTo(0.52, 9)
   })
 })

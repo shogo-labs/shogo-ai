@@ -107,9 +107,10 @@ mock.module('../SharedAnalytics', () => ({
     ]),
   ChatAnalyticsSection: () => null,
   UsageBreakdownSection: () => null,
-  UsageTimeseriesChart: ({ onGroupByChange, onMetricChange }: any) =>
-    createElement('div', { 'data-testid': 'chart' }, [
+  UsageTimeseriesChart: ({ onGroupByChange, onMetricChange, groupByOptions }: any) =>
+    createElement('div', { 'data-testid': 'chart', 'data-options': (groupByOptions ?? []).join(',') }, [
       createElement('button', { key: 'g', 'data-testid': 'chart-user', onClick: () => onGroupByChange('user') }, 'by user'),
+      createElement('button', { key: 'c', 'data-testid': 'chart-category', onClick: () => onGroupByChange('category') }, 'by category'),
       createElement('button', { key: 'm', 'data-testid': 'chart-tokens', onClick: () => onMetricChange('tokens') }, 'tokens'),
     ]),
 }))
@@ -205,6 +206,31 @@ describe('WorkspaceUsagePanel', () => {
     await waitFor(() => expect(getWorkspaceAnalytics).toHaveBeenCalledTimes(1))
     expect(endpoints()).toEqual(['dashboard'])
     expect(getWorkspaceAnalytics.mock.calls[0][3].groupBy).toBe('user')
+  })
+
+  /**
+   * SHO-355 AC4: Category is a dimension of the Usage chart, so the panel must
+   * offer it and ask for it. Without the option the tab cannot show image /
+   * video / voice spend separately from chat.
+   */
+  test('the chart offers Category as a group-by', async () => {
+    render(<WorkspaceUsagePanel />)
+    await waitFor(() => expect(getWorkspaceAnalytics).toHaveBeenCalledTimes(2))
+
+    expect(screen.getByTestId('chart').getAttribute('data-options')).toBe(
+      'model,user,source,category',
+    )
+  })
+
+  test('choosing Category issues exactly one request, asked for category', async () => {
+    render(<WorkspaceUsagePanel />)
+    await waitFor(() => expect(getWorkspaceAnalytics).toHaveBeenCalledTimes(2))
+    getWorkspaceAnalytics.mockClear()
+
+    fireEvent.click(screen.getByTestId('chart-category'))
+    await waitFor(() => expect(getWorkspaceAnalytics).toHaveBeenCalledTimes(1))
+    expect(endpoints()).toEqual(['dashboard'])
+    expect(getWorkspaceAnalytics.mock.calls[0][3].groupBy).toBe('category')
   })
 
   test('a chart metric toggle issues exactly one request', async () => {
