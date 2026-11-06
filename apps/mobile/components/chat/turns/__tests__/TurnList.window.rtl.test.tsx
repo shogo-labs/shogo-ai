@@ -238,6 +238,32 @@ describe("TurnList — mounted window (AC 3)", () => {
     view.unmount()
   })
 
+  test("returning to the bottom shrinks the window back to the tail", () => {
+    const scroll = createTranscriptScrollSignal()
+    const view = render(
+      createElement(TurnList as any, {
+        messages: longChat(300),
+        scrollSignal: scroll,
+      }),
+    )
+
+    scrollToWindowTop(scroll, 270)
+    expect(mountedRows(view.container)).toHaveLength(
+      TURN_WINDOW_SIZE + TURN_WINDOW_STEP,
+    )
+
+    // Now at the bottom of the content — the same report the autoscroll that
+    // follows a streaming reply produces.
+    act(() => {
+      scroll.report({ y: 119_000, viewportHeight: 800, contentHeight: 120_000 })
+    })
+    const rows = mountedRows(view.container)
+    expect(rows).toHaveLength(TURN_WINDOW_SIZE)
+    expect(rows[0]).toBe("turn-row-turn-u270")
+
+    view.unmount()
+  })
+
   test("opening the in-place editor mounts the turn that owns the divider", () => {
     const view = render(
       createElement(

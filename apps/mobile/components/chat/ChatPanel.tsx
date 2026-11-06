@@ -6571,10 +6571,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleMessagesScrollWeb = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
-      lastScrollOffsetRef.current = contentOffset.y
+      // The window follows the scroll view even for our own scroll calls (the
+      // autoscroll that follows a streaming reply), so it can shrink back to
+      // the tail while the person just watches a long turn. Only the *follow
+      // state* and the load-older trigger below have to ignore programmatic
+      // events.
+      feedTranscriptScroll(e)
       if (Date.now() < programmaticScrollUntilRef.current) return
 
-      feedTranscriptScroll(e)
       const overflows = contentSize.height > layoutMeasurement.height + 1
       setHasScrollableTranscript((current) =>
         current === overflows ? current : overflows,

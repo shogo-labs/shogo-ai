@@ -178,7 +178,7 @@ export function useTurnWindow({
         if (!sample) return
         const windowTop = spacerHeightRef.current
         const nearWindowTop =
-          sample.y + sample.viewportHeight > windowTop - TURN_WINDOW_TOP_EDGE
+          sample.y + sample.viewportHeight <= windowTop + TURN_WINDOW_TOP_EDGE
         if (nearWindowTop && startRef.current > 0) {
           lastExpandAtRef.current = 0
           expand()
@@ -194,23 +194,27 @@ export function useTurnWindow({
       const { y, viewportHeight, contentHeight } = scrollSignal.read()
       const current = startRef.current
 
-      // Expand when the *top of the mounted window* comes near the bottom of
-      // the viewport — not when the scroll offset nears zero. The collapsed
-      // spacer sits between the two and is usually far taller than one screen,
-      // so waiting for `y ≈ 0` would let the person scroll into blank space for
-      // thousands of pixels before history came back.
-      const nearWindowTop =
-        y + viewportHeight > spacerHeightRef.current - TURN_WINDOW_TOP_EDGE
-      if (nearWindowTop && current > 0) {
-        if (Date.now() - lastExpandAtRef.current < EXPAND_THROTTLE_MS) return
-        expand()
+      // Back at the end of the transcript: drop everything mounted above the
+      // tail window again. Checked first so the expansion throttle can't
+      // swallow it, and it is checked on every report — including the
+      // autoscroll the panel does to follow a streaming reply.
+      const nearBottom =
+        contentHeight - y - viewportHeight < TURN_WINDOW_BOTTOM_EDGE
+      if (nearBottom) {
+        if (extraRef.current !== 0) setExtra(0)
         return
       }
 
-      const nearBottom =
-        contentHeight - y - viewportHeight < TURN_WINDOW_BOTTOM_EDGE
-      if (nearBottom && extraRef.current !== 0) {
-        setExtra(0)
+      // Expand when the *top of the mounted window* comes up to the viewport
+      // bottom — not when the scroll offset nears zero. The collapsed spacer
+      // sits between the two and is usually far taller than one screen, so
+      // waiting for `y ≈ 0` would let the person scroll into blank space for
+      // thousands of pixels before history came back.
+      const nearWindowTop =
+        y + viewportHeight <= spacerHeightRef.current + TURN_WINDOW_TOP_EDGE
+      if (nearWindowTop && current > 0) {
+        if (Date.now() - lastExpandAtRef.current < EXPAND_THROTTLE_MS) return
+        expand()
       }
     })
   }, [scrollSignal, expand, setExtra])
