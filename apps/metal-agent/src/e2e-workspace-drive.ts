@@ -11,11 +11,14 @@
  *   2. A write larger than the rootfs's whole free space succeeds, and the root
  *      device's usage does not move.
  *   3. `bun install` of a real dependency lands on the drive.
- *   4. Suspend, push to the durable store, delete EVERYTHING local (what a wake
+ *   4. The drive grows LIVE (SHO-349) — freeze → host ftruncate → PATCH /drives
+ *      → thaw → resize2fs — the guest sees the extra space without a reboot and
+ *      every byte already on the drive survives untouched.
+ *   5. Suspend, push to the durable store, delete EVERYTHING local (what a wake
  *      on another host sees), pull, restore: the files come back byte-exact and
  *      the pulled drive is still sparse.
- *   5. SIGKILL the VM: the host can still rescue the workspace off the drive.
- *   6. With the drive disabled the same image boots with the workspace on the
+ *   6. SIGKILL the VM: the host can still rescue the workspace off the drive.
+ *   7. With the drive disabled the same image boots with the workspace on the
  *      rootfs, as before.
  *
  * Talks to the guest through its terminal PTY (the same unauthenticated
@@ -28,7 +31,9 @@
 import { rmSync, statSync } from 'fs'
 import { join } from 'path'
 import { config } from './config'
+import { DataDriveProvisioner } from './data-drive'
 import { allocatedBytes } from './disk'
+import { FcApi } from './fc-api'
 import { FirecrackerVMManager, type FcVmHandle } from './firecracker-vm-manager'
 import { createSnapshotStore, type SnapshotMeta } from './snapshot-store'
 
@@ -136,6 +141,17 @@ async function must(url: string, cmd: string, timeoutMs?: number): Promise<strin
   return r.out
 }
 
+/** POST /pool/workspace-drive on the guest — the ops the host grow path calls. */
+async function driveOp(url: string, op: 'freeze' | 'thaw' | 'resize'): Promise<void> {
+  const res = await fetch(`${url}/pool/workspace-drive`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...AUTH },
+    body: JSON.stringify({ op }),
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!res.ok) fail(`/pool/workspace-drive ${op} failed (${res.status}): ${await res.text()}`)
+}
+
 /** `df -B1 --output=source,size,used,avail <path>` → numbers. */
 async function df(url: string, path: string): Promise<{ source: string; size: number; used: number; avail: number }> {
   const out = await must(url, `df -B1 --output=source,size,used,avail ${path} | tail -1`)
@@ -207,7 +223,38 @@ async function main() {
     // of measuring the push below).
     await must(h.agentUrl, 'rm -f /app/workspace/big.bin && sync')
 
-    // --- 4. suspend, push, lose all local state, pull, restore -------------
+    // --- 4. grow the drive live (SHO-349) ----------------------------------
+    // Exactly the host sequence pool.ensureWorkspaceDriveSize runs: quiesce the
+    // guest filesystem, extend the sparse backing file, tell Firecracker, thaw,
+    // then grow ext4 online. Nothing here may lose a byte already written.
+    const growToMiB = config.workspaceDriveMiB * 2
+    const drives = new DataDriveProvisioner(config)
+    t = performance.now()
+    let grown: { fromMiB: number; toMiB: number } | null = null
+    let frozen = false
+    try {
+      await driveOp(h.agentUrl, 'freeze')
+      frozen = true
+      grown = drives.grow(h.workspaceDrive, growToMiB)
+      if (grown) await new FcApi(h.socketPath).patchDrive('workspace', h.workspaceDrive)
+    } finally {
+      if (frozen) await driveOp(h.agentUrl, 'thaw')
+    }
+    if (!grown) fail(`drive was not extended to ${growToMiB}MiB (host file still ${drives.sizeMiB(h.workspaceDrive)}MiB)`)
+    await driveOp(h.agentUrl, 'resize')
+    const ws1 = await df(h.agentUrl, '/app/workspace')
+    const growMs = Math.round(performance.now() - t)
+    report.steps.grow = { fromMiB: grown.fromMiB, toMiB: grown.toMiB, ms: growMs, guestBytes: ws1.size }
+    log('grow', `${grown.fromMiB} → ${grown.toMiB} MiB in ${growMs}ms; guest sees ${(ws1.size / GiB).toFixed(1)} GiB`)
+    if (ws1.size < growToMiB * 1024 * 1024 * 0.9) fail(`guest still sees only ${ws1.size} bytes after the resize op`)
+    if (ws1.source !== ws0.source) fail(`growing the drive changed the /app/workspace device (${ws0.source} → ${ws1.source})`)
+    const sumGrown = await must(h.agentUrl, 'cd /app/workspace/project && sha256sum marker.txt random.bin node_modules/react/package.json')
+    if (sumGrown !== sumBefore) fail(`live grow corrupted the workspace:\n${sumBefore}\n---\n${sumGrown}`)
+    // Prove the new space is actually usable, not just an ext4 superblock number.
+    await must(h.agentUrl, `dd if=/dev/zero of=/app/workspace/grown.bin bs=4M count=64 conv=fsync status=none && rm -f /app/workspace/grown.bin && sync`)
+    log('grown', 'bytes intact and the added space accepts writes')
+
+    // --- 5. suspend, push, lose all local state, pull, restore -------------
     t = performance.now()
     const snap = await mgr.snapshotVM(h)
     const durable = mgr.durableRootfs(snap.rootfs)
@@ -260,7 +307,7 @@ async function main() {
     await must(h.agentUrl, `echo after-restore >> /app/workspace/project/marker.txt && sync`)
     log('restore', `restored in ${report.steps.restoreMs}ms; checksums match and the drive is writable`)
 
-    // --- 5. crash → rescue off the drive ------------------------------------
+    // --- 6. crash → rescue off the drive ------------------------------------
     process.kill(h.pid, 'SIGKILL')
     await Bun.sleep(500)
     await mgr.stopVM(h, { keepRootfs: true })
@@ -275,7 +322,7 @@ async function main() {
     if (h.workspaceDrive) mgr.releaseDataDrive(h.workspaceDrive)
     h = null
 
-    // --- 6. no drive → workspace on the rootfs ------------------------------
+    // --- 7. no drive → workspace on the rootfs ------------------------------
     const noDrive = new FirecrackerVMManager({ ...config, workspaceDriveMiB: 0 })
     h = await noDrive.startVM()
     await waitHealthy(noDrive, h, BOOT_TIMEOUT_MS)

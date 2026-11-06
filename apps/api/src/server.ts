@@ -187,8 +187,14 @@ import {
   requireProjectAccess,
   isProjectReservedTopLevelPath,
 } from './middleware/auth'
-import type { Permission } from '@shogo/authz'
+import { governsAllProjects, type Permission } from '@shogo/authz'
 import { decide, getAccess, loadAccess } from './lib/authz'
+import {
+  describeProjectDisk,
+  instanceMinScale,
+  planDiskChange,
+  readRuntimeDiskUsage,
+} from './services/project-disk.service'
 import {
   apiAuthGate,
   allowUserAppProxyRequest,
@@ -4073,6 +4079,144 @@ app.delete('/api/projects/:projectId/preferred-instance', async (c) => {
   })
 
   return c.json({ ok: true })
+})
+
+// =============================================================================
+// Workspace drive (SHO-349)
+//
+// Per-project disk size on metal. A project's files live on its own sparse
+// ext4 drive, whose size used to be one setting for the whole fleet. Now a
+// project can ask for more from Settings → Disk, and the host grows the live
+// drive (fsfreeze → ftruncate → PATCH /drives → resize2fs).
+//
+// The column is dedicated (not `settings` JSON) because the value is plan
+// limited, so only this validated route may write it — the generic project
+// PATCH drops the field (see generated/project.hooks.ts).
+// =============================================================================
+
+/** Which substrate owns this project's runtime, for the Disk panel. */
+async function projectDiskSubstrate(projectId: string): Promise<'local' | 'metal' | 'knative'> {
+  if (process.env.SHOGO_LOCAL_MODE === 'true' || !process.env.KUBERNETES_SERVICE_HOST) return 'local'
+  try {
+    const { getProjectSubstrate } = await import('./lib/substrate/router')
+    const substrate = await getProjectSubstrate(projectId)
+    return substrate.kind === 'metal' ? 'metal' : 'knative'
+  } catch (err: any) {
+    console.warn(`[ProjectDisk] substrate probe failed for ${projectId}:`, err?.message ?? err)
+    return 'knative'
+  }
+}
+
+app.get('/api/projects/:projectId/disk', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceDiskGiB: true, workspace: { select: { instanceSize: true } } },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+  const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
+  const substrate = await projectDiskSubstrate(projectId)
+  // Never wake a VM just to measure it: a stopped project answers with the
+  // size only, and the panel says usage appears while the project is running.
+  const usage = substrate === 'metal' ? await readRuntimeDiskUsage(projectId, workspaceId) : null
+
+  return c.json(
+    describeProjectDisk({
+      requestedGiB: project.workspaceDiskGiB,
+      instanceSize,
+      substrate,
+      usage,
+    }),
+  )
+})
+
+app.put('/api/projects/:projectId/disk', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const principal = { userId, via: 'session' as const }
+  const access = await loadAccess(principal, { projectId })
+  if (!access.exists) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+  if (!access.permissions.has('project:update')) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+  // Raising disk is a spend decision: workspace owners/admins only.
+  if (!governsAllProjects(access.workspaceRole)) {
+    return c.json(
+      { error: { code: 'forbidden', message: 'Only workspace owners and admins can change disk size' } },
+      403,
+    )
+  }
+  const workspaceId = access.workspaceId
+  if (!workspaceId) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+
+  const body = await c.req
+    .json<{ sizeGiB?: number | string }>()
+    .catch(() => ({}) as { sizeGiB?: number | string })
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceDiskGiB: true, workspace: { select: { instanceSize: true } } },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+  const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
+  const plan = planDiskChange(body.sizeGiB, instanceSize)
+  if (!plan.ok) {
+    return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
+  }
+
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { workspaceDiskGiB: plan.sizeGiB },
+  })
+
+  // Grow a running VM right away. A project that isn't running picks the size
+  // up on its next open (the assign env carries it). `minScale` is passed
+  // through so this never downgrades an always-on project.
+  const substrate = await projectDiskSubstrate(projectId)
+  let growError: string | undefined
+  if (substrate === 'metal') {
+    try {
+      const { resizeProjectRuntime } = await import('./lib/substrate/router')
+      await resizeProjectRuntime(projectId, {
+        disk: `${plan.sizeGiB}Gi`,
+        minScale: instanceMinScale(instanceSize),
+      })
+    } catch (err: any) {
+      growError = err?.message ?? String(err)
+      console.warn(`[ProjectDisk] live grow for ${projectId} failed:`, growError)
+    }
+  }
+
+  const usage = substrate === 'metal' ? await readRuntimeDiskUsage(projectId, workspaceId) : null
+  return c.json({
+    ...describeProjectDisk({
+      requestedGiB: plan.sizeGiB,
+      instanceSize,
+      substrate,
+      usage,
+    }),
+    // The column is saved either way; a failed live grow retries on next open.
+    ...(growError ? { growError } : {}),
+  })
 })
 
 // =============================================================================

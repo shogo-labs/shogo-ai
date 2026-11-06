@@ -38,6 +38,7 @@ import {
   INSTANCE_SIZES,
   meetsMinimumInstanceSize,
   resolveMetalVmSize,
+  resolveWorkspaceDiskMiB,
   type InstanceSizeName,
 } from '../../config/instance-sizes'
 import { isDockerClassEnabled } from '../runtime-class-setting'
@@ -97,7 +98,7 @@ export interface BuildWorkspaceEnvOpts {
   _generateProxyToken?: typeof generateProxyToken
   _loadProjects?: (
     projectIds: string[],
-  ) => Promise<Array<{ id: string; name: string | null; settings?: unknown }>>
+  ) => Promise<Array<{ id: string; name: string | null; settings?: unknown; workspaceDiskGiB?: number | null }>>
   _loadAvailableProjects?: (
     workspaceId: string,
   ) => Promise<Array<{ id: string; name: string | null; description?: string | null }>>
@@ -227,8 +228,8 @@ export async function buildWorkspaceEnv(
         const { prisma } = await import('../prisma')
         return (await prisma.project.findMany({
           where: { id: { in: ids } },
-          select: { id: true, name: true, settings: true },
-        })) as Array<{ id: string; name: string | null; settings?: unknown }>
+          select: { id: true, name: true, settings: true, workspaceDiskGiB: true },
+        })) as Array<{ id: string; name: string | null; settings?: unknown; workspaceDiskGiB?: number | null }>
       })
     const rows = attachedProjectIds.length ? await loadProjects(attachedProjectIds) : []
     const nameById = new Map(rows.map((r) => [r.id, r.name]))
@@ -276,6 +277,17 @@ export async function buildWorkspaceEnv(
           resolveMetalVmSize(workspaceInstanceSize, Object.values(techStacks), env.SHOGO_RUNTIME_CLASS === 'docker'),
         ),
       )
+      // Workspace-drive size (SHO-349). A project-anchored runtime gets its own
+      // anchor project's request; a bare `ws:<workspaceId>` runtime has no
+      // single project, so it grows for the largest member it mounts.
+      const anchorRow = opts.anchorProjectId ? rows.find((r) => r.id === opts.anchorProjectId) : undefined
+      const requestedDiskGiB = anchorRow
+        ? anchorRow.workspaceDiskGiB
+        : rows.reduce<number | null>((max, r) => {
+            if (typeof r.workspaceDiskGiB !== 'number') return max
+            return max === null || r.workspaceDiskGiB > max ? r.workspaceDiskGiB : max
+          }, null)
+      env.SHOGO_VM_DISK_MIB = String(resolveWorkspaceDiskMiB(requestedDiskGiB, workspaceInstanceSize))
       // Paid tiers stay warm, as their single-project runtimes already do.
       // Only with the pooled budget on: it is what bounds how many of a
       // workspace's always-on VMs can be running at once.

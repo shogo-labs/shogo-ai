@@ -713,6 +713,22 @@ export interface PublishedEnvironmentMetrics {
   projectionUsd: number
 }
 
+/** `GET/PUT /api/projects/:id/disk` (SHO-349). */
+export interface ProjectDiskState {
+  /** What the project asked for; null = never set (fleet default). */
+  requestedGiB: number | null
+  /** The size in force, clamped to the tier ceiling. */
+  effectiveGiB: number
+  defaultGiB: number
+  /** Largest size this workspace's tier may ask for. */
+  maxGiB: number
+  canIncrease: boolean
+  reason?: string
+  /** Live usage from the guest; null while the project isn't running. */
+  usage: { usedBytes: number; totalBytes: number; measuredAt: string } | null
+  substrate: 'metal' | 'knative' | 'local'
+}
+
 export const api = {
   /** POST /api/users/me/attribution (after signup; session cookie / token via HttpClient). */
   async postSignupAttribution(http: HttpClient, body: Record<string, unknown>) {
@@ -1363,6 +1379,24 @@ export const api = {
   },
 
   // ─── Publish ─────────────────────────────────────────────
+
+  /** Workspace-drive size + live usage for a project (SHO-349, Settings → Disk). */
+  async getProjectDisk(http: HttpClient, projectId: string) {
+    const res = await http.get<ProjectDiskState>(`/api/projects/${projectId}/disk`)
+    return res.data
+  },
+
+  /**
+   * Ask for a bigger workspace drive. Saves immediately and grows a running VM;
+   * errors carry the server's `error.message` (e.g. the plan ceiling).
+   */
+  async updateProjectDisk(http: HttpClient, projectId: string, sizeGiB: number) {
+    const res = await http.put<ProjectDiskState & { growError?: string }>(
+      `/api/projects/${projectId}/disk`,
+      { sizeGiB },
+    )
+    return res.data
+  },
 
   async getPublishState(http: HttpClient, projectId: string) {
     const res = await http.get<{

@@ -224,6 +224,7 @@ import { injectCommitTrailer } from './git-attribution'
 import type { TeamManager } from './team-manager'
 import type { TeammateLoopHandle } from './teammate-loop'
 import { createChatHandoffTool } from './chat-handoff-tool'
+import { readWorkspaceDriveUsage } from './workspace-drive'
 
 export interface ToolContext {
   workspaceDir: string
@@ -1929,9 +1930,36 @@ function createExecTool(ctx: ToolContext): AgentTool {
         return buildSoftTimeoutResult(ctx, entry, winner === STOPPED ? null : softTimeoutMs)
       }
 
-      return withOtherProjectFolderWarning(ctx.workspaceDir, topLevelBefore, buildCompletedExecResult({ ctx, entry, finalResult: winner }))
+      const completed = buildCompletedExecResult({ ctx, entry, finalResult: winner })
+      return withOtherProjectFolderWarning(
+        ctx.workspaceDir,
+        topLevelBefore,
+        await withDiskFullHint(completed),
+      )
     },
   }, ctx)
+}
+
+/**
+ * When a command dies with ENOSPC on metal, say so in one line with the real
+ * numbers and where to fix it (SHO-349). Without this the agent reads a bare
+ * `No space left on device` and starts deleting the user's files: the actual
+ * fix may be a bigger drive in Settings → Disk, which it cannot see.
+ */
+async function withDiskFullHint(result: AgentToolResult<any>): Promise<AgentToolResult<any>> {
+  if (!isMetalRuntime()) return result
+  const details = result.details && typeof result.details === 'object' ? result.details : null
+  const text = details ? JSON.stringify(details) : String(result.details ?? '')
+  if (!/ENOSPC|no space left on device/i.test(text)) return result
+  const usage = await readWorkspaceDriveUsage()
+  if (!usage) return result
+  const gib = (b: number) => Math.round((b / 1024 ** 3) * 10) / 10
+  return textResult({
+    ...details,
+    diskHint:
+      `The project disk is full (${gib(usage.usedBytes)} of ${gib(usage.totalBytes)} GiB). ` +
+      'Free space, or raise it in Settings → Disk.',
+  })
 }
 
 /**

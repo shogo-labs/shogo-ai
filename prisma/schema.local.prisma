@@ -580,6 +580,10 @@ model Project {
   //   Default mirrors the PG schema (`git_only`); harmless on desktop
   //   where cloud sync is disabled (SHOGO_LOCAL_MODE).
   cloudSyncMode String  @default("git_only")
+  // Requested size (GiB) of this project's runtime workspace drive; null = the
+  // fleet default. Read-only on desktop (the machine's own disk is used) — the
+  // column exists in both tracks for schema parity. See schema.prisma.
+  workspaceDiskGiB Int?
   // Optional SSH host for desktop Remote-SSH projects. When set, the
   // primary ProjectFolder path is resolved on the remote machine.
   remoteHostId  String?
