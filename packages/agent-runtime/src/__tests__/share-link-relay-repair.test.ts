@@ -168,6 +168,37 @@ describe('harvestShareLinkTokens', () => {
     expect((gw as any).shareLinkTokensFor('s-object')).toEqual(new Set([MINTED]))
   })
 
+  test('learns the token from a remote share_file result (SHO-353)', () => {
+    const gw = new AgentGateway(makeWorkspace('host-remote-share'), 'p-sho353-harvest-remote')
+    const harvest = (sessionId: string, result: unknown, isError: boolean) =>
+      (gw as any).harvestShareLinkTokens(sessionId, result, isError)
+
+    // What `withRemoteProject` hands the model: the target runtime's own
+    // `share_file` result, annotated with the project it ran in.
+    harvest(
+      's-remote',
+      {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              url: url(MINTED),
+              filename: 'report.xlsx',
+              path: 'reports/report.xlsx',
+              chatPath: 'proj-b/reports/report.xlsx',
+              project: { id: 'proj-b', name: 'Beta' },
+            }),
+          },
+        ],
+        details: { ok: true, url: url(MINTED), path: 'reports/report.xlsx', chatPath: 'proj-b/reports/report.xlsx' },
+      },
+      false,
+    )
+
+    expect((gw as any).shareLinkTokensFor('s-remote')).toEqual(new Set([MINTED]))
+  })
+
   test('ignores error results and results that carry no share link', () => {
     const gw = new AgentGateway(makeWorkspace('host-error'), 'p-sho172-harvest-error')
     const harvest = (sessionId: string, result: unknown, isError: boolean) =>

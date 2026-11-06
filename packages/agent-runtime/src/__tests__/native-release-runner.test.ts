@@ -1,0 +1,488 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * The runner is the only part of native release that touches the user's files, so
+ * these tests are about what leaves the pod: no secret in the archive, no write to
+ * the working tree, and a release that asks for the bundle id before it spends
+ * anything.
+ */
+
+import { afterEach, describe, expect, it } from 'bun:test'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  MAX_ARCHIVE_BYTES,
+  NON_APP_TOP_LEVEL_DIRS,
+  buildAppConfigOverlay,
+  buildDynamicConfigWrapper,
+  buildEasJson,
+  buildIgnoreMatcher,
+  computeFingerprint,
+  hasMaestroFlows,
+  hasServerFiles,
+  isExcludedFromArchive,
+  largestTopLevelDirs,
+  packageManagerPin,
+  publicEnvFrom,
+  runNativeRelease,
+  writeProjectArchive,
+} from '../native-release-runner'
+
+const dirs: string[] = []
+
+function makeProject(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), 'shogo-native-test-'))
+  dirs.push(dir)
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = join(dir, rel)
+    mkdirSync(join(abs, '..'), { recursive: true })
+    writeFileSync(abs, content)
+  }
+  return dir
+}
+
+afterEach(() => {
+  while (dirs.length) {
+    const dir = dirs.pop()!
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+describe('what never enters the archive', () => {
+  it('refuses every .env variant, and keeps the templates', () => {
+    for (const name of ['.env', '.env.local', '.env.production', 'apps/mobile/.env', 'sub/.env.test']) {
+      expect(isExcludedFromArchive(name)).toBe(true)
+    }
+    expect(isExcludedFromArchive('.env.example')).toBe(false)
+    expect(isExcludedFromArchive('.env.sample')).toBe(false)
+  })
+
+  it('refuses node_modules, .shogo, .git and build output at any depth', () => {
+    for (const path of [
+      'node_modules/react/index.js',
+      'apps/mobile/node_modules/x/y.js',
+      '.shogo/logs/build.log',
+      '.git/config',
+      '.expo/state.json',
+      'ios/Podfile',
+      'android/build.gradle',
+    ]) {
+      expect(isExcludedFromArchive(path)).toBe(true)
+    }
+  })
+
+  it('keeps application source', () => {
+    expect(isExcludedFromArchive('apps/mobile/App.tsx')).toBe(false)
+    expect(isExcludedFromArchive('app.json')).toBe(false)
+    expect(isExcludedFromArchive('.maestro/smoke.yaml')).toBe(false)
+  })
+
+  it('honours .gitignore as well as the hard rules', () => {
+    const matcher = buildIgnoreMatcher('/tmp/x', [{ name: '.gitignore', content: 'dist/\n*.log\n' }])
+    expect(matcher('dist/index.js')).toBe(true)
+    expect(matcher('debug.log')).toBe(true)
+    expect(matcher('src/index.ts')).toBe(false)
+  })
+})
+
+describe('the archive', () => {
+  it('carries the generated eas.json and no .env, and leaves the tree untouched', async () => {
+    const dir = makeProject({
+      'package.json': '{"name":"app"}',
+      'app.json': JSON.stringify({ expo: { name: 'App', slug: 'app' } }),
+      'App.tsx': 'export default function App() { return null }',
+      '.env': 'SECRET=shhh\nEXPO_PUBLIC_API_URL=https://api.test\n',
+      '.gitignore': 'dist/\n',
+      'dist/bundle.js': 'built',
+    })
+
+    const before = readFileSync(join(dir, '.env'), 'utf8')
+    const out = join(dir, '..', `archive-${Date.now()}.tar.gz`)
+    const result = await writeProjectArchive({
+      projectId: 'proj_1',
+      projectDir: dir,
+      outFile: out,
+      easyProjectId: 'eas_app_1',
+    })
+
+    expect(result.files).toBeGreaterThan(0)
+    expect(result.bytes).toBeGreaterThan(0)
+    expect(result.publicEnv).toEqual({ EXPO_PUBLIC_API_URL: 'https://api.test' })
+
+    const { list } = await import('tar')
+    const entries: string[] = []
+    await list({ file: out, onentry: (entry: any) => entries.push(entry.path) })
+
+    expect(entries).toContain('eas.json')
+    expect(entries).toContain('package.json')
+    expect(entries).toContain('App.tsx')
+    expect(entries.some((e) => e.includes('.env'))).toBe(false)
+    expect(entries.some((e) => e.startsWith('dist/'))).toBe(false)
+    expect(entries.some((e) => e.includes('node_modules'))).toBe(false)
+
+    // The project itself is read-only for us.
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(before)
+    expect(() => readFileSync(join(dir, 'eas.json'), 'utf8')).toThrow()
+
+    rmSync(out, { force: true })
+  })
+
+  it('generates a store profile and a test profile, with the class left to the API', () => {
+    const eas = buildEasJson({ projectId: 'proj_1' }) as any
+    expect(eas.build['shogo-test'].withoutCredentials).toBe(true)
+    expect(eas.build['shogo-test'].ios.simulator).toBe(true)
+    expect(eas.build['shogo-store'].distribution).toBe('store')
+  })
+
+  it('pins the resource class on every profile, rather than taking the platform default', () => {
+    // A profile without `resourceClass` runs on Expo's `default`, whose concrete
+    // class differs by platform — while the meter quotes the class we chose. The
+    // value is the API's (it prices the build), so this asserts it is threaded
+    // through rather than copied here.
+    const eas = buildEasJson({
+      projectId: 'proj_1',
+      resourceClass: {
+        test: { ios: 'medium', android: 'medium' },
+        store: { ios: 'large', android: 'large' },
+      },
+    }) as any
+    expect(eas.build['shogo-test'].ios.resourceClass).toBe('medium')
+    expect(eas.build['shogo-test'].android.resourceClass).toBe('medium')
+    // The store profile's class is its own, because a store build is quoted from
+    // `buildParams.resourceClass` — one profile pinning a different table than the
+    // request is how the quote and the invoice diverge.
+    expect(eas.build['shogo-store'].ios.resourceClass).toBe('large')
+    expect(eas.build['shogo-store'].android.resourceClass).toBe('large')
+  })
+
+  it('still pins a class when the API sent none, so no profile depends on a default', () => {
+    const eas = buildEasJson({ projectId: 'proj_1' }) as any
+    expect(eas.build['shogo-test'].ios.resourceClass).toBe('medium')
+    expect(eas.build['shogo-store'].android.resourceClass).toBe('medium')
+  })
+
+  it('wraps a dynamic app config instead of overwriting it', () => {
+    const wrapper = buildDynamicConfigWrapper({ extra: { eas: { projectId: 'p1' } } })
+    expect(wrapper).toContain("require('./app.json')")
+    expect(wrapper).toContain('module.exports = ({ config })')
+    expect(wrapper).toContain('projectId')
+  })
+})
+
+describe('EXPO_PUBLIC values', () => {
+  it('extracts only public variables, unquoting and skipping comments', () => {
+    const env = [
+      '# comment',
+      'SECRET=shhh',
+      'EXPO_PUBLIC_API_URL=https://api.test',
+      'EXPO_PUBLIC_TITLE="My App"',
+      '',
+      "EXPO_PUBLIC_KEY='abc'",
+    ].join('\n')
+    expect(publicEnvFrom(env)).toEqual({
+      EXPO_PUBLIC_API_URL: 'https://api.test',
+      EXPO_PUBLIC_TITLE: 'My App',
+      EXPO_PUBLIC_KEY: 'abc',
+    })
+  })
+})
+
+describe('fingerprints', () => {
+  it('is stable for the same tree and changes when a tracked file changes', async () => {
+    const dir = makeProject({ 'a.ts': 'one', 'b.ts': 'two' })
+    const first = await computeFingerprint(dir, ['a.ts', 'b.ts'])
+    const again = await computeFingerprint(dir, ['a.ts', 'b.ts'])
+    expect(first).toBe(again)
+    expect(first.startsWith('shogo-hash-')).toBe(true)
+
+    writeFileSync(join(dir, 'a.ts'), 'changed')
+    const changed = await computeFingerprint(dir, ['a.ts', 'b.ts'])
+    expect(changed).not.toBe(first)
+  })
+
+  it('does not depend on file order', async () => {
+    const dir = makeProject({ 'a.ts': 'one', 'b.ts': 'two' })
+    expect(await computeFingerprint(dir, ['a.ts', 'b.ts'])).toBe(
+      await computeFingerprint(dir, ['b.ts', 'a.ts']),
+    )
+  })
+})
+
+describe('maestro flows', () => {
+  it('are found when the project has them', async () => {
+    const withFlows = makeProject({ '.maestro/smoke.yaml': 'appId: x\n---\n- launchApp\n' })
+    expect(await hasMaestroFlows(withFlows)).toBe(true)
+  })
+
+  it('are skipped, not faked, when the project has none', async () => {
+    const withoutFlows = makeProject({ 'app.json': '{}' })
+    expect(await hasMaestroFlows(withoutFlows)).toBe(false)
+  })
+})
+
+/**
+ * A project whose store connections are all done. Every case below that expects a
+ * release to start uses this, so the flow gate (bundle id → backend → Play/ASC →
+ * first upload → app record → icon) is not what the case is quietly testing.
+ */
+const READY = {
+  needsBundleId: false,
+  mode: 'cloud',
+  app: {
+    easAppId: 'eas_1',
+    bundleIdentifier: 'ai.shogo.app.cool',
+    androidPackage: 'ai.shogo.app.cool',
+    ascAppId: 'asc_1',
+  },
+  connections: {
+    play: { keyAvailable: true, publisherEmail: 'publisher@shogo.test', firstUploadDone: true },
+    asc: { keyAvailable: true, appRecord: true },
+  },
+  backend: { published: true, url: 'https://cool.shogo.one' },
+}
+
+/** The `expo.icon` every shippable project has; without it a release stops at needs_icon. */
+const ICON = { 'assets/images/icon.png': 'png-bytes' }
+
+describe('a release, against a fake API', () => {
+  it('asks for the bundle id before it spends anything', async () => {
+    const dir = makeProject({ 'app.json': '{}' })
+    let started = false
+    const result = await runNativeRelease({
+      projectId: 'p1',
+      projectDir: dir,
+      platforms: ['ios'],
+      track: 'internal',
+      hasMaestroFlows: false,
+      api: {
+        state: async () => ({
+          ok: true,
+          data: { needsBundleId: true, defaultBundleIdentifier: 'ai.shogo.app.cool', mode: 'byok', app: null },
+        }),
+        start: async () => {
+          started = true
+          return { ok: true, data: {} }
+        },
+        sources: async () => ({ ok: true, data: {} }),
+      },
+    })
+
+    expect(started).toBe(false)
+    expect(result.needs_bundle_id).toBe(true)
+    expect(result.default_bundle_identifier).toBe('ai.shogo.app.cool')
+  })
+
+  it('uploads the archive and starts the test stage', async () => {
+    const dir = makeProject({ 'app.json': '{"expo":{"name":"App"}}', 'App.tsx': 'x', ...ICON })
+    const uploaded: { url: string; size: number }[] = []
+    const sourcesCalls: any[] = []
+
+    const result = await runNativeRelease({
+      projectId: 'p1',
+      projectDir: dir,
+      platforms: ['ios'],
+      track: 'testflight',
+      hasMaestroFlows: true,
+      api: {
+        state: async () => ({ ok: true, data: READY }),
+        start: async () => ({
+          ok: true,
+          data: {
+            releaseId: 'rel_1',
+            kind: 'build',
+            mode: 'cloud',
+            uploads: [{ kind: 'source', url: 'https://upload.test/1', bucketKey: 'bucket/1' }],
+          },
+        }),
+        sources: async (_p, _r, input) => {
+          sourcesCalls.push(input)
+          return { ok: true, data: { status: 'testing', workflowRunId: 'wf_1' } }
+        },
+      },
+      upload: async (url, body) => {
+        uploaded.push({ url, size: body.byteLength })
+      },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.release_id).toBe('rel_1')
+    expect(result.test_stage).toBe('scheduled')
+    expect(uploaded).toHaveLength(1)
+    expect(uploaded[0].size).toBeGreaterThan(0)
+    expect(sourcesCalls[0].bucketKey).toBe('bucket/1')
+  })
+
+  it('surfaces a plan refusal as a plan gate, not a generic failure', async () => {
+    const dir = makeProject({ 'app.json': '{}', ...ICON })
+    const result = await runNativeRelease({
+      projectId: 'p1',
+      projectDir: dir,
+      platforms: ['ios'],
+      track: 'production',
+      hasMaestroFlows: false,
+      api: {
+        state: async () => ({ ok: true, data: READY }),
+        start: async () => ({
+          ok: false,
+          status: 402,
+          error: 'Publishing to the App Store and Google Play is available on paid plans.',
+          code: 'plan_not_allowed',
+        }),
+        sources: async () => ({ ok: true, data: {} }),
+      },
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.plan_gate).toBe(true)
+    expect(result.code).toBe('plan_not_allowed')
+  })
+})
+
+
+describe('what a workspace keeps out of the build — Samsara was 1.3 GB', () => {
+  it('excludes the heavy non-app directories at the top level', () => {
+    for (const dir of NON_APP_TOP_LEVEL_DIRS) {
+      expect(isExcludedFromArchive(`${dir}/thing.bin`)).toBe(true)
+    }
+  })
+
+  it('keeps them when they are inside the app, where they are the code', () => {
+    expect(isExcludedFromArchive('app/src/scripts/build.ts')).toBe(false)
+    expect(isExcludedFromArchive('packages/ui/src/data/theme.ts')).toBe(false)
+  })
+
+  it('keeps the app itself', () => {
+    expect(isExcludedFromArchive('app.json')).toBe(false)
+    expect(isExcludedFromArchive('src/app/index.tsx')).toBe(false)
+    expect(isExcludedFromArchive('assets/images/icon.png')).toBe(false)
+  })
+
+  it('an archive of a project with a 1 GB media directory contains no media', async () => {
+    const dir = makeProject({
+      'app.json': '{"expo":{"name":"App"}}',
+      'App.tsx': 'x',
+      'media/big.bin': 'x'.repeat(1024),
+      'content/post.md': 'hello',
+    })
+    const out = join(dir, '..', `archive-media-${Date.now()}.tar.gz`)
+    const result = await writeProjectArchive({ projectId: 'p1', projectDir: dir, outFile: out })
+
+    const { list } = await import('tar')
+    const entries: string[] = []
+    await list({ file: out, onentry: (e: any) => entries.push(e.path) })
+    expect(entries.some((e) => e.startsWith('media/'))).toBe(false)
+    expect(entries.some((e) => e.startsWith('content/'))).toBe(false)
+    expect(entries).toContain('App.tsx')
+    expect(result.files).toBeGreaterThan(0)
+  })
+
+  it('names the largest directories when the project is over the cap', () => {
+    const sizes = new Map([
+      ['src', 1024],
+      ['media', 900 * 1024 * 1024],
+      ['research', 40 * 1024 * 1024],
+    ])
+    expect(largestTopLevelDirs(sizes, 2)).toEqual([
+      { dir: 'media', bytes: 900 * 1024 * 1024 },
+      { dir: 'research', bytes: 40 * 1024 * 1024 },
+    ])
+    expect(MAX_ARCHIVE_BYTES).toBe(500 * 1024 * 1024)
+  })
+})
+
+describe('the package manager pin', () => {
+  it('pins bun when the project has a bun lockfile, which Samsara needed', () => {
+    expect(packageManagerPin({ files: ['package.json', 'bun.lock'], bunVersion: '1.3.2' })).toBe('bun@1.3.2')
+  })
+
+  it('says nothing when the project uses another package manager', () => {
+    expect(packageManagerPin({ files: ['package.json', 'package-lock.json'], bunVersion: '1.3.2' })).toBeNull()
+  })
+})
+
+describe('the app config overlay', () => {
+  it('carries the identifiers the stores read off the built app', () => {
+    const overlay = buildAppConfigOverlay({
+      easProjectId: 'eas_1',
+      identifier: {
+        slug: 'cool-app',
+        scheme: 'coolapp',
+        iosBundleIdentifier: 'ai.shogo.app.cool',
+        androidPackage: 'ai.shogo.app.cool',
+      },
+    })
+    expect(overlay.slug).toBe('cool-app')
+    expect(overlay.scheme).toBe('coolapp')
+    expect(overlay.ios).toEqual({ bundleIdentifier: 'ai.shogo.app.cool' })
+    expect(overlay.android).toEqual({ package: 'ai.shogo.app.cool' })
+    expect(overlay.extra).toEqual({ eas: { projectId: 'eas_1' } })
+  })
+})
+
+describe('the flow gate before anything is built', () => {
+  const state = (over: Record<string, unknown> = {}) => ({
+    ok: true,
+    data: {
+      mode: 'cloud',
+      app: { easAppId: 'eas_1', bundleIdentifier: 'ai.shogo.app.cool', androidPackage: 'ai.shogo.app.cool' },
+      connections: {
+        play: { keyAvailable: true, publisherEmail: 'p@shogo.test', firstUploadDone: true },
+        asc: { keyAvailable: true, appRecord: true },
+      },
+      backend: { published: true, url: 'https://cool.shogo.one' },
+      ...over,
+    },
+  })
+
+  it('stops at publish_web when the app has a server and nothing is published', async () => {
+    const dir = makeProject({ 'app.json': '{}', 'server.tsx': 'export default {}', ...ICON })
+    let started = false
+    const result = await runNativeRelease({
+      projectId: 'p1',
+      projectDir: dir,
+      platforms: ['android'],
+      track: 'internal',
+      hasMaestroFlows: false,
+      api: {
+        state: async () => state({ backend: { published: false, url: null } }),
+        start: async () => {
+          started = true
+          return { ok: true, data: {} }
+        },
+        sources: async () => ({ ok: true, data: {} }),
+      },
+    })
+    expect(started).toBe(false)
+    expect(result.next_action).toBe('publish_web')
+  })
+
+  it('stops at needs_icon when the project has no artwork', async () => {
+    const dir = makeProject({ 'app.json': '{}', 'App.tsx': 'x' })
+    let started = false
+    const result = await runNativeRelease({
+      projectId: 'p1',
+      projectDir: dir,
+      platforms: ['ios'],
+      track: 'testflight',
+      hasMaestroFlows: false,
+      api: {
+        state: async () => state(),
+        start: async () => {
+          started = true
+          return { ok: true, data: {} }
+        },
+        sources: async () => ({ ok: true, data: {} }),
+      },
+    })
+    expect(started).toBe(false)
+    expect(result.next_action).toBe('needs_icon')
+  })
+
+  it('detects a server in the project’s own files', () => {
+    expect(hasServerFiles(['server.tsx'])).toBe(true)
+    expect(hasServerFiles(['custom-routes.ts'])).toBe(true)
+    expect(hasServerFiles(['prisma/schema.prisma'])).toBe(true)
+    expect(hasServerFiles(['App.tsx', 'app.json'])).toBe(false)
+  })
+})

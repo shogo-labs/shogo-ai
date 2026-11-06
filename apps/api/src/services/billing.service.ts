@@ -672,6 +672,24 @@ export async function canPublishSubdomain(workspaceId: string): Promise<boolean>
 }
 
 /**
+ * Check if a workspace may ship a native app to the App Store / Google Play.
+ *
+ * Paid plans only (Russell, 2026-11-06): Free is refused with an upgrade
+ * message. The reason is the same one `canPublishSubdomain` has — a build on
+ * Shogo's Expo account costs real money and cannot be reclaimed — but the floor
+ * is `basic`, not `pro`.
+ *
+ * Local mode is unlimited (channel rule, SHO-43), and `byok` is not gated at all
+ * because the user pays Expo themselves; `release.service` only calls this in
+ * `cloud` and `relay`.
+ */
+export async function canUseNativeRelease(workspaceId: string): Promise<boolean> {
+  if (isLocalMode) return true
+  const plan = await getEffectivePlanId(workspaceId)
+  return PLAN_RANK[plan] >= PLAN_RANK.basic
+}
+
+/**
  * Check if workspace has a Business or Enterprise plan, whether via
  * Stripe subscription or super-admin grant. Returns false for Pro,
  * free, or unconfigured workspaces.

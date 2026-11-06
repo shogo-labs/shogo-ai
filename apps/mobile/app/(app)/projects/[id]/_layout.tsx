@@ -170,7 +170,9 @@ import {
 import { FoldersPanel } from "../../../../components/project/panels/FoldersPanel";
 import { CustomDomainsSection } from "../../../../components/project/CustomDomainsSection";
 import { AlwaysOnSection } from "../../../../components/project/AlwaysOnSection";
+import { AppStoresSection } from "../../../../components/project/AppStoresSection";
 import { DeploymentSection } from "../../../../components/project/DeploymentSection";
+import { DiskSettings } from "../../../../components/settings/DiskSettings";
 import { ProjectAgentLookSection } from "../../../../components/settings/ProjectAgentLookSection";
 import { CheckpointGraphNative } from "../../../../components/project/panels/ide/graph/CheckpointGraphNative";
 import {
@@ -196,12 +198,14 @@ import {
   BarChart3,
   FileText,
   ShieldCheck,
+  HardDrive,
   Globe,
   Plus,
   History,
   Zap,
   Users,
   Boxes,
+  Smartphone,
 } from "lucide-react-native";
 import { ProjectAccessPanel } from "../../../../components/project/ProjectAccessPanel";
 import { usePermissions } from "../../../../hooks/usePermissions";
@@ -4833,6 +4837,19 @@ export default observer(function ProjectLayout() {
                                   </PanelErrorBoundary>
                                 ),
                               },
+                              {
+                                id: "disk",
+                                label: "Disk",
+                                icon: HardDrive,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Disk">
+                                    <DiskSettings
+                                      projectId={projectId!}
+                                      http={http}
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
                             ],
                           },
                           {
@@ -4861,6 +4878,21 @@ export default observer(function ProjectLayout() {
                                   <PanelErrorBoundary panelName="Custom domain">
                                     <CustomDomainsSection
                                       projectId={projectId!}
+                                      http={http}
+                                      embedded={false}
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "app-stores",
+                                label: "App stores",
+                                icon: Smartphone,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="App stores">
+                                    <AppStoresSection
+                                      projectId={projectId!}
+                                      workspaceId={project?.workspaceId}
                                       http={http}
                                       embedded={false}
                                     />

@@ -184,6 +184,14 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
     files: ['e2e/agent-call-restart.test.ts'],
     env: {},
   },
+  // SHO-335: real `net` listeners plus the real API manager and the worker it
+  // embeds. It allocates ports for real, so it must not share a bun process
+  // with another suite that is binding servers on the same range.
+  {
+    name: 'shared port pool e2e',
+    files: ['e2e/sho-335-port-pool.e2e.test.ts'],
+    env: { SHOGO_LOCAL_MODE: 'true', DATABASE_URL: 'file:./shogo.db' },
+  },
   ...['enterprise-onboarding', 'restricted-project-lifecycle', 'api-key-lifecycle'].map((name) => ({
     name: `rbac e2e: ${name}`,
     files: [`e2e/rbac/${name}.e2e.test.ts`],

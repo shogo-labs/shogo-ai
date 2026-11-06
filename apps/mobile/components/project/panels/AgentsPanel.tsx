@@ -91,12 +91,18 @@ function StreamPartsRenderer({
   return (
     <View className="gap-2">
       {visibleParts.map((part) => {
+        // The runtime caps what it streams (a browser snapshot is trimmed to a
+        // preview), so say so instead of showing a silently shortened result.
+        const truncated = (part as { truncated?: boolean }).truncated
         if (part.type === "text") {
           return (
             <View key={part.id}>
               <MarkdownText className="text-foreground text-xs prose-sm">
                 {part.text}
               </MarkdownText>
+              {truncated ? (
+                <Text className="mt-1 text-[10px] text-muted-foreground">trimmed for the live view</Text>
+              ) : null}
             </View>
           )
         }
@@ -111,7 +117,14 @@ function StreamPartsRenderer({
           )
         }
         if (part.type === "tool") {
-          return <InlineToolWidget key={part.id} tool={part.tool} />
+          return (
+            <View key={part.id} className="gap-1">
+              <InlineToolWidget tool={part.tool} />
+              {truncated ? (
+                <Text className="text-[10px] text-muted-foreground">trimmed for the live view</Text>
+              ) : null}
+            </View>
+          )
         }
         return null
       })}

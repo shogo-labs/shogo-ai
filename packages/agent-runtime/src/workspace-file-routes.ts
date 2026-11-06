@@ -55,6 +55,25 @@ export function resolveWithinRoot(root: string, subPath: string): string | null 
 }
 
 /**
+ * RFC 7232 weak comparison of an `If-None-Match` header against our weak
+ * ETag. The header may carry a comma-separated list (browsers and proxies
+ * re-send whatever we last returned), so compare each entry with the `W/`
+ * prefix stripped, plus the `*` wildcard.
+ */
+export function ifNoneMatchMatches(
+  header: string | undefined,
+  etag: string,
+): boolean {
+  if (!header) return false
+  const normalize = (value: string): string => value.trim().replace(/^W\//, '')
+  const target = normalize(etag)
+  return header
+    .split(',')
+    .map((part) => normalize(part))
+    .some((candidate) => candidate === '*' || candidate === target)
+}
+
+/**
  * The project's content root: `<workspaceDir>/<anchorId>` on a workspace
  * runtime (a folder-linked project's own folder, or `workspaces/<id>` for a
  * managed one), `workspaceDir` itself on a single-project runtime or before
@@ -196,6 +215,16 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
     }
     if (isDirectoryPath(target)) return c.json({ error: 'Path is a directory' }, 400)
 
+    // Conditional reads: the IDE re-reads the active file and must be able to
+    // ask "still this version?" for the price of a stat. Weak ETag = mtime+size,
+    // which is enough to make an unchanged file a bodiless 304.
+    const stat = statSync(target)
+    const etag = `W/"${Math.floor(stat.mtimeMs)}-${stat.size}"`
+    const ifNoneMatch = c.req.header('if-none-match')
+    if (ifNoneMatchMatches(ifNoneMatch, etag)) {
+      return c.body(null, 304, { ETag: etag })
+    }
+
     const buf = readFileSync(target)
     if (isBinaryFilePath(target) || isBinaryBuffer(buf)) {
       return c.json({
@@ -203,11 +232,15 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
         contentBase64: buf.toString('base64'),
         encoding: 'base64',
         bytes: buf.length,
-      })
+      }, 200, { ETag: etag })
     }
 
     const content = buf.toString('utf-8')
-    return c.json({ path: subPath, content, encoding: 'utf-8', bytes: content.length })
+    return c.json(
+      { path: subPath, content, encoding: 'utf-8', bytes: content.length },
+      200,
+      { ETag: etag },
+    )
   })
 
   // Write/create a file. Accepts either:

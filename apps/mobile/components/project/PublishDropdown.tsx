@@ -34,6 +34,7 @@ import {
   History,
   UploadCloud,
   Database,
+  Smartphone,
 } from 'lucide-react-native'
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -643,6 +644,31 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                 <Text className="text-sm font-medium text-foreground">Custom domain</Text>
                 <Text className="text-[11px] text-muted-foreground mt-0.5" numberOfLines={1}>
                   {describeDomainRow(customDomains ?? [])}
+                </Text>
+              </View>
+              <ChevronRight size={14} className="text-muted-foreground" />
+            </Pressable>
+          )}
+
+          {/* Native release — a link into Settings → App stores. The release
+              itself is started by asking the agent ("publish to the App
+              Store"), so the popover only needs to say where the setup lives. */}
+          {onOpenSettingsItem && (
+            <Pressable
+              onPress={() => {
+                setIsOpen(false)
+                onOpenSettingsItem('app-stores')
+              }}
+              testID="publish-app-stores-row"
+              accessibilityRole="button"
+              accessibilityLabel="App store settings"
+              className="mb-4 flex-row items-center gap-3 rounded-lg border border-border p-3 active:bg-muted"
+            >
+              <Smartphone size={16} className="text-muted-foreground" />
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-foreground">App stores</Text>
+                <Text className="text-[11px] text-muted-foreground mt-0.5" numberOfLines={1}>
+                  Ship to the App Store & Google Play
                 </Text>
               </View>
               <ChevronRight size={14} className="text-muted-foreground" />

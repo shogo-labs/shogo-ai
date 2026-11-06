@@ -120,6 +120,31 @@ const EXEMPT_KEYS = new Set(LEGACY_EXEMPT.map((e) => `${e.migration}::${e.table}
 /** Functions whose output is a function of their inputs, so of row content. */
 const DERIVED_ID_FUNCS = /\b(md5|sha1|sha256|sha512|digest|encode)\s*\(/i
 
+/**
+ * Migrations at or after this name are subject to the DML rule below; anything
+ * earlier is applied history.
+ *
+ * Why a date and not a per-entry list: the 2026-11-05 outage (SHO-344) was
+ * caused by a migration that *wrote rows* into a published table, not by a
+ * derived id. Roughly thirty already-applied migrations do that (they backfill
+ * a new column, seed a lookup table, or move rows), so a per-entry exemption
+ * list would be a thirty-line ledger that nobody can keep honest. A cutoff is
+ * the same "applied history only" rule in one line: every migration before it
+ * has already run in both regions and cannot be rewritten, and every migration
+ * written after it must not write rows into a published table at all.
+ *
+ * The value is the day this rule landed. Do not move it forward to excuse a
+ * new migration — that is exactly the permanent blind spot this guard exists
+ * to prevent. Write the data change as an idempotent, primary-region-only
+ * post-deploy step instead.
+ */
+export const DML_GUARD_EPOCH = '20261105120000'
+
+const DML_INSERT_RE = /^INSERT\s+INTO\s+(?:ONLY\s+)?(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
+const DML_UPDATE_RE = /^UPDATE\s+(?:ONLY\s+)?(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
+const DML_DELETE_RE = /^DELETE\s+FROM\s+(?:ONLY\s+)?(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
+const DML_TRUNCATE_RE = /^TRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?(?:(?:"?\w+"?)\s*\.\s*)?"?(\w+)"?/i
+
 export interface MigrationSource {
   /** Migration directory name, e.g. `20261021120000_add_device_version_events`. */
   name: string
@@ -526,6 +551,129 @@ function isPublished(table: string): boolean {
   return !(INTENTIONALLY_UNPUBLISHED as readonly string[]).includes(table)
 }
 
+// ===========================================================================
+// DML scanning (SHO-344)
+// ===========================================================================
+
+export interface DmlWrite {
+  table: string
+  kind: 'INSERT' | 'UPDATE' | 'DELETE' | 'TRUNCATE'
+  /** 1-based line in the SQL this was scanned from. */
+  line: number
+}
+
+/**
+ * A `WITH … INSERT/UPDATE/DELETE/TRUNCATE` statement hides its DML behind the
+ * CTE definitions, so an anchored regex would miss it entirely — a migration
+ * could bypass the guard with a CTE. Return the statement from its first
+ * top-level DML keyword onward.
+ */
+function stripWithClause(text: string): string {
+  if (!/^WITH\b/i.test(text)) return text
+  let depth = 0
+  let inSingle = false
+  let inDouble = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inSingle) {
+      if (ch === "'") {
+        if (text[i + 1] === "'") {
+          i++
+          continue
+        }
+        inSingle = false
+      }
+      continue
+    }
+    if (inDouble) {
+      if (ch === '"') inDouble = false
+      continue
+    }
+    if (ch === "'") {
+      inSingle = true
+      continue
+    }
+    if (ch === '"') {
+      inDouble = true
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') depth = Math.max(0, depth - 1)
+    else if (depth === 0 && /[A-Za-z]/.test(ch) && (i === 0 || !/[A-Za-z0-9_]/.test(text[i - 1]))) {
+      const rest = text.slice(i)
+      if (/^(INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE)\b/i.test(rest)) return rest
+    }
+  }
+  return text
+}
+
+/** The table a statement writes rows into, or null when it writes none. */
+export function dmlOf(statement: string): { table: string; kind: DmlWrite['kind'] } | null {
+  const text = stripWithClause(statement.trim())
+  let m = DML_INSERT_RE.exec(text)
+  if (m) return { table: m[1], kind: 'INSERT' }
+  m = DML_UPDATE_RE.exec(text)
+  if (m) return { table: m[1], kind: 'UPDATE' }
+  m = DML_DELETE_RE.exec(text)
+  if (m) return { table: m[1], kind: 'DELETE' }
+  m = DML_TRUNCATE_RE.exec(text)
+  if (m) return { table: m[1], kind: 'TRUNCATE' }
+  return null
+}
+
+/** The body of a `DO $tag$ … $tag$` block, or null. */
+function dollarBody(text: string): string | null {
+  const m = /^\s*DO\s+(\$[A-Za-z_]*\$)/i.exec(text)
+  if (!m) return null
+  const tag = m[1]
+  const start = text.indexOf(tag) + tag.length
+  const end = text.indexOf(tag, start)
+  if (end === -1) return null
+  return text.slice(start, end)
+}
+
+/**
+ * Drop leading PL/pgSQL block keywords so a statement inside a `DO` body
+ * (`BEGIN … DELETE …`, `IF … THEN UPDATE …`) is read as the DML it is.
+ */
+function stripBlockKeywords(text: string): string {
+  let t = text.trim()
+  for (;;) {
+    const kw = /^(DECLARE|BEGIN|END|ELSE|LOOP|THEN|EXCEPTION)\b/i.exec(t)
+    if (kw) {
+      t = t.slice(kw[0].length).trim()
+      continue
+    }
+    const ctl = /^(IF|FOR|WHILE|FOREACH)\b[\s\S]*?\b(THEN|LOOP)\b/i.exec(t)
+    if (ctl) {
+      t = t.slice(ctl[0].length).trim()
+      continue
+    }
+    break
+  }
+  return t
+}
+
+/**
+ * Every row write in a migration, including those inside a `DO` block (a
+ * backfill wrapped in `DO $$ … $$` is the same hazard as a bare `UPDATE`).
+ */
+export function collectDml(sql: string, baseLine = 1): DmlWrite[] {
+  const out: DmlWrite[] = []
+  for (const span of statementSpans(sql)) {
+    const raw = span.text.trim()
+    const line = baseLine + lineOf(sql, span.start) - 1
+    if (/^DO\b/i.test(raw)) {
+      const body = dollarBody(raw)
+      if (body) out.push(...collectDml(body, line))
+      continue
+    }
+    const dml = dmlOf(stripBlockKeywords(raw))
+    if (dml) out.push({ ...dml, line })
+  }
+  return out
+}
+
 function lineOf(sql: string, offset: number): number {
   let line = 1
   for (let i = 0; i < offset && i < sql.length; i++) if (sql[i] === '\n') line++
@@ -539,9 +687,36 @@ function lineOf(sql: string, offset: number): number {
 export function checkMigrationSources(sources: MigrationSource[], filePrefix = ''): Violation[] {
   const violations: Violation[] = []
   for (const source of sources) {
+    const file = `${filePrefix}${source.name}/migration.sql`
+
+    // Row writes into a published table (SHO-344). Only migrations written
+    // after the rule landed are checked; earlier ones are applied history.
+    const dmlLines = new Set<number>()
+    if (source.name >= DML_GUARD_EPOCH) {
+      for (const dml of collectDml(source.sql)) {
+        if (!isPublished(dml.table)) continue
+        dmlLines.add(dml.line)
+        violations.push({
+          file,
+          line: dml.line,
+          table: dml.table,
+          expression: `${dml.kind} ${dml.table}`,
+          message:
+            `runs ${dml.kind} against published table "${dml.table}" in a migration. Both ` +
+            `regions run migrations on their own primary, so the same rows are written twice: ` +
+            `an INSERT mints rows the peer's tablesync COPY then collides on (the 2026-11-05 ` +
+            `SHO-308 outage), a DELETE removes a row the peer still has, and an UPDATE races ` +
+            `the peer's copy. Move the data change into an idempotent, primary-region-only ` +
+            `post-deploy step (or a job under global-job-lock) so one writer replicates it out.`,
+        })
+      }
+    }
+
     for (const written of writtenIds(source, filePrefix)) {
       if (!written.derived) continue
       if (EXEMPT_KEYS.has(`${source.name}::${written.table}`)) continue
+      // A post-epoch DML statement is already reported above; do not double-report.
+      if (dmlLines.has(written.line)) continue
       violations.push({
         file: written.file,
         line: written.line,
@@ -686,7 +861,8 @@ function main(): number {
       console.log(
         `[migration-ids] OK — ${sources.length} migration(s) checked; no published table gets an ` +
           `id derived from row content (${LEGACY_EXEMPT.length} applied-history exemption(s), ` +
-          `each repaired forward and verified).`,
+          `each repaired forward and verified), and no migration at or after ${DML_GUARD_EPOCH} ` +
+          `writes rows into a published table.`,
       )
     }
     return 0

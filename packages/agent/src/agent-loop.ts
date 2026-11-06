@@ -247,6 +247,13 @@ export interface AgentLoopOptions {
    */
   onContextOverflow?: () => Promise<Message[] | null>
   /**
+   * Called when a model call is rejected as unauthorized (401/403). The runtime
+   * uses this to force an immediate AI-proxy token rotation when its cached
+   * token has expired, instead of failing every turn until the next scheduled
+   * refresh (SHO-348). Best effort — a throw here is swallowed.
+   */
+  onAuthFailure?: () => void
+  /**
    * Per-LLM-call context transform. pi-agent-core invokes its
    * `transformContext` hook inside `streamAssistantResponse`, which runs once
    * per assistant response — i.e. before every API call in the tool-use loop,
@@ -1096,6 +1103,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         stopReason: failure.stopReason,
         aborted: abortTriggered || signal?.aborted,
       })
+      // A 401/403 from the AI proxy may mean the runtime's own token expired
+      // (SHO-348). Tell the runtime so it can rotate now instead of 401-ing
+      // every turn until the next scheduled refresh. Best effort, never throws.
+      if (classification.reason === 'auth') {
+        try {
+          options.onAuthFailure?.()
+        } catch { /* the hook must never break the loop */ }
+      }
       if (!classification.retryable) {
         // Layer 5 for providers that report context overflow as an error
         // message (pi-ai doesn't throw) rather than a thrown error.
@@ -1456,7 +1471,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
               const content = ev?.message?.content
               if (ev?.type === 'done' && Array.isArray(content) && content.some((c: any) => c?.type === 'toolCall')) {
                 console.warn('[AgentLoop] Finalizer answered with a tool call despite no tools — using the failure summary instead')
-                const text = buildTurnFailureMessage(failureClass, toolCalls.length)
+                const text = buildTurnFailureMessage(failureClass, toolCalls.length, { modelName: modelId })
                 onTextDelta?.(text)
                 return push({
                   ...ev,
@@ -1508,7 +1523,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     // An empty turn with no tool calls has nothing to preserve, so leave it
     // empty and let the caller retry or explain, not claim tool work happened.
     if (!finalText.trim() && !emptyNoToolTurn) {
-      finalText = buildTurnFailureMessage(failureClass, toolCalls.length)
+      finalText = buildTurnFailureMessage(failureClass, toolCalls.length, { modelName: modelId })
       onTextDelta?.(finalText)
       const fallbackMessage: AssistantMessage = {
         role: 'assistant',

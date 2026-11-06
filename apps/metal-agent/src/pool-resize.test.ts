@@ -54,32 +54,32 @@ describe('pool.applyResize', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('upgrade flips always-on ON live and persists for adopt-on-restart', () => {
+  test('upgrade flips always-on ON live and persists for adopt-on-restart', async () => {
     const pool = makePool(dir)
     pool.seed('p1', false)
 
-    expect(pool.applyResize('p1', { alwaysOn: true })).toBe(true)
+    expect(await pool.applyResize('p1', { alwaysOn: true })).toMatchObject({ applied: true, alwaysOn: true })
     expect(pool.peek('p1')?.alwaysOn).toBe(true)
     expect(pool.live_('p1')?.alwaysOn).toBe(true)
   })
 
-  test('downgrade flips always-on OFF (re-arms the idle reaper)', () => {
+  test('downgrade flips always-on OFF (re-arms the idle reaper)', async () => {
     const pool = makePool(dir)
     pool.seed('p1', true)
 
-    expect(pool.applyResize('p1', { alwaysOn: false })).toBe(true)
+    expect(await pool.applyResize('p1', { alwaysOn: false })).toMatchObject({ applied: true, alwaysOn: false })
     expect(pool.peek('p1')?.alwaysOn).toBe(false)
   })
 
-  test('no-op (returns false) when the project is not live on this host', () => {
+  test('no-op (applied:false) when the project is not live on this host', async () => {
     const pool = makePool(dir)
-    expect(pool.applyResize('ghost', { alwaysOn: true })).toBe(false)
+    expect(await pool.applyResize('ghost', { alwaysOn: true })).toMatchObject({ applied: false })
   })
 
-  test('omitting alwaysOn leaves the flag untouched', () => {
+  test('omitting alwaysOn leaves the flag untouched', async () => {
     const pool = makePool(dir)
     pool.seed('p1', true)
-    expect(pool.applyResize('p1', {})).toBe(true)
+    expect(await pool.applyResize('p1', {})).toMatchObject({ applied: true })
     expect(pool.peek('p1')?.alwaysOn).toBe(true)
   })
 })

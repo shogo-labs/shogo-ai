@@ -30,7 +30,8 @@ import { PhaseTimer, type StaleReason } from './phase-timer'
 import { HydrateProxy } from './hydrate-proxy'
 import { classConfig, config, isVmClassSupported, VM_CLASSES, type VmClass } from './config'
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
-import { WORKSPACE_DRIVE_SUFFIX } from './data-drive'
+import { DataDriveProvisioner, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
+import { FcApi } from './fc-api'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
@@ -179,7 +180,38 @@ export class ExportTooLargeError extends Error {
   }
 }
 
-/** Longest the periodic sweep waits before retrying a failed `.git` export. */
+/**
+ * A fetch deadline that can also be tripped by hand.
+ *
+ * `AbortSignal.timeout` only fires on its own schedule. When a body read stops
+ * for any other reason — over the size cap, a full disk, a failed write — the
+ * guest is still uploading an archive nobody will read, and closing the socket
+ * is the only way to tell it to stop. Without that the guest's runtime keeps a
+ * multi-gigabyte spool descriptor open for exports that are long abandoned
+ * (SHO-352).
+ */
+function exportDeadline(ms: number): { signal: AbortSignal; abort: (reason?: unknown) => void; dispose: () => void } {
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(new Error(`export timed out after ${ms}ms`)), ms)
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  return {
+    signal: ac.signal,
+    abort: (reason?: unknown) => {
+      if (!ac.signal.aborted) ac.abort(reason)
+    },
+    dispose: () => clearTimeout(timer),
+  }
+}
+
+/**
+ * Result of growing a workspace drive (SHO-349).
+ *   - `{ fromMiB, toMiB }` — the drive grew (host mirror; the guest's own ext4
+ *      size is what `df` reports after the following resize2fs).
+ *   - `'unchanged'` — already at least that big, nothing to do.
+ *   - `'unsupported'` — this host/guest has no workspace drive to grow.
+ */
+export type DriveResizeResult = { fromMiB: number; toMiB: number } | 'unchanged' | 'unsupported'
+
 /** How long a rollout rotation that aborted waits before trying again. */
 export const ROTATE_RETRY_MS = 10 * 60_000
 const REPO_EXPORT_MAX_BACKOFF_MS = 30 * 60_000
@@ -215,6 +247,10 @@ export async function spoolResponse(
     }
   } finally {
     await writer.end()
+    // Done early (over the cap, a failed write) the guest is still sending:
+    // cancelling the reader closes the connection so it stops, instead of
+    // streaming the rest of a multi-gigabyte archive into a socket we abandon.
+    await res.body?.cancel().catch(() => {})
   }
   return { size, sha256: hash.digest('hex') }
 }
@@ -386,6 +422,8 @@ export interface ProjectStatus {
   lastRealActivityAt?: number
   realIdleMs?: number
   activeStreams?: number
+  /** The guest's own verdict on whether real agent work is running. */
+  busy?: boolean
   /** Rootfs the running guest booted from (assigned) or the local snapshot was taken on (suspended). */
   snapshotRootfsIdentity?: string
   /** A pre-warmed snapshot on the staged rootfs is held for this key (see `stagedSuspended`). */
@@ -451,6 +489,18 @@ export interface AssignedVm {
    * snapshot the VM away (it would kill the turn). Refreshed each pollActivity.
    */
   activeStreams?: number
+  /**
+   * What the guest itself says about being busy: real agent work is running
+   * (`activeTurns + activeTasks + live` streams). Set by `/pool/activity` when
+   * the guest reports it; `undefined` for older guests, in which case the raw
+   * `activeStreams` counter is used.
+   *
+   * This is what the idle reaper, the recycler and `isBusy` gate on. Trusting
+   * `activeStreams` alone is how a stream whose turn was stopped or frozen
+   * pinned a guest busy for hours: it was never suspended, never resumed, and
+   * so never got a fresh AI_PROXY_TOKEN — the Odin incident (SHO-348).
+   */
+  busy?: boolean
   /**
    * Wall-clock (ms) of the last request the guest classified as *app usage* —
    * an end-user hitting the built app's `/api/*` sidecar. Together with
@@ -935,6 +985,19 @@ function vmClassFromEnv(env: Record<string, string> | undefined): VmClass {
   return env?.SHOGO_RUNTIME_CLASS === 'docker' ? 'docker' : 'standard'
 }
 
+/**
+ * The workspace-drive size (MiB) the control plane asked for on this
+ * assignment (`SHOGO_VM_DISK_MIB`, built from `Project.workspaceDiskGiB` —
+ * see apps/api/src/lib/runtime/build-project-env.ts). Absent for a host or
+ * caller that doesn't set it: leave the drive at the fleet size.
+ */
+function workspaceDriveMiBFromEnv(env: Record<string, string> | undefined): number | undefined {
+  const raw = env?.SHOGO_VM_DISK_MIB
+  if (!raw) return undefined
+  const mib = parseInt(raw, 10)
+  return Number.isFinite(mib) && mib > 0 ? mib : undefined
+}
+
 async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
   try {
     const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(timeoutMs) })
@@ -1050,6 +1113,13 @@ export class MetalWarmPool {
    * about one rootfs still gets the exact same value.
    */
   private rootfsIds: Record<VmClass, string>
+  /**
+   * Serializes workspace-drive grows per VM (SHO-349). Two concurrent grows of
+   * one drive would interleave freeze/thaw and the host-side ftruncate.
+   */
+  private driveLock = new KeyedMutex()
+  /** Resolves a VM's workspace-drive backing file (grow / size / existence). */
+  private driveProvisioner: DataDriveProvisioner
 
   constructor(
     private mgr = new FirecrackerVMManager(),
@@ -1057,6 +1127,7 @@ export class MetalWarmPool {
     store?: SnapshotStore,
   ) {
     this.store = store ?? createSnapshotStore(cfg)
+    this.driveProvisioner = new DataDriveProvisioner(cfg)
     this.rootfsIds = this.readRootfsIds()
     this.rootfsId = this.rootfsIds.standard
     this.index = new CacheIndex(cfg.snapDir)
@@ -1858,6 +1929,15 @@ export class MetalWarmPool {
         if (healthy) {
           live.lastTouchedAt = Date.now()
           live.lastHealthOk = true
+          // Re-assert the drive size on every open, like always-on: a project
+          // that raised its setting while the VM was live, or a VM that predates
+          // the grow, converges here. No-op when it is already big enough.
+          const wantDriveMiB = workspaceDriveMiBFromEnv(env)
+          if (wantDriveMiB !== undefined) {
+            await this.ensureWorkspaceDriveSize(live, wantDriveMiB).catch((err: any) =>
+              console.warn(`[pool] open: workspace-drive grow failed for ${projectId}:`, err?.message ?? err),
+            )
+          }
           if (bind?.attachedProjectIds) {
             // Merge, never replace: the caller's attachments omit projects
             // mounted live into this VM, and dropping them here meant their
@@ -2096,6 +2176,20 @@ export class MetalWarmPool {
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)
+
+    // Grow the workspace drive to the size this project asked for, BEFORE any
+    // of its files are restored (SHO-349): a project whose workspace is larger
+    // than the fleet default must not be hydrated into a drive that can't hold
+    // it. Best-effort — a failed grow must not fail the assignment; every later
+    // open retries it.
+    const requestedDriveMiB = workspaceDriveMiBFromEnv(env)
+    if (requestedDriveMiB !== undefined) {
+      try {
+        await timer.time('workspace_drive', () => this.ensureWorkspaceDriveSize(a, requestedDriveMiB))
+      } catch (err: any) {
+        console.warn(`[pool] assign: workspace-drive grow failed for ${projectId}:`, err?.message ?? err)
+      }
+    }
 
     // Cold miss: this warm VM booted from the TEMPLATE, so its workspace is the
     // "Project Ready" placeholder — the project's real source lives only in the
@@ -2451,19 +2545,30 @@ export class MetalWarmPool {
    * Returns null when the guest reports nothing to back up (204, empty project).
    */
   protected async fetchExport(handle: FcVmHandle, token?: string, dir?: string): Promise<Uint8Array | null> {
-    const res = await fetch(`${handle.agentUrl}/pool/export`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      ...(dir ? { body: JSON.stringify({ dir }) } : {}),
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
-    })
-    if (res.status === 204) return null
-    if (!res.ok) throw new Error(`/pool/export failed (${res.status}): ${await res.text()}`)
-    const buf = await res.arrayBuffer()
-    return buf.byteLength ? new Uint8Array(buf) : null
+    const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
+    try {
+      const res = await fetch(`${handle.agentUrl}/pool/export`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        ...(dir ? { body: JSON.stringify({ dir }) } : {}),
+        signal: dl.signal,
+      })
+      if (res.status === 204) return null
+      if (!res.ok) throw new Error(`/pool/export failed (${res.status}): ${await res.text()}`)
+      const buf = await res.arrayBuffer()
+      return buf.byteLength ? new Uint8Array(buf) : null
+    } catch (err) {
+      // A read that stopped early — deadline, or a body the guest is still
+      // sending — must be torn down, not merely abandoned: the guest only
+      // releases its spool file when the connection actually goes away.
+      dl.abort(err)
+      throw err
+    } finally {
+      dl.dispose()
+    }
   }
 
   /**
@@ -2878,25 +2983,33 @@ export class MetalWarmPool {
     knownTag?: string,
     dir?: string,
   ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | null> {
-    const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
-      method: 'POST',
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(knownTag ? { 'If-None-Match': knownTag } : {}),
-        ...(dir ? { 'Content-Type': 'application/json' } : {}),
-      },
-      ...(dir ? { body: JSON.stringify({ dir }) } : {}),
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
-    })
-    if (res.status === 304) return 'unchanged'
-    if (res.status === 204) return null
-    // A guest from before this endpoint existed. Distinguished from a real
-    // failure because it is permanent for this VM and must not be retried.
-    if (res.status === 404) return 'unsupported'
-    if (!res.ok) throw new Error(`/pool/export-data failed (${res.status}): ${await res.text()}`)
-    const buf = await res.arrayBuffer()
-    if (!buf.byteLength) return null
-    return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
+    const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
+    try {
+      const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(knownTag ? { 'If-None-Match': knownTag } : {}),
+          ...(dir ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(dir ? { body: JSON.stringify({ dir }) } : {}),
+        signal: dl.signal,
+      })
+      if (res.status === 304) return 'unchanged'
+      if (res.status === 204) return null
+      // A guest from before this endpoint existed. Distinguished from a real
+      // failure because it is permanent for this VM and must not be retried.
+      if (res.status === 404) return 'unsupported'
+      if (!res.ok) throw new Error(`/pool/export-data failed (${res.status}): ${await res.text()}`)
+      const buf = await res.arrayBuffer()
+      if (!buf.byteLength) return null
+      return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
+    } catch (err) {
+      dl.abort(err)
+      throw err
+    } finally {
+      dl.dispose()
+    }
   }
 
   /** Guarded (conditional) upload of writable state. `protected` for tests. */
@@ -2975,10 +3088,26 @@ export class MetalWarmPool {
   }
 
   protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<RepoExport | null> {
+    const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
+    try {
+      return await this.readRepoExport(handle, token, dl)
+    } catch (err) {
+      dl.abort(err)
+      throw err
+    } finally {
+      dl.dispose()
+    }
+  }
+
+  private async readRepoExport(
+    handle: FcVmHandle,
+    token: string | undefined,
+    dl: { signal: AbortSignal },
+  ): Promise<RepoExport | null> {
     const res = await fetch(`${handle.agentUrl}/pool/export-repo`, {
       method: 'POST',
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+      signal: dl.signal,
     })
     if (res.status === 204) return null
     if (res.status === 404) return null
@@ -3281,10 +3410,11 @@ export class MetalWarmPool {
    */
   private async publishRepoBundle(a: AssignedVm, entry: RepoManifestBundle): Promise<void> {
     const path = this.exportSpoolPath(a.handle.id, 'bundle')
+    const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
     try {
       const res = await fetch(`${a.handle.agentUrl}/pool/export-repo-bundle/${entry.sha256}`, {
         headers: a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {},
-        signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+        signal: dl.signal,
       })
       if (!res.ok) throw new Error(`bundle ${entry.sha256} download failed (${res.status})`)
       const spooled = await spoolResponse(res, path, REPO_MAX_BYTES)
@@ -3294,7 +3424,11 @@ export class MetalWarmPool {
       await this.uploadRepoBundleGuarded(a.projectId, entry, Bun.file(path))
       metrics.inc(M.repoBundleBytes, entry.bytes)
       if (entry.kind === 'base') metrics.inc(M.repoBundleFull)
+    } catch (err) {
+      dl.abort(err)
+      throw err
     } finally {
+      dl.dispose()
       rmSync(path, { force: true })
     }
   }
@@ -4868,7 +5002,14 @@ export class MetalWarmPool {
     projectId: string,
     env: Record<string, string> = {},
     timer = new PhaseTimer(),
-  ): Promise<{ assigned: AssignedVm; apiMs: number; readyMs: number; source: 'local' | 'store' } | null> {
+  ): Promise<{
+    assigned: AssignedVm
+    apiMs: number
+    readyMs: number
+    source: 'local' | 'store'
+    /** Workspace-drive size (MiB) re-asserted after the restore, when requested. */
+    drive?: number | null
+  } | null> {
     ;({ env } = this.ownMembersOnly(projectId, env))
     let s = this.suspended.get(projectId)
     let source: 'local' | 'store' = 'local'
@@ -5120,8 +5261,19 @@ export class MetalWarmPool {
     await timer.time('rehydrate', () =>
       this.callGuestHook(handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs, a.runtimeToken),
     )
+    // The drive came back with the snapshot at whatever size it was suspended
+    // with — grow it to what the project asks for now (SHO-349). A no-op when
+    // the sizes already match.
+    const wantDriveMiB = workspaceDriveMiBFromEnv(env)
+    if (wantDriveMiB !== undefined) {
+      await timer
+        .time('workspace_drive', () => this.ensureWorkspaceDriveSize(a, wantDriveMiB))
+        .catch((err: any) =>
+          console.warn(`[pool] resume: workspace-drive grow failed for ${projectId}:`, err?.message ?? err),
+        )
+    }
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
-    return { assigned: a, apiMs, readyMs: apiMs + readyMs, source }
+    return { assigned: a, apiMs, readyMs: apiMs + readyMs, source, drive: wantDriveMiB ?? null }
   }
 
   /**
@@ -5166,7 +5318,7 @@ export class MetalWarmPool {
       if (a.apiUnhealthySince === undefined) continue
       const forMs = now - a.apiUnhealthySince
       if (forMs < this.cfg.apiUnhealthyRecycleMs) continue
-      if ((a.activeStreams ?? 0) > 0) continue
+      if (this.vmBusy(a)) continue
       const reason = `api unhealthy for ${Math.round(forMs / 60_000)}m (${(a.apiUnhealthyProjects ?? []).join(', ')})`
       if (mode === 'observe') {
         if (!a.apiWatchdogObserved) {
@@ -5246,6 +5398,7 @@ export class MetalWarmPool {
           const body = (await res.json()) as {
             lastRequestAt?: number
             activeStreams?: number
+            busy?: boolean
             lastAppRequestAt?: number | null
             appRequestCount?: number
             lastAgentRequestAt?: number | null
@@ -5259,7 +5412,11 @@ export class MetalWarmPool {
           // Cache live-stream count so reapIdle can skip a project mid-generation
           // even when no new HTTP request has bumped lastRequestAt for a while.
           a.activeStreams = typeof body.activeStreams === 'number' ? body.activeStreams : 0
-          if (a.activeStreams > 0) {
+          // The guest's own busy verdict, when it reports one. `activeStreams`
+          // alone can outlive its turn (a stopped or frozen stream), which is
+          // what pinned guests busy for hours (SHO-348).
+          a.busy = typeof body.busy === 'boolean' ? body.busy : undefined
+          if (this.vmBusy(a)) {
             a.lastTouchedAt = now // an active turn is activity
             a.lastRealActivityAt = now
           }
@@ -5332,6 +5489,7 @@ export class MetalWarmPool {
           // as busy forever while the guest is mute. Expire it.
           if (now - a.activityPollFailedAt >= STALE_STREAM_TTL_MS) {
             a.activeStreams = 0
+            a.busy = undefined
           }
         }
       }),
@@ -5346,6 +5504,20 @@ export class MetalWarmPool {
    * on an unknown state); a clean 404 (guest opts out) or `activeStreams:0` →
    * not busy. Only assigned (running) projects can be busy.
    */
+  /**
+   * Whether this guest is doing real work, as far as the last activity poll can
+   * tell. The guest's own `busy` verdict wins when it reports one; older guests
+   * fall back to the raw `activeStreams` counter, which is what this used to be.
+   *
+   * Every idle/lifecycle gate (reaper, rootfs rotation, API watchdog, recycle)
+   * goes through here, so a stream that outlived its turn can no longer keep a
+   * VM resident forever — that pin is why an expired AI_PROXY_TOKEN never
+   * refreshed on metal (SHO-348).
+   */
+  private vmBusy(a: AssignedVm): boolean {
+    return a.busy ?? (a.activeStreams ?? 0) > 0
+  }
+
   async isBusy(projectId: string): Promise<boolean> {
     const a = this.assigned.get(projectId)
     if (!a) return false
@@ -5355,8 +5527,10 @@ export class MetalWarmPool {
       })
       if (res.status === 404) return false // guest opts out of activity reporting
       if (!res.ok) return true // unknown state → don't risk killing a live turn
-      const body = (await res.json()) as { activeStreams?: number }
-      return (body.activeStreams ?? 0) > 0
+      const body = (await res.json()) as { activeStreams?: number; busy?: boolean }
+      // `busy` is the guest's own verdict and excludes a leaked stream counter;
+      // older guests only report `activeStreams`.
+      return body.busy ?? (body.activeStreams ?? 0) > 0
     } catch {
       const now = Date.now()
       a.lastHealthOk = false
@@ -5392,7 +5566,7 @@ export class MetalWarmPool {
     // activity poll saw mid-stream — never snapshot away an active agent
     // message. (The reaper timer polls activity immediately before this.)
     const stale = [...this.assigned.values()]
-      .filter((a) => !a.alwaysOn && idleFor(a) >= idleMs && (a.activeStreams ?? 0) === 0)
+      .filter((a) => !a.alwaysOn && idleFor(a) >= idleMs && !this.vmBusy(a))
       .sort((x, y) => idleFor(y) - idleFor(x))
     const cap = opts.maxPerPass ?? this.cfg.reapMaxPerPass ?? 0
     if (cap > 0 && stale.length > cap) {
@@ -5435,7 +5609,7 @@ export class MetalWarmPool {
     for (const id of this.rotateRetryAt.keys()) if (!staleIds.has(id)) this.rotateRetryAt.delete(id)
 
     const due = stale.filter((a) => {
-      if ((a.activeStreams ?? 0) > 0) return false
+      if (this.vmBusy(a)) return false
       if (now < (this.rotateRetryAt.get(a.projectId) ?? 0)) return false
       const idleFor = now - (a.lastRealActivityAt ?? a.assignedAt)
       return idleFor >= this.cfg.rolloutIdleMs || now - this.staleSince.get(a.projectId)! >= this.cfg.rolloutDeadlineMs
@@ -5643,6 +5817,95 @@ export class MetalWarmPool {
   }
 
   /**
+   * Grow this VM's workspace drive to `targetMiB` live, with the guest frozen
+   * (SHO-349). Serialized per VM: two grows of the same drive at once would
+   * interleave freeze/thaw.
+   *
+   *   guest freeze → host ftruncate → PATCH /drives → guest thaw → resize2fs
+   *
+   * A no-op (`'unchanged'`) when the drive is already at least that big, so it
+   * is safe to call on every open. `'unsupported'` when this host runs without a
+   * workspace drive (`METAL_WORKSPACE_DRIVE_MIB=0`) or the guest predates the
+   * endpoint — neither is an error.
+   */
+  async ensureWorkspaceDriveSize(a: AssignedVm, targetMiB: number): Promise<DriveResizeResult> {
+    if (!this.cfg.workspaceDriveMiB || this.cfg.workspaceDriveMiB <= 0) return 'unsupported'
+    const path = a.handle.workspaceDrive
+    if (!path || !this.driveProvisioner.exists(path)) return 'unsupported'
+    const cap =
+      this.cfg.workspaceDriveMaxMiB > 0 ? this.cfg.workspaceDriveMaxMiB : this.cfg.workspaceDriveMiB
+    const target = Math.min(Math.floor(targetMiB), cap)
+    if (!(target > 0)) return 'unchanged'
+    const fromMiB = this.driveProvisioner.sizeMiB(path)
+    if (fromMiB >= target) return 'unchanged'
+
+    return this.driveLock.run(a.handle.id, async () => {
+      // Re-read inside the lock: a queued grow may have already done the work.
+      const current = this.driveProvisioner.sizeMiB(path)
+      if (current >= target) return 'unchanged'
+
+      const t0 = Date.now()
+      let frozen = false
+      try {
+        const freeze = await this.guestDriveOp(a, 'freeze')
+        if (freeze === 'unsupported') {
+          console.warn(`[pool] guest for ${a.projectId} has no /pool/workspace-drive — not growing the drive`)
+          return 'unsupported'
+        }
+        frozen = true
+        const grew = this.driveProvisioner.grow(path, target)
+        if (!grew) return 'unchanged'
+        // Tell the running VM its backing file changed. Only legal while the
+        // device is idle, which is exactly what the freeze above buys us.
+        await new FcApi(a.handle.socketPath).patchDrive('workspace', path)
+        await this.guestDriveOp(a, 'thaw')
+        frozen = false
+        await this.guestDriveOp(a, 'resize')
+        const toMiB = this.driveProvisioner.sizeMiB(path)
+        metrics.inc(`${M.workspaceDriveGrow}{result="ok"}`)
+        metrics.gauge(M.workspaceDriveGrowMs, Date.now() - t0)
+        console.log(
+          `[pool] grew workspace drive for ${a.projectId} ${grew.fromMiB}MiB → ${grew.toMiB}MiB ` +
+            `(file reads ${toMiB}MiB, ${Date.now() - t0}ms)`,
+        )
+        return { fromMiB: grew.fromMiB, toMiB: grew.toMiB }
+      } catch (err: any) {
+        metrics.inc(`${M.workspaceDriveGrow}{result="error"}`)
+        console.error(
+          `[pool] workspace-drive grow for ${a.projectId} to ${target}MiB failed:`,
+          err?.message ?? err,
+        )
+        throw err
+      } finally {
+        // Never leave the guest's filesystem frozen: a hung freeze means every
+        // write in the project blocks forever.
+        if (frozen) {
+          await this.guestDriveOp(a, 'thaw').catch(() => {})
+        }
+      }
+    })
+  }
+
+  /** POST /pool/workspace-drive on the guest. `'unsupported'` on 404/409. */
+  private async guestDriveOp(
+    a: AssignedVm,
+    op: 'freeze' | 'thaw' | 'resize',
+  ): Promise<'ok' | 'unsupported'> {
+    const res = await fetch(`${a.handle.agentUrl}/pool/workspace-drive`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {}),
+      },
+      body: JSON.stringify({ op }),
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (res.status === 404 || res.status === 409) return 'unsupported'
+    if (!res.ok) throw new Error(`/pool/workspace-drive ${op} failed (${res.status}): ${await res.text()}`)
+    return 'ok'
+  }
+
+  /**
    * Apply a live instance-tier change to an assigned project. Firecracker can't
    * hot-change vCPU/RAM, so those take effect on the NEXT cold boot/resume (the
    * assign env is re-read then). What we CAN apply immediately is the always-on
@@ -5650,14 +5913,28 @@ export class MetalWarmPool {
    * downgrade re-arms idle-suspend. No-op when the project isn't live on this
    * host. Returns true when a live VM was updated.
    */
-  applyResize(projectId: string, opts: { alwaysOn?: boolean }): boolean {
+  async applyResize(
+    projectId: string,
+    opts: { alwaysOn?: boolean; workspaceDriveMiB?: number },
+  ): Promise<{ applied: boolean; alwaysOn?: boolean; disk: DriveResizeResult }> {
     const a = this.assigned.get(projectId)
-    if (!a) return false
+    if (!a) return { applied: false, disk: 'unsupported' }
     if (opts.alwaysOn !== undefined && !!a.alwaysOn !== opts.alwaysOn) {
       a.alwaysOn = opts.alwaysOn
       this.writeLive(a)
     }
-    return true
+    let disk: DriveResizeResult = 'unchanged'
+    if (opts.workspaceDriveMiB !== undefined) {
+      try {
+        disk = await this.ensureWorkspaceDriveSize(a, opts.workspaceDriveMiB)
+      } catch (err: any) {
+        // A failed grow must not fail the tier change: always-on still applied,
+        // and the next open re-asserts the size (and retries the grow).
+        console.warn(`[pool] resize: workspace-drive grow for ${projectId} failed:`, err?.message ?? err)
+        disk = 'unsupported'
+      }
+    }
+    return { applied: true, alwaysOn: !!a.alwaysOn, disk }
   }
 
   // --- GC / cache management ------------------------------------------------
@@ -6384,8 +6661,8 @@ export class MetalWarmPool {
     console.log(`[pool] recycle ${runtimeKey} requested (state=${state}, force=${force}, reason=${opts.reason ?? 'none'})`)
 
     let a = this.assigned.get(runtimeKey)
-    if (a && (a.activeStreams ?? 0) > 0 && !force) {
-      steps.push({ step: 'idle', ok: false, detail: `${a.activeStreams} agent turn(s) in flight` })
+    if (a && this.vmBusy(a) && !force) {
+      steps.push({ step: 'idle', ok: false, detail: `${a.activeStreams ?? 0} agent turn(s) in flight` })
       return report(true)
     }
     let resumed = false
@@ -6543,6 +6820,7 @@ export class MetalWarmPool {
         lastRealActivityAt: a.lastRealActivityAt ?? a.assignedAt,
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
         activeStreams: a.activeStreams ?? 0,
+        busy: this.vmBusy(a),
         snapshotRootfsIdentity: this.bootRootfsIdentity(a),
         ...(staged ? { stagedSnapshotIdentity: staged.rootfsIdentity } : {}),
       }
@@ -6619,8 +6897,10 @@ export class MetalWarmPool {
         // idleMs by however much routing polls / fail-open have touched the VM.
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
         // Per-class liveness (see AssignedVm). `*IdleMs: null` = no request of
-        // that class observed yet; `activeStreams>0` = an agent turn in flight.
+        // that class observed yet; `busy` (or `activeStreams>0` for an older
+        // guest) = an agent turn in flight.
         activeStreams: a.activeStreams ?? 0,
+        busy: this.vmBusy(a),
         appIdleMs: a.lastAppRequestAt ? now - a.lastAppRequestAt : null,
         appRequestCount: a.appRequestCount ?? 0,
         agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,

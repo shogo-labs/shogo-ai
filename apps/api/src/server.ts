@@ -54,6 +54,7 @@ import { invitationInfoRoutes } from './routes/invitation-info'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
+import { startChatSweepWorker, stopChatSweepWorker } from './jobs/run-chat-sweep'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { startConversationRelay, stopConversationRelay } from './lib/conversation-relay'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -94,6 +95,11 @@ import { chatQueuedMessageActionsRoutes } from './routes/chat-queued-message-act
 import { agentWakeRoutes } from './routes/agent-wakes'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { socialRelayRoutes, socialRoutes, socialWebhookRoutes } from './routes/social'
+import {
+  nativeReleaseRelayRoutes,
+  nativeReleaseRoutes,
+  nativeWebhookRoutes,
+} from './routes/native-release'
 import {
   generateTitleCompletion,
   setTitleGenerationModelId,
@@ -187,8 +193,14 @@ import {
   requireProjectAccess,
   isProjectReservedTopLevelPath,
 } from './middleware/auth'
-import type { Permission } from '@shogo/authz'
+import { governsAllProjects, type Permission } from '@shogo/authz'
 import { decide, getAccess, loadAccess } from './lib/authz'
+import {
+  describeProjectDisk,
+  instanceMinScale,
+  planDiskChange,
+  readRuntimeDiskUsage,
+} from './services/project-disk.service'
 import {
   apiAuthGate,
   allowUserAppProxyRequest,
@@ -1715,6 +1727,7 @@ startAgentScheduleWorker(getRuntimeManager())
 startEventDeliveryWorker(getRuntimeManager())
 void import('./services/composio-triggers.service').then((m) => m.startComposioTriggerReconciler()).catch(() => {})
 startChatQueueWorker()
+startChatSweepWorker()
 startChannelWorkers()
 // Forward chat realtime events and presence to sibling regions (no-op in single-region mode).
 startConversationRelay()
@@ -3645,6 +3658,11 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // transport.
   const contentType = c.req.header('content-type')
   const accept = c.req.header('accept')
+  // Conditional reads: the IDE asks the runtime "is this file still the
+  // version I have?" with `If-None-Match`, and a 304 lets it skip the body.
+  // Only the header carrying it needs forwarding; the `ETag` on the way back
+  // already survives the response-header copy below.
+  const ifNoneMatch = c.req.header('if-none-match')
   // Every project is served by a merged-root runtime that authenticates with
   // the WORKSPACE token, not the project token — sending the project token
   // here 401s every proxied call (config, quick-actions, workspace
@@ -3700,6 +3718,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       const tunnelHeaders: Record<string, string> = {}
       if (contentType) tunnelHeaders['content-type'] = contentType
       if (accept) tunnelHeaders['accept'] = accept
+      if (ifNoneMatch) tunnelHeaders['if-none-match'] = ifNoneMatch
       tunnelHeaders['x-runtime-token'] = runtimeToken
       if (isChatStream && authedUserId) tunnelHeaders['x-billing-user-id'] = authedUserId
       if (chatSessionIdHeader) tunnelHeaders['x-chat-session-id'] = chatSessionIdHeader
@@ -3743,6 +3762,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const headers = new Headers()
   if (contentType) headers.set('content-type', contentType)
   if (accept) headers.set('accept', accept)
+  if (ifNoneMatch) headers.set('if-none-match', ifNoneMatch)
   if (isWebchatPath) {
     const fwdHeaders = ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const
     for (const h of fwdHeaders) {
@@ -3899,7 +3919,12 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         return new Response(outBody, { status: response.status, headers: responseHeaders })
       }
 
-      return new Response(response.body, { status: response.status, headers: responseHeaders })
+      // 304 must carry no body at all (RFC 9110); `fetch` already gives us a
+      // null body for it, but be explicit so a future change can't attach one.
+      return new Response(response.status === 304 ? null : response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
     } catch (fetchError: any) {
       lastError = fetchError
 
@@ -4073,6 +4098,144 @@ app.delete('/api/projects/:projectId/preferred-instance', async (c) => {
   })
 
   return c.json({ ok: true })
+})
+
+// =============================================================================
+// Workspace drive (SHO-349)
+//
+// Per-project disk size on metal. A project's files live on its own sparse
+// ext4 drive, whose size used to be one setting for the whole fleet. Now a
+// project can ask for more from Settings → Disk, and the host grows the live
+// drive (fsfreeze → ftruncate → PATCH /drives → resize2fs).
+//
+// The column is dedicated (not `settings` JSON) because the value is plan
+// limited, so only this validated route may write it — the generic project
+// PATCH drops the field (see generated/project.hooks.ts).
+// =============================================================================
+
+/** Which substrate owns this project's runtime, for the Disk panel. */
+async function projectDiskSubstrate(projectId: string): Promise<'local' | 'metal' | 'knative'> {
+  if (process.env.SHOGO_LOCAL_MODE === 'true' || !process.env.KUBERNETES_SERVICE_HOST) return 'local'
+  try {
+    const { getProjectSubstrate } = await import('./lib/substrate/router')
+    const substrate = await getProjectSubstrate(projectId)
+    return substrate.kind === 'metal' ? 'metal' : 'knative'
+  } catch (err: any) {
+    console.warn(`[ProjectDisk] substrate probe failed for ${projectId}:`, err?.message ?? err)
+    return 'knative'
+  }
+}
+
+app.get('/api/projects/:projectId/disk', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceDiskGiB: true, workspace: { select: { instanceSize: true } } },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+  const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
+  const substrate = await projectDiskSubstrate(projectId)
+  // Never wake a VM just to measure it: a stopped project answers with the
+  // size only, and the panel says usage appears while the project is running.
+  const usage = substrate === 'metal' ? await readRuntimeDiskUsage(projectId, workspaceId) : null
+
+  return c.json(
+    describeProjectDisk({
+      requestedGiB: project.workspaceDiskGiB,
+      instanceSize,
+      substrate,
+      usage,
+    }),
+  )
+})
+
+app.put('/api/projects/:projectId/disk', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const principal = { userId, via: 'session' as const }
+  const access = await loadAccess(principal, { projectId })
+  if (!access.exists) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+  if (!access.permissions.has('project:update')) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+  // Raising disk is a spend decision: workspace owners/admins only.
+  if (!governsAllProjects(access.workspaceRole)) {
+    return c.json(
+      { error: { code: 'forbidden', message: 'Only workspace owners and admins can change disk size' } },
+      403,
+    )
+  }
+  const workspaceId = access.workspaceId
+  if (!workspaceId) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+
+  const body = await c.req
+    .json<{ sizeGiB?: number | string }>()
+    .catch(() => ({}) as { sizeGiB?: number | string })
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceDiskGiB: true, workspace: { select: { instanceSize: true } } },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+  const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
+  const plan = planDiskChange(body.sizeGiB, instanceSize)
+  if (!plan.ok) {
+    return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
+  }
+
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { workspaceDiskGiB: plan.sizeGiB },
+  })
+
+  // Grow a running VM right away. A project that isn't running picks the size
+  // up on its next open (the assign env carries it). `minScale` is passed
+  // through so this never downgrades an always-on project.
+  const substrate = await projectDiskSubstrate(projectId)
+  let growError: string | undefined
+  if (substrate === 'metal') {
+    try {
+      const { resizeProjectRuntime } = await import('./lib/substrate/router')
+      await resizeProjectRuntime(projectId, {
+        disk: `${plan.sizeGiB}Gi`,
+        minScale: instanceMinScale(instanceSize),
+      })
+    } catch (err: any) {
+      growError = err?.message ?? String(err)
+      console.warn(`[ProjectDisk] live grow for ${projectId} failed:`, growError)
+    }
+  }
+
+  const usage = substrate === 'metal' ? await readRuntimeDiskUsage(projectId, workspaceId) : null
+  return c.json({
+    ...describeProjectDisk({
+      requestedGiB: plan.sizeGiB,
+      instanceSize,
+      substrate,
+      usage,
+    }),
+    // The column is saved either way; a failed live grow retries on next open.
+    ...(growError ? { growError } : {}),
+  })
 })
 
 // =============================================================================
@@ -9095,6 +9258,11 @@ app.route('/api', socialRelayRoutes())
 // Zernio's webhooks (comments, DMs, account health). Cloud only: the desktop
 // half of the relay applies local-scope events in its own DB.
 app.route('/api', socialWebhookRoutes())
+// Native release (App Store / Google Play). The runner holds no Expo token, so
+// every EAS call is made here; the webhook is how a build's outcome reaches us.
+app.route('/api', nativeReleaseRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', nativeReleaseRelayRoutes())
+app.route('/api', nativeWebhookRoutes())
 
 // EZ Mode / voice translator routes (session-auth'd via authMiddleware
 // above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
@@ -9639,6 +9807,7 @@ async function gracefulShutdown(signal: string) {
   stopAgentScheduleWorker()
   stopEventDeliveryWorker()
   stopChatQueueWorker()
+  stopChatSweepWorker()
   stopChannelWorkers()
   stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
@@ -10575,6 +10744,42 @@ setTimeout(async () => {
     } catch (err: any) {
       console.error(
         '[PollCustomDomains] failed to schedule reconciler (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Native release — the poller is the only way a test stage's result and a
+// BYOK build ever reach us (EAS webhooks carry BUILD and SUBMIT only), and its
+// meter sweep is what closes a charge the webhook dropped. Both native crons
+// no-op outside `cloud` mode and take withGlobalJobLock internally.
+{
+  ;(async () => {
+    try {
+      const { startNativeReleasePollCron } = await import(
+        './jobs/native-release-poll'
+      )
+      startNativeReleasePollCron()
+    } catch (err: any) {
+      console.error(
+        '[NativeReleasePoll] failed to schedule poller (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+{
+  ;(async () => {
+    try {
+      const { startNativeUpdateMonthlyCron } = await import(
+        './jobs/native-update-monthly'
+      )
+      startNativeUpdateMonthlyCron()
+    } catch (err: any) {
+      console.error(
+        '[NativeUpdateMonthly] failed to schedule meter (non-fatal):',
         err?.message ?? err,
       )
     }

@@ -18,6 +18,15 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 
 const MANAGER_SOURCE = readFileSync(join(import.meta.dir, '..', 'manager.ts'), 'utf8')
+/**
+ * The occupancy probe moved into the shared pool (SHO-335) so api and the
+ * worker it embeds apply the same timeout semantics. The socket check lives
+ * there; `isPortListening` must delegate, never re-implement it.
+ */
+const PORT_POOL_SOURCE = readFileSync(
+  join(import.meta.dir, '..', '..', '..', '..', '..', '..', 'packages', 'shogo-worker', 'src', 'lib', 'port-pool.ts'),
+  'utf8',
+)
 
 function functionBody(name: string): string {
   const start = MANAGER_SOURCE.indexOf(`${name}(`)
@@ -60,8 +69,11 @@ describe('runtime manager hot paths', () => {
     })
   }
 
-  test('isPortListening probes the socket directly', () => {
-    expect(functionBody('isPortListening')).toMatch(/connect\(/)
+  test('isPortListening delegates to the shared pool instead of its own probe', () => {
+    // Two independent probes in one process disagreed on what "busy" means
+    // (SHO-335): the pool owns the one TCP check now.
+    expect(functionBody('isPortListening')).toMatch(/this\.ports\.isPortAvailable\(/)
+    expect(PORT_POOL_SOURCE).toMatch(/connect\(/)
   })
 
   test('the orphan sweep is started without awaiting it in the constructor', () => {

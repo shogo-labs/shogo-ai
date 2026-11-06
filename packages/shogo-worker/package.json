@@ -20,6 +20,7 @@
     "./tunnel": "./src/lib/tunnel.ts",
     "./tunnel-host": "./src/lib/tunnel-host.ts",
     "./runtime-manager": "./src/lib/runtime-manager.ts",
+    "./port-pool": "./src/lib/port-pool.ts",
     "./runtime-activity": "./src/lib/runtime-activity.ts",
     "./resource-limits": "./src/lib/resource-limits.ts",
     "./cloud-sync-watcher": "./src/lib/cloud-sync-watcher.ts",

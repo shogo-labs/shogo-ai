@@ -118,6 +118,16 @@ export class FcApi {
   }
 
   /**
+   * Tell a running VM that one of its drive files changed on the host — used
+   * after growing a workspace drive's backing file (SHO-349). Firecracker only
+   * supports this when the device is idle, so the caller freezes the guest
+   * around it. `path_on_host` must be the same file the drive was attached with.
+   */
+  patchDrive(driveId: string, pathOnHost: string) {
+    return this.patch(`/drives/${driveId}`, { path_on_host: pathOnHost })
+  }
+
+  /**
    * Configure vCPUs + RAM and (optionally) install the balloon device.
    * `statsIntervalS > 0` enables balloon statistics so pre-snapshot reclaim can
    * poll the guest's available/actual sizes — this MUST be set pre-boot, FC

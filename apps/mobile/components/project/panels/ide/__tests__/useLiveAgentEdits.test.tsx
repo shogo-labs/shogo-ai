@@ -9,13 +9,22 @@
  *   - Recent user activity in the IDE, or unsaved edits in the active file,
  *     mean the new tab opens in the background (activeId unchanged).
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test"
 import { act, cleanup, renderHook } from "@testing-library/react"
 import { useState } from "react"
 
 import { useLiveAgentEdits, USER_ACTIVE_WINDOW_MS } from "../useLiveAgentEdits"
 import type { EditorGroup, OpenFile } from "../types"
 import type { WorkspaceFsEvent, WorkspaceService } from "../workspace/types"
+
+// Other suites leave `document.visibilityState` hidden behind them; the hook
+// parks its stream on a hidden tab, so every test here starts visible.
+beforeEach(() => {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    get: () => "visible",
+  })
+})
 
 afterEach(() => cleanup())
 
@@ -155,5 +164,190 @@ describe("useLiveAgentEdits auto-open", () => {
     act(() => emit({ type: "file.changed", path: "src/a.ts", mtime: 2, source: "fs" }))
     await flush()
     expect(view.result.current[0].files[0].content).toBe("new")
+  })
+})
+
+/**
+ * The active-file poll is a bridge for a broken stream, not a background
+ * heartbeat: healthy SSE = zero reads, and a stream that stays down falls
+ * back to the shared 15 s cadence until a retry opens (PERF-10).
+ */
+describe("useLiveAgentEdits stream health", () => {
+  function makeStreaming(contents: Record<string, string>) {
+    const reads: string[] = []
+    let listener: ((e: WorkspaceFsEvent) => void) | null = null
+    let status: ((s: "open" | "down") => void) | null = null
+    let mode: "up" | "down" = "up"
+    const service = {
+      id: "agent",
+      label: "agent",
+      readFile: async (p: string) => {
+        reads.push(p)
+        return { content: contents[p] ?? "x", mtime: 1 }
+      },
+      readFileIfChanged: async (p: string) => {
+        reads.push(p)
+        const content = contents[p]
+        return content === undefined ? null : { content, mtime: 2 }
+      },
+      subscribe: (cb: (e: WorkspaceFsEvent) => void, opts?: { onStatus?: (s: "open" | "down") => void }) => {
+        listener = cb
+        status = opts?.onStatus ?? null
+        status?.(mode === "up" ? "open" : "down")
+        return () => {
+          listener = null
+        }
+      },
+    } as unknown as WorkspaceService
+    return {
+      service,
+      reads,
+      emit: (e: WorkspaceFsEvent) => listener?.(e),
+      fail: () => {
+        mode = "down"
+        status?.("down")
+      },
+      recover: () => {
+        mode = "up"
+      },
+    }
+  }
+
+  function mount(service: WorkspaceService, visible = true) {
+    return renderHook(() => {
+      const [groups, setGroups] = useState<EditorGroup[]>([
+        { id: "g1", files: [file("src/a.ts")], activeId: "agent::src/a.ts" } as EditorGroup,
+      ])
+      const [conflicts, setConflicts] = useState<any[]>([])
+      useLiveAgentEdits({
+        service,
+        groups,
+        setGroups,
+        activeGroupIdx: 0,
+        conflicts,
+        setConflicts,
+        refreshTree,
+        visible,
+      })
+      return groups
+    })
+  }
+
+  const flush = () =>
+    act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+  test("a healthy stream never re-reads the active file", async () => {
+    jest.useFakeTimers()
+    const s = makeStreaming({ "src/a.ts": "x" })
+    const view = mount(s.service)
+    await flush()
+
+    // One resync when the stream opens, then nothing.
+    const afterOpen = s.reads.length
+    expect(afterOpen).toBeGreaterThan(0)
+
+    await act(async () => {
+      jest.advanceTimersByTime(10 * 60_000)
+      await Promise.resolve()
+    })
+    expect(s.reads.length).toBe(afterOpen)
+    view.unmount()
+    jest.useRealTimers()
+  })
+
+  test("a dropped stream polls every 15 s and stops when a retry opens", async () => {
+    jest.useFakeTimers()
+    const s = makeStreaming({ "src/a.ts": "x" })
+    const view = mount(s.service)
+    await flush()
+    const afterOpen = s.reads.length
+
+    act(() => s.fail())
+    await act(async () => {
+      jest.advanceTimersByTime(20_000)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // One retry at 2 s (still down) then exactly one poll at 17 s.
+    expect(s.reads.length).toBe(afterOpen + 1)
+
+    // Stream comes back: the next retry opens, resyncs once, and polling stops.
+    s.recover()
+    await act(async () => {
+      jest.advanceTimersByTime(30_000)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const afterRecover = s.reads.length
+    await act(async () => {
+      jest.advanceTimersByTime(10 * 60_000)
+      await Promise.resolve()
+    })
+    expect(s.reads.length).toBe(afterRecover)
+    view.unmount()
+    jest.useRealTimers()
+  })
+
+  test("a hidden IDE pane makes no fallback reads", async () => {
+    jest.useFakeTimers()
+    const s = makeStreaming({ "src/a.ts": "x" })
+    const view = mount(s.service, false)
+    await flush()
+    const afterOpen = s.reads.length
+
+    act(() => s.fail())
+    await act(async () => {
+      jest.advanceTimersByTime(5 * 60_000)
+      await Promise.resolve()
+    })
+    expect(s.reads.length).toBe(afterOpen)
+    view.unmount()
+    jest.useRealTimers()
+  })
+
+  test("a local folder with no stream parks on a hidden tab and catches up when visible", async () => {
+    jest.useFakeTimers()
+    const reads: string[] = []
+    const service = {
+      id: "local",
+      label: "local",
+      readFile: async (p: string) => {
+        reads.push(p)
+        return { content: "x", mtime: 1 }
+      },
+      readFileIfChanged: async (p: string) => {
+        reads.push(p)
+        return null
+      },
+    } as unknown as WorkspaceService
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    })
+    const view = mount(service)
+    await flush()
+
+    await act(async () => {
+      jest.advanceTimersByTime(5 * 60_000)
+      await Promise.resolve()
+    })
+    expect(reads).toEqual([])
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    })
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(reads).toEqual(["src/a.ts"])
+    view.unmount()
+    jest.useRealTimers()
   })
 })

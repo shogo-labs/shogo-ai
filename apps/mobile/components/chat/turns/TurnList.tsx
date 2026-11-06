@@ -19,6 +19,8 @@ import { TurnGroup } from "./TurnGroup"
 import { RejoinRow } from "./RejoinRow"
 import { useMessageEditContext } from "./MessageEditContext"
 import { firstDimmedTurnIndex, replacedTurnsLabel } from "./editResend"
+import { useTurnWindow } from "./useTurnWindow"
+import type { TranscriptScrollSignal } from "./transcript-scroll"
 import type { ToolCallData } from "../tools/types"
 
 export interface TurnListProps {
@@ -34,6 +36,19 @@ export interface TurnListProps {
   phase?: string | null
   subagentToolCalls?: ToolCallData[]
   className?: string
+  /**
+   * Where the transcript ScrollView is (SHO-354). Without it the list still
+   * windows to the tail, it just can't mount older turns again on scroll.
+   */
+  scrollSignal?: TranscriptScrollSignal | null
+  /**
+   * Scroll the transcript by `dy` px when content above the visible turns
+   * changed height (a window expansion, or an estimate turning into a real
+   * measurement). The caller must ignore it while following the bottom.
+   */
+  onContentShift?: (dy: number) => void
+  /** Resets the mounted window — a different chat was opened. */
+  resetKey?: string | null
 }
 
 /**
@@ -46,6 +61,12 @@ export interface TurnListProps {
  *
  * The edit-dimming state comes from context, which re-renders this component
  * even when the memo bails out on props.
+ *
+ * Only a bounded window of turns is mounted (SHO-354): the newest
+ * `TURN_WINDOW_SIZE` turns, grown upwards as the person scrolls back through
+ * history that is already in memory. Everything older collapses into a single
+ * spacer, so a 500-turn chat costs the same to render and lay out as a 30-turn
+ * one.
  */
 export const TurnList = memo(
   function TurnList({
@@ -55,6 +76,9 @@ export const TurnList = memo(
     phase,
     subagentToolCalls,
     className,
+    scrollSignal,
+    onContentShift,
+    resetKey,
   }: TurnListProps) {
     const turns = useTurnGrouping(messages, isStreaming, subagentToolCalls)
     const ctx = useMessageEditContext()
@@ -63,13 +87,33 @@ export const TurnList = memo(
     const replacedCount =
       ctx && editingMessageId ? ctx.countMessagesAfter(editingMessageId) : 0
 
+    // The divider has to stay on screen while an editor is open, so the turn
+    // that owns it (and the one it dims from) are always mounted.
+    const turnWindow = useTurnWindow({
+      turns,
+      resetKey,
+      editingIndex: dimFrom >= 0 ? Math.max(0, dimFrom - 1) : undefined,
+      scrollSignal,
+      onContentShift,
+    })
+    const { start, spacerHeight, onTurnLayout } = turnWindow
+
     return (
-      <View className={cn("gap-4", className)}>
+      <View testID="turn-list" className={cn("gap-4", className)}>
+        {start > 0 ? (
+          <View testID="turn-window-spacer" style={{ height: spacerHeight }} />
+        ) : null}
         {turns.map((turn, index) => {
+          if (index < start) return null
           const dimmed = dimFrom >= 0 && index >= dimFrom
           const dimTail = dimFrom > 0 && index === dimFrom - 1
           return (
-            <View key={turn.id} className="gap-2">
+            <View
+              key={turn.id}
+              testID={`turn-row-${turn.id}`}
+              className="gap-2"
+              onLayout={onTurnLayout(turn.id)}
+            >
               {dimmed && index === dimFrom ? (
                 <View className="flex-row items-center gap-2 py-1">
                   <View className="h-px flex-1 bg-border/60" />
@@ -79,9 +123,12 @@ export const TurnList = memo(
                   <View className="h-px flex-1 bg-border/60" />
                 </View>
               ) : null}
+              {/* Only the live turn needs the current phase: it colours the
+                  turn being written. Handing it to history would re-render
+                  every past turn whenever the phase changes. */}
               <TurnGroup
                 turn={turn}
-                phase={phase}
+                phase={index === turns.length - 1 ? phase : undefined}
                 summaryCard={index === turns.length - 1}
                 dimmed={dimmed}
                 dimTail={dimTail}
@@ -99,7 +146,10 @@ export const TurnList = memo(
     prev.rejoining === next.rejoining &&
     prev.phase === next.phase &&
     prev.subagentToolCalls === next.subagentToolCalls &&
-    prev.className === next.className,
+    prev.className === next.className &&
+    prev.scrollSignal === next.scrollSignal &&
+    prev.onContentShift === next.onContentShift &&
+    prev.resetKey === next.resetKey,
 )
 
 export default TurnList

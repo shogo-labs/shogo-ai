@@ -12,9 +12,10 @@
  *     → the target's own tool, rooted at the target project's folder
  *
  * Remotable tools (`REMOTE_TOOL_ALLOWLIST`):
- *   exec, exec_wait, exec_list, read_file, write_file, edit_file, delete_file, search
+ *   exec, exec_wait, exec_list, read_file, write_file, edit_file, delete_file, search, share_file
  * Read-only subset (`REMOTE_READONLY_TOOLS`; the API keeps its own copy for RBAC):
- *   read_file, search, exec_list, exec_wait
+ *   read_file, search, exec_list, exec_wait, share_file
+ * `REMOTE_PROJECT_ONLY_TOOLS` reach projects but never a paired desktop.
  *
  * Never remotable: mount/unmount, connect_project, copy_to_project, the project lifecycle tools
  * (project_attach, project_create, project_call, …) and anything that spawns
@@ -35,9 +36,17 @@ export const REMOTE_TOOL_ALLOWLIST = [
   'edit_file',
   'delete_file',
   'search',
+  'share_file',
 ] as const
 
-export const REMOTE_READONLY_TOOLS = ['read_file', 'search', 'exec_list', 'exec_wait'] as const
+export const REMOTE_READONLY_TOOLS = ['read_file', 'search', 'exec_list', 'exec_wait', 'share_file'] as const
+
+/**
+ * Remotable tools that only ever run inside another project's runtime, never on
+ * a paired desktop: `share_file` on a desktop answers with a `file://` link to
+ * that machine's disk, which a cloud chat cannot open (SHO-353).
+ */
+export const REMOTE_PROJECT_ONLY_TOOLS: ReadonlySet<string> = new Set(['share_file'])
 
 export type RemoteToolName = (typeof REMOTE_TOOL_ALLOWLIST)[number]
 
@@ -115,8 +124,11 @@ export function remoteProjectsGuidance(opts: { copyToProject?: boolean } = {}): 
     "(paths are relative to that project's root). " +
     (opts.copyToProject
       ? 'To move several files or any binary files into another project, use `copy_to_project`: never copy into a folder ' +
-        'named after another project here (it lands only on this runtime), and never use `share_file` for this. '
+        'named after another project here (it lands only on this runtime) — `share_file` gives the user a link to one ' +
+        'file, it does not move anything. '
       : 'Never copy into a folder named after another project here: it lands only on this runtime. ') +
+    'To give the user a file that lives in another project, call `share_file` with `project` — never copy it through ' +
+    'the shell, into a static/public folder, or hand out a preview URL. ' +
     "Previews are per project too: call `preview_project` with that project's id and use only the URL it " +
     'returns — do not build a link from this runtime\'s base URL. ' +
     "Use `project_call` to hand work to that project's agent."

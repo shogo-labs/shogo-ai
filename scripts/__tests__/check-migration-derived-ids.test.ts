@@ -19,9 +19,12 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import {
+  DML_GUARD_EPOCH,
   LEGACY_EXEMPT,
   checkLegacyExemptions,
   checkMigrationSources,
+  collectDml,
+  dmlOf,
   extractWrittenId,
   isDerivedExpression,
   listMigrations,
@@ -331,6 +334,136 @@ describe('safe shapes', () => {
       SELECT 1;
     `)
     expect(violations).toEqual([])
+  })
+})
+
+// ===========================================================================
+// Row writes into a published table (SHO-344, the 2026-11-05 outage).
+//
+// A migration that INSERTs/UPDATEs/DELETEs rows in a published table runs on
+// both regions' primaries. The SHO-308 backfill minted the same subdomains in
+// US and EU with different random ids; EU's tablesync COPY of US's rows then
+// died on `published_environments_subdomain_key` and disabled sub_from_us for
+// 3.5 hours. Random ids do not make a row write safe — every other unique index
+// still collides.
+// ===========================================================================
+
+const POST_EPOCH = '20261106000000_fixture'
+
+describe('row writes into a published table (SHO-344)', () => {
+  const sho308Backfill = readFileSync(
+    resolve(REPO_ROOT, 'prisma/migrations/20261104120000_sho308_published_environments/migration.sql'),
+    'utf-8',
+  )
+
+  test('the SHO-308 backfill fails under a post-epoch name', () => {
+    const violations = check(sho308Backfill, POST_EPOCH)
+    expect(violations.length).toBeGreaterThan(0)
+    expect(
+      violations.some(
+        (v) => v.table === 'published_environments' && v.expression === 'INSERT published_environments',
+      ),
+    ).toBe(true)
+  })
+
+  test('the same SQL is applied history under its real name', () => {
+    const violations = check(sho308Backfill, '20261104120000_sho308_published_environments')
+    expect(violations).toEqual([])
+  })
+
+  test('the epoch is after the SHO-308 migration it grandfathers', () => {
+    expect('20261104120000_sho308_published_environments' < DML_GUARD_EPOCH).toBe(true)
+  })
+
+  test('an UPDATE on a published table fails', () => {
+    const violations = check(`UPDATE "projects" SET "settings" = '{}' WHERE "id" = 'x';`, POST_EPOCH)
+    expect(violations.map((v) => v.expression)).toEqual(['UPDATE projects'])
+  })
+
+  test('a DELETE from a published table fails', () => {
+    const violations = check(`DELETE FROM "members" WHERE "role" = 'owner';`, POST_EPOCH)
+    expect(violations.map((v) => v.expression)).toEqual(['DELETE members'])
+  })
+
+  test('a row write inside a DO block fails', () => {
+    const violations = check(
+      `
+      DO $$
+      BEGIN
+        UPDATE "projects" SET "settings" = '{}';
+      END $$;
+    `,
+      POST_EPOCH,
+    )
+    expect(violations.map((v) => v.expression)).toEqual(['UPDATE projects'])
+  })
+
+  test('a row write into a region-local table passes', () => {
+    const violations = check(`UPDATE "usage_wallets" SET "balance" = 0;`, POST_EPOCH)
+    expect(violations).toEqual([])
+  })
+
+  test('DDL after the epoch passes', () => {
+    const violations = check(
+      `
+      ALTER TABLE "projects" ADD COLUMN "x" TEXT;
+      CREATE INDEX "projects_x_idx" ON "projects" ("x");
+    `,
+      POST_EPOCH,
+    )
+    expect(violations).toEqual([])
+  })
+
+  test('a post-epoch INSERT with a derived id is reported once, not twice', () => {
+    const violations = check(
+      `INSERT INTO "things" ("id", "name") SELECT md5("name"), "name" FROM "users";`,
+      POST_EPOCH,
+    )
+    expect(violations).toHaveLength(1)
+    expect(violations[0].expression).toBe('INSERT things')
+  })
+
+  test('a WITH … INSERT cannot bypass the guard', () => {
+    const violations = check(
+      `WITH src AS (SELECT "id" FROM "projects") INSERT INTO "published_environments" ("id") SELECT "id" FROM src;`,
+      POST_EPOCH,
+    )
+    expect(violations.map((v) => v.expression)).toEqual(['INSERT published_environments'])
+  })
+
+  test('a TRUNCATE of a published table fails', () => {
+    const violations = check(`TRUNCATE TABLE "published_usage_minutes";`, POST_EPOCH)
+    expect(violations.map((v) => v.expression)).toEqual(['TRUNCATE published_usage_minutes'])
+  })
+})
+
+describe('dmlOf / collectDml', () => {
+  test('reads the target table of each DML form', () => {
+    expect(dmlOf('INSERT INTO "a" ("id") VALUES (1)')).toEqual({ table: 'a', kind: 'INSERT' })
+    expect(dmlOf('UPDATE public."b" SET "x" = 1')).toEqual({ table: 'b', kind: 'UPDATE' })
+    expect(dmlOf('DELETE FROM "c" WHERE 1=1')).toEqual({ table: 'c', kind: 'DELETE' })
+    expect(dmlOf('TRUNCATE TABLE "d"')).toEqual({ table: 'd', kind: 'TRUNCATE' })
+    expect(dmlOf('CREATE TABLE "e" ("id" TEXT)')).toBeNull()
+  })
+
+  test('INSERT INTO ONLY names the table, not the ONLY keyword', () => {
+    expect(dmlOf('INSERT INTO ONLY "published_environments" ("id") VALUES (1)')).toEqual({
+      table: 'published_environments',
+      kind: 'INSERT',
+    })
+  })
+
+  test('a WITH clause is stripped to its DML', () => {
+    expect(dmlOf('WITH x AS (SELECT 1) UPDATE "projects" SET "a" = 1')).toEqual({
+      table: 'projects',
+      kind: 'UPDATE',
+    })
+  })
+
+  test('finds writes inside a DO block and reports their line', () => {
+    const writes = collectDml(`SELECT 1;\nDO $$\nBEGIN\n  DELETE FROM "projects";\nEND $$;`)
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toMatchObject({ table: 'projects', kind: 'DELETE' })
   })
 })
 

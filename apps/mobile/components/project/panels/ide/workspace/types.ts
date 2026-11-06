@@ -65,6 +65,17 @@ export type WorkspaceFsEvent =
   | { type: "file.changed"; path: string; mtime: number; source?: WorkspaceFsEventSource }
   | { type: "file.deleted"; path: string; source?: WorkspaceFsEventSource };
 
+/** Health of the live-edits stream, as reported by the backing service. */
+export type WorkspaceStreamStatus = "open" | "down";
+
+export interface WorkspaceSubscribeOptions {
+  /**
+   * Called when the live stream opens (including after a reconnect) and when
+   * it breaks. A poller uses this to know whether it needs to run at all.
+   */
+  onStatus?: (status: WorkspaceStreamStatus) => void;
+}
+
 export interface WorkspaceService {
   readonly id: string;
   readonly label: string;
@@ -98,5 +109,11 @@ export interface WorkspaceService {
    * Subscribe to live file-level edits performed by the backing agent.
    * Returns a disposer. Optional — not all backends support it.
    */
-  subscribe?(onEvent: (event: WorkspaceFsEvent) => void): () => void;
+  subscribe?(onEvent: (event: WorkspaceFsEvent) => void, opts?: WorkspaceSubscribeOptions): () => void;
+  /**
+   * Conditional re-read of a file: returns the file only when it changed since
+   * the last read, `null` when the backing store confirms it is unchanged (a
+   * 304 — no body transferred). Optional; callers fall back to `readFile`.
+   */
+  readFileIfChanged?(path: string): Promise<WsFile | null>;
 }

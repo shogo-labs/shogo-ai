@@ -27,6 +27,7 @@ import { getOveragePriceConfig, planFromPriceId, type PlanType } from '../config
 
 export interface StripePriceRefLike {
   id?: string | null
+  recurring?: { usage_type?: string | null } | null
 }
 
 export interface StripeSubscriptionItemLike {
@@ -60,8 +61,24 @@ function priceIdOf(item: StripeSubscriptionItemLike): string | null {
 }
 
 /**
+ * Whether an item bills by usage rather than by seat.
+ *
+ * Prefer the price's own `recurring.usage_type`: the configured overage price
+ * id is only one of them (the current environment's), and a caller targeting
+ * the other environment — the Phase 5 migration's `--env` — would otherwise
+ * mistake the metered item for the plan and put a `quantity` on it, which
+ * Stripe rejects.
+ */
+export function isMeteredItem(item: StripeSubscriptionItemLike, overagePriceId: string | null = null): boolean {
+  const price = item.price
+  if (price && typeof price === 'object' && price.recurring?.usage_type === 'metered') return true
+  const priceId = priceIdOf(item)
+  return !!priceId && !!overagePriceId && priceId === overagePriceId
+}
+
+/**
  * The plan (licensed) item of a subscription — the first item whose price is
- * not the metered overage price.
+ * neither metered nor the configured overage price.
  */
 export function selectPlanItem(
   sub: StripeSubscriptionLike,
@@ -71,7 +88,7 @@ export function selectPlanItem(
   for (const item of items) {
     const priceId = priceIdOf(item)
     if (!priceId) continue
-    if (overagePriceId && priceId === overagePriceId) continue
+    if (isMeteredItem(item, overagePriceId)) continue
     return item
   }
   return null

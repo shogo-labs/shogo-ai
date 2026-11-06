@@ -120,7 +120,7 @@ import { refreshAvailableModels, getAvailableModels } from './available-models'
 import { mergeAgentModelIntoConfig, type AgentModelSnapshot } from './agent-model-config'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
-import { WorkspaceLSPManager, resolveBin, WorktreeManager } from '@shogo/shared-runtime'
+import { WorkspaceLSPManager, resolveBin, WorktreeManager, notifyProxyAuthFailure } from '@shogo/shared-runtime'
 import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
 import {
   isForeignWorkspaceDir,
@@ -3619,11 +3619,12 @@ export class AgentGateway {
     // When there's no uiWriter (heartbeat, channel, webhook turns),
     // clear the callback so "ask" decisions fail closed instead of writing
     // to a stale stream from a previous UI turn.
+    const permissionWriter = uiWriter && !this.unattendedSessions.has(sessionId)
+      ? (event: Record<string, any>) => uiWriter!.write(event)
+      : undefined
     if (this.permissionEngine) {
       this.permissionEngine.resetTurn()
-      this.permissionEngine.setSseCallback(
-        uiWriter && !this.unattendedSessions.has(sessionId) ? (event) => uiWriter.write(event) : undefined
-      )
+      this.permissionEngine.setSseCallback(permissionWriter)
     }
 
     if (this.config.browserExtensionToken) {
@@ -4924,6 +4925,11 @@ export class AgentGateway {
             `${this.logPrefix} Image dimension cap learned for session ${sessionId}: ${limit}px`,
           )
         },
+        onAuthFailure: () => {
+          if (notifyProxyAuthFailure()) {
+            console.warn(`${this.logPrefix} Proxy 401 with an expired AI_PROXY_TOKEN — rotating now (session ${sessionId})`)
+          }
+        },
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
           const fileStateSummary = this.fileStateCache.size > 0
@@ -5864,7 +5870,7 @@ export class AgentGateway {
       // (step limit, refusal, …) — never a boilerplate apology (SHO-270).
       const emptyFallback =
         failureClass !== 'unknown' && failureClass !== 'aborted_by_user'
-          ? buildTurnFailureMessage(failureClass, result.toolCalls.length)
+          ? buildTurnFailureMessage(failureClass, result.toolCalls.length, { modelName: requestedModelId })
           : 'Sorry, I was unable to generate a response. Please try again.'
       // Stream the fallback so clients (and eval bridges) never receive a
       // completely silent turn when nothing was emitted and no error fired.
@@ -5911,6 +5917,10 @@ export class AgentGateway {
         clearInterval(timer)
       }
       toolHeartbeatTimers.clear()
+      // This turn's stream is over. Leaving its writer wired would make the
+      // next remote request write into a dead stream and hang; cleared, it
+      // queues for the next window stream instead (SHO-333).
+      if (permissionWriter) this.permissionEngine?.clearSseCallback(permissionWriter)
       unsubscribeProcesses?.()
       if (remoteRefreshTimer) clearInterval(remoteRefreshTimer)
       if (sessionId && this.commandRegistries.has(sessionId)) {
@@ -6707,6 +6717,9 @@ export class AgentGateway {
       'remote tools off, and a command or file change waits for their approval on that computer.',
       'An offline device answers `device_offline` with its last-seen time, and one that has not',
       'allowed remote tools answers `remote_device_tools_disabled` — say which, rather than retrying.',
+      'A request nobody approves on that computer answers `remote_approval_timeout` (or',
+      '`remote_approval_unavailable` when no Shogo window opened in time): ask the user to approve it',
+      'there, then try again.',
       '',
       ...lines,
       '',
@@ -8206,6 +8219,17 @@ export class AgentGateway {
       children += counts.children
     }
     return { turns: this.turnLocks.size, tasks, children }
+  }
+
+  /**
+   * Whether this session still holds its turn lock. `abortCurrentTurn` drops it
+   * eagerly, so an unlocked session means no turn owns its stream any more —
+   * which is exactly the signal the stream registry's orphan reaper needs to
+   * tell a long quiet turn (still locked, never reap) from a wedged one
+   * (aborted or frozen, reap after TTL) — SHO-348.
+   */
+  hasTurnLock(sessionId: string): boolean {
+    return this.turnLocks.has(sessionId)
   }
 
   abortCurrentTurn(sessionId: string): boolean {

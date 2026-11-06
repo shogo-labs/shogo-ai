@@ -135,6 +135,14 @@ const CLOUD_ONLY_RUNTIME_PATHS = new Set([
   // there, so `preview_project` takes the local `/p/<id>/preview/start` path
   // and never builds this URL.
   '/api/internal/workspaces/:param/sessions/:param/projects/:param/preview',
+  // Native release (SHO-323): the Expo token, the paid EAS builds and the EAS
+  // webhook all live in the cloud API, so the runner it ships to a pod is
+  // token-less and calls the cloud. A desktop runtime never reaches these — the
+  // desktop half is the relay, which answers 501 until it lands.
+  '/api/internal/projects/:param/native/state',
+  '/api/internal/projects/:param/native/releases',
+  '/api/internal/projects/:param/native/releases/:param',
+  '/api/internal/projects/:param/native/releases/:param/sources',
 ])
 
 const AGENT_RUNTIME_SRC = resolve(import.meta.dir, '../../../../../packages/agent-runtime/src')

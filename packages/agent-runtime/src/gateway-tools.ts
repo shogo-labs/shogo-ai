@@ -19,6 +19,7 @@ import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
 import {
+  REMOTE_PROJECT_ONLY_TOOLS,
   REMOTE_READONLY_TOOLS,
   REMOTE_TOOL_ALLOWLIST,
   RemoteToolError,
@@ -224,6 +225,7 @@ import { injectCommitTrailer } from './git-attribution'
 import type { TeamManager } from './team-manager'
 import type { TeammateLoopHandle } from './teammate-loop'
 import { createChatHandoffTool } from './chat-handoff-tool'
+import { readWorkspaceDriveUsage } from './workspace-drive'
 
 export interface ToolContext {
   workspaceDir: string
@@ -923,11 +925,11 @@ function remoteFailure(err: unknown, project: { id: string; name: string }): Age
 }
 
 /**
- * File tools whose result names one file the caller may want to open. Only
- * these are in `REMOTE_TOOL_ALLOWLIST`; `share_file` is not remotable, so its
- * result never needs placing.
+ * File tools whose result names one file the caller may want to open. All of
+ * them are in `REMOTE_TOOL_ALLOWLIST`; `share_file`'s `path` is the target
+ * project's relative path it signed, so it places the same way.
  */
-const REMOTE_FILE_PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'delete_file'])
+const REMOTE_FILE_PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'delete_file', 'share_file'])
 
 /**
  * The fields that say which project a remote file result belongs to.
@@ -1066,6 +1068,24 @@ export function withRemoteProject(tool: AgentTool, ctx: ToolContext): AgentTool 
  */
 export function withRemoteDevice(tool: AgentTool, ctx: ToolContext): AgentTool {
   if (!isRemotableTool(tool.name)) return tool
+  // Project-only tools never gain `device`: the answer would name a file on
+  // that desktop's disk, which the user's cloud chat cannot open (SHO-353).
+  if (REMOTE_PROJECT_ONLY_TOOLS.has(tool.name)) {
+    return {
+      ...tool,
+      execute: async (toolCallId, params, signal, onUpdate) => {
+        if ((params as Record<string, unknown> | undefined)?.device !== undefined) {
+          return textResult({
+            error:
+              `\`${tool.name}\` runs inside a project's runtime, not on a paired desktop. ` +
+              'Pass `project` to reach another project, or omit both to run here.',
+            code: 'device_not_supported',
+          })
+        }
+        return tool.execute(toolCallId, params, signal, onUpdate)
+      },
+    }
+  }
   const base = tool.parameters as unknown as { properties?: Record<string, any> }
   return {
     ...tool,
@@ -1929,9 +1949,36 @@ function createExecTool(ctx: ToolContext): AgentTool {
         return buildSoftTimeoutResult(ctx, entry, winner === STOPPED ? null : softTimeoutMs)
       }
 
-      return withOtherProjectFolderWarning(ctx.workspaceDir, topLevelBefore, buildCompletedExecResult({ ctx, entry, finalResult: winner }))
+      const completed = buildCompletedExecResult({ ctx, entry, finalResult: winner })
+      return withOtherProjectFolderWarning(
+        ctx.workspaceDir,
+        topLevelBefore,
+        await withDiskFullHint(completed),
+      )
     },
   }, ctx)
+}
+
+/**
+ * When a command dies with ENOSPC on metal, say so in one line with the real
+ * numbers and where to fix it (SHO-349). Without this the agent reads a bare
+ * `No space left on device` and starts deleting the user's files: the actual
+ * fix may be a bigger drive in Settings → Disk, which it cannot see.
+ */
+async function withDiskFullHint(result: AgentToolResult<any>): Promise<AgentToolResult<any>> {
+  if (!isMetalRuntime()) return result
+  const details = result.details && typeof result.details === 'object' ? result.details : null
+  const text = details ? JSON.stringify(details) : String(result.details ?? '')
+  if (!/ENOSPC|no space left on device/i.test(text)) return result
+  const usage = await readWorkspaceDriveUsage()
+  if (!usage) return result
+  const gib = (b: number) => Math.round((b / 1024 ** 3) * 10) / 10
+  return textResult({
+    ...details,
+    diskHint:
+      `The project disk is full (${gib(usage.usedBytes)} of ${gib(usage.totalBytes)} GiB). ` +
+      'Free space, or raise it in Settings → Disk.',
+  })
 }
 
 /**
@@ -4879,6 +4926,19 @@ function resolveTargetProjectId(ctx: ToolContext, requested?: string): string | 
   return attached.length === 1 ? attached[0] : undefined
 }
 
+/**
+ * Where a native release reads the project from.
+ *
+ * A workspace runtime mounts each project at `<workspaceDir>/<projectId>`; a pod
+ * whose working directory *is* the project has no such folder, so the workspace
+ * dir is already the project. Checking beats assuming: guessing projectId as a
+ * subfolder would tar the wrong tree.
+ */
+function nativeProjectDir(ctx: ToolContext, projectId: string): string {
+  const scoped = join(ctx.workspaceDir, projectId)
+  return existsSync(join(scoped, 'package.json')) || existsSync(join(scoped, 'app.json')) ? scoped : ctx.workspaceDir
+}
+
 // ---------------------------------------------------------------------------
 // Custom domains — the `publish` tool's `domain_action` (SHO-304)
 //
@@ -5152,6 +5212,22 @@ async function runPublishDomainAction(
   })
 }
 
+const HOSTING_ERROR_REASON_MAX = 200
+
+/**
+ * Published-service setup failures arrive carrying the raw kubectl/k8s body
+ * (a multi-KB `AlreadyExists` dump with an `HTTP-Code`/`Body:` trailer). Handing
+ * that to the model produced answers that blamed the user's code, or that pasted
+ * cluster JSON at them. Keep only the leading human sentence.
+ */
+function summarizeHostingError(message: unknown): string {
+  const raw = String(message ?? '').replace(/\s+/g, ' ').trim()
+  const cutAt = [raw.indexOf('{'), raw.search(/HTTP-Code/i), raw.search(/\bBody:/i)].filter((i) => i >= 0)
+  const head = (cutAt.length > 0 ? raw.slice(0, Math.min(...cutAt)) : raw).trim().replace(/[:\-–,\s]+$/, '')
+  if (!head) return 'the hosting platform returned no detail'
+  return head.length > HOSTING_ERROR_REASON_MAX ? `${head.slice(0, HOSTING_ERROR_REASON_MAX - 1)}…` : head
+}
+
 function createPublishTool(ctx: ToolContext): AgentTool {
   return {
     name: 'publish',
@@ -5164,9 +5240,12 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds and that the scripts/stylesheets it references load — share THAT URL with the user. If it returns `brokenAssets`, the site renders blank: fix the asset paths and republish before telling the user it works.',
       'The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
       'In a workspace runtime, pass `project_id` for the mounted project to publish. It defaults to the current project, the workspace anchor, or the only attached project.',
-      'Published apps run on Knative and scale past one instance. Pass `environment: "staging"` to deploy to the optional staging site (`{subdomain}--staging.shogo.one`) for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
+      'Published apps run on Knative and scale past one instance. `publish` deploys the WHOLE app — the built frontend AND its server (`server.tsx` / `custom-routes.ts`) with its database — on Shogo\'s own hosting, with `/api/*` served on the same `{subdomain}.shogo.one` domain (and on custom domains). Shogo hosts and runs all of it, so NEVER suggest or set up an outside host for the API or database (Render, Fly, Railway, Heroku, a VPS), and never propose splitting the app into a static site plus a separately hosted backend. Pass `environment: \"staging\"` to deploy to the optional staging site (`{subdomain}--staging.shogo.one`) for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
       'For anything other than a deploy — checking replicas/latency/cost, tailing logs, changing scale, rolling back, redeploying, promoting, creating or deleting staging — pass `ops_action` instead of publishing. An ops action NEVER builds or publishes new code. Get the user\'s confirmation before: raising max replicas or size (real money), rollback, promote to production, and deleting an environment.',
       'Custom domains: `domain_action` lists/adds/checks/removes the project\'s own domains and returns every DNS record verbatim. Set `domain_action` and it does NOT publish. Actions: "list", "add" (needs `domain`), "verify", "make_primary", "remove". Only remove a domain when the user explicitly asked to remove it.',
+      'Native apps: pass `target: "ios"` / `"android"` (or `"native"` for both) to ship an Expo project to the App Store / Google Play instead of the web. It builds a test app and runs the project\'s Maestro flows first, and only builds for the store if they pass — so a broken flow costs nothing. Paid plans only (`plan_not_allowed` → point to Settings > Billing).',
+      'Every native response carries `next_action` and a `user_message` to say: follow `next_action` instead of guessing at the flow. `confirm_bundle_id` → show the ids and get them confirmed, they lock after the first upload. `publish_web` → this app calls its own backend, so the web version has to be published first; publish it, then ship. `connect_play` → the user invites the publisher email it returns in Play Console; they never handle a JSON key. `connect_asc` → they add their own App Store Connect key, which Apple cannot delegate to Shogo. `play_first_upload` → they upload one build by hand in Play Console (link included) so Google creates the app record. `asc_app_record` → they create the app in App Store Connect. `needs_icon` → ask for a logo and pass `icon`. Then `building` → `testing` → `submitted` → `live`, or `test_failed` with the failing flow.',
+      'The release is asynchronous: this returns a `release_id` immediately and never waits on a build — never start a background process, a sleep, or a watcher for it. Call this tool again with `release_id` (no `target`) when you are asked to check, and report the failing Maestro step when the test failed. Never tell the user an app shipped before a poll says `live`.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -5204,6 +5283,36 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         Type.Boolean({
           description:
             'Only after the user explicitly confirms: proceed even though the schema change destroys data (a dropped table/column, a narrowed type, or a new required column with no default). Publishing is refused with `destructive_schema_change` otherwise — show the user exactly which fields would lose data first.',
+        }),
+      ),
+      target: Type.Optional(
+        Type.Union(
+          [Type.Literal('web'), Type.Literal('ios'), Type.Literal('android'), Type.Literal('native')],
+          {
+            description:
+              'What to publish. Defaults to "web" (a `{subdomain}.shogo.one` site). "ios" / "android" / "native" ship an Expo project to the App Store / Google Play, which requires the user\'s store accounts to be connected first. Does not combine with `ops_action` or `domain_action`.',
+          },
+        ),
+      ),
+      track: Type.Optional(
+        Type.Union(
+          [Type.Literal('internal'), Type.Literal('testflight'), Type.Literal('production')],
+          {
+            description:
+              'Native only: which store track to release to. "internal" (default) is TestFlight/Play internal testing, "production" is a public release. An unchanged native fingerprint publishes an OTA update instead of a new build.',
+          },
+        ),
+      ),
+      release_id: Type.Optional(
+        Type.String({
+          description:
+            'Poll a native release instead of starting one: pass the id a `target` call returned. Reports the current step, the failing Maestro flow when the test failed, and the store submission status. Poll every minute or two; do not poll in a loop.',
+        }),
+      ),
+      icon: Type.Optional(
+        Type.String({
+          description:
+            'Native store artwork: a project-relative path to the user\'s logo (PNG, 8-bit RGB or RGBA, not interlaced). Shogo generates the 1024 iOS icon, the Android adaptive icon, the splash icon and the 512 Play icon from it, and lists them under .shogo/store-assets/ so the user can commit them. Ask the user for a logo when a release returns `next_action: needs_icon`.',
         }),
       ),
       ops_action: Type.Optional(
@@ -5287,6 +5396,10 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         replica,
         domain_action,
         domain,
+        target,
+        track,
+        release_id,
+        icon,
       } = params as {
         subdomain?: string
         access_level?: 'anyone' | 'authenticated' | 'private' | 'password'
@@ -5305,12 +5418,45 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         replica?: string
         domain_action?: 'list' | 'add' | 'verify' | 'make_primary' | 'remove'
         domain?: string
+        target?: 'web' | 'ios' | 'android' | 'native'
+        track?: 'internal' | 'testflight' | 'production'
+        release_id?: string
       }
       const projectId = resolveTargetProjectId(ctx, project_id)
       if (!projectId) {
         return textResult({
           error: 'No project context is available, so the app cannot be published. Pass project_id for the project to publish.',
         })
+      }
+
+      // Native release (App Store / Google Play). A `target` of ios/android/native
+      // — or a `release_id` poll — never touches the web publish path, and the
+      // web-only arguments are refused rather than silently ignored.
+      const nativeTarget = target && target !== 'web' ? target : undefined
+      if (nativeTarget || release_id) {
+        if (ops_action || domain_action) {
+          return textResult({
+            error:
+              '`ops_action` and `domain_action` are for published web apps. A native release takes `target` and `track` only.',
+            code: 'native_arg_conflict',
+          })
+        }
+        const { hasMaestroFlows, runNativeRelease, nativeReleaseStatus } = await import('./native-release-runner')
+        if (release_id) {
+          return textResult(await nativeReleaseStatus(projectId, release_id))
+        }
+        const projectDir = nativeProjectDir(ctx, projectId)
+        const platforms: ('ios' | 'android')[] =
+          nativeTarget === 'native' ? ['ios', 'android'] : [nativeTarget as 'ios' | 'android']
+        const result = await runNativeRelease({
+          projectId,
+          projectDir,
+          platforms,
+          track: track ?? 'internal',
+          hasMaestroFlows: await hasMaestroFlows(projectDir),
+          iconPath: icon,
+        })
+        return textResult(result as unknown as Record<string, unknown>)
       }
 
       // Domain management never publishes — handle it before any publish work.
@@ -5405,10 +5551,34 @@ function createPublishTool(ctx: ToolContext): AgentTool {
             changes: changes.map((c) => c.message).filter(Boolean),
           })
         }
+        if (res.code === 'configure_failed' || res.code === 'configure_timeout') {
+          const reason = summarizeHostingError(res.error)
+          const liveUrl = currentSubdomain ? `https://${currentSubdomain}.shogo.one` : null
+          return textResult({
+            error:
+              `Publishing failed on Shogo's hosting side while setting up the published service (${reason}). ` +
+              "This is our infrastructure, not the user's app — their code built and uploaded fine. " +
+              (liveUrl
+                ? `The previous deploy is still serving at ${liveUrl}, so nothing the user has now is broken. `
+                : 'Nothing is live yet: this project has no published site serving right now. ') +
+              'Tell the user plainly that publishing hit a problem on our side' +
+              (liveUrl ? ' and their existing site is unaffected.' : '.') +
+              ' Do NOT suggest moving the app or its API to another host (Render, Fly, Railway, a VPS), splitting the frontend from the backend, or publishing static-only: Shogo hosts the frontend, the API and the database. ' +
+              (res.code === 'configure_timeout'
+                ? 'This was a timeout, so one retry a little later is reasonable — but do not loop.'
+                : 'Do not retry it — the same call, or the same call with a different subdomain, will fail the same way.'),
+            code: res.code,
+            status: res.status,
+            reason,
+            liveUrl,
+          })
+        }
         if (res.code === 'database_unavailable' || res.code === 'schema_push_failed' || res.code === 'seed_failed') {
           return textResult({
-            error: `${res.error} This is a hosting/infrastructure failure, not something to retry with different arguments — the user's work is saved and the previous deploy (if any) is still serving.`,
+            error: `${summarizeHostingError(res.error)} This is a hosting/infrastructure failure, not something to retry with different arguments — the user's work is saved and the previous deploy (if any) is still serving.`,
             code: res.code,
+            status: res.status,
+            reason: summarizeHostingError(res.error),
           })
         }
         if (res.code === 'publish_route_missing') {
@@ -5475,6 +5645,7 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       'Never upload the file to a third-party host (filebin, file.io, transfer.sh, tmpfiles, 0x0.st, or similar) with curl or any other tool; this is the only supported way to hand a user a file.',
       'After this succeeds, paste the returned URL verbatim; tell the user when it expires only when the result has an `expiresAt`. Do not delete or overwrite the shared file before the user downloads it.',
       'In a workspace runtime the file decides where the link points: a file inside a mounted project gets a project link, anything else gets a workspace link. `project_id` only picks the project when the path alone is ambiguous.',
+      'On cloud, other projects run in their own runtimes: to give the user a file from another project, call `share_file` with `project: "<id or name>"` and the path relative to that project. Never copy it through the shell, into a static/public folder, or to a preview URL.',
       'On local desktop it returns a `file://` link to the file on disk that does not expire.',
     ].join(' '),
     label: 'Share file',
@@ -5489,7 +5660,7 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       project_id: Type.Optional(
         Type.String({
           description:
-            'Optional tiebreaker. The project that owns the file is taken from the path itself (a file under `<projectId>/…` belongs to that project); pass this only when the path sits at the workspace root and you want a particular project named, or to be explicit. A value that contradicts where the file actually lives is ignored and reported in the result.',
+            'Optional tiebreaker for a file that is already on this runtime\'s disk. The project that owns the file is taken from the path itself (a file under `<projectId>/…` belongs to that project); pass this only when the path sits at the workspace root and you want a particular project named, or to be explicit. A value that contradicts where the file actually lives is ignored and reported in the result. This is not `project`: `project` runs the whole call in that project\'s own runtime, `project_id` only names a tiebreaker here.',
         }),
       ),
     }),
@@ -5514,10 +5685,18 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
         }
         fileSize = file.size
       } catch {
-        const hint = bogusPathPrefixHint(ctx.workspaceDir, path)
+        const hints: string[] = []
+        const prefix = bogusPathPrefixHint(ctx.workspaceDir, path)
+        if (prefix) hints.push(prefix)
+        if (isWorkspaceRuntimeMode() && isMetalRuntime()) {
+          hints.push(
+            'If the file is in another project, call share_file again with `project: "<id or name>"` and the path ' +
+              'relative to that project.',
+          )
+        }
         return textResult({
           error: `File not found: ${path}`,
-          ...(hint ? { hint } : {}),
+          ...(hints.length ? { hint: hints.join(' ') } : {}),
         })
       }
 
@@ -8746,6 +8925,119 @@ export function subagentToolResult(
 }
 
 /**
+ * Display caps for the sub-agent transcript the runtime streams to the chat.
+ *
+ * `parts` is display-only: the parent model gets `subagentToolResult`'s capped
+ * report and a per-tool count. Re-sending a whole browser `snapshot` (an
+ * accessibility tree) or a `write_file` argument (a whole file) in every frame
+ * made each frame megabytes and saturated the client's main thread while a
+ * `browser_qa` run streamed (SHO-340).
+ */
+const SUBAGENT_PART_FIELD_MAX_CHARS = 2048
+const SUBAGENT_PART_MAX_CHARS = 8192
+const SUBAGENT_SNAPSHOT_MAX_CHARS = 256 * 1024
+/** Tools whose parts carry a file chip the UI keeps showing, whatever the size. */
+const SUBAGENT_PINNED_PART_TOOLS = new Set(['generate_image', 'generate_video', 'share_file'])
+
+interface DisplayPart {
+  /** The capped copy emitted for this part. */
+  part: any
+  size: number
+  /** What an over-budget part degrades to (older parts, oldest first). */
+  collapsed: any
+  collapsedSize: number
+}
+
+function truncationNote(dropped: number): string {
+  return `…[${dropped} chars truncated]`
+}
+
+function capStrings(value: any, limit: number, dropped: { chars: number }): any {
+  if (typeof value === 'string') {
+    if (value.length <= limit) return value
+    dropped.chars += value.length - limit
+    return value.slice(0, limit) + truncationNote(value.length - limit)
+  }
+  if (Array.isArray(value)) {
+    const out = new Array(value.length)
+    for (let i = 0; i < value.length; i++) out[i] = capStrings(value[i], limit, dropped)
+    return out
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, any> = {}
+    for (const key of Object.keys(value)) out[key] = capStrings(value[key], limit, dropped)
+    return out
+  }
+  return value
+}
+
+function jsonSize(value: unknown): number {
+  if (value === undefined) return 0
+  try {
+    return JSON.stringify(value)?.length ?? 0
+  } catch {
+    return 0
+  }
+}
+
+function jsonPreview(value: unknown): string {
+  try {
+    return (JSON.stringify(value) ?? '').slice(0, SUBAGENT_PART_FIELD_MAX_CHARS)
+  } catch {
+    return ''
+  }
+}
+
+function buildDisplayPart(p: any): DisplayPart {
+  if (p?.type === 'tool' && p.tool) {
+    const dropped = { chars: 0 }
+    const tool = {
+      ...p.tool,
+      args: capStrings(p.tool.args, SUBAGENT_PART_FIELD_MAX_CHARS, dropped),
+      result: capStrings(p.tool.result, SUBAGENT_PART_FIELD_MAX_CHARS, dropped),
+    }
+    let part: any = dropped.chars > 0 ? { ...p, tool, truncated: true } : { ...p, tool }
+    if (jsonSize(part) > SUBAGENT_PART_MAX_CHARS) {
+      // Many short strings (a whole accessibility tree, a long diff): keep the
+      // tool's identity and a preview of the bulk, not the bulk itself.
+      part = {
+        ...part,
+        tool: {
+          ...p.tool,
+          args: { truncated: true, preview: jsonPreview(p.tool.args) },
+          result: { truncated: true, preview: jsonPreview(p.tool.result) },
+        },
+        truncated: true,
+      }
+    }
+    const collapsed = {
+      type: 'tool',
+      id: p.id,
+      tool: {
+        id: p.tool.id ?? p.id,
+        toolName: p.tool.toolName,
+        state: p.tool.state,
+        args: undefined,
+        result: undefined,
+      },
+      truncated: true,
+      collapsed: true,
+    }
+    return { part, size: jsonSize(part), collapsed, collapsedSize: jsonSize(collapsed) }
+  }
+  const dropped = { chars: 0 }
+  const text = typeof p?.text === 'string' ? capStrings(p.text, SUBAGENT_PART_MAX_CHARS, dropped) : p?.text
+  const part = dropped.chars > 0 ? { ...p, text, truncated: true } : p
+  const collapsed = {
+    ...p,
+    text: typeof p?.text === 'string' ? p.text.slice(0, 200) : '',
+    truncated: true,
+    collapsed: true,
+  }
+  return { part, size: jsonSize(part), collapsed, collapsedSize: jsonSize(collapsed) }
+}
+
+/**
  * Build sub-agent stream callbacks that accumulate content into an internal
  * parts[] array and periodically emit it as a preliminary tool output.
  *
@@ -8777,7 +9069,43 @@ export function buildSpawnCallbacks(
   let model: string | null = null
   let lastEmitTime = 0
   let pendingEmit: ReturnType<typeof setTimeout> | null = null
-  const THROTTLE_MS = 150
+  const THROTTLE_MS = 250
+  // Display copies are built once per part state (a tool part changes twice:
+  // args, then result) instead of on every emit.
+  const displayCache = new WeakMap<object, DisplayPart>()
+
+  function displayPart(p: any): DisplayPart {
+    const cached = displayCache.get(p)
+    if (cached) return cached
+    const entry = buildDisplayPart(p)
+    displayCache.set(p, entry)
+    return entry
+  }
+
+  /**
+   * The transcript snapshot sent to the client: every part capped, and the
+   * oldest parts collapsed once the snapshot would exceed the budget — so a
+   * frame's size depends on the newest activity, not on how long the run has
+   * been going.
+   */
+  function snapshotParts(): any[] {
+    const out: any[] = new Array(parts.length)
+    // Every part costs at least its collapsed stub, so reserve those first and
+    // spend what is left on keeping parts whole — oldest parts lose first.
+    let reserved = 0
+    for (const part of parts) reserved += displayPart(part).collapsedSize
+    let budget = Math.max(0, SUBAGENT_SNAPSHOT_MAX_CHARS - reserved)
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const part = parts[i]
+      const entry = displayPart(part)
+      const pinned = part?.type === 'tool' && SUBAGENT_PINNED_PART_TOOLS.has(part.tool?.toolName)
+      const extra = Math.max(0, entry.size - entry.collapsedSize)
+      const keep = pinned || extra <= budget
+      out[i] = keep ? entry.part : entry.collapsed
+      if (keep) budget = Math.max(0, budget - extra)
+    }
+    return out
+  }
 
   function emitPreliminary(force?: boolean) {
     const now = Date.now()
@@ -8801,7 +9129,7 @@ export function buildSpawnCallbacks(
     w.write({
       type: 'tool-output-available',
       toolCallId: spawnToolCallId,
-      output: { agentId, instance_id: instanceId, model, parts: [...parts] },
+      output: { agentId, instance_id: instanceId, model, parts: snapshotParts() },
       dynamic: true,
       preliminary: true,
     })
@@ -8813,7 +9141,7 @@ export function buildSpawnCallbacks(
     },
     onModelResolved: (m: string) => {
       model = m
-      emitPreliminary(true)
+      emitPreliminary()
     },
     onEnd: (_name: string) => {
       // Flush any pending throttled emit so the last snapshot arrives
@@ -8827,6 +9155,7 @@ export function buildSpawnCallbacks(
       const last = parts[parts.length - 1]
       if (last?.type === 'text') {
         last.text += delta
+        displayCache.delete(last)
       } else {
         parts.push({
           type: 'text',
@@ -8851,8 +9180,11 @@ export function buildSpawnCallbacks(
     },
     onThinkingEnd: () => {
       const last = parts[parts.length - 1]
-      if (last?.type === 'reasoning') last.isStreaming = false
-      emitPreliminary(true)
+      if (last?.type === 'reasoning') {
+        last.isStreaming = false
+        displayCache.delete(last)
+      }
+      emitPreliminary()
     },
     onToolCallStart: (toolName: string, toolCallId: string) => {
       parts.push({
@@ -8890,7 +9222,8 @@ export function buildSpawnCallbacks(
       } else {
         p.tool.args = args
       }
-      emitPreliminary(true)
+      displayCache.delete(p)
+      emitPreliminary()
     },
     onAfterToolCall: async (_toolName: string, _args: any, result: any, isError: boolean, toolCallId: string) => {
       const parsed =
@@ -8911,14 +9244,15 @@ export function buildSpawnCallbacks(
             }
           : (parsed ?? { success: true })
         p.tool.state = isError ? 'error' : 'success'
+        displayCache.delete(p)
       }
-      emitPreliminary(true)
+      emitPreliminary()
     },
   }
 
   return {
     callbacks,
-    getAccumulatedOutput: () => ({ agentId, parts: [...parts], model }),
+    getAccumulatedOutput: () => ({ agentId, parts: snapshotParts(), model }),
     setInstanceId: (id: string) => {
       instanceId = id
       scLog(`[screencast] buildSpawnCallbacks.setInstanceId toolCallId=${spawnToolCallId} ` + `instanceId=${id}`)
@@ -9920,19 +10254,29 @@ export function socialMediaToolEnabled(config: import('./gateway').GatewayConfig
   return config.socialMediaEnabled === true || config.socialManagementEnabled === true
 }
 
-/** Platforms the `social_media` tool may call. Empty when lookups are off. */
-export function enabledSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
-  if (config.socialMediaEnabled !== true) return []
+/**
+ * Platforms whose per-platform switch is on. Management work (the inbox, posting)
+ * is gated by these alone: a workspace that turned paid lookups off still owns
+ * and reads its own connected inboxes.
+ */
+function managedSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
   const platforms: SocialPlatformName[] = []
   if (config.socialInstagramEnabled !== false) platforms.push('instagram')
   if (config.socialTiktokEnabled !== false) platforms.push('tiktok')
   return platforms
 }
 
-function socialPlatformSchema(platforms: SocialPlatformName[]) {
-  if (platforms.length === 1) return Type.Literal(platforms[0])
+/** Platforms the `social_media` tool may call. Empty when lookups are off. */
+export function enabledSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
+  if (config.socialMediaEnabled !== true) return []
+  return managedSocialPlatforms(config)
+}
+
+function socialPlatformSchema(platforms: SocialPlatformName[], description?: string) {
   const listed = platforms.length > 0 ? platforms : (['instagram', 'tiktok'] as SocialPlatformName[])
-  return Type.Union(listed.map((platform) => Type.Literal(platform)))
+  const options = description ? { description } : {}
+  if (listed.length === 1) return Type.Literal(listed[0], options)
+  return Type.Union(listed.map((platform) => Type.Literal(platform)), options)
 }
 
 /**
@@ -10228,7 +10572,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       `"post" publishes or schedules one post to one or more accounts (content, account_ids, media, scheduled_for/publish_now/draft); ` +
       `"posts" lists posts, "calendar" the schedule and "analytics" the numbers; ` +
       `"delete" takes a post_id and removes a draft, a scheduled or failed post, or a published one — it unpublishes each target the provider can remove, and returns the ones the person has to remove in the Instagram / TikTok / Snapchat app with their links; ` +
-      `"inbox" lists DM threads (kind "dms") or comments (kind "comments"); ` +
+      `"inbox" lists DM threads (kind "dms", optionally narrowed to one platform) or comments (kind "comments"); ` +
       `"reply" takes conversation_id + text; "comment_reply" takes comment_id + text; ` +
       `"automate" manages comment→DM automations (automation_action create/list/pause/resume/delete). ` +
       `Media for a post is a public https URL or a workspace file path, which is uploaded for you. ` +
@@ -10258,7 +10602,12 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | delete | calendar | analytics',
         },
       ),
-      platform: Type.Optional(socialPlatformSchema(platforms)),
+      platform: Type.Optional(
+        socialPlatformSchema(
+          platforms,
+          'Required for profile/recent_posts. For action "inbox" with kind "dms", narrows the threads to that platform; omit it to list every platform.',
+        ),
+      ),
       handle: Type.Optional(Type.String({ description: 'Account handle, with or without a leading @. Required for profile/recent_posts.' })),
       limit: Type.Optional(Type.Number({
         description: 'How many posts or inbox rows to return (1-50, default 20).',
@@ -10790,6 +11139,11 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             return textResult({
               kind,
               count: comments.length,
+              ...(params.platform
+                ? {
+                    note: 'Comments are not filtered by platform — GET /social/comments has no platform filter, so this list covers every platform. Read the platform on each comment.',
+                  }
+                : {}),
               comments: comments.map((comment: any) => ({
                 comment_id: comment.id,
                 platform: comment.platform,
@@ -10801,12 +11155,24 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
               })),
             })
           }
-          const unread = params.unread_only === true ? '&unread=true' : ''
-          const result = await socialInternalCall(ctx, 'GET', `/social/inbox?limit=${limit}${unread}`)
+          const query = new URLSearchParams({ limit: String(limit) })
+          if (params.unread_only === true) query.set('unread', 'true')
+          const platform = String(params.platform ?? '').trim().toLowerCase()
+          if (platform) {
+            const managed = managedSocialPlatforms(ctx.config)
+            if (!managed.includes(platform as SocialPlatformName)) {
+              return textResult({
+                error: `Platform "${platform}" is not enabled. Enabled platforms: ${managed.join(', ') || 'none'}.`,
+              })
+            }
+            query.set('platform', platform)
+          }
+          const result = await socialInternalCall(ctx, 'GET', `/social/inbox?${query.toString()}`)
           if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
           const conversations = Array.isArray(result.data?.conversations) ? result.data.conversations : []
           return textResult({
             kind,
+            ...(platform ? { platform } : {}),
             count: conversations.length,
             unread: result.data?.unread ?? 0,
             conversations: conversations.map((conversation: any) => ({
@@ -10947,7 +11313,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createAskUserTool(ctx),
     createCheckpointTool(ctx),
     createPublishTool(ctx),
-    createShareFileTool(ctx),
+    r(createShareFileTool(ctx)),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
     createChannelDisconnectTool(ctx),

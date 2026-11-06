@@ -190,6 +190,14 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   PublishedEnvironment: { decision: 'exclude', reason: 'SHO-308: a live published environment is a Knative service, an image and a provisioned Postgres database, not archive content. Restoring the row would claim a subdomain and a database that only the cloud can create, so an import re-publishes instead.' },
   PublishedDeployment: { decision: 'exclude', reason: 'SHO-308: an image revision that ran in the cloud registry. Meaningless on another cluster, and unrecoverable from an archive.' },
   PublishedUsageMinute: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
+  // SHO-323: native release. The app mapping is project config (like
+  // CustomDomain), but everything that costs money or holds a key stays out.
+  NativeApp: { decision: 'include', reason: 'The App Store / Play mapping for this project (bundle id, package name, which store apps it points at). Project config, like CustomDomain; no secret lives here.', scope: { kind: 'project' } },
+  NativeAppCredential: { decision: 'exclude', reason: 'App Store Connect and Play service-account keys. Reusable credentials: a downloaded archive must never carry them, and they are re-entered after a restore.' },
+  NativeSigningCredential: { decision: 'exclude', reason: 'Distribution certificates, provisioning profiles and the Android keystore. Signing material cannot be re-issued by us, so it never leaves the instance.' },
+  NativeRelease: { decision: 'exclude', reason: 'Release history and its build state, meaningless on another instance.' },
+  NativeBuild: { decision: 'exclude', reason: 'Per-build EAS state and the metered charge attached to it.' },
+  NativeUsageMonth: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   PushSubscription: { decision: 'exclude', reason: 'One device or one person\'s ephemeral state, meaningless on restore.' },
   Registry: { decision: 'exclude', reason: 'Instance catalog or global configuration, identical on every restore.' },
   RemoteAction: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },

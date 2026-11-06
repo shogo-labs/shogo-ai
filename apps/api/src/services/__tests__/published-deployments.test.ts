@@ -150,3 +150,42 @@ describe('rollback picks a genuinely different image', () => {
     if (!res.ok) expect(res.code).toBe('deployment_not_found')
   })
 })
+
+describe('rollback and promote switch by digest (SHO-308 §2)', () => {
+  const earlierDigest = `sha256:${'e'.repeat(64)}`
+
+  it('patches the ksvc to the digest, not the mutable tag the row was tagged with', async () => {
+    const { mock } = await import('bun:test')
+    const patched: Array<{ projectId: string; image: string }> = []
+    mock.module('../../lib/knative-project-manager', () => ({
+      getKnativeProjectManager: () => ({
+        setPublishedImage: async (projectId: string, image: string) => {
+          patched.push({ projectId, image })
+        },
+      }),
+    }))
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+
+    deployments.unshift({
+      id: 'dep_0',
+      environmentId: 'env_prod',
+      commitSha: 'zzz',
+      // Recorded before §2 as a tag; the digest is what makes it pin-able.
+      imageRef: 'us-ashburn-1.ocir.io/ns/shogo/published/p1:zzz',
+      imageDigest: earlierDigest,
+      schemaHash: null,
+      status: 'superseded',
+      createdAt: new Date(Date.now() - 120_000),
+    })
+
+    try {
+      const res = await rollbackEnvironment('p1', 'production')
+      expect(res.ok).toBe(true)
+      expect(patched).toHaveLength(1)
+      expect(patched[0].image).toBe(`us-ashburn-1.ocir.io/ns/shogo/published/p1@${earlierDigest}`)
+      if (res.ok) expect(res.value.imageRef).toBe(patched[0].image)
+    } finally {
+      delete process.env.KUBERNETES_SERVICE_HOST
+    }
+  })
+})

@@ -213,7 +213,15 @@ export function startTokenRefreshLoop(options: TokenRefreshOptions): TokenRefres
 
       const saToken = readSAToken()
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (saToken) headers['Authorization'] = `Bearer ${saToken}`
+      if (saToken) {
+        headers['Authorization'] = `Bearer ${saToken}`
+      } else if (process.env.RUNTIME_AUTH_SECRET) {
+        // Metal guests have no ServiceAccount token file, so the SA-only call
+        // 401'd on every tick and their AI_PROXY_TOKEN never rotated. The
+        // neighbouring `/api/internal/projects/:id/*` routes already accept the
+        // runtime's own token; `/pod-config` now does too (SHO-348).
+        headers['x-runtime-token'] = process.env.RUNTIME_AUTH_SECRET
+      }
 
       const url = `${apiUrl}/api/internal/pod-config/${projectId}`
       const startedAt = Date.now()
@@ -277,16 +285,60 @@ export function startTokenRefreshLoop(options: TokenRefreshOptions): TokenRefres
 
   schedule()
 
-  return {
+  const handle: TokenRefreshHandle = {
     stop: () => {
       stopped = true
       if (timer) {
         clearTimeout(timer)
         timer = null
       }
+      if (activeHandle === handle) activeHandle = null
     },
     refreshNow: refresh,
   }
+  activeHandle = handle
+  return handle
+}
+
+/** The running loop, so a 401 anywhere in the process can force a rotation. */
+let activeHandle: TokenRefreshHandle | null = null
+
+/**
+ * How often a burst of 401s may force a rotation. Single-flight already
+ * coalesces concurrent callers; this guard stops a retry storm (many sessions
+ * 401-ing at once) from re-requesting a new token after every one of them.
+ */
+const AUTH_FAILURE_MIN_INTERVAL_MS = 30_000
+let lastAuthFailureRefreshAt = 0
+
+/**
+ * A model call was rejected as unauthorized. When the local `AI_PROXY_TOKEN`
+ * is already expired, waiting for the next 12 h tick means every turn fails
+ * until someone restarts the pod (the Odin incident: ~10 h of 401s, SHO-348).
+ * Rotate now instead — once, and only when the failure really is an expired
+ * local token rather than, say, a revoked project.
+ *
+ * Returns true when a refresh was actually started.
+ */
+export function notifyProxyAuthFailure(): boolean {
+  const handle = activeHandle
+  if (!handle) return false
+  const token = process.env.AI_PROXY_TOKEN
+  const exp = token ? readJwtExpMs(token) : null
+  // Still-valid token → this 401 is not a rotation problem (bad key, revoked
+  // project). Rotating would not help and would mask the real cause.
+  if (exp && exp > Date.now()) return false
+  const now = Date.now()
+  if (now - lastAuthFailureRefreshAt < AUTH_FAILURE_MIN_INTERVAL_MS) return false
+  lastAuthFailureRefreshAt = now
+  void handle.refreshNow()
+  return true
+}
+
+/** Test seam: forget the running loop and the debounce. */
+export function __resetTokenRefreshGlobals(): void {
+  activeHandle = null
+  lastAuthFailureRefreshAt = 0
 }
 
 /**

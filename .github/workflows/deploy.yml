@@ -1239,6 +1239,14 @@ jobs:
           if [ -n "${{ secrets.HIGGSFIELD_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=HIGGSFIELD_API_KEY="${{ secrets.HIGGSFIELD_API_KEY }}"); fi
           if [ -n "${{ secrets.ZERNIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_API_KEY="${{ secrets.ZERNIO_API_KEY }}"); fi
           if [ -n "${{ secrets.ZERNIO_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_WEBHOOK_SECRET="${{ secrets.ZERNIO_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.EXPO_ACCOUNT_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=EXPO_ACCOUNT_TOKEN="${{ secrets.EXPO_ACCOUNT_TOKEN }}"); fi
+          if [ -n "${{ secrets.EXPO_ACCOUNT_ID }}" ]; then SECRET_ARGS+=(--from-literal=EXPO_ACCOUNT_ID="${{ secrets.EXPO_ACCOUNT_ID }}"); fi
+          # Shogo's Google Play publisher service account (one account, invited
+          # into each customer's Play Console). The API falls back to it when a
+          # workspace has no key of its own; unset, Play refuses with the
+          # connect-a-key message rather than an uninvitable instruction.
+          if [ -n "${{ secrets.SHOGO_PLAY_PUBLISHER_SA }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_PLAY_PUBLISHER_SA="${{ secrets.SHOGO_PLAY_PUBLISHER_SA }}"); fi
+          if [ -n "${{ secrets.EAS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=EAS_WEBHOOK_SECRET="${{ secrets.EAS_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
@@ -1902,6 +1910,14 @@ jobs:
           if [ -n "${{ secrets.HIGGSFIELD_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=HIGGSFIELD_API_KEY="${{ secrets.HIGGSFIELD_API_KEY }}"); fi
           if [ -n "${{ secrets.ZERNIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_API_KEY="${{ secrets.ZERNIO_API_KEY }}"); fi
           if [ -n "${{ secrets.ZERNIO_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ZERNIO_WEBHOOK_SECRET="${{ secrets.ZERNIO_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.EXPO_ACCOUNT_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=EXPO_ACCOUNT_TOKEN="${{ secrets.EXPO_ACCOUNT_TOKEN }}"); fi
+          if [ -n "${{ secrets.EXPO_ACCOUNT_ID }}" ]; then SECRET_ARGS+=(--from-literal=EXPO_ACCOUNT_ID="${{ secrets.EXPO_ACCOUNT_ID }}"); fi
+          # Shogo's Google Play publisher service account (one account, invited
+          # into each customer's Play Console). The API falls back to it when a
+          # workspace has no key of its own; unset, Play refuses with the
+          # connect-a-key message rather than an uninvitable instruction.
+          if [ -n "${{ secrets.SHOGO_PLAY_PUBLISHER_SA }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_PLAY_PUBLISHER_SA="${{ secrets.SHOGO_PLAY_PUBLISHER_SA }}"); fi
+          if [ -n "${{ secrets.EAS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=EAS_WEBHOOK_SECRET="${{ secrets.EAS_WEBHOOK_SECRET }}"); fi
           if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
           if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
@@ -2330,6 +2346,21 @@ jobs:
             < k8s/cnpg/logical-replication/exclude-region-local-tables.sql \
             || { echo "::error::region-local publication exclusion failed on EU"; exit 1; }
 
+      # Capture the cumulative sync_error_count BEFORE the REFRESH, so a COPY
+      # that fails during this deploy shows up as an increase. Capturing it after
+      # the REFRESH would already include the new failure, and the fast path in
+      # the verify step would never fire.
+      - name: Capture EU tablesync error baseline
+        run: |
+          set -euo pipefail
+          BASE_ERR=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -tAc "
+              SELECT COALESCE(sum(sync_error_count), 0)
+              FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
+            ")
+          echo "BASE_ERR=$BASE_ERR" >> "$GITHUB_ENV"
+          echo "EU tablesync sync_error_count baseline: $BASE_ERR"
+
       # ENABLE first: see the US job. This is the common case — US migrates
       # first, so its new columns reach EU before EU has run the migration.
       - name: Refresh logical replication subscriptions
@@ -2341,6 +2372,69 @@ jobs:
                 -c "ALTER SUBSCRIPTION ${SUB} ENABLE;" \
                 -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
               || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on EU (subscription may not exist yet)"
+          done
+
+      # A REFRESH PUBLICATION with the default copy_data = true makes EU COPY
+      # every row of a newly-published table from US. If EU already wrote rows
+      # into that table — a migration backfill that ran in both regions, the
+      # 2026-11-05 SHO-308 outage — the COPY dies on a duplicate key and the
+      # tablesync worker leaves the relation in 'd' (data copy) or 'i'
+      # (initialize) forever, with sub_from_us disabled. Nothing paged for 3.5h
+      # while US writes never reached EU. Fail the deploy loudly instead of
+      # leaving the mesh silently broken.
+      - name: Verify EU tablesync is not stuck
+        run: |
+          set -euo pipefail
+          # BASE_ERR was captured before the REFRESH (see the step above).
+          BASE_ERR="${BASE_ERR:-0}"
+          DEADLINE=$(( $(date +%s) + 180 ))
+          while :; do
+            STUCK=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -tAc "
+                SELECT count(*) FROM pg_subscription_rel WHERE srsubstate IN ('d','i');
+              ")
+            if [ "$STUCK" = "0" ]; then
+              echo "✓ every replicated relation on EU is past tablesync (no 'd'/'i')"
+              exit 0
+            fi
+            # A NEW sync error (above the baseline) is definitive: the COPY
+            # failed, it will not recover on its own, and waiting out the
+            # deadline only delays the page. A relation still in 'd' with no new
+            # error is a large copy in progress, so keep waiting for it.
+            SYNC_ERR=$(kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+              psql -U postgres -d shogo -tAc "
+                SELECT COALESCE(sum(sync_error_count), 0)
+                FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
+              ")
+            if [ "$SYNC_ERR" -gt "$BASE_ERR" ]; then
+              echo "::error::tablesync COPY failed on EU (sync_error_count rose $BASE_ERR → $SYNC_ERR) — a duplicate key in the initial copy. sub_from_us will not stream until the rows are reconciled."
+              kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+                psql -U postgres -d shogo -c "
+                  SELECT srsubid::regclass AS relation, srsubstate
+                  FROM pg_subscription_rel WHERE srsubstate IN ('d','i');
+                "
+              kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+                psql -U postgres -d shogo -c "
+                  SELECT subname, subenabled, apply_error_count, sync_error_count
+                  FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
+                "
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::$STUCK relation(s) on EU are still in tablesync ('d'/'i') after 180s with no new sync error — either a very large initial copy or a stuck worker. sub_from_us may not be streaming."
+              kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+                psql -U postgres -d shogo -c "
+                  SELECT srsubid::regclass AS relation, srsubstate
+                  FROM pg_subscription_rel WHERE srsubstate IN ('d','i');
+                "
+              kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
+                psql -U postgres -d shogo -c "
+                  SELECT subname, subenabled, apply_error_count, sync_error_count
+                  FROM pg_stat_subscription_stats WHERE subname LIKE 'sub_from_%';
+                "
+              exit 1
+            fi
+            sleep 5
           done
 
       # Tables this deploy created are now published on EU, but the US

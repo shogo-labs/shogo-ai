@@ -53,14 +53,19 @@ const mockPrisma = {
     },
   },
   chatQueuedMessage: {
-    findFirst: async ({ where }: any) => ({
-      id: `queued-${where.sessionId}`,
-      sessionId: where.sessionId,
-      userId: "user-1",
-      content: "queued prompt",
-      parts: null,
-      body: "{}",
-    }),
+    findFirst: async ({ where }: any) => {
+      // The claim guard asks whether a row of this session is already
+      // `dispatching`; this table only ever holds a pending row.
+      if (where?.status === "dispatching") return null
+      return {
+        id: `queued-${where.sessionId}`,
+        sessionId: where.sessionId,
+        userId: "user-1",
+        content: "queued prompt",
+        parts: null,
+        body: "{}",
+      }
+    },
     updateMany: async ({ where }: any) => {
       if (where.status === "dispatching" && where.updatedAt) {
         state.resetWheres.push(where)
@@ -73,6 +78,8 @@ const mockPrisma = {
     deleteMany: async () => ({ count: 0 }),
     findMany: async ({ where }: any) => {
       state.findManyWheres.push(where)
+      // The only `dispatching` lookup is the claim guard; nothing is claimed here.
+      if (where?.status === "dispatching") return []
       return state.pendingSessions
     },
   },

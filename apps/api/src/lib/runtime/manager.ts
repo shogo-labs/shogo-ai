@@ -23,7 +23,6 @@ import {
   copyFileSync,
 } from 'fs'
 import { join, dirname, resolve, basename } from 'path'
-import { connect } from 'node:net'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { pkg } from '../../../../../packages/cli/src/pkg'
@@ -41,6 +40,11 @@ import {
   describeBusyReason,
   type BusyDecision,
 } from '@shogo-ai/worker/runtime-activity'
+import {
+  DEFAULT_PORT_RANGE_END,
+  DEFAULT_PORT_RANGE_START,
+  PortPool,
+} from '@shogo-ai/worker/port-pool'
 import { sampleHostMemory } from './host-memory'
 import { inflightCallCount } from './inflight-calls'
 import type {
@@ -226,8 +230,8 @@ function execAsync(command: string, options: { maxBuffer?: number } = {}): Promi
   })
 }
 
-const PORT_RANGE_START = 37100
-const PORT_RANGE_END = 37900
+const PORT_RANGE_START = DEFAULT_PORT_RANGE_START
+const PORT_RANGE_END = DEFAULT_PORT_RANGE_END
 const AGENT_PORT_OFFSET = 1000
 const PERF_LOG_ENABLED = process.env.SHOGO_PERF_LOG === '1'
 /** Longest a new-project open waits for an in-flight warm workspace before seeding on its own. */
@@ -438,7 +442,16 @@ interface ProjectInfo {
 export class RuntimeManager implements IRuntimeManager {
   private config: IRuntimeConfig
   private runtimes: Map<string, InternalRuntime> = new Map()
-  private usedPorts: Set<number> = new Set()
+  /**
+   * Port reservations shared with the embedded {@link WorkerRuntimeManager}
+   * (SHO-335). Both allocators draw from 37100–37900 in this one process, so a
+   * single pool is the only thing keeping a Vite port and an agent block from
+   * colliding. Exposed to tests as `usedPorts`.
+   */
+  private readonly ports = new PortPool()
+  private get usedPorts(): Set<number> {
+    return this.ports.reserved
+  }
   private healthCheckTimers: Map<string, NodeJS.Timeout> = new Map()
   private startingPromises: Map<string, Promise<IProjectRuntime>> = new Map()
   /**
@@ -562,6 +575,10 @@ export class RuntimeManager implements IRuntimeManager {
     void this.cleanupStaleProcesses()
     this.startOrphanReapTimer()
     this.agentManager = new WorkerRuntimeManager({
+      // One port pool for both allocators in this process (SHO-335): the worker
+      // reserves its 16-port agent blocks in the SAME set this manager uses for
+      // Vite, so neither can hand out a port the other already took.
+      ports: this.ports,
       // Spawn `bun run <RUNTIME_SERVER>` so the desktop dev path can
       // use the source bundle / TS entry directly without depending on
       // a prebuilt agent-runtime binary on disk.
@@ -936,22 +953,13 @@ export class RuntimeManager implements IRuntimeManager {
    * whole event loop (~65 ms per call here, seconds on a loaded machine). That
    * stall starved `/health`, the desktop supervisor killed the API after three
    * missed probes, and the tunnel dropped as 1006 at the cloud (SHO-185).
+   *
+   * Occupancy semantics live in one place — `@shogo-ai/worker/port-pool` — so
+   * this manager and the worker it embeds agree that a connect TIMEOUT means
+   * in use, not free (SHO-335).
    */
   private async isPortListening(port: number): Promise<boolean> {
-    return await new Promise<boolean>((resolve) => {
-      let settled = false
-      const done = (listening: boolean) => {
-        if (settled) return
-        settled = true
-        try { socket.destroy() } catch { /* already closed */ }
-        resolve(listening)
-      }
-      const socket = connect({ host: '127.0.0.1', port })
-      socket.setTimeout(350)
-      socket.once('connect', () => done(true))
-      socket.once('timeout', () => done(false))
-      socket.once('error', () => done(false))
-    })
+    return !(await this.ports.isPortAvailable(port))
   }
 
   /**
@@ -962,37 +970,28 @@ export class RuntimeManager implements IRuntimeManager {
    * what PreviewManager reads via `API_SERVER_PORT` / `SKILL_SERVER_PORT`;
    * without a per-project allocation it falls back to a static 3001 and the
    * second project to spawn fails with EADDRINUSE.
+   *
+   * All three ports are reserved in the shared pool, not just the Vite one:
+   * the embedded worker draws agent ports from the same 37100–37900 range, so
+   * an unreserved `port + 1000` could be handed out as an agent block (SHO-335).
    */
   private async allocatePortAsync(): Promise<number> {
-    const range = PORT_RANGE_END - PORT_RANGE_START
-    const maxAttempts = Math.min(range, 50)
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const port = PORT_RANGE_START + Math.floor(Math.random() * range)
-      const agentPort = port + AGENT_PORT_OFFSET
-      const apiServerPort = agentPort + 1
-
-      if (this.usedPorts.has(port)) continue
-
-      const viteInUse = await this.isPortListening(port)
-      const agentInUse = await this.isPortListening(agentPort)
-      const apiInUse = await this.isPortListening(apiServerPort)
-
-      if (!viteInUse && !agentInUse && !apiInUse) {
-        this.usedPorts.add(port)
-        console.log(`[RuntimeManager] Allocated ports ${port}/${agentPort}/${apiServerPort}`)
-        return port
-      }
-    }
-
-    throw new Error(`Cannot allocate port after ${maxAttempts} attempts in range ${PORT_RANGE_START}-${PORT_RANGE_END}`)
+    const port = await this.ports.allocate({
+      start: PORT_RANGE_START,
+      end: PORT_RANGE_END,
+      blockSize: 1,
+      probeOffsets: [0, AGENT_PORT_OFFSET, AGENT_PORT_OFFSET + 1],
+    })
+    console.log(`[RuntimeManager] Allocated ports ${port}/${port + AGENT_PORT_OFFSET}/${port + AGENT_PORT_OFFSET + 1}`)
+    return port
   }
 
   /**
    * Release a port back to the pool.
    */
   private releasePort(port: number): void {
-    this.usedPorts.delete(port)
+    if (!port) return
+    this.ports.release([port, port + AGENT_PORT_OFFSET, port + AGENT_PORT_OFFSET + 1])
   }
 
   /**

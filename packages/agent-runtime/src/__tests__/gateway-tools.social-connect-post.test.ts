@@ -201,6 +201,101 @@ describe('reading posts, the calendar and analytics', () => {
   })
 })
 
+describe('the inbox', () => {
+  const threads = [
+    { id: 'conv_ig', platform: 'instagram', participantName: 'ada', unreadCount: 2 },
+    { id: 'conv_tt', platform: 'tiktok', participantName: 'grace', unreadCount: 1 },
+  ]
+
+  test('kind=dms platform=tiktok asks for that platform only', async () => {
+    route(/GET .*\/social\/inbox/, { conversations: [threads[1]], unread: 1 })
+
+    const result = await run({ action: 'inbox', kind: 'dms', platform: 'tiktok' })
+
+    expect(calls[0].url).toContain('/social/inbox?')
+    expect(new URL(calls[0].url).searchParams.get('platform')).toBe('tiktok')
+    expect(result.platform).toBe('tiktok')
+    expect(result.count).toBe(1)
+    expect(result.conversations.map((entry: any) => entry.platform)).toEqual(['tiktok'])
+  })
+
+  test('kind=dms platform=instagram asks for instagram only', async () => {
+    route(/GET .*\/social\/inbox/, { conversations: [threads[0]], unread: 2 })
+
+    const result = await run({ action: 'inbox', kind: 'dms', platform: 'instagram' })
+
+    expect(new URL(calls[0].url).searchParams.get('platform')).toBe('instagram')
+    expect(result.conversations.map((entry: any) => entry.platform)).toEqual(['instagram'])
+  })
+
+  test('omitting platform keeps the combined list', async () => {
+    route(/GET .*\/social\/inbox/, { conversations: threads, unread: 3 })
+
+    const result = await run({ action: 'inbox', kind: 'dms' })
+
+    expect(new URL(calls[0].url).searchParams.has('platform')).toBe(false)
+    expect(result.platform).toBeUndefined()
+    expect(result.count).toBe(2)
+  })
+
+  test('platform and unread_only travel together', async () => {
+    route(/GET .*\/social\/inbox/, { conversations: [], unread: 0 })
+
+    await run({ action: 'inbox', kind: 'dms', platform: 'tiktok', unread_only: true })
+
+    const query = new URL(calls[0].url).searchParams
+    expect(query.get('platform')).toBe('tiktok')
+    expect(query.get('unread')).toBe('true')
+  })
+
+  test('a platform the workspace turned off is refused, and nothing is called', async () => {
+    const result = await run(
+      { action: 'inbox', kind: 'dms', platform: 'instagram' },
+      makeCtx({
+        config: {
+          socialManagementEnabled: true,
+          socialMediaEnabled: false,
+          socialInstagramEnabled: false,
+          channels: [],
+          model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+        },
+      }),
+    )
+
+    expect(result.error).toContain('Platform "instagram" is not enabled')
+    expect(result.error).toContain('Enabled platforms: tiktok')
+    expect(calls).toHaveLength(0)
+  })
+
+  test('an unknown platform is refused, and nothing is called', async () => {
+    const result = await run({ action: 'inbox', kind: 'dms', platform: 'twitter' })
+
+    expect(result.error).toContain('Platform "twitter" is not enabled')
+    expect(calls).toHaveLength(0)
+  })
+
+  test('kind=comments says plainly that the platform filter cannot apply', async () => {
+    route(/GET .*\/social\/comments/, { comments: [{ id: 'c1', platform: 'instagram', text: 'hi' }] })
+
+    const result = await run({ action: 'inbox', kind: 'comments', platform: 'tiktok' })
+
+    expect(calls[0].url).not.toContain('platform=')
+    expect(result.note).toContain('not filtered by platform')
+    expect(result.count).toBe(1)
+  })
+
+  test('a management-only workspace can still filter its inbox', async () => {
+    // Social lookups are off here, so the lookup platform list is empty — the
+    // inbox filter must not be read as that gate or every platform is refused.
+    route(/GET .*\/social\/inbox/, { conversations: [threads[1]], unread: 1 })
+
+    const result = await run({ action: 'inbox', kind: 'dms', platform: 'tiktok' })
+
+    expect(result.error).toBeUndefined()
+    expect(new URL(calls[0].url).searchParams.get('platform')).toBe('tiktok')
+  })
+})
+
 describe('posting', () => {
   const accountList = {
     accounts: [

@@ -45,6 +45,9 @@ export const PROJECT_ROUTE_RULES: readonly ProjectRouteRule[] = [
   // and cost expose what the project is billed.
   { methods: 'write', paths: ['/published/*'], permission: 'project:publish' },
   { methods: ['GET'], paths: ['/published/*'], permission: 'project:publish' },
+  // Native release (SHO-323). A release spends real money on a paid EAS build
+  // and ships to a store, so both reads and writes take `project:publish`.
+  { methods: 'any', paths: ['/native/*'], permission: 'project:publish' },
   { methods: 'write', paths: ['/members', '/members/*', '/visibility'], permission: 'project.members:manage' },
   {
     methods: 'write',
@@ -71,6 +74,7 @@ export const PROJECT_UPDATE_ROUTES: readonly string[] = [
   '/chat', '/chat/*', '/permission-response',
   '/checkpoints', '/checkpoints/:checkpointId/rollback',
   '/database/start', '/database/stop', '/database/proxy', '/database/proxy/*',
+  '/disk',
   '/files/*', '/s3/presign',
   '/git/git-receive-pack', '/git/info/lfs/objects/verify',
   '/github/branch', '/github/pull', '/github/push', '/github/sync',
@@ -94,7 +98,7 @@ export const PROJECT_READ_ROUTES: readonly string[] = [
   '/analytics/chat', '/analytics/overview', '/analytics/usage',
   '/chat/status', '/chat/:chatSessionId/stream', '/chat/:chatSessionId/turn',
   '/checkpoints', '/checkpoints/:checkpointId', '/checkpoints/:checkpointId/diff',
-  '/database/status', '/diagnostics', '/domains', '/files', '/files/*',
+  '/database/status', '/diagnostics', '/disk', '/domains', '/files', '/files/*',
   '/git/commit/:sha', '/git/graph', '/git/info/refs', '/git/status',
   '/github', '/github/branches', '/heartbeat',
   // Connecting the caller's own account; the handler signs state for them only.

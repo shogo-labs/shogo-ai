@@ -5,6 +5,64 @@ Status: web profile captured 2026-05-02. iOS / Android pending — see
 containment fix landed 2026-05-02 (PR 1)** — see
 [Phase 1 results](#phase-1-results-css-containment) below.
 
+## 2026-11-06 — SHO-354: windowed transcript
+
+The May run already pointed at this: with 180 real messages mounted, React
+commit cost stayed **flat (0.82 ms mean)** while **total CPU tripled (~10% →
+~30%)** — the added cost was browser layout / paint / style recalc over the
+whole mounted document, not React rendering. Every turn stayed in the tree for
+the life of the chat, so that cost grew without bound.
+
+`TurnList` now mounts a bounded window (`useTurnWindow`):
+`TURN_WINDOW_SIZE = 30` turns at the tail, grown by `TURN_WINDOW_STEP = 20`
+when the top of the mounted window comes within `TURN_WINDOW_TOP_EDGE = 600 px`
+of the viewport bottom, and shrunk back to the tail window within
+`TURN_WINDOW_BOTTOM_EDGE = 240 px` of the bottom. Turns above the window
+collapse into one spacer sized from their measured `onLayout` heights
+(estimate `280 px` for a turn that has never been laid out).
+
+The only window state is the number of turns mounted *above* the tail window,
+so the start index is derived from the current turn count on every render: a
+chat that grows after mount (the live/resuming case) keeps 30 turns mounted
+instead of mounting everything it has received.
+
+Measured here (jsdom, `components/chat/turns/__tests__/`):
+
+| | before | after |
+| --- | --- | --- |
+| `TurnGroup`s mounted, 300-turn chat | 300 | 30 |
+| `TurnGroup`s mounted, chat that grows 0 → 300 turns after mount | 300 | 30 |
+| `TurnGroup`s mounted, chat that grows 5 → 200 turns after mount | 200 | 30 |
+| `TurnGroup`s mounted, 40 turns appended while streaming | 340 | 30 |
+| `TurnGroup`s mounted after scrolling to the top | 300 | 50 |
+| historical `TurnGroup` renders over 50 streamed chunks (19-turn history) | 0 | 0 |
+| React commits per streamed chunk | 1 | 1 |
+
+What is **not** measured here: browser layout/paint and scroll FPS. The
+harness for those (`/dev/profiler-chat`, `lib/profiler-scenarios.ts`) needs a
+real browser and could not run in the sandbox that made this change. To finish
+AC 1, run the long-history scenario on `main` and on this branch and fill in
+the layout/paint and long-task columns; nothing else in this document changes.
+
+Keeping the reading position: a turn that mounts above the reader is first
+charged to the spacer at the estimate. When its real height arrives, the hook
+reports `real - estimate` through `onContentShift` and
+`ChatPanel.handleTurnWindowContentShift` scrolls back by that much, so the
+content above the reader ends up exactly as tall as it really is with nothing
+visible moving. Estimates therefore never produce a jump; they only shape the
+scrollbar until the turn is measured.
+
+This deliberately does not rely on `onLayout` *positions*: react-native-web
+drives `onLayout` from `ResizeObserver`
+(`react-native-web/dist/modules/useElementLayout`), so it fires for a newly
+mounted turn's height but never for a turn that merely moved down. Only the
+height difference is used, and a new element is always observed, so the
+correction works on web, mobile web and native alike.
+
+**Known limits** (not regressions, worth knowing): find-in-page on web cannot
+see the collapsed turns, and a turn whose height changes *after* it was
+measured (an image finishing layout above the reader) is not compensated.
+
 ## TL;DR
 
 - Web streaming at 30 fps spends **~20% of one CPU core** in React render +

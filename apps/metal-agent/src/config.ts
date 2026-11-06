@@ -105,6 +105,12 @@ export const config = {
    * workspace stays on the rootfs, exactly as before this existed.
    */
   workspaceDriveMiB: parseInt(env('METAL_WORKSPACE_DRIVE_MIB', '0'), 10),
+  /**
+   * Hard cap (MiB) on a per-project workspace drive a control-plane request may
+   * grow to (SHO-349). The API already clamps by plan tier; this is the host's
+   * own backstop so one bad request can't hand out a drive the box can't hold.
+   */
+  workspaceDriveMaxMiB: parseInt(env('METAL_WORKSPACE_DRIVE_MAX_MIB', '204800'), 10),
   /** Scratch dir for per-VM sockets, rootfs copies, serial logs. */
   runDir: env('METAL_RUN', `${WORK}/run`),
   /** Where snapshots (vmstate + mem) are written. */

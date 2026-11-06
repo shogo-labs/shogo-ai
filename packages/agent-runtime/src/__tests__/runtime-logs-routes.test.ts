@@ -9,7 +9,7 @@
  * with `__resetRuntimeLogDispatcherForTest` between tests.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from 'bun:test'
 import {
   __resetRuntimeLogDispatcherForTest,
   recordBuildEntry,
@@ -18,7 +18,11 @@ import {
   recordRuntimeLogEntry,
   type RuntimeLogEntry,
 } from '../runtime-log-dispatcher'
-import { parseSources, runtimeLogsRoutes } from '../runtime-logs-routes'
+import {
+  parseSources,
+  RUNTIME_LOGS_PING_INTERVAL_MS,
+  runtimeLogsRoutes,
+} from '../runtime-logs-routes'
 
 beforeEach(() => {
   __resetRuntimeLogDispatcherForTest()
@@ -26,6 +30,7 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetRuntimeLogDispatcherForTest()
+  jest.useRealTimers()
 })
 
 describe('parseSources', () => {
@@ -261,5 +266,72 @@ describe('GET /agent/runtime-logs/stream', () => {
     // be invoked. We just exercise the path; the absence of a leaked
     // listener is asserted by it not throwing on enqueue-after-close.
     expect(() => recordConsoleEntry('after-abort')).not.toThrow()
+  })
+
+  test('sends a `: ping` keepalive every 25 s while no logs flow', async () => {
+    jest.useFakeTimers()
+
+    const app = runtimeLogsRoutes()
+    const ctl = new AbortController()
+    const res = await app.fetch(
+      new Request('http://x/agent/runtime-logs/stream', {
+        signal: ctl.signal,
+      }),
+    )
+    const reader = res.body!.getReader()
+
+    // Nothing has been logged, so the only thing on the wire is keepalive
+    // traffic — that is exactly the case an idle proxy was cutting at 100 s.
+    jest.advanceTimersByTime(RUNTIME_LOGS_PING_INTERVAL_MS - 1)
+    jest.advanceTimersByTime(1)
+
+    const chunk = (await reader.read()) as ReadableStreamReadResult<Uint8Array>
+    const text = new TextDecoder().decode(chunk.value)
+    expect(text).toBe(': ping\n\n')
+
+    jest.advanceTimersByTime(RUNTIME_LOGS_PING_INTERVAL_MS)
+    const next = (await reader.read()) as ReadableStreamReadResult<Uint8Array>
+    expect(new TextDecoder().decode(next.value)).toBe(': ping\n\n')
+
+    ctl.abort()
+    await reader.cancel().catch(() => {})
+  })
+
+  test('clears the keepalive interval on abort (no timer leak)', async () => {
+    jest.useFakeTimers()
+    const created: Array<ReturnType<typeof setInterval>> = []
+    const realSetInterval = globalThis.setInterval
+    const setIntervalSpy = spyOn(globalThis, 'setInterval').mockImplementation(
+      ((fn: () => void, ms?: number) => {
+        const handle = realSetInterval(fn, ms)
+        created.push(handle)
+        return handle
+      }) as typeof globalThis.setInterval,
+    )
+    const clearIntervalSpy = spyOn(globalThis, 'clearInterval')
+
+    try {
+      const app = runtimeLogsRoutes()
+      const ctl = new AbortController()
+      const res = await app.fetch(
+        new Request('http://x/agent/runtime-logs/stream', {
+          signal: ctl.signal,
+        }),
+      )
+      const reader = res.body!.getReader()
+
+      expect(created).toHaveLength(1)
+      ctl.abort()
+
+      const cleared = clearIntervalSpy.mock.calls.map((call) => call[0])
+      expect(cleared).toContain(created[0])
+
+      // Advancing past the cadence must not enqueue on a closed stream.
+      jest.advanceTimersByTime(RUNTIME_LOGS_PING_INTERVAL_MS * 3)
+      await reader.cancel().catch(() => {})
+    } finally {
+      setIntervalSpy.mockRestore()
+      clearIntervalSpy.mockRestore()
+    }
   })
 })

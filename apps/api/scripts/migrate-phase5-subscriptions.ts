@@ -53,7 +53,11 @@ import {
   type PlanType,
   type StripePriceConfig,
 } from '../src/config/stripe-prices'
-import { selectPlanItem, type StripeSubscriptionLike } from '../src/services/stripe-subscription-sync.service'
+import {
+  isMeteredItem,
+  selectPlanItem,
+  type StripeSubscriptionLike,
+} from '../src/services/stripe-subscription-sync.service'
 import { renderPriceChangeEmail } from '../src/services/email-templates/price-change'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -84,6 +88,8 @@ export interface Phase5Candidate {
 }
 
 export interface Phase5Options {
+  /** The environment being migrated. Prices AND the overage price come from it. */
+  env: 'staging' | 'production'
   /** The v2.5.0 prices for this environment. */
   prices: StripePriceConfig
   proToBusiness: boolean
@@ -104,8 +110,20 @@ export interface Phase5Row {
   reason?: string
 }
 
-function planItemOf(sub: Phase5Candidate['stripeSub']) {
-  return selectPlanItem(sub as any)
+/**
+ * The metered overage price id for the environment being migrated.
+ *
+ * Never read this from `NODE_ENV`: a `--env production` run from a normal shell
+ * would then treat the staging metered item as licensed, put a `quantity` on
+ * it (which Stripe rejects on a usage-priced item) and move the real plan item
+ * onto the overage price.
+ */
+function overagePriceIdOf(opts: Pick<Phase5Options, 'env'>): string {
+  return getOveragePriceConfig(opts.env).priceId
+}
+
+function planItemOf(sub: Phase5Candidate['stripeSub'], overagePriceId?: string | null) {
+  return selectPlanItem(sub as any, overagePriceId ?? null)
 }
 
 type ScheduleItemLike = {
@@ -149,14 +167,6 @@ function priceIdOfItem(item: ScheduleItemLike): string | null {
   return typeof price === 'string' ? price : (price.id ?? null)
 }
 
-function isMeteredItem(item: ScheduleItemLike): boolean {
-  const price = item.price
-  if (price && typeof price === 'object' && price.recurring?.usage_type === 'metered') return true
-  const priceId = priceIdOfItem(item)
-  const overagePriceId = getOveragePriceConfig().priceId
-  return !!overagePriceId && priceId === overagePriceId
-}
-
 /**
  * The item list for one schedule phase.
  *
@@ -168,9 +178,9 @@ function isMeteredItem(item: ScheduleItemLike): boolean {
  */
 export function phaseItems(
   sub: Phase5Candidate['stripeSub'],
-  phase: { priceId: string; seats: number },
+  phase: { priceId: string; seats: number; overagePriceId?: string | null },
 ): SchedulePhaseParam[] {
-  const planItem = planItemOf(sub) as ScheduleItemLike | null
+  const planItem = planItemOf(sub, phase.overagePriceId) as ScheduleItemLike | null
   const allItems = (sub.items?.data ?? []) as ScheduleItemLike[]
   const items: SchedulePhaseParam[] = []
   let planIncluded = false
@@ -184,7 +194,7 @@ export function phaseItems(
       items.push({ ...carriedItem, price: phase.priceId, quantity: phase.seats })
       continue
     }
-    if (isMeteredItem(item)) items.push({ ...carriedItem, price: priceId })
+    if (isMeteredItem(item, phase.overagePriceId ?? null)) items.push({ ...carriedItem, price: priceId })
     else items.push({ ...carriedItem, price: priceId, quantity: Math.max(1, Math.floor(item.quantity ?? 1)) })
   }
 
@@ -248,16 +258,16 @@ function carriedPhaseFields(phase: Record<string, unknown> | null): Record<strin
   return carried
 }
 
-function priceIdOfSub(sub: Phase5Candidate['stripeSub']): string | null {
-  const item = planItemOf(sub)
+function priceIdOfSub(sub: Phase5Candidate['stripeSub'], overagePriceId?: string | null): string | null {
+  const item = planItemOf(sub, overagePriceId)
   const price = (item as any)?.price
   if (!price) return null
   return typeof price === 'string' ? price : (price.id ?? null)
 }
 
 /** The plan item's price in USD per billing interval, when Stripe expands it. */
-function currentAmountUsd(sub: Phase5Candidate['stripeSub']): number | null {
-  const price = (planItemOf(sub) as any)?.price
+function currentAmountUsd(sub: Phase5Candidate['stripeSub'], overagePriceId?: string | null): number | null {
+  const price = (planItemOf(sub, overagePriceId) as any)?.price
   const amount = typeof price === 'object' ? price?.unit_amount : null
   return typeof amount === 'number' ? amount / 100 : null
 }
@@ -271,9 +281,9 @@ function currentAmountUsd(sub: Phase5Candidate['stripeSub']): number | null {
  * response. Reading only the top level made every paid subscription look like
  * it had no renewal date and the whole run planned zero schedules.
  */
-function periodEndSecondsOf(sub: Phase5Candidate['stripeSub']): number | null {
+function periodEndSecondsOf(sub: Phase5Candidate['stripeSub'], overagePriceId?: string | null): number | null {
   if (typeof sub.current_period_end === 'number') return sub.current_period_end
-  const planItem = planItemOf(sub) as any
+  const planItem = planItemOf(sub, overagePriceId) as any
   if (typeof planItem?.current_period_end === 'number') return planItem.current_period_end
   for (const item of ((sub as any)?.items?.data ?? []) as any[]) {
     if (typeof item?.current_period_end === 'number') return item.current_period_end
@@ -284,8 +294,9 @@ function periodEndSecondsOf(sub: Phase5Candidate['stripeSub']): number | null {
 function intervalOf(
   sub: Phase5Candidate['stripeSub'],
   dbInterval: string | null,
+  overagePriceId?: string | null,
 ): BillingInterval {
-  const price = (planItemOf(sub) as any)?.price
+  const price = (planItemOf(sub, overagePriceId) as any)?.price
   const recurring = typeof price === 'object' ? price?.recurring?.interval : null
   if (recurring === 'year') return 'annual'
   if (recurring === 'month') return 'monthly'
@@ -326,9 +337,10 @@ function resolveTargetPlan(
 /** Decide what to do with one subscription. Pure — no Stripe or DB calls. */
 export function planPhase5Row(candidate: Phase5Candidate, opts: Phase5Options): Phase5Row {
   const sub = candidate.stripeSub
-  const interval = intervalOf(sub, candidate.dbBillingInterval)
-  const fromPriceId = priceIdOfSub(sub)
-  const seats = Math.max(1, Math.floor((planItemOf(sub) as any)?.quantity ?? 1))
+  const overagePriceId = overagePriceIdOf(opts)
+  const interval = intervalOf(sub, candidate.dbBillingInterval, overagePriceId)
+  const fromPriceId = priceIdOfSub(sub, overagePriceId)
+  const seats = Math.max(1, Math.floor((planItemOf(sub, overagePriceId) as any)?.quantity ?? 1))
   const currentPlan =
     planFromPriceId(fromPriceId) ?? (candidate.dbPlanId as PlanType | null) ?? null
   const targetPlan = resolveTargetPlan(currentPlan, opts)
@@ -358,7 +370,19 @@ export function planPhase5Row(candidate: Phase5Candidate, opts: Phase5Options): 
     return { ...base, action: 'skip-already-migrated', reason: `migrated ${sub.metadata.phase5MigratedAt}` }
   }
   if (candidate.existingScheduleId) {
-    return { ...base, action: 'skip-has-schedule', reason: `schedule ${candidate.existingScheduleId}` }
+    // Nothing stamps `phase5MigratedAt` before an existing schedule is checked,
+    // so a schedule here means either a run already migrated it and the stamp
+    // was lost, or a previous run created the schedule and then failed before
+    // the phase update — leaving an empty one-phase schedule that sweeps this
+    // sub into a "healthy" skip on every future run. Say which, so the report
+    // does not read like success.
+    return {
+      ...base,
+      action: 'skip-has-schedule',
+      reason:
+        `schedule ${candidate.existingScheduleId} exists but the subscription is not marked ` +
+        'phase5MigratedAt — check its phases in Stripe before trusting it',
+    }
   }
 
   // Trial: swap now. A trial has no consumed paid period to protect, and it
@@ -382,7 +406,7 @@ export function planPhase5Row(candidate: Phase5Candidate, opts: Phase5Options): 
     return { ...base, action: 'metadata-only', reason: 'Basic monthly is unchanged' }
   }
 
-  const periodEndSeconds = periodEndSecondsOf(sub)
+  const periodEndSeconds = periodEndSecondsOf(sub, overagePriceId)
   const currentPeriodEnd = periodEndSeconds ? new Date(periodEndSeconds * 1000) : null
   if (!currentPeriodEnd) {
     return { ...base, action: 'skip-unresolved', reason: 'subscription has no current_period_end' }
@@ -426,17 +450,21 @@ export interface Phase5Stripe {
 /**
  * Apply a planned row. `metadata-only` still writes metadata (that IS its
  * purpose); skips write nothing.
+ *
+ * `env` is required, not read from `NODE_ENV`: the schedule's item list is
+ * built from this environment's metered price.
  */
 export async function applyPhase5Row(
   stripe: Phase5Stripe,
   candidate: Phase5Candidate,
   row: Phase5Row,
-  opts: { noticeSentAt?: Date; now: Date },
+  opts: { noticeSentAt?: Date; now: Date; env: 'staging' | 'production' },
 ): Promise<void> {
   const sub = candidate.stripeSub
   if (row.action.startsWith('skip-')) return
 
-  const planItem = planItemOf(sub) as any
+  const overagePriceId = overagePriceIdOf(opts)
+  const planItem = planItemOf(sub, overagePriceId) as any
   const itemId: string | undefined = planItem?.id
   const metadata: Record<string, string> = {
     ...(sub.metadata ?? {}),
@@ -483,7 +511,7 @@ export async function applyPhase5Row(
     const pinnedPaymentMethod = idOfRef((sub as any).default_payment_method)
     if (pinnedPaymentMethod) carried.default_payment_method = pinnedPaymentMethod
   }
-  const currentPlanPrice = priceIdOfSub(sub) ?? targetPriceId
+  const currentPlanPrice = priceIdOfSub(sub, overagePriceId) ?? targetPriceId
   await stripe.subscriptionSchedules.update(schedule.id, {
     end_behavior: 'release',
     metadata: migratedMetadata,
@@ -491,13 +519,13 @@ export async function applyPhase5Row(
       {
         start_date: phaseStart,
         end_date: Math.floor(row.switchDate!.getTime() / 1000),
-        items: phaseItems(sub, { priceId: currentPlanPrice, seats: row.seats }),
+        items: phaseItems(sub, { priceId: currentPlanPrice, seats: row.seats, overagePriceId }),
         proration_behavior: 'none',
         metadata: { ...metadata, phase: 'legacy-price' },
         ...carried,
       },
       {
-        items: phaseItems(sub, { priceId: targetPriceId, seats: row.seats }),
+        items: phaseItems(sub, { priceId: targetPriceId, seats: row.seats, overagePriceId }),
         proration_behavior: 'none',
         metadata: { ...migratedMetadata, phase: 'v2.5.0' },
         ...carried,
@@ -614,6 +642,17 @@ async function main() {
 
   const stripe = new Stripe(apiKey, { apiVersion: '2025-09-30.clover' as Stripe.LatestApiVersion })
   const prices = cli.env === 'production' ? STRIPE_PRICES_PRODUCTION : STRIPE_PRICES_STAGING
+  // Both the plan prices and the metered overage price follow `--env`. Reading
+  // the overage price from `NODE_ENV` instead let a `--env production` run from
+  // a normal shell treat the metered item as the plan item.
+  const opts: Phase5Options = {
+    env: cli.env,
+    prices,
+    proToBusiness: cli.proToBusiness,
+    minNoticeDays: cli.minNoticeDays,
+    noticeSentAt: cli.noticeSentAt,
+    now,
+  }
 
   const where: any = { status: { in: ['active', 'trialing', 'past_due'] } }
   if (cli.workspaceId) where.workspaceId = cli.workspaceId
@@ -624,7 +663,12 @@ async function main() {
   for (const row of rows) {
     let sub: any
     try {
-      sub = await stripe.subscriptions.retrieve(row.stripeSubscriptionId, { expand: ['schedule'] })
+      // Expand the item prices: `recurring.usage_type` is what tells a metered
+      // overage item apart from the licensed plan item, whatever environment
+      // this run targets.
+      sub = await stripe.subscriptions.retrieve(row.stripeSubscriptionId, {
+        expand: ['schedule', 'items.data.price'],
+      })
     } catch (err: any) {
       console.error(`  ✗ ${row.workspaceId}: cannot read Stripe sub ${row.stripeSubscriptionId}: ${err.message}`)
       orphans.push(row.workspaceId)
@@ -658,13 +702,7 @@ async function main() {
   console.log(
     ['workspace', 'plan    ', 'se', 'interval', 'from'.padEnd(30), 'to'.padEnd(30), 'switch    ', 'action', 'reason'].join('  '),
   )
-  const plans = candidates.map((c) => ({ candidate: c, row: planPhase5Row(c, {
-    prices,
-    proToBusiness: cli.proToBusiness,
-    minNoticeDays: cli.minNoticeDays,
-    noticeSentAt: cli.noticeSentAt,
-    now,
-  }) }))
+  const plans = candidates.map((c) => ({ candidate: c, row: planPhase5Row(c, opts) }))
   for (const p of plans) console.log('  ' + formatRow(p.row))
 
   if (missingRows.length) {
@@ -699,7 +737,7 @@ async function main() {
       // $40 → $16 for a Business seat, $20 → $16 for Pro, and "same price" for
       // Basic monthly ($8 both sides). A hardcoded 40/16 wrote all three wrong.
       const fromPriceUsd =
-        currentAmountUsd(p.candidate.stripeSub) ?? 40
+        currentAmountUsd(p.candidate.stripeSub, overagePriceIdOf(opts)) ?? 40
       const toPriceUsd =
         (await targetAmountUsd(p.row.toPriceId)) ??
         (p.row.toPriceId === p.row.fromPriceId ? fromPriceUsd : null) ??
@@ -748,6 +786,7 @@ async function main() {
         await applyPhase5Row(stripe as unknown as Phase5Stripe, p.candidate, p.row, {
           noticeSentAt: cli.sendNotice ? cli.noticeSentAt : undefined,
           now,
+          env: cli.env,
         })
         console.log(`  ✓ ${p.row.workspaceId.slice(0, 8)} ${p.row.action}`)
       } catch (err: any) {

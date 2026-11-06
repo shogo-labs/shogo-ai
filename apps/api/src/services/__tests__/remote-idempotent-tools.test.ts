@@ -21,4 +21,8 @@ describe('REMOTE_IDEMPOTENT_TOOLS', () => {
       expect(isRemoteIdempotentTool(tool)).toBe(false)
     }
   })
+
+  test('share_file may be replayed: a second link is harmless (SHO-353)', () => {
+    expect(isRemoteIdempotentTool('share_file')).toBe(true)
+  })
 })

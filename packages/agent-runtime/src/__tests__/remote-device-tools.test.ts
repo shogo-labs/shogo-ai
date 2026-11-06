@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import { createTools, resetRemoteTargetCache, type ToolContext } from '../gateway-tools'
-import { REMOTE_TOOL_ALLOWLIST } from '../remote-tools'
+import { REMOTE_PROJECT_ONLY_TOOLS, REMOTE_TOOL_ALLOWLIST } from '../remote-tools'
 import { withIntegrationCredentials } from '../integration-credentials'
 
 const WORKSPACE_ID = 'ws-device-test'
@@ -58,12 +58,17 @@ afterEach(() => {
 })
 
 describe('device target on the remote tool channel', () => {
-  test('every remotable tool gains an optional device param; others do not', () => {
+  test('every remotable tool gains an optional device param; project-only tools do not', () => {
     const tools = createTools(toolCtx(dir))
     for (const name of REMOTE_TOOL_ALLOWLIST) {
       const tool = tools.find((t) => t.name === name)
       if (!tool) continue // search is registered only with SHOGO_SEARCH_ENABLED
       const schema = tool.parameters as any
+      if (REMOTE_PROJECT_ONLY_TOOLS.has(name)) {
+        // A `file://` link to a desktop's disk is useless to a cloud chat (SHO-353).
+        expect(schema.properties.device).toBeUndefined()
+        continue
+      }
       expect(schema.properties.device?.type).toBe('string')
       expect(schema.required ?? []).not.toContain('device')
     }

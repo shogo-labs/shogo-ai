@@ -123,6 +123,18 @@ describe('POST /projects/:projectId/remote-tool', () => {
     expect(forwarded).toHaveLength(1)
   })
 
+  test('a read-only viewer can share a file from the target project (SHO-353)', async () => {
+    const viewer = { 'x-runtime-token': tokenA, 'X-Requester-Ticket': ticketFor(w.users.viewer) }
+    const res = await remoteTool(
+      w.projects.open,
+      { tool: 'share_file', args: { path: 'reports/q3.xlsx', expires_in_days: 7 } },
+      viewer,
+    )
+    expect(res.status).toBe(200)
+    expect(forwarded).toHaveLength(1)
+    expect(forwarded[0]).toMatchObject({ body: { tool: 'share_file', args: { path: 'reports/q3.xlsx', expires_in_days: 7 } } })
+  })
+
   test('a person who cannot see the target gets the same 404 RBAC hides it with, even for read-only tools', async () => {
     const res = await remoteTool(
       w.projects.restricted,

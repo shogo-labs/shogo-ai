@@ -90,6 +90,12 @@ export interface ProjectHooks {
 const PUBLISH_FIELDS = ['accessLevel', 'sitePasswordHash', 'publishedSubdomain', 'publishedAt', 'publishedAlwaysOn'] as const
 /** Fields the generic PATCH silently drops. */
 const IMMUTABLE_FIELDS = ['workspaceId', 'createdBy', 'createdAt'] as const
+/**
+ * Fields only a dedicated route may write. `workspaceDiskGiB` is plan-limited
+ * (and may be billed), so it goes through PUT /api/projects/:id/disk, which
+ * validates the workspace role and the tier ceiling (SHO-349).
+ */
+const ROUTE_ONLY_FIELDS = ['workspaceDiskGiB'] as const
 
 /**
  * Default Project hooks (customize as needed)
@@ -326,6 +332,9 @@ export const projectHooks: ProjectHooks = {
     }
 
     for (const field of IMMUTABLE_FIELDS) {
+      if (input) delete input[field]
+    }
+    for (const field of ROUTE_ONLY_FIELDS) {
       if (input) delete input[field]
     }
 
