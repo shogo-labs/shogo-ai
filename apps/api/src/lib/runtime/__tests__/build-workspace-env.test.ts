@@ -395,6 +395,33 @@ describe('buildWorkspaceEnv', () => {
     })
   })
 
+  describe('compaction variant forwarding (SHO-327)', () => {
+    const saved = process.env.COMPACTION_VARIANT
+
+    afterEach(() => {
+      if (saved === undefined) delete process.env.COMPACTION_VARIANT
+      else process.env.COMPACTION_VARIANT = saved
+    })
+
+    it("forwards the API's COMPACTION_VARIANT to the runtime env", async () => {
+      process.env.COMPACTION_VARIANT = 'B1'
+      const env = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
+      expect(env.COMPACTION_VARIANT).toBe('B1')
+    })
+
+    it('forwards it on the metal path too (guests are assigned solely from this builder)', async () => {
+      process.env.COMPACTION_VARIANT = 'B1'
+      const env = await buildWorkspaceEnv('ws-1', ['p1'], { ...seams, forMetal: true } as any)
+      expect(env.COMPACTION_VARIANT).toBe('B1')
+    })
+
+    it('leaves it unset when the API has no value, so the runtime default (A) applies', async () => {
+      delete process.env.COMPACTION_VARIANT
+      const env = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
+      expect(env.COMPACTION_VARIANT).toBeUndefined()
+    })
+  })
+
   describe('per-project DB provisioning (WORKSPACE_DATABASE_URLS)', () => {
     it('omits the DB map by default (local/desktop → per-subfolder sqlite)', async () => {
       const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], seams as any)

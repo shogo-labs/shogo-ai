@@ -2553,6 +2553,12 @@ export class WarmPoolController {
       env.push({ name: 'SHOGO_PUBLIC_API_URL', value: process.env.SHOGO_PUBLIC_API_URL })
     }
 
+    // Compaction variant (SHO-327). `A` is the agent-runtime default; forward the
+    // API's own value so warm-pool pods compact the same way as claimed runtimes.
+    if (process.env.COMPACTION_VARIANT) {
+      env.push({ name: 'COMPACTION_VARIANT', value: process.env.COMPACTION_VARIANT })
+    }
+
     // OTEL tracing — propagate to warm pool pods so they send traces to SigNoz
     if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
       env.push({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: process.env.OTEL_EXPORTER_OTLP_ENDPOINT })
