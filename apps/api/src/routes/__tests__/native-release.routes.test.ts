@@ -3,25 +3,30 @@
 /**
  * The HTTP surface, mounted the way `server.ts` mounts it.
  *
- * These assertions are about routing, not business logic: every route here
- * answers before it touches the database, so a 401 (or the relay's 501) proves
- * the path is mounted and shaped — a 404 would mean the runner's
- * `/api/internal/.../native/...` calls and the app's settings page are pointing
- * at nothing, which unit tests on the services cannot catch.
+ * These assertions are about routing, not business logic: every route below
+ * answers before it needs anything from the database except the project row, so
+ * a 404 with OUR error shape (or a 401, or the relay's 501) proves the path is
+ * mounted — Hono's default 404 has no JSON body at all, which is what an
+ * unmounted route looks like. A wrong path here would 404 the runner's
+ * `/api/internal/.../native/...` calls and the settings page, and a service
+ * unit test cannot catch that.
  */
 
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, mock } from 'bun:test'
 import { Hono } from 'hono'
-import {
-  nativeReleaseRelayRoutes,
-  nativeReleaseRoutes,
-  nativeWebhookRoutes,
-} from '../native-release'
+
+// The route looks the project up before it authenticates, so stub the row out
+// instead of depending on whatever database happens to be behind the test run.
+mock.module('../../lib/prisma', () => ({
+  prisma: { project: { findUnique: async () => null } },
+}))
+
+const { nativeReleaseRelayRoutes, nativeReleaseRoutes, nativeWebhookRoutes } = await import('../native-release')
 
 /** Mounted exactly as `server.ts` does: all three under `/api`. */
-function app(resolveUserId: () => Promise<string | null> = async () => null) {
+function app() {
   const hono = new Hono()
-  hono.route('/api', nativeReleaseRoutes({ resolveUserId }))
+  hono.route('/api', nativeReleaseRoutes({ resolveUserId: async () => null }))
   hono.route('/api', nativeReleaseRelayRoutes())
   hono.route('/api', nativeWebhookRoutes())
   return hono
@@ -43,18 +48,18 @@ async function call(
 describe('native release routes are mounted where the callers point', () => {
   it('answers the workspace credential routes', async () => {
     expect((await call('/api/workspaces/w1/native/credentials')).status).toBe(401)
-    const put = await call('/api/workspaces/w1/native/credentials/asc_api_key', {
-      method: 'PUT',
-      body: { keyP8: 'x', keyId: 'y', issuerId: 'z', teamId: 't' },
-    })
-    expect(put.status).toBe(401)
+    expect(
+      (
+        await call('/api/workspaces/w1/native/credentials/asc_api_key', {
+          method: 'PUT',
+          body: { keyP8: 'x', keyId: 'y', issuerId: 'z', teamId: 't' },
+        })
+      ).status,
+    ).toBe(401)
     expect((await call('/api/workspaces/w1/native/credentials/expo_token', { method: 'DELETE' })).status).toBe(401)
   })
 
   it('answers the project app + release routes', async () => {
-    // No project `p1` exists, so each route reaches its handler and refuses with
-    // OUR json shape. An unmounted path would answer Hono's plain-text 404
-    // instead, which is the distinction this test is about (see below).
     for (const [path, method] of [
       ['/api/projects/p1/native/app', 'GET'],
       ['/api/projects/p1/native/app', 'PUT'],
@@ -72,6 +77,7 @@ describe('native release routes are mounted where the callers point', () => {
     const mounted = await call('/api/projects/p1/native/app')
     const unmounted = await call('/api/projects/p1/native/nope')
     expect(mounted.json?.error?.code).toBe('not_found')
+    // Hono's own 404 is plain text, so there is no JSON to read.
     expect(unmounted.json).toBeNull()
   })
 
@@ -101,11 +107,10 @@ describe('native release routes are mounted where the callers point', () => {
 })
 
 describe('native release routes never leak a secret', () => {
-  it('has no route that returns a credential payload without a mask', async () => {
-    // A 401 body carries no data at all; the guard that matters is that the
-    // credential read goes through `listCredentials`, which maps to
-    // `maskedHint`. Asserting the shape here keeps a future refactor from
-    // returning the encrypted blob or the plaintext.
+  it('returns masks, never an encrypted payload', async () => {
+    // The 401 body carries no data at all; what this pins is that the credential
+    // read goes through `listCredentials`, which maps to `maskedHint`. A future
+    // refactor that returned the row would fail here.
     const res = await call('/api/workspaces/w1/native/credentials')
     expect(JSON.stringify(res.json)).not.toContain('encryptedPayload')
   })
