@@ -65,10 +65,19 @@ import {
   type ActivitySample,
   type BusyDecision,
 } from './runtime-activity.ts';
+import {
+  DEFAULT_PORT_RANGE_END,
+  DEFAULT_PORT_RANGE_START,
+  PortPool,
+} from './port-pool.ts';
 
-/** Port range for random allocation (mirrors apps/api desktop manager). */
-const PORT_RANGE_START = 37100;
-const PORT_RANGE_END = 37900;
+/**
+ * Port range agents are allocated from. The same range is used by `apps/api`'s
+ * manager for its Vite ports, so both allocators in one process must share one
+ * {@link PortPool} — see port-pool.ts.
+ */
+const PORT_RANGE_START = DEFAULT_PORT_RANGE_START;
+const PORT_RANGE_END = DEFAULT_PORT_RANGE_END;
 const API_PORT_OFFSET = 1; // API server port = agentPort + 1.
 
 /**
@@ -424,6 +433,14 @@ export interface WorkerRuntimeManagerOptions {
    * callback are swallowed.
    */
   onRuntimeGone?: (projectId: string, info: RuntimeGoneInfo) => void;
+  /**
+   * Shared port reservation pool. Pass the SAME pool the host process uses for
+   * its own port allocations (the desktop API does) so two allocators in one
+   * process can never hand out the same port — the EADDRINUSE crash-loop in
+   * SHO-335. When absent the manager creates its own pool, which is correct for
+   * a standalone `shogo worker start` (it is the only allocator there).
+   */
+  ports?: PortPool;
 }
 
 export interface RuntimeGoneInfo {
@@ -671,7 +688,14 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   private readonly opts: WorkerRuntimeManagerOptions;
   private readonly log: Pick<Console, 'log' | 'warn' | 'error'>;
   private readonly runtimes = new Map<string, InternalRuntime>();
-  private readonly usedPorts = new Set<number>();
+  /**
+   * Port reservations, shared with the host when it passes one in (`apps/api`).
+   * Exposed to tests as `usedPorts` — the pool's set is the only one.
+   */
+  private readonly ports: PortPool;
+  private get usedPorts(): Set<number> {
+    return this.ports.reserved;
+  }
   private readonly spawnCommand: SpawnCommandFactory;
   private resolved: ResolvedRuntime | null = null;
   private stopped = false;
@@ -702,6 +726,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   constructor(opts: WorkerRuntimeManagerOptions = {}) {
     this.opts = opts;
     this.log = opts.logger ?? console;
+    this.ports = opts.ports ?? new PortPool();
     this.spawnCommand = opts.spawnCommand ?? defaultSpawnCommand;
     this.sweepOrphanedViteWatches();
     // Activity is sampled on its own timer rather than probed at eviction
@@ -2379,50 +2404,28 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   }
 
   private async allocatePort(): Promise<number> {
-    const range = PORT_RANGE_END - PORT_RANGE_START;
-    const maxAttempts = Math.min(range, 50);
-    for (let i = 0; i < maxAttempts; i++) {
-      const candidate = PORT_RANGE_START + Math.floor(Math.random() * range);
-      // Reserve a contiguous per-runtime block so the agent port, its API
-      // server AND every preview sidecar (WORKSPACE_API_PORT_BASE + idx) live
-      // in a range that no other warm runtime can overlap.
-      if (candidate + RUNTIME_PORT_BLOCK - 1 > PORT_RANGE_END) continue;
-      let blockFree = true;
-      for (let off = 0; off < RUNTIME_PORT_BLOCK; off++) {
-        if (this.usedPorts.has(candidate + off)) { blockFree = false; break; }
-      }
-      if (!blockFree) continue;
-      // Liveness-probe only the two ports we bind eagerly (agent + its API
-      // server). The sidecar ports are bound lazily by the agent-runtime and
-      // guarded by its own leaked-process force-kill, so probing the whole
-      // block here would just slow allocation down.
-      const agentInUse = await this.isPortListening(candidate);
-      const apiInUse = await this.isPortListening(candidate + API_PORT_OFFSET);
-      if (agentInUse || apiInUse) continue;
-      for (let off = 0; off < RUNTIME_PORT_BLOCK; off++) this.usedPorts.add(candidate + off);
-      return candidate;
-    }
-    throw new Error(
-      `Cannot allocate port in range ${PORT_RANGE_START}-${PORT_RANGE_END} after ${maxAttempts} attempts`,
+    // The agent port, its API server (+1) and every preview sidecar
+    // (+2 … +15) live in one contiguous block that no other runtime — and no
+    // other allocator in this process (api's Vite port, SHO-335) — can hand
+    // out. Only the two eagerly-bound ports are liveness-probed; the sidecar
+    // ports are bound lazily by the agent-runtime and guarded by its own
+    // leaked-process force-kill, so probing the whole block would just slow
+    // allocation down.
+    const agentPort = await this.ports.allocate({
+      start: PORT_RANGE_START,
+      end: PORT_RANGE_END,
+      blockSize: RUNTIME_PORT_BLOCK,
+      probeOffsets: [0, API_PORT_OFFSET],
+    });
+    this.log.log(
+      `[WorkerRuntimeManager] Allocated agent block ${agentPort}-${agentPort + RUNTIME_PORT_BLOCK - 1}`,
     );
+    return agentPort;
   }
 
   private releasePort(port: number): void {
     if (!port) return;
-    for (let off = 0; off < RUNTIME_PORT_BLOCK; off++) this.usedPorts.delete(port + off);
-  }
-
-  private async isPortListening(port: number): Promise<boolean> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 250);
-    try {
-      await fetch(`http://127.0.0.1:${port}/`, { method: 'HEAD', signal: controller.signal });
-      clearTimeout(timer);
-      return true;
-    } catch {
-      clearTimeout(timer);
-      return false;
-    }
+    this.ports.releaseBlock(port, RUNTIME_PORT_BLOCK);
   }
 
   /**
@@ -2430,9 +2433,10 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    * to `127.0.0.1:port` succeeds within {@link TCP_CONNECT_TIMEOUT_MS},
    * `false` for any failure mode (refused, timed out, host unreachable).
    *
-   * This is intentionally distinct from {@link isPortListening} (which
-   * fires an HTTP HEAD): we want to know whether `Bun.serve()` has
-   * bound the socket, NOT whether its request handler is responding.
+   * This is intentionally distinct from the occupancy probe in
+   * `port-pool.ts` (which a timeout counts as BUSY): we want to know whether
+   * `Bun.serve()` has bound the socket, NOT whether its request handler is
+   * responding. A timeout here means "not ready yet".
    * Once the kernel has the listener, the agent-runtime's
    * `export default { port, fetch }` has been evaluated — which is
    * sufficient evidence to clear the boot gate even if the event loop

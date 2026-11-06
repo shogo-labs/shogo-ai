@@ -708,17 +708,9 @@ describe('doStart() via ensureRunning — makeSlot + proc handlers (L968-1072)',
 });
 
 // ──────────────────────────────────────────────────────────────────────
-// isPortListening() (L1356-1366)
+// Port occupancy now lives in port-pool.ts (SHO-335): the worker's HTTP HEAD
+// probe is gone, so its unit tests moved to runtime-manager-ports.test.ts.
 // ──────────────────────────────────────────────────────────────────────
-
-describe('isPortListening() (L1356-1366)', () => {
-  it('returns false when nothing is listening on the port', async () => {
-    const mgr = makeManager();
-    // Port 1 is always closed/refused
-    const result = await (mgr as any).isPortListening(1);
-    expect(result).toBe(false);
-  });
-});
 
 // ──────────────────────────────────────────────────────────────────────
 // armGraceTimer() callback body — covers L1135-1138
