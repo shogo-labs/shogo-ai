@@ -17,6 +17,74 @@
 
 import { NativeReleaseError, type EasClient } from './client'
 
+/**
+ * Every GraphQL document this module sends, in one place so a test can validate
+ * the **documents themselves** against the schema snapshot.
+ *
+ * That test is not a formality: a fake `client.request` accepts any string, so
+ * six of these once shipped with a selection on `JSONObject!`, a `JobInput` that
+ * does not exist and singular root fields, and every unit test still passed
+ * while the first call of every release 400d. Keep the documents here, not
+ * inline in the functions.
+ */
+export const DOCUMENTS: Record<string, string> = {
+  meActor: `query { meActor { __typename id ... on User { accounts { id name } } ... on Robot { accounts { id name } } } }`,
+
+  createApp: `mutation CreateApp($appInput: AppInput!) {
+    app { createApp(appInput: $appInput) { id slug } }
+  }`,
+
+  createWebhook: `mutation CreateWebhook($appId: String!, $webhookInput: WebhookInput!) {
+    webhook { createWebhook(appId: $appId, webhookInput: $webhookInput) { id } }
+  }`,
+
+  // Returns `JSONObject!`: the selection is the bare field and the payload is
+  // read off the object. `{ url bucketKey }` here is a hard 400.
+  createUploadSession: `mutation CreateUploadSession($type: UploadSessionType!, $filename: String) {
+    uploadSession { createUploadSession(type: $type, filename: $filename) }
+  }`,
+
+  createAccountScopedUploadSession: `mutation CreateAccountScopedUploadSession($type: AccountUploadSessionType!, $accountID: ID!) {
+    uploadSession { createAccountScopedUploadSession(type: $type, accountID: $accountID) }
+  }`,
+
+  // `job` is typed per platform; there is no shared `JobInput`. The result wraps
+  // the build: `CreateBuildResult { build }`.
+  createIosBuild: `mutation CreateIosBuild($appId: ID!, $job: IosJobInput!, $metadata: BuildMetadataInput, $buildParams: BuildParamsInput) {
+    build { createIosBuild(appId: $appId, job: $job, metadata: $metadata, buildParams: $buildParams) { build { id status } } }
+  }`,
+
+  createAndroidBuild: `mutation CreateAndroidBuild($appId: ID!, $job: AndroidJobInput!, $metadata: BuildMetadataInput, $buildParams: BuildParamsInput) {
+    build { createAndroidBuild(appId: $appId, job: $job, metadata: $metadata, buildParams: $buildParams) { build { id status } } }
+  }`,
+
+  createWorkflowRun: `mutation CreateWorkflowRun($appId: ID!, $workflowRevisionInput: WorkflowRevisionInput!, $workflowRunInput: WorkflowRunInput!) {
+    workflowRun { createWorkflowRun(appId: $appId, workflowRevisionInput: $workflowRevisionInput, workflowRunInput: $workflowRunInput) { id status } }
+  }`,
+
+  // The root fields are plural (`workflowRuns`, `builds`, `submissions`).
+  // `jobs.turtleBuild` is how the poller learns which builds the test stage
+  // actually ran — the webhook cannot, because a workflow build has no
+  // `NativeBuild` row when it starts and we must not guess at a charge.
+  getWorkflowRun: `query GetWorkflowRun($workflowRunId: ID!) {
+    workflowRuns { byId(workflowRunId: $workflowRunId) { id status durationSeconds jobs { key name type status turtleBuild { id status platform } } } }
+  }`,
+
+  getBuild: `query GetBuild($buildId: ID!) {
+    builds { byId(buildId: $buildId) { id status } }
+  }`,
+
+  // No `SubmissionInput`: the two platforms have their own input type, each with
+  // a required nested config.
+  createIosSubmission: `mutation CreateIosSubmission($input: CreateIosSubmissionInput!) {
+    submission { createIosSubmission(input: $input) { submission { id status } } }
+  }`,
+
+  createAndroidSubmission: `mutation CreateAndroidSubmission($input: CreateAndroidSubmissionInput!) {
+    submission { createAndroidSubmission(input: $input) { submission { id status } } }
+  }`,
+}
+
 export type BuildResourceClass =
   | 'ANDROID_DEFAULT'
   | 'ANDROID_MEDIUM'
@@ -69,9 +137,7 @@ function pick<T>(data: Record<string, any>, path: string[]): T {
 
 /** The accounts this token can act for. Used by BYOK to find `accountId`. */
 export async function meActor(client: EasClient): Promise<{ id: string; accounts: EasAccount[] }> {
-  const data = await client.request<Record<string, any>>(
-    `query { meActor { __typename id ... on User { accounts { id name } } ... on Robot { accounts { id name } } } }`,
-  )
+  const data = await client.request<Record<string, any>>(DOCUMENTS.meActor)
   const actor = pick<any>(data, ['meActor'])
   return { id: String(actor.id), accounts: (actor.accounts ?? []).map((a: any) => ({ id: a.id, name: a.name })) }
 }
@@ -85,10 +151,9 @@ export async function createApp(
   client: EasClient,
   input: { accountId: string; projectName: string },
 ): Promise<{ id: string; slug: string }> {
-  const data = await client.request<Record<string, any>>(
-    `mutation CreateApp($appInput: AppInput!) { app { createApp(appInput: $appInput) { id slug } } }`,
-    { appInput: { accountId: input.accountId, projectName: input.projectName } },
-  )
+  const data = await client.request<Record<string, any>>(DOCUMENTS.createApp, {
+    appInput: { accountId: input.accountId, projectName: input.projectName },
+  })
   const app = pick<any>(data, ['app', 'createApp'])
   return { id: String(app.id), slug: String(app.slug) }
 }
@@ -97,12 +162,10 @@ export async function createWebhook(
   client: EasClient,
   input: { appId: string; url: string; secret: string; event: 'BUILD' | 'SUBMIT' },
 ): Promise<{ id: string }> {
-  const data = await client.request<Record<string, any>>(
-    `mutation CreateWebhook($appId: String!, $webhookInput: WebhookInput!) {
-       webhook { createWebhook(appId: $appId, webhookInput: $webhookInput) { id } }
-     }`,
-    { appId: input.appId, webhookInput: { url: input.url, secret: input.secret, event: input.event } },
-  )
+  const data = await client.request<Record<string, any>>(DOCUMENTS.createWebhook, {
+    appId: input.appId,
+    webhookInput: { url: input.url, secret: input.secret, event: input.event },
+  })
   return { id: String(pick<any>(data, ['webhook', 'createWebhook', 'id'])) }
 }
 
@@ -111,13 +174,12 @@ export async function createUploadSession(
   client: EasClient,
   input: { type: UploadSessionKind; filename: string },
 ): Promise<UploadSlot> {
-  const data = await client.request<Record<string, any>>(
-    `mutation CreateUploadSession($type: UploadSessionType!, $filename: String!) {
-       uploadSession { createUploadSession(type: $type, filename: $filename) { url bucketKey } }
-     }`,
-    input,
-  )
-  return pick<UploadSlot>(data, ['uploadSession', 'createUploadSession'])
+  const data = await client.request<Record<string, any>>(DOCUMENTS.createUploadSession, input)
+  // `createUploadSession` returns `JSONObject!`, which has no subfields: the
+  // selection must be the bare field and `url`/`bucketKey` are read off the
+  // returned object. Selecting `{ url bucketKey }` is a hard 400 from the API.
+  const slot = pick<any>(data, ['uploadSession', 'createUploadSession'])
+  return { url: String(slot.url), bucketKey: String(slot.bucketKey) }
 }
 
 /** A signed slot for a workflow's project source. Account-scoped, not app-scoped. */
@@ -125,17 +187,21 @@ export async function createAccountScopedUploadSession(
   client: EasClient,
   input: { type: AccountUploadSessionKind; accountID: string },
 ): Promise<UploadSlot> {
-  const data = await client.request<Record<string, any>>(
-    `mutation CreateAccountScopedUploadSession($type: AccountUploadSessionType!, $accountID: ID!) {
-       uploadSession { createAccountScopedUploadSession(type: $type, accountID: $accountID) { url bucketKey } }
-     }`,
-    input,
-  )
-  return pick<UploadSlot>(data, ['uploadSession', 'createAccountScopedUploadSession'])
+  const data = await client.request<Record<string, any>>(DOCUMENTS.createAccountScopedUploadSession, input)
+  const slot = pick<any>(data, ['uploadSession', 'createAccountScopedUploadSession'])
+  return { url: String(slot.url), bucketKey: String(slot.bucketKey) }
 }
 
+/**
+ * `projectMetadataFile` is deliberately absent. Every `BuildMetadataInput`
+ * field is optional, and this file is the JSON EAS parses for the project's
+ * config — a *separate* upload from the source archive (`UploadSessionType`
+ * has `EAS_BUILD_GCS_PROJECT_METADATA` for it). We open no such upload slot, so
+ * the only way to fill the field was to reuse the source archive's bucketKey,
+ * which points EAS at a tarball where it expects JSON. Omit it and let EAS read
+ * the project from the archive; `fingerprintHash` is what we actually know.
+ */
 export interface BuildMetadata {
-  projectMetadataFile: { type: 'GCS'; bucketKey: string }
   appIdentifier?: string
   appVersion?: string
   appBuildVersion?: string
@@ -160,22 +226,20 @@ export async function createBuild(
     expoTokenRole?: string
   },
 ): Promise<{ id: string; status: string }> {
+  // `job` is typed per platform (`IosJobInput!` / `AndroidJobInput!`); there is
+  // no shared `JobInput`. The result wraps the build: `CreateBuildResult { build }`.
   const field = input.platform === 'ios' ? 'createIosBuild' : 'createAndroidBuild'
-  const data = await client.request<Record<string, any>>(
-    `mutation CreateBuild($appId: ID!, $job: JobInput!, $metadata: BuildMetadataInput!, $buildParams: BuildParamsInput!) {
-       build { ${field}(appId: $appId, job: $job, metadata: $metadata, buildParams: $buildParams) { id status } }
-     }`,
-    {
-      appId: input.appId,
-      job: input.job,
-      metadata: input.metadata,
-      buildParams: {
-        resourceClass: input.resourceClass,
-        expoTokenRole: input.expoTokenRole ?? 'RUNNER',
-      },
+  const document = input.platform === 'ios' ? DOCUMENTS.createIosBuild : DOCUMENTS.createAndroidBuild
+  const data = await client.request<Record<string, any>>(document, {
+    appId: input.appId,
+    job: input.job,
+    metadata: input.metadata,
+    buildParams: {
+      resourceClass: input.resourceClass,
+      expoTokenRole: input.expoTokenRole ?? 'RUNNER',
     },
-  )
-  return pick<{ id: string; status: string }>(data, ['build', field])
+  })
+  return pick<{ id: string; status: string }>(data, ['build', field, 'build'])
 }
 
 /**
@@ -194,11 +258,7 @@ export async function createWorkflowRun(
     packageJsonBucketKey?: string
   },
 ): Promise<{ id: string; status: WorkflowRunStatus }> {
-  const data = await client.request<Record<string, any>>(
-    `mutation CreateWorkflowRun($appId: ID!, $workflowRevisionInput: WorkflowRevisionInput!, $workflowRunInput: WorkflowRunInput!) {
-       workflowRun { createWorkflowRun(appId: $appId, workflowRevisionInput: $workflowRevisionInput, workflowRunInput: $workflowRunInput) { id status } }
-     }`,
-    {
+  const data = await client.request<Record<string, any>>(DOCUMENTS.createWorkflowRun, {
       appId: input.appId,
       workflowRevisionInput: { fileName: input.fileName, yamlConfig: input.yamlConfig },
       workflowRunInput: {
@@ -219,14 +279,21 @@ export async function createWorkflowRun(
 export async function getWorkflowRun(
   client: EasClient,
   workflowRunId: string,
-): Promise<{ id: string; status: WorkflowRunStatus; jobs?: { name: string; status: string }[] }> {
-  const data = await client.request<Record<string, any>>(
-    `query GetWorkflowRun($workflowRunId: ID!) {
-       workflowRun { byId(workflowRunId: $workflowRunId) { id status jobs { name status } } }
-     }`,
-    { workflowRunId },
-  )
-  return pick<any>(data, ['workflowRun', 'byId'])
+): Promise<{
+  id: string
+  status: WorkflowRunStatus
+  durationSeconds?: number | null
+  jobs?: {
+    key?: string
+    name?: string
+    type?: string
+    status?: string
+    turtleBuild?: { id?: string; status?: string; platform?: string } | null
+  }[]
+}> {
+  // The root field is plural (`workflowRuns { byId }`); `workflowRun` does not exist.
+  const data = await client.request<Record<string, any>>(DOCUMENTS.getWorkflowRun, { workflowRunId })
+  return pick<any>(data, ['workflowRuns', 'byId'])
 }
 
 export interface AscApiKeyInline {
@@ -240,9 +307,15 @@ export interface AndroidSubmissionCredential {
 }
 
 /**
- * Submit an already-built binary, with the API key inline. Inline keeps the
- * customer's Apple key out of Expo's credential storage: it exists for the
- * duration of this submission input and nowhere else.
+ * Submit an already-built binary, with the credentials inline.
+ *
+ * Inline keeps the customer's Apple key out of Expo's credential storage: it
+ * exists for the duration of this submission input and nowhere else.
+ *
+ * The two platforms take **different** input types with a **required** nested
+ * config (there is no `SubmissionInput`): iOS needs `ascAppIdentifier` and
+ * `groups`, Android needs `track` — leaving any of them out is a validation
+ * error from the API, not a default.
  */
 export async function createSubmission(
   client: EasClient,
@@ -250,37 +323,63 @@ export async function createSubmission(
     platform: 'ios' | 'android'
     appId: string
     buildId: string
+    /** `internal` | `alpha` | `beta` | `production` (Android only). */
     track?: string
+    /** App Store Connect app id (or bundle id). Required by the iOS input. */
+    ascAppIdentifier?: string
+    /** TestFlight group names, comma-separated. Empty means the app's default. */
+    groups?: string
     ascApiKey?: AscApiKeyInline
     googleServiceAccountKeyJson?: string
+    /** Play application id; defaults to the app's package name. */
+    applicationIdentifier?: string
   },
 ): Promise<{ id: string; status: string }> {
-  const field = input.platform === 'ios' ? 'createIosSubmission' : 'createAndroidSubmission'
-  const submissionInput: Record<string, unknown> = {
-    appId: input.appId,
-    buildId: input.buildId,
-    ...(input.track ? { track: input.track } : {}),
-    ...(input.ascApiKey ? { ascApiKey: input.ascApiKey } : {}),
-    ...(input.googleServiceAccountKeyJson
-      ? { googleServiceAccountKeyJson: input.googleServiceAccountKeyJson }
-      : {}),
+  if (input.platform === 'ios') {
+    if (!input.ascAppIdentifier) {
+      throw new NativeReleaseError(
+        409,
+        'native_asc_app_missing',
+        'Submitting to the App Store needs the App Store Connect app id.',
+      )
+    }
+    const data = await client.request<Record<string, any>>(DOCUMENTS.createIosSubmission, {
+      input: {
+        appId: input.appId,
+        submittedBuildId: input.buildId,
+        config: {
+          // `ascApiKey` is the inline key; `ascApiKeyId` is the alternative for a
+          // key already stored on the account, which we deliberately do not use.
+          ...(input.ascApiKey ? { ascApiKey: input.ascApiKey } : {}),
+          ascAppIdentifier: input.ascAppIdentifier,
+          groups: input.groups ?? '',
+        },
+      },
+    })
+    return pick<{ id: string; status: string }>(data, ['submission', 'createIosSubmission', 'submission'])
   }
-  const data = await client.request<Record<string, any>>(
-    `mutation CreateSubmission($input: SubmissionInput!) {
-       submission { ${field}(input: $input) { id status } }
-     }`,
-    { input: submissionInput },
-  )
-  return pick<{ id: string; status: string }>(data, ['submission', field])
+
+  const track = input.track ?? 'internal'
+  const data = await client.request<Record<string, any>>(DOCUMENTS.createAndroidSubmission, {
+    input: {
+      appId: input.appId,
+      submittedBuildId: input.buildId,
+      config: {
+        ...(input.googleServiceAccountKeyJson
+          ? { googleServiceAccountKeyJson: input.googleServiceAccountKeyJson }
+          : {}),
+        ...(input.applicationIdentifier ? { applicationIdentifier: input.applicationIdentifier } : {}),
+        track,
+      },
+    },
+  })
+  return pick<{ id: string; status: string }>(data, ['submission', 'createAndroidSubmission', 'submission'])
 }
 
 export async function getBuild(
   client: EasClient,
   buildId: string,
 ): Promise<{ id: string; status: string; resourceClass?: BuildResourceClass }> {
-  const data = await client.request<Record<string, any>>(
-    `query GetBuild($buildId: ID!) { build { byId(buildId: $buildId) { id status } } }`,
-    { buildId },
-  )
-  return pick<any>(data, ['build', 'byId'])
+  const data = await client.request<Record<string, any>>(DOCUMENTS.getBuild, { buildId })
+  return pick<any>(data, ['builds', 'byId'])
 }

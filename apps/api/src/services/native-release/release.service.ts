@@ -43,7 +43,12 @@ import {
 } from './eas-graphql'
 import { ensureNativeApp, lockAppIdentifiers, type NativeAppRow } from './apps.service'
 import { readAscKey, readByokExpoToken, readPlayKey } from './credentials.service'
-import { projectedReleaseRawUsd, type ProjectedReleaseInput } from './usage.service'
+import {
+  TEST_BUILD_RESOURCE_CLASS,
+  meterTestRun,
+  projectedReleaseRawUsd,
+  type ProjectedReleaseInput,
+} from './usage.service'
 import { alertOps } from './alerts'
 
 const db = prisma as any
@@ -63,6 +68,14 @@ export const PROTECTED_JOB_KEYS = [
   'resourceClass',
   'username',
   'builderEnvironment',
+  // Required by `IosJobInput` / `AndroidJobInput`, and ours to fill: which
+  // archive is built and how. A draft that could repoint `projectArchive` would
+  // build someone else's source. `projectRootDirectory` is deliberately *not*
+  // here — only the runner knows where the Expo app sits in a monorepo, and the
+  // path is inside the archive we already vetted.
+  'type',
+  'projectArchive',
+  'buildArtifactPaths',
 ] as const
 
 export interface JobDraftViolation {
@@ -168,23 +181,37 @@ export function buildTestWorkflowYaml(opts: {
   const jobs: string[] = []
 
   for (const platform of opts.platforms) {
-    const jobName = platform === 'ios' ? 'build_test_ios' : 'build_test_android'
-    jobs.push(`  ${jobName}:
+    jobs.push(`  ${testBuildJobKey(platform)}:
     type: build
     params:
       platform: ${platform}
       profile: ${profile}`)
   }
 
-  const needs = opts.platforms.map((p) => (p === 'ios' ? 'build_test_ios' : 'build_test_android'))
-  jobs.push(`  maestro:
+  // One Maestro job per platform: a workflow job takes a single `build_id`, so a
+  // two-platform release needs two jobs, each naming the build it tests. A
+  // wildcard (`needs.*.outputs.build_id`) is not a documented selector and would
+  // silently pick one of them.
+  for (const platform of opts.platforms) {
+    const build = testBuildJobKey(platform)
+    jobs.push(`  ${testMaestroJobKey(platform)}:
     type: maestro
-    needs: [${needs.map((n) => `"${n}"`).join(', ')}]
+    needs: ["${build}"]
     params:
-      build_id: \${{ needs.*.outputs.build_id }}
+      build_id: \${{ needs.${build}.outputs.build_id }}
       flow_path: ${flows.map((f) => `"${f}"`).join(', ')}`)
+  }
 
   return `name: shogo-test\non:\n  workflow_dispatch: {}\njobs:\n${jobs.join('\n')}\n`
+}
+
+/** The generated workflow's job keys, also used to read results back. */
+export function testBuildJobKey(platform: ReleasePlatform): string {
+  return platform === 'ios' ? 'build_test_ios' : 'build_test_android'
+}
+
+export function testMaestroJobKey(platform: ReleasePlatform): string {
+  return platform === 'ios' ? 'maestro_ios' : 'maestro_android'
 }
 
 const PLAN_MESSAGE =
@@ -309,7 +336,12 @@ export async function startRelease(input: StartReleaseInput): Promise<StartRelea
       fingerprint: input.fingerprint,
       kind,
       status: 'queued',
-      step: kind === 'update' ? 'exporting' : 'uploading',
+      // The runner is the one that can see `.maestro/`, so it tells us at start
+      // time and we record the answer on this release. `maestro-skipped` is
+      // read back by `sourcesUploaded` — before this the step was never written,
+      // so `hasMaestro` could never be false and a project with no flows could
+      // never reach a store build.
+      step: kind === 'update' ? 'exporting' : input.hasMaestroFlows ? 'uploading' : 'maestro-skipped',
       createdById: input.memberId,
     },
   })
@@ -389,7 +421,7 @@ export async function sourcesUploaded(opts: {
     data: { sourceBucketKey: opts.bucketKey },
   })
 
-  if (!release.testOutcome && (await hasMaestro(release.projectId))) {
+  if (!release.testOutcome && hasMaestro(release)) {
     const run = await createWorkflowRun(client, {
       appId: app.easAppId,
       fileName: '.eas/workflows/shogo-test.yml',
@@ -412,14 +444,17 @@ export async function sourcesUploaded(opts: {
   })
 }
 
-async function hasMaestro(projectId: string): Promise<boolean> {
-  const row = await db.nativeRelease.findFirst({
-    where: { projectId },
-    orderBy: { createdAt: 'desc' },
-  })
-  // The runner tells us on the release row (step `maestro-skipped` means the
-  // project has no `.maestro/`); default to running the stage otherwise.
-  return row?.step !== 'maestro-skipped'
+/**
+ * Does this release have a Maestro stage?
+ *
+ * The runner reports whether the project has `.maestro/` when it starts the
+ * release, and `startRelease` records that as `step: 'maestro-skipped'` when it
+ * does not. Reading the flag off *this* release (rather than the newest row for
+ * the project) is what keeps two concurrent releases from borrowing each other's
+ * answer.
+ */
+export function hasMaestro(release: { step?: string | null }): boolean {
+  return release.step !== 'maestro-skipped'
 }
 
 /**
@@ -446,15 +481,23 @@ export async function startStoreBuilds(opts: {
 
   for (const platform of opts.platforms) {
     const resourceClass = storeResourceClass(platform)
-    // The class and the token role are ours; everything else comes from the
-    // runner's draft, which `assertRunnerJobDraft` has already vetted.
-    const job = { ...(opts.jobDraft ?? {}), platform, resourceClass }
+    // `IosJobInput` requires `type`, `projectArchive`, `projectRootDirectory` and
+    // `buildArtifactPaths` — without them the API rejects the job before any
+    // auth check ("Field projectArchive of required type ... was not provided").
+    // Ours are spread last so the runner's draft cannot repoint them; the class
+    // and the token role travel in `buildParams`, not here.
+    const job = {
+      projectRootDirectory: '.',
+      ...(opts.jobDraft ?? {}),
+      type: 'MANAGED',
+      projectArchive: { type: 'GCS', bucketKey: release.sourceBucketKey },
+      buildArtifactPaths: '',
+    }
     const build = await createBuild(opts.client, {
       platform,
       appId: opts.app.easAppId,
       job,
       metadata: {
-        projectMetadataFile: { type: 'GCS', bucketKey: release.sourceBucketKey },
         fingerprintHash: release.fingerprint,
       },
       resourceClass,
@@ -515,10 +558,22 @@ export async function submitStoreBuild(opts: {
               'Connect an App Store Connect API key in Project → App stores before shipping to iOS.',
             )
           }
+          // `ascAppIdentifier` is required by `IosSubmissionConfigInput`, and
+          // `groups` is a required String (empty = the app's default group).
+          const ascAppIdentifier = app.ascAppId ?? app.bundleIdentifier
+          if (!ascAppIdentifier) {
+            throw new NativeReleaseError(
+              409,
+              'native_asc_app_missing',
+              'This app has no bundle identifier to submit under. Set it in Project → App stores.',
+            )
+          }
           return createSubmission(client, {
             platform: 'ios',
             appId: app.easAppId,
             buildId: build.easBuildId,
+            ascAppIdentifier,
+            groups: '',
             ascApiKey: {
               keyP8: key.keyP8,
               keyIdentifier: key.keyId,
@@ -539,7 +594,10 @@ export async function submitStoreBuild(opts: {
             platform: 'android',
             appId: app.easAppId,
             buildId: build.easBuildId,
-            track: release.track,
+            // `SubmissionAndroidTrack` has no `testflight`; `internal` is the
+            // Play equivalent and is what a test-track release means.
+            track: release.track === 'production' ? 'production' : 'internal',
+            applicationIdentifier: app.androidPackage ?? undefined,
             googleServiceAccountKeyJson: play,
           })
         })()
@@ -568,10 +626,67 @@ export async function pollWorkflowRun(releaseId: string): Promise<'pending' | 'p
   })
   const run = await getWorkflowRun(easClientFor(credentials), release.workflowRunId)
 
+  // Claim the test stage's builds before deciding the outcome. A workflow build
+  // has no `NativeBuild` row of its own, so without this the BUILD webhook finds
+  // nothing, raises `native_build_unknown` on every release, and the test build
+  // is never charged. The row is created as soon as the job exists, which is
+  // minutes before the build finishes, so the webhook finds it.
+  await adoptWorkflowBuilds(release, run.jobs ?? [])
+
+  if (run.status === 'SUCCESS' || run.status === 'FAILURE' || run.status === 'CANCELED') {
+    // The CI minutes are billed once the run is over; the claim on
+    // `testMeteredAt` makes a repeated poll safe.
+    await meterTestRun({
+      releaseId,
+      memberId: 'native-workflow',
+      ciMinutes: Math.max(0, Math.round(Number(run.durationSeconds ?? 0) / 60)),
+    })
+  }
+
   if (run.status === 'SUCCESS') return 'passed'
   if (run.status === 'FAILURE' || run.status === 'CANCELED') {
     await alertOps('native_workflow_failed', { releaseId, workflowRunId: release.workflowRunId })
     return 'failed'
   }
   return 'pending'
+}
+
+/**
+ * Give each build a workflow job ran a `NativeBuild` row (purpose `test`), so the
+ * meter and the webhook can both find it.
+ *
+ * The resource class is the one the generated `shogo-test` profile pins — see
+ * `TEST_BUILD_RESOURCE_CLASS`. It is not read off EAS because `Build` only
+ * exposes `resourceClassDisplayName`, and guessing a class from a display name
+ * is exactly how an unpriced build gets billed at the medium rate.
+ */
+async function adoptWorkflowBuilds(
+  release: { id: string },
+  jobs: { key?: string; type?: string; turtleBuild?: { id?: string; status?: string; platform?: string } | null }[],
+): Promise<void> {
+  for (const job of jobs) {
+    const build = job.turtleBuild
+    if (!build?.id) continue
+    const platform = build.platform === 'ANDROID' || build.platform === 'android' || /android/i.test(job.key ?? '')
+      ? 'android'
+      : 'ios'
+    const existing = await db.nativeBuild.findUnique({ where: { easBuildId: build.id } })
+    if (existing) {
+      if (existing.status !== build.status && build.status) {
+        await db.nativeBuild.update({ where: { id: existing.id }, data: { status: build.status } })
+      }
+      continue
+    }
+    await db.nativeBuild.create({
+      data: {
+        releaseId: release.id,
+        easBuildId: build.id,
+        platform,
+        purpose: 'test',
+        resourceClass: TEST_BUILD_RESOURCE_CLASS[platform as 'ios' | 'android'],
+        status: build.status ?? 'in_progress',
+        startedAt: new Date(),
+      },
+    })
+  }
 }

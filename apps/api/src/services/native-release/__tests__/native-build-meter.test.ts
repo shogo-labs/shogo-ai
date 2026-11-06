@@ -159,10 +159,12 @@ describe('meterBuild', () => {
     expect(consumeCalls).toHaveLength(0)
   })
 
-  it('does not charge a test build as a store build', async () => {
+  it('charges a test build too, because EAS ran a real worker for it', async () => {
     seedBuild({ purpose: 'test' })
-    expect(await meterBuild({ easBuildId: 'build_1', memberId: 'me', mode: 'cloud' })).toBe('skipped')
-    expect(consumeCalls).toHaveLength(0)
+    expect(await meterBuild({ easBuildId: 'build_1', memberId: 'me', mode: 'cloud' })).toBe('metered')
+    expect(consumeCalls).toHaveLength(1)
+    expect(consumeCalls[0].actionType).toBe('native_build')
+    expect(consumeCalls[0].rawUsd).toBe(2)
   })
 
   it('charges nothing outside cloud mode', async () => {

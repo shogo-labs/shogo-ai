@@ -969,6 +969,608 @@
       }
      }
     ]
+   },
+   "queryType": {
+    "fields": [
+     {
+      "name": "userPreference",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserPreferenceQuery"
+       }
+      }
+     },
+     {
+      "name": "account",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AccountQuery"
+       }
+      }
+     },
+     {
+      "name": "accountSSOConfigurationPublicData",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AccountSSOConfigurationPublicDataQuery"
+       }
+      }
+     },
+     {
+      "name": "agentRuns",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AgentRunQuery"
+       }
+      }
+     },
+     {
+      "name": "appleDeviceRegistrationRequestPublicData",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppleDeviceRegistrationRequestPublicDataQuery"
+       }
+      }
+     },
+     {
+      "name": "appleDeviceRegistrationRequest",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppleDeviceRegistrationRequestQuery"
+       }
+      }
+     },
+     {
+      "name": "appleDistributionCertificate",
+      "type": {
+       "kind": "OBJECT",
+       "name": "AppleDistributionCertificateQuery",
+       "ofType": null
+      }
+     },
+     {
+      "name": "appleProvisioningProfile",
+      "type": {
+       "kind": "OBJECT",
+       "name": "AppleProvisioningProfileQuery",
+       "ofType": null
+      }
+     },
+     {
+      "name": "appleTeam",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppleTeamQuery"
+       }
+      }
+     },
+     {
+      "name": "app",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppQuery"
+       }
+      }
+     },
+     {
+      "name": "appStoreConnectApiKey",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AppStoreConnectApiKeyQuery"
+       }
+      }
+     },
+     {
+      "name": "asset",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AssetQuery"
+       }
+      }
+     },
+     {
+      "name": "auditLogs",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AuditLogQuery"
+       }
+      }
+     },
+     {
+      "name": "userAuditLogs",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserAuditLogQuery"
+       }
+      }
+     },
+     {
+      "name": "backgroundJobReceipt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BackgroundJobReceiptQuery"
+       }
+      }
+     },
+     {
+      "name": "branches",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BranchQuery"
+       }
+      }
+     },
+     {
+      "name": "buildAnnotations",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BuildAnnotationsQuery"
+       }
+      }
+     },
+     {
+      "name": "buildPublicData",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BuildPublicDataQuery"
+       }
+      }
+     },
+     {
+      "name": "builds",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BuildQuery"
+       }
+      }
+     },
+     {
+      "name": "channels",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ChannelQuery"
+       }
+      }
+     },
+     {
+      "name": "convexIntegration",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ConvexIntegrationQuery"
+       }
+      }
+     },
+     {
+      "name": "deployments",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DeploymentQuery"
+       }
+      }
+     },
+     {
+      "name": "deviceRunSessionArtifacts",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DeviceRunSessionArtifactQuery"
+       }
+      }
+     },
+     {
+      "name": "deviceRunSessions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DeviceRunSessionQuery"
+       }
+      }
+     },
+     {
+      "name": "embeddedUpdates",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "EmbeddedUpdateQuery"
+       }
+      }
+     },
+     {
+      "name": "experimentation",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ExperimentationQuery"
+       }
+      }
+     },
+     {
+      "name": "expoGoBuild",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ExpoGoBuildQuery"
+       }
+      }
+     },
+     {
+      "name": "githubApp",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubAppQuery"
+       }
+      }
+     },
+     {
+      "name": "githubAppRegistrations",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubAppRegistrationQuery"
+       }
+      }
+     },
+     {
+      "name": "googleServiceAccountKey",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GoogleServiceAccountKeyQuery"
+       }
+      }
+     },
+     {
+      "name": "invoice",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "InvoiceQuery"
+       }
+      }
+     },
+     {
+      "name": "jobRun",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "JobRunQuery"
+       }
+      }
+     },
+     {
+      "name": "posthogIntegration",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PostHogIntegrationQuery"
+       }
+      }
+     },
+     {
+      "name": "runtimes",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RuntimeQuery"
+       }
+      }
+     },
+     {
+      "name": "sandboxArtifacts",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SandboxArtifactQuery"
+       }
+      }
+     },
+     {
+      "name": "sandboxes",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SandboxQuery"
+       }
+      }
+     },
+     {
+      "name": "snack",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SnackQuery"
+       }
+      }
+     },
+     {
+      "name": "statuspageService",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "StatuspageServiceQuery"
+       }
+      }
+     },
+     {
+      "name": "submissions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SubmissionQuery"
+       }
+      }
+     },
+     {
+      "name": "turtleBrownfieldArtifacts",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "TurtleBrownfieldArtifactQuery"
+       }
+      }
+     },
+     {
+      "name": "updatesByGroup",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null
+       }
+      }
+     },
+     {
+      "name": "updates",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UpdateQuery"
+       }
+      }
+     },
+     {
+      "name": "usageBudget",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UsageBudgetQuery"
+       }
+      }
+     },
+     {
+      "name": "userActorPublicData",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserActorPublicDataQuery"
+       }
+      }
+     },
+     {
+      "name": "userInvitationPublicData",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserInvitationPublicDataQuery"
+       }
+      }
+     },
+     {
+      "name": "vexoIntegration",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "VexoIntegrationQuery"
+       }
+      }
+     },
+     {
+      "name": "me",
+      "type": {
+       "kind": "OBJECT",
+       "name": "User",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewer",
+      "type": {
+       "kind": "OBJECT",
+       "name": "User",
+       "ofType": null
+      }
+     },
+     {
+      "name": "meActor",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Actor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "meUserActor",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "UserActor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "webhook",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WebhookQuery"
+       }
+      }
+     },
+     {
+      "name": "workerDeployment",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkerDeploymentQuery"
+       }
+      }
+     },
+     {
+      "name": "workflowJobs",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowJobQuery"
+       }
+      }
+     },
+     {
+      "name": "workflows",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowQuery"
+       }
+      }
+     },
+     {
+      "name": "workflowRevisions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowRevisionQuery"
+       }
+      }
+     },
+     {
+      "name": "workflowRuns",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "WorkflowRunQuery"
+       }
+      }
+     }
+    ]
    }
   }
  },
@@ -1041,6 +1643,1554 @@
    "kind": "OBJECT",
    "name": "AccessTokenMutation"
   },
+  "Account": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "name",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "displayName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "isCurrent",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "logRocketOrganization",
+     "type": {
+      "kind": "OBJECT",
+      "name": "LogRocketOrganization",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "pendingSentryInstallation",
+     "type": {
+      "kind": "OBJECT",
+      "name": "PendingSentryInstallation",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "sentryInstallation",
+     "type": {
+      "kind": "OBJECT",
+      "name": "SentryInstallation",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "pushSecurityEnabled",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "isDisabled",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "requireTwoFactor",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "observeIngestionPaused",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "environmentVariableProtectionEnabled",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "credentialsProtectionEnabled",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "createdAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "updatedAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "lastDeletionAttemptTime",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "userSpecifiedAccountUsage",
+     "type": {
+      "kind": "ENUM",
+      "name": "UserSpecifiedAccountUsage",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "offers",
+     "type": {
+      "kind": "LIST",
+      "name": null,
+      "ofType": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Offer",
+        "ofType": null
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "snacksPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountSnacksConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "appCount",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AccountAppsFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "appsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountAppsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AccountDeviceRunSessionFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "deviceRunSessionsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountDeviceRunSessionsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "createdBefore",
+       "type": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filterTypes",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "ENUM",
+          "name": "ActivityTimelineProjectActivityType",
+          "ofType": null
+         }
+        }
+       }
+      }
+     ],
+     "name": "activityTimelineProjectActivities",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INTERFACE",
+         "name": "ActivityTimelineProjectActivity",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "viewerNotificationPreferences",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "UNION",
+         "name": "NotificationPreferenceItem",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "TimelineActivityFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "timelineActivity",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "TimelineActivityConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "ownerUserActor",
+     "type": {
+      "kind": "INTERFACE",
+      "name": "UserActor",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "memberType",
+       "type": {
+        "kind": "ENUM",
+        "name": "AccountMemberType",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AccountMembersFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "membersPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountMembersConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "memberStats",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountMemberStats",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "onboardingStats",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountOnboardingStats",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "viewerUserPermission2",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "ViewerUserPermission",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "userInvitations",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "UserInvitation",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "isSSOEnabled",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "ssoConfiguration",
+     "type": {
+      "kind": "OBJECT",
+      "name": "AccountSSOConfiguration",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "ssoAllowedAuthProviders",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "ENUM",
+         "name": "AuthProviderIdentifier",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "billing",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Billing",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "date",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "DateTime",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "billingPeriod",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "BillingPeriod",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "subscription",
+     "type": {
+      "kind": "OBJECT",
+      "name": "SubscriptionDetails",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AppleTeamFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "appleTeamsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountAppleTeamsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "bundleIdentifier",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "appleAppIdentifiers",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "AppleAppIdentifier",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AppleDeviceFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "appleDevicesPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountAppleDevicesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "appleDistributionCertificatesPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountAppleDistributionCertificatesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "applePushKeysPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountApplePushKeysConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "appleProvisioningProfilesPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountAppleProvisioningProfilesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "appStoreConnectApiKeysPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountAppStoreConnectApiKeysConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "googleServiceAccountKeysPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountGoogleServiceAccountKeysConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AuditLogFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "auditLogsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AuditLogConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filterNames",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      },
+      {
+       "name": "excludeProductionOnly",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "environmentSecrets",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "EnvironmentSecret",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filterNames",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      },
+      {
+       "name": "environment",
+       "type": {
+        "kind": "SCALAR",
+        "name": "EnvironmentVariableEnvironment",
+        "ofType": null
+       }
+      },
+      {
+       "name": "excludeProductionOnly",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "environmentVariables",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "EnvironmentVariable",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filterNames",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      },
+      {
+       "name": "environment",
+       "type": {
+        "kind": "SCALAR",
+        "name": "EnvironmentVariableEnvironment",
+        "ofType": null
+       }
+      },
+      {
+       "name": "excludeProductionOnly",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "environmentVariablesIncludingSensitive",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "EnvironmentVariableWithSecret",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "githubAppInstallations",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "GitHubAppInstallation",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "githubAppRegistration",
+     "type": {
+      "kind": "OBJECT",
+      "name": "GitHubAppRegistration",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "isFreeAppDevDomainTier",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "profileImageUrl",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      }
+     ],
+     "name": "accountFeatureGates",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "JSONObject",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "convexTeamConnections",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "ConvexTeamConnection",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "posthogOrganizationConnection",
+     "type": {
+      "kind": "OBJECT",
+      "name": "PostHogOrganizationConnection",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "supabaseConnection",
+     "type": {
+      "kind": "OBJECT",
+      "name": "SupabaseConnection",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "vexoAccountConnection",
+     "type": {
+      "kind": "OBJECT",
+      "name": "VexoAccountConnection",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "agentProviderConnections",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "AgentProviderConnection",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "concurrencyConsumers",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "UNION",
+         "name": "ConcurrencyConsumer",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "excludeProductionOnly",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "environmentVariableEnvironments",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "EnvironmentVariableEnvironment",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "usageMetrics",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AccountUsageMetrics",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "Account"
+  },
   "AccountUploadSessionType": {
    "enumValues": [
     {
@@ -1054,6 +3204,177 @@
    "inputFields": null,
    "kind": "ENUM",
    "name": "AccountUploadSessionType"
+  },
+  "Actor": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "firstName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "created",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "isExpoAdmin",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "lastDeletionAttemptTime",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "displayName",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "accounts",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Account",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "accessTokens",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "AccessToken",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      }
+     ],
+     "name": "featureGates",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "JSONObject",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "experiments",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "ActorExperiment",
+         "ofType": null
+        }
+       }
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "INTERFACE",
+   "name": "Actor"
   },
   "AndroidJobInput": {
    "enumValues": null,
@@ -1217,7 +3538,8 @@
        "name": null,
        "ofType": {
         "kind": "SCALAR",
-        "name": "String"
+        "name": "String",
+        "ofType": null
        }
       }
      }
@@ -1265,6 +3587,2666 @@
    ],
    "kind": "INPUT_OBJECT",
    "name": "AndroidJobInput"
+  },
+  "AndroidSubmissionConfigInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "googleServiceAccountKeyId",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "googleServiceAccountKeyJson",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "applicationIdentifier",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "track",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "SubmissionAndroidTrack",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "releaseStatus",
+     "type": {
+      "kind": "ENUM",
+      "name": "SubmissionAndroidReleaseStatus",
+      "ofType": null
+     }
+    },
+    {
+     "name": "rollout",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Float",
+      "ofType": null
+     }
+    },
+    {
+     "name": "changesNotSentForReview",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "changelog",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "isVerboseFastlaneEnabled",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "AndroidSubmissionConfigInput"
+  },
+  "App": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "devDomainName",
+     "type": {
+      "kind": "OBJECT",
+      "name": "AppDevDomainName",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "suggestedDevDomainName",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "insights",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppInsights",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "observe",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppObserve",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "pushNotifications",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppPushNotifications",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "name",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "fullName",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "slug",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "scopeKey",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "ownerAccount",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Account",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "internalDistributionBuildPrivacy",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "AppInternalDistributionBuildPrivacy",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "pushSecurityEnabled",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "observeIngestionPaused",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "assetLimitPerUpdateGroup",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "appStoreConnectApp",
+     "type": {
+      "kind": "OBJECT",
+      "name": "AppStoreConnectApp",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "appStoreConnectWorkflowConnectionStatus",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "AppStoreConnectWorkflowConnectionStatus",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "convexProject",
+     "type": {
+      "kind": "OBJECT",
+      "name": "ConvexProject",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "posthogProject",
+     "type": {
+      "kind": "OBJECT",
+      "name": "PostHogProject",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "logRocketProject",
+     "type": {
+      "kind": "OBJECT",
+      "name": "LogRocketProject",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "sentryProject",
+     "type": {
+      "kind": "OBJECT",
+      "name": "SentryProject",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "supabaseProject",
+     "type": {
+      "kind": "OBJECT",
+      "name": "SupabaseProject",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "buildProfiles",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "latestActivity",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "BuildFilter",
+        "ofType": null
+       }
+      },
+      {
+       "name": "offset",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "status",
+       "type": {
+        "kind": "ENUM",
+        "name": "BuildStatus",
+        "ofType": null
+       }
+      },
+      {
+       "name": "platform",
+       "type": {
+        "kind": "ENUM",
+        "name": "AppPlatform",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "builds",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Build",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "SubmissionFilter",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "offset",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "submissions",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Submission",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "DeploymentFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "deployments",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "DeploymentsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "channel",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "runtimeVersion",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "deployment",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Deployment",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "RuntimeFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "runtimes",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "RuntimesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "IosAppCredentialsFilter",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "iosAppCredentials",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "IosAppCredentials",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AndroidAppCredentialsFilter",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "androidAppCredentials",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "AndroidAppCredentials",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "offset",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "updateChannels",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "UpdateChannel",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "name",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "updateChannelByName",
+     "type": {
+      "kind": "OBJECT",
+      "name": "UpdateChannel",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "offset",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "updateBranches",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "UpdateBranch",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "name",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "updateBranchByName",
+     "type": {
+      "kind": "OBJECT",
+      "name": "UpdateBranch",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "offset",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "updates",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Update",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "offset",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "UpdatesFilter",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "updateGroups",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "LIST",
+         "name": null,
+         "ofType": {
+          "kind": "NON_NULL",
+          "name": null,
+          "ofType": {
+           "kind": "OBJECT",
+           "name": "Update",
+           "ofType": null
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "createdBefore",
+       "type": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filterTypes",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "ENUM",
+          "name": "ActivityTimelineProjectActivityType",
+          "ofType": null
+         }
+        }
+       }
+      },
+      {
+       "name": "filterPlatforms",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "ENUM",
+          "name": "AppPlatform",
+          "ofType": null
+         }
+        }
+       }
+      },
+      {
+       "name": "filterChannels",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      }
+     ],
+     "name": "activityTimelineProjectActivities",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INTERFACE",
+         "name": "ActivityTimelineProjectActivity",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "TimelineActivityFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "timelineActivity",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "TimelineActivityConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filterNames",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      },
+      {
+       "name": "excludeProductionOnly",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "environmentSecrets",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "EnvironmentSecret",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filterNames",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      },
+      {
+       "name": "environment",
+       "type": {
+        "kind": "SCALAR",
+        "name": "EnvironmentVariableEnvironment",
+        "ofType": null
+       }
+      },
+      {
+       "name": "excludeProductionOnly",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "environmentVariables",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "EnvironmentVariable",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filterNames",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      },
+      {
+       "name": "environment",
+       "type": {
+        "kind": "SCALAR",
+        "name": "EnvironmentVariableEnvironment",
+        "ofType": null
+       }
+      },
+      {
+       "name": "excludeProductionOnly",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "environmentVariablesIncludingSensitive",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "EnvironmentVariableWithSecret",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "WebhookFilter",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "webhooks",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Webhook",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "UpdateFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "updatesPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppUpdatesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "BranchFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "branchesPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppBranchesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "ChannelFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "channelsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppChannelsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "submissionsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppSubmissionsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "BuildFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "buildsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppBuildsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "FingerprintFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "fingerprintsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppFingerprintsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "EmbeddedUpdateFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "embeddedUpdatesPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppEmbeddedUpdatesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "UpdatesTimelineFilter",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "updatesTimeline",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "UpdatesTimelineConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AgentRunFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "agentRunsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AgentRunConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "DeviceRunSessionFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "deviceRunSessionsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppDeviceRunSessionsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "deviceRunSessionTags",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "platform",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "ENUM",
+         "name": "AppPlatform",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "applicationIdentifier",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "latestAppVersionByPlatformAndApplicationIdentifier",
+     "type": {
+      "kind": "OBJECT",
+      "name": "AppVersion",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AppWorkflowFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workflows",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Workflow",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AppWorkflowRunFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workflowRunsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppWorkflowRunsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "WorkflowRunGitBranchFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workflowRunGitBranchesPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppWorkflowRunGitBranchesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filter",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "BrownfieldArtifactFilterInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "turtleBrownfieldArtifactsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "BrownfieldArtifactsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "githubRepository",
+     "type": {
+      "kind": "OBJECT",
+      "name": "GitHubRepository",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "githubRepositorySettings",
+     "type": {
+      "kind": "OBJECT",
+      "name": "GitHubRepositorySettings",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "githubBuildTriggers",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "GitHubBuildTrigger",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "isEligibleForObserveLapsedPaidNotification",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "vexoApp",
+     "type": {
+      "kind": "OBJECT",
+      "name": "VexoApp",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "githubJobRunTriggers",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "GitHubJobRunTrigger",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "lastDeletionAttemptTime",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "resourceClassExperiment",
+     "type": {
+      "kind": "ENUM",
+      "name": "ResourceClassExperiment",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "width",
+       "type": {
+        "kind": "ENUM",
+        "name": "AppProfileImageWidth",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "profileImageUrl",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "viewerNotificationPreferences",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "UNION",
+         "name": "NotificationPreferenceItem",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "excludeProductionOnly",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "environmentVariableEnvironments",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "EnvironmentVariableEnvironment",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "usageMetrics",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppUsageMetrics",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "workerCustomDomain",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkerCustomDomain",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "aliasName",
+       "type": {
+        "kind": "SCALAR",
+        "name": "WorkerDeploymentIdentifier",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workerDeploymentAlias",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkerDeploymentAlias",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workerDeploymentAliases",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkerDeploymentAliasesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "crashKey",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "sampleFor",
+       "type": {
+        "kind": "ENUM",
+        "name": "CrashSampleFor",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workerDeploymentsCrash",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkerDeploymentCrashEdge",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "timespan",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "DatasetTimespan",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "filters",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "CrashesFilters",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workerDeploymentsCrashes",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkerDeploymentCrashes",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "requestKey",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "workerDeploymentsRequest",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkerDeploymentRequestEdge",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "timespan",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "DatasetTimespan",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "filters",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "RequestsFilters",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workerDeploymentsRequests",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkerDeploymentRequests",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "deploymentIdentifier",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "WorkerDeploymentIdentifier",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "workerDeployment",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkerDeployment",
+      "ofType": null
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workerDeployments",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkerDeploymentsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workflowCachesPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppWorkflowCachesConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "workflowCachingConfig",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowCachingConfig",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "timespan",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "WorkflowDeviceTestCaseInsightsTimespanInput",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "filters",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "WorkflowDeviceTestCaseInsightsFiltersInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workflowDeviceTestCaseInsights",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowDeviceTestCaseInsights",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "path",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "timespan",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "WorkflowDeviceTestCaseInsightsTimespanInput",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "filters",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "WorkflowDeviceTestCaseHistoryFiltersInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "workflowDeviceTestCaseHistory",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowDeviceTestCaseHistory",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "workflowsInsights",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "AppWorkflowsInsights",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "App"
   },
   "AppInput": {
    "enumValues": null,
@@ -1334,6 +6316,244 @@
        "ofType": null
       }
      }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "pushSecurityEnabled",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Boolean",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "setPushSecurityEnabled",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "paused",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Boolean",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "setObserveIngestionPaused",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "appInfo",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "AppInfoInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "setAppInfo",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "resourceClassExperiment",
+       "type": {
+        "kind": "ENUM",
+        "name": "ResourceClassExperiment",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "setResourceClassExperiment",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "scheduleAppDeletion",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "BackgroundJobReceipt",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "removeProfileImage",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "config",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "WorkflowCachingConfigInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "setWorkflowCachingConfig",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
     }
    ],
    "inputFields": null,
@@ -1350,6 +6570,715 @@
    "inputFields": null,
    "kind": "ENUM",
    "name": "AppUploadSessionType"
+  },
+  "AscApiKeyInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "keyP8",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "keyIdentifier",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "issuerIdentifier",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "AscApiKeyInput"
+  },
+  "Build": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "actor",
+     "type": {
+      "kind": "INTERFACE",
+      "name": "Actor",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "activityTimestamp",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "parentBuild",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Build",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "childBuild",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Build",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "resourceClassDisplayName",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "initiatingActor",
+     "type": {
+      "kind": "INTERFACE",
+      "name": "Actor",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "cancelingActor",
+     "type": {
+      "kind": "INTERFACE",
+      "name": "Actor",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "artifacts",
+     "type": {
+      "kind": "OBJECT",
+      "name": "BuildArtifacts",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "logFileUrls",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "updatedAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "createdAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "enqueuedAt",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "provisioningStartedAt",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "workerStartedAt",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "completedAt",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "status",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "BuildStatus",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "expirationDate",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "platform",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "AppPlatform",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "appVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "appBuildVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "sdkVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "runtime",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Runtime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "fingerprint",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Fingerprint",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "reactNativeVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "appIdentifier",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "releaseChannel",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "updateChannel",
+     "type": {
+      "kind": "OBJECT",
+      "name": "UpdateChannel",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "embeddedUpdate",
+     "type": {
+      "kind": "OBJECT",
+      "name": "EmbeddedUpdate",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "metrics",
+     "type": {
+      "kind": "OBJECT",
+      "name": "BuildMetrics",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "distribution",
+     "type": {
+      "kind": "ENUM",
+      "name": "DistributionType",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "iosEnterpriseProvisioning",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildIosEnterpriseProvisioning",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "buildProfile",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "gitCommitHash",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "gitCommitMessage",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "gitRef",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "projectRootDirectory",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "isGitWorkingTreeDirty",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "message",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "projectMetadataFileUrl",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "runFromCI",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "buildMode",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildMode",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "customWorkflowName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "resolvedEnvironment",
+     "type": {
+      "kind": "SCALAR",
+      "name": "EnvironmentVariableEnvironment",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "developmentClient",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "requiredPackageManager",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "resolvedImage",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "customNodeVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "error",
+     "type": {
+      "kind": "OBJECT",
+      "name": "BuildError",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "submissions",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Submission",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "priority",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "BuildPriority",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "newMode",
+       "type": {
+        "kind": "ENUM",
+        "name": "BuildMode",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "canRetry",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "newMode",
+       "type": {
+        "kind": "ENUM",
+        "name": "BuildMode",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "retryDisabledReason",
+     "type": {
+      "kind": "ENUM",
+      "name": "BuildRetryDisabledReason",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "maxBuildTimeSeconds",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "maxRetryTimeMinutes",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Int",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "app",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "isWaived",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "waiverType",
+     "type": {
+      "kind": "ENUM",
+      "name": "EASBuildWaiverType",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "isForIosSimulator",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "deployment",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Deployment",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "cliVersion",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "workflowJob",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkflowJob",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "sshSession",
+     "type": {
+      "kind": "OBJECT",
+      "name": "TurtleSshSession",
+      "ofType": null
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "Build"
   },
   "BuildMetadataInput": {
    "enumValues": null,
@@ -1683,6 +7612,130 @@
     {
      "args": [
       {
+       "name": "buildId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "jobOverrides",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "AndroidJobOverridesInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "retryAndroidBuild",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Build",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "buildId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "cancelBuild",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Build",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "buildId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "deleteBuild",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Build",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "buildId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "metadata",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "BuildMetadataInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "updateBuildMetadata",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Build",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
        "name": "appId",
        "type": {
         "kind": "NON_NULL",
@@ -1724,6 +7777,98 @@
       }
      ],
      "name": "createIosBuild",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "CreateBuildResult",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "buildId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "jobOverrides",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "IosJobOverridesInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "retryIosBuild",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Build",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "job",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "LocalBuildJobInput",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "artifactSource",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "LocalBuildArchiveSourceInput",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "metadata",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "BuildMetadataInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "createLocalBuild",
      "type": {
       "kind": "NON_NULL",
       "name": null,
@@ -1782,6 +7927,40 @@
    ],
    "kind": "INPUT_OBJECT",
    "name": "BuildParamsInput"
+  },
+  "BuildQuery": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "buildId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "byId",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Build",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "BuildQuery"
   },
   "BuildResourceClass": {
    "enumValues": [
@@ -1915,6 +8094,36 @@
    "kind": "INPUT_OBJECT",
    "name": "CreateAndroidSubmissionInput"
   },
+  "CreateBuildResult": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "build",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Build",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "deprecationInfo",
+     "type": {
+      "kind": "OBJECT",
+      "name": "EASBuildDeprecationInfo",
+      "ofType": null
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "CreateBuildResult"
+  },
   "CreateIosSubmissionInput": {
    "enumValues": null,
    "fields": null,
@@ -1962,6 +8171,27 @@
    ],
    "kind": "INPUT_OBJECT",
    "name": "CreateIosSubmissionInput"
+  },
+  "CreateSubmissionResult": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "submission",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Submission",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "CreateSubmissionResult"
   },
   "IosJobInput": {
    "enumValues": null,
@@ -2149,7 +8379,8 @@
        "name": null,
        "ofType": {
         "kind": "SCALAR",
-        "name": "String"
+        "name": "String",
+        "ofType": null
        }
       }
      }
@@ -2197,6 +8428,90 @@
    ],
    "kind": "INPUT_OBJECT",
    "name": "IosJobInput"
+  },
+  "IosSubmissionConfigInput": {
+   "enumValues": null,
+   "fields": null,
+   "inputFields": [
+    {
+     "name": "appleAppSpecificPassword",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "ascApiKey",
+     "type": {
+      "kind": "INPUT_OBJECT",
+      "name": "AscApiKeyInput",
+      "ofType": null
+     }
+    },
+    {
+     "name": "ascApiKeyId",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "appleIdUsername",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "ascAppIdentifier",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "name": "isVerboseFastlaneEnabled",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Boolean",
+      "ofType": null
+     }
+    },
+    {
+     "name": "changelog",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "name": "groups",
+     "type": {
+      "kind": "LIST",
+      "name": null,
+      "ofType": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     }
+    }
+   ],
+   "kind": "INPUT_OBJECT",
+   "name": "IosSubmissionConfigInput"
   },
   "JobExpoTokenRole": {
    "enumValues": [
@@ -2293,6 +8608,211 @@
    "kind": "INPUT_OBJECT",
    "name": "ProjectMetadataFileInput"
   },
+  "Robot": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "firstName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "created",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "isExpoAdmin",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "displayName",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "lastDeletionAttemptTime",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "isManagedByGitHubApp",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "accounts",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Account",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "accessTokens",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "AccessToken",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      }
+     ],
+     "name": "featureGates",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "JSONObject",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "experiments",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "ActorExperiment",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "githubAppInstallations",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "GitHubAppInstallation",
+         "ofType": null
+        }
+       }
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "Robot"
+  },
   "RobotDataInput": {
    "enumValues": null,
    "fields": null,
@@ -2366,6 +8886,287 @@
    "kind": "OBJECT",
    "name": "RobotMutation"
   },
+  "Submission": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "actor",
+     "type": {
+      "kind": "INTERFACE",
+      "name": "Actor",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "activityTimestamp",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "parentSubmission",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Submission",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "childSubmission",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Submission",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "app",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "initiatingActor",
+     "type": {
+      "kind": "INTERFACE",
+      "name": "Actor",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "cancelingActor",
+     "type": {
+      "kind": "INTERFACE",
+      "name": "Actor",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "submittedBuild",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Build",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "platform",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "AppPlatform",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "status",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "SubmissionStatus",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "androidConfig",
+     "type": {
+      "kind": "OBJECT",
+      "name": "AndroidSubmissionConfig",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "iosConfig",
+     "type": {
+      "kind": "OBJECT",
+      "name": "IosSubmissionConfig",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "archiveUrl",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "logFiles",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "error",
+     "type": {
+      "kind": "OBJECT",
+      "name": "SubmissionError",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "canRetry",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "maxRetryTimeMinutes",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "createdAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "updatedAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "completedAt",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "priority",
+     "type": {
+      "kind": "ENUM",
+      "name": "SubmissionPriority",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "workflowJob",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkflowJob",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "jobRun",
+     "type": {
+      "kind": "OBJECT",
+      "name": "JobRun",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "appStoreConnectBuildUpload",
+     "type": {
+      "kind": "OBJECT",
+      "name": "AppStoreConnectBuildUpload",
+      "ofType": null
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "Submission"
+  },
   "SubmissionMutation": {
    "enumValues": null,
    "fields": [
@@ -2417,6 +9218,84 @@
       "ofType": {
        "kind": "OBJECT",
        "name": "CreateSubmissionResult",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "submissionId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "cancelSubmission",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Submission",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "parentSubmissionId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "retrySubmission",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "CreateSubmissionResult",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "submissionId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "generateSubmissionArchiveDownloadUrl",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
        "ofType": null
       }
      }
@@ -2500,6 +9379,44 @@
        "ofType": null
       }
      }
+    },
+    {
+     "args": [
+      {
+       "name": "type",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "ENUM",
+         "name": "AppUploadSessionType",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "appID",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "createAppScopedUploadSession",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "JSONObject",
+       "ofType": null
+      }
+     }
     }
    ],
    "inputFields": null,
@@ -2534,6 +9451,770 @@
    "inputFields": null,
    "kind": "ENUM",
    "name": "UploadSessionType"
+  },
+  "User": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "username",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "email",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "emailVerified",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "newEmailPendingVerification",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "firstName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "lastName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "fullName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "created",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "appCount",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "isExpoAdmin",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "isStaffModeEnabled",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "displayName",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "bestContactEmail",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "isSecondFactorAuthenticationEnabled",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "lastDeletionAttemptTime",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "secondFactorDevices",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "UserSecondFactorDevice",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "passkeyCredentials",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "UserPasskeyCredential",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "primaryAccount",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Account",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "accounts",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Account",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "onboardingOrganization",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Account",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "primaryAccountProfileImageUrl",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "accessTokens",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "AccessToken",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "offset",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "snacks",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Snack",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "hasPendingUserInvitations",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "pendingUserInvitations",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "UserInvitation",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "limit",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "Int",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "createdBefore",
+       "type": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      },
+      {
+       "name": "filterTypes",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "ENUM",
+          "name": "ActivityTimelineProjectActivityType",
+          "ofType": null
+         }
+        }
+       }
+      }
+     ],
+     "name": "activityTimelineProjectActivities",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INTERFACE",
+         "name": "ActivityTimelineProjectActivity",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "pinnedApps",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "App",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "pinnedDashboardViews",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "PinnedDashboardView",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "filter",
+       "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      }
+     ],
+     "name": "featureGates",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "JSONObject",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "discordUser",
+     "type": {
+      "kind": "OBJECT",
+      "name": "DiscordUser",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "githubUser",
+     "type": {
+      "kind": "OBJECT",
+      "name": "GitHubUser",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "githubUsers",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "GitHubUser",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "githubAppRegistrations",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubAppRegistration",
+        "ofType": null
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "experiments",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "ActorExperiment",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "first",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "after",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      {
+       "name": "last",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      {
+       "name": "before",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "websiteNotificationsPaginated",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WebsiteNotificationsConnection",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "oAuthIdentities",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "OAuthIdentity",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "hasPassword",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "User"
+  },
+  "Webhook": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "appId",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "event",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "WebhookType",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "url",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "createdAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "updatedAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "Webhook"
   },
   "WebhookInput": {
    "enumValues": null,
@@ -2619,6 +10300,70 @@
        "ofType": null
       }
      }
+    },
+    {
+     "args": [
+      {
+       "name": "webhookId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "webhookInput",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "WebhookInput",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "updateWebhook",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Webhook",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "webhookId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "deleteWebhook",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "DeleteWebhookResult",
+       "ofType": null
+      }
+     }
     }
    ],
    "inputFields": null,
@@ -2638,6 +10383,320 @@
    "inputFields": null,
    "kind": "ENUM",
    "name": "WebhookType"
+  },
+  "WorkflowJob": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "workflowRun",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowRun",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "key",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "name",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "type",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "WorkflowJobType",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "status",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "WorkflowJobStatus",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "requiredJobKeys",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "outputs",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "JSONObject",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "errors",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "WorkflowJobError",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "createdAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "updatedAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "turtleJobRun",
+     "type": {
+      "kind": "OBJECT",
+      "name": "JobRun",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "turtleBuild",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Build",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "turtleSubmission",
+     "type": {
+      "kind": "OBJECT",
+      "name": "Submission",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "credentialsAppleDeviceRegistrationRequest",
+     "type": {
+      "kind": "OBJECT",
+      "name": "AppleDeviceRegistrationRequest",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "approvals",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "WorkflowJobApproval",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "environment",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "skipReason",
+     "type": {
+      "kind": "UNION",
+      "name": "WorkflowJobSkipReason",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "allDeviceTestCaseResults",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "WorkflowDeviceTestCaseResult",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "deviceTestCaseResultAttempts",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "WorkflowDeviceTestCaseResult",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "rolloutUpdateGroup",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "Update",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "childWorkflowRun",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkflowRun",
+      "ofType": null
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "WorkflowJob"
   },
   "WorkflowProjectSourceInput": {
    "enumValues": null,
@@ -2744,7 +10803,8 @@
        "name": null,
        "ofType": {
         "kind": "INPUT_OBJECT",
-        "name": "WorkflowReferencedFileInput"
+        "name": "WorkflowReferencedFileInput",
+        "ofType": null
        }
       }
      }
@@ -2752,6 +10812,365 @@
    ],
    "kind": "INPUT_OBJECT",
    "name": "WorkflowRevisionInput"
+  },
+  "WorkflowRun": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [],
+     "name": "id",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "ID",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "app",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "App",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "workflow",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "Workflow",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "workflowRevision",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkflowRevision",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "name",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "displayTitle",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "status",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "WorkflowRunStatus",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "triggerEventType",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "ENUM",
+       "name": "WorkflowRunTriggerEventType",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "gitCommitHash",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "gitCommitMessage",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "requestedGitRef",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "githubRepository",
+     "type": {
+      "kind": "OBJECT",
+      "name": "GitHubRepository",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "pullRequestNumber",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Int",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "createdAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "updatedAt",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "durationSeconds",
+     "type": {
+      "kind": "SCALAR",
+      "name": "Int",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "finalizedAt",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "actor",
+     "type": {
+      "kind": "INTERFACE",
+      "name": "Actor",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "activityTimestamp",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "errors",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "WorkflowRunError",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "triggeringLabelName",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "triggeringSchedule",
+     "type": {
+      "kind": "SCALAR",
+      "name": "String",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "inputs",
+     "type": {
+      "kind": "SCALAR",
+      "name": "JSONObject",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "sourceExpiresAt",
+     "type": {
+      "kind": "SCALAR",
+      "name": "DateTime",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "retries",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "WorkflowRun",
+         "ofType": null
+        }
+       }
+      }
+     }
+    },
+    {
+     "args": [],
+     "name": "retriedWorkflowRun",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkflowRun",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "parentWorkflowJob",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkflowJob",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "sshSettings",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkflowRunSshSettings",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "cancelReason",
+     "type": {
+      "kind": "UNION",
+      "name": "WorkflowRunCancelReason",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "blockingWorkflowRun",
+     "type": {
+      "kind": "OBJECT",
+      "name": "WorkflowRun",
+      "ofType": null
+     }
+    },
+    {
+     "args": [],
+     "name": "jobs",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "WorkflowJob",
+         "ofType": null
+        }
+       }
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "WorkflowRun"
   },
   "WorkflowRunInput": {
    "enumValues": null,
@@ -2841,11 +11260,213 @@
        "ofType": null
       }
      }
+    },
+    {
+     "args": [
+      {
+       "name": "appId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "projectSource",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "INPUT_OBJECT",
+         "name": "WorkflowProjectSourceInput",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "sdkVersion",
+       "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "createExpoGoRepackWorkflowRun",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowRun",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "workflowRevisionId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "gitRef",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "inputs",
+       "type": {
+        "kind": "SCALAR",
+        "name": "JSONObject",
+        "ofType": null
+       }
+      },
+      {
+       "name": "ssh",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "WorkflowRunSshInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "createWorkflowRunFromGitRef",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowRun",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "workflowRunId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      },
+      {
+       "name": "fromFailedJobs",
+       "type": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      },
+      {
+       "name": "ssh",
+       "type": {
+        "kind": "INPUT_OBJECT",
+        "name": "WorkflowRunSshInput",
+        "ofType": null
+       }
+      }
+     ],
+     "name": "retryWorkflowRun",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowRun",
+       "ofType": null
+      }
+     }
+    },
+    {
+     "args": [
+      {
+       "name": "workflowRunId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "cancelWorkflowRun",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowRun",
+       "ofType": null
+      }
+     }
     }
    ],
    "inputFields": null,
    "kind": "OBJECT",
    "name": "WorkflowRunMutation"
+  },
+  "WorkflowRunQuery": {
+   "enumValues": null,
+   "fields": [
+    {
+     "args": [
+      {
+       "name": "workflowRunId",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ],
+     "name": "byId",
+     "type": {
+      "kind": "NON_NULL",
+      "name": null,
+      "ofType": {
+       "kind": "OBJECT",
+       "name": "WorkflowRun",
+       "ofType": null
+      }
+     }
+    }
+   ],
+   "inputFields": null,
+   "kind": "OBJECT",
+   "name": "WorkflowRunQuery"
   },
   "WorkflowRunStatus": {
    "enumValues": [
@@ -2872,6 +11493,8 @@
     }
    ],
    "fields": null,
+   "inputFields": null,
+   "kind": "ENUM",
    "name": "WorkflowRunStatus"
   }
  }

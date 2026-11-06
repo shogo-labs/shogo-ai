@@ -228,11 +228,20 @@ describe('the App Store Connect JWT avoids the 1200 s bug', () => {
 })
 
 describe('the generated test workflow', () => {
-  it('runs Maestro after the test builds it needs', () => {
+  it('gives each platform its own Maestro job, naming the build it tests', () => {
     const yaml = buildTestWorkflowYaml({ platforms: ['ios', 'android'] })
     expect(yaml).toContain('type: build')
     expect(yaml).toContain('type: maestro')
-    expect(yaml).toContain('needs: ["build_test_ios", "build_test_android"]')
+    // One maestro job per platform: a job takes a single `build_id`, so a shared
+    // job could only ever test one of the two builds, and `needs.*.outputs` is
+    // not a documented selector.
+    expect(yaml).toContain('maestro_ios:')
+    expect(yaml).toContain('maestro_android:')
+    expect(yaml).toContain('needs: ["build_test_ios"]')
+    expect(yaml).toContain('needs: ["build_test_android"]')
+    expect(yaml).toContain('build_id: ${{ needs.build_test_ios.outputs.build_id }}')
+    expect(yaml).toContain('build_id: ${{ needs.build_test_android.outputs.build_id }}')
+    expect(yaml).not.toContain('needs.*')
     expect(yaml).toContain('profile: shogo-test')
   })
 
@@ -240,5 +249,7 @@ describe('the generated test workflow', () => {
     const yaml = buildTestWorkflowYaml({ platforms: ['ios'] })
     expect(yaml).toContain('build_test_ios')
     expect(yaml).not.toContain('build_test_android')
+    expect(yaml).toContain('maestro_ios:')
+    expect(yaml).not.toContain('maestro_android:')
   })
 })

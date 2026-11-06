@@ -117,6 +117,12 @@ export function projectedReleaseRawUsd(input: ProjectedReleaseInput): number {
     raw += buildPriceUsd(build.resourceClass) ?? 0
   }
   if (input.hasTests) {
+    // The test stage builds a simulator/emulator binary per platform, and that
+    // build is charged like any other — so the projection has to include it, or
+    // preflight under-quotes what the release will cost.
+    for (const build of input.builds) {
+      raw += buildPriceUsd(TEST_BUILD_RESOURCE_CLASS[build.platform]) ?? 0
+    }
     raw += NATIVE_MAESTRO_RUN_USD
     raw += (input.testCiMinutes ?? NATIVE_DEFAULT_TEST_CI_MINUTES) * NATIVE_CI_MACOS_MEDIUM_PER_MIN_USD
   }
@@ -154,10 +160,10 @@ export async function meterBuild(opts: {
     return 'failed'
   }
   if (build.meteredAt) return 'skipped'
-  if (build.purpose === 'test') {
-    // The test build is counted in `native_test_run`, not as a store build.
-    return 'skipped'
-  }
+  // A test build is a build: EAS ran a real worker for simulator/emulator build,
+  // and the preflight projection already quotes it. It used to return 'skipped'
+  // here, which is how the test stage ended up free while the customer was still
+  // shown a cost for it. `native_test_run` covers the Maestro run and CI minutes.
 
   const price = buildPriceUsd(build.resourceClass)
   if (price === null) {
@@ -246,6 +252,20 @@ export async function meterTestRun(opts: {
     return 'failed'
   }
   return 'metered'
+}
+
+/**
+ * The resource class the generated `shogo-test` profile pins, and therefore what
+ * a test build is priced at.
+ *
+ * The workflow's build cannot be priced from EAS: `Build` exposes only
+ * `resourceClassDisplayName`. So the class is decided here, pinned in the profile
+ * the runner writes (`eas.json` → `build['shogo-test']`), and used by both the
+ * projection and the meter — the same number quoted is the number charged.
+ */
+export const TEST_BUILD_RESOURCE_CLASS: Record<'ios' | 'android', BuildResourceClass> = {
+  ios: 'IOS_MEDIUM',
+  android: 'ANDROID_MEDIUM',
 }
 
 /** The raw USD a month's Updates MAU represents, past the included allowance. */

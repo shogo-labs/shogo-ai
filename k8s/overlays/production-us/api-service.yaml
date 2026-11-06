@@ -517,6 +517,31 @@ spec:
                   name: api-secrets
                   key: ZERNIO_WEBHOOK_SECRET
                   optional: true
+            # SHO-323 native release (managed mode). A robot on the Shogo Expo
+            # account with Permission.PUBLISH — the lowest level that can build
+            # and submit. Optional until managed mode is switched on, so a deploy
+            # without the secret keeps working; `NATIVE_RELEASE_MODE` decides
+            # whether the server looks at it at all.
+            - name: EXPO_ACCOUNT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: EXPO_ACCOUNT_TOKEN
+                  optional: true
+            - name: EXPO_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: EXPO_ACCOUNT_ID
+                  optional: true
+            - name: EAS_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: EAS_WEBHOOK_SECRET
+                  optional: true
+            - name: NATIVE_RELEASE_MODE
+              value: "byok"
             - name: ELEVENLABS_API_KEY
               valueFrom:
                 secretKeyRef:

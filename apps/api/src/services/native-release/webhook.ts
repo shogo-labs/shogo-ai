@@ -120,6 +120,18 @@ export async function handleEasWebhook(opts: {
 
   const build = await db.nativeBuild.findUnique({ where: { easBuildId } })
   if (!build) {
+    // A test-stage build is started by the workflow, not by us, so it has no row
+    // until the poller adopts it (`adoptWorkflowBuilds`) — that can lag a
+    // delivery by up to one poll interval. Alerting on those made every release
+    // raise a false "unknown build" (the alert that exists to catch a build
+    // someone started by hand), so: while a release is in its test stage the
+    // build is logged, and the alert only fires when there is no release that
+    // could own it.
+    const openTests = await db.nativeRelease.count({ where: { status: 'testing' } })
+    if (openTests > 0) {
+      console.warn('[native-release] build arrived before its workflow was polled', { easBuildId })
+      return { status: 202, body: { ok: true, matched: false, pending_adoption: true } }
+    }
     await alertOps('native_build_unknown', { easBuildId, status: payload.status })
     return { status: 202, body: { ok: true, matched: false } }
   }

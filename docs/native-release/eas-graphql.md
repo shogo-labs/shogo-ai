@@ -85,7 +85,11 @@ mutation {
     createIosBuild(
       appId: "<app id>"
       job: { ...eas-build-job JSON... }
-      metadata: { projectMetadataFile: { type: GCS, bucketKey: "<key from uploadSession>" }, ... }
+      # Every BuildMetadataInput field is optional. Do NOT put the source
+      # archive's bucketKey in `projectMetadataFile`: that field is a JSON file
+      # uploaded through its own EAS_BUILD_GCS_PROJECT_METADATA session, so a
+      # tarball key there fails the build. Omit it; send `fingerprintHash`.
+      metadata: { fingerprintHash: "<sha>" }
       buildParams: { resourceClass: IOS_MEDIUM, expoTokenRole: DEVELOPER }   # BuildResourceClass, not DEFAULT|MEDIUM|LARGE
     ) { id status }
   }
