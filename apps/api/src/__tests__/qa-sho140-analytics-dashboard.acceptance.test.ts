@@ -194,7 +194,24 @@ describe('SHO-140 QA: one request, the same numbers', () => {
     expect(canon(data.summary.summaries)).toEqual(canon(summary.summaries as any))
     expect(data.summary.total).toBe(summary.total)
     expect(canon(data.timeseries)).toEqual(canon(timeseries as any))
-    expect(canon(data.usage)).toEqual(canon(usage as any))
+    // SHO-355: the dashboard breakdown covers the *billed* types only, so it
+    // matches the legacy aggregate minus the internal/never-charged ones
+    // (`ai_proxy_internal` and friends), and adds the category roll-up.
+    const billed = new Set<string>(analytics.USAGE_METERED_ACTION_TYPES as readonly string[])
+    const expectedActions = Object.keys((usage as any).byActionType)
+      .filter((actionType) => billed.has(actionType))
+      .sort()
+    expect(Object.keys((data.usage as any).byActionType).sort()).toEqual(expectedActions)
+    const expectedCount = expectedActions
+      .reduce((sum, actionType) => sum + Number((usage as any).byActionType[actionType].count), 0)
+    expect((data.usage as any).totalEvents).toBe(expectedCount)
+    const expectedSpend = expectedActions
+      .reduce((sum, actionType) => sum + Number((usage as any).byActionType[actionType].totalSpendUsd), 0)
+    expect((data.usage as any).totalSpendUsd).toBeCloseTo(expectedSpend, 9)
+    // The category roll-up accounts for the same dollars as the action rows.
+    const categorySpend = Object.values((data.usage as any).byCategory)
+      .reduce((sum: number, bucket: any) => sum + Number(bucket.totalSpendUsd), 0)
+    expect(categorySpend).toBeCloseTo((data.usage as any).totalSpendUsd, 9)
     expect(data.logCount).toBe(log.total)
     expect(data.window.period).toBe('30d')
   }, 60_000)
@@ -255,7 +272,9 @@ describe('SHO-140 QA: one request, the same numbers', () => {
   }, 90_000)
 
   test('the summary table takes a page size and the page changes the rows', async () => {
-    // 3 members x 3 models = 9 aggregate rows, so page at 4.
+    // 3 members x 3 models x 2 billed categories (chat + voice) = 18 aggregate
+    // rows, so page at 4. SHO-355 added the category to the row key: the same
+    // model billing chat tokens and voice minutes is two lines, not one.
     const first = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=4&page=1`)
     expect(first.data.summary.limit).toBe(4)
     expect(first.data.summary.page).toBe(1)
@@ -264,7 +283,7 @@ describe('SHO-140 QA: one request, the same numbers', () => {
 
     const second = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=4&page=2`)
     expect(second.data.summary.page).toBe(2)
-    const key = (row: any) => `${row.userId}:${row.model ?? ''}`
+    const key = (row: any) => `${row.userId}:${row.model ?? ''}:${row.category ?? ''}`
     const firstIds = first.data.summary.summaries.map(key)
     const secondIds = second.data.summary.summaries.map(key)
     expect(secondIds).not.toEqual(firstIds)
@@ -274,7 +293,7 @@ describe('SHO-140 QA: one request, the same numbers', () => {
     // The panel asks for 50 and gets the default page size it asked for.
     const fifty = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&limit=50&page=1`)
     expect(fifty.data.summary.limit).toBe(50)
-    expect(fifty.data.summary.summaries).toHaveLength(9)
+    expect(fifty.data.summary.summaries).toHaveLength(18)
   }, 60_000)
 
   test('a chart toggle and a log page each cost one request and leave the summary alone', async () => {
@@ -284,12 +303,14 @@ describe('SHO-140 QA: one request, the same numbers', () => {
     const stop = watch(tracker)
     let toggled: any
     try {
-      toggled = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=day&metric=tokens&limit=50`)
+      // A supported series, unlike the old `groupBy=day`, which the route used
+      // to echo back while actually grouping by model (SHO-355 normalizes it).
+      toggled = await call(`/workspaces/${workspaceId}/analytics/dashboard?period=30d&groupBy=category&metric=tokens&limit=50`)
     } finally {
       stop()
     }
     expect(toggled.status).toBe(200)
-    expect(toggled.data.timeseries.groupBy).toBe('day')
+    expect(toggled.data.timeseries.groupBy).toBe('category')
     expect(toggled.data.timeseries.metric).toBe('tokens')
     // Same rows, same window: the toggle must not need a new scan.
     expect(toggled.data.summary.totals).toEqual(first.data.summary.totals)

@@ -47,6 +47,7 @@ import {
   type WorkTotals,
 } from '../lib/engagement-compute'
 import { periodToWindow, type AnalyticsPeriod } from './analytics.service'
+import { BILLED_USAGE_ACTION_TYPE_LIST } from '../config/usage-action-types'
 import { splitUsageCost } from '../lib/usage-cost'
 
 export type EngagementPeriod = AnalyticsPeriod | 'all'
@@ -63,15 +64,13 @@ export const ALL_TIME_DAYS = 730
 
 const isSqlite = () => process.env.SHOGO_LOCAL_MODE === 'true'
 
-const USAGE_ACTIONS = [
-  'ai_proxy_completion',
-  'chat_message',
-  'voice_minutes_inbound',
-  'voice_minutes_outbound',
-  'voice_number_setup',
-  'voice_number_monthly',
-  'ai_live_session_minutes',
-]
+/**
+ * Spend rows for engagement costs. Read from the billing registry, never a local
+ * list: a hand-kept allow-list here silently dropped image/video/3D/music/
+ * transcription/hosting/social spend (SHO-355), which made "cost per active
+ * user" disagree with the Usage dashboard's figure for the same window.
+ */
+const USAGE_ACTIONS: readonly string[] = BILLED_USAGE_ACTION_TYPE_LIST
 
 /** Channel approval cards are matched this far back from the window start, since they are decided after they are posted. */
 const APPROVAL_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
@@ -160,7 +159,7 @@ export async function collectActivity(
     prisma.usageEvent.findMany({
       where: {
         workspaceId: { in: workspaceIds },
-        actionType: { in: USAGE_ACTIONS },
+        actionType: { in: [...USAGE_ACTIONS] },
         createdAt,
         ...(user ? { memberId: user } : { memberId: { not: 'system' } }),
       },

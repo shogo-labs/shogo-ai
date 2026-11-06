@@ -38,6 +38,7 @@ import {
   type WindowLimits,
 } from '../config/usage-plans';
 import { getOveragePriceConfig } from '../config/stripe-prices';
+import type { BilledUsageActionType } from '../config/usage-action-types';
 import { RAW_REGION_ID, PRIMARY_REGION, getPeer } from '../lib/region';
 import { callPeerInternal } from '../lib/region-peer-proxy';
 import {
@@ -1046,7 +1047,12 @@ export interface ConsumeUsageParams {
   billingWorkspaceId?: string
   projectId: string | null
   memberId: string
-  actionType: string
+  /**
+   * Must be registered in `config/usage-action-types.ts`. Typing it here is what
+   * makes a new billed type fail typecheck until it is added to the dashboard
+   * registry (SHO-355).
+   */
+  actionType: BilledUsageActionType
   /** Raw provider cost in USD (no markup). Optional — falls back to billedUsd. */
   rawUsd?: number
   /** Marked-up USD to charge the workspace. */
@@ -1328,7 +1334,10 @@ export async function consumeCredits(
     workspaceId,
     projectId,
     memberId,
-    actionType,
+    // Legacy shim: callers still pass arbitrary strings (`'chat'`, tests pass
+    // `'x'`). Route it through the one registry at the type level without
+    // pretending those values are registered.
+    actionType: actionType as BilledUsageActionType,
     billedUsd,
     actionMetadata,
   })

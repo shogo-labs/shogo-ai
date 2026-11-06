@@ -1,0 +1,363 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * SHO-355 — every billed cost reaches the Usage dashboard.
+ *
+ * A turn that generates an image is charged as **one** `chat_message` row whose
+ * `actionMetadata` itemises the media (`imageBilledUsd`, `imageModels`, …). The
+ * dashboard used to render that row as "Claude Opus $0.42", hiding the image
+ * spend behind the chat model, and it dropped perfectly ordinary media rows
+ * (an `ai_image_generation` charge) because its allow-list never named them.
+ *
+ * This file pins both halves: `expandUsageEvent` re-attributes folded media to
+ * its own line without changing the total, and the read paths (log, summary,
+ * dashboard breakdown) show the media line with its real model, provider and
+ * category — never chat's vendor by default.
+ *
+ *   bun --no-env-file test apps/api/src/services/__tests__/analytics-media-spend.test.ts
+ */
+
+import { beforeAll, describe, expect, test } from 'bun:test'
+import { setupChannelsTestDb } from '../../__tests__/helpers/channels-test-db'
+
+setupChannelsTestDb()
+
+const { prisma } = await import('../../lib/prisma')
+const analytics = await import('../analytics.service')
+const db = prisma as any
+
+const WORKSPACE_SLUG = `media-spend-${crypto.randomUUID().slice(0, 8)}`
+const PERIOD = '30d' as const
+
+/**
+ * The row `proxy-billing-session.ts` writes for a turn that made one image on
+ * top of the chat: $0.40 of tokens plus $0.12 of image generation.
+ */
+const FOLDED_CHAT_ROW = {
+  actionType: 'chat_message',
+  billedUsd: 0.52,
+  rawUsd: 0.4,
+  actionMetadata: {
+    model: 'claude-opus-4-1',
+    provider: 'anthropic',
+    inputTokens: 120_000,
+    outputTokens: 4_000,
+    totalTokens: 124_000,
+    // The itemisation the billing session adds when media rides along.
+    tokenBilledUsd: 0.4,
+    imageBilledUsd: 0.12,
+    imageRawUsd: 0.1,
+    imageGenerationCount: 1,
+    imageModel: 'gpt-image-1',
+    imageModels: ['gpt-image-1'],
+  },
+}
+
+describe('expandUsageEvent', () => {
+  test('a plain chat turn stays one line, untouched', () => {
+    const lines = analytics.expandUsageEvent({
+      actionType: 'chat_message',
+      billedUsd: 0.4,
+      rawUsd: 0.3,
+      actionMetadata: { model: 'claude-opus-4-1', provider: 'anthropic', totalTokens: 100 },
+    })
+    expect(lines).toHaveLength(1)
+    expect(lines[0].actionType).toBe('chat_message')
+    expect(lines[0].billedUsd).toBeCloseTo(0.4, 9)
+  })
+
+  test('a standalone media row is one line and keeps its own model', () => {
+    const lines = analytics.expandUsageEvent({
+      actionType: 'ai_image_generation',
+      billedUsd: 0.12,
+      rawUsd: 0.1,
+      actionMetadata: { model: 'gpt-image-1', provider: 'openai', imageGenerationCount: 1 },
+    })
+    expect(lines).toHaveLength(1)
+    expect(lines[0].actionType).toBe('ai_image_generation')
+    expect(lines[0].meta.model).toBe('gpt-image-1')
+    expect(lines[0].billedUsd).toBeCloseTo(0.12, 9)
+  })
+
+  test('image spend folded into a chat turn becomes its own line', () => {
+    const lines = analytics.expandUsageEvent(FOLDED_CHAT_ROW)
+    expect(lines).toHaveLength(2)
+
+    const chat = lines.find((l) => l.actionType === 'chat_message')!
+    const image = lines.find((l) => l.actionType === 'ai_image_generation')!
+
+    // The chat line keeps only its tokens; the image dollars move off it.
+    expect(chat.billedUsd).toBeCloseTo(0.4, 9)
+    expect(chat.meta.model).toBe('claude-opus-4-1')
+
+    // The media line carries the media model, its generation count, and the
+    // marker that says it came out of a folded turn.
+    expect(image.billedUsd).toBeCloseTo(0.12, 9)
+    expect(image.rawUsd).toBeCloseTo(0.1, 9)
+    expect(image.meta.model).toBe('gpt-image-1')
+    expect(image.meta.foldedIntoChatTurn).toBe(true)
+    expect(image.requests).toBe(1)
+
+    // Splitting only moves dollars between lines.
+    const total = lines.reduce((sum, l) => sum + l.billedUsd, 0)
+    expect(total).toBeCloseTo(FOLDED_CHAT_ROW.billedUsd, 9)
+  })
+
+  test('two media kinds in one turn become two lines, and the count drives requests', () => {
+    const lines = analytics.expandUsageEvent({
+      actionType: 'chat_message',
+      billedUsd: 1.5,
+      rawUsd: 1.2,
+      actionMetadata: {
+        model: 'claude-opus-4-1',
+        provider: 'anthropic',
+        tokenBilledUsd: 0.5,
+        imageBilledUsd: 0.4,
+        imageGenerationCount: 1,
+        imageModel: 'gpt-image-1',
+        videoBilledUsd: 0.6,
+        videoGenerationCount: 4,
+        videoModel: 'veo-3',
+      },
+    })
+    expect(lines.map((l) => l.actionType)).toEqual([
+      'chat_message',
+      'ai_image_generation',
+      'ai_video_generation',
+    ])
+    const video = lines.find((l) => l.actionType === 'ai_video_generation')!
+    // Four generations billed in one row, not one.
+    expect(video.requests).toBe(4)
+    expect(video.meta.model).toBe('veo-3')
+    expect(lines.reduce((sum, l) => sum + l.billedUsd, 0)).toBeCloseTo(1.5, 9)
+  })
+
+  test('a pre-itemisation chat row (no media keys) is not split', () => {
+    const lines = analytics.expandUsageEvent({
+      actionType: 'chat_message',
+      billedUsd: 0.2,
+      rawUsd: 0.15,
+      actionMetadata: { model: 'claude-sonnet-4-5', provider: 'anthropic', totalTokens: 900 },
+    })
+    expect(lines).toHaveLength(1)
+    expect(lines[0].billedUsd).toBeCloseTo(0.2, 9)
+  })
+})
+
+describe('a media line reaches the read paths', () => {
+  let scope: { workspaceId: string }
+  let memberId: string
+
+  beforeAll(async () => {
+    const suffix = crypto.randomUUID().slice(0, 8)
+    const user = await db.user.create({
+      data: { name: 'Media User', email: `media-${suffix}@example.com` },
+    })
+    memberId = user.id
+    const workspace = await db.workspace.create({
+      data: { name: 'Media Usage', slug: WORKSPACE_SLUG, kind: 'team' },
+    })
+    scope = { workspaceId: workspace.id }
+    const now = Date.now()
+    await db.usageEvent.createMany({
+      data: [
+        {
+          workspaceId: workspace.id,
+          projectId: null,
+          memberId,
+          source: 'daily',
+          balanceBefore: 0,
+          balanceAfter: 0,
+          createdAt: new Date(now - 60_000),
+          ...FOLDED_CHAT_ROW,
+        },
+        {
+          workspaceId: workspace.id,
+          projectId: null,
+          memberId,
+          actionType: 'ai_video_generation',
+          source: 'daily',
+          billedUsd: 0.75,
+          rawUsd: 0.6,
+          balanceBefore: 0,
+          balanceAfter: 0,
+          createdAt: new Date(now - 120_000),
+          actionMetadata: { model: 'veo-3', provider: 'google', videoGenerationCount: 2 },
+        },
+      ],
+    })
+  })
+
+  test('the log shows the split image line with its own model and category', async () => {
+    const log = await analytics.getUsageLog(scope, PERIOD)
+    const image = log.entries.find((e: any) => e.actionType === 'ai_image_generation')
+    expect(image).toBeDefined()
+    expect(image!.model).toBe('gpt-image-1')
+    expect(image!.category).toBe('image')
+    // The image was generated by OpenAI — it must not inherit the chat vendor.
+    expect(image!.provider).not.toBe('anthropic')
+    expect(image!.billedUsd).toBeCloseTo(0.12, 9)
+
+    // The chat line remains, with the token cost only.
+    const chat = log.entries.find((e: any) => e.actionType === 'chat_message')
+    expect(chat!.billedUsd).toBeCloseTo(0.4, 9)
+  })
+
+  test('the summary reports a separate image row', async () => {
+    const summary = await analytics.getUsageSummary(scope, PERIOD)
+    const image = summary.summaries.find((row: any) => row.category === 'image')
+    expect(image).toBeDefined()
+    expect(image!.totalBilledUsd).toBeCloseTo(0.12, 9)
+    expect(image!.model).toBe('gpt-image-1')
+  })
+
+  test('the dashboard breakdown bills the media under image/video', async () => {
+    const dashboard = await analytics.getUsageDashboard(scope, { period: PERIOD })
+    expect(dashboard.usage.byActionType.ai_image_generation.count).toBe(1)
+    expect(dashboard.usage.byActionType.ai_video_generation.count).toBe(1)
+    expect(dashboard.usage.byCategory.image.totalSpendUsd).toBeCloseTo(0.12, 9)
+    expect(dashboard.usage.byCategory.video.totalSpendUsd).toBeCloseTo(0.75, 9)
+    // Nothing was lost: the whole window still adds up.
+    expect(dashboard.usage.totalSpendUsd).toBeCloseTo(0.52 + 0.75, 9)
+  })
+
+  test('a voice_* row never renders as its raw tag, and a model-less chat row is unknown', () => {
+    expect(analytics.usageLabelFor('voice_minutes_inbound', {}).model).toBe('Voice · inbound')
+    expect(analytics.usageLabelFor('voice_something_new', {}).model).toBe('Voice')
+    expect(analytics.usageLabelFor('voice_something_new', {}).provider).toBe('elevenlabs')
+    // A billed completion with no recorded model has no better name than this.
+    expect(analytics.usageLabelFor('ai_proxy_completion', {}).model).toBe('unknown')
+  })
+
+  test('hosting and social rows are named, never `unknown`', () => {
+    // These record no model at all, so `unknown` was the only label the rewrite
+    // could give them — the reason SHO-355 came back from QA.
+    const hosting = analytics.usageLabelFor('published_hosting', { podSeconds: 3600 })
+    expect(hosting.model).toBe('Published hosting')
+    expect(hosting.provider).toBe('shogo')
+    expect(hosting.category).toBe('hosting')
+
+    for (const actionType of ['social_account_monthly', 'social_dm', 'social_x_api', 'social_media_lookup']) {
+      const label = analytics.usageLabelFor(actionType, {})
+      expect(label.model, actionType).not.toBe('unknown')
+      expect(label.model.startsWith('Social'), actionType).toBe(true)
+      expect(label.provider, actionType).not.toBe('anthropic')
+      expect(label.category).toBe('social')
+    }
+
+    // A chat completion whose model we failed to record stays honest: guessing
+    // "Chat" would hide the missing metadata instead of surfacing it.
+    expect(analytics.usageLabelFor('ai_proxy_completion', {}).model).toBe('unknown')
+  })
+
+  test('the spend chart draws folded media in its own series, not under chat', async () => {
+    const byCategory = await analytics.getSpendTimeseries(scope, PERIOD, {
+      groupBy: 'category',
+      metric: 'spend',
+    })
+    expect(byCategory.models).toEqual(expect.arrayContaining(['Chat', 'Image', 'Video']))
+
+    const image = byCategory.days.reduce((sum, day) => sum + (day.byModel.Image ?? 0), 0)
+    const chat = byCategory.days.reduce((sum, day) => sum + (day.byModel.Chat ?? 0), 0)
+    const video = byCategory.days.reduce((sum, day) => sum + (day.byModel.Video ?? 0), 0)
+    expect(image).toBeCloseTo(0.12, 6)
+    // The chat line keeps only its tokens: 0.52 total - 0.12 image.
+    expect(chat).toBeCloseTo(0.4, 6)
+    expect(video).toBeCloseTo(0.75, 6)
+    // The split moves dollars; it never creates or loses them.
+    expect(chat + image + video).toBeCloseTo(0.4 + 0.12 + 0.75, 6)
+
+    // Grouping by model names the media model instead of the chat model.
+    const byModel = await analytics.getSpendTimeseries(scope, PERIOD, { groupBy: 'model' })
+    expect(byModel.models).toEqual(expect.arrayContaining(['gpt-image-1', 'veo-3']))
+    expect(byModel.days.reduce((sum, day) => sum + (day.byModel['gpt-image-1'] ?? 0), 0)).toBeCloseTo(0.12, 6)
+  })
+
+  test('the `unknown` sentinel reads as "no model" for every non-chat type', () => {
+    // The scans store a model-less row as the literal 'unknown'. Treating that
+    // as a model name is what made the summary table disagree with the log
+    // (SHO-355 QA round 2), so the resolver — not each reader — owns it.
+    for (const actionType of ['published_hosting', 'social_dm', 'social_x_api', 'ai_audio_transcription']) {
+      expect(analytics.usageLabelFor(actionType, { model: 'unknown' }).model, actionType)
+        .not.toBe('unknown')
+      // An empty string is the same statement as the sentinel.
+      expect(analytics.usageLabelFor(actionType, { model: '' }).model, actionType)
+        .not.toBe('unknown')
+    }
+    expect(analytics.usageLabelFor('published_hosting', { model: 'unknown' }).model)
+      .toBe('Published hosting')
+    // Chat keeps the sentinel on purpose: a completion with no recorded model is
+    // lost metadata, and naming it "Chat" would hide the bug.
+    expect(analytics.usageLabelFor('ai_proxy_completion', { model: 'unknown' }).model).toBe('unknown')
+  })
+
+  test('no summary row outside chat is labelled unknown', async () => {
+    const summary = await analytics.getUsageSummary(scope, PERIOD)
+    const broken = summary.summaries
+      .filter((row: any) => row.category !== null && row.category !== 'chat')
+      .filter((row: any) => row.model === 'unknown')
+    expect(broken).toEqual([])
+  })
+
+  /**
+   * QA's round-3 nit: the model-grouped chart called a model-less chat row
+   * "Chat" while the dashboard beside it said `unknown`. Both now go through
+   * `usageLabelFor`, so the two surfaces cannot disagree again.
+   */
+  test('the model-grouped chart agrees with the table on the `unknown` sentinel', async () => {
+    const suffix = crypto.randomUUID().slice(0, 8)
+    const workspace = await db.workspace.create({
+      data: { name: 'Sentinel Usage', slug: `media-sentinel-${suffix}`, kind: 'team' },
+    })
+    const scope2 = { workspaceId: workspace.id }
+    await db.usageEvent.createMany({
+      data: [
+        {
+          workspaceId: workspace.id,
+          projectId: null,
+          memberId,
+          actionType: 'ai_proxy_completion',
+          source: 'daily',
+          billedUsd: 0.05,
+          rawUsd: 0.04,
+          balanceBefore: 0,
+          balanceAfter: 0,
+          createdAt: new Date(),
+          // A completion whose model we failed to record.
+          actionMetadata: { model: 'unknown', totalTokens: 1_000 },
+        },
+        {
+          workspaceId: workspace.id,
+          projectId: null,
+          memberId,
+          actionType: 'published_hosting',
+          source: 'daily',
+          billedUsd: 0.02,
+          rawUsd: 0.02,
+          balanceBefore: 0,
+          balanceAfter: 0,
+          createdAt: new Date(),
+          actionMetadata: { model: 'unknown', podSeconds: 600 },
+        },
+      ],
+    })
+
+    // An explicit window: this test is about the label, and a period-relative
+    // boundary makes the row timestamps race the clock.
+    const chart = await analytics.getSpendTimeseries(scope2, PERIOD, {
+      groupBy: 'model',
+      fromIso: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+      toIso: new Date(Date.now() + 3 * 60 * 60_000).toISOString(),
+    })
+
+    // The chat row keeps the sentinel, exactly like the dashboard summary.
+    expect(chart.models).toContain('unknown')
+    expect(chart.models).not.toContain('Chat')
+    // The hosting row is named, exactly like the dashboard summary.
+    expect(chart.models).toContain('Published hosting')
+
+    const summary = await analytics.getUsageSummary(scope2, PERIOD)
+    expect(summary.summaries.find((r: any) => r.category === 'chat')!.model).toBe('unknown')
+    expect(summary.summaries.find((r: any) => r.category === 'hosting')!.model).toBe('Published hosting')
+  })
+})

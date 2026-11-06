@@ -25,6 +25,16 @@ import { getChannelBreakdown } from '../services/conversation-metrics'
 // Helpers
 // ============================================================================
 
+/** Group-by values the spend chart understands; anything else falls back to model. */
+const SPEND_GROUP_BYS = ['model', 'workspace', 'user', 'source', 'category'] as const
+type SpendGroupBy = (typeof SPEND_GROUP_BYS)[number]
+
+function parseSpendGroupBy(value: string | null): SpendGroupBy {
+  return value && (SPEND_GROUP_BYS as readonly string[]).includes(value)
+    ? (value as SpendGroupBy)
+    : 'model'
+}
+
 function checkWorkspaceAccess(c: Context, workspaceId: string): Promise<boolean> {
   return can(c, 'workspace:read', { workspaceId })
 }
@@ -177,7 +187,7 @@ export function scopedAnalyticsRoutes(): Hono {
       const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
       const fromIso = url.searchParams.get('from') || undefined
       const toIso = url.searchParams.get('to') || undefined
-      const groupBy = (url.searchParams.get('groupBy') || 'model') as 'model' | 'user' | 'source'
+      const groupBy = parseSpendGroupBy(url.searchParams.get('groupBy'))
       const metric = (url.searchParams.get('metric') || 'spend') as 'spend' | 'tokens' | 'requests'
       const topN = parseInt(url.searchParams.get('topN') || '8', 10)
       const scope = {
@@ -348,7 +358,7 @@ export function scopedAnalyticsRoutes(): Hono {
       const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
       const fromIso = url.searchParams.get('from') || undefined
       const toIso = url.searchParams.get('to') || undefined
-      const groupBy = (url.searchParams.get('groupBy') || 'model') as 'model' | 'user' | 'source'
+      const groupBy = parseSpendGroupBy(url.searchParams.get('groupBy'))
       const metric = (url.searchParams.get('metric') || 'spend') as 'spend' | 'tokens' | 'requests'
       const topN = parseInt(url.searchParams.get('topN') || '8', 10)
       const page = parseInt(url.searchParams.get('page') || '1', 10)
@@ -366,10 +376,13 @@ export function scopedAnalyticsRoutes(): Hono {
       // `/analytics/usage`), so they stay Business-only here — otherwise this
       // endpoint is a way around the plan gate.
       const business = isLocalMode || await isBusinessOrHigherPlan(workspaceId)
+      // The dashboard's grouped scan is scoped to one workspace already, so
+      // `workspace` is not a series it can draw — it falls back to model.
+      const dashboardGroupBy = groupBy === 'workspace' ? 'model' : groupBy
       const [dashboard, chat] = await Promise.all([
         analytics.getUsageDashboard(
           { workspaceId, ...(userId ? { userId } : {}) },
-          { period, fromIso, toIso, groupBy, metric, topN, page, limit },
+          { period, fromIso, toIso, groupBy: dashboardGroupBy, metric, topN, page, limit },
         ),
         business
           ? analytics.getChatAnalytics({ workspaceId }, period)

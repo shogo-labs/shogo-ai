@@ -93,6 +93,8 @@ export interface UsageSummaryEntry {
   userImage: string | null
   model: string
   provider: string
+  /** What the row was: chat, image, video, 3d, music, transcription, voice, hosting, social, native. */
+  category?: string | null
   requestCount: number
   totalInputTokens: number
   totalOutputTokens: number
@@ -143,6 +145,8 @@ export interface UsageLogEntry {
   userImage: string | null
   model: string
   provider: string
+  /** What the row was: chat, image, video, 3d, music, transcription, voice, hosting, social, native. */
+  category?: string | null
   inputTokens: number
   outputTokens: number
   totalTokens: number
@@ -673,10 +677,19 @@ export function UsageSummaryView({
                     {entry.userName || entry.userEmail?.split('@')[0] || '—'}
                   </Text>
                 </View>
-                <View className={cn('self-start rounded-md border px-2 py-1', getModelColor(entry.model))}>
-                  <Text className={cn('text-sm font-medium', getModelTextColor(entry.model))}>
-                    {getModelDisplayName(entry.model)}
-                  </Text>
+                <View className="flex-row flex-wrap items-center gap-1.5">
+                  <View className={cn('self-start rounded-md border px-2 py-1', getModelColor(entry.model))}>
+                    <Text className={cn('text-sm font-medium', getModelTextColor(entry.model))}>
+                      {getModelDisplayName(entry.model)}
+                    </Text>
+                  </View>
+                  {entry.category ? (
+                    <View className="self-start rounded-md border border-border bg-muted/40 px-2 py-1">
+                      <Text className="text-sm font-medium text-muted-foreground">
+                        {USAGE_CATEGORY_LABELS[entry.category] ?? entry.category}
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
                 <View className="flex-row items-center justify-between gap-3">
                   <Text className="text-sm text-muted-foreground">
@@ -815,6 +828,20 @@ export function UsageSummaryView({
   )
 }
 
+/** Human label for a billed category, so an image row says "Image", not a model name. */
+const USAGE_CATEGORY_LABELS: Record<string, string> = {
+  chat: 'Chat',
+  image: 'Image',
+  video: 'Video',
+  '3d': '3D',
+  music: 'Music',
+  transcription: 'Transcription',
+  voice: 'Voice',
+  hosting: 'Hosting',
+  social: 'Social',
+  native: 'Native',
+}
+
 export function UsageEventLogView({
   data,
   onPageChange,
@@ -904,10 +931,19 @@ export function UsageEventLogView({
                     {entry.userName || entry.userEmail?.split('@')[0] || '—'}
                   </Text>
                 </View>
-                <View className={cn('self-start rounded-md border px-2 py-1', getModelColor(entry.model))}>
-                  <Text className={cn('text-sm font-medium', getModelTextColor(entry.model))}>
-                    {getModelDisplayName(entry.model)}
-                  </Text>
+                <View className="flex-row flex-wrap items-center gap-1.5">
+                  <View className={cn('self-start rounded-md border px-2 py-1', getModelColor(entry.model))}>
+                    <Text className={cn('text-sm font-medium', getModelTextColor(entry.model))}>
+                      {getModelDisplayName(entry.model)}
+                    </Text>
+                  </View>
+                  {entry.category ? (
+                    <View className="self-start rounded-md border border-border bg-muted/40 px-2 py-1">
+                      <Text className="text-sm font-medium text-muted-foreground">
+                        {USAGE_CATEGORY_LABELS[entry.category] ?? entry.category}
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
                 <View className="flex-row items-center justify-between">
                   <Text className="text-sm text-muted-foreground">
@@ -987,8 +1023,10 @@ export function UsageEventLogView({
                   {getModelDisplayName(entry.model)}
                 </Text>
               </View>
-              <Text className="w-14 text-right text-[10px] font-mono text-muted-foreground">
-                {formatNumber(entry.totalTokens)}
+              <Text className="w-14 text-right text-[10px] font-mono text-muted-foreground" numberOfLines={1}>
+                {entry.category && entry.category !== 'chat'
+                  ? (USAGE_CATEGORY_LABELS[entry.category] ?? entry.category)
+                  : formatNumber(entry.totalTokens)}
               </Text>
               <View className="w-12 items-end">
                 <Text className="text-right text-[10px] font-mono text-foreground">
@@ -1603,7 +1641,7 @@ export function AIInsightsPanel({
 // Timeseries charts — shared by workspace settings + super admin
 // =============================================================================
 
-export type SpendGroupBy = 'model' | 'workspace' | 'user' | 'source'
+export type SpendGroupBy = 'model' | 'workspace' | 'user' | 'source' | 'category'
 export type SpendMetric = 'spend' | 'tokens' | 'requests'
 
 export interface SpendTimeseriesData {
@@ -1632,6 +1670,7 @@ const GROUP_BY_LABELS: Record<SpendGroupBy, string> = {
   workspace: 'Workspace',
   user: 'User',
   source: 'Source',
+  category: 'Category',
 }
 
 const METRIC_LABELS: Record<SpendMetric, string> = {

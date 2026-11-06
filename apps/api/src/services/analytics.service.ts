@@ -20,7 +20,21 @@ import {
   INTERNAL_ROLE,
   internalEmailClauses,
 } from '../lib/internal-accounts'
-import { resolveModelLabels } from './model-registry.service'
+// Namespace import: analytics is read by suites that double this module with
+// only the label resolver, and a missing catalog lookup must never break an
+// analytics read (see the optional calls below).
+import * as modelRegistry from './model-registry.service'
+import {
+  BILLED_USAGE_ACTION_TYPE_LIST,
+  BILLED_USAGE_ACTION_TYPES,
+  USAGE_CATEGORY_LABELS,
+  USAGE_CATEGORY_ORDER,
+  usageActionLabel,
+  isUnknownModel,
+  usageCategoryFor,
+  usageCategoryLabel,
+  type UsageCategory,
+} from '../config/usage-action-types'
 import { SHOGO_FEE_PERCENT, splitUsageCost } from '../lib/usage-cost'
 import { countLineChanges } from '../lib/tool-line-stats'
 import {
@@ -69,6 +83,216 @@ function voiceLabel(actionType: string): string {
     default:
       return 'Voice'
   }
+}
+
+/**
+ * A billed row's display label: what it was, which model produced it, and which
+ * provider charged for it.
+ *
+ * Every Usage reader (`getUsageLog`, `getMemberInsights`, the dashboard's group
+ * scan) calls this one function, so a row can never be labelled `unknown` /
+ * `anthropic` just because its category is not chat (SHO-355).
+ */
+export interface UsageLabel {
+  /** Billed category; `null` only for a type outside the registry. */
+  category: UsageCategory | null
+  model: string
+  provider: string
+}
+
+/** Provider implied by a model id's vendor prefix. */
+function providerFromModelId(model: string): string | null {
+  const id = model.toLowerCase()
+  if (id.startsWith('gpt-image') || id.startsWith('dall-e') || id.startsWith('whisper') || id.startsWith('gpt-')) return 'openai'
+  if (id.startsWith('imagen') || id.startsWith('lyria') || id.startsWith('veo') || id.startsWith('gemini')) return 'google'
+  if (id.startsWith('hf-') || id.startsWith('higgsfield')) return 'higgsfield'
+  if (id.startsWith('tripo')) return 'tripo'
+  if (id.startsWith('genjutsu')) return 'genjutsu'
+  if (id.startsWith('eleven')) return 'elevenlabs'
+  if (id.startsWith('claude')) return 'anthropic'
+  return null
+}
+
+function categoryDefaultProvider(category: UsageCategory | null): string {
+  switch (category) {
+    case 'voice':
+      return 'elevenlabs'
+    case 'hosting':
+      return 'shogo'
+    case 'social':
+      return 'meta.platform'
+    case 'native':
+      // EAS builds and test runs are Expo's; the meter charges on their behalf.
+      return 'expo'
+    case 'chat':
+      return 'anthropic'
+    default:
+      return 'shogo'
+  }
+}
+
+/**
+ * Resolve one event's label.
+ *
+ * Model: the recorded id (resolved to its catalog display name when
+ * `modelLabels` has it), else the voice label for a `voice_*` row
+ * ("Voice · inbound", or plain "Voice" for a type we have not met yet), else the
+ * type's own name from the registry ("Published hosting", "Social: DM", …).
+ *
+ * A *chat* row with no model stays `unknown`: that is a completion whose model
+ * we failed to record, and guessing "Chat" would hide the bug. Hosting and
+ * social rows have no model to record at all, so their type name is the honest
+ * label (SHO-355 AC3).
+ * Provider: recorded provider, else the catalog entry's provider, else the
+ * vendor prefix, else the category default. `anthropic` is only ever the chat
+ * default.
+ */
+export function usageLabelFor(
+  actionType: string,
+  meta: Record<string, any>,
+  modelLabels?: Map<string, string>,
+): UsageLabel {
+  const category = usageCategoryFor(actionType)
+  // The voice prefix, not registry membership, decides the label: a `voice_*`
+  // type we have not registered yet still bills minutes and must never render
+  // as its raw tag.
+  const isVoice = category === 'voice' || actionType.startsWith('voice_')
+  // `unknown` is the scans' "no model recorded" sentinel, not a model name, so
+  // it must read as absent here — otherwise every reader that forgets to strip
+  // it (the summary table, the model-grouped chart) ships `unknown` while the
+  // log beside it says "Published hosting" (SHO-355 QA round 2).
+  const recordedRaw = isUnknownModel(meta.model) ? meta.modelUsed : meta.model
+  const recordedModel = !isUnknownModel(recordedRaw) ? String(recordedRaw) : null
+  const model = recordedModel
+    ? (modelLabels?.get(recordedModel) ?? recordedModel)
+    : isVoice
+      ? voiceLabel(actionType)
+      : category === 'chat' || category === null
+        ? 'unknown'
+        : usageActionLabel(actionType)
+
+  const recordedProvider = typeof meta.provider === 'string' && meta.provider ? meta.provider : null
+  // Optional-call: some suites mock `model-registry.service` with only the label
+  // resolver, and a missing catalog lookup must never break an analytics read.
+  const catalogProvider = recordedModel
+    ? (modelRegistry.getMergedModelEntrySync?.(recordedModel)?.provider ?? null)
+    : null
+  const provider = recordedProvider
+    ?? catalogProvider
+    ?? (recordedModel ? providerFromModelId(recordedModel) : null)
+    ?? categoryDefaultProvider(isVoice ? 'voice' : category)
+
+  return { category, model, provider }
+}
+
+/** One billable line derived from a stored `usage_events` row. */
+export interface UsageBillingLine {
+  actionType: string
+  /** Metadata for the line; a media line carries its own model/provider. */
+  meta: Record<string, any>
+  billedUsd: number
+  rawUsd: number
+  /** Generations / events this line represents (≥ 1). */
+  requests: number
+}
+
+/**
+ * Media kinds folded into an open billing session's `chat_message` row, with the
+ * metadata keys `proxy-billing-session.ts` writes for each.
+ */
+export const USAGE_MEDIA_META_KEYS: Record<UsageMediaKind, {
+  billed: string
+  raw: string
+  count: string
+  models: string
+  model: string
+}> = {
+  image: { billed: 'imageBilledUsd', raw: 'imageRawUsd', count: 'imageGenerationCount', models: 'imageModels', model: 'imageModel' },
+  video: { billed: 'videoBilledUsd', raw: 'videoRawUsd', count: 'videoGenerationCount', models: 'videoModels', model: 'videoModel' },
+  '3d': { billed: 'threeDBilledUsd', raw: 'threeDRawUsd', count: 'threeDGenerationCount', models: 'threeDModels', model: 'threeDModel' },
+  music: { billed: 'musicBilledUsd', raw: 'musicRawUsd', count: 'musicGenerationCount', models: 'musicModels', model: 'musicModel' },
+}
+
+function metaNumber(meta: Record<string, any>, key: string): number {
+  const value = meta[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function metaModel(meta: Record<string, any>, modelsKey: string, modelKey: string): string | null {
+  const single = meta[modelKey]
+  if (typeof single === 'string' && single) return single
+  const list = meta[modelsKey]
+  if (Array.isArray(list)) {
+    const first = list.find((m) => typeof m === 'string' && m)
+    if (typeof first === 'string') return first
+  }
+  return null
+}
+
+/**
+ * Expand one stored usage row into the lines the dashboard shows.
+ *
+ * A turn that generated images/video/3D/music is charged as **one**
+ * `chat_message` row whose `actionMetadata` itemises the media
+ * (`imageBilledUsd`, `videoBilledUsd`, …). Showing that row as "Claude Opus
+ * $0.42" hides every media cost behind the chat model, so the media part is
+ * re-attributed to its own line. The split only moves dollars between lines —
+ * their sum is always the original row's `billedUsd`/`rawUsd` — and rows
+ * recorded before the itemisation existed (`tokenBilledUsd` absent, no media
+ * keys) come back as the single line they were stored as.
+ */
+export function expandUsageEvent(event: {
+  actionType: string
+  billedUsd: number
+  rawUsd?: number | null
+  actionMetadata?: unknown
+}): UsageBillingLine[] {
+  const meta = parseMeta(event.actionMetadata)
+  const billedUsd = Number(event.billedUsd || 0)
+  const rawUsd = Number(event.rawUsd ?? meta.rawUsd ?? meta.dollarCost ?? 0)
+  const base: UsageBillingLine = {
+    actionType: String(event.actionType),
+    meta,
+    billedUsd,
+    rawUsd,
+    requests: 1,
+  }
+  if (event.actionType !== 'chat_message') return [base]
+
+  const media = USAGE_MEDIA_KINDS.map((kind) => ({
+    kind,
+    actionType: MEDIA_ACTION_TYPES[kind],
+    billedUsd: metaNumber(meta, USAGE_MEDIA_META_KEYS[kind].billed),
+    rawUsd: metaNumber(meta, USAGE_MEDIA_META_KEYS[kind].raw),
+    requests: metaNumber(meta, USAGE_MEDIA_META_KEYS[kind].count),
+    model: metaModel(meta, USAGE_MEDIA_META_KEYS[kind].models, USAGE_MEDIA_META_KEYS[kind].model),
+  })).filter((m) => m.billedUsd > 0 || m.rawUsd > 0)
+  if (media.length === 0) return [base]
+
+  const mediaBilled = media.reduce((sum, m) => sum + m.billedUsd, 0)
+  const mediaRaw = media.reduce((sum, m) => sum + m.rawUsd, 0)
+  const lines: UsageBillingLine[] = [{
+    ...base,
+    billedUsd: Math.max(0, billedUsd - mediaBilled),
+    rawUsd: Math.max(0, rawUsd - mediaRaw),
+  }]
+  for (const m of media) {
+    lines.push({
+      actionType: m.actionType,
+      meta: {
+        model: m.model ?? undefined,
+        // Never inherit the chat row's provider: `gpt-image-1` on a Claude turn
+        // is OpenAI's bill. Leaving it unset lets the label resolver read the
+        // media model's own vendor (registry → prefix → category default).
+        foldedIntoChatTurn: true,
+        ...(meta.chatSessionId ? { chatSessionId: meta.chatSessionId } : {}),
+      },
+      billedUsd: m.billedUsd,
+      rawUsd: m.rawUsd,
+      requests: Math.max(1, Math.trunc(m.requests || 1)),
+    })
+  }
+  return lines
 }
 
 // ============================================================================
@@ -345,20 +569,14 @@ async function countByDay(
 }
 
 /**
- * The action types the Usage tab meters (token / voice usage). Internal,
- * non-billable events (`ai_proxy_internal`, …) are deliberately outside it: the
+ * The action types the Usage tab meters. Single source of truth is
+ * `config/usage-action-types.ts` (SHO-355): every type `consumeUsage` charges is
+ * there, plus its category. Internal, non-billable events (`ai_proxy_internal`,
+ * `title_generation`, `signup_credit_*`, …) are deliberately outside it: the
  * log, the summary, the spend chart and the dashboard's group scan must agree
- * on exactly one set, so it is defined once.
+ * on exactly one set.
  */
-export const USAGE_METERED_ACTION_TYPES = [
-  'ai_proxy_completion',
-  'chat_message',
-  'voice_minutes_inbound',
-  'voice_minutes_outbound',
-  'voice_number_setup',
-  'voice_number_monthly',
-  'ai_live_session_minutes',
-] as const
+export const USAGE_METERED_ACTION_TYPES: readonly string[] = BILLED_USAGE_ACTION_TYPE_LIST
 
 interface UsageModelAggregate {
   userId: string
@@ -412,6 +630,8 @@ function aggregateUsageByModel(
     excludeMemberIds?: Set<string> | null
     modelForEvent?: (event: UsageAggregateEvent, meta: Record<string, any>) => string
     providerForEvent?: (event: UsageAggregateEvent, meta: Record<string, any>) => string
+    /** Defaults to 1; a split media line counts its generations. */
+    requestCountForEvent?: (event: UsageAggregateEvent, meta: Record<string, any>) => number
   } = {},
 ): { aggregateMap: Map<string, UsageModelAggregate>; countedEvents: number } {
   const aggregateMap = new Map<string, UsageModelAggregate>()
@@ -419,8 +639,9 @@ function aggregateUsageByModel(
 
   for (const event of events) {
     if (options.excludeMemberIds?.has(event.memberId)) continue
-    countedEvents += 1
     const meta = parseMeta(event.actionMetadata)
+    const requests = Math.max(1, Math.trunc(options.requestCountForEvent?.(event, meta) ?? 1))
+    countedEvents += requests
     const model = String(
       options.modelForEvent?.(event, meta) ??
       meta.model ??
@@ -446,7 +667,7 @@ function aggregateUsageByModel(
     const existing = aggregateMap.get(key)
 
     if (existing) {
-      existing.requestCount += 1
+      existing.requestCount += requests
       existing.totalInputTokens += inputTokens
       existing.totalOutputTokens += outputTokens
       existing.totalTokens += totalTokens
@@ -463,12 +684,15 @@ function aggregateUsageByModel(
       aggregateMap.set(key, {
         userId: event.memberId,
         model,
+        // Every caller supplies `providerForEvent`; the fallbacks exist so a
+        // future caller cannot silently stamp chat's vendor on a media row.
         provider: String(
           options.providerForEvent?.(event, meta) ??
           meta.provider ??
-          'anthropic',
+          providerFromModelId(model) ??
+          'unknown',
         ),
-        requestCount: 1,
+        requestCount: requests,
         totalInputTokens: inputTokens,
         totalOutputTokens: outputTokens,
         totalTokens,
@@ -1146,30 +1370,41 @@ export async function getMemberInsights(
     return daily
   }
 
-  const { aggregateMap: usageByModel } = aggregateUsageByModel(usageEvents, {
-    modelForEvent: (event, meta) => String(
-      meta.model ||
-      meta.modelUsed ||
-      (event.actionType?.startsWith('voice_') ? voiceLabel(event.actionType) : 'unknown'),
-    ),
-    providerForEvent: (event, meta) =>
-      String(meta.provider || (event.actionType?.startsWith('voice_') ? 'elevenlabs' : 'anthropic')),
+  // A turn that folded image/video/3D/music spend into its `chat_message` row is
+  // re-split into one line per media kind, so a member's per-model rows show
+  // where the money went instead of charging it all to the chat model (SHO-355).
+  const usageLines = usageEvents.flatMap((event) =>
+    expandUsageEvent(event).map((line) => ({
+      memberId: event.memberId,
+      actionType: line.actionType,
+      billedUsd: line.billedUsd,
+      rawUsd: line.rawUsd,
+      actionMetadata: line.meta,
+      createdAt: event.createdAt,
+      requests: line.requests,
+    })),
+  )
+
+  const { aggregateMap: usageByModel } = aggregateUsageByModel(usageLines, {
+    modelForEvent: (event, meta) => usageLabelFor(String(event.actionType ?? ''), meta).model,
+    providerForEvent: (event, meta) => usageLabelFor(String(event.actionType ?? ''), meta).provider,
+    requestCountForEvent: (event: any) => Number(event.requests ?? 1),
   })
 
-  for (const event of usageEvents) {
-    const member = getMember(event.memberId)
-    const meta = parseMeta(event.actionMetadata)
+  for (const line of usageLines) {
+    const member = getMember(line.memberId)
+    const meta = line.actionMetadata as Record<string, any>
     const inputTokens = Number(meta.inputTokens || 0)
     const outputTokens = Number(meta.outputTokens || 0)
     const totalTokens = Number(meta.totalTokens || inputTokens + outputTokens)
-    const spendUsd = Number(event.billedUsd || 0)
+    const spendUsd = Number(line.billedUsd || 0)
     const split = splitUsageCost({
-      billedUsd: event.billedUsd,
-      rawUsd: event.rawUsd,
+      billedUsd: line.billedUsd,
+      rawUsd: line.rawUsd,
       actionMetadata: meta,
     })
 
-    member.requests += 1
+    member.requests += line.requests
     member.inputTokens += inputTokens
     member.outputTokens += outputTokens
     member.totalTokens += totalTokens
@@ -1177,13 +1412,13 @@ export async function getMemberInsights(
     member.modelCostUsd += split.modelCostUsd
     member.shogoFeeUsd += split.shogoFeeUsd
     member.unitemizedUsd += split.unitemizedUsd
-    const date = isoDay(event.createdAt)
+    const date = isoDay(line.createdAt)
     const daily = touchDaily(member, date)
-    daily.requests += 1
+    daily.requests += line.requests
     daily.totalTokens += totalTokens
     daily.spendUsd += spendUsd
-    if (!member.lastActiveAt || event.createdAt > new Date(member.lastActiveAt)) {
-      member.lastActiveAt = event.createdAt.toISOString()
+    if (!member.lastActiveAt || line.createdAt > new Date(member.lastActiveAt)) {
+      member.lastActiveAt = line.createdAt.toISOString()
     }
   }
 
@@ -1237,7 +1472,7 @@ export async function getMemberInsights(
     })
   const userMap = new Map(users.map((user) => [user.id, user]))
   const rawModels = [...memberMap.values()].flatMap((member) => [...member.models.keys()])
-  const modelLabels = await resolveModelLabels(rawModels)
+  const modelLabels = await modelRegistry.resolveModelLabels(rawModels)
 
   const rows = [...memberMap.values()].map((member): MemberInsight => {
     const user = userMap.get(member.userId)
@@ -1373,7 +1608,7 @@ export interface SpendTimeseriesData {
     uniqueModels: number
   }
   models: string[]
-  groupBy: 'model' | 'workspace' | 'user' | 'source'
+  groupBy: 'model' | 'workspace' | 'user' | 'source' | 'category'
   metric: 'spend' | 'tokens' | 'requests'
 }
 
@@ -1393,7 +1628,7 @@ export async function getSpendTimeseries(
   options: {
     fromIso?: string
     toIso?: string
-    groupBy?: 'model' | 'workspace' | 'user' | 'source'
+    groupBy?: 'model' | 'workspace' | 'user' | 'source' | 'category'
     metric?: 'spend' | 'tokens' | 'requests'
     topN?: number
   } = {}
@@ -1449,6 +1684,11 @@ export async function getSpendTimeseries(
 
   const groupDialect = sqlDialect()
   const measureGroup = measure(groupDialect)
+  // Category is a property of the action type, not of the row's JSON, so it is
+  // still one grouped statement (SHO-355).
+  const categoryExpr = `CASE t."actionType" ${Object.entries(BILLED_USAGE_ACTION_TYPES)
+    .map(([actionType, category]) => `WHEN '${actionType}' THEN '${USAGE_CATEGORY_LABELS[category]}'`)
+    .join(' ')} ELSE 'Other' END`
   const seriesExpr =
     groupBy === 'user'
       ? 't."memberId"'
@@ -1456,17 +1696,36 @@ export async function getSpendTimeseries(
         ? 't."workspaceId"'
         : groupBy === 'source'
           ? 't."source"'
-          : measureGroup.rawModel
+          : groupBy === 'category'
+            ? categoryExpr
+            : measureGroup.rawModel
+
+  // Folded media (SHO-355): a `chat_message` row can carry an image/video/3D/
+  // music charge in its metadata. When the series *is* the model or the category
+  // that spend belongs to its own series, so a folded image is not drawn as
+  // Claude tokens — the same split `expandUsageGroups` does for every other
+  // reader. Still one grouped statement: the media sums ride along per cell.
+  const mediaColumns = USAGE_MEDIA_KINDS.map((kind) => {
+    const key = kind === '3d' ? 'threeD' : kind
+    const keys = USAGE_MEDIA_META_KEYS[kind]
+    const num = (field: string) => groupDialect.jsonNumber('t."actionMetadata"', field)
+    return `      COALESCE(SUM(${num(keys.billed)}), 0) AS "${key}Billed",
+        COALESCE(SUM(${num(keys.raw)}), 0) AS "${key}Raw",
+        COALESCE(SUM(${num(keys.count)}), 0) AS "${key}Requests",
+        MIN(${groupDialect.jsonText('t."actionMetadata"', keys.model)}) AS "${key}Model"`
+  }).join(',\n')
 
   const grouped = await prisma.$queryRawUnsafe<any[]>(
     `SELECT ${groupDialect.day('t."createdAt"')} AS "day",
         ${seriesExpr} AS "series",
+        t."actionType" AS "actionType",
         ${groupDialect.sumReal(measureGroup.cost)} AS "spend",
         ${groupDialect.sumReal(measureGroup.tokens)} AS "tokens",
-        COUNT(*) AS "requests"
+        COUNT(*) AS "requests",
+${mediaColumns}
       FROM "usage_events" t
       WHERE ${measureGroup.conditions.join(' AND ')}
-      GROUP BY 1, 2`,
+      GROUP BY 1, 2, 3`,
     ...groupDialect.params,
   )
 
@@ -1495,8 +1754,43 @@ export async function getSpendTimeseries(
   // Resolve model ids → display names when grouping by model (post catalog-uuid
   // migration the stored ids are UUIDs).
   let modelLabels = new Map<string, string>()
+  const splitFolded = groupBy === 'model' || groupBy === 'category'
   if (groupBy === 'model') {
-    modelLabels = await resolveModelLabels(grouped.map((r) => String(r.series)))
+    const ids = new Set(grouped.map((r) => String(r.series)))
+    for (const row of grouped) {
+      for (const kind of USAGE_MEDIA_KINDS) {
+        const model = row[`${kind === '3d' ? 'threeD' : kind}Model`]
+        if (model) ids.add(String(model))
+      }
+    }
+    modelLabels = await modelRegistry.resolveModelLabels([...ids])
+  }
+
+  /**
+   * The media lines a folded chat cell stands for, in the chart's own series.
+   * Without this a folded image was counted under the chat model on the
+   * super-admin chart (SHO-355, QA round 1).
+   */
+  const mediaOf = (row: any): Array<{ series: string; spend: number; requests: number }> => {
+    if (!splitFolded || row.actionType !== 'chat_message') return []
+    const out: Array<{ series: string; spend: number; requests: number }> = []
+    for (const kind of USAGE_MEDIA_KINDS) {
+      const key = kind === '3d' ? 'threeD' : kind
+      const billed = toNum(row[`${key}Billed`])
+      const raw = toNum(row[`${key}Raw`])
+      const requests = toNum(row[`${key}Requests`])
+      if (billed === 0 && raw === 0 && requests === 0) continue
+      const mediaModel = row[`${key}Model`] ? String(row[`${key}Model`]) : null
+      out.push({
+        series: groupBy === 'category'
+          ? USAGE_CATEGORY_LABELS[kind]
+          : (modelLabels.get(mediaModel ?? '') ?? mediaModel ?? USAGE_CATEGORY_LABELS[kind]),
+        // The same rule the chat line uses: billed when charged, else the cost.
+        spend: billed > 0 ? billed : raw,
+        requests,
+      })
+    }
+    return out
   }
 
   // Aggregate {date → {seriesKey → metric value}} and totals
@@ -1513,19 +1807,37 @@ export async function getSpendTimeseries(
           ? (workspaceMap.get(rawSeries) ?? rawSeries)
           : groupBy === 'source'
             ? rawSeries
-            : (modelLabels.get(rawSeries) ?? rawSeries)
+            // Through the resolver, so a model-less row reads the same here as
+            // it does in the log and the table: the type's name for a media
+            // row, and `unknown` for a chat row whose model went missing.
+            : isUnknownModel(rawSeries)
+              ? usageLabelFor(String(row.actionType ?? ''), { model: rawSeries }).model
+              : (modelLabels.get(rawSeries) ?? rawSeries)
 
+    const media = mediaOf(row)
+    // The dollars move off the chat cell onto their own; nothing is added or
+    // dropped, so the day total and the window total are unchanged.
+    const mediaSpend = media.reduce((sum, m) => sum + m.spend, 0)
     const value =
       metric === 'tokens'
         ? toNum(row.tokens)
         : metric === 'requests'
           ? toNum(row.requests)
-          : toNum(row.spend)
+          : toNum(row.spend) - mediaSpend
 
     if (!byDay.has(day)) byDay.set(day, new Map())
     const dayMap = byDay.get(day)!
-    dayMap.set(series, (dayMap.get(series) ?? 0) + value)
-    seriesTotals.set(series, (seriesTotals.get(series) ?? 0) + value)
+    if (value !== 0) {
+      dayMap.set(series, (dayMap.get(series) ?? 0) + value)
+      seriesTotals.set(series, (seriesTotals.get(series) ?? 0) + value)
+    }
+    if (metric === 'tokens') continue
+    for (const part of media) {
+      const mediaValue = metric === 'requests' ? part.requests : part.spend
+      if (mediaValue === 0) continue
+      dayMap.set(part.series, (dayMap.get(part.series) ?? 0) + mediaValue)
+      seriesTotals.set(part.series, (seriesTotals.get(part.series) ?? 0) + mediaValue)
+    }
   }
 
   const totalDialect = sqlDialect()
@@ -2560,6 +2872,10 @@ export interface QualityTimeseriesPoint {
   cacheHitRatio: number
   costPerMessage: number
   costPerActiveUser: number
+  /** Everything the day cost — chat plus every media/billed type (SHO-355). */
+  spendUsd?: number
+  /** The chat-only part of `spendUsd` (tokens), the base of `costPerMessage`. */
+  chatSpendUsd?: number
   agentEscalatedRate: number
   agentLoopRate: number
   agentMaxTurnsRate: number
@@ -2584,6 +2900,7 @@ export async function getQualityTimeseries(
     cacheWrite: number
     input: number
     spend: number
+    chatSpend: number
     activeUsers: number
     messages: number
     runs: number
@@ -2595,7 +2912,7 @@ export async function getQualityTimeseries(
   const ensure = (d: string): Acc => {
     let a = acc.get(d)
     if (!a) {
-      a = { cached: 0, cacheWrite: 0, input: 0, spend: 0, activeUsers: 0, messages: 0, runs: 0, escalated: 0, loop: 0, maxTurns: 0 }
+      a = { cached: 0, cacheWrite: 0, input: 0, spend: 0, chatSpend: 0, activeUsers: 0, messages: 0, runs: 0, escalated: 0, loop: 0, maxTurns: 0 }
       acc.set(d, a)
     }
     return a
@@ -2607,7 +2924,9 @@ export async function getQualityTimeseries(
       const conditions = [
         `t."createdAt" >= ${d.bind(from)}`,
         `t."createdAt" < ${d.bind(to)}`,
-        `t."actionType" IN ('ai_proxy_completion', 'chat_message')`,
+        // Every billed type: the day's cost is everything the user cost, media
+        // included (SHO-355). The per-message figure below stays chat-only.
+        `t."actionType" IN (${USAGE_METERED_ACTION_TYPES.map((type) => `'${type}'`).join(', ')})`,
       ]
       if (scope.workspaceId) conditions.push(`t."workspaceId" = ${d.bind(scope.workspaceId)}`)
       if (scope.projectId) conditions.push(`t."projectId" = ${d.bind(scope.projectId)}`)
@@ -2616,11 +2935,15 @@ export async function getQualityTimeseries(
       const cost = `(CASE WHEN t."billedUsd" > 0 THEN t."billedUsd"
           WHEN t."rawUsd" IS NOT NULL AND t."rawUsd" > 0 THEN t."rawUsd"
           ELSE COALESCE(${d.jsonNumber('t."actionMetadata"', 'rawUsd')}, ${d.jsonNumber('t."actionMetadata"', 'dollarCost')}, 0) END)`
+      // An image hour is not a message cost, so `costPerMessage` keeps the
+      // chat-only spend; the spend line itself is everything.
+      const chatSpend = `(CASE WHEN t."actionType" IN ('ai_proxy_completion', 'chat_message') THEN ${cost} ELSE 0 END)`
       const sql = `SELECT ${d.day('t."createdAt"')} AS "day",
           ${d.sumReal(d.jsonNumber('t."actionMetadata"', 'cachedInputTokens'))} AS "cached",
           ${d.sumReal(d.jsonNumber('t."actionMetadata"', 'cacheWriteTokens'))} AS "cacheWrite",
           ${d.sumReal(d.jsonNumber('t."actionMetadata"', 'inputTokens'))} AS "input",
           ${d.sumReal(cost)} AS "spend",
+          ${d.sumReal(chatSpend)} AS "chatSpend",
           COUNT(DISTINCT CASE WHEN t."memberId" <> 'system' THEN t."memberId" END) AS "activeUsers"
         FROM "usage_events" t
         WHERE ${conditions.join(' AND ')}
@@ -2680,6 +3003,7 @@ export async function getQualityTimeseries(
     a.cacheWrite += toNum(row.cacheWrite)
     a.input += toNum(row.input)
     a.spend += toNum(row.spend)
+    a.chatSpend += toNum(row.chatSpend)
     a.activeUsers += toNum(row.activeUsers)
   }
   for (const [day, count] of messageDays) ensure(day).messages += count
@@ -2705,8 +3029,12 @@ export async function getQualityTimeseries(
     days.push({
       date: key,
       cacheHitRatio: a ? promptCacheHitRatio(a.cached, a.input, a.cacheWrite) : 0,
-      costPerMessage: a && a.messages > 0 ? a.spend / a.messages : 0,
+      // A hosting hour is not a message cost: the per-message figure stays on
+      // chat spend, while cost per active user is everything the user costs.
+      costPerMessage: a && a.messages > 0 ? a.chatSpend / a.messages : 0,
       costPerActiveUser: a && activeUsers > 0 ? a.spend / activeUsers : 0,
+      spendUsd: a?.spend ?? 0,
+      chatSpendUsd: a?.chatSpend ?? 0,
       agentEscalatedRate: a ? pct(a.escalated, a.runs) : 0,
       agentLoopRate: a ? pct(a.loop, a.runs) : 0,
       agentMaxTurnsRate: a ? pct(a.maxTurns, a.runs) : 0,
@@ -2729,6 +3057,8 @@ export interface UsageLogEntry {
   userImage: string | null
   model: string
   provider: string
+  /** Billed category (`chat`, `image`, `voice`, …); null only for unregistered types. */
+  category?: UsageCategory | null
   inputTokens: number
   outputTokens: number
   totalTokens: number
@@ -2748,6 +3078,8 @@ export interface UsageLogEntry {
    * UIs can switch on this to render a badge; older entries may omit it.
    */
   actionType?: string
+  /** Generations/events this line represents (>1 for a split media line). */
+  requests?: number
   /**
    * Metadata snapshot useful for the billing panel (voice call direction,
    * phone numbers, billed minutes). Opaque record — UIs should feature-detect.
@@ -2763,6 +3095,8 @@ export interface UsageSummaryEntry {
   userImage: string | null
   model: string
   provider: string
+  /** Billed category for this user × model row. */
+  category?: UsageCategory | null
   requestCount: number
   totalInputTokens: number
   totalOutputTokens: number
@@ -2835,7 +3169,7 @@ export async function getUsageLog(
 
   // Stored model ids are opaque UUIDs after the catalog-uuid migration; resolve
   // them to human display names (alias / static-catalog aware) for the UI.
-  const modelLabels = await resolveModelLabels(
+  const modelLabels = await modelRegistry.resolveModelLabels(
     events
       .filter((e) => !(typeof e.actionType === 'string' && e.actionType.startsWith('voice_')))
       .map((e) => {
@@ -2844,43 +3178,50 @@ export async function getUsageLog(
       }),
   )
 
-  const entries: UsageLogEntry[] = events.map((event) => {
-    const meta = parseMeta(event.actionMetadata)
+  const entries: UsageLogEntry[] = events.flatMap((event) => {
     const user = userMap.get(event.memberId)
-    const isVoice = typeof event.actionType === 'string' &&
-      event.actionType.startsWith('voice_')
-    const rawModel = meta.model || meta.modelUsed || 'unknown'
-    const split = splitUsageCost({
+    const actionType = String(event.actionType)
+    return expandUsageEvent({
+      actionType,
       billedUsd: event.billedUsd,
       rawUsd: event.rawUsd,
-      actionMetadata: meta,
+      actionMetadata: event.actionMetadata,
+    }).map((line) => {
+      const lineMetaForLabel = line.meta
+      const label = usageLabelFor(line.actionType, lineMetaForLabel, modelLabels)
+      const split = splitUsageCost({
+        billedUsd: line.billedUsd,
+        rawUsd: line.rawUsd,
+        actionMetadata: lineMetaForLabel,
+      })
+      const isFolded = lineMetaForLabel.foldedIntoChatTurn === true
+      return {
+        id: isFolded ? `${event.id}:${line.actionType}` : event.id,
+        userId: event.memberId,
+        userName: user?.name ?? null,
+        userEmail: user?.email ?? event.memberId,
+        userImage: user?.image ?? null,
+        model: label.model,
+        provider: label.provider,
+        category: label.category,
+        inputTokens: isFolded ? 0 : (lineMetaForLabel.inputTokens || 0),
+        outputTokens: isFolded ? 0 : (lineMetaForLabel.outputTokens || 0),
+        totalTokens: isFolded ? 0 : (lineMetaForLabel.totalTokens || 0),
+        billedUsd: line.billedUsd,
+        rawUsd: line.rawUsd,
+        modelCostUsd: split.modelCostUsd,
+        shogoFeeUsd: split.shogoFeeUsd,
+        unitemizedUsd: split.unitemizedUsd,
+        durationMs: isFolded
+          ? 0
+          : ((lineMetaForLabel.durationSeconds ?? 0) * 1000 || lineMetaForLabel.durationMs || 0),
+        success: lineMetaForLabel.success !== false,
+        createdAt: event.createdAt.toISOString(),
+        actionType: line.actionType,
+        requests: line.requests,
+        metadata: lineMetaForLabel as Record<string, unknown>,
+      }
     })
-    return {
-      id: event.id,
-      userId: event.memberId,
-      userName: user?.name ?? null,
-      userEmail: user?.email ?? event.memberId,
-      userImage: user?.image ?? null,
-      model: isVoice
-        ? voiceLabel(event.actionType)
-        : (modelLabels.get(rawModel) ?? rawModel),
-      provider: isVoice ? 'elevenlabs' : (meta.provider || 'anthropic'),
-      inputTokens: meta.inputTokens || 0,
-      outputTokens: meta.outputTokens || 0,
-      totalTokens: meta.totalTokens || 0,
-      billedUsd: event.billedUsd,
-      // The row's own `rawUsd` first: some writers (desktop, live-session
-      // minutes) only put the cost in metadata, but a recorded column wins.
-      rawUsd: event.rawUsd ?? (meta.rawUsd as number | undefined) ?? (meta.dollarCost as number | undefined) ?? 0,
-      modelCostUsd: split.modelCostUsd,
-      shogoFeeUsd: split.shogoFeeUsd,
-      unitemizedUsd: split.unitemizedUsd,
-      durationMs: (meta.durationSeconds ?? 0) * 1000 || meta.durationMs || 0,
-      success: meta.success !== false,
-      createdAt: event.createdAt.toISOString(),
-      actionType: event.actionType,
-      metadata: meta as Record<string, unknown>,
-    }
   })
 
   return { entries, total, page, limit }
@@ -2909,16 +3250,29 @@ export async function getUsageSummary(
   // one-scan aggregate — and that scan is cached (SHO-140, SHO-311). Reading it
   // costs a few thousand group rows instead of ~926k events with their
   // `actionMetadata` (the 7.4 s `/me/analytics/usage-summary`).
-  const groups = await loadUsageGroups(scope, since, new Date())
+  // Media folded into a `chat_message` row is re-attributed before aggregation,
+  // so an image generated on a Claude turn is not billed against Claude.
+  const groups = expandUsageGroups(await loadUsageGroups(scope, since, new Date()))
   const metered = USAGE_METERED_ACTION_TYPES as readonly string[]
 
-  const aggregateMap = new Map<string, UsageModelAggregate>()
+  // One row per (member, model, category): the same model can bill chat tokens
+  // and an image in the window, and those are two different lines.
+  const aggregateMap = new Map<string, UsageModelAggregate & { category: UsageCategory | null }>()
   let countedEvents = 0
   for (const group of groups) {
     if (!metered.includes(group.actionType)) continue
     if (internalIds?.has(group.memberId)) continue
     countedEvents += group.requests
-    const key = `${group.memberId}::${group.model}`
+    const category = usageCategoryFor(group.actionType)
+    // The one shared resolver (plan §4): without it this read path shipped an
+    // empty provider for every non-chat row and `unknown` for hosting/social
+    // (SHO-355 AC3). `modelLabels` still upgrades a raw id to its display name
+    // once it has been read.
+    const { model: label, provider: resolvedProvider } = usageLabelFor(
+      group.actionType,
+      { model: group.model, provider: group.provider },
+    )
+    const key = `${group.memberId}::${label}::${category ?? 'none'}`
     const existing = aggregateMap.get(key)
     if (existing) {
       existing.requestCount += group.requests
@@ -2938,8 +3292,9 @@ export async function getUsageSummary(
     }
     aggregateMap.set(key, {
       userId: group.memberId,
-      model: group.model,
-      provider: group.provider,
+      model: label,
+      provider: resolvedProvider,
+      category,
       requestCount: group.requests,
       totalInputTokens: group.inputTokens,
       totalOutputTokens: group.outputTokens,
@@ -2966,7 +3321,7 @@ export async function getUsageSummary(
 
   // Stored model ids are opaque UUIDs after the catalog-uuid migration; resolve
   // them to human display names for the UI (uniqueModels still counts raw ids).
-  const modelLabels = await resolveModelLabels(
+  const modelLabels = await modelRegistry.resolveModelLabels(
     [...aggregateMap.values()].map((a) => a.model),
   )
 
@@ -2984,8 +3339,12 @@ export async function getUsageSummary(
         userName: user?.name ?? null,
         userEmail: user?.email ?? agg.userId,
         userImage: user?.image ?? null,
+        // `agg.model` is already the display label (the raw id is resolved in the
+        // loop), so the catalog lookup is only a second chance for an id the
+        // label passes through unchanged.
         model: modelLabels.get(agg.model) ?? agg.model,
         provider: agg.provider,
+        category: agg.category,
         requestCount: agg.requestCount,
         totalInputTokens: agg.totalInputTokens,
         totalOutputTokens: agg.totalOutputTokens,
@@ -3068,6 +3427,36 @@ function toolCallWhereFor(scope: AnalyticsScope, since?: Date): any {
  * workspace (SHO-140). Everything the tab shows is a sum over these rows, so
  * the JSON is opened inside the database and only the roll-up travels.
  */
+/**
+ * The media folded into a `chat_message` row, summed for the group.
+ * Billed/raw USD plus how many generations it was, and the model that made it.
+ */
+export interface UsageMediaSplit {
+  billedUsd: number
+  rawUsd: number
+  requests: number
+  model: string | null
+}
+
+export const USAGE_MEDIA_KINDS = ['image', 'video', '3d', 'music'] as const
+export type UsageMediaKind = (typeof USAGE_MEDIA_KINDS)[number]
+
+const MEDIA_ACTION_TYPES: Record<UsageMediaKind, string> = {
+  image: 'ai_image_generation',
+  video: 'ai_video_generation',
+  '3d': 'ai_3d_generation',
+  music: 'ai_music_generation',
+}
+
+function emptyMediaSplits(): Record<UsageMediaKind, UsageMediaSplit> {
+  return {
+    image: { billedUsd: 0, rawUsd: 0, requests: 0, model: null },
+    video: { billedUsd: 0, rawUsd: 0, requests: 0, model: null },
+    '3d': { billedUsd: 0, rawUsd: 0, requests: 0, model: null },
+    music: { billedUsd: 0, rawUsd: 0, requests: 0, model: null },
+  }
+}
+
 interface UsageGroupRow {
   day: string
   memberId: string
@@ -3086,6 +3475,12 @@ interface UsageGroupRow {
   shogoFeeUsd: number
   /** Billed rows with no recorded provider cost (pre-2026-04-24). */
   unitemizedUsd: number
+  /**
+   * Image/video/3D/music spend folded into a `chat_message` turn (the
+   * `generate_image` tool path). `expandUsageGroups` turns each non-zero kind
+   * into its own group so the cost is attributed to the media model (SHO-355).
+   */
+  media: Record<UsageMediaKind, UsageMediaSplit>
   inputTokens: number
   outputTokens: number
   /**
@@ -3108,7 +3503,7 @@ export interface UsageDashboardOptions {
   period?: AnalyticsPeriod
   fromIso?: string
   toIso?: string
-  groupBy?: 'model' | 'user' | 'source'
+  groupBy?: 'model' | 'user' | 'source' | 'category'
   metric?: 'spend' | 'tokens' | 'requests'
   topN?: number
   page?: number
@@ -3132,11 +3527,19 @@ export async function getUsageDashboard(
   const metric = options.metric ?? 'spend'
   const topN = options.topN ?? 8
 
-  const groups = await loadUsageGroups(scope, from, to)
+  const rawGroups = await loadUsageGroups(scope, from, to)
+  // Media folded into a chat turn becomes its own group here, once, so the
+  // summary, the chart and the breakdown all attribute it to the media model
+  // (SHO-355). Totals are unchanged.
+  const groups = expandUsageGroups(rawGroups)
 
   // Everything below is a roll-up of `groups`: no further database reads except
   // the two label lookups (users, model names) and the tool-call count.
   const metered = groups.filter((g) => METERED_ACTION_TYPE_SET.has(g.actionType))
+  // The log's page count is the number of stored events, not of split lines.
+  const meteredEventCount = rawGroups
+    .filter((g) => METERED_ACTION_TYPE_SET.has(g.actionType))
+    .reduce((sum, g) => sum + g.requests, 0)
 
   const memberIds = [...new Set(groups.map((g) => g.memberId))].filter((id) => id !== 'system')
   const models = [...new Set(metered.map((g) => g.model))]
@@ -3147,17 +3550,28 @@ export async function getUsageDashboard(
         where: { id: { in: memberIds } },
         select: { id: true, name: true, email: true, image: true },
       }),
-    resolveModelLabels(models),
+    modelRegistry.resolveModelLabels(models),
     prisma.toolCallLog.count({ where: toolCallWhereFor(scope, from) }),
   ])
   const userMap = new Map(users.map((u) => [u.id, u]))
-  const labelFor = (model: string) => modelLabels.get(model) ?? model
+  const labelFor = (model: string, actionType?: string) =>
+    actionType
+      ? usageLabelFor(actionType, { model }, modelLabels).model
+      : (modelLabels.get(model) ?? model)
+  // The resolver owns the `unknown` sentinel and the category fallback, so no
+  // reader needs its own guard.
+  const displayModelFor = (actionType: string, model: string) =>
+    usageLabelFor(actionType, { model }, modelLabels).model
+  const displayProviderFor = (actionType: string, model: string, provider: string) =>
+    usageLabelFor(actionType, { model, provider: provider || undefined }).provider
 
   return {
     window: { from: from.toISOString(), to: to.toISOString(), period: options.period ?? '30d' },
     summary: buildUsageDashboardSummary(metered, {
       userMap,
       labelFor,
+      displayModelFor,
+      displayProviderFor,
       totalToolCalls,
       page,
       limit,
@@ -3171,8 +3585,8 @@ export async function getUsageDashboard(
       labelFor,
       userMap,
     }),
-    usage: buildUsageDashboardBreakdown(groups),
-    logCount: metered.reduce((sum, g) => sum + g.requests, 0),
+    usage: buildUsageDashboardBreakdown(metered),
+    logCount: meteredEventCount,
   }
 }
 
@@ -3282,7 +3696,7 @@ async function scanUsageGroupsInNode(
     const actionType = String(event.actionType)
     const source = String(event.source)
     const model = String(meta.model ?? meta.modelUsed ?? 'unknown')
-    const provider = String(meta.provider ?? 'anthropic')
+    const provider = String(meta.provider ?? '')
     const key = `${day}::${memberId}::${actionType}::${source}::${model}::${provider}`
 
     let group = groups.get(key)
@@ -3302,6 +3716,7 @@ async function scanUsageGroupsInNode(
         modelCostUsd: 0,
         shogoFeeUsd: 0,
         unitemizedUsd: 0,
+        media: emptyMediaSplits(),
         inputTokens: 0,
         outputTokens: 0,
         totalTokensField: 0,
@@ -3332,6 +3747,21 @@ async function scanUsageGroupsInNode(
     group.cacheWriteTokens += cacheWriteTokens
     group.durationMs += num('durationMs')
     if (meta.pricingUnknown === true) group.unpricedRequests += 1
+
+    // Media folded into this turn's chat row (SHO-355) — split out afterwards.
+    if (actionType === 'chat_message') {
+      for (const kind of USAGE_MEDIA_KINDS) {
+        const keys = USAGE_MEDIA_META_KEYS[kind]
+        const billed = num(keys.billed)
+        const raw = num(keys.raw)
+        if (billed === 0 && raw === 0) continue
+        const splitByKind = group.media[kind]
+        splitByKind.billedUsd += billed
+        splitByKind.rawUsd += raw
+        splitByKind.requests += num(keys.count)
+        if (!splitByKind.model) splitByKind.model = metaModel(meta, keys.models, keys.model)
+      }
+    }
   }
 
   return [...groups.values()]
@@ -3373,7 +3803,7 @@ async function scanUsageGroupsInSql(
   const num = (key: string) => `COALESCE(${numOrNull(key)}, 0)`
 
   const rawModel = `COALESCE("actionMetadata"->>'model', "actionMetadata"->>'modelUsed', 'unknown')`
-  const rawProvider = `COALESCE("actionMetadata"->>'provider', 'anthropic')`
+  const rawProvider = `COALESCE("actionMetadata"->>'provider', '')`
   const rawUnpriced = `CASE WHEN jsonb_typeof("actionMetadata"->'pricingUnknown') = 'boolean' AND ("actionMetadata"->>'pricingUnknown')::boolean THEN 1 ELSE 0 END`
 
   const input = num('inputTokens')
@@ -3403,6 +3833,19 @@ async function scanUsageGroupsInSql(
           WHEN "billedUsd" > 0 AND ${rawKnown} IS NULL THEN "billedUsd"
           ELSE 0
         END`
+
+  // Media folded into a `chat_message` row (SHO-355), one triple per kind plus
+  // the model that produced it. Only chat rows carry them; every other group
+  // gets 0 / NULL, exactly like the Node scan.
+  const mediaColumns = USAGE_MEDIA_KINDS.map((kind) => {
+    const keys = USAGE_MEDIA_META_KEYS[kind]
+    const key = kind === '3d' ? 'threeD' : kind
+    const model = `COALESCE("actionMetadata"->>'${keys.model}', "actionMetadata"->'${keys.models}'->>0)`
+    return `      COALESCE(SUM(${num(keys.billed)}), 0) AS "${key}BilledUsd",
+      COALESCE(SUM(${num(keys.raw)}), 0) AS "${key}RawUsd",
+      COALESCE(SUM(${num(keys.count)}), 0) AS "${key}Requests",
+      MIN(${model}) AS "${key}Model"`
+  }).join(',\n')
 
   const sql = `SELECT
       ${day}                          AS "day",
@@ -3435,45 +3878,145 @@ async function scanUsageGroupsInSql(
       COALESCE(SUM(${cached}), 0)     AS "cachedInputTokens",
       COALESCE(SUM(${cacheWrite}), 0) AS "cacheWriteTokens",
       COALESCE(SUM(${num('durationMs')}), 0) AS "durationMs",
-      COALESCE(SUM(${rawUnpriced}), 0) AS "unpricedRequests"
+      COALESCE(SUM(${rawUnpriced}), 0) AS "unpricedRequests",
+${mediaColumns}
     FROM "usage_events"
     WHERE ${where.join(' AND ')}
     GROUP BY 1, 2, 3, 4, 5, 6`
 
   const rows = await prisma.$queryRawUnsafe<any[]>(sql, ...params)
 
-  return rows.map((r) => ({
-    // `DATE_TRUNC` comes back as a Date through the pg driver; a driver (or a
-    // test double) handing back the raw timestamp string must not lose the
-    // bucket, or the day would never merge with the zero-filled series.
-    day: r.day instanceof Date ? isoDay(r.day) : isoDay(new Date(String(r.day))),
-    memberId: String(r.memberId),
-    actionType: String(r.actionType),
-    source: String(r.source),
-    model: String(r.model ?? 'unknown'),
-    provider: String(r.provider ?? 'anthropic'),
-    requests: Number(r.requests),
-    billedUsd: Number(r.billedUsd),
-    rawUsd: Number(r.rawUsd),
-    metaRawUsd: Number(r.metaRawUsd),
-    costUsd: Number(r.costUsd),
-    modelCostUsd: Number(r.modelCostUsd),
-    shogoFeeUsd: Number(r.shogoFeeUsd),
-    unitemizedUsd: Number(r.unitemizedUsd),
-    inputTokens: Number(r.inputTokens),
-    outputTokens: Number(r.outputTokens),
-    totalTokensField: Number(r.totalTokensField),
-    totalTokens: Number(r.totalTokens),
-    cachedInputTokens: Number(r.cachedInputTokens),
-    cacheWriteTokens: Number(r.cacheWriteTokens),
-    durationMs: Number(r.durationMs),
-    unpricedRequests: Number(r.unpricedRequests),
-  }))
+  return rows.map((r) => {
+    const media = emptyMediaSplits()
+    for (const kind of USAGE_MEDIA_KINDS) {
+      const key = kind === '3d' ? 'threeD' : kind
+      media[kind] = {
+        billedUsd: Number(r[`${key}BilledUsd`] ?? 0),
+        rawUsd: Number(r[`${key}RawUsd`] ?? 0),
+        requests: Number(r[`${key}Requests`] ?? 0),
+        model: r[`${key}Model`] ? String(r[`${key}Model`]) : null,
+      }
+    }
+    return {
+      // `DATE_TRUNC` comes back as a Date through the pg driver; a driver (or a
+      // test double) handing back the raw timestamp string must not lose the
+      // bucket, or the day would never merge with the zero-filled series.
+      day: r.day instanceof Date ? isoDay(r.day) : isoDay(new Date(String(r.day))),
+      memberId: String(r.memberId),
+      actionType: String(r.actionType),
+      source: String(r.source),
+      model: String(r.model ?? 'unknown'),
+      provider: String(r.provider ?? ''),
+      requests: Number(r.requests),
+      billedUsd: Number(r.billedUsd),
+      rawUsd: Number(r.rawUsd),
+      metaRawUsd: Number(r.metaRawUsd),
+      costUsd: Number(r.costUsd),
+      modelCostUsd: Number(r.modelCostUsd),
+      shogoFeeUsd: Number(r.shogoFeeUsd),
+      unitemizedUsd: Number(r.unitemizedUsd),
+      media,
+      inputTokens: Number(r.inputTokens),
+      outputTokens: Number(r.outputTokens),
+      totalTokensField: Number(r.totalTokensField),
+      totalTokens: Number(r.totalTokens),
+      cachedInputTokens: Number(r.cachedInputTokens),
+      cacheWriteTokens: Number(r.cacheWriteTokens),
+      durationMs: Number(r.durationMs),
+      unpricedRequests: Number(r.unpricedRequests),
+    }
+  })
+}
+
+/**
+ * Split a group whose `chat_message` row folded media spend into the media's own
+ * group(s), so the dashboard shows the image/video/3D/music cost against the
+ * model that produced it instead of the chat model (SHO-355).
+ *
+ * Totals are preserved: the media dollars are subtracted from the chat group and
+ * added back as their own groups. A group with no folded media comes back
+ * unchanged, which is every row recorded before the itemisation existed.
+ */
+export function expandUsageGroups(groups: UsageGroupRow[]): UsageGroupRow[] {
+  const out: UsageGroupRow[] = []
+  for (const g of groups) {
+    const present = USAGE_MEDIA_KINDS
+      .map((kind) => ({ kind, split: g.media[kind] }))
+      .filter(({ split }) => split.billedUsd > 0 || split.rawUsd > 0)
+    if (g.actionType !== 'chat_message' || present.length === 0) {
+      out.push(g)
+      continue
+    }
+
+    const mediaBilled = present.reduce((sum, { split }) => sum + split.billedUsd, 0)
+    const mediaRaw = present.reduce((sum, { split }) => sum + split.rawUsd, 0)
+
+    const mediaGroups: UsageGroupRow[] = []
+    let mediaModelCost = 0
+    let mediaFee = 0
+    let mediaUnitemized = 0
+    let mediaCost = 0
+    for (const { kind, split } of present) {
+      const billed = split.billedUsd
+      const raw = split.rawUsd
+      const modelCost = billed > 0 ? Math.min(raw, billed) : raw
+      const fee = billed > 0 ? billed - modelCost : 0
+      const unitemized = billed > 0 && raw <= 0 ? billed : 0
+      const cost = billed > 0 ? billed : raw
+      mediaModelCost += modelCost
+      mediaFee += fee
+      mediaUnitemized += unitemized
+      mediaCost += cost
+      const model = split.model ?? USAGE_CATEGORY_LABELS[usageCategoryFor(MEDIA_ACTION_TYPES[kind]) ?? 'chat']
+      mediaGroups.push({
+        day: g.day,
+        memberId: g.memberId,
+        actionType: MEDIA_ACTION_TYPES[kind],
+        source: g.source,
+        model,
+        provider: usageLabelFor(MEDIA_ACTION_TYPES[kind], { model }).provider,
+        requests: Math.max(1, split.requests),
+        billedUsd: billed,
+        rawUsd: raw,
+        metaRawUsd: raw,
+        costUsd: cost,
+        modelCostUsd: modelCost,
+        shogoFeeUsd: fee,
+        unitemizedUsd: unitemized,
+        media: emptyMediaSplits(),
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokensField: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        durationMs: 0,
+        unpricedRequests: 0,
+      })
+    }
+
+    out.push({
+      ...g,
+      billedUsd: Math.max(0, g.billedUsd - mediaBilled),
+      rawUsd: Math.max(0, g.rawUsd - mediaRaw),
+      costUsd: Math.max(0, g.costUsd - mediaCost),
+      modelCostUsd: Math.max(0, g.modelCostUsd - mediaModelCost),
+      shogoFeeUsd: Math.max(0, g.shogoFeeUsd - mediaFee),
+      unitemizedUsd: Math.max(0, g.unitemizedUsd - mediaUnitemized),
+      media: emptyMediaSplits(),
+    })
+    out.push(...mediaGroups)
+  }
+  return out
 }
 
 interface UsageDashboardLabels {
   userMap: Map<string, { name: string | null; email: string; image: string | null }>
   labelFor: (model: string) => string
+  /** Model label that falls back to the category ("Published hosting"). */
+  displayModelFor?: (actionType: string, model: string) => string
+  /** Provider that falls back per category instead of always `anthropic`. */
+  displayProviderFor?: (actionType: string, model: string, provider: string) => string
   totalToolCalls: number
   page: number
   limit: number
@@ -3482,12 +4025,15 @@ interface UsageDashboardLabels {
 /** Same rows, totals and pagination as `getUsageSummary`. */
 function buildUsageDashboardSummary(
   groups: UsageGroupRow[],
-  { userMap, labelFor, totalToolCalls, page, limit }: UsageDashboardLabels,
+  { userMap, labelFor, displayModelFor, displayProviderFor, totalToolCalls, page, limit }: UsageDashboardLabels,
 ) {
+  const modelLabel = displayModelFor ?? ((_actionType: string, model: string) => labelFor(model))
+  const providerLabel = displayProviderFor ?? ((_actionType: string, _model: string, provider: string) => provider)
   const byMemberModel = new Map<string, {
     memberId: string
     model: string
     provider: string
+    category: UsageCategory | null
     requests: number
     inputTokens: number
     outputTokens: number
@@ -3504,7 +4050,13 @@ function buildUsageDashboardSummary(
   }>()
 
   for (const g of groups) {
-    const key = `${g.memberId}::${g.model}`
+    const label = modelLabel(g.actionType, g.model)
+    // Keyed by category, not action type: `ai_proxy_completion` and
+    // `chat_message` are both chat spend against the same model, so they are one
+    // row — the same grouping `getUsageSummary` uses, which is what keeps the
+    // dashboard equal to the read paths it replaced.
+    const category = usageCategoryFor(g.actionType)
+    const key = `${g.memberId}::${label}::${category ?? 'none'}`
     const agg = byMemberModel.get(key)
     if (agg) {
       agg.requests += g.requests
@@ -3523,8 +4075,9 @@ function buildUsageDashboardSummary(
     } else {
       byMemberModel.set(key, {
         memberId: g.memberId,
-        model: g.model,
-        provider: g.provider,
+        model: label,
+        provider: providerLabel(g.actionType, g.model, g.provider),
+        category,
         requests: g.requests,
         inputTokens: g.inputTokens,
         outputTokens: g.outputTokens,
@@ -3550,8 +4103,9 @@ function buildUsageDashboardSummary(
         userName: user?.name ?? null,
         userEmail: user?.email ?? agg.memberId,
         userImage: user?.image ?? null,
-        model: labelFor(agg.model),
+        model: agg.model,
         provider: agg.provider,
+        category: agg.category,
         requestCount: agg.requests,
         totalInputTokens: agg.inputTokens,
         totalOutputTokens: agg.outputTokens,
@@ -3613,10 +4167,12 @@ function buildUsageDashboardTimeseries(
   }: {
     from: Date
     to: Date
-    groupBy: 'model' | 'user' | 'source'
+    groupBy: 'model' | 'user' | 'source' | 'category'
     metric: 'spend' | 'tokens' | 'requests'
     topN: number
-    labelFor: (model: string) => string
+    // `actionType` lets a model-grouped series fall back to its own category's
+    // name instead of surfacing the `unknown` sentinel (SHO-355 QA round 2).
+    labelFor: (model: string, actionType?: string) => string
     userMap: UsageDashboardLabels['userMap']
   },
 ): SpendTimeseriesData {
@@ -3635,7 +4191,12 @@ function buildUsageDashboardTimeseries(
       ? (userMap.get(g.memberId)?.email || userMap.get(g.memberId)?.name || g.memberId)
       : groupBy === 'source'
         ? g.source
-        : labelFor(g.model)
+        : groupBy === 'category'
+          ? (() => {
+              const category = usageCategoryFor(g.actionType)
+              return category ? USAGE_CATEGORY_LABELS[category] : g.actionType
+            })()
+          : labelFor(g.model, g.actionType)
     // The chart has always read the recorded `totalTokens` field only
     // (`meta.totalTokens || 0` in `getSpendTimeseries`), so a row with no
     // `totalTokens` contributes nothing here even though the summary derives a
@@ -3698,9 +4259,13 @@ function buildUsageDashboardTimeseries(
   }
 }
 
-/** Same breakdown as `getUsageAnalytics` (which counts every event type). */
+/**
+ * Same breakdown as `getUsageAnalytics`, restricted to the billed types, plus the
+ * category roll-up the Usage tab's "Group by: Category" reads (SHO-355).
+ */
 function buildUsageDashboardBreakdown(groups: UsageGroupRow[]) {
-  const byActionType: Record<string, { count: number; totalSpendUsd: number }> = {}
+  const byActionType: Record<string, { count: number; totalSpendUsd: number; category?: UsageCategory }> = {}
+  const byCategory: Record<string, { count: number; totalSpendUsd: number }> = {}
   const bySource: Record<string, number> = {}
   const byMember = new Map<string, number>()
   const daily = new Map<string, number>()
@@ -3710,10 +4275,17 @@ function buildUsageDashboardBreakdown(groups: UsageGroupRow[]) {
   for (const g of groups) {
     totalEvents += g.requests
     totalSpendUsd += g.billedUsd
-    const action = byActionType[g.actionType] ?? { count: 0, totalSpendUsd: 0 }
+    const category = usageCategoryFor(g.actionType)
+    const action = byActionType[g.actionType] ?? { count: 0, totalSpendUsd: 0, category: category ?? undefined }
     action.count += g.requests
     action.totalSpendUsd += g.billedUsd
     byActionType[g.actionType] = action
+    if (category) {
+      const bucket = byCategory[category] ?? { count: 0, totalSpendUsd: 0 }
+      bucket.count += g.requests
+      bucket.totalSpendUsd += g.billedUsd
+      byCategory[category] = bucket
+    }
     bySource[g.source] = (bySource[g.source] ?? 0) + g.billedUsd
     byMember.set(g.memberId, (byMember.get(g.memberId) ?? 0) + g.billedUsd)
     daily.set(g.day, (daily.get(g.day) ?? 0) + g.requests)
@@ -3723,6 +4295,7 @@ function buildUsageDashboardBreakdown(groups: UsageGroupRow[]) {
     totalEvents,
     totalSpendUsd,
     byActionType,
+    byCategory,
     bySource,
     topConsumers: [...byMember.entries()]
       .map(([memberId, spend]) => ({ memberId, totalSpendUsd: spend }))
@@ -5937,7 +6510,7 @@ export async function getWorkspaceHeartbeats(
     totals.workspaceBilledUsd += group.billedUsd
   }
 
-  const modelLabels = await resolveModelLabels(
+  const modelLabels = await modelRegistry.resolveModelLabels(
     configs.map((c) => c.modelName ?? '').filter((id) => !!id),
   )
 
