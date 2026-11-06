@@ -101,13 +101,16 @@ export function nativeNextStep(input: {
   }
 
   if (wantsAndroid && !facts.connections.play.keyAvailable) {
+    // With no publisher account configured (the live byok default) there is no
+    // email to invite, and saying "invite the Shogo publisher account" is an
+    // instruction nobody can carry out. The user's own key is the only way in.
+    const email = facts.connections.play.publisherEmail
     return {
       state: 'play',
       next_action: 'connect_play',
-      user_message: PLAY_INVITE.replace(
-        '{email}',
-        facts.connections.play.publisherEmail ?? 'the Shogo publisher account',
-      ),
+      user_message: email
+        ? PLAY_INVITE.replace('{email}', email)
+        : `Connect a Google Play service account in Project → App stores: Play Console → Setup → API access → create a service account, download its JSON key, and grant it "Release apps to testing tracks" on ${facts.androidPackage}. No publisher account is configured, so the release has nothing to submit with.`,
       links: {},
     }
   }

@@ -45,8 +45,8 @@ import { ensureNativeApp, lockAppIdentifiers, type NativeAppRow } from './apps.s
 import { readAscKey, readByokExpoToken, readPlayKey } from './credentials.service'
 import { findAscAppId } from './signing.service'
 import {
-  playPublisherEmail,
   playRefusalMessage,
+  playMissingAccountMessage,
   probePlayPackage,
   resolvePlayCredentials,
   type PlayKey,
@@ -309,13 +309,13 @@ export async function assertStoreConnections(opts: {
     const resolved = await resolvePlayCredentials(opts.workspaceId, { readByokKey: readPlayKey })
     const packageName = opts.app.androidPackage ?? undefined
     if (!resolved) {
-      const email = playPublisherEmail()
-      throw new NativeReleaseError(
-        412,
-        'connect_play',
-        playRefusalMessage('play_not_invited', { email, packageName }),
-        { next_action: 'connect_play', publisher_email: email },
-      )
+      // Nothing to invite: the workspace has no key and no Shogo publisher is
+      // configured (`NATIVE_RELEASE_MODE=byok` is the live default). Point at the
+      // key the user can actually add.
+      throw new NativeReleaseError(412, 'connect_play', playMissingAccountMessage({ packageName }), {
+        next_action: 'connect_play',
+        publisher_email: null,
+      })
     }
     if (packageName) {
       const probe = await probePlay(resolved.key, packageName)
@@ -748,11 +748,8 @@ async function submitStoreBuildImpl(opts: {
             throw new NativeReleaseError(
               412,
               'connect_play',
-              playRefusalMessage('play_not_invited', {
-                email: playPublisherEmail(),
-                packageName: app.androidPackage ?? undefined,
-              }),
-              { next_action: 'connect_play', publisher_email: playPublisherEmail() },
+              playMissingAccountMessage({ packageName: app.androidPackage ?? undefined }),
+              { next_action: 'connect_play', publisher_email: null },
             )
           }
           return createSubmission(client, {

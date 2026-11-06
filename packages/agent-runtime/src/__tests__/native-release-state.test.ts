@@ -61,6 +61,16 @@ describe('the pre-release states', () => {
     expect(s.user_message.toLowerCase()).not.toContain('json')
   })
 
+  it('asks for a Play key in Project → App stores when there is no publisher to invite', () => {
+    const s = step({
+      connections: { ...READY.connections, play: { keyAvailable: false, publisherEmail: null, firstUploadDone: false } },
+    })
+    expect(s.next_action).toBe('connect_play')
+    expect(s.user_message).toContain('Project → App stores')
+    expect(s.user_message.toLowerCase()).not.toContain('invite')
+    expect(s.user_message).not.toContain('the Shogo publisher account')
+  })
+
   it('explains that the ASC key has to be the user’s', () => {
     const s = step({ connections: { ...READY.connections, asc: { keyAvailable: false, appRecord: false } } }, ['ios'])
     expect(s.next_action).toBe('connect_asc')

@@ -43,6 +43,7 @@ const {
   PLAY_PUBLISHER_ENV,
   PLAY_PUBLISHER_FILE_ENV,
   googleAccessToken,
+  playMissingAccountMessage,
   playPublisherEmail,
   playRefusalMessage,
   probePlayPackage,
@@ -179,6 +180,17 @@ describe('the Play probe', () => {
     const fakeFetch = (async () =>
       new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 })) as unknown as typeof fetch
     await expect(googleAccessToken(key(), { fetchImpl: fakeFetch })).rejects.toThrow('google_token_rejected')
+  })
+
+  it('points at Project → App stores when no publisher is configured at all', () => {
+    // The live case: NATIVE_RELEASE_MODE=byok and no SHOGO_PLAY_PUBLISHER_SA, so
+    // there is no email to invite and "invite the Shogo publisher account" is an
+    // instruction nobody can follow.
+    const msg = playMissingAccountMessage({ packageName: 'ai.shogo.app.cool' })
+    expect(msg).toContain('Project → App stores')
+    expect(msg).toContain('ai.shogo.app.cool')
+    expect(msg.toLowerCase()).not.toContain('invite')
+    expect(msg).not.toContain('the Shogo publisher account')
   })
 
   it('writes the invite step in the user’s words', () => {

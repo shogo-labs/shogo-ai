@@ -13,18 +13,46 @@
  */
 
 import { describe, expect, it } from 'bun:test'
+import { execFileSync } from 'node:child_process'
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 const SRC = join(import.meta.dir, '..')
 
+const topLevelFiles = () =>
+  readdirSync(SRC, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+
 describe('the runtime package contains no React source of its own', () => {
-  it('has no .tsx file at the top of src/', () => {
-    const strays = readdirSync(SRC, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.tsx'))
-      .map((entry) => entry.name)
+  it('has no .tsx or .jsx file at the top of src/', () => {
+    const strays = topLevelFiles()
+      .filter((name) => name.endsWith('.tsx') || name.endsWith('.jsx'))
       .sort()
 
     expect(strays).toEqual([])
+  })
+
+  it('has no untracked file at the top of src/, whatever its extension', () => {
+    // The leak wrote `utils.ts` too — a `.tsx`-only check misses half of it. Every
+    // real module here is tracked, so an untracked one is debris by definition.
+    // Skipped where git is unavailable (a source tarball, a packaged release).
+    let tracked: string[] | null = null
+    try {
+      tracked = execFileSync('git', ['ls-files', '--', '.'], { cwd: SRC, encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => line.split('/').pop()!)
+    } catch {
+      tracked = null
+    }
+    if (!tracked) return
+
+    const trackedNames = new Set(tracked)
+    const untracked = topLevelFiles()
+      .filter((name) => !trackedNames.has(name))
+      .sort()
+
+    expect(untracked).toEqual([])
   })
 })

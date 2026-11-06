@@ -124,6 +124,18 @@ export async function findAscAppId(key: AscApiKey, bundleId: string): Promise<st
     jwt,
     `/v1/apps?filter[bundleId]=${encodeURIComponent(bundleId)}&limit=1`,
   )
+  // A rejected key is not "no app record": 401 means the key was revoked or
+  // mistyped, and 403 means its role cannot list apps. Reporting either as
+  // "create the app in App Store Connect" sends the user to do work that will not
+  // fix anything.
+  if (status === 401 || status === 403) {
+    throw new NativeReleaseError(
+      412,
+      'asc_key_rejected',
+      `App Store Connect rejected the API key (${status}). Re-upload it in Project → App stores — the key may have been revoked, or its role lacks App Manager access.`,
+      { next_action: 'connect_asc', status },
+    )
+  }
   if (status !== 200) return null
   return json?.data?.[0]?.id ?? null
 }

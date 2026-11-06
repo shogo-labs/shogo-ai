@@ -219,6 +219,18 @@ export async function probePlayPackage(
   return { ok: true }
 }
 
+/**
+ * The message when there is no publisher account to invite.
+ *
+ * This is the live byok case: `NATIVE_RELEASE_MODE=byok` means the Shogo publisher
+ * service account may not be configured at all, and "invite the Shogo publisher
+ * account" is then an instruction nobody can follow. The user's own key in
+ * Project → App stores is the only path, so say that.
+ */
+export function playMissingAccountMessage(opts: { packageName?: string } = {}): string {
+  return `Connect a Google Play service account in Project → App stores (Play Console → Setup → API access → create a service account, download its JSON key, then grant it "Release apps to testing tracks" on ${opts.packageName ?? 'this app'}). No publisher account is configured for Shogo, so this release has nothing to submit with.`
+}
+
 /** The message a user gets for each refusal, in the words of the two manual steps. */
 export function playRefusalMessage(code: PlayRefusal, opts: { email?: string | null; packageName?: string }): string {
   const email = opts.email ?? 'the Shogo publisher account'
