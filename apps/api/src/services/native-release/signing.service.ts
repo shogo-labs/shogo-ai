@@ -1,0 +1,214 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * App Store Connect and Google Play, called by us.
+ *
+ * The reason this module exists at all is `expo/eas-cli#4623`: `@expo/apple-utils`
+ * signs the App Store Connect JWT with a lifetime of exactly 1200 s, Apple's hard
+ * maximum, so any positive clock skew (≥ 1 s, routine in a container) makes the
+ * token "1201 s" and Apple answers 401. Every published `eas-cli` through 27.4.1
+ * carries that constant, so there is no version to pin.
+ *
+ * We sign our own instead, at `ASC_JWT_TTL_SECONDS` (1140 s), which leaves a
+ * minute of slack in both directions. `createAscJwt` is the only place a token is
+ * minted, and its `exp - iat` is asserted by a unit test — that assertion is the
+ * regression guard for the whole bug class.
+ *
+ * No `eas-cli` and no `@expo/apple-utils` runs anywhere in this process.
+ */
+
+import { createSign } from 'node:crypto'
+import { NativeReleaseError } from './client'
+import type { AscApiKey } from './credentials.service'
+
+export const ASC_API_BASE = 'https://api.appstoreconnect.apple.com'
+/**
+ * 1140 s, not 1200: Apple rejects a token whose lifetime exceeds 1200 s, and a
+ * 1200 s token is rejected the moment our clock is a second ahead of theirs.
+ */
+export const ASC_JWT_TTL_SECONDS = 1140
+const ASC_AUDIENCE = 'appstoreconnect-v1'
+
+function base64url(input: string | Buffer): string {
+  return Buffer.from(input)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
+/**
+ * Mint an App Store Connect JWT.
+ *
+ * ES256 over the .p8: header `{ alg: 'ES256', kid, typ: 'JWT' }`, claims
+ * `{ iss: issuerId, iat, exp, aud: 'appstoreconnect-v1' }`. Apple expects the
+ * raw `r||s` signature, which is what `dsaEncoding: 'ieee-p1363'` produces — the
+ * DER default is a silent 401.
+ */
+export function createAscJwt(
+  key: Pick<AscApiKey, 'keyP8' | 'keyId' | 'issuerId'>,
+  opts: { now?: number; ttlSeconds?: number } = {},
+): string {
+  const ttl = Math.min(opts.ttlSeconds ?? ASC_JWT_TTL_SECONDS, ASC_JWT_TTL_SECONDS)
+  const iat = Math.floor((opts.now ?? Date.now()) / 1000)
+  const exp = iat + ttl
+
+  const header = base64url(JSON.stringify({ alg: 'ES256', kid: key.keyId, typ: 'JWT' }))
+  const claims = base64url(JSON.stringify({ iss: key.issuerId, iat, exp, aud: ASC_AUDIENCE }))
+  const signingInput = `${header}.${claims}`
+
+  const signer = createSign('SHA256')
+  signer.update(signingInput)
+  signer.end()
+  const signature = signer.sign({ key: key.keyP8, dsaEncoding: 'ieee-p1363' })
+
+  return `${signingInput}.${base64url(signature)}`
+}
+
+/** The lifetime of a minted token, for the guard test and for logging. */
+export function ascJwtLifetimeSeconds(token: string): number {
+  const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString('utf8')) as {
+    iat: number
+    exp: number
+  }
+  return claims.exp - claims.iat
+}
+
+async function ascFetch(
+  jwt: string,
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<{ status: number; json: any }> {
+  const res = await fetch(`${ASC_API_BASE}${path}`, {
+    method: init.method ?? 'GET',
+    headers: {
+      authorization: `Bearer ${jwt}`,
+      'content-type': 'application/json',
+    },
+    body: init.body ? JSON.stringify(init.body) : undefined,
+    signal: AbortSignal.timeout(20_000),
+  })
+  const json = await res.json().catch(() => ({}))
+  return { status: res.status, json }
+}
+
+/**
+ * Validate a key at save time by listing the team's apps. A key that cannot do
+ * this cannot submit a build either, so there is no point storing it.
+ */
+export async function validateAscKey(
+  key: AscApiKey,
+  fetchImpl: typeof ascFetch = ascFetch,
+): Promise<void> {
+  const jwt = createAscJwt(key)
+  const { status, json } = await fetchImpl(jwt, '/v1/apps?limit=1')
+  if (status === 401 || status === 403) {
+    throw new NativeReleaseError(
+      400,
+      'asc_key_rejected',
+      'Apple rejected that key. Check the key id, the issuer id and the team id, and that the key has App Manager access.',
+    )
+  }
+  if (status !== 200) {
+    throw new NativeReleaseError(502, 'asc_unreachable', `App Store Connect answered ${status}.`, {
+      detail: json?.errors?.[0]?.detail,
+    })
+  }
+}
+
+/** Find the App Store Connect app record for a bundle id, for `ascAppIdentifier`. */
+export async function findAscAppId(key: AscApiKey, bundleId: string): Promise<string | null> {
+  const jwt = createAscJwt(key)
+  const { status, json } = await ascFetch(
+    jwt,
+    `/v1/apps?filter[bundleId]=${encodeURIComponent(bundleId)}&limit=1`,
+  )
+  if (status !== 200) return null
+  return json?.data?.[0]?.id ?? null
+}
+
+/**
+ * Validate a Play service account at save time: mint an access token from its
+ * private key, open an edit, delete it. An edit is the cheapest write that
+ * proves the account has release permission on some app.
+ */
+export async function validatePlayKey(
+  credentialsJson: string,
+  opts: { packageName?: string; fetchImpl?: typeof fetch } = {},
+): Promise<void> {
+  const fetchImpl = opts.fetchImpl ?? fetch
+  let parsed: { client_email?: string; private_key?: string; token_uri?: string }
+  try {
+    parsed = JSON.parse(credentialsJson)
+  } catch {
+    throw new NativeReleaseError(400, 'play_key_invalid', 'The Play service-account file is not valid JSON.')
+  }
+  if (!parsed.client_email || !parsed.private_key) {
+    throw new NativeReleaseError(
+      400,
+      'play_key_invalid',
+      'That JSON is not a Google service-account key (client_email and private_key are missing).',
+    )
+  }
+
+  const tokenUri = parsed.token_uri ?? 'https://oauth2.googleapis.com/token'
+  const iat = Math.floor(Date.now() / 1000)
+  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
+  const claims = base64url(
+    JSON.stringify({
+      iss: parsed.client_email,
+      scope: 'https://www.googleapis.com/auth/androidpublisher',
+      aud: tokenUri,
+      iat,
+      exp: iat + 3600,
+    }),
+  )
+  const signer = createSign('SHA256')
+  signer.update(`${header}.${claims}`)
+  signer.end()
+  const assertion = `${header}.${claims}.${base64url(signer.sign(parsed.private_key))}`
+
+  const tokenRes = await fetchImpl(tokenUri, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  })
+  const tokenJson = (await tokenRes.json().catch(() => ({}))) as { access_token?: string }
+  if (!tokenRes.ok || !tokenJson.access_token) {
+    throw new NativeReleaseError(
+      400,
+      'play_key_rejected',
+      'Google rejected that service account. Make sure it is granted release access in Play Console.',
+    )
+  }
+
+  if (!opts.packageName) return
+
+  const base = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(opts.packageName)}/edits`
+  const editRes = await fetchImpl(base, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${tokenJson.access_token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({}),
+    signal: AbortSignal.timeout(20_000),
+  })
+  const edit = (await editRes.json().catch(() => ({}))) as { id?: string }
+  if (!editRes.ok || !edit.id) {
+    throw new NativeReleaseError(
+      400,
+      'play_package_rejected',
+      'That service account cannot publish to this Android package. Check the package name and its Play Console permissions.',
+    )
+  }
+  await fetchImpl(`${base}/${edit.id}`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${tokenJson.access_token}` },
+    signal: AbortSignal.timeout(20_000),
+  }).catch(() => undefined)
+}

@@ -280,6 +280,44 @@ interface UniqueKeyRule {
 }
 
 const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
+  // --- native release (SHO-323) -------------------------------------------
+  {
+    key: 'NativeApp.projectId',
+    category: 'single_tenant_upsert',
+    reason:
+      'One Expo project per Shogo project, created by `ensureNativeApp` which upserts on this key; a project lives in one workspace and its releases are created in that workspace home region.',
+  },
+  {
+    key: 'NativeApp.easAppId',
+    category: 'external_global_id',
+    reason:
+      'Expo assigns the EAS app id and it is globally unique per Expo project; null for a row whose `createApp` has not succeeded yet, and only the row that called `createApp` writes it.',
+  },
+  {
+    key: 'NativeAppCredential.(kind,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One credential per kind per workspace, written by the settings route and upserted; the workspace is homed to one region, so the two writes cannot cross regions.',
+  },
+  {
+    key: 'NativeRelease.workflowRunId',
+    category: 'external_global_id',
+    reason:
+      'EAS assigns the workflow run id and it identifies exactly one run; it is written once, by the API that created the run, right after `createWorkflowRun` returns.',
+  },
+  {
+    key: 'NativeBuild.easBuildId',
+    category: 'external_global_id',
+    reason:
+      'EAS assigns the build id. It is the join key a redelivered webhook lands on, which is exactly why it is unique: two rows for one build would charge twice.',
+  },
+  {
+    key: 'NativeUsageMonth.(month,nativeAppId)',
+    category: 'cron_locked',
+    reason:
+      'One Updates-MAU row per app per month, written only by the `native-update-monthly` sweep, which runs under `withGlobalJobLock` so exactly one region bills a given month.',
+    writer: 'native-update-monthly',
+  },
   // --- signup risk / free trial (added with the signup credit rollout) ----
   {
     key: 'SignupRiskAssessment.userId',
