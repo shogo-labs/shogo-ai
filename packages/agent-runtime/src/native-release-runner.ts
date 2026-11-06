@@ -22,13 +22,15 @@
  */
 
 import { createHash } from 'node:crypto'
-import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, posix, sep } from 'node:path'
 import ignore from 'ignore'
+// `node:child_process` directly would flash a console window on Windows — every
+// spawn in this repo goes through the windowsHide wrapper.
+import { execFile } from '@shogo/shared-runtime/child-process'
 
 const execFileAsync = promisify(execFile)
 

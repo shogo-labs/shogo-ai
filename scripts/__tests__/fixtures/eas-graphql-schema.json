@@ -2846,6 +2846,33 @@
    "inputFields": null,
    "kind": "OBJECT",
    "name": "WorkflowRunMutation"
+  },
+  "WorkflowRunStatus": {
+   "enumValues": [
+    {
+     "name": "NEW"
+    },
+    {
+     "name": "WAITING"
+    },
+    {
+     "name": "IN_PROGRESS"
+    },
+    {
+     "name": "ACTION_REQUIRED"
+    },
+    {
+     "name": "SUCCESS"
+    },
+    {
+     "name": "FAILURE"
+    },
+    {
+     "name": "CANCELED"
+    }
+   ],
+   "fields": null,
+   "name": "WorkflowRunStatus"
   }
  }
 }
