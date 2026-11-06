@@ -23,7 +23,8 @@ setupChannelsTestDb()
 
 const { prisma } = await import('../lib/prisma')
 const analytics = await import('../services/analytics.service')
-const { usageCategoryFor } = await import('../config/usage-action-types')
+const { usageCategoryFor, BILLED_USAGE_ACTION_TYPE_LIST, USAGE_CATEGORY_LABELS, USAGE_CATEGORY_ORDER, usageActionLabel } =
+  await import('../config/usage-action-types')
 const db = prisma as any
 
 const PERIOD = '30d' as const
@@ -59,6 +60,11 @@ const FIXTURES: Array<{ actionType: string; billedUsd: number; rawUsd: number; m
   { actionType: 'social_dm', billedUsd: 0.02, rawUsd: 0.015, meta: { messageId: 'msg_1', units: 1, usedThisMonth: 40 } },
   { actionType: 'social_x_api', billedUsd: 0.03, rawUsd: 0.02, meta: { targetId: 'tgt_1', withLink: false } },
   { actionType: 'social_media_lookup', billedUsd: 0.04, rawUsd: 0.03, meta: { platform: 'instagram', op: 'profile', limit: 10, units: 1 } },
+  // Native release meters (SHO-323, landed on main after this registry): billed
+  // and model-less, so they must read as their own charges, never as hosting.
+  { actionType: 'native_build', billedUsd: 0.60, rawUsd: 0.55, meta: { easBuildId: 'eas_1', platform: 'ios', resourceClass: 'm-medium' } },
+  { actionType: 'native_test_run', billedUsd: 0.25, rawUsd: 0.22, meta: { releaseId: 'rel_1', maestroRuns: 1, ciMinutes: 4 } },
+  { actionType: 'native_update_mau', billedUsd: 0.05, rawUsd: 0.04, meta: { mau: 5 } },
 ]
 
 /** Row types that must never reach the dashboard. */
@@ -152,7 +158,7 @@ describe('SHO-355 AC1 — every billed type reaches every reader', () => {
       expect(action, `breakdown is missing ${fixture.actionType}`).toBeDefined()
       expect(action.count).toBeGreaterThanOrEqual(1)
     }
-    for (const category of ['chat', 'image', 'video', '3d', 'music', 'transcription', 'voice', 'hosting', 'social']) {
+    for (const category of ['chat', 'image', 'video', '3d', 'music', 'transcription', 'voice', 'hosting', 'social', 'native']) {
       expect(summaryCategories.has(category), `summary has no ${category} row`).toBe(true)
       expect(dashboard.usage.byCategory[category], `dashboard has no ${category} bucket`).toBeDefined()
     }
@@ -277,5 +283,59 @@ describe('SHO-355 AC6 — internal and wallet-adjustment rows never appear', () 
 
     const dashboard = await analytics.getUsageDashboard(scope, { period: PERIOD })
     expect(Object.keys(dashboard.usage.byActionType).filter((type) => excluded.has(type))).toEqual([])
+  })
+})
+
+/**
+ * The registry is the contract, so assert it for **every** registered type
+ * rather than the ones this file happens to name: a type added on main (SHO-323's
+ * native meters were) must arrive with a category, a human label and a provider
+ * instead of turning up as `unknown` on the dashboard.
+ */
+describe('SHO-355 AC1/AC3 — the registry itself is complete', () => {
+  test('every billed type resolves to a category, a human label and a provider', () => {
+    for (const actionType of BILLED_USAGE_ACTION_TYPE_LIST) {
+      const category = usageCategoryFor(actionType)
+      expect(category, actionType).not.toBeNull()
+
+      // A model-less row of this type: what the dashboard shows when the
+      // producer recorded no model (hosting, social, native meters).
+      const row = analytics.usageLabelFor(actionType, {})
+      expect(row.model, actionType).toBeTruthy()
+      expect(row.provider, actionType).toBeTruthy()
+      expect(row.provider, actionType).not.toBe('')
+      if (category !== 'chat') {
+        // Non-chat types never have a model in the catalog, so a model-less row
+        // must fall back to its own name — never the `unknown` sentinel.
+        expect(row.model, actionType).not.toBe('unknown')
+        expect(row.model, actionType).not.toBe(actionType)
+      }
+
+      // A per-type name is what a model-less row shows; it must never be the raw tag.
+      expect(usageActionLabel(actionType), actionType).not.toBe(actionType)
+    }
+  })
+
+  test('every category has a label and a place in the legend order', () => {
+    const categories = new Set(BILLED_USAGE_ACTION_TYPE_LIST.map((type) => usageCategoryFor(type)))
+    for (const category of categories) {
+      expect(USAGE_CATEGORY_LABELS[category!], String(category)).toBeTruthy()
+      expect(USAGE_CATEGORY_ORDER, String(category)).toContain(category!)
+    }
+  })
+
+  test('a native release row is its own charge, not hosting', async () => {
+    const log = await analytics.getUsageLog(scope, PERIOD)
+    const build = log.entries.find((entry: any) => entry.actionType === 'native_build')
+    expect(build).toBeDefined()
+    expect(build.model).toBe('EAS build')
+    expect(build.provider).toBe('expo')
+
+    const spend = await analytics.getSpendTimeseries(scope, PERIOD, { groupBy: 'category' })
+    expect(spend.models).toContain('Native')
+    // "Hosting" must stay hosting-only: an EAS build is not published hosting.
+    const hosting = spend.totals.bySeries?.['Hosting']
+    expect(spend.models).not.toContain('EAS build')
+    if (hosting !== undefined) expect(hosting).toBeLessThan(foldedTotal)
   })
 })
