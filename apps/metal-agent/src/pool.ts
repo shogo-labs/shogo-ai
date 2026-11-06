@@ -5192,7 +5192,7 @@ export class MetalWarmPool {
         )
     }
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
-    return { assigned: a, apiMs, readyMs: apiMs + readyMs, drive: wantDriveMiB ?? null }
+    return { assigned: a, apiMs, readyMs: apiMs + readyMs, source, drive: wantDriveMiB ?? null }
   }
 
   /**

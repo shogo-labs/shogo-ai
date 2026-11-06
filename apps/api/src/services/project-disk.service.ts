@@ -117,27 +117,35 @@ export function instanceMinScale(instanceSize: InstanceSizeName): number {
 }
 
 /**
- * Read the guest's own statfs for the workspace drive. Best-effort: a project
- * that isn't running answers null, and nothing here wakes a VM just to measure
- * it. Guest endpoints sit under the auth-gated `/pool` prefix, so the workspace
- * runtime token is required.
+ * Read the guest's own statfs for the workspace drive. Best-effort and
+ * **passive**: it only talks to a runtime that is already up, never resolving a
+ * placement or waking a VM (AC 8 — opening Settings must not cold-boot a
+ * project). A stopped project answers null and the panel says usage appears
+ * while the project is running. Guest endpoints sit under the auth-gated
+ * `/pool` prefix, so the workspace runtime token is required.
  */
 export async function readRuntimeDiskUsage(
   projectId: string,
   workspaceId: string,
   deps: {
-    resolveUrl?: (projectId: string) => Promise<{ url: string }>
+    /** Already-running URL, or null when nothing is up. Must never wake a VM. */
+    peekUrl?: (projectId: string) => string | null | undefined
     token?: (workspaceId: string) => string
     fetchImpl?: typeof fetch
   } = {},
 ): Promise<RuntimeDiskUsage | null> {
   try {
-    const resolveUrl =
-      deps.resolveUrl ?? (async (id: string) => (await import('../lib/resolve-pod-url')).resolveProjectPodUrl(id, { logTag: 'ProjectDisk' }))
+    const peekUrl =
+      deps.peekUrl ??
+      (await (async () => {
+        const { peekMetalProjectUrl } = await import('../lib/metal-warm-pool-controller')
+        return (id: string) => peekMetalProjectUrl(id) ?? null
+      })())
+    const url = peekUrl(projectId)
+    if (!url) return null
     const token =
       deps.token ?? (await import('../lib/workspace-runtime-token')).deriveWorkspaceRuntimeToken
     const fetchImpl = deps.fetchImpl ?? fetch
-    const { url } = await resolveUrl(projectId)
     const base = url.replace(/\/+$/, '')
     const res = await fetchImpl(`${base}/pool/workspace-drive`, {
       headers: { 'x-runtime-token': token(workspaceId) },

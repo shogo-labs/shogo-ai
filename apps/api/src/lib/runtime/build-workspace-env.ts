@@ -142,6 +142,11 @@ export async function buildWorkspaceEnv(
   if (!workspaceId) {
     throw new Error('[buildWorkspaceEnv] workspaceId is required')
   }
+  // Projects the caller wants live in this runtime. The metal branch below
+  // narrows `attachedProjectIds` to the anchor folder, but workspace-drive
+  // sizing still needs the full set: projects attach into a metal runtime after
+  // boot, and the drive must be big enough for the largest one (SHO-349).
+  const requestedMemberIds = [...attachedProjectIds]
   // Metal: a runtime only ever mounts its own anchor project. Other workspace
   // projects stay visible via WORKSPACE_AVAILABLE_PROJECTS and are reached
   // through the remote-tool channel.
@@ -278,15 +283,20 @@ export async function buildWorkspaceEnv(
         ),
       )
       // Workspace-drive size (SHO-349). A project-anchored runtime gets its own
-      // anchor project's request; a bare `ws:<workspaceId>` runtime has no
-      // single project, so it grows for the largest member it mounts.
+      // anchor project's request; a bare `ws:<workspaceId>` runtime mounts no
+      // project folder at boot, but projects DO attach into it live, so it grows
+      // for the largest member the caller asked for. Those rows must be loaded
+      // explicitly: the metal narrowing above already emptied `attachedProjectIds`
+      // (and therefore `rows`), so sizing off `rows` would always read the default.
       const anchorRow = opts.anchorProjectId ? rows.find((r) => r.id === opts.anchorProjectId) : undefined
-      const requestedDiskGiB = anchorRow
-        ? anchorRow.workspaceDiskGiB
-        : rows.reduce<number | null>((max, r) => {
-            if (typeof r.workspaceDiskGiB !== 'number') return max
-            return max === null || r.workspaceDiskGiB > max ? r.workspaceDiskGiB : max
-          }, null)
+      let requestedDiskGiB = anchorRow?.workspaceDiskGiB ?? null
+      if (!opts.anchorProjectId && requestedMemberIds.length > 0) {
+        const memberRows = await loadProjects(requestedMemberIds)
+        requestedDiskGiB = memberRows.reduce<number | null>((max, r) => {
+          if (typeof r.workspaceDiskGiB !== 'number') return max
+          return max === null || r.workspaceDiskGiB > max ? r.workspaceDiskGiB : max
+        }, null)
+      }
       env.SHOGO_VM_DISK_MIB = String(resolveWorkspaceDiskMiB(requestedDiskGiB, workspaceInstanceSize))
       // Paid tiers stay warm, as their single-project runtimes already do.
       // Only with the pooled budget on: it is what bounds how many of a

@@ -940,6 +940,20 @@ export class MetalWarmPoolController {
     return this.resolveRuntime(projectId, () => this.envBuilder(projectId, { forMetal: true }))
   }
 
+  /**
+   * The project's runtime URL **only if it is already up right now** — no
+   * assign, no resume, no lease (SHO-349). A settings read must never cold-boot
+   * a microVM just to display a number, so callers that only want a passive
+   * measurement (GET /disk) use this and treat `undefined` as "not running".
+   *
+   * Reads the same URL cache `resolveRuntime` populates, for both keys a
+   * project can live under: its anchored workspace runtime (`ws:proj:<id>`,
+   * what Studio opens) and its bare/legacy project key.
+   */
+  peekCachedUrl(projectId: string): string | undefined {
+    return this.getCachedUrl(workspaceRuntimeKey('', projectId)) ?? this.getCachedUrl(projectId)
+  }
+
   /** Resolve a merged-root workspace microVM on Metal. */
   async getMetalWorkspaceUrl(
     workspaceId: string,
@@ -2249,6 +2263,15 @@ export async function metalIdleDirectiveFor(region: string, prevTier: IdleTier |
 
 export async function getMetalProjectUrl(projectId: string): Promise<string> {
   return getMetalWarmPoolController().getMetalProjectUrl(projectId)
+}
+
+/**
+ * A project's runtime URL only when it is already running — never wakes it
+ * (SHO-349). Undefined means "not up", so callers report absence instead of
+ * paying for a cold boot.
+ */
+export function peekMetalProjectUrl(projectId: string): string | undefined {
+  return getMetalWarmPoolController().peekCachedUrl(projectId)
 }
 
 /** Project-scoped runtime status on metal (substrate.getStatus). */

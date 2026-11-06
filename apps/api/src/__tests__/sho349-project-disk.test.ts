@@ -20,6 +20,7 @@ import {
   describeProjectDisk,
   instanceMinScale,
   planDiskChange,
+  readRuntimeDiskUsage,
 } from '../services/project-disk.service'
 import { diskStringToMiB } from '../lib/metal-warm-pool-controller'
 
@@ -135,5 +136,56 @@ describe('diskStringToMiB', () => {
     expect(diskStringToMiB('')).toBeUndefined()
     expect(diskStringToMiB('lots')).toBeUndefined()
     expect(diskStringToMiB('-5Gi')).toBeUndefined()
+  })
+})
+
+describe('readRuntimeDiskUsage (passive)', () => {
+  const okFetch = (body: unknown, calls: string[]): typeof fetch =>
+    (async (url: string) => {
+      calls.push(String(url))
+      return new Response(JSON.stringify(body), { status: 200 })
+    }) as unknown as typeof fetch
+
+  it('never wakes a project: no URL means no request at all', async () => {
+    // AC 8 — opening Settings → Disk on a sleeping project must not cold-boot a
+    // VM. The passive resolver answers undefined, so nothing is fetched.
+    const calls: string[] = []
+    const usage = await readRuntimeDiskUsage('p1', 'ws-1', {
+      peekUrl: () => undefined,
+      token: () => 'tok',
+      fetchImpl: okFetch({ usedBytes: 1, totalBytes: 2 }, calls),
+    })
+    expect(usage).toBeNull()
+    expect(calls).toEqual([])
+  })
+
+  it('reads statfs from a runtime that is already up', async () => {
+    const calls: string[] = []
+    const usage = await readRuntimeDiskUsage('p1', 'ws-1', {
+      peekUrl: () => 'http://10.0.0.5:8080/',
+      token: () => 'tok',
+      fetchImpl: okFetch({ usedBytes: 3 * 1024 ** 3, totalBytes: 40 * 1024 ** 3 }, calls),
+    })
+    expect(calls).toEqual(['http://10.0.0.5:8080/pool/workspace-drive'])
+    expect(usage).toEqual({ usedBytes: 3 * 1024 ** 3, totalBytes: 40 * 1024 ** 3 })
+  })
+
+  it('answers null for a non-2xx or a malformed body instead of throwing', async () => {
+    const notOk = (async () => new Response('nope', { status: 409 })) as unknown as typeof fetch
+    expect(
+      await readRuntimeDiskUsage('p1', 'ws-1', {
+        peekUrl: () => 'http://10.0.0.5:8080',
+        token: () => 'tok',
+        fetchImpl: notOk,
+      }),
+    ).toBeNull()
+    const junk = okFetch({ used: 1 }, [])
+    expect(
+      await readRuntimeDiskUsage('p1', 'ws-1', {
+        peekUrl: () => 'http://10.0.0.5:8080',
+        token: () => 'tok',
+        fetchImpl: junk,
+      }),
+    ).toBeNull()
   })
 })

@@ -22,7 +22,7 @@
  *     is the serial console — never the workspace.
  */
 
-import { execFile } from 'node:child_process'
+import { execFile } from '@shogo/shared-runtime/child-process'
 import { statfs } from 'node:fs/promises'
 
 /** Where fc-init mounts the workspace drive (`build-runtime-rootfs.sh`). */
