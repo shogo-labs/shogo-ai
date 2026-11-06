@@ -823,6 +823,104 @@ export async function publishOps(
 }
 
 // ---------------------------------------------------------------------------
+// Native release (SHO-323) — backs the `publish` tool's `target`/`track`/
+// `release_id` arguments. The pod has no Expo token: these routes start the
+// release in the API, which holds it.
+// ---------------------------------------------------------------------------
+
+export interface NativeReleaseState {
+  mode: 'cloud' | 'relay' | 'byok'
+  app: {
+    bundleIdentifier: string | null
+    androidPackage: string | null
+    easAppId: string | null
+    idsLockedAt: string | null
+  } | null
+  needsBundleId: boolean
+  defaultBundleIdentifier: string
+  defaultAndroidPackage: string
+}
+
+export async function getNativeReleaseState(
+  projectId: string,
+): Promise<CheckpointCallResult<NativeReleaseState>> {
+  return publishFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/native/state`,
+    { method: 'GET', parse: (j) => j as NativeReleaseState },
+    30_000,
+  )
+}
+
+export interface StartNativeReleaseInput {
+  platforms: ('ios' | 'android')[]
+  track: 'internal' | 'testflight' | 'production'
+  fingerprint: string
+  hasMaestroFlows: boolean
+  jobDraft?: Record<string, unknown>
+}
+
+export interface StartNativeReleaseResult {
+  releaseId: string
+  kind: 'build' | 'update'
+  mode: 'cloud' | 'relay' | 'byok'
+  uploads: { kind: 'source' | 'metadata' | 'workflow'; url: string; bucketKey: string }[]
+}
+
+export async function startNativeRelease(
+  projectId: string,
+  input: StartNativeReleaseInput,
+): Promise<CheckpointCallResult<StartNativeReleaseResult>> {
+  return publishFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/native/releases`,
+    { method: 'POST', body: JSON.stringify(input), parse: (j) => j as StartNativeReleaseResult },
+    120_000,
+  )
+}
+
+export async function uploadNativeSources(
+  projectId: string,
+  releaseId: string,
+  input: { bucketKey: string; jobDraft?: Record<string, unknown> },
+): Promise<CheckpointCallResult<{ status: string; workflowRunId?: string }>> {
+  return publishFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/native/releases/${encodeURIComponent(releaseId)}/sources`,
+    { method: 'POST', body: JSON.stringify(input), parse: (j) => j as { status: string } },
+    120_000,
+  )
+}
+
+export interface NativeReleaseRow {
+  id: string
+  status: string
+  step: string | null
+  error: string | null
+  kind: 'build' | 'update'
+  track: string
+  platforms: string[]
+  testOutcome: string | null
+  workflowRunId: string | null
+  builds: {
+    platform: string
+    purpose: string
+    status: string
+    resourceClass: string | null
+    submissionStatus: string | null
+    meterStatus: string | null
+  }[]
+}
+
+export async function getNativeRelease(
+  projectId: string,
+  releaseId: string,
+): Promise<CheckpointCallResult<{ release: NativeReleaseRow }>> {
+  return publishFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/native/releases/${encodeURIComponent(releaseId)}`,
+    { method: 'GET', parse: (j) => j as { release: NativeReleaseRow } },
+    30_000,
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Custom domain wrappers — back the `publish` tool's `domain_action`
 // (SHO-304). Same internal routes the publish panel's session routes serve,
 // so the agent reads/writes exactly what Settings → Custom domain shows.
