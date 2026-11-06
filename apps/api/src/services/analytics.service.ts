@@ -30,6 +30,7 @@ import {
   USAGE_CATEGORY_LABELS,
   USAGE_CATEGORY_ORDER,
   usageActionLabel,
+  isUnknownModel,
   usageCategoryFor,
   usageCategoryLabel,
   type UsageCategory,
@@ -153,11 +154,12 @@ export function usageLabelFor(
   // type we have not registered yet still bills minutes and must never render
   // as its raw tag.
   const isVoice = category === 'voice' || actionType.startsWith('voice_')
-  const recordedModel = typeof meta.model === 'string' && meta.model
-    ? meta.model
-    : typeof meta.modelUsed === 'string' && meta.modelUsed
-      ? meta.modelUsed
-      : null
+  // `unknown` is the scans' "no model recorded" sentinel, not a model name, so
+  // it must read as absent here — otherwise every reader that forgets to strip
+  // it (the summary table, the model-grouped chart) ships `unknown` while the
+  // log beside it says "Published hosting" (SHO-355 QA round 2).
+  const recordedRaw = isUnknownModel(meta.model) ? meta.modelUsed : meta.model
+  const recordedModel = !isUnknownModel(recordedRaw) ? String(recordedRaw) : null
   const model = recordedModel
     ? (modelLabels?.get(recordedModel) ?? recordedModel)
     : isVoice
@@ -1802,7 +1804,9 @@ ${mediaColumns}
           ? (workspaceMap.get(rawSeries) ?? rawSeries)
           : groupBy === 'source'
             ? rawSeries
-            : (modelLabels.get(rawSeries) ?? rawSeries)
+            : isUnknownModel(rawSeries)
+              ? usageActionLabel(String(row.actionType ?? ''))
+              : (modelLabels.get(rawSeries) ?? rawSeries)
 
     const media = mediaOf(row)
     // The dollars move off the chat cell onto their own; nothing is added or
@@ -3544,16 +3548,16 @@ export async function getUsageDashboard(
     prisma.toolCallLog.count({ where: toolCallWhereFor(scope, from) }),
   ])
   const userMap = new Map(users.map((u) => [u.id, u]))
-  const labelFor = (model: string) => modelLabels.get(model) ?? model
-  // A row's model/provider never falls back to 'unknown'/'anthropic' just because
-  // it is not a chat model: the category label and its provider are the fallback.
+  const labelFor = (model: string, actionType?: string) =>
+    actionType
+      ? usageLabelFor(actionType, { model }, modelLabels).model
+      : (modelLabels.get(model) ?? model)
+  // The resolver owns the `unknown` sentinel and the category fallback, so no
+  // reader needs its own guard.
   const displayModelFor = (actionType: string, model: string) =>
-    usageLabelFor(actionType, { model: model === 'unknown' ? undefined : model }, modelLabels).model
+    usageLabelFor(actionType, { model }, modelLabels).model
   const displayProviderFor = (actionType: string, model: string, provider: string) =>
-    usageLabelFor(actionType, {
-      model: model === 'unknown' ? undefined : model,
-      provider: provider || undefined,
-    }).provider
+    usageLabelFor(actionType, { model, provider: provider || undefined }).provider
 
   return {
     window: { from: from.toISOString(), to: to.toISOString(), period: options.period ?? '30d' },
@@ -4160,7 +4164,9 @@ function buildUsageDashboardTimeseries(
     groupBy: 'model' | 'user' | 'source' | 'category'
     metric: 'spend' | 'tokens' | 'requests'
     topN: number
-    labelFor: (model: string) => string
+    // `actionType` lets a model-grouped series fall back to its own category's
+    // name instead of surfacing the `unknown` sentinel (SHO-355 QA round 2).
+    labelFor: (model: string, actionType?: string) => string
     userMap: UsageDashboardLabels['userMap']
   },
 ): SpendTimeseriesData {
@@ -4184,7 +4190,7 @@ function buildUsageDashboardTimeseries(
               const category = usageCategoryFor(g.actionType)
               return category ? USAGE_CATEGORY_LABELS[category] : g.actionType
             })()
-          : labelFor(g.model)
+          : labelFor(g.model, g.actionType)
     // The chart has always read the recorded `totalTokens` field only
     // (`meta.totalTokens || 0` in `getSpendTimeseries`), so a row with no
     // `totalTokens` contributes nothing here even though the summary derives a

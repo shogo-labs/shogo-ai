@@ -272,4 +272,30 @@ describe('a media line reaches the read paths', () => {
     expect(byModel.models).toEqual(expect.arrayContaining(['gpt-image-1', 'veo-3']))
     expect(byModel.days.reduce((sum, day) => sum + (day.byModel['gpt-image-1'] ?? 0), 0)).toBeCloseTo(0.12, 6)
   })
+
+  test('the `unknown` sentinel reads as "no model" for every non-chat type', () => {
+    // The scans store a model-less row as the literal 'unknown'. Treating that
+    // as a model name is what made the summary table disagree with the log
+    // (SHO-355 QA round 2), so the resolver — not each reader — owns it.
+    for (const actionType of ['published_hosting', 'social_dm', 'social_x_api', 'ai_audio_transcription']) {
+      expect(analytics.usageLabelFor(actionType, { model: 'unknown' }).model, actionType)
+        .not.toBe('unknown')
+      // An empty string is the same statement as the sentinel.
+      expect(analytics.usageLabelFor(actionType, { model: '' }).model, actionType)
+        .not.toBe('unknown')
+    }
+    expect(analytics.usageLabelFor('published_hosting', { model: 'unknown' }).model)
+      .toBe('Published hosting')
+    // Chat keeps the sentinel on purpose: a completion with no recorded model is
+    // lost metadata, and naming it "Chat" would hide the bug.
+    expect(analytics.usageLabelFor('ai_proxy_completion', { model: 'unknown' }).model).toBe('unknown')
+  })
+
+  test('no summary row outside chat is labelled unknown', async () => {
+    const summary = await analytics.getUsageSummary(scope, PERIOD)
+    const broken = summary.summaries
+      .filter((row: any) => row.category !== null && row.category !== 'chat')
+      .filter((row: any) => row.model === 'unknown')
+    expect(broken).toEqual([])
+  })
 })

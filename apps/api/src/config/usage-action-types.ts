@@ -141,6 +141,21 @@ export const USAGE_ACTION_LABELS: Partial<Record<BilledUsageActionType, string>>
   voice_number_monthly: 'Voice: number rental',
 }
 
+/**
+ * The value the scans store when a row recorded no model. It is **not** a model
+ * name: handing it to a label resolver must mean "absent", or every reader has
+ * to remember to strip it and the ones that forget ship `unknown` to the UI
+ * (SHO-355 QA round 2).
+ */
+export const USAGE_UNKNOWN_MODEL = 'unknown'
+
+/** True when a recorded model is really "no model at all". */
+export function isUnknownModel(value: unknown): boolean {
+  if (typeof value !== 'string') return true
+  const trimmed = value.trim()
+  return trimmed === '' || trimmed.toLowerCase() === USAGE_UNKNOWN_MODEL
+}
+
 /** The best human name for an action type: its own, else its category's. */
 export function usageActionLabel(actionType: string): string {
   const own = USAGE_ACTION_LABELS[actionType as BilledUsageActionType]
