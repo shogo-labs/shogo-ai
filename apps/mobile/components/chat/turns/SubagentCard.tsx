@@ -151,48 +151,42 @@ function truncate(text: string, max: number): string {
 const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image"]);
 const VIDEO_RESULT_TOOL_NAMES = new Set(["generate_video"]);
 
-function extractMediaTools(
-  parts: readonly any[] | undefined,
-  toolNames: ReadonlySet<string>,
-  fallbackId: string,
-): ToolCallData[] {
-  if (!parts) return [];
-  return parts.flatMap((part) => {
+/**
+ * The cards this sub-agent's transcript contributes, collected in one walk:
+ * three separate passes over a 200-step `browser_qa` transcript ran on every
+ * re-render (SHO-340).
+ */
+function extractWidgetTools(parts: readonly any[] | undefined): {
+  generatedImageTools: ToolCallData[];
+  generatedVideoTools: ToolCallData[];
+  sharedFileTools: ToolCallData[];
+} {
+  const generatedImageTools: ToolCallData[] = [];
+  const generatedVideoTools: ToolCallData[] = [];
+  const sharedFileTools: ToolCallData[] = [];
+  for (const part of parts ?? []) {
     const tool = part?.type === "tool" ? part.tool : null;
-    if (!tool || !toolNames.has(tool.toolName)) return [];
-    return [
-      {
-        id: tool.id ?? part.id ?? fallbackId,
-        toolName: tool.toolName,
-        category: "other" as const,
-        state: tool.state ?? "streaming",
-        args: tool.args,
-        result: tool.result,
-        error: tool.error,
-        timestamp: 0,
-      },
-    ];
-  });
-}
-
-function extractSharedFileTools(
-  parts: readonly any[] | undefined,
-): ToolCallData[] {
-  if (!parts) return [];
-  return parts.flatMap((part) => {
-    const tool = part?.type === "tool" ? part.tool : null;
-    if (!tool || tool.toolName !== "share_file") return [];
-    return [{
-      id: tool.id ?? part.id ?? "shared-file",
-      toolName: "share_file",
+    if (!tool) continue;
+    const bucket = IMAGE_RESULT_TOOL_NAMES.has(tool.toolName)
+      ? generatedImageTools
+      : VIDEO_RESULT_TOOL_NAMES.has(tool.toolName)
+        ? generatedVideoTools
+        : tool.toolName === "share_file"
+          ? sharedFileTools
+          : null;
+    if (!bucket) continue;
+    bucket.push({
+      id: tool.id ?? part.id ?? "widget",
+      toolName: tool.toolName,
       category: "other" as const,
       state: tool.state ?? "streaming",
       args: tool.args,
       result: tool.result,
       error: tool.error,
       timestamp: 0,
-    }];
-  });
+    });
+  }
+  return { generatedImageTools, generatedVideoTools, sharedFileTools };
 }
 
 function getStatusText(
@@ -249,14 +243,17 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
 
   const Icon = fork ? GitFork : Bot;
 
-  // Subscribe to the stream store so the model badge / instance id that
-  // arrive via preliminary tool output are picked up without a reload.
-  useSyncExternalStore(
-    subagentStreamStore.subscribe,
-    () => subagentStreamStore.getVersion(),
-    () => subagentStreamStore.getVersion(),
+  // Subscribe to this sub-agent's entry only, so a preliminary frame for a
+  // sibling run does not re-render this card (SHO-340).
+  const subscribeToStream = useCallback(
+    (onChange: () => void) => subagentStreamStore.subscribeTool(tool.id, onChange),
+    [tool.id],
   );
-  const streamData = subagentStreamStore.get(tool.id);
+  const streamData = useSyncExternalStore(
+    subscribeToStream,
+    () => subagentStreamStore.get(tool.id),
+    () => subagentStreamStore.get(tool.id),
+  );
   const model = streamData?.model;
   const instanceId = streamData?.instanceId;
 
@@ -273,30 +270,10 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
     () => deriveLatestActivityLabel(streamData?.parts),
     [streamData?.parts],
   );
-  const generatedImageTools = useMemo(
-    () =>
-      extractMediaTools(
-        streamData?.parts?.length ? streamData.parts : output.parts,
-        IMAGE_RESULT_TOOL_NAMES,
-        "generated-image",
-      ),
-    [output.parts, streamData?.parts],
-  );
-  const generatedVideoTools = useMemo(
-    () =>
-      extractMediaTools(
-        streamData?.parts?.length ? streamData.parts : output.parts,
-        VIDEO_RESULT_TOOL_NAMES,
-        "generated-video",
-      ),
-    [output.parts, streamData?.parts],
-  );
-  const sharedFileTools = useMemo(
-    () =>
-      extractSharedFileTools(
-        streamData?.parts?.length ? streamData.parts : output.parts,
-      ),
-    [output.parts, streamData?.parts],
+  const streamParts = streamData?.parts?.length ? streamData.parts : output.parts;
+  const { generatedImageTools, generatedVideoTools, sharedFileTools } = useMemo(
+    () => extractWidgetTools(streamParts),
+    [streamParts],
   );
 
   return (
