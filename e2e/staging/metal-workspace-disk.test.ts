@@ -142,6 +142,8 @@ test.describe("Metal workspace drive", () => {
 
   let page: Page
   let projectId = ""
+  /** GiB the live-grow test asked for; the wake test re-asserts it. */
+  let targetGiB = 0
   const marker = `wsdrive-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
   test.beforeAll(async ({ browser }) => {
@@ -182,6 +184,45 @@ test.describe("Metal workspace drive", () => {
     await mustExec(page, projectId, `echo ${marker} > /app/workspace/.wsdrive-e2e-marker && sync`)
   })
 
+  test("asking for more disk grows the live drive without a restart", async () => {
+    test.setTimeout(600_000)
+    // SHO-349 AC 4: PUT /disk on a RUNNING project grows /app/workspace in
+    // place — no restart, no lost bytes, same device. The host does
+    // freeze → ftruncate → PATCH /drives → thaw → resize2fs underneath.
+    const base = bootstrapApiBase()
+    const before = await df(page, projectId, "/app/workspace")
+    const stateRes = await page.request.get(`${base}/api/projects/${projectId}/disk`, {
+      headers: { Origin: base },
+    })
+    expect(stateRes.ok(), await stateRes.text()).toBe(true)
+    const state = (await stateRes.json()) as {
+      substrate: string
+      effectiveGiB: number
+      maxGiB: number
+      canIncrease: boolean
+    }
+    test.skip(state.substrate !== "metal", "this project is not on a metal host")
+    test.skip(!state.canIncrease, `the plan ceiling (${state.maxGiB} GiB) leaves no headroom`)
+
+    targetGiB = Math.min(state.maxGiB, state.effectiveGiB + 20)
+    const put = await page.request.put(`${base}/api/projects/${projectId}/disk`, {
+      headers: { Origin: base, "content-type": "application/json" },
+      data: { sizeGiB: targetGiB },
+    })
+    expect(put.ok(), await put.text()).toBe(true)
+
+    // AC 4's budget: the guest sees the new size within 10 s, still mounted on
+    // the same device, with the bytes written before the grow untouched.
+    await expect
+      .poll(async () => (await df(page, projectId, "/app/workspace")).size, { timeout: 20_000 })
+      .toBeGreaterThan(before.size)
+    const after = await df(page, projectId, "/app/workspace")
+    expect(after.source, "growing the drive must not change the device").toBe(before.source)
+    expect(after.size).toBeGreaterThanOrEqual(targetGiB * 1024 ** 3 * 0.95)
+    const stillThere = await mustExec(page, projectId, "cat /app/workspace/.wsdrive-e2e-marker")
+    expect(stillThere).toContain(marker)
+  })
+
   test("the drive comes back from the durable store", async () => {
     test.setTimeout(600_000)
     test.skip(!process.env.SHOGO_E2E_BOOTSTRAP_SECRET, "needs SHOGO_E2E_BOOTSTRAP_SECRET for the fault backdoor")
@@ -196,5 +237,13 @@ test.describe("Metal workspace drive", () => {
     await page.goto(`/projects/${projectId}`)
     const out = await mustExec(page, projectId, "cat /app/workspace/.wsdrive-e2e-marker; findmnt -no SOURCE /app/workspace")
     expect(out).toContain(marker)
+
+    // AC 5: the raised size survives suspend → wake with the local snapshot
+    // dropped, i.e. a restore of the pushed drive onto this host. A fresh boot
+    // that went back to the fleet default is exactly the bug this card fixes.
+    if (targetGiB) {
+      const restored = await df(page, projectId, "/app/workspace")
+      expect(restored.size).toBeGreaterThanOrEqual(targetGiB * 1024 ** 3 * 0.95)
+    }
   })
 })
