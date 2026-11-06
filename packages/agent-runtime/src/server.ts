@@ -142,7 +142,7 @@ import {
   WRITABLE_STATE_PATHS,
   SQLITE_SIDECAR_ENTRY,
 } from './writable-state'
-import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
+import { logLeakedSpoolDescriptors, spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
 import { sweepExecCwdMarkers } from './exec-cwd'
 import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { handleExportHome, handleHydrateHome } from './home-state-routes'
@@ -3299,7 +3299,9 @@ app.post('/pool/export', async (c) => {
     // Streamed, not read into a Buffer: the largest source archive in
     // production is ~1.8 GB and the guest has 4 GiB, so materialising it to
     // respond is most of the VM's memory for the length of the upload.
-    const res = await spooledFileResponse(tmp, { 'Content-Type': 'application/gzip' })
+    const res = await spooledFileResponse(tmp, { 'Content-Type': 'application/gzip' }, {
+      signal: c.req.raw.signal,
+    })
     // Only now: if the call above threw before taking ownership, the `finally`
     // still needs to clean up.
     handedOff = true
@@ -3371,10 +3373,14 @@ app.post('/pool/export-repo', async (c) => {
     const size = statSync(tmp).size
     console.log(`[pool/export-repo] packed .git for durable backup (${size} bytes)`)
     const rootCommitAt = repoRootCommitAt(destinationDir)
-    const res = await spooledFileResponse(tmp, {
-      'Content-Type': 'application/gzip',
-      ...(rootCommitAt !== null ? { [REPO_ROOT_COMMIT_AT_HEADER]: String(rootCommitAt) } : {}),
-    })
+    const res = await spooledFileResponse(
+      tmp,
+      {
+        'Content-Type': 'application/gzip',
+        ...(rootCommitAt !== null ? { [REPO_ROOT_COMMIT_AT_HEADER]: String(rootCommitAt) } : {}),
+      },
+      { signal: c.req.raw.signal },
+    )
     handedOff = true
     return res
   } catch (err: any) {
@@ -3552,7 +3558,7 @@ app.get('/pool/export-repo-bundle/:sha256', async (c) => {
   if (!/^[0-9a-f]{64}$/.test(sha)) return c.json({ error: 'sha256 must be 64 hex digits' }, 400)
   const path = join(spoolDir(), `${sha}.bundle`)
   if (!existsSync(path)) return c.json({ error: 'bundle not built for this export' }, 404)
-  return spooledFileResponse(path, { 'Content-Type': 'application/octet-stream' })
+  return spooledFileResponse(path, { 'Content-Type': 'application/octet-stream' }, { signal: c.req.raw.signal })
 })
 
 app.post('/pool/repo-bundles-hydrate', async (c) => {
@@ -3684,11 +3690,15 @@ app.post('/pool/export-data', async (c) => {
     // Streams from an already-unlinked descriptor, so the `finally` below can
     // remove the stage directory out from under it without truncating the
     // response.
-    return await spooledFileResponse(out, {
-      'Content-Type': 'application/gzip',
-      'X-Shogo-Data-Paths': pack.paths.join(','),
-      ...(pack.tag ? { ETag: pack.tag } : {}),
-    })
+    return await spooledFileResponse(
+      out,
+      {
+        'Content-Type': 'application/gzip',
+        'X-Shogo-Data-Paths': pack.paths.join(','),
+        ...(pack.tag ? { ETag: pack.tag } : {}),
+      },
+      { signal: c.req.raw.signal },
+    )
   } catch (err: any) {
     // Deliberately NOT falling back to copying the database files: a torn copy
     // restores as a healthy-looking database with wrong contents, which is
@@ -6742,6 +6752,11 @@ app.get('*', (c) => {
  */
 async function initializeEssentials(): Promise<void> {
   logTiming('Initializing essentials...')
+
+  // Report anything we unlinked but still hold open, before any export runs:
+  // those inodes are invisible to `du` and to `sweepSpool`, and left alone they
+  // only announce themselves as "no space left on device" hours later (SHO-352).
+  logLeakedSpoolDescriptors()
 
   // When the workspace is 9p-mounted, keep .shogo/ on the local overlay disk
   // so SQLite uses a real filesystem with proper locking. For warm pool VMs this

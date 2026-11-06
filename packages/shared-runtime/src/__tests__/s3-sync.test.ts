@@ -604,6 +604,29 @@ describe('packProjectArchive (metal host-side export)', () => {
     }
   })
 
+  test('never packs a sibling spool directory into the backup', async () => {
+    // The guest spools multi-gigabyte exports beside the workspace
+    // (`/data/.shogo-spool` next to `/data/workspace`, SHO-352). A spool file
+    // swept into `project-src.tar.gz` would be uploaded as if the user had
+    // written it and land back in the workspace on the next hydrate.
+    const ws = join(TEST_DIR, 'ws')
+    mkdirSync(ws, { recursive: true })
+    writeFileSync(join(ws, 'a.ts'), 'export const a = 1\n')
+    const spool = join(TEST_DIR, '.shogo-spool')
+    mkdirSync(spool, { recursive: true })
+    writeFileSync(join(spool, '123-pool-export.tar.gz'), 'not source')
+    const sync = mkSync({ localDir: ws, suppressProjectArchive: true })
+    const dest = join(tmpdir(), `s3-sync-spool-${process.pid}-${Date.now()}.tar.gz`)
+    try {
+      expect(await sync.packProjectArchive(dest)).not.toBeNull()
+      const entries = spawnSync('tar', ['-tzf', dest], { encoding: 'utf-8' }).stdout.split('\n').filter(Boolean)
+      expect(entries.some((e) => e.includes('.shogo-spool'))).toBe(false)
+    } finally {
+      rmSync(dest, { force: true })
+      rmSync(spool, { recursive: true, force: true })
+    }
+  })
+
   test('returns null for an empty workspace (nothing to back up)', async () => {
     const emptyDir = join(TEST_DIR, 'empty-ws')
     const { mkdirSync } = await import('fs')

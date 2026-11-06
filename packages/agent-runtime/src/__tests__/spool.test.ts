@@ -15,10 +15,19 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { isRamBacked, resetSpoolDir, resolveSpoolDir, spoolPath, spooledFileResponse, sweepSpool, type SpoolProbe } from '../spool'
+import {
+  isRamBacked,
+  logLeakedSpoolDescriptors,
+  resetSpoolDir,
+  resolveSpoolDir,
+  spoolPath,
+  spooledFileResponse,
+  sweepSpool,
+  type SpoolProbe,
+} from '../spool'
 
 let dir: string
 let realTmpdir: string | undefined
@@ -107,6 +116,44 @@ describe('resolveSpoolDir', () => {
     }
     // Silently doing the dangerous thing is how this bug shipped the first time.
     expect(warnings.join(' ')).toContain('RAM-backed')
+  })
+})
+
+describe('SHOGO_SPOOL_DIR', () => {
+  test('spools onto the workspace drive the guest exports from it', () => {
+    // fc-init exports this when the shogo-ws drive mounts: `/data/.shogo-spool`,
+    // a sibling of the bind-mounted workspace, on the project's own disk.
+    const onDrive = join(dir, 'data/.shogo-spool')
+    const chosen = resolveSpoolDir(join(dir, 'data/workspace'), probe({ tmp: join(dir, 'tmp') }), {
+      SHOGO_SPOOL_DIR: onDrive,
+    })
+    expect(chosen).toBe(onDrive)
+    expect(existsSync(chosen)).toBe(true)
+  })
+
+  test('refuses a spool dir inside the workspace, so it cannot end up in the backup', () => {
+    const workspace = join(dir, 'data/workspace')
+    const inside = join(workspace, '.spool')
+    const warnings: string[] = []
+    const orig = console.warn
+    console.warn = (m: any) => warnings.push(String(m))
+    let chosen: string
+    try {
+      chosen = resolveSpoolDir(workspace, probe({ tmp: join(dir, 'tmp') }), { SHOGO_SPOOL_DIR: inside })
+    } finally {
+      console.warn = orig
+    }
+    expect(chosen).not.toBe(inside)
+    expect(chosen.startsWith(workspace)).toBe(false)
+    expect(warnings.join(' ')).toContain('inside the workspace')
+  })
+
+  test('ignores an unusable value rather than writing 2 GB into it', () => {
+    const tmp = join(dir, 'tmp')
+    const ram = join(dir, 'ram-spool')
+    const chosen = resolveSpoolDir(join(dir, 'app/workspace'), probe({ tmp, ram: [ram] }), { SHOGO_SPOOL_DIR: ram })
+    expect(chosen).not.toBe(ram)
+    expect(chosen).toBe(join(tmp, 'shogo-spool'))
   })
 })
 
@@ -240,6 +287,136 @@ describe('spooledFileResponse', () => {
     rmSync(stage, { recursive: true, force: true })
 
     expect(Buffer.from(await res.arrayBuffer()).equals(payload)).toBe(true)
+  })
+})
+
+/**
+ * The incident these exist for (SHO-352): `/pool/export` unlinks its tarball,
+ * then serves it from the open descriptor. When the host's fetch gave up
+ * mid-body, Bun.serve never called the stream's `cancel()`, so the descriptor
+ * stayed open in pid 1 forever — five of them, 3.6 GB, on a 16 GiB rootfs that
+ * then reported 100% full while `du -x /` saw only 11 GiB.
+ *
+ * Counting this process's descriptors is the cheapest honest proof: a leaked
+ * file shows up as one that never went away.
+ */
+describe('spooledFileResponse — releasing the descriptor', () => {
+  function openFdCount(): number {
+    const proc = process.platform === 'linux' ? '/proc/self/fd' : '/dev/fd'
+    try {
+      return readdirSync(proc).length
+    } catch {
+      return -1
+    }
+  }
+
+  async function within(ms: number, predicate: () => boolean): Promise<boolean> {
+    const deadline = Date.now() + ms
+    for (;;) {
+      if (predicate()) return true
+      if (Date.now() > deadline) return false
+      await new Promise((r) => setTimeout(r, 5))
+    }
+  }
+
+  test('an aborted download closes it within a second', async () => {
+    const p = join(dir, 'aborted.tar.gz')
+    writeFileSync(p, Buffer.alloc(50 * 1024 * 1024, 5))
+    const baseline = openFdCount()
+
+    const ac = new AbortController()
+    const res = await spooledFileResponse(p, {}, { signal: ac.signal })
+    const reader = res.body!.getReader()
+    await reader.read()
+    expect(openFdCount()).toBeGreaterThan(baseline)
+
+    ac.abort(new Error('host gave up'))
+
+    expect(await within(1000, () => openFdCount() <= baseline)).toBe(true)
+    // The reason must be the abort, not a coincidental EOF: only our own
+    // listener can have closed this descriptor.
+    await expect(reader.read()).rejects.toThrow(/aborted/)
+  })
+
+  test('a consumer that takes one chunk and goes quiet is closed by the watchdog', async () => {
+    const p = join(dir, 'stalled.tar.gz')
+    writeFileSync(p, Buffer.alloc(4 * 1024 * 1024, 6))
+    const baseline = openFdCount()
+
+    // Long enough that the first read is comfortably inside the window even on
+    // a loaded CI box, short enough that the test does not sit and wait.
+    const res = await spooledFileResponse(p, {}, { idleTimeoutMs: 150 })
+    const reader = res.body!.getReader()
+    await reader.read()
+    expect(openFdCount()).toBeGreaterThan(baseline)
+
+    expect(await within(1000, () => openFdCount() <= baseline)).toBe(true)
+
+    // Whatever the stream does next, it must not look like a complete archive:
+    // either the read errors, or it ends short of the file. A silent full-length
+    // EOF would hide a truncated backup.
+    let delivered = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        delivered += value!.byteLength
+      }
+    } catch {}
+    expect(delivered).toBeLessThan(4 * 1024 * 1024)
+  })
+
+  test('a download nobody ever reads is closed by the watchdog too', async () => {
+    const p = join(dir, 'ignored.tar.gz')
+    writeFileSync(p, Buffer.alloc(1024 * 1024, 7))
+    const baseline = openFdCount()
+
+    await spooledFileResponse(p, {}, { idleTimeoutMs: 40 })
+
+    expect(await within(1000, () => openFdCount() <= baseline)).toBe(true)
+  })
+
+  test('an already-aborted signal never opens a descriptor it cannot close', async () => {
+    const p = join(dir, 'gone.tar.gz')
+    writeFileSync(p, Buffer.alloc(1024, 8))
+    const baseline = openFdCount()
+    const ac = new AbortController()
+    ac.abort()
+
+    await expect(spooledFileResponse(p, {}, { signal: ac.signal })).rejects.toThrow(/aborted/)
+    expect(openFdCount()).toBe(baseline)
+  })
+})
+
+describe('logLeakedSpoolDescriptors', () => {
+  test('does not report anything when every descriptor was released', () => {
+    expect(logLeakedSpoolDescriptors(dir)).toBe(0)
+  })
+
+  test('reports a descriptor left open after its unlink, with a loud warning', async () => {
+    // `sweepSpool` cannot see this state — the name is already gone — which is
+    // exactly why the leak ran for two days as "no space left on device".
+    const fsp = await import('node:fs/promises')
+    const p = join(dir, 'leaked.tar.gz')
+    writeFileSync(p, Buffer.alloc(4096, 1))
+    const fh = await fsp.open(p, 'r')
+    await fsp.unlink(p)
+    const warnings: string[] = []
+    const orig = console.warn
+    console.warn = (m: any) => warnings.push(String(m))
+    let leaked: number
+    try {
+      leaked = logLeakedSpoolDescriptors(dir)
+    } finally {
+      console.warn = orig
+      await fh.close()
+    }
+    if (process.platform !== 'linux') {
+      expect(leaked).toBe(0)
+      return
+    }
+    expect(leaked).toBe(1)
+    expect(warnings.join(' ')).toContain('[spool] leaked 1')
   })
 })
 

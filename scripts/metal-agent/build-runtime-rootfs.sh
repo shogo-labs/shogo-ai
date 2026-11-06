@@ -231,8 +231,14 @@ if [ -n "\$WS_DEV" ]; then
       mount -t overlay overlay -o "lowerdir=/app/\$d,upperdir=/data/overlay/\$n/upper,workdir=/data/overlay/\$n/work" "/app/\$d" \\
         || echo "[fc-init] WARNING: overlay for /app/\$d failed; it stays on the rootfs" >&2
     done
-    chown 1001:1001 /data/workspace /data/overlay/*/upper 2>/dev/null || true
-    echo "[fc-init] workspace drive \$WS_DEV mounted at /data"
+    # Multi-gigabyte export tarballs spool here. Beside the workspace, never
+    # inside it, so `packProjectArchive` cannot sweep them into the backup — and
+    # on this drive rather than /app, because the rootfs is the 16 GiB disk
+    # shared with node_modules (SHO-352).
+    mkdir -p /data/.shogo-spool
+    chown 1001:1001 /data/workspace /data/.shogo-spool /data/overlay/*/upper 2>/dev/null || true
+    export SHOGO_SPOOL_DIR=/data/.shogo-spool
+    echo "[fc-init] workspace drive \$WS_DEV mounted at /data (spool: \$SHOGO_SPOOL_DIR)"
   else
     echo "[fc-init] WARNING: workspace drive \$WS_DEV failed to mount; workspace stays on the rootfs" >&2
   fi

@@ -28,6 +28,26 @@ describe('build-runtime-rootfs.sh contract', () => {
     for (const d of ['.bun/cache', '.npm', '.cache']) expect(init).toContain(d)
   })
 
+  it('only exports SHOGO_SPOOL_DIR onto a drive it actually mounted', () => {
+    // Export tarballs are gigabytes; spooling them onto /app (the 16 GiB rootfs
+    // shared with node_modules) is how a guest hits ENOSPC and every later
+    // backup fails (SHO-352). The env must therefore be set *inside* the
+    // successful-mount branch, on the drive, and beside the workspace — never
+    // inside it, where packProjectArchive would ship it to durable storage.
+    const init = source.slice(source.indexOf('cat > "$MNT/usr/local/bin/fc-init" <<INIT'), source.indexOf('\nINIT\n'))
+    const exportAt = init.indexOf('export SHOGO_SPOOL_DIR=/data/.shogo-spool')
+    expect(exportAt).toBeGreaterThan(-1)
+    expect(exportAt).toBeGreaterThan(init.indexOf('mount -t ext4 -o noatime'))
+    expect(exportAt).toBeLessThan(init.indexOf('exec /entrypoint.sh'))
+    // Inside the `then` branch of the mount check, before its `else`.
+    const elseAt = init.indexOf('WARNING: workspace drive \\$WS_DEV failed to mount')
+    expect(exportAt).toBeLessThan(elseAt)
+    expect(init).toContain('mkdir -p /data/.shogo-spool')
+    expect(init).not.toContain('/data/workspace/.shogo-spool')
+    // The drive mount happens once; so does the export.
+    expect(init.split('export SHOGO_SPOOL_DIR=').length - 1).toBe(1)
+  })
+
   it('reports contract failures and treats the revision stamp as advisory', () => {
     expect(source).toContain('CONTRACT:')
     expect(source).toContain('WARNING: /etc/shogo-runtime-revision missing')
