@@ -1012,7 +1012,7 @@ app.get('/projects/:projectId/native/state', async (c) => {
       needsBundleId: !appRow?.bundleIdentifier,
       defaultBundleIdentifier: native.defaultBundleIdentifier(slug),
       defaultAndroidPackage: native.defaultBundleIdentifier(slug),
-      testResourceClass: native.easJsonResourceClass(),
+      pinnedResourceClass: native.easJsonResourceClass(),
     })
   } catch (err: any) {
     return c.json({ error: { code: 'native_state_failed', message: err?.message ?? 'failed' } }, 500)

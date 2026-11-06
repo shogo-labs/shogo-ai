@@ -179,11 +179,16 @@ export async function computeFingerprint(
 export function buildEasJson(opts: {
   projectId: string
   owner?: string
-  /** eas.json's short enum (`default` | `medium` | `large`), per platform. */
-  resourceClass?: { ios?: string; android?: string }
+  /** eas.json's short enum (`default` | `medium` | `large`), per profile. */
+  resourceClass?: {
+    test?: { ios?: string; android?: string }
+    store?: { ios?: string; android?: string }
+  }
 }): Record<string, unknown> {
-  const iosClass = opts.resourceClass?.ios ?? 'medium'
-  const androidClass = opts.resourceClass?.android ?? 'medium'
+  const testIos = opts.resourceClass?.test?.ios ?? 'medium'
+  const testAndroid = opts.resourceClass?.test?.android ?? 'medium'
+  const storeIos = opts.resourceClass?.store?.ios ?? testIos
+  const storeAndroid = opts.resourceClass?.store?.android ?? testAndroid
   return {
     cli: { version: '>= 16.0.0', appVersionSource: 'remote', requireCommit: false },
     build: {
@@ -191,14 +196,14 @@ export function buildEasJson(opts: {
         distribution: 'internal',
         developmentClient: false,
         withoutCredentials: true,
-        android: { buildType: 'apk', resourceClass: androidClass },
-        ios: { simulator: true, resourceClass: iosClass },
+        android: { buildType: 'apk', resourceClass: testAndroid },
+        ios: { simulator: true, resourceClass: testIos },
       },
       'shogo-store': {
         distribution: 'store',
         autoIncrement: true,
-        android: { resourceClass: androidClass },
-        ios: { resourceClass: iosClass },
+        android: { resourceClass: storeAndroid },
+        ios: { resourceClass: storeIos },
       },
     },
     ...(opts.owner ? { owner: opts.owner } : {}),
@@ -246,7 +251,10 @@ export async function writeProjectArchive(
     outFile: string
     easyProjectId?: string
     updatesUrl?: string
-    resourceClass?: { ios?: string; android?: string }
+    resourceClass?: {
+      test?: { ios?: string; android?: string }
+      store?: { ios?: string; android?: string }
+    }
   },
 ): Promise<{ bytes: number; files: number; publicEnv: Record<string, string> }> {
   const { create } = await import('tar')
@@ -466,7 +474,7 @@ export async function runNativeRelease(input: RunNativeReleaseInput): Promise<Na
       projectDir: input.projectDir,
       outFile,
       easyProjectId: (state.data.app?.easAppId as string | undefined) ?? undefined,
-      resourceClass: state.data.testResourceClass,
+      resourceClass: state.data.pinnedResourceClass,
     })
   } catch (err) {
     return { ok: false, release_id: releaseId, error: `Could not archive the project: ${String((err as Error)?.message ?? err)}` }

@@ -841,11 +841,15 @@ export interface NativeReleaseState {
   defaultAndroidPackage: string
   /**
    * The worker class each generated `eas.json` profile pins, in eas.json's short
-   * enum. The API owns it because the API prices the build: a profile that left
-   * `resourceClass` unset would run on Expo's platform-dependent default while
-   * the meter quoted a class we chose.
+   * enum, per profile. The API owns it because the API prices the build: a profile
+   * that left `resourceClass` unset would run on Expo's platform-dependent default
+   * while the meter quoted a class we chose — and a store profile pinned from a
+   * different table than `buildParams.resourceClass` can disagree with the quote.
    */
-  testResourceClass?: { ios: string; android: string }
+  pinnedResourceClass?: {
+    test: { ios: string; android: string }
+    store: { ios: string; android: string }
+  }
 }
 
 export async function getNativeReleaseState(

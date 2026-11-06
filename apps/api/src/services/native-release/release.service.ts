@@ -44,6 +44,7 @@ import {
 import { ensureNativeApp, lockAppIdentifiers, type NativeAppRow } from './apps.service'
 import { readAscKey, readByokExpoToken, readPlayKey } from './credentials.service'
 import {
+  STORE_BUILD_RESOURCE_CLASS,
   TEST_BUILD_RESOURCE_CLASS,
   meterTestRun,
   projectedReleaseRawUsd,
@@ -155,13 +156,18 @@ export function decideReleaseKind(opts: {
   return opts.previousFingerprint === opts.fingerprint ? 'update' : 'build'
 }
 
-/** The resource class we request per platform. Both are on the published card. */
+/**
+ * The resource class we request per platform, read from the one table that also
+ * pins the generated `eas.json` profiles. A second literal here is how the class
+ * in `buildParams` and the class in the profile drift apart, and then the quote
+ * and the invoice disagree.
+ */
 export function storeResourceClass(platform: ReleasePlatform): BuildResourceClass {
-  return platform === 'ios' ? 'IOS_MEDIUM' : 'ANDROID_MEDIUM'
+  return STORE_BUILD_RESOURCE_CLASS[platform]
 }
 
 export function testResourceClass(platform: ReleasePlatform): BuildResourceClass {
-  return platform === 'ios' ? 'IOS_MEDIUM' : 'ANDROID_MEDIUM'
+  return TEST_BUILD_RESOURCE_CLASS[platform]
 }
 
 /**

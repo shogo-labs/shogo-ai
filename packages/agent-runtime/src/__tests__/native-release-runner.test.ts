@@ -136,12 +136,18 @@ describe('the archive', () => {
     // through rather than copied here.
     const eas = buildEasJson({
       projectId: 'proj_1',
-      resourceClass: { ios: 'medium', android: 'medium' },
+      resourceClass: {
+        test: { ios: 'medium', android: 'medium' },
+        store: { ios: 'large', android: 'large' },
+      },
     }) as any
     expect(eas.build['shogo-test'].ios.resourceClass).toBe('medium')
     expect(eas.build['shogo-test'].android.resourceClass).toBe('medium')
-    expect(eas.build['shogo-store'].ios.resourceClass).toBe('medium')
-    expect(eas.build['shogo-store'].android.resourceClass).toBe('medium')
+    // The store profile's class is its own, because a store build is quoted from
+    // `buildParams.resourceClass` — one profile pinning a different table than the
+    // request is how the quote and the invoice diverge.
+    expect(eas.build['shogo-store'].ios.resourceClass).toBe('large')
+    expect(eas.build['shogo-store'].android.resourceClass).toBe('large')
   })
 
   it('still pins a class when the API sent none, so no profile depends on a default', () => {

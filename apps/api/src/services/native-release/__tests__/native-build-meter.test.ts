@@ -46,10 +46,16 @@ const fakePrisma = {
           .map((b) => ({ id: b.id }))
       }
       const cutoff = where.finishedAt?.lt as Date | undefined
+      // `OR: [{ meterStatus: null }, { meterStatus: 'unpriced' }]` — the sweep
+      // re-walks both, because a price row added later is what makes an unpriced
+      // build billable.
+      const statuses: (string | null)[] = where.OR
+        ? where.OR.map((clause: any) => clause.meterStatus)
+        : [where.meterStatus]
       return all
-        .filter((b) => b.status === 'finished' && !b.meteredAt && b.meterStatus === null)
+        .filter((b) => b.status === 'finished' && !b.meteredAt && statuses.includes(b.meterStatus))
         .filter((b) => !cutoff || (b.finishedAt !== null && b.finishedAt < cutoff))
-        .map((b) => ({ easBuildId: b.easBuildId, release }))
+        .map((b) => ({ easBuildId: b.easBuildId, resourceClass: b.resourceClass, release }))
     },
     async count({ where }: any) {
       return [...builds.values()].filter((b) => b.meterStatus === where.meterStatus).length
@@ -269,11 +275,65 @@ describe('the meter sweep closes what the webhook dropped', () => {
     expect(result.metered).toBe(0)
     expect(consumeCalls).toHaveLength(0)
   })
+
+  it('does not re-alert an unpriced row on every pass', async () => {
+    const build = seedBuild({
+      resourceClass: 'IOS_M_MEDIUM',
+      status: 'finished',
+      finishedAt: longAgo,
+      meterStatus: 'unpriced',
+    })
+    const before = alerts.length
+    const result = await sweepNativeMeters({ mode: 'cloud' })
+
+    expect(build.meterStatus).toBe('unpriced')
+    expect(consumeCalls).toHaveLength(0)
+    expect(result.unpriced).toBe(1)
+    // One aggregate sweep alert, not another per-build `native_build_unpriced`.
+    expect(alerts.slice(before).filter((a) => a === 'native_build_unpriced')).toHaveLength(0)
+    expect(alerts).toContain('native_meter_sweep')
+  })
+
+  it('bills an unpriced row once a price exists for its class', async () => {
+    // The row is unpriced today only because `IOS_M_MEDIUM` has no rate. The sweep
+    // must pick it up the moment one is published — that is the promise the
+    // "never bill at a guess" rule makes.
+    const build = seedBuild({
+      resourceClass: 'IOS_MEDIUM',
+      status: 'finished',
+      finishedAt: longAgo,
+      meterStatus: 'unpriced',
+    })
+    const result = await sweepNativeMeters({ mode: 'cloud' })
+    expect(result.metered).toBe(1)
+    expect(build.meterStatus).toBe('metered')
+    expect(consumeCalls).toHaveLength(1)
+    expect(consumeCalls[0].actionType).toBe('native_build')
+  })
 })
 
 describe('the class the generated eas.json pins is the class the meter prices', () => {
-  it('maps the priced classes to eas.json short names', () => {
-    expect(easJsonResourceClass()).toEqual({ ios: 'medium', android: 'medium' })
+  it('maps the priced classes to eas.json short names, per profile', () => {
+    expect(easJsonResourceClass()).toEqual({
+      test: { ios: 'medium', android: 'medium' },
+      store: { ios: 'medium', android: 'medium' },
+    })
+  })
+
+  it('gives buildParams and the store profile one source, so they cannot disagree', () => {
+    // `storeResourceClass` (what we send in `buildParams`) and the store profile
+    // are separate code paths over the same table; a second literal is how they
+    // drift and the quote stops matching the invoice.
+    const { storeResourceClass, testResourceClass } = require('../release.service')
+    const pins = easJsonResourceClass()
+    expect(pins.store.ios).toBe(storeResourceClass('ios').toLowerCase().replace('ios_', ''))
+    expect(pins.store.android).toBe(
+      storeResourceClass('android').toLowerCase().replace('android_', ''),
+    )
+    expect(pins.test.ios).toBe(testResourceClass('ios').toLowerCase().replace('ios_', ''))
+    expect(pins.test.android).toBe(
+      testResourceClass('android').toLowerCase().replace('android_', ''),
+    )
   })
 
   it('pins what is priced, so a profile default cannot diverge from the quote', () => {

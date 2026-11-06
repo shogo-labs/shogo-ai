@@ -284,8 +284,18 @@ is a logged ops event, not a guess.
 
 Two more consequences worth writing down:
 
-- **Bill by `actualResourceClass`.** `resourceClass` is what was asked for;
-  `actualResourceClass` is what ran, and it is what the invoice names.
+- **Bill by `actualResourceClass`, but never store it raw.** `resourceClass` is
+  what was asked for; `actualResourceClass` is what ran, and the invoice names it.
+  Both are **builder-machine slugs** in the webhook (`android-n2-1.3-12`), not
+  `BuildResourceClass` values — the enum only appears on the GraphQL `Build`
+  type. Writing the slug into `NativeBuild.resourceClass`, whose price is looked
+  up in `BUILD_PRICE_USD` keyed by the enum, made every real build price as
+  `null`: charged nothing, alerted `unpriced` on every delivery.
+  `normalizeResourceClass()` resolves enum names, `ios-medium`-shaped names and
+  eas.json's `medium`/`large`; anything else stays the class we requested (EAS
+  honours it) and the raw report is logged. Slugs are deliberately **not** mapped
+  — the machine behind one depends on the account's build-infrastructure setting,
+  so deriving "medium" from it would be the guess this whole meter refuses to make.
 - **The "build before its row exists" suppression is per app, not per account.**
   A test-stage build is started by the workflow and only adopted by the poller a
   tick later, so it can arrive with no `NativeBuild`. Suppressing that alert

@@ -7,6 +7,8 @@
 
 import { describe, expect, it } from 'bun:test'
 import { createPublicKey, createVerify, generateKeyPairSync } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   buildTestWorkflowYaml,
   decideReleaseKind,
@@ -20,6 +22,7 @@ import {
   BUILD_PRICE_USD,
   billedUsd,
   buildPriceUsd,
+  normalizeResourceClass,
   projectedReleaseRawUsd,
   updateMauRawUsd,
   NATIVE_UPDATE_INCLUDED_MAU,
@@ -151,6 +154,36 @@ describe('pricing', () => {
     expect(updateMauRawUsd(NATIVE_UPDATE_INCLUDED_MAU)).toBe(0)
     expect(updateMauRawUsd(NATIVE_UPDATE_INCLUDED_MAU + 2_000)).toBe(10)
     expect(updateMauRawUsd(0)).toBe(0)
+  })
+})
+
+describe('every BuildResourceClass the schema knows is recognised', () => {
+  it('matches the live enum, so a class can never be silently mis-typed', () => {
+    // `normalizeResourceClass` carries its own copy of the enum (production code
+    // must not import a test fixture). This is the guard that the copy has not
+    // drifted: a class added to the schema and not here would arrive as a string
+    // nothing recognises, and the build would be billed as whatever we requested.
+    const schemaPath = join(
+      import.meta.dir,
+      '../../../../../../scripts/__tests__/fixtures/eas-graphql-schema.json',
+    )
+    const schema = JSON.parse(readFileSync(schemaPath, 'utf8'))
+    const fromSchema: string[] = schema.types.BuildResourceClass.enumValues
+      .map((v: { name: string }) => v.name)
+      .sort()
+    expect(fromSchema.length).toBeGreaterThan(0)
+    for (const value of fromSchema) {
+      expect(normalizeResourceClass(value)).toBe(value as never)
+      expect(normalizeResourceClass(value.toLowerCase())).toBe(value as never)
+    }
+
+    // A builder slug is not an enum member, which is exactly the round-3 bug…
+    expect(normalizeResourceClass('android-n2-1.3-12')).toBeNull()
+    // …while the shapes EAS and eas.json really send do resolve.
+    expect(normalizeResourceClass('ios-m-medium')).toBe('IOS_M_MEDIUM')
+    expect(normalizeResourceClass('medium', 'android')).toBe('ANDROID_MEDIUM')
+    expect(normalizeResourceClass('large', 'ios')).toBe('IOS_LARGE')
+    expect(normalizeResourceClass('', 'ios')).toBeNull()
   })
 })
 

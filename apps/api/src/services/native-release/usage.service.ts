@@ -45,10 +45,80 @@ export const BUILD_PRICE_USD: Partial<Record<BuildResourceClass, number>> = {
   IOS_LARGE: 4,
 }
 
+/**
+ * The concrete classes Expo's payloads can name, spelled the way `eas.json`
+ * spells them (`medium`, `large`) — that is the vocabulary a *profile* uses, and
+ * the same three words arrive in a webhook when EAS reports the requested class.
+ */
+const EAS_JSON_TO_RESOURCE_CLASS: Record<'ios' | 'android', Record<string, BuildResourceClass>> = {
+  ios: { default: 'IOS_DEFAULT', medium: 'IOS_MEDIUM', large: 'IOS_LARGE' },
+  android: { default: 'ANDROID_DEFAULT', medium: 'ANDROID_MEDIUM', large: 'ANDROID_LARGE' },
+}
+
+// Every `BuildResourceClass` the code can be handed. Deliberately the whole enum
+// (from the GraphQL types), not the priced subset: an unpriced class must still be
+// *recognised* so it can be reported as unpriced instead of silently mis-typed.
+const RESOURCE_CLASS_VALUES = new Set<string>([
+  'ANDROID_DEFAULT',
+  'ANDROID_MEDIUM',
+  'ANDROID_LARGE',
+  'IOS_DEFAULT',
+  'IOS_MEDIUM',
+  'IOS_LARGE',
+  'IOS_M_MEDIUM',
+  'IOS_M_LARGE',
+  'LEGACY',
+  'LINUX_MEDIUM',
+  'LINUX_LARGE',
+])
+
+/**
+ * Turn whatever a payload or a profile calls a class into the `BuildResourceClass`
+ * the price table is keyed by.
+ *
+ * Expo reports `resourceClass` / `actualResourceClass` as a **builder-machine
+ * slug**, not as the enum — the documented payload carries `android-n2-1.3-12`,
+ * and `Build.resourceClass` in the GraphQL schema is where plain enum values come
+ * from. Writing that slug straight into `NativeBuild.resourceClass` made every
+ * real build price as `null`: the meter saw a string with no row in
+ * `BUILD_PRICE_USD`, charged nothing and alerted `unpriced` on every delivery.
+ *
+ * A slug is deliberately **not** mapped to a class. The machine behind a slug
+ * depends on the account's build-infrastructure setting (Expo documents two
+ * machine types per Android class), so deriving "medium" from `android-n2-1.3-12`
+ * would be exactly the guess this file refuses to bill. Callers fall back to the
+ * class the release asked for — which EAS honours — and keep the raw report.
+ */
+export function normalizeResourceClass(
+  value: string | null | undefined,
+  platform?: 'ios' | 'android',
+): BuildResourceClass | null {
+  if (!value) return null
+  const raw = value.trim()
+  if (!raw) return null
+
+  // Already the enum, in any casing/spelling a client might send.
+  const upper = raw.toUpperCase().replace(/-/g, '_')
+  if (RESOURCE_CLASS_VALUES.has(upper)) return upper as BuildResourceClass
+  if (platform && RESOURCE_CLASS_VALUES.has(`${platform.toUpperCase()}_${upper}`)) {
+    return `${platform.toUpperCase()}_${upper}` as BuildResourceClass
+  }
+
+  // eas.json's own three words, which need the platform to be unambiguous.
+  if (platform) {
+    const short = EAS_JSON_TO_RESOURCE_CLASS[platform][raw.toLowerCase()]
+    if (short) return short
+  }
+
+  // A builder slug, or anything else we do not recognise: no price.
+  return null
+}
+
 /** The flat rate for a build, or `null` when Expo does not publish one. */
 export function buildPriceUsd(resourceClass: string | null | undefined): number | null {
   if (!resourceClass) return null
-  const price = BUILD_PRICE_USD[resourceClass as BuildResourceClass]
+  const normalized = normalizeResourceClass(resourceClass) ?? resourceClass
+  const price = BUILD_PRICE_USD[normalized as BuildResourceClass]
   return typeof price === 'number' ? price : null
 }
 
@@ -282,7 +352,10 @@ export interface MeterSweepResult {
  * 2. **Finished but unmetered builds.** `meterBuild` is idempotent (it re-claims
  *    the row), so this is safe to call on every pass.
  * 3. **Unpriced rows.** They are never billed at a guess, so they accumulate
- *    until a human adds a price — one aggregate alert, not one per build.
+ *    until a price row exists for their class — and then the next pass charges
+ *    them, which is what makes "the sweep bills it once a row is added" true.
+ *    While they stay unpriced they are counted into one aggregate alert, not one
+ *    alert per build per pass.
  */
 export async function sweepNativeMeters(opts: {
   now?: Date
@@ -313,17 +386,28 @@ export async function sweepNativeMeters(opts: {
     result.recovered += 1
   }
 
+  // Rows with no metering decision at all, plus the `unpriced` ones: a price row
+  // added after the build finished is exactly what "the sweep retries it once a
+  // row exists" means, so they have to be re-attempted rather than only counted.
+  // A row that is still unpriced is skipped here by `buildPriceUsd` below, so the
+  // sweep does not re-alert the same build on every pass.
   const pending = await db.nativeBuild.findMany({
     where: {
       status: 'finished',
       meteredAt: null,
-      meterStatus: null,
+      OR: [{ meterStatus: null }, { meterStatus: 'unpriced' }],
       finishedAt: { lt: cutoff },
     },
-    select: { easBuildId: true, release: { select: { workspaceId: true } } },
+    select: { easBuildId: true, resourceClass: true },
     take: opts.limit ?? 50,
   })
   for (const row of pending) {
+    if (buildPriceUsd(row.resourceClass) === null) {
+      // Still not priceable: it counts as unpriced and the aggregate alert below
+      // reports it. Calling meterBuild would only repeat its per-build alert.
+      result.unpriced += 1
+      continue
+    }
     result.retried += 1
     const outcome = await meterBuild({
       easBuildId: row.easBuildId,
@@ -369,6 +453,16 @@ export const TEST_BUILD_RESOURCE_CLASS: Record<'ios' | 'android', BuildResourceC
   android: 'ANDROID_MEDIUM',
 }
 
+/**
+ * The class we request on a store build — the same table the store profile pins,
+ * because `buildParams.resourceClass` and `eas.json` must not be able to disagree
+ * about what a release costs.
+ */
+export const STORE_BUILD_RESOURCE_CLASS: Record<'ios' | 'android', BuildResourceClass> = {
+  ios: 'IOS_MEDIUM',
+  android: 'ANDROID_MEDIUM',
+}
+
 /** eas.json's own enum; a class outside it cannot be pinned in a profile. */
 const EAS_JSON_RESOURCE_CLASSES = ['default', 'medium', 'large'] as const
 
@@ -380,7 +474,10 @@ const EAS_JSON_RESOURCE_CLASSES = ['default', 'medium', 'large'] as const
  * second copy that can drift. A class eas.json cannot express is a bug in the
  * table above, not something to send and hope for.
  */
-export function easJsonResourceClass(): { ios: string; android: string } {
+export function easJsonResourceClass(): {
+  test: { ios: string; android: string }
+  store: { ios: string; android: string }
+} {
   const toShort = (cls: BuildResourceClass, platform: 'ios' | 'android'): string => {
     const short = cls.toLowerCase().replace(`${platform}_`, '')
     if (!(EAS_JSON_RESOURCE_CLASSES as readonly string[]).includes(short)) {
@@ -390,10 +487,11 @@ export function easJsonResourceClass(): { ios: string; android: string } {
     }
     return short
   }
-  return {
-    ios: toShort(TEST_BUILD_RESOURCE_CLASS.ios, 'ios'),
-    android: toShort(TEST_BUILD_RESOURCE_CLASS.android, 'android'),
-  }
+  const pins = (table: Record<'ios' | 'android', BuildResourceClass>) => ({
+    ios: toShort(table.ios, 'ios'),
+    android: toShort(table.android, 'android'),
+  })
+  return { test: pins(TEST_BUILD_RESOURCE_CLASS), store: pins(STORE_BUILD_RESOURCE_CLASS) }
 }
 
 /** The raw USD a month's Updates MAU represents, past the included allowance. */

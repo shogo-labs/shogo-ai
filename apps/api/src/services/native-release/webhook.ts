@@ -32,7 +32,7 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { prisma } from '../../lib/prisma'
-import { meterBuild } from './usage.service'
+import { meterBuild, normalizeResourceClass } from './usage.service'
 import { submitStoreBuild } from './release.service'
 import { alertOps } from './alerts'
 
@@ -243,13 +243,19 @@ export async function handleEasWebhook(opts: {
   }
 
   const status = String(payload.status ?? 'in_progress')
-  const reportedClass = payload.actualResourceClass ?? payload.resourceClass
+  // `actualResourceClass` is what ran (and what the invoice names), so it wins —
+  // but only once it is a class the price table can name. Expo reports these as
+  // builder-machine slugs (`android-n2-1.3-12`), and writing one straight into
+  // the row made every real build price as `null` and charge nothing. Unparseable
+  // stays what we requested, which EAS honours, and the raw report goes in the
+  // alert detail rather than into a column we bill from.
+  const reportedRaw = payload.actualResourceClass ?? payload.resourceClass
+  const reportedClass =
+    normalizeResourceClass(reportedRaw, payload.platform === 'android' ? 'android' : 'ios') ?? null
   await db.nativeBuild.update({
     where: { id: build.id },
     data: {
       status,
-      // `actualResourceClass` is what ran (and what the invoice names); the
-      // requested class is only a fallback. Bill by what ran.
       resourceClass: reportedClass ?? build.resourceClass,
       artifactKey: payload.artifacts?.buildUrl ?? build.artifactKey,
       finishedAt: status === 'finished' || status === 'errored' || status === 'canceled'
@@ -274,6 +280,14 @@ export async function handleEasWebhook(opts: {
 
   // Charge first, then submit: a build we cannot bill is still a build the
   // customer asked for, but the meter has to see it before anything else claims it.
+  if (!reportedClass && reportedRaw) {
+    console.warn('[native-release] build reported a class we cannot price', {
+      easBuildId,
+      reported: reportedRaw,
+      billing: build.resourceClass,
+    })
+  }
+
   const metered = await meterBuild({ easBuildId, memberId })
 
   if (build.purpose === 'store') {

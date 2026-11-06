@@ -25,7 +25,17 @@ let submitThrows: string | null = null
 const fakePrisma = {
   nativeBuild: {
     async findUnique({ where }: any) {
-      return builds.get(where.easBuildId) ?? null
+      const build = builds.get(where.easBuildId) ?? [...builds.values()].find((b) => b.id === where.id)
+      // `meterBuild` reads `build.release.workspaceId`.
+      return build ? { ...build, release: { workspaceId: 'ws_1', projectId: 'proj_1' } } : null
+    },
+    /** The `meteredAt` claim: only the first caller flips the row. */
+    async updateMany({ where, data }: any) {
+      const build = builds.get(where.easBuildId) ?? [...builds.values()].find((b) => b.id === where.id)
+      if (!build) return { count: 0 }
+      if (where.meteredAt === null && build.meteredAt) return { count: 0 }
+      Object.assign(build, data)
+      return { count: 1 }
     },
     async findFirst({ where }: any) {
       return [...builds.values()].find((b) => b.submissionId === where.submissionId) ?? null
@@ -56,12 +66,6 @@ const fakePrisma = {
 }
 
 mock.module('../../../lib/prisma', () => ({ prisma: fakePrisma }))
-mock.module('../usage.service', () => ({
-  meterBuild: async ({ easBuildId }: { easBuildId: string }) => {
-    meterCalls.push(easBuildId)
-    return 'metered'
-  },
-}))
 mock.module('../release.service', () => ({
   submitStoreBuild: async ({ easBuildId }: { easBuildId: string }) => {
     submitCalls.push(easBuildId)
@@ -72,25 +76,71 @@ mock.module('../release.service', () => ({
 const { handleEasWebhook, detectWebhookEvent, verifyEasSignature } = await import('../webhook')
 const { setNativeAlertSink } = await import('../alerts')
 const { webhookUrlFor } = await import('../apps.service')
+const { buildPriceUsd, setNativeUsageWallet } = await import('../usage.service')
 
 const SECRET = 'webhook-secret-'.padEnd(32, 'x')
 
-/** A documented BUILD delivery — note: no `event`, no `buildDetails`. */
+/**
+ * A documented BUILD delivery, **copied from `docs.expo.dev/eas/webhooks/`** —
+ * note: no `event`, no `buildDetails`, and `resourceClass` /
+ * `actualResourceClass` are builder-machine slugs (`android-n2-1.3-12`), not
+ * `BuildResourceClass` values. Round 2's test paired `resourceClass: 'ios-medium'`
+ * with `actualResourceClass: 'IOS_LARGE'`, a combination no delivery can produce,
+ * which is how a slug reached a column the price table keys on.
+ */
 const BUILD_PAYLOAD = {
   id: '147a3212-49fd-446f-b4e3-a6519acf264a',
-  accountName: 'shogo',
+  accountName: 'dsokal',
   projectName: 'example',
-  buildDetailsPageUrl: 'https://expo.dev/accounts/shogo/projects/example/builds/147a3212',
+  buildDetailsPageUrl: 'https://expo.dev/accounts/dsokal/projects/example/builds/147a3212',
   appId: 'bc0a82de-65a5-4497-ad86-54ff1f53edf7',
   initiatingUserId: 'd1041496-1a59-423a-8caf-479bb978203a',
-  platform: 'ios',
-  status: 'finished',
-  artifacts: { buildUrl: 'https://expo.dev/artifacts/eas/abc.ipa', logsS3KeyPrefix: 'production/abc' },
-  metadata: { buildProfile: 'shogo-store', distribution: 'store', appVersion: '1.0.2' },
-  resourceClass: 'ios-medium',
-  actualResourceClass: 'IOS_LARGE',
+  cancelingUserId: null,
+  platform: 'android',
+  status: 'errored',
+  artifacts: {
+    buildUrl: 'https://expo.dev/artifacts/eas/wyodu9tua2ZuKKiaJ1Nbkn.aab',
+    logsS3KeyPrefix: 'production/f9609423-5072-4ea2-a0a5-c345eedf2c2a',
+  },
+  metadata: {
+    appName: 'example',
+    username: 'dsokal',
+    workflow: 'managed',
+    appVersion: '1.0.2',
+    appBuildVersion: '123',
+    cliVersion: '0.37.0',
+    sdkVersion: '41.0.0',
+    buildProfile: 'production',
+    distribution: 'store',
+    appIdentifier: 'com.expo.example',
+    runtimeVersion: '1.0.2',
+    channel: 'default',
+    credentialsSource: 'remote',
+    isGitWorkingTreeDirty: false,
+    message: 'release build',
+    runFromCI: false,
+  },
+  error: { message: 'Unknown error. Please see logs.', errorCode: 'UNKNOWN_ERROR' },
   createdAt: '2021-11-24T09:53:01.155Z',
+  enqueuedAt: '2021-11-24T09:53:01.155Z',
+  provisioningStartedAt: '2021-11-24T09:54:01.155Z',
+  workerStartedAt: '2021-11-24T09:54:11.155Z',
   completedAt: '2021-11-24T09:57:42.715Z',
+  updatedAt: '2021-11-24T09:57:42.715Z',
+  // The two fields that broke billing. Both are builder slugs in the docs.
+  resourceClass: 'android-n2-1.3-12',
+  actualResourceClass: 'android-n2-1.3-12',
+}
+
+/**
+ * The same documented build, finished. Only `status` differs — the docs list
+ * `finished` as one of the three statuses this payload can carry.
+ */
+const FINISHED_BUILD = {
+  ...BUILD_PAYLOAD,
+  status: 'finished',
+  artifacts: { ...BUILD_PAYLOAD.artifacts, buildUrl: 'https://expo.dev/artifacts/eas/abc.apk' },
+  error: undefined,
 }
 
 /** A documented SUBMIT delivery. */
@@ -127,9 +177,9 @@ function seedBuild(overrides: Record<string, any> = {}) {
     id: 'nb_1',
     easBuildId: BUILD_PAYLOAD.id,
     releaseId: 'rel_1',
-    platform: 'ios',
+    platform: 'android',
     purpose: 'store',
-    resourceClass: 'IOS_MEDIUM',
+    resourceClass: 'ANDROID_MEDIUM',
     status: 'in_progress',
     artifactKey: null,
     submissionId: null,
@@ -141,6 +191,8 @@ function seedBuild(overrides: Record<string, any> = {}) {
   return build
 }
 
+const previousMode = process.env.NATIVE_RELEASE_MODE
+
 beforeEach(() => {
   builds.clear()
   releases.clear()
@@ -149,13 +201,27 @@ beforeEach(() => {
   meterCalls.length = 0
   submitCalls.length = 0
   submitThrows = null
+  // The meter only charges in `cloud`; every case here is about what a cloud
+  // delivery bills, and the real meter is left in place so a slug that cannot be
+  // priced shows up as the failure it is.
+  process.env.NATIVE_RELEASE_MODE = 'cloud'
   setNativeAlertSink(async (event, detail) => {
     alerts.push({ event, detail })
+  })
+  setNativeUsageWallet({
+    consume: (async (params: Record<string, any>) => {
+      if (params.actionType === 'native_build') meterCalls.push(params.actionMetadata?.easBuildId)
+      return { success: true }
+    }) as any,
+    checkBalance: (async () => ({ ok: true })) as any,
   })
 })
 
 afterEach(() => {
   setNativeAlertSink(null)
+  setNativeUsageWallet(null)
+  if (previousMode === undefined) delete process.env.NATIVE_RELEASE_MODE
+  else process.env.NATIVE_RELEASE_MODE = previousMode
 })
 
 describe('the webhook event comes from the URL, not from a body field', () => {
@@ -202,36 +268,50 @@ describe('the webhook event comes from the URL, not from a body field', () => {
 })
 
 describe('a finished build', () => {
-  it('bills by what actually ran and stores the real artifact URL', async () => {
+  it('never writes the reported builder slug into the column the price table keys on', async () => {
+    // The round-3 blocker: `actualResourceClass` is `android-n2-1.3-12`, which has
+    // no row in BUILD_PRICE_USD, so storing it raw left every real build
+    // unpriced, uncharged, and alerting.
     const build = seedBuild()
-    const res = await deliver(BUILD_PAYLOAD, 'build')
+    const res = await deliver(FINISHED_BUILD, 'build')
     expect(res.status).toBe(200)
+    expect(meterCalls).toEqual([FINISHED_BUILD.id])
 
-    expect(meterCalls).toEqual([BUILD_PAYLOAD.id])
-    expect(build.resourceClass).toBe('IOS_LARGE')
-    expect(build.artifactKey).toBe(BUILD_PAYLOAD.artifacts.buildUrl)
+    expect(build.resourceClass).toBe('ANDROID_MEDIUM')
+    expect(buildPriceUsd(build.resourceClass)).toBe(1)
+    expect(build.artifactKey).toBe('https://expo.dev/artifacts/eas/abc.apk')
     expect(build.status).toBe('finished')
     expect(releases.get('rel_1')!.step).toBe('store_submission')
-    expect(submitCalls).toEqual([BUILD_PAYLOAD.id])
+    expect(submitCalls).toEqual([FINISHED_BUILD.id])
+    expect(alerts.map((a) => a.event)).not.toContain('native_build_unpriced')
+  })
+
+  it('takes the reported class when EAS reports one it can name', async () => {
+    // The GraphQL side reports enum values, so an *actual* class that differs
+    // from the requested one has to win — it is what the invoice names.
+    const build = seedBuild()
+    await deliver(
+      { ...FINISHED_BUILD, resourceClass: 'large', actualResourceClass: 'android-large' },
+      'build',
+    )
+    expect(build.resourceClass).toBe('ANDROID_LARGE')
+    expect(buildPriceUsd(build.resourceClass)).toBe(2)
   })
 
   it('is detected without the query hint too', async () => {
     seedBuild()
-    const res = await deliver(BUILD_PAYLOAD)
+    const res = await deliver(FINISHED_BUILD)
     expect(res.body).toMatchObject({ ok: true, metered: 'metered' })
     expect(meterCalls).toHaveLength(1)
   })
 
   it('marks a failed build with the reason Expo gives', async () => {
     const build = seedBuild()
-    const res = await deliver(
-      { ...BUILD_PAYLOAD, status: 'errored', error: { message: 'Gradle build failed', errorCode: 'E' } },
-      'build',
-    )
+    const res = await deliver(BUILD_PAYLOAD, 'build')
     expect(res.status).toBe(200)
     expect(build.status).toBe('errored')
     expect(meterCalls).toHaveLength(0)
-    expect(releases.get('rel_1')!.error).toBe('Gradle build failed')
+    expect(releases.get('rel_1')!.error).toBe('Unknown error. Please see logs.')
     expect(releases.get('rel_1')!.status).toBe('failed')
   })
 })
