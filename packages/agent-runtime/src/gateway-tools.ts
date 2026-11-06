@@ -5165,6 +5165,22 @@ async function runPublishDomainAction(
   })
 }
 
+const HOSTING_ERROR_REASON_MAX = 200
+
+/**
+ * Published-service setup failures arrive carrying the raw kubectl/k8s body
+ * (a multi-KB `AlreadyExists` dump with an `HTTP-Code`/`Body:` trailer). Handing
+ * that to the model produced answers that blamed the user's code, or that pasted
+ * cluster JSON at them. Keep only the leading human sentence.
+ */
+function summarizeHostingError(message: unknown): string {
+  const raw = String(message ?? '').replace(/\s+/g, ' ').trim()
+  const cutAt = [raw.indexOf('{'), raw.search(/HTTP-Code/i), raw.search(/\bBody:/i)].filter((i) => i >= 0)
+  const head = (cutAt.length > 0 ? raw.slice(0, Math.min(...cutAt)) : raw).trim().replace(/[:\-–,\s]+$/, '')
+  if (!head) return 'the hosting platform returned no detail'
+  return head.length > HOSTING_ERROR_REASON_MAX ? `${head.slice(0, HOSTING_ERROR_REASON_MAX - 1)}…` : head
+}
+
 function createPublishTool(ctx: ToolContext): AgentTool {
   return {
     name: 'publish',
@@ -5177,7 +5193,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds and that the scripts/stylesheets it references load — share THAT URL with the user. If it returns `brokenAssets`, the site renders blank: fix the asset paths and republish before telling the user it works.',
       'The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
       'In a workspace runtime, pass `project_id` for the mounted project to publish. It defaults to the current project, the workspace anchor, or the only attached project.',
-      'Published apps run on Knative and scale past one instance. Pass `environment: "staging"` to deploy to the optional staging site (`{subdomain}--staging.shogo.one`) for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
+      'Published apps run on Knative and scale past one instance. `publish` deploys the WHOLE app — the built frontend AND its server (`server.tsx` / `custom-routes.ts`) with its database — on Shogo\'s own hosting, with `/api/*` served on the same `{subdomain}.shogo.one` domain (and on custom domains). Shogo hosts and runs all of it, so NEVER suggest or set up an outside host for the API or database (Render, Fly, Railway, Heroku, a VPS), and never propose splitting the app into a static site plus a separately hosted backend. Pass `environment: \"staging\"` to deploy to the optional staging site (`{subdomain}--staging.shogo.one`) for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
       'For anything other than a deploy — checking replicas/latency/cost, tailing logs, changing scale, rolling back, redeploying, promoting, creating or deleting staging — pass `ops_action` instead of publishing. An ops action NEVER builds or publishes new code. Get the user\'s confirmation before: raising max replicas or size (real money), rollback, promote to production, and deleting an environment.',
       'Custom domains: `domain_action` lists/adds/checks/removes the project\'s own domains and returns every DNS record verbatim. Set `domain_action` and it does NOT publish. Actions: "list", "add" (needs `domain`), "verify", "make_primary", "remove". Only remove a domain when the user explicitly asked to remove it.',
       'Native apps: pass `target: "ios"` / `"android"` (or `"native"` for both) to ship an Expo project to the App Store / Google Play instead of the web. It builds a test app and runs the project\'s Maestro flows first, and only builds for the store if they pass — so a broken flow costs nothing. Paid plans only (`plan_not_allowed` → point to Settings > Billing).',
@@ -5488,10 +5504,34 @@ function createPublishTool(ctx: ToolContext): AgentTool {
             changes: changes.map((c) => c.message).filter(Boolean),
           })
         }
+        if (res.code === 'configure_failed' || res.code === 'configure_timeout') {
+          const reason = summarizeHostingError(res.error)
+          const liveUrl = currentSubdomain ? `https://${currentSubdomain}.shogo.one` : null
+          return textResult({
+            error:
+              `Publishing failed on Shogo's hosting side while setting up the published service (${reason}). ` +
+              "This is our infrastructure, not the user's app — their code built and uploaded fine. " +
+              (liveUrl
+                ? `The previous deploy is still serving at ${liveUrl}, so nothing the user has now is broken. `
+                : 'Nothing is live yet: this project has no published site serving right now. ') +
+              'Tell the user plainly that publishing hit a problem on our side' +
+              (liveUrl ? ' and their existing site is unaffected.' : '.') +
+              ' Do NOT suggest moving the app or its API to another host (Render, Fly, Railway, a VPS), splitting the frontend from the backend, or publishing static-only: Shogo hosts the frontend, the API and the database. ' +
+              (res.code === 'configure_timeout'
+                ? 'This was a timeout, so one retry a little later is reasonable — but do not loop.'
+                : 'Do not retry it — the same call, or the same call with a different subdomain, will fail the same way.'),
+            code: res.code,
+            status: res.status,
+            reason,
+            liveUrl,
+          })
+        }
         if (res.code === 'database_unavailable' || res.code === 'schema_push_failed' || res.code === 'seed_failed') {
           return textResult({
-            error: `${res.error} This is a hosting/infrastructure failure, not something to retry with different arguments — the user's work is saved and the previous deploy (if any) is still serving.`,
+            error: `${summarizeHostingError(res.error)} This is a hosting/infrastructure failure, not something to retry with different arguments — the user's work is saved and the previous deploy (if any) is still serving.`,
             code: res.code,
+            status: res.status,
+            reason: summarizeHostingError(res.error),
           })
         }
         if (res.code === 'publish_route_missing') {
