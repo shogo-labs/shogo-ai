@@ -5180,7 +5180,9 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'Published apps run on Knative and scale past one instance. Pass `environment: "staging"` to deploy to the optional staging site (`{subdomain}--staging.shogo.one`) for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
       'For anything other than a deploy — checking replicas/latency/cost, tailing logs, changing scale, rolling back, redeploying, promoting, creating or deleting staging — pass `ops_action` instead of publishing. An ops action NEVER builds or publishes new code. Get the user\'s confirmation before: raising max replicas or size (real money), rollback, promote to production, and deleting an environment.',
       'Custom domains: `domain_action` lists/adds/checks/removes the project\'s own domains and returns every DNS record verbatim. Set `domain_action` and it does NOT publish. Actions: "list", "add" (needs `domain`), "verify", "make_primary", "remove". Only remove a domain when the user explicitly asked to remove it.',
-      'Native apps: pass `target: "ios"` / `"android"` (or `"native"` for both) to ship an Expo project to the App Store / Google Play instead of the web. It builds a test app and runs the project\'s Maestro flows first, and only builds for the store if they pass — so a broken flow costs nothing. The user\'s own Apple Developer and Play accounts must be connected in Project → Settings → App stores; if that is missing the call says which key is needed. Paid plans only (`plan_not_allowed` → point to Settings > Billing). The release is asynchronous: this returns a `release_id` immediately, and you then call this tool again with `release_id` (no `target`) to poll it, reporting the failing Maestro step when the test fails. Never tell the user an app shipped before that poll says so.',
+      'Native apps: pass `target: "ios"` / `"android"` (or `"native"` for both) to ship an Expo project to the App Store / Google Play instead of the web. It builds a test app and runs the project\'s Maestro flows first, and only builds for the store if they pass — so a broken flow costs nothing. Paid plans only (`plan_not_allowed` → point to Settings > Billing).',
+      'Every native response carries `next_action` and a `user_message` to say: follow `next_action` instead of guessing at the flow. `confirm_bundle_id` → show the ids and get them confirmed, they lock after the first upload. `publish_web` → this app calls its own backend, so the web version has to be published first; publish it, then ship. `connect_play` → the user invites the publisher email it returns in Play Console; they never handle a JSON key. `connect_asc` → they add their own App Store Connect key, which Apple cannot delegate to Shogo. `play_first_upload` → they upload one build by hand in Play Console (link included) so Google creates the app record. `asc_app_record` → they create the app in App Store Connect. `needs_icon` → ask for a logo and pass `icon`. Then `building` → `testing` → `submitted` → `live`, or `test_failed` with the failing flow.',
+      'The release is asynchronous: this returns a `release_id` immediately and never waits on a build — never start a background process, a sleep, or a watcher for it. Call this tool again with `release_id` (no `target`) when you are asked to check, and report the failing Maestro step when the test failed. Never tell the user an app shipped before a poll says `live`.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -5242,6 +5244,12 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         Type.String({
           description:
             'Poll a native release instead of starting one: pass the id a `target` call returned. Reports the current step, the failing Maestro flow when the test failed, and the store submission status. Poll every minute or two; do not poll in a loop.',
+        }),
+      ),
+      icon: Type.Optional(
+        Type.String({
+          description:
+            'Native store artwork: a project-relative path to the user\'s logo (PNG, 8-bit RGB or RGBA, not interlaced). Shogo generates the 1024 iOS icon, the Android adaptive icon, the splash icon and the 512 Play icon from it, and lists them under .shogo/store-assets/ so the user can commit them. Ask the user for a logo when a release returns `next_action: needs_icon`.',
         }),
       ),
       ops_action: Type.Optional(
@@ -5328,6 +5336,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         target,
         track,
         release_id,
+        icon,
       } = params as {
         subdomain?: string
         access_level?: 'anyone' | 'authenticated' | 'private' | 'password'
@@ -5382,6 +5391,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
           platforms,
           track: track ?? 'internal',
           hasMaestroFlows: await hasMaestroFlows(projectDir),
+          iconPath: icon,
         })
         return textResult(result as unknown as Record<string, unknown>)
       }

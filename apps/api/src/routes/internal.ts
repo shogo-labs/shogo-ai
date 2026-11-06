@@ -992,13 +992,29 @@ app.get('/projects/:projectId/native/state', async (c) => {
     const [project, appRow] = await Promise.all([
       (prisma as any).project.findUnique({
         where: { id: projectId },
-        select: { workspaceId: true, name: true, slug: true },
+        select: {
+          workspaceId: true,
+          name: true,
+          slug: true,
+          publishedSubdomain: true,
+          publishStatus: true,
+        },
       }),
       (prisma as any).nativeApp.findUnique({ where: { projectId } }),
     ])
     if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
 
     const slug = project.slug ?? project.name ?? 'app'
+
+    // What the store connections can actually do right now, so the agent can say
+    // "invite this email" instead of starting a build that cannot be submitted.
+    // Nothing here calls Apple or Google — a probe costs a token and a round trip,
+    // and `startRelease` runs the real one before any credit is reserved.
+    const [playKey, ascKey] = await Promise.all([
+      native.resolvePlayCredentialsFor(project.workspaceId),
+      native.readAscKey(project.workspaceId),
+    ])
+
     return c.json({
       mode: native.nativeReleaseMode(),
       app: appRow
@@ -1006,13 +1022,40 @@ app.get('/projects/:projectId/native/state', async (c) => {
             bundleIdentifier: appRow.bundleIdentifier,
             androidPackage: appRow.androidPackage,
             easAppId: appRow.easAppId,
+            ascAppId: appRow.ascAppId,
             idsLockedAt: appRow.idsLockedAt,
+            firstPlaySubmissionAt: appRow.firstPlaySubmissionAt,
           }
         : null,
       needsBundleId: !appRow?.bundleIdentifier,
+      defaultSlug: slug,
       defaultBundleIdentifier: native.defaultBundleIdentifier(slug),
       defaultAndroidPackage: native.defaultBundleIdentifier(slug),
       pinnedResourceClass: native.easJsonResourceClass(),
+      connections: {
+        play: {
+          // Shogo's publisher account, or the workspace's own uploaded key.
+          keyAvailable: Boolean(playKey),
+          publisherEmail: playKey?.clientEmail ?? native.playPublisherEmail(),
+          firstUploadDone: Boolean(appRow?.firstPlaySubmissionAt),
+          packageName: appRow?.androidPackage ?? native.defaultBundleIdentifier(slug),
+        },
+        asc: {
+          keyAvailable: Boolean(ascKey),
+          appRecord: Boolean(appRow?.ascAppId),
+          bundleIdentifier: appRow?.bundleIdentifier ?? native.defaultBundleIdentifier(slug),
+        },
+      },
+      backend: {
+        // The published web URL, when there is one: a native app that calls
+        // relative `/api/...` is dead on a device, so this is what the runner puts
+        // in `EXPO_PUBLIC_API_URL`.
+        published: project.publishStatus === 'live' && Boolean(project.publishedSubdomain),
+        url:
+          project.publishStatus === 'live' && project.publishedSubdomain
+            ? `https://${project.publishedSubdomain}.${process.env.PUBLISH_DOMAIN || 'shogo.one'}`
+            : null,
+      },
     })
   } catch (err: any) {
     return c.json({ error: { code: 'native_state_failed', message: err?.message ?? 'failed' } }, 500)

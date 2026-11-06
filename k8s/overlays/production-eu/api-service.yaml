@@ -555,6 +555,17 @@ spec:
                   optional: true
             - name: NATIVE_RELEASE_MODE
               value: "byok"
+            # SHO-323 native release (managed store submit). Shogo-owned Google
+            # Play publisher service account: the customer invites its email in
+            # Play Console, and it submits on their behalf without them minting
+            # a key. Optional — a workspace's own `play_service_account`
+            # credential always wins when one exists.
+            - name: SHOGO_PLAY_PUBLISHER_SA
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SHOGO_PLAY_PUBLISHER_SA
+                  optional: true
             - name: ELEVENLABS_API_KEY
               valueFrom:
                 secretKeyRef:

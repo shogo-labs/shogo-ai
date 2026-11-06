@@ -43,6 +43,15 @@ import {
 } from './eas-graphql'
 import { ensureNativeApp, lockAppIdentifiers, type NativeAppRow } from './apps.service'
 import { readAscKey, readByokExpoToken, readPlayKey } from './credentials.service'
+import { findAscAppId } from './signing.service'
+import {
+  playPublisherEmail,
+  playRefusalMessage,
+  probePlayPackage,
+  resolvePlayCredentials,
+  type PlayKey,
+  type PlayProbe,
+} from './play'
 import {
   STORE_BUILD_RESOURCE_CLASS,
   TEST_BUILD_RESOURCE_CLASS,
@@ -263,6 +272,92 @@ export async function preflightBalance(opts: {
   )
 }
 
+/**
+ * The Play probe and the ASC lookup are the two calls that decide whether a
+ * release can be submitted at all, and they talk to Apple and Google. Swapped in
+ * tests, exactly like `setEasClient`.
+ */
+let probePlay: (key: PlayKey, packageName: string) => Promise<PlayProbe> = probePlayPackage
+let lookupAscApp: typeof findAscAppId = findAscAppId
+
+export function setStoreProbes(opts: {
+  play?: ((key: PlayKey, packageName: string) => Promise<PlayProbe>) | null
+  asc?: typeof findAscAppId | null
+}): void {
+  probePlay = opts.play ?? probePlayPackage
+  lookupAscApp = opts.asc ?? findAscAppId
+}
+
+/**
+ * Can this workspace actually submit to the stores it asked for?
+ *
+ * Samsara's run is why this exists: the build succeeded, the submit then failed
+ * on a permission the user could have granted before anything was built. Both
+ * refusals are the user's to fix and both are knowable in advance, so they become
+ * a `next_action` before a build is charged rather than a dead release after it.
+ *
+ * Ordering: Play has no per-user key at all any more (Shogo's publisher account is
+ * granted permission on the app), so the common Android case here is "invite the
+ * publisher email" or "do the one-time first upload".
+ */
+export async function assertStoreConnections(opts: {
+  workspaceId: string
+  app: NativeAppRow
+  platforms: ReleasePlatform[]
+}): Promise<void> {
+  if (opts.platforms.includes('android')) {
+    const resolved = await resolvePlayCredentials(opts.workspaceId, { readByokKey: readPlayKey })
+    const packageName = opts.app.androidPackage ?? undefined
+    if (!resolved) {
+      const email = playPublisherEmail()
+      throw new NativeReleaseError(
+        412,
+        'connect_play',
+        playRefusalMessage('play_not_invited', { email, packageName }),
+        { next_action: 'connect_play', publisher_email: email },
+      )
+    }
+    if (packageName) {
+      const probe = await probePlay(resolved.key, packageName)
+      if (!probe.ok) {
+        const code = probe.code ?? 'play_error'
+        throw new NativeReleaseError(412, code, playRefusalMessage(code, {
+          email: resolved.key.clientEmail,
+          packageName,
+        }), { next_action: code, publisher_email: resolved.key.clientEmail })
+      }
+    }
+  }
+
+  if (opts.platforms.includes('ios')) {
+    const key = await readAscKey(opts.workspaceId)
+    if (!key) {
+      throw new NativeReleaseError(
+        412,
+        'connect_asc',
+        'Connect an App Store Connect API key in Project → App stores before shipping to iOS.',
+        { next_action: 'connect_asc' },
+      )
+    }
+    // Apple has no way to grant us publishing rights, so the app record has to
+    // exist before a submission can name it. A null here means "create the app in
+    // App Store Connect", which is a one-time hand step in Settings.
+    if (opts.app.bundleIdentifier && !opts.app.ascAppId) {
+      const ascAppId = await lookupAscApp(key, opts.app.bundleIdentifier)
+      if (!ascAppId) {
+        throw new NativeReleaseError(
+          412,
+          'asc_app_record',
+          `Create the app for ${opts.app.bundleIdentifier} in App Store Connect (Apps → + → New App) and try again.`,
+          { next_action: 'asc_app_record', bundle_identifier: opts.app.bundleIdentifier },
+        )
+      }
+      await db.nativeApp.update({ where: { id: opts.app.id }, data: { ascAppId } })
+      opts.app.ascAppId = ascAppId
+    }
+  }
+}
+
 export interface StartReleaseInput {
   workspaceId: string
   projectId: string
@@ -305,6 +400,14 @@ export async function startRelease(input: StartReleaseInput): Promise<StartRelea
     workspaceId: input.workspaceId,
     credentials,
     apiBaseUrl: input.apiBaseUrl,
+  })
+
+  // Before a single credit is reserved: can the stores we are shipping to accept
+  // a submission from this workspace? Nothing has been built at this point.
+  await assertStoreConnections({
+    workspaceId: input.workspaceId,
+    app,
+    platforms: input.platforms,
   })
 
   const previous = await db.nativeRelease.findFirst({
@@ -464,6 +567,27 @@ export function hasMaestro(release: { step?: string | null }): boolean {
 }
 
 /**
+ * The address a native app has to talk to, or null when nothing is published.
+ *
+ * A device has no origin, so a build whose code calls `/api/...` reaches nothing:
+ * Samsara built and installed fine and was unusable. The runner refuses to start
+ * in that case (`publish_web`); when there *is* a published app, this is the URL
+ * the build gets as `EXPO_PUBLIC_API_URL`.
+ */
+export async function publishedBackendUrl(opts: {
+  projectId: string
+  env?: NodeJS.ProcessEnv
+}): Promise<string | null> {
+  const project = await db.project.findUnique({
+    where: { id: opts.projectId },
+    select: { publishedSubdomain: true, publishStatus: true },
+  })
+  if (!project || project.publishStatus !== 'live' || !project.publishedSubdomain) return null
+  const domain = (opts.env ?? process.env).PUBLISH_DOMAIN || 'shogo.one'
+  return `https://${project.publishedSubdomain}.${domain}`
+}
+
+/**
  * Start the store builds. Only reached when the test stage passed or was
  * skipped, which is what makes "a failed Maestro flow never costs a store build"
  * true rather than aspirational.
@@ -485,6 +609,8 @@ export async function startStoreBuilds(opts: {
     throw new NativeReleaseError(409, 'native_source_missing', 'This release has no uploaded archive.')
   }
 
+  const backendUrl = await publishedBackendUrl({ projectId: release.projectId })
+
   for (const platform of opts.platforms) {
     const resourceClass = storeResourceClass(platform)
     // `IosJobInput` requires `type`, `projectArchive`, `projectRootDirectory` and
@@ -492,12 +618,17 @@ export async function startStoreBuilds(opts: {
     // auth check ("Field projectArchive of required type ... was not provided").
     // Ours are spread last so the runner's draft cannot repoint them; the class
     // and the token role travel in `buildParams`, not here.
+    const draft = (opts.jobDraft ?? {}) as Record<string, any>
+    const draftEnvironment = (draft.environment ?? {}) as Record<string, string>
     const job = {
       projectRootDirectory: '.',
-      ...(opts.jobDraft ?? {}),
+      ...draft,
       type: 'MANAGED',
       projectArchive: { type: 'GCS', bucketKey: release.sourceBucketKey },
       buildArtifactPaths: '',
+      // Our value wins: this is the address the app has to reach, and a draft that
+      // could replace it would ship a build pointing somewhere else.
+      ...(backendUrl ? { environment: { ...draftEnvironment, EXPO_PUBLIC_API_URL: backendUrl } } : {}),
     }
     const build = await createBuild(opts.client, {
       platform,
@@ -606,12 +737,22 @@ async function submitStoreBuildImpl(opts: {
           })
         })()
       : await (async () => {
-          const play = await readPlayKey(release.workspaceId)
-          if (!play) {
+          // Play is the one store where the user does not need to hold a key:
+          // Shogo's own publisher service account is granted release permission
+          // on the app by its owner (Play Console → Users and permissions). A
+          // workspace-uploaded key still wins, for apps that already have one.
+          const resolved = await resolvePlayCredentials(release.workspaceId, {
+            readByokKey: readPlayKey,
+          })
+          if (!resolved) {
             throw new NativeReleaseError(
               412,
-              'play_key_required',
-              'Connect a Google Play service account in Project → App stores before shipping to Android.',
+              'connect_play',
+              playRefusalMessage('play_not_invited', {
+                email: playPublisherEmail(),
+                packageName: app.androidPackage ?? undefined,
+              }),
+              { next_action: 'connect_play', publisher_email: playPublisherEmail() },
             )
           }
           return createSubmission(client, {
@@ -622,7 +763,7 @@ async function submitStoreBuildImpl(opts: {
             // Play equivalent and is what a test-track release means.
             track: release.track === 'production' ? 'production' : 'internal',
             applicationIdentifier: app.androidPackage ?? undefined,
-            googleServiceAccountKeyJson: play,
+            googleServiceAccountKeyJson: resolved.key.json,
           })
         })()
 
@@ -631,6 +772,15 @@ async function submitStoreBuildImpl(opts: {
     data: { submissionId: submission.id, submissionStatus: submission.status },
   })
   await lockAppIdentifiers(release.projectId, build.platform)
+  if (build.platform === 'android' && !app.firstPlaySubmissionAt) {
+    // Play creates the app record on the first successful upload, so this is the
+    // flag that says "the one-time hand step is done" — the state route reads it
+    // to stop returning `play_first_upload`.
+    await db.nativeApp.update({
+      where: { id: app.id },
+      data: { firstPlaySubmissionAt: new Date() },
+    })
+  }
   await db.nativeRelease.update({
     where: { id: release.id },
     data: { status: 'submitting', step: 'store_submission' },

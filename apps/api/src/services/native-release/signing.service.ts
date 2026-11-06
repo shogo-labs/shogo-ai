@@ -20,6 +20,7 @@
 import { createSign } from 'node:crypto'
 import { NativeReleaseError } from './client'
 import type { AscApiKey } from './credentials.service'
+import { googleAccessToken, probePlayPackage, type PlayKey } from './play'
 
 export const ASC_API_BASE = 'https://api.appstoreconnect.apple.com'
 /**
@@ -136,8 +137,7 @@ export async function validatePlayKey(
   credentialsJson: string,
   opts: { packageName?: string; fetchImpl?: typeof fetch } = {},
 ): Promise<void> {
-  const fetchImpl = opts.fetchImpl ?? fetch
-  let parsed: { client_email?: string; private_key?: string; token_uri?: string }
+  let parsed: { client_email?: string; private_key?: string }
   try {
     parsed = JSON.parse(credentialsJson)
   } catch {
@@ -150,35 +150,12 @@ export async function validatePlayKey(
       'That JSON is not a Google service-account key (client_email and private_key are missing).',
     )
   }
+  const key: PlayKey = { json: credentialsJson, clientEmail: parsed.client_email }
 
-  const tokenUri = parsed.token_uri ?? 'https://oauth2.googleapis.com/token'
-  const iat = Math.floor(Date.now() / 1000)
-  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
-  const claims = base64url(
-    JSON.stringify({
-      iss: parsed.client_email,
-      scope: 'https://www.googleapis.com/auth/androidpublisher',
-      aud: tokenUri,
-      iat,
-      exp: iat + 3600,
-    }),
-  )
-  const signer = createSign('SHA256')
-  signer.update(`${header}.${claims}`)
-  signer.end()
-  const assertion = `${header}.${claims}.${base64url(signer.sign(parsed.private_key))}`
-
-  const tokenRes = await fetchImpl(tokenUri, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion,
-    }),
-    signal: AbortSignal.timeout(20_000),
-  })
-  const tokenJson = (await tokenRes.json().catch(() => ({}))) as { access_token?: string }
-  if (!tokenRes.ok || !tokenJson.access_token) {
+  let accessToken: string
+  try {
+    accessToken = await googleAccessToken(key, { fetchImpl: opts.fetchImpl })
+  } catch {
     throw new NativeReleaseError(
       400,
       'play_key_rejected',
@@ -188,27 +165,16 @@ export async function validatePlayKey(
 
   if (!opts.packageName) return
 
-  const base = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(opts.packageName)}/edits`
-  const editRes = await fetchImpl(base, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${tokenJson.access_token}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({}),
-    signal: AbortSignal.timeout(20_000),
+  const probe = await probePlayPackage(key, opts.packageName, {
+    fetchImpl: opts.fetchImpl,
+    accessToken,
   })
-  const edit = (await editRes.json().catch(() => ({}))) as { id?: string }
-  if (!editRes.ok || !edit.id) {
+  if (!probe.ok) {
     throw new NativeReleaseError(
       400,
-      'play_package_rejected',
+      probe.code === 'play_package_not_found' ? 'play_package_missing' : 'play_package_rejected',
       'That service account cannot publish to this Android package. Check the package name and its Play Console permissions.',
+      { play: probe.code },
     )
   }
-  await fetchImpl(`${base}/${edit.id}`, {
-    method: 'DELETE',
-    headers: { authorization: `Bearer ${tokenJson.access_token}` },
-    signal: AbortSignal.timeout(20_000),
-  }).catch(() => undefined)
 }

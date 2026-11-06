@@ -87,3 +87,28 @@ add there + `global.css`) so dark mode keeps working for free.
 
 If preview seems stuck, request a rebuild via the runtime's preview/rebuild
 endpoint instead of restarting Metro yourself.
+
+## Shipping to the App Store / Google Play
+
+This project can be published as a real iOS and Android app with
+`publish({ target: "ios" | "android" | "native" })`. Follow the `next_action` in
+every response — it is the whole procedure, in order:
+
+`confirm_bundle_id` → `publish_web` → `connect_play` / `connect_asc` →
+`play_first_upload` / `asc_app_record` → `needs_icon` → `building` → `testing` →
+`submitted` → `live`.
+
+- **A backend has to be published first.** This stack calls its own API, and a
+  device has no origin. The release injects the published URL as
+  `EXPO_PUBLIC_API_URL`; read that variable for every request base in the app —
+  never hardcode `http://localhost` or a relative URL that only works in the
+  preview.
+- **Keep `.maestro/` current.** The test build runs these flows before any store
+  build, and a flow that no longer matches the app blocks every release. A failed
+  flow costs nothing, which is the point.
+- **An icon is required.** Pass `icon: "<path to a square PNG>"` and the four
+  store images are generated from it (1024 icon, adaptive foreground, splash, 512
+  Play icon), listed under `.shogo/store-assets/`.
+- **Never run `eas-cli` or a browser** for any of this, and never wait on a build
+  in the background: the release returns a `release_id`, and you check it when the
+  user asks.

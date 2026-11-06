@@ -31,11 +31,46 @@ import ignore from 'ignore'
 // `node:child_process` directly would flash a console window on Windows — every
 // spawn in this repo goes through the windowsHide wrapper.
 import { execFile } from '@shogo/shared-runtime/child-process'
+import { decodePng, generateStoreAssets, type StoreAssets } from './native-release-assets'
+import {
+  RELEASE_ONLY_FACTS,
+  hasCustomStoreIcon,
+  nativeNextStep,
+  type NativeNextStep,
+  type NativeReleaseFacts,
+} from './native-release-state'
 
 const execFileAsync = promisify(execFile)
 
 /** Directories that never belong in a build archive, at any depth. */
 const ALWAYS_EXCLUDED_DIRS = new Set(['node_modules', '.shogo', '.git', '.expo', 'ios', 'android'])
+
+/**
+ * Heavy directories that are not part of the app.
+ *
+ * Samsara's tree was 1.3 GB — content, media, research and reports from the
+ * project's life as a Shogo workspace — and EAS rejected it. A store build needs
+ * the app source, its assets and its config; everything else is bytes on the
+ * wire and minutes on the builder. Excluded at the **top level only**, so an
+ * `app/src/scripts` or a package's own `data` folder is untouched: the rule is
+ * about the workspace, not about the word.
+ */
+export const NON_APP_TOP_LEVEL_DIRS = new Set([
+  'content',
+  'media',
+  'research',
+  'data',
+  'dist',
+  'docs',
+  'reports',
+  'tests',
+  'scripts',
+  'shots',
+  'coverage',
+])
+
+/** Above this, the release stops and names what is large instead of uploading. */
+export const MAX_ARCHIVE_BYTES = 500 * 1024 * 1024
 
 /** Files that could carry a secret, or that we generate into the archive instead. */
 const ALWAYS_EXCLUDED_FILES = new Set(['eas.json', 'easignore'])
@@ -54,6 +89,7 @@ export function isExcludedFromArchive(relPath: string): boolean {
   const base = parts[parts.length - 1] ?? ''
 
   if (parts.some((part) => ALWAYS_EXCLUDED_DIRS.has(part))) return true
+  if (parts.length > 1 && NON_APP_TOP_LEVEL_DIRS.has(parts[0]!)) return true
   if (ALWAYS_EXCLUDED_FILES.has(base)) return true
   if (base === '.env.example' || base === '.env.sample') return false
   if (base === '.env' || base.startsWith('.env.')) return true
@@ -83,10 +119,22 @@ export interface ArchiveOptions {
   /** The Shogo project id, recorded in the generated `eas.json`. */
   projectId: string
   owner?: string
+  /** Identifiers the store build must carry, whatever the project's config says. */
+  identifier?: {
+    slug?: string
+    scheme?: string
+    iosBundleIdentifier?: string
+    androidPackage?: string
+  }
   /** Build env the API should hand to EAS (`EXPO_PUBLIC_*` only). */
   publicEnv?: Record<string, string>
   /** Absolute paths (project-relative) the caller wants excluded on top. */
   extraExcludes?: string[]
+  /**
+   * Store artwork generated from the user's logo. Written into the archive only —
+   * the working tree stays byte-identical.
+   */
+  storeAssets?: StoreAssets
 }
 
 /**
@@ -218,9 +266,47 @@ export function buildEasJson(opts: {
 export function buildAppConfigOverlay(opts: {
   easProjectId: string
   updatesUrl?: string
+  identifier?: ArchiveOptions['identifier']
+  storeAssets?: Pick<StoreAssets, 'backgroundColor'>
 }): Record<string, unknown> {
+  const id = opts.identifier ?? {}
+  const bg = opts.storeAssets?.backgroundColor
+
+  // One `android` object, built in one place: two spreads of the same key is how
+  // the generated adaptive icon silently loses to the bare package name.
+  const android: Record<string, unknown> = {
+    ...(id.androidPackage ? { package: id.androidPackage } : {}),
+    ...(bg
+      ? {
+          adaptiveIcon: {
+            foregroundImage: './assets/images/adaptive-icon.png',
+            backgroundColor: bg,
+          },
+        }
+      : {}),
+  }
+
   return {
     extra: { eas: { projectId: opts.easProjectId } },
+    // The same keys on both platforms: iOS carries the flat icon, Android the
+    // adaptive pair plus the splash both of them use.
+    ...(bg
+      ? {
+          icon: './assets/images/icon.png',
+          splash: {
+            image: './assets/images/splash-icon.png',
+            resizeMode: 'contain',
+            backgroundColor: bg,
+          },
+        }
+      : {}),
+    // The stores read these from the built app, not from eas.json, and Samsara's
+    // tree had none of them: `slug` and `scheme` are also what `expo-router`
+    // deep links resolve against.
+    ...(id.slug ? { slug: id.slug } : {}),
+    ...(id.scheme ? { scheme: id.scheme } : {}),
+    ...(id.iosBundleIdentifier ? { ios: { bundleIdentifier: id.iosBundleIdentifier } } : {}),
+    ...(Object.keys(android).length ? { android } : {}),
     ...(opts.updatesUrl ? { updates: { url: opts.updatesUrl } } : {}),
   }
 }
@@ -236,6 +322,38 @@ module.exports = ({ config }) => ({
   extra: { ...((base.expo ?? base).extra ?? {}), ...(config.extra ?? {}), ...${JSON.stringify(overlay.extra ?? {})} },
 })
 `
+}
+
+/**
+ * The largest top-level directories in an archive, for a refusal that names what
+ * is large instead of saying "too large".
+ */
+export function largestTopLevelDirs(
+  sizes: Map<string, number>,
+  limit = 3,
+): { dir: string; bytes: number }[] {
+  return [...sizes.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([dir, bytes]) => ({ dir, bytes }))
+}
+
+/**
+ * Pin the package manager to the one this runtime builds with.
+ *
+ * Samsara only installed under `bun`; EAS picks npm/yarn/bun from the lockfile
+ * and `package.json`, and the agent had to work that out by hand. Writing
+ * `packageManager` into the **archive's** copy fixes it for every release without
+ * touching the project.
+ */
+export function packageManagerPin(opts: {
+  files: string[]
+  bunVersion?: string | null
+}): string | null {
+  const hasBunLock = opts.files.some((f) => f === 'bun.lock' || f === 'bun.lockb')
+  if (!hasBunLock) return null
+  const version = String(opts.bunVersion ?? process.versions.bun ?? '').trim()
+  return version ? `bun@${version}` : null
 }
 
 /**
@@ -265,6 +383,8 @@ export async function writeProjectArchive(
   const extra = new Set((opts.extraExcludes ?? []).map(archivePath))
 
   const files: string[] = []
+  const dirBytes = new Map<string, number>()
+  let totalBytes = 0
   const walk = async (dir: string): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const abs = join(dir, entry.name)
@@ -274,10 +394,28 @@ export async function writeProjectArchive(
         await walk(abs)
         continue
       }
-      if (entry.isFile()) files.push(rel)
+      if (entry.isFile()) {
+        files.push(rel)
+        const size = (await stat(abs)).size
+        totalBytes += size
+        const top = rel.split('/')[0] ?? rel
+        dirBytes.set(top, (dirBytes.get(top) ?? 0) + size)
+      }
     }
   }
   await walk(opts.projectDir)
+
+  // A cap that names what is large. Uploading a 1.3 GB workspace costs the user
+  // minutes before EAS refuses it anyway — Samsara's tree was exactly that.
+  if (totalBytes > MAX_ARCHIVE_BYTES) {
+    const largest = largestTopLevelDirs(dirBytes)
+    const mb = (n: number) => `${Math.round(n / (1024 * 1024))} MB`
+    throw new Error(
+      `This project is ${mb(totalBytes)}, over the ${mb(MAX_ARCHIVE_BYTES)} a store build accepts. ` +
+        `Largest: ${largest.map((d) => `${d.dir} (${mb(d.bytes)})`).join(', ')}. ` +
+        'Move those out of the app or add them to .easignore, then ship again.',
+    )
+  }
 
   let publicEnv: Record<string, string> = {}
   const envPath = join(opts.projectDir, '.env')
@@ -289,6 +427,15 @@ export async function writeProjectArchive(
       const target = join(staging, rel)
       await mkdir(join(target, '..'), { recursive: true })
       await cp(join(opts.projectDir, rel), target)
+    }
+
+    if (opts.storeAssets) {
+      for (const [rel, bytes] of Object.entries(opts.storeAssets.files)) {
+        const target = join(staging, rel)
+        await mkdir(join(target, '..'), { recursive: true })
+        await writeFile(target, bytes)
+        if (!files.includes(rel)) files.push(rel)
+      }
     }
 
     await writeFile(
@@ -306,16 +453,35 @@ export async function writeProjectArchive(
     )
     files.push('eas.json')
 
+    // EAS installs with whichever package manager the project's lockfile implies;
+    // Samsara needed bun and the agent had to find that out at build time.
+    const pin = packageManagerPin({ files })
+    const pkgPath = join(staging, 'package.json')
+    if (pin && existsSync(pkgPath)) {
+      const pkg = JSON.parse(await readFile(pkgPath, 'utf8')) as Record<string, any>
+      if (!pkg.packageManager) {
+        pkg.packageManager = pin
+        await writeFile(pkgPath, JSON.stringify(pkg, null, 2), 'utf8')
+      }
+    }
+
     if (opts.easyProjectId) {
       const overlay = buildAppConfigOverlay({
         easProjectId: opts.easyProjectId,
         updatesUrl: opts.updatesUrl,
+        identifier: opts.identifier,
+        storeAssets: opts.storeAssets,
       })
       const appJsonPath = join(staging, 'app.json')
       if (existsSync(appJsonPath)) {
         const parsed = JSON.parse(await readFile(appJsonPath, 'utf8')) as Record<string, any>
         const root = parsed.expo ?? parsed
         root.extra = { ...(root.extra ?? {}), ...(overlay.extra ?? {}) }
+        for (const key of ['slug', 'scheme'] as const) {
+          if (overlay[key]) root[key] = overlay[key]
+        }
+        if (overlay.ios) root.ios = { ...(root.ios ?? {}), ...(overlay.ios as object) }
+        if (overlay.android) root.android = { ...(root.android ?? {}), ...(overlay.android as object) }
         if (overlay.updates) root.updates = { ...(root.updates ?? {}), ...(overlay.updates as object) }
         await writeFile(appJsonPath, JSON.stringify(parsed, null, 2), 'utf8')
       } else {
@@ -333,6 +499,20 @@ export async function writeProjectArchive(
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
+}
+
+/** Write the generated artwork under `.shogo/store-assets/` and return those paths. */
+export async function stageStoreAssets(projectDir: string, assets: StoreAssets): Promise<string[]> {
+  const { mkdir } = await import('node:fs/promises')
+  const written: string[] = []
+  for (const [rel, bytes] of Object.entries(assets.files)) {
+    const name = rel.split('/').pop()!
+    const target = join(projectDir, '.shogo', 'store-assets', name)
+    await mkdir(join(target, '..'), { recursive: true })
+    await writeFile(target, bytes)
+    written.push(`.shogo/store-assets/${name}`)
+  }
+  return written
 }
 
 /** Exposed so callers and tests use the same normalisation for paths. */
@@ -363,6 +543,18 @@ export interface NativeReleaseResult {
   test_stage?: 'scheduled' | 'skipped'
   error?: string
   code?: string
+  /**
+   * The generated store artwork, written under `.shogo/store-assets/` so the user
+   * can commit it. `.shogo` is the runtime's own directory and is excluded from
+   * the archive, so this does not change the project's source.
+   */
+  store_assets?: string[]
+  store_background_color?: string
+  /** The one thing to do next, and the sentence to say. See native-release-state. */
+  state?: string
+  next_action?: string
+  user_message?: string
+  links?: Record<string, string>
 }
 
 export interface RunNativeReleaseInput {
@@ -372,6 +564,12 @@ export interface RunNativeReleaseInput {
   track: 'internal' | 'testflight' | 'production'
   /** Result of `hasMaestroFlows(projectDir)` — whether a test stage exists. */
   hasMaestroFlows: boolean
+  /**
+   * A logo the user supplied (`publish({ icon })`). The four store images are
+   * generated from it; without one a project that has no artwork stops at
+   * `needs_icon` rather than shipping a listing with no icon.
+   */
+  iconPath?: string
   /** Injected so a test (and the relay path) can stand in for the API. */
   api?: {
     state: (projectId: string) => Promise<{ ok: boolean; status?: number; data?: any; error?: string; code?: string }>
@@ -396,6 +594,73 @@ export async function hasMaestroFlows(projectDir: string): Promise<boolean> {
 }
 
 /**
+ * Does the project run its own backend?
+ *
+ * A Shogo project with a server answers `/api/...` relative to the origin the app
+ * is served from — which on a device is nothing. Samsara is the reference case:
+ * it built, installed, and could not load a single request.
+ */
+export function hasServerFiles(files: string[]): boolean {
+  return files.some(
+    (rel) =>
+      rel === 'server.tsx' ||
+      rel === 'server.ts' ||
+      rel === 'custom-routes.ts' ||
+      rel === 'custom-routes.tsx' ||
+      rel === 'prisma/schema.prisma' ||
+      rel === 'src/server.tsx' ||
+      rel === 'src/server.ts',
+  )
+}
+
+/**
+ * The facts the state machine needs: what the API reports (connections, backend,
+ * identifiers) plus what only the runner can see (the file list).
+ */
+export function factsFromState(
+  stateData: any,
+  files: string[],
+  opts: { iconProvided?: boolean } = {},
+): NativeReleaseFacts {
+  const connections = stateData?.connections ?? {}
+  const app = stateData?.app ?? {}
+  return {
+    needsBundleId: Boolean(stateData?.needsBundleId),
+    hasServerFiles: hasServerFiles(files),
+    backend: {
+      published: Boolean(stateData?.backend?.published),
+      url: stateData?.backend?.url ?? null,
+    },
+    connections: {
+      play: {
+        keyAvailable: Boolean(connections.play?.keyAvailable),
+        publisherEmail: connections.play?.publisherEmail ?? null,
+        firstUploadDone: Boolean(connections.play?.firstUploadDone),
+      },
+      asc: {
+        keyAvailable: Boolean(connections.asc?.keyAvailable),
+        appRecord: Boolean(connections.asc?.appRecord),
+      },
+    },
+    hasStoreIcon: Boolean(opts.iconProvided) || hasCustomStoreIcon({ files }),
+    bundleIdentifier: app.bundleIdentifier ?? stateData?.defaultBundleIdentifier ?? '',
+    androidPackage: app.androidPackage ?? stateData?.defaultAndroidPackage ?? '',
+  }
+}
+
+function toResultFields(step: NativeNextStep): Pick<
+  NativeReleaseResult,
+  'state' | 'next_action' | 'user_message' | 'links'
+> {
+  return {
+    state: step.state,
+    next_action: step.next_action,
+    user_message: step.user_message,
+    links: step.links,
+  }
+}
+
+/**
  * Run one release. Returns the shape the agent reports from — deliberately
  * small, because the release is asynchronous: the agent gets a `release_id` and
  * polls it, rather than holding the turn open for a 20-minute build.
@@ -414,6 +679,12 @@ export async function runNativeRelease(input: RunNativeReleaseInput): Promise<Na
       needs_bundle_id: true,
       default_bundle_identifier: state.data.defaultBundleIdentifier,
       mode: state.data.mode,
+      ...toResultFields(
+        nativeNextStep({
+          facts: factsFromState(state.data, []),
+          platforms: input.platforms,
+        }),
+      ),
     }
   }
 
@@ -431,6 +702,50 @@ export async function runNativeRelease(input: RunNativeReleaseInput): Promise<Na
     }
   }
   await walk(input.projectDir)
+
+  // The logo is the one input that has to be turned into files before the gate
+  // runs: with `iconPath` the project does have artwork, it just is not written
+  // down yet.
+  let storeAssets: StoreAssets | undefined
+  let stagedAssetPaths: string[] = []
+  if (input.iconPath) {
+    const iconAbs = join(input.projectDir, input.iconPath)
+    if (!existsSync(iconAbs)) {
+      return { ok: false, error: `There is no file at ${input.iconPath}.`, code: 'native_icon_missing' }
+    }
+    try {
+      storeAssets = generateStoreAssets(decodePng(await readFile(iconAbs)))
+      // Offered to the user, not committed for them: these are their brand
+      // assets and they may want to adjust the crops.
+      stagedAssetPaths = await stageStoreAssets(input.projectDir, storeAssets)
+    } catch (err) {
+      return {
+        ok: false,
+        error: `Could not use ${input.iconPath} as the store icon: ${(err as Error).message}`,
+        code: 'native_icon_invalid',
+      }
+    }
+  }
+
+  // Everything the flow needs is known before a build is charged: a missing
+  // bundle id, a backend that is not published, an uninvited publisher account, a
+  // Play package Google has never seen, an App Store Connect app record that does
+  // not exist, or no store icon. Each of those is one sentence to the user, and
+  // none of them is discoverable after a 20-minute build.
+  const step = nativeNextStep({
+    facts: factsFromState(state.data, tracked, { iconProvided: Boolean(storeAssets) }),
+    platforms: input.platforms,
+  })
+  if (step.next_action !== 'building') {
+    return {
+      ok: true,
+      mode: state.data.mode,
+      ...(stagedAssetPaths.length
+        ? { store_assets: stagedAssetPaths, store_background_color: storeAssets?.backgroundColor }
+        : {}),
+      ...toResultFields(step),
+    }
+  }
 
   const fingerprint = await computeFingerprint(input.projectDir, tracked)
 
@@ -475,6 +790,21 @@ export async function runNativeRelease(input: RunNativeReleaseInput): Promise<Na
       outFile,
       easyProjectId: (state.data.app?.easAppId as string | undefined) ?? undefined,
       resourceClass: state.data.pinnedResourceClass,
+      storeAssets,
+      // The store build carries the identifiers we confirmed with the user, not
+      // whatever the project's config happened to say.
+      identifier: {
+        slug: state.data.defaultSlug ?? undefined,
+        scheme: String(state.data.defaultSlug ?? '')
+          .replace(/[^a-z0-9]+/gi, '')
+          .toLowerCase() || undefined,
+        iosBundleIdentifier:
+          (state.data.app?.bundleIdentifier as string | undefined) ??
+          (state.data.defaultBundleIdentifier as string | undefined),
+        androidPackage:
+          (state.data.app?.androidPackage as string | undefined) ??
+          (state.data.defaultAndroidPackage as string | undefined),
+      },
     })
   } catch (err) {
     return { ok: false, release_id: releaseId, error: `Could not archive the project: ${String((err as Error)?.message ?? err)}` }
@@ -499,6 +829,9 @@ export async function runNativeRelease(input: RunNativeReleaseInput): Promise<Na
     status: (sources.data as { status?: string })?.status ?? 'uploaded',
     mode,
     test_stage: (sources.data as { workflowRunId?: string })?.workflowRunId ? 'scheduled' : 'skipped',
+    ...(stagedAssetPaths.length
+      ? { store_assets: stagedAssetPaths, store_background_color: storeAssets?.backgroundColor }
+      : {}),
     ...(archive.files ? {} : {}),
   }
 }
@@ -560,6 +893,7 @@ export async function nativeReleaseStatus(
     error: string | null
     kind: string
     track: string
+    platforms?: ('ios' | 'android')[]
     testOutcome: string | null
     builds: { platform: string; purpose: string; status: string; resourceClass: string | null; submissionStatus: string | null }[]
   }
@@ -572,7 +906,22 @@ export async function nativeReleaseStatus(
     submission_status: b.submissionStatus,
   }))
 
-  const failed = release.testOutcome === 'failed'
+  // The same state machine the start path uses, so a poll cannot say something
+  // different from the call that started the release.
+  const step = nativeNextStep({
+    facts: RELEASE_ONLY_FACTS,
+    // The release row carries the platforms it was started for; both when a
+    // caller hands us an older payload that predates the field.
+    platforms: (release.platforms as ('ios' | 'android')[] | undefined) ?? ['ios', 'android'],
+    release: {
+      status: release.status,
+      step: release.step,
+      testOutcome: release.testOutcome,
+      kind: release.kind,
+      error: release.error,
+    },
+  })
+
   return {
     ok: true,
     release_id: releaseId,
@@ -583,15 +932,9 @@ export async function nativeReleaseStatus(
     test_outcome: release.testOutcome,
     builds,
     error: release.error ?? undefined,
-    // What the agent says to the user, so a failed test run is never reported
-    // as a shipped app.
-    summary:
-      release.status === 'done'
-        ? release.kind === 'update'
-          ? 'Update published to existing installs.'
-          : 'Submitted to the store.'
-        : failed
-          ? 'The test build or Maestro flow failed, so nothing was sent to the store.'
-          : `In progress: ${release.step ?? release.status}.`,
+    ...toResultFields(step),
+    // Kept for callers that only render one line, and so a failed test run is
+    // never reported as a shipped app.
+    summary: step.user_message,
   }
 }
