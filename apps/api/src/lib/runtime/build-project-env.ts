@@ -13,6 +13,7 @@ import {
   INSTANCE_SIZES,
   meetsMinimumInstanceSize,
   resolveMetalVmSize,
+  resolveWorkspaceDiskMiB,
   type InstanceSizeName,
   type MetalVmSize,
 } from '../../config/instance-sizes'
@@ -76,6 +77,7 @@ export async function buildProjectEnv(
         name: true,
         settings: true,
         cloudSyncMode: true,
+        workspaceDiskGiB: true,
         workspace: { select: { composioScope: true, instanceSize: true } },
       } as any,
     }) as (Record<string, any> & {
@@ -83,6 +85,7 @@ export async function buildProjectEnv(
       name?: string | null
       settings?: unknown
       cloudSyncMode?: string | null
+      workspaceDiskGiB?: number | null
       workspace?: { composioScope?: string | null; instanceSize?: string | null } | null
     }) | null
     if (project) {
@@ -223,6 +226,12 @@ export async function buildProjectEnv(
               env.SHOGO_RUNTIME_CLASS === 'docker',
             ),
           ),
+        )
+        // Workspace-drive size for this assignment (SHO-349). The host grows the
+        // drive to this before restoring the project's files, and re-asserts it
+        // on every open/reuse/resize.
+        env.SHOGO_VM_DISK_MIB = String(
+          resolveWorkspaceDiskMiB(project.workspaceDiskGiB, instanceSize as InstanceSizeName),
         )
       }
 

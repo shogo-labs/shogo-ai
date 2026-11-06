@@ -554,3 +554,56 @@ describe('buildWorkspaceEnv', () => {
     })
   })
 })
+
+// SHO-349: the workspace drive a metal runtime asks the host for, from
+// `SHOGO_VM_DISK_MIB`. Ceilings live in config/instance-sizes.ts.
+describe('buildWorkspaceEnv — workspace drive (SHO-349)', () => {
+  const metalSeams = (diskById: Record<string, number | null>) =>
+    ({
+      ...seams,
+      forMetal: true,
+      _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'medium' }),
+      _loadProjects: async (ids: string[]) =>
+        ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' }, workspaceDiskGiB: diskById[id] ?? null })),
+    }) as any
+
+  it('sends the anchor project’s own request', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], {
+      ...metalSeams({ p1: 40, p2: 20 }),
+      anchorProjectId: 'p1',
+    })
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
+  })
+
+  it('falls back to the fleet default when the anchor never asked', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+      ...metalSeams({ p1: null }),
+      anchorProjectId: 'p1',
+    })
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(20 * 1024))
+  })
+
+  it('grows a bare workspace runtime for the largest member it mounts', async () => {
+    // No anchor: metal mounts no project folder at boot, but projects attach
+    // live. The size must come from the members the caller asked for — reading
+    // the (already narrowed) `rows` would always answer the default.
+    const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], metalSeams({ p1: 20, p2: 40 }))
+    expect(env.WORKSPACE_ANCHOR_PROJECT_ID).toBeUndefined()
+    expect(env.WORKSPACE_PROJECT_IDS).toBe('')
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
+  })
+
+  it('never exceeds the tier ceiling for the workspace', async () => {
+    // `medium` allows 40 GiB: a member asking for 80 resolves to the ceiling.
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], metalSeams({ p1: 80 }))
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
+  })
+
+  it('is not emitted off metal', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+      ...seams,
+      _loadProjects: async (ids: string[]) => ids.map((id) => ({ id, name: id, workspaceDiskGiB: 40 })),
+    } as any)
+    expect(env.SHOGO_VM_DISK_MIB).toBeUndefined()
+  })
+})

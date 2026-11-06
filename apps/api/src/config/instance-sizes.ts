@@ -28,6 +28,12 @@ export interface InstanceSizeSpec {
   storageLimitBytes: number
   storageGbLabel: string
   diskSizeLimit: string
+  /**
+   * Ceiling (GiB) for a project's WORKSPACE drive on metal — the ext4 drive at
+   * /data that holds the project itself. Distinct from `diskSizeLimit`, which
+   * is the Knative overlay. See `resolveWorkspaceDiskMiB`.
+   */
+  workspaceDiskMaxGiB: number
   baseCostMonthly: number
   baseCostAnnual: number
   minScale: number
@@ -47,6 +53,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 1 * 1024 ** 3,
     storageGbLabel: '1 GB',
     diskSizeLimit: '2Gi',
+    workspaceDiskMaxGiB: 20,
     baseCostMonthly: 0,
     baseCostAnnual: 0,
     minScale: 0,
@@ -62,6 +69,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 5 * 1024 ** 3,
     storageGbLabel: '5 GB',
     diskSizeLimit: '4Gi',
+    workspaceDiskMaxGiB: 20,
     baseCostMonthly: 15,
     baseCostAnnual: 150,
     minScale: 1,
@@ -77,6 +85,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 20 * 1024 ** 3,
     storageGbLabel: '20 GB',
     diskSizeLimit: '8Gi',
+    workspaceDiskMaxGiB: 40,
     baseCostMonthly: 40,
     baseCostAnnual: 400,
     minScale: 1,
@@ -92,6 +101,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 100 * 1024 ** 3,
     storageGbLabel: '100 GB',
     diskSizeLimit: '16Gi',
+    workspaceDiskMaxGiB: 80,
     baseCostMonthly: 80,
     baseCostAnnual: 800,
     minScale: 1,
@@ -107,6 +117,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 200 * 1024 ** 3,
     storageGbLabel: '200 GB',
     diskSizeLimit: '32Gi',
+    workspaceDiskMaxGiB: 160,
     baseCostMonthly: 150,
     baseCostAnnual: 1500,
     minScale: 1,
@@ -117,6 +128,46 @@ export const INSTANCE_SIZE_ORDER: InstanceSizeName[] = ['micro', 'small', 'mediu
 
 export function getInstanceSizeSpec(size: InstanceSizeName): InstanceSizeSpec {
   return INSTANCE_SIZES[size]
+}
+
+/**
+ * Every project gets this much workspace disk (GiB) on metal unless it asked
+ * for more. Mirrors the fleet default `METAL_WORKSPACE_DRIVE_MIB=20480`; a host
+ * whose own configured drive size differs still uses this as the *floor*, so a
+ * project can never be clamped below the size it already runs at.
+ */
+export const DEFAULT_WORKSPACE_DISK_GIB = 20
+
+/**
+ * Hard cap on any single workspace drive, whatever the tier. A drive is a
+ * sparse file, but suspend packs it and wake restores it, so its *logical* size
+ * bounds how long both take and how much object storage one project can push.
+ */
+export const MAX_WORKSPACE_DISK_GIB = 200
+
+/** Largest workspace drive (GiB) a project on `instanceSize` may ask for. */
+export function workspaceDiskCeilingGiB(instanceSize: InstanceSizeName): number {
+  const spec = (INSTANCE_SIZES as Record<string, InstanceSizeSpec>)[instanceSize] ?? INSTANCE_SIZES.micro
+  return Math.max(DEFAULT_WORKSPACE_DISK_GIB, Math.min(spec.workspaceDiskMaxGiB, MAX_WORKSPACE_DISK_GIB))
+}
+
+/**
+ * The workspace-drive size (MiB) to hand a metal host for one assignment.
+ *
+ * `requestedGiB` is `Project.workspaceDiskGiB` — null when the project never
+ * asked. Drives never shrink (ext4 cannot shrink online, and the drive is
+ * sparse so a bigger logical size costs nothing until written), so a request
+ * below the default — or below the ceiling after a tier downgrade — clamps UP
+ * to the default and only caps future growth.
+ */
+export function resolveWorkspaceDiskMiB(
+  requestedGiB: number | null | undefined,
+  instanceSize: InstanceSizeName,
+): number {
+  const ceiling = workspaceDiskCeilingGiB(instanceSize)
+  const wanted = typeof requestedGiB === 'number' && Number.isFinite(requestedGiB) ? Math.floor(requestedGiB) : 0
+  const gib = Math.min(Math.max(wanted, DEFAULT_WORKSPACE_DISK_GIB), ceiling)
+  return gib * 1024
 }
 
 /**

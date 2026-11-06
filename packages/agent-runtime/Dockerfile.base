@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium nss-plugin-pem fonts-freefont-ttf \
     ffmpeg imagemagick ripgrep \
     lsof psmisc \
+    e2fsprogs util-linux \
     build-essential && \
     # Node 24 via nodesource
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \

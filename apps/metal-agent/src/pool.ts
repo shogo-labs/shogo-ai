@@ -30,7 +30,8 @@ import { PhaseTimer, type StaleReason } from './phase-timer'
 import { HydrateProxy } from './hydrate-proxy'
 import { classConfig, config, isVmClassSupported, VM_CLASSES, type VmClass } from './config'
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
-import { WORKSPACE_DRIVE_SUFFIX } from './data-drive'
+import { DataDriveProvisioner, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
+import { FcApi } from './fc-api'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
@@ -179,7 +180,15 @@ export class ExportTooLargeError extends Error {
   }
 }
 
-/** Longest the periodic sweep waits before retrying a failed `.git` export. */
+/**
+ * Result of growing a workspace drive (SHO-349).
+ *   - `{ fromMiB, toMiB }` — the drive grew (host mirror; the guest's own ext4
+ *      size is what `df` reports after the following resize2fs).
+ *   - `'unchanged'` — already at least that big, nothing to do.
+ *   - `'unsupported'` — this host/guest has no workspace drive to grow.
+ */
+export type DriveResizeResult = { fromMiB: number; toMiB: number } | 'unchanged' | 'unsupported'
+
 /** How long a rollout rotation that aborted waits before trying again. */
 export const ROTATE_RETRY_MS = 10 * 60_000
 const REPO_EXPORT_MAX_BACKOFF_MS = 30 * 60_000
@@ -949,6 +958,19 @@ function vmClassFromEnv(env: Record<string, string> | undefined): VmClass {
   return env?.SHOGO_RUNTIME_CLASS === 'docker' ? 'docker' : 'standard'
 }
 
+/**
+ * The workspace-drive size (MiB) the control plane asked for on this
+ * assignment (`SHOGO_VM_DISK_MIB`, built from `Project.workspaceDiskGiB` —
+ * see apps/api/src/lib/runtime/build-project-env.ts). Absent for a host or
+ * caller that doesn't set it: leave the drive at the fleet size.
+ */
+function workspaceDriveMiBFromEnv(env: Record<string, string> | undefined): number | undefined {
+  const raw = env?.SHOGO_VM_DISK_MIB
+  if (!raw) return undefined
+  const mib = parseInt(raw, 10)
+  return Number.isFinite(mib) && mib > 0 ? mib : undefined
+}
+
 async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
   try {
     const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(timeoutMs) })
@@ -1064,6 +1086,13 @@ export class MetalWarmPool {
    * about one rootfs still gets the exact same value.
    */
   private rootfsIds: Record<VmClass, string>
+  /**
+   * Serializes workspace-drive grows per VM (SHO-349). Two concurrent grows of
+   * one drive would interleave freeze/thaw and the host-side ftruncate.
+   */
+  private driveLock = new KeyedMutex()
+  /** Resolves a VM's workspace-drive backing file (grow / size / existence). */
+  private driveProvisioner: DataDriveProvisioner
 
   constructor(
     private mgr = new FirecrackerVMManager(),
@@ -1071,6 +1100,7 @@ export class MetalWarmPool {
     store?: SnapshotStore,
   ) {
     this.store = store ?? createSnapshotStore(cfg)
+    this.driveProvisioner = new DataDriveProvisioner(cfg)
     this.rootfsIds = this.readRootfsIds()
     this.rootfsId = this.rootfsIds.standard
     this.index = new CacheIndex(cfg.snapDir)
@@ -1872,6 +1902,15 @@ export class MetalWarmPool {
         if (healthy) {
           live.lastTouchedAt = Date.now()
           live.lastHealthOk = true
+          // Re-assert the drive size on every open, like always-on: a project
+          // that raised its setting while the VM was live, or a VM that predates
+          // the grow, converges here. No-op when it is already big enough.
+          const wantDriveMiB = workspaceDriveMiBFromEnv(env)
+          if (wantDriveMiB !== undefined) {
+            await this.ensureWorkspaceDriveSize(live, wantDriveMiB).catch((err: any) =>
+              console.warn(`[pool] open: workspace-drive grow failed for ${projectId}:`, err?.message ?? err),
+            )
+          }
           if (bind?.attachedProjectIds) {
             // Merge, never replace: the caller's attachments omit projects
             // mounted live into this VM, and dropping them here meant their
@@ -2110,6 +2149,20 @@ export class MetalWarmPool {
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)
+
+    // Grow the workspace drive to the size this project asked for, BEFORE any
+    // of its files are restored (SHO-349): a project whose workspace is larger
+    // than the fleet default must not be hydrated into a drive that can't hold
+    // it. Best-effort — a failed grow must not fail the assignment; every later
+    // open retries it.
+    const requestedDriveMiB = workspaceDriveMiBFromEnv(env)
+    if (requestedDriveMiB !== undefined) {
+      try {
+        await timer.time('workspace_drive', () => this.ensureWorkspaceDriveSize(a, requestedDriveMiB))
+      } catch (err: any) {
+        console.warn(`[pool] assign: workspace-drive grow failed for ${projectId}:`, err?.message ?? err)
+      }
+    }
 
     // Cold miss: this warm VM booted from the TEMPLATE, so its workspace is the
     // "Project Ready" placeholder — the project's real source lives only in the
@@ -4882,7 +4935,14 @@ export class MetalWarmPool {
     projectId: string,
     env: Record<string, string> = {},
     timer = new PhaseTimer(),
-  ): Promise<{ assigned: AssignedVm; apiMs: number; readyMs: number; source: 'local' | 'store' } | null> {
+  ): Promise<{
+    assigned: AssignedVm
+    apiMs: number
+    readyMs: number
+    source: 'local' | 'store'
+    /** Workspace-drive size (MiB) re-asserted after the restore, when requested. */
+    drive?: number | null
+  } | null> {
     ;({ env } = this.ownMembersOnly(projectId, env))
     let s = this.suspended.get(projectId)
     let source: 'local' | 'store' = 'local'
@@ -5134,8 +5194,19 @@ export class MetalWarmPool {
     await timer.time('rehydrate', () =>
       this.callGuestHook(handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs, a.runtimeToken),
     )
+    // The drive came back with the snapshot at whatever size it was suspended
+    // with — grow it to what the project asks for now (SHO-349). A no-op when
+    // the sizes already match.
+    const wantDriveMiB = workspaceDriveMiBFromEnv(env)
+    if (wantDriveMiB !== undefined) {
+      await timer
+        .time('workspace_drive', () => this.ensureWorkspaceDriveSize(a, wantDriveMiB))
+        .catch((err: any) =>
+          console.warn(`[pool] resume: workspace-drive grow failed for ${projectId}:`, err?.message ?? err),
+        )
+    }
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
-    return { assigned: a, apiMs, readyMs: apiMs + readyMs, source }
+    return { assigned: a, apiMs, readyMs: apiMs + readyMs, source, drive: wantDriveMiB ?? null }
   }
 
   /**
@@ -5679,6 +5750,95 @@ export class MetalWarmPool {
   }
 
   /**
+   * Grow this VM's workspace drive to `targetMiB` live, with the guest frozen
+   * (SHO-349). Serialized per VM: two grows of the same drive at once would
+   * interleave freeze/thaw.
+   *
+   *   guest freeze → host ftruncate → PATCH /drives → guest thaw → resize2fs
+   *
+   * A no-op (`'unchanged'`) when the drive is already at least that big, so it
+   * is safe to call on every open. `'unsupported'` when this host runs without a
+   * workspace drive (`METAL_WORKSPACE_DRIVE_MIB=0`) or the guest predates the
+   * endpoint — neither is an error.
+   */
+  async ensureWorkspaceDriveSize(a: AssignedVm, targetMiB: number): Promise<DriveResizeResult> {
+    if (!this.cfg.workspaceDriveMiB || this.cfg.workspaceDriveMiB <= 0) return 'unsupported'
+    const path = a.handle.workspaceDrive
+    if (!path || !this.driveProvisioner.exists(path)) return 'unsupported'
+    const cap =
+      this.cfg.workspaceDriveMaxMiB > 0 ? this.cfg.workspaceDriveMaxMiB : this.cfg.workspaceDriveMiB
+    const target = Math.min(Math.floor(targetMiB), cap)
+    if (!(target > 0)) return 'unchanged'
+    const fromMiB = this.driveProvisioner.sizeMiB(path)
+    if (fromMiB >= target) return 'unchanged'
+
+    return this.driveLock.run(a.handle.id, async () => {
+      // Re-read inside the lock: a queued grow may have already done the work.
+      const current = this.driveProvisioner.sizeMiB(path)
+      if (current >= target) return 'unchanged'
+
+      const t0 = Date.now()
+      let frozen = false
+      try {
+        const freeze = await this.guestDriveOp(a, 'freeze')
+        if (freeze === 'unsupported') {
+          console.warn(`[pool] guest for ${a.projectId} has no /pool/workspace-drive — not growing the drive`)
+          return 'unsupported'
+        }
+        frozen = true
+        const grew = this.driveProvisioner.grow(path, target)
+        if (!grew) return 'unchanged'
+        // Tell the running VM its backing file changed. Only legal while the
+        // device is idle, which is exactly what the freeze above buys us.
+        await new FcApi(a.handle.socketPath).patchDrive('workspace', path)
+        await this.guestDriveOp(a, 'thaw')
+        frozen = false
+        await this.guestDriveOp(a, 'resize')
+        const toMiB = this.driveProvisioner.sizeMiB(path)
+        metrics.inc(`${M.workspaceDriveGrow}{result="ok"}`)
+        metrics.gauge(M.workspaceDriveGrowMs, Date.now() - t0)
+        console.log(
+          `[pool] grew workspace drive for ${a.projectId} ${grew.fromMiB}MiB → ${grew.toMiB}MiB ` +
+            `(file reads ${toMiB}MiB, ${Date.now() - t0}ms)`,
+        )
+        return { fromMiB: grew.fromMiB, toMiB: grew.toMiB }
+      } catch (err: any) {
+        metrics.inc(`${M.workspaceDriveGrow}{result="error"}`)
+        console.error(
+          `[pool] workspace-drive grow for ${a.projectId} to ${target}MiB failed:`,
+          err?.message ?? err,
+        )
+        throw err
+      } finally {
+        // Never leave the guest's filesystem frozen: a hung freeze means every
+        // write in the project blocks forever.
+        if (frozen) {
+          await this.guestDriveOp(a, 'thaw').catch(() => {})
+        }
+      }
+    })
+  }
+
+  /** POST /pool/workspace-drive on the guest. `'unsupported'` on 404/409. */
+  private async guestDriveOp(
+    a: AssignedVm,
+    op: 'freeze' | 'thaw' | 'resize',
+  ): Promise<'ok' | 'unsupported'> {
+    const res = await fetch(`${a.handle.agentUrl}/pool/workspace-drive`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {}),
+      },
+      body: JSON.stringify({ op }),
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (res.status === 404 || res.status === 409) return 'unsupported'
+    if (!res.ok) throw new Error(`/pool/workspace-drive ${op} failed (${res.status}): ${await res.text()}`)
+    return 'ok'
+  }
+
+  /**
    * Apply a live instance-tier change to an assigned project. Firecracker can't
    * hot-change vCPU/RAM, so those take effect on the NEXT cold boot/resume (the
    * assign env is re-read then). What we CAN apply immediately is the always-on
@@ -5686,14 +5846,28 @@ export class MetalWarmPool {
    * downgrade re-arms idle-suspend. No-op when the project isn't live on this
    * host. Returns true when a live VM was updated.
    */
-  applyResize(projectId: string, opts: { alwaysOn?: boolean }): boolean {
+  async applyResize(
+    projectId: string,
+    opts: { alwaysOn?: boolean; workspaceDriveMiB?: number },
+  ): Promise<{ applied: boolean; alwaysOn?: boolean; disk: DriveResizeResult }> {
     const a = this.assigned.get(projectId)
-    if (!a) return false
+    if (!a) return { applied: false, disk: 'unsupported' }
     if (opts.alwaysOn !== undefined && !!a.alwaysOn !== opts.alwaysOn) {
       a.alwaysOn = opts.alwaysOn
       this.writeLive(a)
     }
-    return true
+    let disk: DriveResizeResult = 'unchanged'
+    if (opts.workspaceDriveMiB !== undefined) {
+      try {
+        disk = await this.ensureWorkspaceDriveSize(a, opts.workspaceDriveMiB)
+      } catch (err: any) {
+        // A failed grow must not fail the tier change: always-on still applied,
+        // and the next open re-asserts the size (and retries the grow).
+        console.warn(`[pool] resize: workspace-drive grow for ${projectId} failed:`, err?.message ?? err)
+        disk = 'unsupported'
+      }
+    }
+    return { applied: true, alwaysOn: !!a.alwaysOn, disk }
   }
 
   // --- GC / cache management ------------------------------------------------

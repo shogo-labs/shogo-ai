@@ -62,6 +62,29 @@ export function workspaceRuntimeKey(workspaceId: string, anchorProjectId?: strin
   return anchorProjectId ? `ws:proj:${anchorProjectId}` : `ws:${workspaceId}`
 }
 
+/**
+ * Parse a Kubernetes-style storage quantity into MiB, for the workspace-drive
+ * size sent to a host (SHO-349). Accepts `40Gi`/`40G`/`40960Mi`/bare numbers
+ * (MiB). `undefined` for anything unparseable so the host keeps its own size
+ * rather than being handed a garbage number.
+ */
+export function diskStringToMiB(disk: string | undefined): number | undefined {
+  if (!disk) return undefined
+  const m = /^\s*(\d+(?:\.\d+)?)\s*([KMGTPE]i?)?\s*$/i.exec(disk)
+  if (!m) return undefined
+  const value = Number(m[1])
+  if (!Number.isFinite(value) || value <= 0) return undefined
+  const unit = (m[2] ?? 'Mi').toLowerCase()
+  const factors: Record<string, number> = {
+    '': 1, mi: 1, ki: 1 / 1024, gi: 1024, ti: 1024 ** 2, pi: 1024 ** 3,
+    k: 1000 / (1024 * 1024), m: 1e6 / (1024 * 1024), g: 1e9 / (1024 * 1024),
+    t: 1e12 / (1024 * 1024),
+  }
+  const factor = factors[unit]
+  if (factor === undefined) return undefined
+  return Math.round(value * factor)
+}
+
 const tracer = trace.getTracer('shogo-metal-pool')
 const meter = metrics.getMeter('shogo-metal-pool')
 
@@ -917,6 +940,20 @@ export class MetalWarmPoolController {
     return this.resolveRuntime(projectId, () => this.envBuilder(projectId, { forMetal: true }))
   }
 
+  /**
+   * The project's runtime URL **only if it is already up right now** — no
+   * assign, no resume, no lease (SHO-349). A settings read must never cold-boot
+   * a microVM just to display a number, so callers that only want a passive
+   * measurement (GET /disk) use this and treat `undefined` as "not running".
+   *
+   * Reads the same URL cache `resolveRuntime` populates, for both keys a
+   * project can live under: its anchored workspace runtime (`ws:proj:<id>`,
+   * what Studio opens) and its bare/legacy project key.
+   */
+  peekCachedUrl(projectId: string): string | undefined {
+    return this.getCachedUrl(workspaceRuntimeKey('', projectId)) ?? this.getCachedUrl(projectId)
+  }
+
   /** Resolve a merged-root workspace microVM on Metal. */
   async getMetalWorkspaceUrl(
     workspaceId: string,
@@ -1625,15 +1662,30 @@ export class MetalWarmPoolController {
     projectId: string,
     resources: { cpu?: string; memory?: string; disk?: string; minScale?: number },
   ): Promise<void> {
-    const host = await this.hostForProject(projectId)
-    if (!host) return
     const alwaysOn = (resources.minScale ?? 0) >= 1
-    await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/resize`, {
-      method: 'POST',
-      headers: this.agentHeaders(),
-      body: JSON.stringify({ projectId, alwaysOn }),
-      signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
-    }).catch((err) => console.warn(`[MetalPool] resize ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}`))
+    const workspaceDriveMiB = diskStringToMiB(resources.disk)
+    // Both keys a live runtime can be registered under: Studio opens a project
+    // as its anchored workspace runtime (`ws:proj:<id>`), and a bare project id
+    // is what an older/plain assign used. Either may be the live one.
+    const keys = [...new Set([projectId, workspaceRuntimeKey('', projectId)])]
+    await Promise.all(
+      keys.map(async (key) => {
+        const host = await this.hostForProject(key)
+        if (!host) return
+        await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/resize`, {
+          method: 'POST',
+          headers: this.agentHeaders(),
+          body: JSON.stringify({
+            projectId: key,
+            alwaysOn,
+            ...(workspaceDriveMiB !== undefined ? { workspaceDriveMiB } : {}),
+          }),
+          signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+        }).catch((err) =>
+          console.warn(`[MetalPool] resize ${key} on ${host.hostId} failed: ${(err as any)?.message ?? err}`),
+        )
+      }),
+    )
   }
 
   /**
@@ -2211,6 +2263,15 @@ export async function metalIdleDirectiveFor(region: string, prevTier: IdleTier |
 
 export async function getMetalProjectUrl(projectId: string): Promise<string> {
   return getMetalWarmPoolController().getMetalProjectUrl(projectId)
+}
+
+/**
+ * A project's runtime URL only when it is already running — never wakes it
+ * (SHO-349). Undefined means "not up", so callers report absence instead of
+ * paying for a cold boot.
+ */
+export function peekMetalProjectUrl(projectId: string): string | undefined {
+  return getMetalWarmPoolController().peekCachedUrl(projectId)
 }
 
 /** Project-scoped runtime status on metal (substrate.getStatus). */

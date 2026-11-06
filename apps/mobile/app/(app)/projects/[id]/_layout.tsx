@@ -172,6 +172,7 @@ import { CustomDomainsSection } from "../../../../components/project/CustomDomai
 import { AlwaysOnSection } from "../../../../components/project/AlwaysOnSection";
 import { AppStoresSection } from "../../../../components/project/AppStoresSection";
 import { DeploymentSection } from "../../../../components/project/DeploymentSection";
+import { DiskSettings } from "../../../../components/settings/DiskSettings";
 import { ProjectAgentLookSection } from "../../../../components/settings/ProjectAgentLookSection";
 import { CheckpointGraphNative } from "../../../../components/project/panels/ide/graph/CheckpointGraphNative";
 import {
@@ -197,6 +198,7 @@ import {
   BarChart3,
   FileText,
   ShieldCheck,
+  HardDrive,
   Globe,
   Plus,
   History,
@@ -4831,6 +4833,19 @@ export default observer(function ProjectLayout() {
                                     <AuthDatabasePanel
                                       projectId={projectId!}
                                       visible
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "disk",
+                                label: "Disk",
+                                icon: HardDrive,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Disk">
+                                    <DiskSettings
+                                      projectId={projectId!}
+                                      http={http}
                                     />
                                   </PanelErrorBoundary>
                                 ),

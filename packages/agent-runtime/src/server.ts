@@ -58,6 +58,7 @@ import {
   writePoolPreseedManifest,
 } from './workspace-pool-adopt'
 import { LiveTurnGate } from './live-turn-wait'
+import { handleWorkspaceDriveOp, readWorkspaceDriveUsage, type DriveOp } from './workspace-drive'
 import type { TurnOrigin } from './gateway'
 import {
   createRuntimeApp, traceOperation,
@@ -3770,6 +3771,23 @@ app.post('/pool/quiesce', async (c) => {
   const projects = await quiesceSidecars(allPreviewManagers())
   console.log(`[pool/quiesce] ${JSON.stringify(projects)}`)
   return c.json({ ok: true, projects })
+})
+
+// Workspace-drive maintenance for a live grow (SHO-349) — see workspace-drive.ts.
+// The host freezes the guest around its ftruncate + PATCH /drives, then thaws
+// and resizes; GET is what Settings → Disk shows. 409 `no_workspace_drive` on a
+// guest without a separate workspace drive (Knative, desktop, drive disabled).
+app.post('/pool/workspace-drive', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const op = body?.op as DriveOp
+  const result = await handleWorkspaceDriveOp(op)
+  return c.json(result.body, result.status as any)
+})
+
+app.get('/pool/workspace-drive', async (c) => {
+  const usage = await readWorkspaceDriveUsage()
+  if (!usage) return c.json({ error: 'no_workspace_drive' }, 409)
+  return c.json(usage)
 })
 
 app.post('/pool/rehydrate', async (c) => {

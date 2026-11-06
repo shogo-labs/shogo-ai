@@ -700,6 +700,15 @@ model Project {
   // start. See apps/docs/docs/architecture/cloud-pod-sync.md.
   cloudSyncMode CloudSyncMode @default(git_only)
 
+  // Requested size (GiB) of this project's runtime workspace drive — the ext4
+  // drive mounted at /data and bind-mounted onto /app/workspace inside a metal
+  // microVM (see apps/metal-agent/src/data-drive.ts). null = the fleet default
+  // (METAL_WORKSPACE_DRIVE_MIB). Drives never shrink: lowering it only caps
+  // future growth. Written ONLY by PUT /api/projects/:id/disk, which validates
+  // the workspace role and the tier ceiling (apps/api/src/config/instance-sizes.ts)
+  // — the generic project PATCH drops the field.
+  workspaceDiskGiB Int?
+
   // Relations
   workspace              Workspace                       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                 Folder?                         @relation(fields: [folderId], references: [id], onDelete: SetNull)

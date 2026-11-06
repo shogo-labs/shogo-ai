@@ -875,6 +875,51 @@ describe('buildProjectEnv — metal VM size', () => {
   })
 })
 
+// SHO-349: the workspace drive the host must grow to before it restores files.
+describe('buildProjectEnv — workspace drive (SHO-349)', () => {
+  test('sends the project’s own request as MiB', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspaceDiskGiB: 40,
+      workspace: { instanceSize: 'medium' },
+    }))
+    const env = await buildProjectEnv('proj-disk', { forMetal: true })
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
+  })
+
+  test('defaults to the fleet size when the project never asked', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspaceDiskGiB: null,
+      workspace: { instanceSize: 'medium' },
+    }))
+    const env = await buildProjectEnv('proj-disk-default', { forMetal: true })
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(20 * 1024))
+  })
+
+  test('clamps a stale request down to the current tier ceiling', async () => {
+    // Lowered from `large` to `medium`: 80 GiB is above the 40 GiB ceiling, so
+    // the host is never told to grow past what this plan allows today.
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspaceDiskGiB: 80,
+      workspace: { instanceSize: 'medium' },
+    }))
+    const env = await buildProjectEnv('proj-disk-downgraded', { forMetal: true })
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
+  })
+
+  test('leaves the drive size off non-metal envs', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspaceDiskGiB: 40,
+      workspace: { instanceSize: 'medium' },
+    }))
+    const env = await buildProjectEnv('proj-disk-k8s')
+    expect(env.SHOGO_VM_DISK_MIB).toBeUndefined()
+  })
+})
+
 // ─── Docker-capable ("Tier 2") project class ──────────────────────────────
 
 describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () => {
