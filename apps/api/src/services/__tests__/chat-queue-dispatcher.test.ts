@@ -45,8 +45,13 @@ const mockPrisma = {
   },
   workspace: { findMany: async () => [] },
   chatQueuedMessage: {
-    findFirst: async () =>
-      state.row.status === "pending" ? { ...state.row } : null,
+    findFirst: async ({ where }: any = {}) => {
+      // The dispatcher's claim guard asks for a `dispatching` row; this table
+      // holds one row and it is the one under test.
+      if (where?.status && where.status !== state.row.status) return null
+      if (where?.id && where.id !== state.row.id) return null
+      return { ...state.row }
+    },
     updateMany: async ({ data }: any) => {
       if (state.row.status !== "pending") return { count: 0 }
       state.row.status = data.status

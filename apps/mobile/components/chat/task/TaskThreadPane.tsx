@@ -166,10 +166,10 @@ function ProjectSessionView({ link, target, onClose }: { link: Extract<TaskLink,
 /** A sub-agent: its live stream while it runs, its log once it has stopped. */
 function SubagentView({ link, target, onClose }: { link: Extract<TaskLink, { kind: "subagent" }>; target: TaskThreadTarget; onClose: () => void }) {
   const [version, setVersion] = useState(0)
-  useEffect(() => {
-    const store = subagentStreamStore as unknown as { subscribe?: (fn: () => void) => () => void }
-    return store.subscribe?.(() => setVersion((v) => v + 1))
-  }, [])
+  useEffect(
+    () => subagentStreamStore.subscribeTool(link.toolCallId, () => setVersion((v) => v + 1)),
+    [link.toolCallId],
+  )
   const stream = useMemo(() => subagentStreamStore.get(link.toolCallId), [link.toolCallId, version])
   const text = (stream?.parts ?? [])
     .map((part: any) => (typeof part?.text === "string" ? part.text : ""))

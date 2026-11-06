@@ -34,7 +34,7 @@ mock.module(resolve(import.meta.dir, "../../../../hooks/useWorkspaceUser"), () =
   useWorkspaceUser: () => ({ id: "user-1" }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/subagent-stream-store"), () => ({
-  subagentStreamStore: { get: () => undefined },
+  subagentStreamStore: { get: () => undefined, subscribeTool: () => () => {} },
 }))
 mock.module(resolve(import.meta.dir, "../../../team-chat/TimelinePane"), () => ({
   TimelinePane: ({ threadRootId }: { threadRootId: string }) =>

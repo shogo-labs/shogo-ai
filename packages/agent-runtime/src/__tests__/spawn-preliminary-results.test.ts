@@ -13,7 +13,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { runSubagent, type SubagentConfig, type SubagentStreamCallbacks } from '../subagent'
-import { buildSpawnCallbacks, type ToolContext } from '../gateway-tools'
+import { buildSpawnCallbacks, subagentToolResult, type ToolContext } from '../gateway-tools'
 import { FileStateCache } from '../file-state-cache'
 import { createMockStreamFn, buildTextResponse, buildToolUseResponse } from '../pi-adapter'
 import { MockToolTracker } from './helpers/mock-tools'
@@ -454,6 +454,20 @@ describe('spawn preliminary results — mock callbacks', () => {
     expect(output.parts[0].tool.result).toEqual({ key: 'value' })
   })
 
+  test('tool transitions are throttled, not forced', async () => {
+    const w = createMockWriter()
+    const spawn = buildSpawnCallbacks(w, 'tc-throttle')!
+    spawn.callbacks.onStart!('browser_qa', 'desc', 'a-browser_qa-throttle')
+
+    for (let i = 0; i < 10; i++) {
+      await spawn.callbacks.onBeforeToolCall!('browser', { action: 'snapshot' }, `c-${i}`)
+      await spawn.callbacks.onAfterToolCall!('browser', { action: 'snapshot' }, { ok: true }, false, `c-${i}`)
+    }
+
+    const frames = w.events.filter((e) => e.type === 'tool-output-available' && e.preliminary === true)
+    expect(frames.length).toBeLessThan(10)
+  })
+
   test('getAccumulatedOutput returns defensive copy', () => {
     const w = createMockWriter()
     const spawn = buildSpawnCallbacks(w, 'tc-1')!
@@ -470,5 +484,113 @@ describe('spawn preliminary results — mock callbacks', () => {
     // But the text content grows (parts array is shallow-copied, inner objects are shared)
     // What matters is the array reference is different
     expect(output1.parts).not.toBe(output2.parts)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 3: a long browser_qa run must not grow every frame (SHO-340)
+// ---------------------------------------------------------------------------
+
+describe('spawn preliminary results — bounded frames', () => {
+  const STEPS = 200
+  const SNAPSHOT_CHARS = 50_000
+  const FILE_CHARS = 30_000
+  /** SUBAGENT_SNAPSHOT_MAX_CHARS (256 KB) plus the collapsed stubs behind it. */
+  const FRAME_LIMIT = 300_000
+
+  function snapshotResult() {
+    return {
+      ok: true,
+      // A real accessibility tree: many short strings, so a per-string cap
+      // alone would not shrink it.
+      snapshot: Array.from({ length: 500 }, (_, i) => `- [${i}] link "row ${i}"`),
+      raw: 'x'.repeat(SNAPSHOT_CHARS),
+    }
+  }
+
+  async function runLongBrowserQa() {
+    const w = createMockWriter()
+    const spawn = buildSpawnCallbacks(w, 'spawn-tc-long')!
+    spawn.callbacks.onStart!('browser_qa', 'run the app', 'a-browser_qa-long')
+
+    for (let step = 0; step < STEPS; step++) {
+      const callId = `call-${step}`
+      spawn.callbacks.onToolCallStart!('browser', callId)
+      await spawn.callbacks.onBeforeToolCall!('browser', { action: 'snapshot' }, callId)
+      await spawn.callbacks.onAfterToolCall!('browser', { action: 'snapshot' }, snapshotResult(), false, callId)
+
+      const fileId = `file-${step}`
+      const args = { path: `reports/step-${step}.md`, content: 'y'.repeat(FILE_CHARS) }
+      spawn.callbacks.onToolCallStart!('write_file', fileId)
+      await spawn.callbacks.onBeforeToolCall!('write_file', args, fileId)
+      await spawn.callbacks.onAfterToolCall!('write_file', args, { success: true }, false, fileId)
+
+      spawn.callbacks.onTextDelta!(`step ${step} done `)
+      // Flush the throttle, as onEnd does, so every step has a frame to measure.
+      spawn.callbacks.onEnd!('browser_qa')
+    }
+    return { w, spawn }
+  }
+
+  test('every frame stays under the bound as the run grows', async () => {
+    const { w } = await runLongBrowserQa()
+    const frames = w.events.filter((e) => e.type === 'tool-output-available' && e.preliminary === true)
+    expect(frames.length).toBeGreaterThan(STEPS)
+
+    const sizes = frames.map((f) => JSON.stringify(f.output).length)
+    const over = sizes.filter((s) => s > FRAME_LIMIT)
+    expect(over, `frames over ${FRAME_LIMIT} chars: ${over.length} (largest ${Math.max(...sizes)})`).toEqual([])
+
+    // Flat, not quadratic: the frame late in the run is the same order of size
+    // as the one early on.
+    const early = sizes[Math.floor(sizes.length / 5)]
+    const late = sizes[sizes.length - 1]
+    expect(late).toBeLessThanOrEqual(early * 2)
+  })
+
+  test('the accumulated transcript is capped too', async () => {
+    const { spawn } = await runLongBrowserQa()
+    const parts = spawn.getAccumulatedOutput().parts
+    expect(parts.length).toBeGreaterThanOrEqual(STEPS * 2)
+
+    expect(JSON.stringify(parts).length).toBeLessThan(FRAME_LIMIT)
+    const strings = (value: any, out: string[] = []): string[] => {
+      if (typeof value === 'string') out.push(value)
+      else if (Array.isArray(value)) value.forEach((v) => strings(v, out))
+      else if (value && typeof value === 'object') Object.values(value).forEach((v) => strings(v, out))
+      return out
+    }
+    for (const s of strings(parts)) {
+      expect(s.length).toBeLessThanOrEqual(8_200)
+    }
+    expect(parts.some((p: any) => p.truncated === true)).toBe(true)
+  })
+
+  test('the parent model never sees the transcript', () => {
+    const parts = Array.from({ length: 200 }, (_, i) => ({
+      type: 'tool',
+      id: `call-${i}`,
+      tool: { toolName: 'browser', state: 'success', args: { action: 'snapshot' }, result: snapshotResult() },
+    }))
+    const details = {
+      instance_id: 'inst-1',
+      agent_id: 'a-browser_qa-1',
+      status: 'completed',
+      toolCalls: 200,
+      iterations: 210,
+      tokens: { input: 1000, output: 100 },
+      model: 'sonnet',
+      parts,
+    }
+    const withParts = subagentToolResult(details, 'the report')
+    // Same shape, same tool names, tiny results: the model-facing text must not
+    // depend on how much the transcript carries.
+    const slimParts = parts.map((p) => ({ ...p, tool: { ...p.tool, result: { ok: true } } }))
+    const withSlimParts = subagentToolResult({ ...details, parts: slimParts }, 'the report')
+
+    const modelText = (withParts.content[0] as { text: string }).text
+    expect(modelText).toBe((withSlimParts.content[0] as { text: string }).text)
+    expect(modelText.length).toBeLessThan(2_000)
+    expect(modelText).not.toContain('row 499')
   })
 })
