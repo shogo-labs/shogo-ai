@@ -10,6 +10,7 @@ import { createPublicKey, createVerify, generateKeyPairSync } from 'node:crypto'
 import {
   buildTestWorkflowYaml,
   decideReleaseKind,
+  OTA_UPDATES_SUPPORTED,
   storeResourceClass,
   validateRunnerJobDraft,
   assertRunnerJobDraft,
@@ -74,10 +75,22 @@ describe('build vs update', () => {
     )
   })
 
-  it('updates when the fingerprint is unchanged', () => {
-    expect(decideReleaseKind({ previousFingerprint: 'abc', fingerprint: 'abc', hasStoreBuild: true })).toBe(
-      'update',
-    )
+  it('updates when the fingerprint is unchanged, once OTA can deliver it', () => {
+    expect(
+      decideReleaseKind({ previousFingerprint: 'abc', fingerprint: 'abc', hasStoreBuild: true, otaAvailable: true }),
+    ).toBe('update')
+  })
+
+  it('falls back to a store build when OTA is not available, rather than claiming an update shipped', () => {
+    // The update path (expo export + asset upload + manifest) is not implemented
+    // yet, so an unchanged fingerprint must still produce a build: reporting an OTA
+    // update would tell the user their change shipped when nothing left the pod.
+    expect(
+      decideReleaseKind({ previousFingerprint: 'abc', fingerprint: 'abc', hasStoreBuild: true, otaAvailable: false }),
+    ).toBe('build')
+    // …and that is the default this deployment ships with.
+    expect(decideReleaseKind({ previousFingerprint: 'abc', fingerprint: 'abc', hasStoreBuild: true })).toBe('build')
+    expect(OTA_UPDATES_SUPPORTED).toBe(false)
   })
 
   it('builds when the native side changed', () => {

@@ -111,17 +111,34 @@ export function assertRunnerJobDraft(draft: unknown): void {
 }
 
 /**
+ * Whether this deployment can actually deliver an OTA update.
+ *
+ * An update is not a build: it needs `expo export` for the runtime version,
+ * an asset upload to the updates CDN and a manifest — none of which is
+ * implemented yet. Until it is, an unchanged fingerprint must NOT be reported
+ * as an update: that would tell the user their change shipped when nothing left
+ * the pod. It falls back to a store build instead, which does deliver the change
+ * and is visibly a build in the release history and the meter.
+ *
+ * Flip this to `true` in the change that lands the export/asset-upload path.
+ */
+export const OTA_UPDATES_SUPPORTED = false
+
+/**
  * Build or update? An unchanged fingerprint for the same platform and track means
  * the native side did not change and only JS went out, so it is an OTA update —
- * no build, no charge. A null/previous-missing fingerprint means build.
+ * no build, no charge. A null/previous-missing fingerprint means build, and so
+ * does a deployment that cannot publish updates yet (see `OTA_UPDATES_SUPPORTED`).
  */
 export function decideReleaseKind(opts: {
   previousFingerprint: string | null | undefined
   fingerprint: string
   hasStoreBuild: boolean
+  otaAvailable?: boolean
 }): ReleaseKind {
   if (!opts.hasStoreBuild) return 'build'
   if (!opts.previousFingerprint) return 'build'
+  if (!(opts.otaAvailable ?? OTA_UPDATES_SUPPORTED)) return 'build'
   return opts.previousFingerprint === opts.fingerprint ? 'update' : 'build'
 }
 
@@ -348,11 +365,23 @@ export async function sourcesUploaded(opts: {
   const platforms: ReleasePlatform[] = release.platforms
 
   if (release.kind === 'update') {
+    // No release should be created as an update while `OTA_UPDATES_SUPPORTED`
+    // is false, so reaching here means a row predates that guard. Failing loudly
+    // beats the old behaviour, which marked it done and told the user their
+    // change had shipped when nothing had been uploaded anywhere.
     await db.nativeRelease.update({
       where: { id: release.id },
-      data: { status: 'done', step: 'published_update' },
+      data: {
+        status: 'failed',
+        step: 'ota_unsupported',
+        error: 'Over-the-air updates are not available on this deployment yet.',
+      },
     })
-    return { status: 'done' }
+    throw new NativeReleaseError(
+      501,
+      'ota_not_available',
+      'Over-the-air updates are not available on this deployment yet. Ask for a new store build instead.',
+    )
   }
 
   await db.nativeRelease.update({
