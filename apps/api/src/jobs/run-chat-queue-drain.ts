@@ -6,7 +6,7 @@ import {
   resetStuckDispatching,
 } from '../services/chat-queue-dispatcher.service'
 import { reconcileStuckTasks, sweepUnnotifiedWakes } from '../services/background-tasks.service'
-import { sweepDeadAgentReplies, sweepPendingAgentWakes } from '../services/conversation-agent-dispatcher'
+import { sweepPendingAgentWakes } from '../services/conversation-agent-dispatcher'
 
 const CHAT_QUEUE_DISPATCH_INTERVAL_MS = 15_000
 
@@ -16,17 +16,19 @@ const CHAT_QUEUE_DISPATCH_INTERVAL_MS = 15_000
  * region drains a disjoint slice. A global lock would leave the peer's
  * sessions undrained because the lock holder skips non-home sessions.
  *
- * The sweep is what makes a wake durable: a finished task whose coalesce timer
- * died with its process (or whose notify never arrived) is re-queued here, so
- * a restarted API heals itself on its first tick.
+ * The wake sweeps are what make a wake durable: a finished task whose coalesce
+ * timer died with its process (or whose notify never arrived) is re-queued
+ * here, so a restarted API heals itself on its first tick.
+ *
+ * The dead-reply sweep used to ride this 15 s loop too. It has its own 60 s
+ * timer in `jobs/run-chat-sweep.ts` since SHO-347: a 5-minute staleness window
+ * does not need a 15 s poll, and every extra tick was a scan of
+ * `conversation_messages` per pod.
  */
 export async function runChatQueueDrain(): Promise<void> {
   await reconcileStuckTasks()
   await sweepUnnotifiedWakes()
   await sweepPendingAgentWakes()
-  // A run whose pod died leaves its card with nobody on it; the heartbeat, not
-  // a restart, is what notices it.
-  await sweepDeadAgentReplies()
   await resetStuckDispatching()
   await dispatchPendingSessions()
 }

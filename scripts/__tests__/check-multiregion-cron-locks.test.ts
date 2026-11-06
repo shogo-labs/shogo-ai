@@ -141,6 +141,14 @@ describe('check-multiregion-cron-locks (e2e, current repo state)', () => {
     expect(rule!.writer).toBe('runPublishedUsageCollect')
   })
 
+  test('the dead-reply sweep is home-region partitioned, pod-locked and in KNOWN_JOB_IDS', () => {
+    const fns = new Set(HOME_REGION_PARTITIONED.map((r) => r.fn))
+    expect(fns.has('runDeadAgentReplySweep')).toBe(true)
+    // The allowlist exempts it from the wrapper check, so assert the wrapper's
+    // registry entry separately — that is what keeps the CI registry honest.
+    expect(readKnownJobIds().has('chat-dead-reply-sweep')).toBe(true)
+  })
+
   test('every wrapped cron resolves to a known job id (cross-registry)', () => {
     const ids = readKnownJobIds()
     const entries = enumerateCronEntries()
