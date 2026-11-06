@@ -24,6 +24,18 @@ export type WorkspaceEvent =
   | { type: 'file.changed'; path: string; mtime: number; source?: 'agent' | 'ide' | 'fs' }
   | { type: 'file.deleted'; path: string; source?: 'agent' | 'ide' | 'fs' }
 
+/** Connection health of a live stream, reported as it opens and breaks. */
+export type StreamStatus = 'open' | 'down'
+
+/**
+ * Result of a conditional `readFileIfChanged`: either the server confirmed
+ * nothing changed (no body was transferred) or it returned the new content
+ * together with the ETag to send next time.
+ */
+export type ConditionalReadResult =
+  | { notModified: true; etag: string | null }
+  | { notModified: false; content: string; etag: string | null }
+
 function withoutContentType(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(headers)) {
@@ -146,7 +158,14 @@ export class AgentClient {
    */
   subscribeToWorkspace(
     onEvent: (event: WorkspaceEvent) => void,
-    opts: { onError?: (err: unknown) => void; includeReload?: boolean } = {},
+    opts: {
+      onError?: (err: unknown) => void
+      includeReload?: boolean
+      /** Called with `'open'` when the stream connects (and on every
+       *  reconnect) and `'down'` when it breaks. Lets a caller decide whether
+       *  a fallback poll is needed instead of polling blindly. */
+      onStatus?: (status: StreamStatus) => void
+    } = {},
   ): () => void {
     let es: EventSource | null = null
     let closed = false
@@ -158,6 +177,10 @@ export class AgentClient {
       if (closed) return
       const url = this.fsUrl('/agent/canvas/stream')
       es = new EventSource(url, { withCredentials: true })
+      es.onopen = () => {
+        backoffMs = 1000 // a healthy connection restarts the backoff ladder
+        try { opts.onStatus?.('open') } catch (e) { opts.onError?.(e) }
+      }
       es.onmessage = (ev) => {
         let parsed: unknown
         try { parsed = JSON.parse(ev.data) } catch { return }
@@ -169,6 +192,7 @@ export class AgentClient {
       }
       es.onerror = (e) => {
         opts.onError?.(e)
+        try { opts.onStatus?.('down') } catch (err) { opts.onError?.(err) }
         try { es?.close() } catch {}
         es = null
         if (closed) return
@@ -236,6 +260,45 @@ export class AgentClient {
       )
     }
     return data.content ?? ''
+  }
+
+  /**
+   * Conditional text read: send the ETag you last saw and get
+   * `{ notModified: true }` with no body when the file is unchanged, instead
+   * of downloading it again. Anything else returns the content plus the ETag
+   * to send next time.
+   *
+   * The runtime answers with a bodiless `304`; the IDE's active-file refresh
+   * uses this so a quiet file costs one stat, not a full read.
+   */
+  async readFileIfChanged(
+    path: string,
+    etag?: string | null,
+  ): Promise<ConditionalReadResult> {
+    const headers: Record<string, string> = { ...this.ambientHeaders }
+    if (etag) headers['If-None-Match'] = etag
+    const res = await this.doFetch(this.fsUrl(`/agent/workspace/files/${this.encodePath(path)}`), {
+      headers,
+    })
+    const nextEtag = res.headers.get('etag')
+    if (res.status === 304) {
+      return { notModified: true, etag: nextEtag ?? etag ?? null }
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(`Agent readFileIfChanged ${res.status}: ${text}`)
+    }
+    const data = (await res.json()) as {
+      content?: string
+      contentBase64?: string
+      encoding?: 'utf-8' | 'base64'
+    }
+    if (data.encoding === 'base64' || typeof data.contentBase64 === 'string') {
+      throw new Error(
+        `Agent readFileIfChanged: '${path}' is a binary file — use readFileBlob() or readFileBytes() instead`,
+      )
+    }
+    return { notModified: false, content: data.content ?? '', etag: nextEtag }
   }
 
   /** Fetch a workspace file's raw bytes. Works for both text and binary

@@ -162,6 +162,73 @@ describe('default (merged-root) path space', () => {
   })
 })
 
+describe('conditional reads (ETag / 304)', () => {
+  test('a read returns a weak ETag derived from mtime and size', async () => {
+    const res = await request('/agent/workspace/files/app.py?scope=project')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('etag')).toMatch(/^W\/"\d+-\d+"$/)
+  })
+
+  test('a matching If-None-Match is a bodiless 304 that still carries the ETag', async () => {
+    const first = await request('/agent/workspace/files/app.py?scope=project')
+    const etag = first.headers.get('etag')!
+
+    const second = await request('/agent/workspace/files/app.py?scope=project', {
+      headers: { 'if-none-match': etag },
+    })
+    expect(second.status).toBe(304)
+    expect(second.headers.get('etag')).toBe(etag)
+    expect(await second.text()).toBe('')
+  })
+
+  test('a changed file returns 200 with the new ETag and content', async () => {
+    const first = await request('/agent/workspace/files/app.py?scope=project')
+    const etag = first.headers.get('etag')!
+    // A different length guarantees a different ETag even inside one mtime tick.
+    writeFileSync(join(user, 'app.py'), 'app = 2 # changed\n')
+    try {
+      const second = await request('/agent/workspace/files/app.py?scope=project', {
+        headers: { 'if-none-match': etag },
+      })
+      expect(second.status).toBe(200)
+      expect(second.headers.get('etag')).not.toBe(etag)
+      expect(((await second.json()) as { content: string }).content).toBe('app = 2 # changed\n')
+    } finally {
+      writeFileSync(join(user, 'app.py'), 'app = 1\n')
+    }
+  })
+
+  test('binary files get the same ETag / 304 treatment', async () => {
+    const bytes = Buffer.from([0x00, 0x01, 0x02, 0x03, 0xff])
+    writeFileSync(join(user, 'blob.bin'), bytes)
+    try {
+      const first = await request('/agent/workspace/files/blob.bin?scope=project')
+      expect(first.status).toBe(200)
+      const etag = first.headers.get('etag')!
+      expect(etag).toMatch(/^W\/"/)
+
+      const second = await request('/agent/workspace/files/blob.bin?scope=project', {
+        headers: { 'if-none-match': etag },
+      })
+      expect(second.status).toBe(304)
+      expect(await second.text()).toBe('')
+    } finally {
+      rmSync(join(user, 'blob.bin'), { force: true })
+    }
+  })
+
+  test('If-None-Match is a list and may drop the weak prefix', async () => {
+    const first = await request('/agent/workspace/files/app.py?scope=project')
+    const etag = first.headers.get('etag')!
+    const strong = etag.replace(/^W\//, '')
+
+    const res = await request('/agent/workspace/files/app.py?scope=project', {
+      headers: { 'if-none-match': `W/"other-1", ${strong}` },
+    })
+    expect(res.status).toBe(304)
+  })
+})
+
 describe('directories are rejected cleanly', () => {
   test.each([
     ['GET', `/agent/workspace/files/${ANCHOR}`],

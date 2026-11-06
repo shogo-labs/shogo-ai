@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { act, render } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { act, render, renderHook } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test'
 import * as React from 'react'
 import { MockEventSource } from '../../../test/helpers/mockEventSource'
 import {
@@ -44,6 +44,7 @@ beforeEach(() => {
 afterEach(() => {
   __resetRuntimeLogStoreForTest()
   __resetRuntimeLogStreamForTest()
+  jest.useRealTimers()
 })
 
 function makeServerEntry(
@@ -147,48 +148,187 @@ describe('useRuntimeLogStream — SSE happy path', () => {
   })
 })
 
-describe('useRuntimeLogStream — polling fallback', () => {
-  test('falls back to GET /agent/runtime-logs on EventSource error', async () => {
-    let latest: ReturnType<typeof useRuntimeLogStream> | null = null
-    const factory = (url: string) => new MockEventSource(url) as unknown as EventSource
+describe('useRuntimeLogStream — stream health and the poll bridge', () => {
+  const factory = (url: string) => new MockEventSource(url) as unknown as EventSource
 
-    let pollResolved = false
+  function countingFetcher(entries: RuntimeLogEntry[] = []) {
+    const calls: string[] = []
     const fetcher = (async (input: RequestInfo | URL): Promise<Response> => {
       const url = typeof input === 'string' ? input : input.toString()
-      expect(url).toContain('/agent/runtime-logs')
-      pollResolved = true
-      return new Response(
-        JSON.stringify({
-          entries: [makeServerEntry({ seq: 5, text: 'from-poll' })],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      )
+      calls.push(url)
+      return new Response(JSON.stringify({ entries }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
     }) as unknown as typeof fetch
+    return { calls, fetcher }
+  }
 
-    render(
-      <Probe
-        projectId={PROJECT}
-        agentUrl="http://agent.test"
-        eventSourceFactory={factory}
-        fetcher={fetcher}
-        expose={(r) => {
-          latest = r
-        }}
-      />,
+  test('a healthy stream makes no poll requests over ten simulated minutes', async () => {
+    jest.useFakeTimers()
+    const { calls, fetcher } = countingFetcher()
+    const view = renderHook(() =>
+      useRuntimeLogStream({
+        projectId: PROJECT,
+        agentUrl: 'http://agent.test',
+        eventSourceFactory: factory,
+        fetcher,
+      }),
     )
 
-    await act(async () => {
-      MockEventSource.last!.fail()
+    act(() => {
+      MockEventSource.last!.onopen?.({} as Event)
+      view.rerender()
     })
-    // Give the poll tick a moment to resolve.
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10))
+    expect(view.result.current.transport).toBe('sse')
+
+    act(() => {
+      jest.advanceTimersByTime(10 * 60_000)
+    })
+    expect(calls).toHaveLength(0)
+    view.unmount()
+  })
+
+  test('a single cut retries SSE instead of starting a poll', async () => {
+    jest.useFakeTimers()
+    const { calls, fetcher } = countingFetcher()
+    const view = renderHook(() =>
+      useRuntimeLogStream({
+        projectId: PROJECT,
+        agentUrl: 'http://agent.test',
+        eventSourceFactory: factory,
+        fetcher,
+      }),
+    )
+    act(() => {
+      MockEventSource.last!.onopen?.({} as Event)
     })
 
-    expect(pollResolved).toBe(true)
-    expect(latest!.entries.map((e) => e.text)).toEqual(['from-poll'])
-    expect(latest!.entries[0]!.origin).toBe('poll')
-    expect(latest!.transport).toBe('poll')
+    act(() => {
+      MockEventSource.last!.fail()
+      view.rerender()
+    })
+    expect(view.result.current.transport).toBe('poll')
+    expect(MockEventSource.all).toHaveLength(1)
+
+    // 2 s later the retry opens; no request was made in between.
+    act(() => {
+      jest.advanceTimersByTime(2_000)
+    })
+    expect(MockEventSource.all).toHaveLength(2)
+    act(() => {
+      MockEventSource.last!.onopen?.({} as Event)
+      view.rerender()
+    })
+    expect(view.result.current.transport).toBe('sse')
+    expect(calls).toHaveLength(0)
+    view.unmount()
+  })
+
+  test('a stream that stays down polls every 15 s and recovers to SSE', async () => {
+    jest.useFakeTimers()
+    const { calls, fetcher } = countingFetcher([
+      makeServerEntry({ seq: 5, text: 'from-poll' }),
+    ])
+    const view = renderHook(() =>
+      useRuntimeLogStream({
+        projectId: PROJECT,
+        agentUrl: 'http://agent.test',
+        eventSourceFactory: factory,
+        fetcher,
+      }),
+    )
+
+    // First cut: retry at 2 s, still no poll.
+    act(() => {
+      MockEventSource.last!.fail()
+    })
+    act(() => {
+      jest.advanceTimersByTime(2_000)
+    })
+    expect(calls).toHaveLength(0)
+
+    // Second cut starts the bridge; the first poll lands 15 s later.
+    act(() => {
+      MockEventSource.last!.fail()
+    })
+    await act(async () => {
+      jest.advanceTimersByTime(15_000)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toContain('/agent/runtime-logs')
+    expect(view.result.current.entries.map((e) => e.text)).toContain('from-poll')
+    expect(view.result.current.entries.find((e) => e.text === 'from-poll')!.origin).toBe('poll')
+
+    // A retry opens: back on SSE, and polling stops.
+    act(() => {
+      MockEventSource.last!.onopen?.({} as Event)
+    })
+    const pollsAtOpen = calls.length
+    await act(async () => {
+      jest.advanceTimersByTime(10 * 60_000)
+      await Promise.resolve()
+    })
+    expect(calls).toHaveLength(pollsAtOpen)
+    view.unmount()
+  })
+
+  test('a hidden tab schedules no retry and no poll', async () => {
+    jest.useFakeTimers()
+    const { calls, fetcher } = countingFetcher()
+    const original = document.visibilityState
+    Object.defineProperty(document, 'visibilityState', {
+      value: 'hidden',
+      configurable: true,
+    })
+    try {
+      const view = renderHook(() =>
+        useRuntimeLogStream({
+          projectId: PROJECT,
+          agentUrl: 'http://agent.test',
+          eventSourceFactory: factory,
+          fetcher,
+        }),
+      )
+      // Nothing connects while hidden.
+      expect(MockEventSource.all).toHaveLength(0)
+
+      // Coming back on screen connects straight away.
+      Object.defineProperty(document, 'visibilityState', {
+        value: 'visible',
+        configurable: true,
+      })
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      expect(MockEventSource.all).toHaveLength(1)
+
+      act(() => {
+        MockEventSource.last!.fail()
+      })
+      Object.defineProperty(document, 'visibilityState', {
+        value: 'hidden',
+        configurable: true,
+      })
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      const connections = MockEventSource.all.length
+      act(() => {
+        jest.advanceTimersByTime(10 * 60_000)
+      })
+      // Hidden: no retries were scheduled and no poll was made.
+      expect(MockEventSource.all).toHaveLength(connections)
+      expect(calls).toHaveLength(0)
+      view.unmount()
+    } finally {
+      Object.defineProperty(document, 'visibilityState', {
+        value: original,
+        configurable: true,
+      })
+    }
   })
 })
 

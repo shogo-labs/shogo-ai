@@ -3647,6 +3647,11 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // transport.
   const contentType = c.req.header('content-type')
   const accept = c.req.header('accept')
+  // Conditional reads: the IDE asks the runtime "is this file still the
+  // version I have?" with `If-None-Match`, and a 304 lets it skip the body.
+  // Only the header carrying it needs forwarding; the `ETag` on the way back
+  // already survives the response-header copy below.
+  const ifNoneMatch = c.req.header('if-none-match')
   // Every project is served by a merged-root runtime that authenticates with
   // the WORKSPACE token, not the project token — sending the project token
   // here 401s every proxied call (config, quick-actions, workspace
@@ -3702,6 +3707,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       const tunnelHeaders: Record<string, string> = {}
       if (contentType) tunnelHeaders['content-type'] = contentType
       if (accept) tunnelHeaders['accept'] = accept
+      if (ifNoneMatch) tunnelHeaders['if-none-match'] = ifNoneMatch
       tunnelHeaders['x-runtime-token'] = runtimeToken
       if (isChatStream && authedUserId) tunnelHeaders['x-billing-user-id'] = authedUserId
       if (chatSessionIdHeader) tunnelHeaders['x-chat-session-id'] = chatSessionIdHeader
@@ -3745,6 +3751,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const headers = new Headers()
   if (contentType) headers.set('content-type', contentType)
   if (accept) headers.set('accept', accept)
+  if (ifNoneMatch) headers.set('if-none-match', ifNoneMatch)
   if (isWebchatPath) {
     const fwdHeaders = ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const
     for (const h of fwdHeaders) {
@@ -3901,7 +3908,12 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         return new Response(outBody, { status: response.status, headers: responseHeaders })
       }
 
-      return new Response(response.body, { status: response.status, headers: responseHeaders })
+      // 304 must carry no body at all (RFC 9110); `fetch` already gives us a
+      // null body for it, but be explicit so a future change can't attach one.
+      return new Response(response.status === 304 ? null : response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
     } catch (fetchError: any) {
       lastError = fetchError
 
