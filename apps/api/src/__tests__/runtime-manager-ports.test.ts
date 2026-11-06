@@ -45,6 +45,7 @@ mock.module('child_process', () => ({
 }))
 
 const { RuntimeManager } = await import('../lib/runtime/manager')
+const { PortPool, probeTcpPort } = await import('@shogo-ai/worker/port-pool')
 
 const originalFetch = globalThis.fetch
 const originalRandom = Math.random
@@ -71,7 +72,19 @@ function managerPrivate() {
     releasePort: (port: number) => void
     buildUrl: (projectId: string, port: number) => string
     usedPorts: Set<number>
+    ports: InstanceType<typeof PortPool>
+    agentManager: { allocatePort: () => Promise<number>; releasePort: (port: number) => void }
   }
+}
+
+/** Take over the manager's own pool so the probes/candidates are deterministic. */
+function stubPool(
+  rm: ReturnType<typeof managerPrivate>,
+  probe: (port: number) => Promise<'free' | 'in-use'>,
+  random: () => number,
+) {
+  ;(rm.ports as any).probe = probe
+  ;(rm.ports as any).random = random
 }
 
 describe('RuntimeManager private port helpers', () => {
@@ -93,32 +106,101 @@ describe('RuntimeManager private port helpers', () => {
     await expect(rm.isPortListening(port)).resolves.toBe(false)
   })
 
-  test('allocatePortAsync skips used ports, checks companion ports, and releases allocated ports', async () => {
+  test('allocatePortAsync skips used ports, checks companion ports, and releases every reserved port', async () => {
     const rm = managerPrivate()
     const randomValues = [0, 0.01]
-    Math.random = () => randomValues.shift() ?? 0.01
     rm.usedPorts.add(37100)
     const checked: number[] = []
-    ;(rm as any).isPortListening = mock(async (port: number) => {
+    stubPool(rm, async (port: number) => {
       checked.push(port)
-      return false
-    })
+      return 'free'
+    }, () => randomValues.shift() ?? 0.01)
 
     const port = await rm.allocatePortAsync()
 
     expect(port).toBe(37108)
+    // The Vite port AND the agent / API-server ports it implies are probed...
     expect(checked).toEqual([37108, 38108, 38109])
+    // ...and all three are reserved, not just the Vite port: the worker draws
+    // agent ports from the same 37100–37900 range (SHO-335).
     expect(rm.usedPorts.has(37108)).toBe(true)
+    expect(rm.usedPorts.has(38108)).toBe(true)
+    expect(rm.usedPorts.has(38109)).toBe(true)
+
     rm.releasePort(37108)
     expect(rm.usedPorts.has(37108)).toBe(false)
+    expect(rm.usedPorts.has(38108)).toBe(false)
+    expect(rm.usedPorts.has(38109)).toBe(false)
   })
 
   test('allocatePortAsync throws after repeated busy candidates', async () => {
     const rm = managerPrivate()
-    Math.random = () => 0
-    ;(rm as any).isPortListening = mock(async () => true)
+    stubPool(rm, async () => 'in-use', () => 0)
 
     await expect(rm.allocatePortAsync()).rejects.toThrow(/Cannot allocate port after/)
+  })
+
+  test('a probe that times out counts as in use', async () => {
+    // A listener whose accept queue never completes is busy, not free. This is
+    // the semantics the shared probe applies for both managers (SHO-335).
+    const timedOut = {
+      setTimeout: () => timedOut,
+      destroy: () => timedOut,
+      once(event: string, listener: (...args: any[]) => void) {
+        if (event === 'timeout') queueMicrotask(() => listener())
+        return timedOut
+      },
+    }
+    await expect(
+      probeTcpPort(37123, { connect: (() => timedOut) as any }),
+    ).resolves.toBe('in-use')
+
+    // ...and api's own check reports such a port as listening.
+    const rm = managerPrivate()
+    stubPool(rm, async () => 'in-use', () => 0)
+    await expect(rm.isPortListening(37123)).resolves.toBe(true)
+  })
+
+  test('api and its embedded worker share one reservation pool', async () => {
+    const rm = managerPrivate()
+    stubPool(rm, async () => 'free', () => 0)
+
+    // 1. A Vite port api hands out can never come back as part of an agent
+    //    block: 37100 → agent 38100, api server 38101.
+    const vitePort = await rm.allocatePortAsync()
+    expect(vitePort).toBe(37100)
+
+    const forbidden = new Set([vitePort, vitePort + 1000, vitePort + 1001])
+    // Real randomness from here on: every block must still dodge those ports.
+    ;(rm.ports as any).random = () => Math.random()
+    for (let i = 0; i < 40; i++) {
+      const block = await rm.agentManager.allocatePort()
+      const blockPorts = new Set<number>()
+      for (let offset = 0; offset < 16; offset++) blockPorts.add(block + offset)
+      for (const port of forbidden) {
+        expect(blockPorts.has(port)).toBe(false)
+        expect(block).not.toBe(port)
+      }
+      rm.agentManager.releasePort(block)
+    }
+
+    // 2. The reverse: a port inside a live agent block is never handed out as
+    //    api's Vite port.
+    rm.releasePort(vitePort)
+    const agentBlock = await rm.agentManager.allocatePort()
+    const outsideBlock = agentBlock > 37110 ? 37100 : agentBlock + 200
+    const picks = [(agentBlock - 37100 + 0.5) / 800, (outsideBlock - 37100 + 0.5) / 800]
+    ;(rm.ports as any).random = () => picks.shift() ?? (outsideBlock - 37100 + 0.5) / 800
+    const next = await rm.allocatePortAsync()
+    expect(next).not.toBe(agentBlock)
+    expect(next < agentBlock || next > agentBlock + 15).toBe(true)
+
+    // 3. Releasing frees the ports for both.
+    rm.releasePort(next)
+    expect(rm.usedPorts.has(next)).toBe(false)
+    expect(rm.usedPorts.has(next + 1000)).toBe(false)
+    rm.agentManager.releasePort(agentBlock)
+    expect(rm.usedPorts.has(agentBlock)).toBe(false)
   })
 
   test('buildUrl uses 127.0.0.1 loopback for localhost dev, project subdomain otherwise', () => {
