@@ -9,7 +9,7 @@
  */
 import type { Permission } from '@shogo/authz'
 
-export const REMOTE_READONLY_TOOLS: readonly string[] = ['read_file', 'search', 'exec_list', 'exec_wait']
+export const REMOTE_READONLY_TOOLS: readonly string[] = ['read_file', 'search', 'exec_list', 'exec_wait', 'share_file']
 
 export function isRemoteReadonlyTool(tool: string): boolean {
   return REMOTE_READONLY_TOOLS.includes(tool)

@@ -185,6 +185,100 @@ describe('remote tool routing (unit)', () => {
     }
   })
 
+  test('share_file is remotable: `project` routes it and its link comes back with project + chatPath', async () => {
+    const saved = snapshotEnv()
+    const originalFetch = globalThis.fetch
+    const dir = mkdtempSync(join('/tmp', 'shogo-remote-share-'))
+    const minted = {
+      ok: true,
+      url: 'https://studio.example.test/api/f/abc.def',
+      filename: 'report.xlsx',
+      size: 2048,
+      expiresAt: '2026-11-13T00:00:00.000Z',
+      path: 'reports/report.xlsx',
+      linkPath: 'reports/report.xlsx',
+      projectId: PROJECT_B,
+    }
+    try {
+      process.env.PROJECT_ID = PROJECT_A
+      process.env.WORKSPACE_ID = WORKSPACE_ID
+      process.env.SHOGO_API_URL = 'http://api.test'
+      delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+      resetRemoteTargetCache()
+      const sent: Array<{ tool?: string; args?: Record<string, unknown> }> = []
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith('/projects/graph')) return Response.json({ projects: GRAPH })
+        if (url.includes('/remote-tool')) {
+          sent.push(JSON.parse(String(init?.body ?? '{}')))
+          return Response.json({
+            ok: true,
+            result: { content: [{ type: 'text', text: JSON.stringify(minted, null, 2) }], details: minted },
+          })
+        }
+        return Response.json({ ok: false, error: 'unexpected call' }, { status: 500 })
+      }) as typeof fetch
+
+      const share = toolNamed(createTools(toolCtx(dir)), 'share_file')
+      const result = await share.execute('s1', { path: 'reports/report.xlsx', project: 'Beta' })
+
+      // Routed to Beta's runtime, which mints the link itself — `project` never
+      // travels on, so a call cannot hop to a third runtime.
+      expect(sent).toHaveLength(1)
+      expect(sent[0].tool).toBe('share_file')
+      expect(sent[0].args).toEqual({ path: 'reports/report.xlsx' })
+
+      // The target's own result passes through, plus where it ran.
+      expect(result.details).toMatchObject({
+        url: minted.url,
+        filename: 'report.xlsx',
+        size: minted.size,
+        expiresAt: minted.expiresAt,
+        projectId: PROJECT_B,
+        project: { id: PROJECT_B, name: 'Beta' },
+        chatPath: `${PROJECT_B}/reports/report.xlsx`,
+      })
+      expect(JSON.stringify(result.content)).toContain(minted.url)
+      expect(JSON.stringify(result.content)).toContain(`${PROJECT_B}/reports/report.xlsx`)
+    } finally {
+      globalThis.fetch = originalFetch
+      restoreEnv(saved)
+      resetRemoteTargetCache()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('share_file never takes `device`: the schema has none and a device call is refused', async () => {
+    const tools = createTools(toolCtx('/tmp/remote-share-device'))
+    const share = toolNamed(tools, 'share_file')
+    const schema = share.parameters as any
+    expect(schema.properties.project?.type).toBe('string')
+    expect(schema.properties.device).toBeUndefined()
+
+    const result = await share.execute('s2', { path: 'a.txt', device: 'MacBook' })
+    expect((result.details as any).code).toBe('device_not_supported')
+  })
+
+  test('on metal a missing file with no `project` hints at `project`', async () => {
+    const saved = snapshotEnv()
+    const originalLocalMode = process.env.SHOGO_LOCAL_MODE
+    try {
+      process.env.PROJECT_ID = PROJECT_A
+      process.env.WORKSPACE_ID = WORKSPACE_ID
+      process.env.WORKSPACE_RUNTIME = 'true'
+      process.env.SHOGO_RUNTIME_SUBSTRATE = 'metal'
+      delete process.env.SHOGO_LOCAL_MODE
+      const share = toolNamed(createTools(toolCtx('/tmp/remote-share-notfound')), 'share_file')
+      const result = await share.execute('s3', { path: 'reports/missing.xlsx' })
+      expect((result.details as any).error).toContain('File not found: reports/missing.xlsx')
+      expect((result.details as any).hint).toContain('`project:')
+    } finally {
+      if (originalLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = originalLocalMode
+      restoreEnv(saved)
+    }
+  })
+
   test('stopping the turn cancels an in-flight remote call', async () => {
     const saved = snapshotEnv()
     const originalFetch = globalThis.fetch
