@@ -284,6 +284,12 @@ export const M = {
   // signal that something is being turned away: either an attacker, or a
   // caller nobody remembered was there.
   controlUnauthenticated: 'metal_control_unauthenticated_total',
+  // Workspace-drive grows (SHO-349), labelled by result: `ok`, `error`. A
+  // failing grow is why a project would still hit ENOSPC after raising its
+  // setting, so this is the first thing to look at when it does.
+  workspaceDriveGrow: 'metal_workspace_drive_grow_total',
+  /** Duration (ms) of the most recent successful grow — freeze→resize2fs. */
+  workspaceDriveGrowMs: 'metal_workspace_drive_grow_last_ms',
 } as const
 
 export const metrics = new Metrics()

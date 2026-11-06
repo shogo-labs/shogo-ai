@@ -49,11 +49,29 @@ export interface PipelineCallHooks {
   onTurnStarted?: () => void
 }
 
+/**
+ * What a live buffered turn hands its owner on start. The owner (the stream
+ * registry) needs to be able to name, abort and force-close the turn, so a
+ * turn that never settles cannot pin the runtime busy forever (SHO-348).
+ */
+export interface BufferedStreamHandle {
+  turnId: string
+  sessionId: string
+  /** Abort the model call behind this turn, if the session still has one. */
+  abort: () => void
+  /** Write the terminal frame (if missing) and complete the buffer now. */
+  reap: (reason: string) => void
+}
+
 export interface BufferedTurnDeps {
   store: Pick<StreamBufferStore, 'create'> & Partial<Pick<StreamBufferStore, 'recordTurnReply'>>
   gate: Pick<LiveTurnGate, 'isBusy' | 'waitUntilFree' | 'noteCallQueued' | 'noteCallStarted' | 'noteCallStopped'>
-  onStreamStart?: () => void
-  onStreamEnd?: () => void
+  onStreamStart?: (handle: BufferedStreamHandle) => void
+  onStreamEnd?: (turnId: string) => void
+  /** Called on every buffered chunk, so an owner can tell a quiet turn from a dead one. */
+  onStreamProgress?: (turnId: string) => void
+  /** Abort the model call behind a session's live turn (gateway.abortCurrentTurn). */
+  abortTurn?: (sessionId: string) => void
 }
 
 /**
@@ -81,7 +99,6 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
     const bufWriter = deps.store.create(chatSessionKey)
     const turnId = bufWriter.turnId
 
-    deps.onStreamStart?.()
     // Tracks whether an explicit `data-turn-complete` terminal frame has been
     // emitted for this turn. The client's auto-resuming fetch keeps reconnecting
     // to `/stream?fromSeq=N` until it parses this frame; if the turn ends
@@ -91,6 +108,40 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
     // `useChat().status` at `streaming` and wedging the composer on Stop/Queue.
     // The bgReader `finally` synthesizes one when this stays false.
     let terminalFrameWritten = false
+
+    // Force the turn closed from outside (the orphan reaper). A turn whose model
+    // fetch is a dead socket never settles, so nothing else would ever write the
+    // terminal frame or release it from the stream registry (SHO-348).
+    const reap = (reason: string) => {
+      if (!terminalFrameWritten) {
+        try {
+          bufWriter.append(
+            encodeTurnCompleteFrame({
+              turnId,
+              chatSessionId: chatSessionKey,
+              status: 'failed',
+              error: reason,
+              lastSeq: bufWriter.lastSeq,
+              completedAt: Date.now(),
+            }),
+          )
+          terminalFrameWritten = true
+        } catch (err: any) {
+          console.warn(`[AgentChat] Failed to write reaped terminal frame for ${chatSessionKey}:`, err?.message ?? err)
+        }
+      }
+      try {
+        bufWriter.complete('reaped')
+      } catch { /* already completed */ }
+    }
+
+    deps.onStreamStart?.({
+      turnId,
+      sessionId: chatSessionKey,
+      abort: () => deps.abortTurn?.(chatSessionKey),
+      reap,
+    })
+
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         // Periodic seq heartbeat. The client uses this to know how many
@@ -166,7 +217,7 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
           writer.write({ type: 'error', errorText: error?.message || 'Agent chat error' } as any)
         } finally {
           clearInterval(seqHeartbeat)
-          deps.onStreamEnd?.()
+          deps.onStreamEnd?.(turnId)
         }
       },
     })
@@ -185,6 +236,7 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
             const { done, value } = await bgReader.read()
             if (done) break
             bufWriter.append(value)
+            deps.onStreamProgress?.(turnId)
             streamTrace.mark('buffered', value.byteLength)
           }
           console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey} (turn ${turnId}, seq=${bufWriter.lastSeq})`)

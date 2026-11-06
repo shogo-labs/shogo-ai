@@ -61,6 +61,18 @@ export interface RuntimeAppConfig {
     activeSessions: number
     lastActivityAt: number | null
     activeStreams?: number
+    /**
+     * Registered streams that are still real work (holding their session's turn
+     * lock, or having written buffer progress inside the orphan TTL). Falls back
+     * to `activeStreams` for runtimes that don't report it.
+     */
+    liveStreams?: number
+    /**
+     * Whether this runtime is doing real work right now. When present, hosts gate
+     * idle-suspend / recycle on this instead of the raw `activeStreams` counter —
+     * a leaked counter must never pin a guest busy forever (SHO-348).
+     */
+    busy?: boolean
     /** Agent turns running now, including ones not started over HTTP (heartbeat, channels). */
     activeTurns?: number
     /** Tasks still running in the registry, whether or not they will notify. */
@@ -754,13 +766,22 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     const lastSessionActivity = activityStats.lastActivityAt ?? (state.poolAssignedAt ?? SERVER_START_TIME)
     const lastActivity = Math.max(state.lastRequestAt, lastSessionActivity)
     const streams = activityStats.activeStreams ?? 0
+    const turns = activityStats.activeTurns ?? 0
+    const tasks = activityStats.activeTasks ?? 0
+    // Busy = real work. `activeStreams` alone is not enough: a stream whose turn
+    // was stopped or frozen can outlive its owner, and a host that trusts the
+    // raw counter never idles the guest — so it never resumes, never gets a
+    // refreshed AI_PROXY_TOKEN (SHO-348). Runtimes that report `busy` decide it
+    // themselves; older ones fall back to the counter.
+    const busy = activityStats.busy ?? (turns + tasks + (activityStats.liveStreams ?? streams) > 0)
     return c.json({
       projectId: state.currentProjectId,
       lastActivityAt: lastActivity,
-      idleSeconds: streams > 0 ? 0 : Math.floor((now - lastActivity) / 1000),
+      idleSeconds: busy ? 0 : Math.floor((now - lastActivity) / 1000),
+      busy,
       activeStreams: streams,
-      activeTurns: activityStats.activeTurns ?? 0,
-      activeTasks: activityStats.activeTasks ?? 0,
+      activeTurns: turns,
+      activeTasks: tasks,
       activeChildren: activityStats.activeChildren ?? 0,
       activeSessions: activityStats.activeSessions,
       lastRequestAt: state.lastRequestAt,

@@ -238,7 +238,7 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     fn: 'runPublishedUsageCollect',
     file: 'apps/api/src/jobs/published-usage.ts',
     reason:
-      'Each region samples only published environments whose project workspace is homed here (homeRegionWorkspaceWhere()); published traffic is pinned to the home region, so only that region can see the real replica count. The write set is therefore disjoint per (environmentId,minute) and the replicated unique never collides across regions. The region-local advisory lock plus the per-region `published-usage:last-collected:<REGION_ID>` PlatformSetting claim only de-duplicate the pods inside one region.',
+      'Each region samples only published environments whose project workspace is homed here (homeRegionWorkspaceWhere()); published traffic is pinned to the home region, so only that region can see the real replica count. The write set is therefore disjoint per (environmentId,minute) and the replicated unique never collides across regions. The region-local advisory lock plus the per-region-minute `published-usage-collect:last-claimed:<REGION_ID>` PlatformSetting claim only de-duplicate the pods inside one region.',
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
@@ -246,6 +246,13 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     file: 'apps/api/src/jobs/published-usage.ts',
     reason:
       'Each region bills and stamps billedAt only on the PublishedUsageMinute rows of environments it collected, i.e. workspaces homed here (homeRegionWorkspaceWhere()). The two regions read disjoint row sets, so the hourly charge cannot be applied twice for one row even though both regions tick.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
+    fn: 'runDeadAgentReplySweep',
+    file: 'apps/api/src/jobs/run-chat-sweep.ts',
+    reason:
+      'Reports and conversation_messages replicate. sweepDeadAgentReplies only reads and settles replies whose conversation workspace is homed here (homeRegionWorkspaceWhere()) and never touches a machine workspace, so each region settles its own slice. The advisory lock and the per-region-period claim only de-duplicate pods within a region.',
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
@@ -280,6 +287,44 @@ interface UniqueKeyRule {
 }
 
 const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
+  // --- native release (SHO-323) -------------------------------------------
+  {
+    key: 'NativeApp.projectId',
+    category: 'single_tenant_upsert',
+    reason:
+      'One Expo project per Shogo project, created by `ensureNativeApp` which upserts on this key; a project lives in one workspace and its releases are created in that workspace home region.',
+  },
+  {
+    key: 'NativeApp.easAppId',
+    category: 'external_global_id',
+    reason:
+      'Expo assigns the EAS app id and it is globally unique per Expo project; null for a row whose `createApp` has not succeeded yet, and only the row that called `createApp` writes it.',
+  },
+  {
+    key: 'NativeAppCredential.(kind,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One credential per kind per workspace, written by the settings route and upserted; the workspace is homed to one region, so the two writes cannot cross regions.',
+  },
+  {
+    key: 'NativeRelease.workflowRunId',
+    category: 'external_global_id',
+    reason:
+      'EAS assigns the workflow run id and it identifies exactly one run; it is written once, by the API that created the run, right after `createWorkflowRun` returns.',
+  },
+  {
+    key: 'NativeBuild.easBuildId',
+    category: 'external_global_id',
+    reason:
+      'EAS assigns the build id. It is the join key a redelivered webhook lands on, which is exactly why it is unique: two rows for one build would charge twice.',
+  },
+  {
+    key: 'NativeUsageMonth.(month,nativeAppId)',
+    category: 'cron_locked',
+    reason:
+      'One Updates-MAU row per app per month, written only by the `native-update-monthly` sweep, which runs under `withGlobalJobLock` so exactly one region bills a given month.',
+    writer: 'native-update-monthly',
+  },
   // --- signup risk / free trial (added with the signup credit rollout) ----
   {
     key: 'SignupRiskAssessment.userId',

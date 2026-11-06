@@ -21,6 +21,7 @@ import type {
   SearchResponse,
   WorkspaceFsEvent,
   WorkspaceService,
+  WorkspaceSubscribeOptions,
   WsFile,
   WsNode,
 } from './types'
@@ -94,6 +95,8 @@ export class SdkFs implements WorkspaceService {
   readonly label: string
   private client: AgentClient
   private readInFlight = new Map<string, Promise<WsFile>>()
+  /** Last ETag seen per path, so a re-read can be a 304 instead of a download. */
+  private etags = new Map<string, string>()
 
   constructor(agentUrl: string, label = 'agent-workspace', fetchImpl?: FetchLike) {
     this.label = label
@@ -158,15 +161,43 @@ export class SdkFs implements WorkspaceService {
     return p
   }
 
-  subscribe(onEvent: (event: WorkspaceFsEvent) => void): () => void {
+  subscribe(onEvent: (event: WorkspaceFsEvent) => void, opts?: WorkspaceSubscribeOptions): () => void {
     return this.client.subscribeToWorkspace(
       (evt: WorkspaceEvent) => {
         if (evt.type === 'file.changed' || evt.type === 'file.deleted') {
           onEvent(evt)
         }
       },
-      {},
+      opts?.onStatus ? { onStatus: opts.onStatus } : {},
     )
+  }
+
+  /**
+   * Conditional re-read: send the ETag this path had on its last read and let
+   * the runtime answer 304 when nothing changed. `null` = unchanged, so the
+   * caller can stop polling a quiet file for the price of one stat.
+   */
+  async readFileIfChanged(path: string): Promise<WsFile | null> {
+    if (isBinaryFilePath(path)) {
+      throw new Error(`Binary file cannot be opened as text: ${path}`)
+    }
+    const etag = this.etags.get(path)
+    const result = await retry429(() => this.client.readFileIfChanged(path, etag))
+    if (result.notModified) return null
+    if (result.etag) this.etags.set(path, result.etag)
+    if (result.content.length > MAX_EDITABLE_CHARS) {
+      throw new Error(
+        `File is too large to open in the editor (${(result.content.length / 1048576).toFixed(1)} MB). Use the terminal to inspect it.`,
+      )
+    }
+    return {
+      path,
+      name: path.split('/').pop() ?? path,
+      language: languageFor(path),
+      size: new Blob([result.content]).size,
+      mtime: Date.now(),
+      content: result.content,
+    }
   }
 
   async writeFile(path: string, content: string) {
@@ -174,11 +205,15 @@ export class SdkFs implements WorkspaceService {
       throw new Error(`Binary file cannot be written as UTF-8 text: ${path}`)
     }
     await retry429(() => this.client.writeFile(path, content))
+    // Our own write invalidates the cached validator — the next conditional
+    // read must not be answered with a 304 for the content we just replaced.
+    this.etags.delete(path)
     return { mtime: Date.now(), size: new Blob([content]).size }
   }
 
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
     await retry429(() => this.client.writeFileBytes(path, bytes))
+    this.etags.delete(path)
   }
 
   async mkdir(path: string): Promise<void> {
@@ -188,6 +223,7 @@ export class SdkFs implements WorkspaceService {
   /** Removes a file or (recursively) a folder. */
   async remove(path: string): Promise<void> {
     await this.client.deleteFile(path, { recursive: true })
+    this.etags.delete(path)
   }
 
   async listFiles(): Promise<string[]> {

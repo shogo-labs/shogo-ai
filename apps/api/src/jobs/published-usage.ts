@@ -35,17 +35,11 @@
 
 import { prisma } from '../lib/prisma'
 import { withGlobalJobLock } from '../lib/global-job-lock'
-import { homeRegionWorkspaceWhere, REGION_ID } from '../lib/region'
+import { claimRegionPeriod } from '../lib/region-period-claim'
+import { homeRegionWorkspaceWhere } from '../lib/region'
 import { PUBLISHED_PRICING, computePublishedCost, roundUsd } from '../config/published-pricing'
 import { scaleSettingsOf } from '../services/published-environments.service'
 import type { PublishedEnvironmentName, PublishedSize } from '../lib/published-scale'
-
-/**
- * One `PlatformSetting` row per region, written only by its own region, so it
- * is a region-scoped key: the PK survives logical replication as
- * `last_update_wins` and the two regions never touch each other's row.
- */
-const COLLECT_CLAIM_KEY_PREFIX = 'published-usage:last-collected'
 
 function isKubernetes(): boolean {
   return !!process.env.KUBERNETES_SERVICE_HOST
@@ -53,42 +47,6 @@ function isKubernetes(): boolean {
 
 function truncateToMinute(d: Date): Date {
   return new Date(Math.floor(d.getTime() / 60_000) * 60_000)
-}
-
-/**
- * Take this region's claim on `minute`. Returns false when this region already
- * collected that minute (whatever pod does it), so the caller writes nothing
- * and does not even list pods.
- *
- * Insert-if-missing then a conditional update on `value < minute`. The value is
- * a fixed-width UTC ISO timestamp, so lexicographic comparison is chronological
- * and the compare-and-set is atomic in one statement.
- *
- * The claim is taken before the pod list, so a pod that dies mid-tick loses that
- * single minute rather than letting the next pod re-list and re-write it — at
- * most 60 pod-seconds of under-billing per crash, against a replicated row per
- * pod per tick.
- */
-async function claimRegionMinute(minute: Date): Promise<boolean> {
-  const key = `${COLLECT_CLAIM_KEY_PREFIX}:${REGION_ID}`
-  const value = minute.toISOString()
-  try {
-    const inserted = await prisma.platformSetting.createMany({
-      data: [{ key, value }],
-      skipDuplicates: true,
-    })
-    if (inserted.count > 0) return true
-  } catch (err: any) {
-    // A lost race is expected (another pod inserted first); anything else is
-    // surfaced but must not stop the tick — the conditional update below is
-    // the authority either way.
-    console.warn('[published-usage] claim insert failed:', err?.message ?? err)
-  }
-  const updated = await prisma.platformSetting.updateMany({
-    where: { key, value: { lt: value } },
-    data: { value },
-  })
-  return updated.count > 0
 }
 
 export interface CollectSummary {
@@ -134,7 +92,12 @@ export async function runPublishedUsageCollect(now: Date = new Date()): Promise<
   if (!isKubernetes()) return { environments: 0, rowsWritten: 0, skipped: true }
   const lock = await withGlobalJobLock<CollectBody>('published-usage-collect', async () => {
     const minute = truncateToMinute(now)
-    if (!(await claimRegionMinute(minute))) {
+    // One collection per region-minute: `claimRegionPeriod` writes this
+    // region's own `PlatformSetting` row, so the PK survives logical
+    // replication as `last_update_wins` and the two regions never touch each
+    // other's key. Taken before the pod list, so a pod that dies mid-tick
+    // loses that single minute rather than letting the next pod re-write it.
+    if (!(await claimRegionPeriod('published-usage-collect', 60_000, now))) {
       return { environments: 0, rowsWritten: 0, claimed: false }
     }
 

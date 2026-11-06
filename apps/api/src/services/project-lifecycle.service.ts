@@ -21,6 +21,7 @@ import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
 import { AUTO_MODEL_ID, isAutoModel } from '@shogo/model-catalog'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
+import { getMergedModelEntrySync } from './model-registry.service'
 import { canRunTechStackOnInstanceSize } from './billing-runtime'
 import { HeartbeatConfigError, buildAgentConfigCreateData, updateHeartbeatConfig } from './heartbeat-config.service'
 import { readProjectToolUsage } from './tool-usage.service'
@@ -418,6 +419,13 @@ export async function capAgentModelToPlan<
   if (!agent) return agent
   const name = typeof agent.modelName === 'string' ? agent.modelName.trim() : ''
   if (!name || isAutoModel(name)) return agent
+  // A model id the registry no longer knows (deleted, renamed) must not reach
+  // the proxy: it answers `400 model_not_found`, which the person sees as the
+  // useless "rejected as malformed" (SHO-348). Run on Auto instead, loudly.
+  if (!getMergedModelEntrySync(name)) {
+    console.warn(`[project-config] workspace ${workspaceId} agent model ${name} no longer exists — running on Auto`)
+    return { ...agent, modelName: AUTO_MODEL_ID, modelProvider: 'auto' }
+  }
   if (await isModelAccessibleForWorkspace(workspaceId, name)) return agent
   return { ...agent, modelName: AUTO_MODEL_ID, modelProvider: 'auto' }
 }

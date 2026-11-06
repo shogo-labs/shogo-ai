@@ -328,11 +328,23 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
         // Instance-tier change. Firecracker can't hot-resize vCPU/RAM, so the
         // size takes effect on the next cold boot/resume (the assign env is
         // re-read then); what we apply LIVE is the always-on flag so a paid
-        // upgrade immediately stops the idle reaper (and a downgrade re-arms it).
-        const { projectId, alwaysOn } = await json(req)
+        // upgrade immediately stops the idle reaper (and a downgrade re-arms it),
+        // plus the workspace-drive size (SHO-349), which CAN grow live:
+        // freeze → ftruncate → PATCH /drives → thaw → resize2fs.
+        const { projectId, alwaysOn, workspaceDriveMiB } = await json(req)
         if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
-        const applied = pool.applyResize(projectId, { alwaysOn })
-        return Response.json({ ok: true, applied })
+        const applied = await pool.applyResize(projectId, {
+          alwaysOn,
+          workspaceDriveMiB:
+            workspaceDriveMiB === undefined || workspaceDriveMiB === null
+              ? undefined
+              : Number(workspaceDriveMiB),
+        })
+        return Response.json({
+          ok: true,
+          applied: { alwaysOn: applied.alwaysOn ?? !!alwaysOn, disk: applied.disk },
+          live: applied.applied,
+        })
       }
 
       return new Response('not found', { status: 404 })

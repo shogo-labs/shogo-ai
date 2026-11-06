@@ -87,6 +87,33 @@ export class DataDriveProvisioner {
     return existsSync(dataDrivePath)
   }
 
+  /**
+   * Enlarge an existing drive's backing file to `sizeMiB` (SHO-349).
+   *
+   * `ftruncate` up only: sparse, so this costs no NVMe until the guest writes
+   * into the new range, and it never touches the bytes already on the drive.
+   * A no-op when the file is already at least that big — `null` says so, so the
+   * caller can skip the Firecracker drive update entirely. Shrinking is refused
+   * rather than silently ignored: ext4 cannot shrink online, and the whole
+   * point of the caller's sequence is that a drive only ever grows.
+   *
+   * The guest MUST have the device quiesced (fsfreeze) across the whole
+   * sequence — `PATCH /drives` after a size change is only supported for a
+   * block device nothing is writing to (Firecracker docs, patch-block).
+   */
+  grow(path: string, sizeMiB: number): { fromMiB: number; toMiB: number } | null {
+    const fromMiB = this.sizeMiB(path)
+    const target = Math.max(0, Math.floor(sizeMiB))
+    if (target <= fromMiB) return null
+    const fd = openSync(path, 'r+')
+    try {
+      ftruncateSync(fd, target * 1024 * 1024)
+    } finally {
+      closeSync(fd)
+    }
+    return { fromMiB, toMiB: target }
+  }
+
   /** Allocated (not logical) NVMe bytes — for cache/disk accounting. */
   allocatedBytes(dataDrivePath: string): number {
     try {

@@ -491,6 +491,74 @@ describe('publish tool', () => {
     expect(details.error).toMatch(/do not retry with a different subdomain/i)
   })
 
+  // Production: a republish hit SHO-350's 409 while the Knative service was
+  // being configured, the tool passed the raw k8s body through the generic
+  // fallthrough, and the agent told the user "the static site is live, but the
+  // API needs a host that stays up — Render, Fly or Railway?" (SHO-351).
+  const K8S_409 =
+    'services.serving.knative.dev "site-p1" is forbidden: the object has been modified; ' +
+    'please apply your changes to the latest version\n' +
+    '{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure",' +
+    '"message":"services.serving.knative.dev \\"site-p1\\" already exists",' +
+    '"reason":"AlreadyExists","details":{"name":"site-p1"},"code":409}\n' +
+    'HTTP-Code: 409\nBody: {"kind":"Status"}'
+
+  test('configure_failed on a republish: hosting-side failure, previous deploy still live, short reason', async () => {
+    getPublishStateImpl = async () => ({
+      ...STATE_UNPUBLISHED,
+      data: { ...STATE_UNPUBLISHED.data, published: true, subdomain: 'live-site' },
+    })
+    publishProjectImpl = async () => ({ ok: false, status: 500, code: 'configure_failed', error: K8S_409 })
+
+    const details = await run(baseCtx(), {})
+
+    expect(details.ok).toBeUndefined()
+    expect(details.published).toBeUndefined()
+    expect(details.code).toBe('configure_failed')
+    expect(details.error).toMatch(/hosting side/i)
+    expect(details.error).toMatch(/previous deploy is still serving/i)
+    expect(details.error).toMatch(/https:\/\/live-site\.shogo\.one/)
+    expect(details.error).toMatch(/do not suggest/i)
+    expect(details.error).toMatch(/render,\s*fly,\s*railway/i)
+    expect(details.liveUrl).toBe('https://live-site.shogo.one')
+    // The k8s body is never handed over — only a trimmed one-line reason.
+    expect(typeof details.reason).toBe('string')
+    expect(details.reason.length).toBeLessThanOrEqual(200)
+    expect(details.reason).not.toContain('{')
+    expect(details.reason).not.toContain('HTTP-Code')
+    expect(details.reason).toMatch(/already exists|forbidden|modified/i)
+  })
+
+  test('configure_failed on a first publish says nothing is live yet', async () => {
+    getPublishStateImpl = async () => STATE_UNPUBLISHED
+    publishProjectImpl = async () => ({ ok: false, status: 500, code: 'configure_failed', error: K8S_409 })
+
+    const details = await run(baseCtx(), { subdomain: 'first-site' })
+
+    expect(details.code).toBe('configure_failed')
+    expect(details.error).toMatch(/nothing is live yet/i)
+    expect(details.error).not.toMatch(/previous deploy is still serving/i)
+    expect(details.liveUrl).toBeNull()
+  })
+
+  test('configure_timeout is its own result and allows one later retry', async () => {
+    publishProjectImpl = async () => ({
+      ok: false,
+      status: 504,
+      code: 'configure_timeout',
+      error: 'Publish configure timed out after 240000ms',
+    })
+
+    const details = await run(baseCtx(), { subdomain: 'slow-site' })
+
+    expect(details.ok).toBeUndefined()
+    expect(details.code).toBe('configure_timeout')
+    expect(details.error).toMatch(/hosting side/i)
+    expect(details.error).toMatch(/one retry/i)
+    expect(details.error).toMatch(/not.*loop|do not loop/i)
+    expect(details.error).not.toMatch(/do not retry it/i)
+  })
+
   test('reports verified:false (with a propagation note) when the live URL is not yet serving', async () => {
     fetchStatus = 503
     const details = await run(baseCtx(), { subdomain: 'cold' })
@@ -587,6 +655,21 @@ describe('publish tool copy (Pro-plan disclosure + no hard-refresh advice)', () 
     // Must be actionable pre-attempt guidance, not just present anywhere —
     // tie it to telling the user before/first, not merely mentioning "Pro".
     expect(description).toMatch(/before|first publish|upfront|may (be on|need)/i)
+  })
+
+  test('the tool description says publish hosts the app server, and forbids outside API hosts', () => {
+    const description = publishTool(baseCtx()).description
+    // The whole app is deployed, not just static files: server + DB too.
+    expect(description).toMatch(/server\.tsx/)
+    expect(description).toMatch(/\/api\/\*/)
+    expect(description).toMatch(/database/i)
+    // And the agent must never invent an outside host for the API.
+    expect(description).toMatch(/never suggest or set up an outside host/i)
+    expect(description).toMatch(/render/i)
+    expect(description).toMatch(/fly/i)
+    expect(description).toMatch(/railway/i)
+    // No always-on promise — the service scales to zero when idle.
+    expect(description).not.toMatch(/always[- ]on|never sleeps|stays up|stays online/i)
   })
 
   test('a successful publish response never tells the user to (hard) refresh or clear their cache', async () => {

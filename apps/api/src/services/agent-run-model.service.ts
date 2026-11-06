@@ -38,6 +38,18 @@ export async function resolveAgentRunModel(projectId: string | null, workspaceId
   const row = await db.agentConfig.findUnique({ where: { projectId }, select: { modelName: true } }).catch(() => null)
   const name = row?.modelName?.trim()
   if (!name || name === DEFAULT_AGENT_MODEL || name === AUTO_MODEL_ID) return AUTO_MODEL_ID
+  // A model id that is no longer in the registry (an admin deleted it, or the
+  // catalog renamed it) used to be handed straight to the proxy, which answered
+  // `400 model_not_found` — surfaced to the person as the useless "rejected as
+  // malformed" (the Odin incident, SHO-348). Running on Auto is the same ending
+  // the inaccessible-model cap already gives, and it is loudly logged so the
+  // stale `AgentConfig.modelName` gets found.
+  if (!getMergedModelEntrySync(name)) {
+    console.warn(
+      `[agent-run-model] project ${projectId} model ${name} no longer exists — running on Auto`,
+    )
+    return AUTO_MODEL_ID
+  }
   // The chat routes cap an inaccessible model to `auto` themselves, so the run
   // is fine without this — but the profile card reports what this returns, and
   // it must not name a model the run will never use (SHO-145, SHO-264).

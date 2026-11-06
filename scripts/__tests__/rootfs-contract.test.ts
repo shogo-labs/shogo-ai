@@ -17,6 +17,8 @@ describe('build-runtime-rootfs.sh contract', () => {
     expect(source).toContain('^exec /entrypoint.sh')
     expect(source).toContain("grep -q 'blkid -L shogo-ws'")
     expect(source).toContain('blkid missing')
+    expect(source).toContain('resize2fs missing')
+    expect(source).toContain('fsfreeze missing')
   })
 
   it('mounts the workspace drive before handing off to the entrypoint', () => {
@@ -25,6 +27,9 @@ describe('build-runtime-rootfs.sh contract', () => {
     expect(mountAt).toBeGreaterThan(-1)
     expect(mountAt).toBeLessThan(init.indexOf('exec /entrypoint.sh'))
     expect(init).toContain('mount --bind /data/workspace /app/workspace')
+    // A drive grown on the host while no VM held it must be grown on disk here.
+    expect(init).toContain('resize2fs')
+    expect(init.indexOf('resize2fs')).toBeLessThan(init.indexOf('exec /entrypoint.sh'))
     for (const d of ['.bun/cache', '.npm', '.cache']) expect(init).toContain(d)
   })
 

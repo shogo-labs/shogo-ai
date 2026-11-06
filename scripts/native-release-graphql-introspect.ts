@@ -102,6 +102,9 @@ const REQUIRED_ENUM_VALUES: Record<string, string[]> = {
   ],
   Permission: ['PUBLISH'],
   WebhookType: ['BUILD', 'SUBMIT'],
+  // The poller is the only status channel for a test workflow (WebhookType has no
+  // workflow event) and the only one BYOK has at all.
+  WorkflowRunStatus: ['IN_PROGRESS', 'SUCCESS', 'FAILURE', 'CANCELED'],
 }
 
 /**

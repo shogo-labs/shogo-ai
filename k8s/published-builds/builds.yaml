@@ -1,0 +1,66 @@
+# BuildKit builds for published images (SHO-308 §2).
+#
+# Everything a region needs before the API can build a published image. The API
+# then creates one `Job` per (project, commit) in this namespace — the Job itself
+# is not a manifest here because it is generated per commit by
+# `apps/api/src/lib/published-build-job.ts`.
+#
+#   kubectl apply -f k8s/published-builds/builds.yaml
+#   kubectl -n shogo-builds create secret docker-registry ocir-push \
+#     --docker-server=us-ashburn-1.ocir.io \
+#     --docker-username='<tenancy>/<user>' \
+#     --docker-password='<auth-token>'
+#
+# The push Secret is deliberately NOT declared here: applying a placeholder would
+# overwrite real credentials. Its name is `ocir-push` unless
+# PUBLISH_BUILD_REGISTRY_SECRET says otherwise.
+#
+# Then enable the feature with PUBLISH_BUILD_REGISTRY / _NAMESPACE / _IMAGE.
+# See docs/runbooks/published-images.md.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shogo-builds
+  labels:
+    # Builds are bursty and never serve traffic: keep them off the critical path
+    # so a queued image build cannot evict a published pod.
+    shogo.io/purpose: published-image-builds
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shogo-builds
+  namespace: shogo-builds
+# The build reports its result through the container's termination message,
+# which the API reads from the Pod status — so the Job needs no RBAC and no
+# service-account token.
+automountServiceAccountToken: false
+---
+# One build is one pod: no DaemonSet, no shared daemon, no privileged host
+# access. The container runs rootless, in its own user namespace.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: shogo-builds-defaults
+  namespace: shogo-builds
+spec:
+  limits:
+    - type: Container
+      default: { cpu: '2', memory: 4Gi }
+      defaultRequest: { cpu: 500m, memory: 1Gi }
+---
+# A failed or timed-out build must not be able to fill a node: the Job's source
+# volume is capped at 2Gi and the API deletes the Job once it gives up.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: shogo-builds-quota
+  namespace: shogo-builds
+spec:
+  hard:
+    pods: '20'
+    requests.cpu: '10'
+    requests.memory: 20Gi
+    limits.cpu: '40'
+    limits.memory: 80Gi

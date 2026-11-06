@@ -8,6 +8,12 @@
 
 export { useTurnGrouping } from "./useTurnGrouping"
 export { TurnList, type TurnListProps } from "./TurnList"
+export {
+  createTranscriptScrollSignal,
+  type TranscriptScrollSample,
+  type TranscriptScrollSignal,
+} from "./transcript-scroll"
+export { useTurnWindow, type TurnWindow } from "./useTurnWindow"
 export { TurnGroup, type TurnGroupProps } from "./TurnGroup"
 export { TurnHeader, type TurnHeaderProps } from "./TurnHeader"
 export { MessageContent, type MessageContentProps } from "./MessageContent"

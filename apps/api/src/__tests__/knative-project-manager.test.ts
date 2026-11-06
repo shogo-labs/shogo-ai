@@ -666,13 +666,32 @@ describe('published service helpers', () => {
     }
   })
 
-  test('createPublishedService replaces on AlreadyExists conflicts', async () => {
+  test('createPublishedService merge-patches on AlreadyExists conflicts', async () => {
     createConflict = true
-    const mgr = new KnativeProjectManager()
+    // The republish update goes through mergePatchKnativeService (raw fetch), so
+    // capture the request to prove it is a PATCH and not the PUT that needs a
+    // resourceVersion (SHO-350).
+    const fetches: { url: string; init: any }[] = []
+    globalThis.fetch = (async (input: any, init?: any) => {
+      fetches.push({ url: typeof input === 'string' ? input : input.url, init })
+      return new Response('{}', { status: 200 })
+    }) as any
 
-    await mgr.createPublishedService('p1', 'my-app')
+    try {
+      const mgr = new KnativeProjectManager()
 
-    expect(capture.some((c) => c.method === 'replaceNamespacedCustomObject')).toBe(true)
+      await mgr.createPublishedService('p1', 'my-app')
+
+      const patches = fetches.filter((f) => f.init?.method === 'PATCH')
+      expect(patches).toHaveLength(1)
+      expect(patches[0].url).toContain('/apis/serving.knative.dev/v1/namespaces/shogo-test/services/published-p1')
+      expect(patches[0].init.headers['Content-Type']).toBe('application/merge-patch+json')
+      const body = JSON.parse(String(patches[0].init.body))
+      expect(body.spec.template.metadata.annotations['shogo.io/deploy-timestamp']).toBeTruthy()
+      expect(capture.some((c) => c.method === 'replaceNamespacedCustomObject')).toBe(false)
+    } finally {
+      globalThis.fetch = (async () => nextFetch() as any) as any
+    }
   })
 
   test('published domain and revision helpers issue expected Kubernetes mutations', async () => {

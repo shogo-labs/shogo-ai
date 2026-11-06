@@ -187,6 +187,9 @@ const NEVER_BILLING = [
   // SHO-308: the metered minutes behind `published_hosting` — the input to
   // consumeUsage, so the cloud's own accounting, never a synced row.
   'PublishedUsageMinute',
+  // SHO-323: the monthly Updates charge, same shape (consumeUsage's input).
+  'NativeUsageMonth',
+  'NativeBuild', // per-build EAS state and the charge attached to it
 ] as const
 
 const NEVER_CLOUD_PLATFORM = [
@@ -202,6 +205,13 @@ const NEVER_CLOUD_PLATFORM = [
   // nor may claim them, so its copy of these tables stays empty.
   'PublishedEnvironment',
   'PublishedDeployment',
+  // SHO-323: native release — the EAS app mapping, the releases and the builds
+  // are cloud facts created by our Expo account. A desktop neither starts them
+  // nor may claim them, and its signing material never travels.
+  'NativeApp',
+  'NativeRelease',
+  'NativeAppCredential',
+  'NativeSigningCredential',
   'ProjectAuthConfig', // published-site auth, cloud-served
   'ProjectAuthSignIn',
   'PlatformSetting',

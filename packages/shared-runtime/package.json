@@ -22,7 +22,8 @@
     "./workspace-root-sync": "./src/workspace-root-sync.ts",
     "./remote-device-call": "./src/remote-device-call.ts",
     "./published-database": "./src/published-database.ts",
-    "./published-schema": "./src/published-schema.ts"
+    "./published-schema": "./src/published-schema.ts",
+    "./published-image-ref": "./src/published-image-ref.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

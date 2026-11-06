@@ -98,6 +98,15 @@ mock.module('../../lib/prisma', () => ({
         }
         return { count }
       },
+      create: async (args: any) => {
+        if (settings.has(args.data.key)) {
+          const err: any = new Error('Unique constraint failed on the fields: (`key`)')
+          err.code = 'P2002'
+          throw err
+        }
+        settings.set(args.data.key, args.data.value)
+        return args.data
+      },
       updateMany: async (args: any) => {
         lastSettingsUpdateArgs = args
         const current = settings.get(args.where.key)
@@ -125,6 +134,15 @@ mock.module('../../lib/prisma', () => ({
             (!allowed || allowed.includes(r.environmentId)) &&
             r.minute < args.where.minute.lt,
         )
+      },
+      create: async (args: any) => {
+        if (settings.has(args.data.key)) {
+          const err: any = new Error('Unique constraint failed on the fields: (`key`)')
+          err.code = 'P2002'
+          throw err
+        }
+        settings.set(args.data.key, args.data.value)
+        return args.data
       },
       updateMany: async (args: any) => {
         lastUsageUpdates.push(args)
@@ -242,7 +260,7 @@ describe('runPublishedUsageCollect', () => {
     envs = [env('penv_1')]
     podCounts = new Map([[publishedServiceName('p-penv_1', 'production'), 1]])
     await runPublishedUsageCollect(MINUTE)
-    expect(settings.get('published-usage:last-collected:eu-frankfurt-1')).toBe(
+    expect(settings.get('published-usage-collect:last-claimed:eu-frankfurt-1')).toBe(
       MINUTE.toISOString(),
     )
   })

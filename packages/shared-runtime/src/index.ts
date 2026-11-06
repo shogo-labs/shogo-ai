@@ -251,6 +251,13 @@ export {
 } from './server-framework'
 
 export {
+  notifyProxyAuthFailure,
+  startTokenRefreshLoop,
+  type TokenRefreshHandle,
+  type TokenRefreshOptions,
+} from './token-refresh'
+
+export {
   RUNTIME_CONFIG,
   buildRuntimeEnv,
   type RuntimeTypeConfig,
@@ -370,3 +377,13 @@ export {
   type SeedRelation,
   type SeedTableData,
 } from './published-schema'
+
+export {
+  publishedImageRepository,
+  publishedImageRepositoryOf,
+  publishedImageTag,
+  publishedImageTagRef,
+  publishedImageDigestRef,
+  isDigestPinnedImageRef,
+  digestOfImageRef,
+} from './published-image-ref'

@@ -11,6 +11,15 @@ import { MAX_WAKE_ATTEMPTS, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAU
 const ACTIVE_TURN_STALE_AFTER_MS = 10 * 60 * 1000
 
 /**
+ * How long a queue claim may stay `dispatching` before it is read as dead and
+ * handed back to `pending`. It covers one claim's whole start — persist, history
+ * seed, the internal POST and the runtime's live-turn gate — and it is the same
+ * cutoff `resetStuckDispatching` recovers at, so a live claim and the recovery
+ * path can never disagree about which claims still count (SHO-341).
+ */
+const DISPATCH_CLAIM_STUCK_AFTER_MS = 2 * 60 * 1000
+
+/**
  * A queued task wake older than this is history, not news. When delivery stalls
  * (the app was closed, the API wedged) the backlog must not replay as one burst
  * of turns the moment the queue moves again: on 2026-10-27 a desktop restart
@@ -154,7 +163,36 @@ async function consumeResponse(response: Response): Promise<void> {
   }
 }
 
+/**
+ * Is a row of this session already claimed and on its way to a turn?
+ *
+ * A claim (`dispatching`) is a turn that has started to start: the row is
+ * claimed, its user message is persisted, and the internal POST to `/chat` is
+ * in flight. `activeTurnId` only lands once the runtime answers that POST, and
+ * it waits on the runtime's live-turn gate while a stopped turn unwinds — so
+ * for seconds at a time the session holds a running turn with no marker for it.
+ * Reading that window as idle is what let a second starter claim the next row
+ * and run two turns at once (SHO-341).
+ *
+ * A claim older than the stuck cutoff is not counted: `resetStuckDispatching`
+ * hands it back to `pending` on the next drain tick, and a dead claim must not
+ * wedge the queue.
+ */
+export async function hasLiveClaim(chatSessionId: string, exceptRowId?: string): Promise<boolean> {
+  const claim = await (prisma as any).chatQueuedMessage.findFirst({
+    where: {
+      sessionId: chatSessionId,
+      status: 'dispatching',
+      updatedAt: { gte: new Date(Date.now() - DISPATCH_CLAIM_STUCK_AFTER_MS) },
+      ...(exceptRowId ? { id: { not: exceptRowId } } : {}),
+    },
+    select: { id: true },
+  })
+  return Boolean(claim)
+}
+
 async function isSessionIdle(chatSessionId: string): Promise<boolean> {
+  if (await hasLiveClaim(chatSessionId)) return false
   const session = await (prisma as any).chatSession.findUnique({
     where: { id: chatSessionId },
     select: { activeTurnId: true, activeTurnHeartbeatAt: true },
@@ -185,6 +223,9 @@ async function isSessionIdle(chatSessionId: string): Promise<boolean> {
 }
 
 async function claimNext(chatSessionId: string): Promise<QueueRow | null> {
+  // Nothing to claim while a sibling row is already on its way to a turn.
+  if (await hasLiveClaim(chatSessionId)) return null
+
   const candidate = await (prisma as any).chatQueuedMessage.findFirst({
     where: { sessionId: chatSessionId, status: 'pending' },
     orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
@@ -196,7 +237,54 @@ async function claimNext(chatSessionId: string): Promise<QueueRow | null> {
     data: { status: 'dispatching', error: null },
   })
   if (claimed.count !== 1) return null
+
+  // Two starters can pass the check above before either claim lands (another
+  // pod, another route, a hand-off). One of them has to lose, and the queue
+  // order decides: the later row goes back to `pending` and waits its turn.
+  const winner = await earlierLiveClaim(chatSessionId, candidate)
+  if (winner) {
+    await (prisma as any).chatQueuedMessage.updateMany({
+      where: { id: candidate.id, sessionId: chatSessionId, status: 'dispatching' },
+      data: { status: 'pending' },
+    })
+    return null
+  }
   return candidate as QueueRow
+}
+
+/**
+ * Is a live claim of some other row ahead of this one in the queue? Queue order
+ * is (position, createdAt, id), so exactly one of two racing claims is the
+ * earlier one even when both of them have committed.
+ */
+async function earlierLiveClaim(
+  chatSessionId: string,
+  candidate: { id: string; position?: number | null; createdAt?: Date | string | null },
+): Promise<boolean> {
+  const siblings: Array<{ id: string; position: number | null; createdAt: Date | string | null }> =
+    await (prisma as any).chatQueuedMessage.findMany({
+      where: {
+        sessionId: chatSessionId,
+        status: 'dispatching',
+        updatedAt: { gte: new Date(Date.now() - DISPATCH_CLAIM_STUCK_AFTER_MS) },
+        id: { not: candidate.id },
+      },
+      select: { id: true, position: true, createdAt: true },
+    })
+  const rank = (row: { id: string; position?: number | null; createdAt?: Date | string | null }) => [
+    row.position ?? 0,
+    row.createdAt ? new Date(row.createdAt).getTime() : 0,
+    row.id,
+  ]
+  const mine = rank(candidate)
+  return siblings.some((sibling) => {
+    const theirs = rank(sibling)
+    for (let index = 0; index < mine.length; index++) {
+      if (theirs[index] === mine[index]) continue
+      return (theirs[index] as any) < (mine[index] as any)
+    }
+    return false
+  })
 }
 
 async function persistQueuedUserMessage(row: QueueRow, body: QueueBody): Promise<void> {
@@ -677,6 +765,17 @@ export async function dispatchQueuedRow(chatSessionId: string, rowId: string): P
   if (!(await isHomeRegionSession(chatSessionId))) {
     return { started: false, rowId, error: 'This chat is served from another region — try again there' }
   }
+  // The stop that precedes a Send now is the preemption, but it preempts the
+  // turn that was running — not a row another starter has already claimed and
+  // is starting. Running this one beside that claim is the second turn the click
+  // used to produce (SHO-341); the row keeps its place and runs next.
+  if (await hasLiveClaim(chatSessionId, rowId)) {
+    return {
+      started: false,
+      rowId,
+      error: 'Another queued message in this chat is already starting — try again in a moment',
+    }
+  }
   const row = await claimRow(chatSessionId, rowId)
   if (row) {
     if (row.kind === 'task_notification') {
@@ -698,7 +797,7 @@ export async function dispatchQueuedRow(chatSessionId: string, rowId: string): P
 }
 
 export async function resetStuckDispatching(
-  olderThan: Date = new Date(Date.now() - 2 * 60 * 1000),
+  olderThan: Date = new Date(Date.now() - DISPATCH_CLAIM_STUCK_AFTER_MS),
 ): Promise<number> {
   const home = homeSessionWhere()
   const result = await (prisma as any).chatQueuedMessage.updateMany({

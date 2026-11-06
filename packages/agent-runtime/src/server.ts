@@ -18,6 +18,7 @@ import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
+import { StreamRegistry, DEFAULT_STREAM_ORPHAN_TTL_MS } from './stream-registry'
 import { describeTurn } from './turn-status'
 import { RepoAdoptGate, isWorkspaceNeutralRequest } from './repo-adopt-gate'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
@@ -57,6 +58,7 @@ import {
   writePoolPreseedManifest,
 } from './workspace-pool-adopt'
 import { LiveTurnGate } from './live-turn-wait'
+import { handleWorkspaceDriveOp, readWorkspaceDriveUsage, type DriveOp } from './workspace-drive'
 import type { TurnOrigin } from './gateway'
 import {
   createRuntimeApp, traceOperation,
@@ -929,10 +931,19 @@ const { app, state, logTiming } = await createRuntimeApp({
       state.poolAssignedAt ?? state.serverStartTime
     )
     const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0, children: 0 }
+    // Busy is real work, not a raw counter: a registered stream that no longer
+    // holds its turn lock and has gone quiet past the TTL is an orphan the
+    // reaper will close, and it must not keep a guest pinned as "busy" — that
+    // pin is what stopped an expired AI-proxy token from ever refreshing on
+    // metal (SHO-348).
+    const liveStreams = streamRegistry.liveCount()
+    const busy = work.turns + work.tasks + liveStreams > 0
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
-      activeStreams,
+      activeStreams: streamRegistry.size,
+      liveStreams,
+      busy,
       activeTurns: work.turns,
       activeTasks: work.tasks,
       activeChildren: work.children ?? 0,
@@ -1354,12 +1365,38 @@ function startWorkspaceDepsInstall(opts: { afterS3Restore?: boolean } = {}): Pro
 
 const streamBufferStore = new StreamBufferStore()
 const liveTurnGate = new LiveTurnGate(streamBufferStore)
+
+// Live buffered turns, owned. `activeStreams` is this registry's size — a turn
+// that never settles is reaped instead of pinning the runtime (and the VM that
+// hosts it) busy forever, which is what stopped an expired AI-proxy token from
+// ever being refreshed on metal (SHO-348).
+const streamRegistry = new StreamRegistry({
+  isTurnLocked: (sessionId: string) => !!agentGateway?.hasTurnLock?.(sessionId),
+  orphanTtlMs: Number(process.env.STREAM_ORPHAN_TTL_MS) > 0
+    ? Number(process.env.STREAM_ORPHAN_TTL_MS)
+    : DEFAULT_STREAM_ORPHAN_TTL_MS,
+})
+
 const bufferedTurns = createBufferedTurns({
   store: streamBufferStore,
   gate: liveTurnGate,
-  onStreamStart: () => trackStreamStart(),
-  onStreamEnd: () => trackStreamEnd(),
+  abortTurn: (sessionId: string) => { agentGateway?.abortCurrentTurn?.(sessionId) },
+  onStreamStart: (handle) => streamRegistry.register(handle),
+  onStreamProgress: (turnId) => streamRegistry.touch(turnId),
+  onStreamEnd: (turnId) => streamRegistry.end(turnId),
 })
+
+// Orphan reaper. Cheap (a map walk) and unref'd so it never holds the process
+// open; a wedged turn is closed within one tick of its TTL.
+const STREAM_REAP_INTERVAL_MS = 30_000
+const streamReaperTimer = setInterval(() => {
+  try {
+    streamRegistry.reapOrphans()
+  } catch (err: any) {
+    console.warn('[agent-runtime] orphan stream reap failed:', err?.message ?? err)
+  }
+}, STREAM_REAP_INTERVAL_MS)
+if (typeof (streamReaperTimer as any)?.unref === 'function') (streamReaperTimer as any).unref()
 
 // Hono app, CORS, auth middleware, /health, /pool/activity, /pool/assign are
 // provided by createRuntimeApp(). Agent-specific routes follow below.
@@ -2721,7 +2758,7 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // Preview Manager (app mode — lazy init)
 // ---------------------------------------------------------------------------
 
-import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
+import { PreviewManager, PUBLISH_STAGING_DIR, publishedBootPlan } from './preview-manager'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
@@ -3251,7 +3288,7 @@ async function flushGitBeforeExport(dir: string): Promise<void> {
   if (!gitSyncInstance || dir !== WORKSPACE_DIR) return
   // Mid-turn edits are committed at turn-complete; committing here would
   // create a checkpoint for each tool call during a host-driven export.
-  if (!shouldFlushGitBeforeExport(activeStreams)) return
+  if (!shouldFlushGitBeforeExport(streamRegistry.size)) return
   const sync = gitSyncInstance
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -3454,7 +3491,7 @@ app.post('/pool/repo-hydrated', async (c) => {
       body?.ifIdle === true
         ? await repoAdoptGate.adoptIfIdle(adopt, () => {
             const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0 }
-            return activeStreams > 0 || work.turns > 0 || work.tasks > 0
+            return streamRegistry.hasLiveStreams() || work.turns > 0 || work.tasks > 0
           })
         : await adopt()
     if (!res) {
@@ -3744,6 +3781,23 @@ app.post('/pool/quiesce', async (c) => {
   const projects = await quiesceSidecars(allPreviewManagers())
   console.log(`[pool/quiesce] ${JSON.stringify(projects)}`)
   return c.json({ ok: true, projects })
+})
+
+// Workspace-drive maintenance for a live grow (SHO-349) — see workspace-drive.ts.
+// The host freezes the guest around its ftruncate + PATCH /drives, then thaws
+// and resizes; GET is what Settings → Disk shows. 409 `no_workspace_drive` on a
+// guest without a separate workspace drive (Knative, desktop, drive disabled).
+app.post('/pool/workspace-drive', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const op = body?.op as DriveOp
+  const result = await handleWorkspaceDriveOp(op)
+  return c.json(result.body, result.status as any)
+})
+
+app.get('/pool/workspace-drive', async (c) => {
+  const usage = await readWorkspaceDriveUsage()
+  if (!usage) return c.json({ error: 'no_workspace_drive' }, 409)
+  return c.json(usage)
 })
 
 app.post('/pool/rehydrate', async (c) => {
@@ -6130,6 +6184,91 @@ app.get('/agent/dist-files', (c) => {
 })
 
 /**
+ * The build context a published image is built from (SHO-308 §2), as a gzipped
+ * tar, base64-encoded.
+ *
+ * Publishing used to build on boot: the pod hydrated source and then ran
+ * `bun install`, `prisma generate` and a Vite build before it could answer.
+ * Now the image is built once per commit, in a BuildKit Job, from this
+ * artifact — so a published pod only has to start. What goes in it:
+ *
+ *   - the project's source at its current commit, minus `node_modules`, `.git`
+ *     and the caches a build regenerates anyway;
+ *   - the root-based `dist/` that `buildForPublish()` just produced, since a
+ *     published bundle must be served from `/` rather than `/p/<id>/`.
+ *
+ * Called by `apps/api/src/services/published-build.service.ts` right after
+ * `POST /agent/publish-build`, under the runtime-owned `/agent/*` namespace
+ * (so `x-runtime-token` gated like `/agent/dist-files`).
+ */
+app.get('/agent/publish-artifact', async (c) => {
+  const projectId = c.req.query('projectId')
+  const projectDir = getProjectWorkspaceDir(projectId)
+  if (!projectDir) {
+    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
+  }
+  const outputRoot = getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir
+  const stagingDir = join(outputRoot, PUBLISH_STAGING_DIR)
+  if (!existsSync(stagingDir)) {
+    return c.json(
+      { error: 'dist_not_found', message: 'No publish build output — run /agent/publish-build first' },
+      404,
+    )
+  }
+
+  // Directories that are either rebuilt inside the image (`node_modules`), not
+  // part of the artifact (`.git`, `.shogo`), or a stale build of the canvas
+  // preview (`dist`, which is path-prefixed and must not leak into the image).
+  const SKIP = new Set(['node_modules', '.git', '.shogo', 'dist', PUBLISH_STAGING_DIR, '.tmp'])
+  // SQLite's write-ahead log belongs to a live process: a `-wal` captured
+  // mid-write and replayed against the image's DB is how a published app starts
+  // up with a corrupt table. The DB file itself is a valid snapshot.
+  const SKIP_SUFFIX = /-(wal|shm)$/
+
+  const { cp, mkdtemp, readFile, rm } = await import('fs/promises')
+  const os = await import('os')
+  const tar = await import('tar')
+  const tmpDir = await mkdtemp(join(os.tmpdir(), 'shogo-publish-artifact-'))
+  const contextDir = join(tmpDir, 'context')
+  const archivePath = join(tmpDir, 'artifact.tar.gz')
+  try {
+    // Fold the WAL back into the DB before copying it. Otherwise the tarball
+    // would skip `-wal` (see SKIP_SUFFIX) and lose the writes it still holds —
+    // a published app booting with a DB that is behind its own last write.
+    for (const rel of ['prisma/dev.db', 'dev.db']) {
+      const dbPath = join(projectDir, rel)
+      if (!existsSync(dbPath)) continue
+      try {
+        const { Database } = await import('bun:sqlite')
+        const db = new Database(dbPath, { readonly: false })
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+        db.close()
+      } catch (err: any) {
+        console.warn(`[agent-runtime] publish-artifact: checkpoint of ${rel} failed: ${err?.message ?? err}`)
+      }
+    }
+    await cp(projectDir, contextDir, {
+      recursive: true,
+      filter: (src) => {
+        const rel = src.slice(projectDir.length + 1)
+        if (!rel) return true
+        if (SKIP_SUFFIX.test(rel)) return false
+        return !SKIP.has(rel.split(/[\\/]/)[0])
+      },
+    })
+    await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
+    await tar.create({ gzip: true, file: archivePath, cwd: contextDir, portable: true }, ['.'])
+    const buf = await readFile(archivePath)
+    cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
+    return c.json({ archive: buf.toString('base64'), bytes: buf.length })
+  } catch (err: any) {
+    return c.json({ error: 'artifact_failed', message: err?.message ?? String(err) }, 500)
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+/**
  * Build the requested project for publishing. Workspace previews need a
  * `/p/<projectId>/` Vite base, but published artifacts are served from the
  * root of their own hostname. The PreviewManager keeps this root-based
@@ -7582,46 +7721,58 @@ async function checkoutPublishedTag(subdomain: string): Promise<void> {
 async function initializePublished(): Promise<void> {
   logTiming(`Published mode: initializing for subdomain=${PUBLISHED_SUBDOMAIN}`)
 
-  // 1. Seed template files (idempotent) so a brand-new emptyDir has the base
-  //    layout; git/S3 hydration below overlays the real published app.
-  ensureWorkspaceFiles()
+  // A per-commit image (SHO-308 §2) already carries the source tree, the seed
+  // DB at that commit, `node_modules`, the generated Prisma client and the
+  // root-based `dist/`. Restoring the durable repo on top would overwrite all
+  // of it — and pay a full clone on every cold start, which is exactly the boot
+  // cost the image exists to remove. The writable-state overlay below still
+  // runs: the image is the commit, the overlay is what users have written since.
+  const boot = publishedBootPlan()
 
-  // 2. Hydrate source read-only. Prefer the durable git repo (carries the
-  //    published tag + the builder's seed DB); fall back to the S3 project
-  //    archive. We deliberately do NOT start any source uploader/watcher —
-  //    published source is immutable for the life of the pod.
-  let hydrated = false
-  const repoCfg = repoStoreConfigFromEnv()
-  if (repoCfg) {
-    try {
-      const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
-      hydrated = res.restored
-      if (hydrated) {
-        await checkoutPublishedTag(PUBLISHED_SUBDOMAIN)
-        logTiming('Published mode: source restored from git repo store')
+  if (boot.hydrateSource) {
+    // 1. Seed template files (idempotent) so a brand-new emptyDir has the base
+    //    layout; git/S3 hydration below overlays the real published app.
+    ensureWorkspaceFiles()
+
+    // 2. Hydrate source read-only. Prefer the durable git repo (carries the
+    //    published tag + the builder's seed DB); fall back to the S3 project
+    //    archive. We deliberately do NOT start any source uploader/watcher —
+    //    published source is immutable for the life of the pod.
+    let hydrated = false
+    const repoCfg = repoStoreConfigFromEnv()
+    if (repoCfg) {
+      try {
+        const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
+        hydrated = res.restored
+        if (hydrated) {
+          await checkoutPublishedTag(PUBLISHED_SUBDOMAIN)
+          logTiming('Published mode: source restored from git repo store')
+        }
+      } catch (err: any) {
+        console.error('[agent-runtime] Published mode: git restore failed:', err?.message ?? err)
       }
-    } catch (err: any) {
-      console.error('[agent-runtime] Published mode: git restore failed:', err?.message ?? err)
     }
-  }
-  if (!hydrated && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
-    try {
-      const sync = createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
-        watchEnabled: false,
-        syncInterval: 0,
-        suppressProjectArchive: true,
-      })
-      if (sync) {
-        const stats = await sync.downloadAll()
-        hydrated = stats.errors.length === 0
-        logTiming(`Published mode: source restored from S3 (downloaded=${stats.downloaded}, errors=${stats.errors.length})`)
+    if (!hydrated && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
+      try {
+        const sync = createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
+          watchEnabled: false,
+          syncInterval: 0,
+          suppressProjectArchive: true,
+        })
+        if (sync) {
+          const stats = await sync.downloadAll()
+          hydrated = stats.errors.length === 0
+          logTiming(`Published mode: source restored from S3 (downloaded=${stats.downloaded}, errors=${stats.errors.length})`)
+        }
+      } catch (err: any) {
+        console.error('[agent-runtime] Published mode: S3 restore failed:', err?.message ?? err)
       }
-    } catch (err: any) {
-      console.error('[agent-runtime] Published mode: S3 restore failed:', err?.message ?? err)
     }
-  }
-  if (!hydrated) {
-    console.error('[agent-runtime] Published mode: NO source hydrated — the published app will not serve correctly')
+    if (!hydrated) {
+      console.error('[agent-runtime] Published mode: NO source hydrated — the published app will not serve correctly')
+    }
+  } else {
+    logTiming('Published mode: prebuilt image — source and dist serve from the image, no hydrate')
   }
 
   // 3. Overlay durable writable state (end-user writes accumulated since the
@@ -7650,11 +7801,7 @@ async function initializePublished(): Promise<void> {
 // In-Flight Request Tracking
 // =============================================================================
 
-let activeStreams = 0
 let isShuttingDown = false
-
-function trackStreamStart(): void { activeStreams++ }
-function trackStreamEnd(): void { activeStreams = Math.max(0, activeStreams - 1) }
 
 // =============================================================================
 // Graceful Shutdown
@@ -7665,16 +7812,16 @@ const DRAIN_TIMEOUT_MS = 30_000
 async function gracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) return
   isShuttingDown = true
-  console.log(`[agent-runtime] ${signal} received — draining ${activeStreams} active stream(s) (max ${DRAIN_TIMEOUT_MS / 1000}s)`)
+  console.log(`[agent-runtime] ${signal} received — draining ${streamRegistry.size} active stream(s) (max ${DRAIN_TIMEOUT_MS / 1000}s)`)
 
-  if (activeStreams > 0) {
+  if (streamRegistry.size > 0) {
     const drainStart = Date.now()
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {
-        if (activeStreams <= 0 || Date.now() - drainStart > DRAIN_TIMEOUT_MS) {
+        if (streamRegistry.size <= 0 || Date.now() - drainStart > DRAIN_TIMEOUT_MS) {
           clearInterval(check)
-          if (activeStreams > 0) {
-            console.warn(`[agent-runtime] Drain timeout — ${activeStreams} stream(s) still active, proceeding with shutdown`)
+          if (streamRegistry.size > 0) {
+            console.warn(`[agent-runtime] Drain timeout — ${streamRegistry.size} stream(s) still active, proceeding with shutdown`)
           } else {
             console.log(`[agent-runtime] All streams drained in ${Date.now() - drainStart}ms`)
           }
@@ -7695,6 +7842,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
   }
 
   streamBufferStore.dispose()
+  clearInterval(streamReaperTimer)
+  streamRegistry.clear()
 
   // Published mode: flush the writable-state archive (the SQLite DB + upload
   // dirs) before exit so end-user writes survive scale-to-zero / redeploys.

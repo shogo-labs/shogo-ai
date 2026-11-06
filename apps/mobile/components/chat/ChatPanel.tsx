@@ -322,6 +322,10 @@ import { useIdeBridge } from "./ideBridge"
 
 import { TurnList } from "./turns"
 import {
+  createTranscriptScrollSignal,
+  type TranscriptScrollSignal,
+} from "./turns"
+import {
   MessageEditProvider,
   dispatchNativeInlineEditTap,
   type MessageEditOptions,
@@ -1508,6 +1512,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * auto-scrolls silently re-engage follow after the user scrolled away.
    */
   const programmaticScrollUntilRef = useRef(0)
+  /**
+   * SHO-354: where the transcript is, for the windowed turn list. Lives in a
+   * ref-backed signal instead of state so a scroll frame costs no re-render —
+   * `TurnList` re-renders only when the mounted window actually changes.
+   */
+  const transcriptScrollSignalRef = useRef<TranscriptScrollSignal | null>(null)
+  if (!transcriptScrollSignalRef.current) {
+    transcriptScrollSignalRef.current = createTranscriptScrollSignal()
+  }
+  /** Last known scroll offset, so a content shift can be applied to it. */
+  const lastScrollOffsetRef = useRef(0)
   const MESSAGE_PAGE_SIZE = 50
   const isNative = Platform.OS !== "web"
   const nativeEditTapStartRef = useRef<{ x: number; y: number } | null>(null)
@@ -1608,6 +1623,44 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
     [isNative],
+  )
+
+  /**
+   * SHO-354: report the ScrollView's position to the turn list's window.
+   * Deliberately ref-only — a scroll frame must not re-render the panel.
+   */
+  const feedTranscriptScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
+      lastScrollOffsetRef.current = contentOffset.y
+      transcriptScrollSignalRef.current?.report({
+        y: contentOffset.y,
+        viewportHeight: layoutMeasurement.height,
+        contentHeight: contentSize.height,
+      })
+    },
+    [],
+  )
+
+  /**
+   * SHO-354: content above the turns on screen changed height (older turns
+   * mounting, an estimated height being replaced by the measured one). Scroll
+   * by the same delta so what the person is reading stays where it is.
+   * Ignored while following the bottom — there the tail is what must stay
+   * pinned, and the autoscroll path already owns the offset — and while a
+   * "load earlier" page is settling, because `onContentSizeChange` already
+   * scrolls by the content delta for that case and the two would double up.
+   */
+  const handleTurnWindowContentShift = useCallback(
+    (dy: number) => {
+      if (!dy || shouldFollowBottom() || isLoadingOlderRef.current) return
+      lastScrollOffsetRef.current = Math.max(0, lastScrollOffsetRef.current + dy)
+      scrollViewRef.current?.scrollTo({
+        y: lastScrollOffsetRef.current,
+        animated: false,
+      })
+    },
+    [shouldFollowBottom],
   )
 
   const scrollToBottomIfFollowing = useCallback(
@@ -6517,9 +6570,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
    */
   const handleMessagesScrollWeb = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
+      // The window follows the scroll view even for our own scroll calls (the
+      // autoscroll that follows a streaming reply), so it can shrink back to
+      // the tail while the person just watches a long turn. Only the *follow
+      // state* and the load-older trigger below have to ignore programmatic
+      // events.
+      feedTranscriptScroll(e)
       if (Date.now() < programmaticScrollUntilRef.current) return
 
-      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
       const overflows = contentSize.height > layoutMeasurement.height + 1
       setHasScrollableTranscript((current) =>
         current === overflows ? current : overflows,
@@ -6545,7 +6604,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         loadOlderWebDebounceRef.current = null
       }
     },
-    [handleLoadOlderMessages],
+    [handleLoadOlderMessages, feedTranscriptScroll],
   )
 
   // Re-hydrate pendingPlan from persisted messages on session restore
@@ -10013,7 +10072,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   onTouchCancel={() => {
                     nativeEditTapStartRef.current = null
                   }}
-                  onScroll={isNative ? undefined : handleMessagesScrollWeb}
+                  onScroll={isNative ? feedTranscriptScroll : handleMessagesScrollWeb}
                   onScrollBeginDrag={() => {
                     if (isNative) {
                       nativeEditTapStartRef.current = null
@@ -10105,6 +10164,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                           rejoining={rejoinView.showRejoinRow}
                           phase={phase}
                           subagentToolCalls={accumulatedSubagentTools}
+                          scrollSignal={transcriptScrollSignalRef.current}
+                          onContentShift={handleTurnWindowContentShift}
+                          resetKey={currentSessionId}
                         />
                       </TurnFooterProvider>
                     </MessageEditProvider>

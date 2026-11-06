@@ -32,6 +32,8 @@ verify_rootfs() {
   [ -x "$root/usr/local/bin/bun" ] || fail "/usr/local/bin/bun missing"
   [ -x "$root/usr/bin/git" ] || fail "/usr/bin/git missing"
   [ -x "$root/sbin/blkid" ] || [ -x "$root/usr/sbin/blkid" ] || fail "blkid missing (fc-init finds the workspace drive by label)"
+  [ -x "$root/sbin/resize2fs" ] || [ -x "$root/usr/sbin/resize2fs" ] || fail "resize2fs missing (a grown workspace drive would never be grown on disk — e2fsprogs)"
+  [ -x "$root/sbin/fsfreeze" ] || [ -x "$root/usr/sbin/fsfreeze" ] || fail "fsfreeze missing (a live drive grow cannot freeze the guest — util-linux)"
   grep -Eq '^[[:space:]]*directory[[:space:]]*=[[:space:]]*\*' "$root/etc/gitconfig" 2>/dev/null ||
     fail "/etc/gitconfig lacks safe.directory = * (git refuses workspaces owned by another uid)"
   local init="$root/usr/local/bin/fc-init"
@@ -41,6 +43,7 @@ verify_rootfs() {
     grep -q '> /etc/resolv.conf' "$init" || fail "fc-init no longer writes /etc/resolv.conf"
     grep -q '^exec /entrypoint.sh' "$init" || fail "fc-init does not exec /entrypoint.sh"
     grep -q 'blkid -L shogo-ws' "$init" || fail "fc-init no longer mounts the workspace drive (projects fill the rootfs)"
+    grep -q 'resize2fs' "$init" || fail "fc-init no longer grows the workspace filesystem to its drive (SHO-349)"
   else
     fail "/usr/local/bin/fc-init missing or not executable"
   fi
@@ -221,6 +224,11 @@ WS_DEV=\$(blkid -L shogo-ws 2>/dev/null || true)
 if [ -n "\$WS_DEV" ]; then
   mkdir -p /data
   if mount -t ext4 -o noatime "\$WS_DEV" /data; then
+    # Grow the filesystem to the drive's real size. Online resize is a no-op
+    # when they already match, so this is free at every boot; it is what makes a
+    # host-side grow (SHO-349) visible after a cold boot instead of leaving the
+    # ext4 smaller than its device.
+    resize2fs "\$WS_DEV" >/dev/null 2>&1 || echo "[fc-init] WARNING: resize2fs \$WS_DEV failed; workspace stays at its current size" >&2
     mkdir -p /data/workspace
     mount --bind /data/workspace /app/workspace
     # Caches keep the image's prewarmed content (bun's Expo tarballs) as a

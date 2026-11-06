@@ -1005,8 +1005,12 @@ export async function resolveRemoteProjectUrl(
  * Mirrors `REMOTE_READONLY_TOOLS` in packages/agent-runtime/src/remote-tools.ts
  * — the API cannot import the runtime package, so they are listed here too and
  * a test asserts the two lists agree.
+ *
+ * `share_file` is on the list: a replay mints a second link, which is harmless
+ * (links are independent rows), while a cold target runtime is exactly the
+ * case the retry exists for (SHO-353).
  */
-export const REMOTE_IDEMPOTENT_TOOLS: readonly string[] = ['read_file', 'search', 'exec_list', 'exec_wait']
+export const REMOTE_IDEMPOTENT_TOOLS: readonly string[] = ['read_file', 'search', 'exec_list', 'exec_wait', 'share_file']
 
 /** One retry is enough to cover a guest that resolved but is not listening yet. */
 const REMOTE_TRANSPORT_RETRY_DELAY_MS = 250
