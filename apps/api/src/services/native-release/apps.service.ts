@@ -48,6 +48,19 @@ export interface NativeAppRow {
 const WEBHOOK_PATH = '/api/webhooks/eas'
 
 /**
+ * The URL registered for one webhook event.
+ *
+ * Expo's build and submit bodies are distinguished by shape, not by a field, and
+ * both are `WebhookType`s you subscribe to separately — so each gets its own URL
+ * and the query carries the event. A single bare path cannot tell a build's
+ * `finished` from a submission's, and reading a nonexistent `payload.event` is
+ * how every build ended up in the submit branch.
+ */
+export function webhookUrlFor(apiBaseUrl: string, event: 'BUILD' | 'SUBMIT'): string {
+  return `${apiBaseUrl.replace(/\/$/, '')}${WEBHOOK_PATH}?event=${event.toLowerCase()}`
+}
+
+/**
  * Resolve the account to create apps on. In `cloud` it comes from the env; in
  * `byok` it is whichever account the token can act for, preferring an exact
  * match (`EXPO_ACCOUNT_ID`) and otherwise the only account — never a guess when
@@ -137,9 +150,13 @@ export async function ensureNativeApp(opts: EnsureNativeAppOptions): Promise<Nat
 
   const secret = opts.webhookSecret ?? process.env.EAS_WEBHOOK_SECRET
   if (secret) {
-    const url = `${opts.apiBaseUrl.replace(/\/$/, '')}${WEBHOOK_PATH}`
     for (const event of ['BUILD', 'SUBMIT'] as const) {
-      await createWebhook(client, { appId: created.id, url, secret, event })
+      await createWebhook(client, {
+        appId: created.id,
+        url: webhookUrlFor(opts.apiBaseUrl, event),
+        secret,
+        event,
+      })
     }
   }
 

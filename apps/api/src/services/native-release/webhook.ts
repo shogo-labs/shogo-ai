@@ -12,6 +12,19 @@
  *    before it bills, so an Expo retry, an overlapping sweep and a duplicate
  *    delivery all collapse onto one charge.
  *
+ * ## The payload has no `event` field
+ *
+ * `WebhookType` (`BUILD` | `SUBMIT`) selects *which webhook you subscribe to*; it
+ * is not repeated in the body. The two documented payloads are told apart by
+ * shape only — a build carries `artifacts`/`metadata`/`resourceClass`, a
+ * submission carries `submissionInfo`/`archiveUrl` — so we register **one
+ * webhook per event with its own URL** (`?event=build` / `?event=submit`) and
+ * treat the query as the authority. Shape detection is the fallback for a
+ * webhook an older revision created on the account (both events pointed at the
+ * bare path), where guessing from fields is better than dropping every delivery.
+ * Do not reintroduce a `payload.event`/`payload.buildDetails` read: neither
+ * exists, and reading them silently routed every build into the submit branch.
+ *
  * A build on the Shogo account with **no `NativeBuild` row** is an ops alert, not
  * a silent drop: it means either a hand-started build (we are paying for someone
  * else's work) or a `createBuild` response we lost, and both need a human.
@@ -43,22 +56,95 @@ export function verifyEasSignature(rawBody: string, signature: string | undefine
   return timingSafeEqual(a, b)
 }
 
-export interface EasWebhookPayload {
+export type EasWebhookEvent = 'build' | 'submit'
+
+/**
+ * The documented EAS **build** webhook body (`docs.expo.dev/eas/webhooks/`).
+ * `id` is the build id — not a generic row id — and the class EAS actually ran
+ * on is `actualResourceClass` (what the invoice is keyed by); `resourceClass` is
+ * what was requested.
+ */
+export interface EasBuildWebhookPayload {
   id?: string
-  platform?: 'ios' | 'android'
   status?: string
-  event?: 'BUILD' | 'SUBMIT'
-  buildDetails?: {
-    buildId?: string
+  platform?: 'ios' | 'android'
+  appId?: string
+  accountName?: string
+  projectName?: string
+  buildDetailsPageUrl?: string
+  parentBuildId?: string | null
+  initiatingUserId?: string | null
+  cancelingUserId?: string | null
+  resourceClass?: string
+  actualResourceClass?: string
+  artifacts?: { buildUrl?: string; logsS3KeyPrefix?: string }
+  metadata?: {
     buildProfile?: string
-    resourceClass?: string
-    artifactUrl?: string
+    distribution?: string
+    appVersion?: string
+    appBuildVersion?: string
+    runtimeVersion?: string
+    [key: string]: unknown
   }
-  submissionDetails?: {
-    submissionId?: string
-    status?: string
-  }
+  metrics?: Record<string, unknown>
+  error?: { message?: string; errorCode?: string }
+  createdAt?: string
+  completedAt?: string
+  updatedAt?: string
   [key: string]: unknown
+}
+
+/** The documented EAS **submit** webhook body. `id` is the submission id. */
+export interface EasSubmitWebhookPayload {
+  id?: string
+  status?: string
+  platform?: 'ios' | 'android'
+  appId?: string
+  accountName?: string
+  projectName?: string
+  submissionDetailsPageUrl?: string
+  parentSubmissionId?: string | null
+  archiveUrl?: string
+  turtleBuildId?: string
+  initiatingUserId?: string | null
+  cancelingUserId?: string | null
+  submissionInfo?: { error?: { message?: string; errorCode?: string }; logsUrl?: string }
+  error?: { message?: string; errorCode?: string }
+  createdAt?: string
+  completedAt?: string
+  updatedAt?: string
+  [key: string]: unknown
+}
+
+export type EasWebhookPayload = EasBuildWebhookPayload & EasSubmitWebhookPayload
+
+/**
+ * Which event a delivery is. The URL wins; the body is the fallback.
+ *
+ * A submission always has `submissionInfo` or `submissionDetailsPageUrl` and
+ * never has `artifacts`/`metadata`; a build is the opposite. `turtleBuildId` and
+ * `archiveUrl` are submit-only too. Nothing here reads a field Expo does not
+ * send.
+ */
+export function detectWebhookEvent(payload: EasWebhookPayload, hint?: string | null): EasWebhookEvent | null {
+  const normalised = typeof hint === 'string' ? hint.trim().toLowerCase() : ''
+  if (normalised === 'build' || normalised === 'submit') return normalised
+
+  const looksLikeSubmit =
+    payload.submissionInfo !== undefined ||
+    payload.submissionDetailsPageUrl !== undefined ||
+    payload.archiveUrl !== undefined ||
+    payload.turtleBuildId !== undefined
+  const looksLikeBuild =
+    payload.artifacts !== undefined ||
+    payload.metadata !== undefined ||
+    payload.buildDetailsPageUrl !== undefined ||
+    payload.actualResourceClass !== undefined ||
+    payload.resourceClass !== undefined
+
+  if (looksLikeSubmit && !looksLikeBuild) return 'submit'
+  if (looksLikeBuild && !looksLikeSubmit) return 'build'
+  return null
 }
 
 export interface HandleWebhookResult {
@@ -72,6 +158,8 @@ export async function handleEasWebhook(opts: {
   rawBody: string
   signature: string | undefined
   secret: string | undefined
+  /** `?event=build|submit` from the registered webhook's URL. */
+  event?: string | null
   memberId?: string
   now?: Date
 }): Promise<HandleWebhookResult> {
@@ -89,12 +177,22 @@ export async function handleEasWebhook(opts: {
     return { status: 400, body: { error: { code: 'invalid_json', message: 'Body is not JSON.' } } }
   }
 
-  const event = payload.event ?? (payload.buildDetails ? 'BUILD' : 'SUBMIT')
-  const memberId = opts.memberId ?? payload['actorId']?.toString?.() ?? 'eas-webhook'
+  const event = detectWebhookEvent(payload, opts.event)
+  if (!event) {
+    // Neither shape: log the keys rather than the body (a build body carries a
+    // signed artifact URL) and refuse, so an Expo format change is visible.
+    await alertOps('native_webhook_unrecognised', { keys: Object.keys(payload).slice(0, 20) })
+    return {
+      status: 202,
+      body: { ok: true, matched: false, reason: 'unrecognised_payload' },
+    }
+  }
 
-  if (event === 'SUBMIT') {
-    const submissionId = payload.submissionDetails?.submissionId ?? payload.id
-    const status = payload.submissionDetails?.status ?? payload.status
+  const memberId = opts.memberId ?? payload.initiatingUserId?.toString?.() ?? 'eas-webhook'
+
+  if (event === 'submit') {
+    const submissionId = payload.id
+    const status = payload.status
     if (!submissionId) return { status: 400, body: { error: { code: 'missing_submission', message: 'No submission id.' } } }
 
     const build = await db.nativeBuild.findFirst({ where: { submissionId } })
@@ -102,20 +200,22 @@ export async function handleEasWebhook(opts: {
       await alertOps('native_submission_failed', { submissionId, status, reason: 'no_build_row' })
       return { status: 202, body: { ok: true, matched: false } }
     }
-    await db.nativeBuild.update({ where: { id: build.id }, data: { submissionStatus: status } })
+    await db.nativeBuild.update({ where: { id: build.id }, data: { submissionStatus: status ?? null } })
     const done = status === 'finished'
+    const errored = status === 'errored' || status === 'canceled'
+    const reason = payload.submissionInfo?.error?.message ?? payload.error?.message
     await db.nativeRelease.update({
       where: { id: build.releaseId },
       data: done
         ? { status: 'done', step: 'live' }
-        : status === 'errored'
-          ? { status: 'failed', step: 'submission', error: 'The store submission failed.' }
+        : errored
+          ? { status: 'failed', step: 'submission', error: reason ?? 'The store submission failed.' }
           : { status: 'submitting', step: 'store_submission' },
     })
     return { status: 200, body: { ok: true } }
   }
 
-  const easBuildId = payload.buildDetails?.buildId ?? payload.id
+  const easBuildId = payload.id
   if (!easBuildId) return { status: 400, body: { error: { code: 'missing_build', message: 'No build id.' } } }
 
   const build = await db.nativeBuild.findUnique({ where: { easBuildId } })
@@ -124,26 +224,37 @@ export async function handleEasWebhook(opts: {
     // until the poller adopts it (`adoptWorkflowBuilds`) — that can lag a
     // delivery by up to one poll interval. Alerting on those made every release
     // raise a false "unknown build" (the alert that exists to catch a build
-    // someone started by hand), so: while a release is in its test stage the
-    // build is logged, and the alert only fires when there is no release that
-    // could own it.
-    const openTests = await db.nativeRelease.count({ where: { status: 'testing' } })
+    // someone started by hand), so: while *this app* has a release in its test
+    // stage the build is logged, and the alert only fires when no release of that
+    // app could own it. The scope is the payload's `appId` — account-wide, one
+    // busy release would hide a hand-started build on any other project.
+    const app = payload.appId
+      ? await db.nativeApp.findFirst({ where: { easAppId: payload.appId } })
+      : null
+    const openTests = app
+      ? await db.nativeRelease.count({ where: { projectId: app.projectId, status: 'testing' } })
+      : 0
     if (openTests > 0) {
-      console.warn('[native-release] build arrived before its workflow was polled', { easBuildId })
+      console.warn('[native-release] build arrived before its workflow was polled', { easBuildId, appId: payload.appId })
       return { status: 202, body: { ok: true, matched: false, pending_adoption: true } }
     }
-    await alertOps('native_build_unknown', { easBuildId, status: payload.status })
+    await alertOps('native_build_unknown', { easBuildId, status: payload.status, appId: payload.appId ?? null })
     return { status: 202, body: { ok: true, matched: false } }
   }
 
   const status = String(payload.status ?? 'in_progress')
+  const reportedClass = payload.actualResourceClass ?? payload.resourceClass
   await db.nativeBuild.update({
     where: { id: build.id },
     data: {
       status,
-      resourceClass: payload.buildDetails?.resourceClass ?? build.resourceClass,
-      artifactKey: payload.buildDetails?.artifactUrl ?? build.artifactKey,
-      finishedAt: status === 'finished' || status === 'errored' ? (opts.now ?? new Date()) : build.finishedAt,
+      // `actualResourceClass` is what ran (and what the invoice names); the
+      // requested class is only a fallback. Bill by what ran.
+      resourceClass: reportedClass ?? build.resourceClass,
+      artifactKey: payload.artifacts?.buildUrl ?? build.artifactKey,
+      finishedAt: status === 'finished' || status === 'errored' || status === 'canceled'
+        ? (opts.now ?? new Date())
+        : build.finishedAt,
     },
   })
 
@@ -151,7 +262,11 @@ export async function handleEasWebhook(opts: {
     if (status === 'errored' || status === 'canceled') {
       await db.nativeRelease.update({
         where: { id: build.releaseId },
-        data: { status: 'failed', step: build.purpose === 'test' ? 'test_build' : 'store_build' },
+        data: {
+          status: 'failed',
+          step: build.purpose === 'test' ? 'test_build' : 'store_build',
+          error: payload.error?.message ?? null,
+        },
       })
     }
     return { status: 200, body: { ok: true } }

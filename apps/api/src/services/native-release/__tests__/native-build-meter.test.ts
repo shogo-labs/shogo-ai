@@ -20,6 +20,9 @@ interface FakeBuild {
   resourceClass: string | null
   meteredAt: Date | null
   meterStatus: string | null
+  status: string
+  finishedAt: Date | null
+  updatedAt?: Date
 }
 
 const builds = new Map<string, FakeBuild>()
@@ -33,6 +36,23 @@ const fakePrisma = {
     async findUnique({ where }: any) {
       const build = builds.get(where.easBuildId)
       return build ? { ...build, release } : null
+    },
+    /** The sweep's two queries; the filters it relies on are honoured here. */
+    async findMany({ where }: any) {
+      const all = [...builds.values()]
+      if (where.meterStatus === 'metering') {
+        return all
+          .filter((b) => b.meterStatus === 'metering' && b.meteredAt !== null)
+          .map((b) => ({ id: b.id }))
+      }
+      const cutoff = where.finishedAt?.lt as Date | undefined
+      return all
+        .filter((b) => b.status === 'finished' && !b.meteredAt && b.meterStatus === null)
+        .filter((b) => !cutoff || (b.finishedAt !== null && b.finishedAt < cutoff))
+        .map((b) => ({ easBuildId: b.easBuildId, release }))
+    },
+    async count({ where }: any) {
+      return [...builds.values()].filter((b) => b.meterStatus === where.meterStatus).length
     },
     async updateMany({ where, data }: any) {
       const build = builds.get(where.easBuildId ?? '')
@@ -61,11 +81,14 @@ const fakePrisma = {
       if (where.id === release.id) Object.assign(release, data)
       return release
     },
+    async count() {
+      return 0
+    },
   },
 }
 
 mock.module('../../../lib/prisma', () => ({ prisma: fakePrisma }))
-const { meterBuild, meterTestRun, billedUsd, setNativeUsageWallet } = await import('../usage.service')
+const { meterBuild, meterTestRun, billedUsd, setNativeUsageWallet, sweepNativeMeters, easJsonResourceClass, TEST_BUILD_RESOURCE_CLASS } = await import('../usage.service')
 const { setNativeAlertSink } = await import('../alerts')
 
 function seedBuild(overrides: Partial<FakeBuild> = {}): FakeBuild {
@@ -78,6 +101,8 @@ function seedBuild(overrides: Partial<FakeBuild> = {}): FakeBuild {
     resourceClass: 'IOS_MEDIUM',
     meteredAt: null,
     meterStatus: null,
+    status: 'in_progress',
+    finishedAt: null,
     ...overrides,
   }
   builds.set(build.easBuildId, build)
@@ -186,5 +211,77 @@ describe('meterTestRun', () => {
       await meterTestRun({ releaseId: release.id, memberId: 'me', ciMinutes: 10, mode: 'cloud' }),
     ).toBe('skipped')
     expect(consumeCalls).toHaveLength(1)
+  })
+})
+
+describe('the meter sweep closes what the webhook dropped', () => {
+  const longAgo = new Date(Date.now() - 60 * 60 * 1000)
+
+  it('charges a finished build nobody billed', async () => {
+    seedBuild({ status: 'finished', finishedAt: longAgo })
+    const result = await sweepNativeMeters({ mode: 'cloud' })
+    expect(result).toMatchObject({ retried: 1, metered: 1, failed: 0 })
+    expect(consumeCalls).toHaveLength(1)
+    expect(builds.get('build_1')!.meterStatus).toBe('metered')
+  })
+
+  it('leaves a build inside the grace window alone, because its webhook may still arrive', async () => {
+    seedBuild({ status: 'finished', finishedAt: new Date() })
+    const result = await sweepNativeMeters({ mode: 'cloud' })
+    expect(result.retried).toBe(0)
+    expect(consumeCalls).toHaveLength(0)
+  })
+
+  it('releases a claim held through a crash, so the charge is retried instead of lost', async () => {
+    seedBuild({
+      status: 'finished',
+      meteredAt: longAgo,
+      meterStatus: 'metering',
+      finishedAt: longAgo,
+    })
+    const result = await sweepNativeMeters({ mode: 'cloud' })
+    expect(result.recovered).toBe(1)
+    // Recovered and charged in the same pass: resetting the claim is only worth
+    // anything if the retry follows immediately.
+    expect(result.metered).toBe(1)
+    expect(consumeCalls).toHaveLength(1)
+    expect(builds.get('build_1')!.meterStatus).toBe('metered')
+  })
+
+  it('counts unpriced rows and alerts once, charging nothing', async () => {
+    const unpriced = seedBuild({
+      resourceClass: 'IOS_M_MEDIUM',
+      status: 'finished',
+      finishedAt: longAgo,
+    })
+    await meterBuild({ easBuildId: unpriced.easBuildId, memberId: 'me', mode: 'cloud' })
+    expect(consumeCalls).toHaveLength(0)
+
+    const result = await sweepNativeMeters({ mode: 'cloud' })
+    expect(result.unpriced).toBe(1)
+    expect(consumeCalls).toHaveLength(0)
+    expect(alerts).toContain('native_meter_sweep')
+  })
+
+  it('does nothing outside cloud mode', async () => {
+    seedBuild({ status: 'finished', finishedAt: longAgo })
+    const result = await sweepNativeMeters({ mode: 'byok' })
+    expect(result.metered).toBe(0)
+    expect(consumeCalls).toHaveLength(0)
+  })
+})
+
+describe('the class the generated eas.json pins is the class the meter prices', () => {
+  it('maps the priced classes to eas.json short names', () => {
+    expect(easJsonResourceClass()).toEqual({ ios: 'medium', android: 'medium' })
+  })
+
+  it('pins what is priced, so a profile default cannot diverge from the quote', () => {
+    // IOS_M_MEDIUM is the unpriced class QA worried the default might resolve to.
+    // Whatever the table says, the profile must pin exactly it — and it must be
+    // one eas.json can express.
+    for (const cls of Object.values(TEST_BUILD_RESOURCE_CLASS)) {
+      expect(['IOS_MEDIUM', 'ANDROID_MEDIUM']).toContain(cls as string)
+    }
   })
 })

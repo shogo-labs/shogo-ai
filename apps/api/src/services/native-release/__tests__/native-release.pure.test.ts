@@ -156,10 +156,14 @@ describe('pricing', () => {
 
 describe('the EAS webhook signature', () => {
   const secret = 'a'.repeat(32)
-  const body = JSON.stringify({ event: 'BUILD', status: 'finished' })
+  const body = JSON.stringify({
+    id: '147a3212-49fd-446f-b4e3-a6519acf264a',
+    status: 'finished',
+    artifacts: { buildUrl: 'https://expo.dev/artifacts/eas/abc.ipa' },
+  })
   // HMAC-SHA1 of the body above with a 32×`a` secret, computed independently of
   // the implementation so a change to either side shows up here.
-  const digest = '7f60cf36dbf5b1608e6c7286b5d3eacc2e075360'
+  const digest = 'd89e42fc3c5b5fff27c57fa80557481284a48e48'
 
   it('accepts a bare hex digest', () => {
     expect(verifyEasSignature(body, digest, secret)).toBe(true)

@@ -10590,3 +10590,39 @@ setTimeout(async () => {
     }
   })()
 }
+
+// Native release — the poller is the only way a test stage's result and a
+// BYOK build ever reach us (EAS webhooks carry BUILD and SUBMIT only), and its
+// meter sweep is what closes a charge the webhook dropped. Both native crons
+// no-op outside `cloud` mode and take withGlobalJobLock internally.
+{
+  ;(async () => {
+    try {
+      const { startNativeReleasePollCron } = await import(
+        './jobs/native-release-poll'
+      )
+      startNativeReleasePollCron()
+    } catch (err: any) {
+      console.error(
+        '[NativeReleasePoll] failed to schedule poller (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+{
+  ;(async () => {
+    try {
+      const { startNativeUpdateMonthlyCron } = await import(
+        './jobs/native-update-monthly'
+      )
+      startNativeUpdateMonthlyCron()
+    } catch (err: any) {
+      console.error(
+        '[NativeUpdateMonthly] failed to schedule meter (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}

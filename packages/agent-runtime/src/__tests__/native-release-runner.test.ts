@@ -127,9 +127,27 @@ describe('the archive', () => {
     expect(eas.build['shogo-test'].withoutCredentials).toBe(true)
     expect(eas.build['shogo-test'].ios.simulator).toBe(true)
     expect(eas.build['shogo-store'].distribution).toBe('store')
-    // resourceClass belongs to the API; a project profile that set it would be
-    // overridden anyway, and setting it here would suggest otherwise.
-    expect(JSON.stringify(eas)).not.toContain('resourceClass')
+  })
+
+  it('pins the resource class on every profile, rather than taking the platform default', () => {
+    // A profile without `resourceClass` runs on Expo's `default`, whose concrete
+    // class differs by platform — while the meter quotes the class we chose. The
+    // value is the API's (it prices the build), so this asserts it is threaded
+    // through rather than copied here.
+    const eas = buildEasJson({
+      projectId: 'proj_1',
+      resourceClass: { ios: 'medium', android: 'medium' },
+    }) as any
+    expect(eas.build['shogo-test'].ios.resourceClass).toBe('medium')
+    expect(eas.build['shogo-test'].android.resourceClass).toBe('medium')
+    expect(eas.build['shogo-store'].ios.resourceClass).toBe('medium')
+    expect(eas.build['shogo-store'].android.resourceClass).toBe('medium')
+  })
+
+  it('still pins a class when the API sent none, so no profile depends on a default', () => {
+    const eas = buildEasJson({ projectId: 'proj_1' }) as any
+    expect(eas.build['shogo-test'].ios.resourceClass).toBe('medium')
+    expect(eas.build['shogo-store'].android.resourceClass).toBe('medium')
   })
 
   it('wraps a dynamic app config instead of overwriting it', () => {

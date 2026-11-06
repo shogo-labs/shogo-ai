@@ -21,6 +21,8 @@ export type NativeOpsEvent =
   | 'native_signing_failed'
   | 'native_workflow_failed'
   | 'native_submission_failed'
+  | 'native_webhook_unrecognised'
+  | 'native_meter_sweep'
 
 let alertOverride: ((event: NativeOpsEvent, detail: Record<string, unknown>) => Promise<void>) | null =
   null

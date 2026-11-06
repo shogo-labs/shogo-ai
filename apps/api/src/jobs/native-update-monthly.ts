@@ -110,3 +110,23 @@ export async function runNativeUpdateMonthly(now: Date = new Date()): Promise<Na
 
   return lock.acquired ? lock.result : summary
 }
+
+/**
+ * Schedule the monthly Updates meter. It re-checks every six hours and the
+ * `NativeUsageMonth` claim makes it idempotent, so a restart mid-month, a missed
+ * tick or a second region cannot bill a month twice. Nothing else calls the job,
+ * so without this the meter would never run at all.
+ */
+export function startNativeUpdateMonthlyCron(intervalMs: number = 6 * 60 * 60 * 1000): void {
+  const tick = (label: string) =>
+    runNativeUpdateMonthly().catch((err) =>
+      console.error(`[native-update-monthly] ${label} failed:`, err),
+    )
+  setTimeout(() => {
+    void tick('initial run')
+    setInterval(() => void tick('periodic run'), intervalMs)
+  }, 5 * 60_000)
+  console.log(
+    `[native-update-monthly] cron scheduled (every ${Math.round(intervalMs / 3_600_000)}h)`,
+  )
+}

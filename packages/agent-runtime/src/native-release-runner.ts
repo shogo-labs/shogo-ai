@@ -168,8 +168,22 @@ export async function computeFingerprint(
 /**
  * The `eas.json` we generate. It never lands in the working tree; it is written
  * into the archive and removed with the temp directory.
+ *
+ * `resourceClass` is always pinned, never left to Expo's default. A profile that
+ * omits it runs on `default`, whose concrete class is platform-dependent — and
+ * the meter prices these builds from the class *we* asked for, so "unset" means
+ * the quote and the invoice can disagree. The value comes from the API
+ * (`NativeReleaseState.testResourceClass`), which is also the side that prices
+ * the build, so there is one owner for the number rather than a copy here.
  */
-export function buildEasJson(opts: { projectId: string; owner?: string }): Record<string, unknown> {
+export function buildEasJson(opts: {
+  projectId: string
+  owner?: string
+  /** eas.json's short enum (`default` | `medium` | `large`), per platform. */
+  resourceClass?: { ios?: string; android?: string }
+}): Record<string, unknown> {
+  const iosClass = opts.resourceClass?.ios ?? 'medium'
+  const androidClass = opts.resourceClass?.android ?? 'medium'
   return {
     cli: { version: '>= 16.0.0', appVersionSource: 'remote', requireCommit: false },
     build: {
@@ -177,12 +191,14 @@ export function buildEasJson(opts: { projectId: string; owner?: string }): Recor
         distribution: 'internal',
         developmentClient: false,
         withoutCredentials: true,
-        android: { buildType: 'apk' },
-        ios: { simulator: true },
+        android: { buildType: 'apk', resourceClass: androidClass },
+        ios: { simulator: true, resourceClass: iosClass },
       },
       'shogo-store': {
         distribution: 'store',
         autoIncrement: true,
+        android: { resourceClass: androidClass },
+        ios: { resourceClass: iosClass },
       },
     },
     ...(opts.owner ? { owner: opts.owner } : {}),
@@ -226,7 +242,12 @@ module.exports = ({ config }) => ({
  * is byte-identical before and after a release" true rather than hopeful.
  */
 export async function writeProjectArchive(
-  opts: ArchiveOptions & { outFile: string; easyProjectId?: string; updatesUrl?: string },
+  opts: ArchiveOptions & {
+    outFile: string
+    easyProjectId?: string
+    updatesUrl?: string
+    resourceClass?: { ios?: string; android?: string }
+  },
 ): Promise<{ bytes: number; files: number; publicEnv: Record<string, string> }> {
   const { create } = await import('tar')
   const { cp, mkdir, readdir, stat } = await import('node:fs/promises')
@@ -264,7 +285,15 @@ export async function writeProjectArchive(
 
     await writeFile(
       join(staging, 'eas.json'),
-      JSON.stringify(buildEasJson({ projectId: opts.projectId, owner: opts.owner }), null, 2),
+      JSON.stringify(
+        buildEasJson({
+          projectId: opts.projectId,
+          owner: opts.owner,
+          resourceClass: opts.resourceClass,
+        }),
+        null,
+        2,
+      ),
       'utf8',
     )
     files.push('eas.json')
@@ -437,6 +466,7 @@ export async function runNativeRelease(input: RunNativeReleaseInput): Promise<Na
       projectDir: input.projectDir,
       outFile,
       easyProjectId: (state.data.app?.easAppId as string | undefined) ?? undefined,
+      resourceClass: state.data.testResourceClass,
     })
   } catch (err) {
     return { ok: false, release_id: releaseId, error: `Could not archive the project: ${String((err as Error)?.message ?? err)}` }

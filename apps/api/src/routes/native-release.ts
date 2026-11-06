@@ -265,6 +265,9 @@ export function nativeWebhookRoutes(): Hono {
       rawBody,
       signature: c.req.header('expo-signature'),
       secret: process.env.EAS_WEBHOOK_SECRET,
+      // One webhook per event, each with its own URL: Expo's payload has no
+      // `event` field, so the query is the only reliable discriminator.
+      event: c.req.query('event'),
     })
     return c.json(result.body, result.status as any)
   })

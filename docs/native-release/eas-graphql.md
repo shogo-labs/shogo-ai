@@ -51,11 +51,13 @@ mutation {
   webhook {
     createWebhook(
       appId: "<app id>"
-      webhookInput: { url: "https://api.shogo.ai/api/webhooks/eas", secret: "<32B hex>", event: BUILD }
+      webhookInput: { url: "https://api.shogo.ai/api/webhooks/eas?event=build", secret: "<32B hex>", event: BUILD }
     ) { id }
   }
 }
-# event is WebhookType: BUILD | SUBMIT. Two webhooks are needed to meter submissions too.
+# event is WebhookType: BUILD | SUBMIT — which webhook you subscribe to, NOT a
+# field in the delivered body. Register two, each with its own `?event=` query:
+# see "The webhook body" below.
 
 # Signed upload slots. Called by the CLOUD, never by the runner.
 #
@@ -251,3 +253,63 @@ tenancy risk, but it is not the product Russell asked for on its own.
 A and C are not exclusive: C is the fallback that must work on day one, and A turns it
 into managed mode later without touching the schema or the routes — only where the token
 comes from (and who calls the build mutation) changes.
+
+## The webhook body
+
+The delivered JSON has **no `event` field and no `buildDetails`**. Reading either
+one is how an earlier revision routed every build into the submit branch —
+nothing was metered, no build left `in_progress`, and no store submission was
+started. The two bodies share `id`, `status`, `platform`, `appId` and the
+timestamps, and are otherwise different shapes:
+
+```json
+// BUILD — https://docs.expo.dev/eas/webhooks/
+{ "id": "<build id>", "status": "finished", "platform": "ios", "appId": "<eas app id>",
+  "resourceClass": "ios-medium", "actualResourceClass": "IOS_LARGE",
+  "artifacts": { "buildUrl": "https://expo.dev/artifacts/eas/<file>", "logsS3KeyPrefix": "..." },
+  "metadata": { "buildProfile": "shogo-store", "distribution": "store", ... },
+  "error": { "message": "...", "errorCode": "..." }, "createdAt": "...", "completedAt": "..." }
+
+// SUBMIT — id is the SUBMISSION id
+{ "id": "<submission id>", "status": "finished", "platform": "android", "appId": "<eas app id>",
+  "submissionDetailsPageUrl": "...", "archiveUrl": "...", "turtleBuildId": "...",
+  "submissionInfo": { "error": { "message": "...", "errorCode": "..." }, "logsUrl": "..." } }
+```
+
+So: **the query is the discriminator** (`?event=build` / `?event=submit`), and
+`detectWebhookEvent` falls back to shape (`submissionInfo` / `archiveUrl` /
+`turtleBuildId` ⇒ submit; `artifacts` / `metadata` / `resourceClass` ⇒ build) only
+for a webhook an older revision created on the bare path. An unrecognisable body
+is a logged ops event, not a guess.
+
+Two more consequences worth writing down:
+
+- **Bill by `actualResourceClass`.** `resourceClass` is what was asked for;
+  `actualResourceClass` is what ran, and it is what the invoice names.
+- **The "build before its row exists" suppression is per app, not per account.**
+  A test-stage build is started by the workflow and only adopted by the poller a
+  tick later, so it can arrive with no `NativeBuild`. Suppressing that alert
+  account-wide meant one busy release hid a hand-started build on every other
+  project, so the check is scoped to the payload's `appId`.
+
+## What closes a charge the webhook dropped
+
+The webhook is the fast path and is allowed to be lossy; Expo's retry window is
+not ours. `sweepNativeMeters` runs inside the `native-release-poll` pass (same
+`withGlobalJobLock`, no second cron) and re-walks three things: a claim held
+through a crash (`meterStatus='metering'`, `meteredAt` set — reset after ten
+minutes so the charge is retried rather than lost), a finished build nobody
+billed, and unpriced rows, which are counted and alerted once and never billed at
+a guess. `native-update-monthly` is scheduled the same way; both crons no-op
+outside `cloud` mode.
+
+## A profile that pins no resource class is not "the default price"
+
+`eas.json`'s `resourceClass` is `default | medium | large`, it lives under
+`android`/`ios`, and *omitting* it runs on `default`, whose concrete
+`BuildResourceClass` differs by platform. The meter prices a build from the class
+we chose, so an unpinned profile means the quote and the invoice can disagree —
+on iOS plausibly by landing on the unpriced `IOS_M_MEDIUM`. The generated
+`shogo-test` and `shogo-store` profiles therefore pin it, and the value comes from
+the API (`NativeReleaseState.testResourceClass`, derived from
+`TEST_BUILD_RESOURCE_CLASS`) because the API is the side that prices the build.

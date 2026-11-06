@@ -254,6 +254,107 @@ export async function meterTestRun(opts: {
   return 'metered'
 }
 
+/** A finished build younger than this may still be mid-flight through the webhook. */
+export const NATIVE_METER_SWEEP_GRACE_MS = 10 * 60 * 1000
+
+export interface MeterSweepResult {
+  /** Claims reverted because the process died between the claim and the charge. */
+  recovered: number
+  retried: number
+  metered: number
+  unpriced: number
+  failed: number
+  /** Test runs that finished but never got charged (a crashed poller). */
+  testRunsPending: number
+}
+
+/**
+ * Close the gaps the webhook cannot: a delivery that was retried past us, a
+ * process that died holding a claim, a finished build nobody billed.
+ *
+ * The webhook is the fast path and is allowed to be lossy — Expo's retry window
+ * is not ours to rely on, and the poller only ever looks at `testing` releases.
+ * So every pass re-walks three things that should not stay open:
+ *
+ * 1. **Stuck claims.** `meteredAt` is set *before* the wallet call; a crash in
+ *    between leaves a row that `meterBuild` will refuse forever. Reset it after
+ *    the grace window so the charge is retried rather than lost.
+ * 2. **Finished but unmetered builds.** `meterBuild` is idempotent (it re-claims
+ *    the row), so this is safe to call on every pass.
+ * 3. **Unpriced rows.** They are never billed at a guess, so they accumulate
+ *    until a human adds a price — one aggregate alert, not one per build.
+ */
+export async function sweepNativeMeters(opts: {
+  now?: Date
+  limit?: number
+  mode?: ReturnType<typeof nativeReleaseMode>
+} = {}): Promise<MeterSweepResult> {
+  const result: MeterSweepResult = {
+    recovered: 0,
+    retried: 0,
+    metered: 0,
+    unpriced: 0,
+    failed: 0,
+    testRunsPending: 0,
+  }
+  const mode = opts.mode ?? nativeReleaseMode()
+  if (mode !== 'cloud') return result
+
+  const now = opts.now ?? new Date()
+  const cutoff = new Date(now.getTime() - NATIVE_METER_SWEEP_GRACE_MS)
+
+  const stuck = await db.nativeBuild.findMany({
+    where: { meterStatus: 'metering', meteredAt: { not: null }, updatedAt: { lt: cutoff } },
+    select: { id: true },
+    take: opts.limit ?? 50,
+  })
+  for (const row of stuck) {
+    await db.nativeBuild.update({ where: { id: row.id }, data: { meteredAt: null, meterStatus: null } })
+    result.recovered += 1
+  }
+
+  const pending = await db.nativeBuild.findMany({
+    where: {
+      status: 'finished',
+      meteredAt: null,
+      meterStatus: null,
+      finishedAt: { lt: cutoff },
+    },
+    select: { easBuildId: true, release: { select: { workspaceId: true } } },
+    take: opts.limit ?? 50,
+  })
+  for (const row of pending) {
+    result.retried += 1
+    const outcome = await meterBuild({
+      easBuildId: row.easBuildId,
+      memberId: 'native-meter-sweep',
+      mode,
+    })
+    if (outcome === 'metered') result.metered += 1
+    else if (outcome === 'unpriced') result.unpriced += 1
+    else if (outcome === 'failed') result.failed += 1
+  }
+
+  const unpricedRows = await db.nativeBuild.count({ where: { meterStatus: 'unpriced' } })
+  const testRunsPending = await db.nativeRelease.count({
+    where: { testOutcome: 'passed', testMeteredAt: null, updatedAt: { lt: cutoff } },
+  })
+  result.unpriced = Math.max(result.unpriced, unpricedRows)
+  result.testRunsPending = testRunsPending
+
+  if (unpricedRows > 0 || testRunsPending > 0 || result.failed > 0) {
+    await alertOps('native_meter_sweep', {
+      unpricedBuilds: unpricedRows,
+      testRunsPending,
+      failedCharges: result.failed,
+      recoveredClaims: result.recovered,
+      retried: result.retried,
+    })
+  }
+
+  return result
+}
+
 /**
  * The resource class the generated `shogo-test` profile pins, and therefore what
  * a test build is priced at.
@@ -266,6 +367,33 @@ export async function meterTestRun(opts: {
 export const TEST_BUILD_RESOURCE_CLASS: Record<'ios' | 'android', BuildResourceClass> = {
   ios: 'IOS_MEDIUM',
   android: 'ANDROID_MEDIUM',
+}
+
+/** eas.json's own enum; a class outside it cannot be pinned in a profile. */
+const EAS_JSON_RESOURCE_CLASSES = ['default', 'medium', 'large'] as const
+
+/**
+ * The pinned class as `eas.json` spells it (`IOS_MEDIUM` → `medium`).
+ *
+ * The runner writes the profile, but the API owns this number because the API is
+ * what quotes and charges it — so the runner asks for it rather than keeping a
+ * second copy that can drift. A class eas.json cannot express is a bug in the
+ * table above, not something to send and hope for.
+ */
+export function easJsonResourceClass(): { ios: string; android: string } {
+  const toShort = (cls: BuildResourceClass, platform: 'ios' | 'android'): string => {
+    const short = cls.toLowerCase().replace(`${platform}_`, '')
+    if (!(EAS_JSON_RESOURCE_CLASSES as readonly string[]).includes(short)) {
+      throw new Error(
+        `[native-release] ${cls} has no eas.json equivalent (${EAS_JSON_RESOURCE_CLASSES.join('|')}), so the generated profile cannot pin the class the meter prices.`,
+      )
+    }
+    return short
+  }
+  return {
+    ios: toShort(TEST_BUILD_RESOURCE_CLASS.ios, 'ios'),
+    android: toShort(TEST_BUILD_RESOURCE_CLASS.android, 'android'),
+  }
 }
 
 /** The raw USD a month's Updates MAU represents, past the included allowance. */
