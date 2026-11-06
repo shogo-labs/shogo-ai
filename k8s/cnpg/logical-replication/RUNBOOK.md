@@ -464,9 +464,9 @@ absent from EU/India for weeks). The shape is intentionally non-negotiable.
 
 ## Multi-region migration rules
 
-Two rules, both learned the hard way. `bun run check:migration-ids` enforces the
-first in CI and `bun run check:multiregion` enforces the second's schema half;
-`bun run check:publication` keeps the table lists honest.
+Three rules, all learned the hard way. `bun run check:migration-ids` enforces the
+first and third in CI and `bun run check:multiregion` enforces the second's
+schema half; `bun run check:publication` keeps the table lists honest.
 
 ### 1. Never derive a primary key from row content on a published table
 
@@ -485,10 +485,10 @@ duplicate key value violates unique constraint "<table>_pkey"
 ```
 
 The `conflict-watchdog` **cannot** recover from this. It can skip a
-*transaction*; it cannot skip a *tablesync COPY*, so it re-disables the
-subscription every few minutes until someone repairs the publication and
-subscription by hand. Both regions also lose the ability to converge, because
-each holds a row the other will never accept.
+*transaction*; it cannot skip a *tablesync COPY*, so it does not re-enable the
+subscription — it exits non-zero and pages, and the subscription stays disabled
+until someone repairs the rows and re-enables it by hand. Both regions also lose
+the ability to converge, because each holds a row the other will never accept.
 
 Use the model's `@default(cuid())` — omit `"id"` from the statement and let the
 default fire — or a `gen_random_uuid()` expression that references no column.
@@ -529,7 +529,28 @@ regions the same key and re-run the same outage on the next publish. Let the
 application always write a region; let NULL mean "written before region
 tagging".
 
-### 3. How to move a table back onto the mesh
+### 3. A migration must not write rows into a published table
+
+Every region runs `prisma migrate deploy` against its own primary, so a
+migration that `INSERT`s, `UPDATE`s or `DELETE`s rows in a published table
+writes the same logical rows twice. Random ids do not save it: the 2026-11-05
+outage (SHO-344) was `20261104120000_sho308_published_environments` backfilling
+`published_environments` in both regions with `gen_random_uuid()` ids — the ids
+differed, but the `subdomain` unique index did not. EU's tablesync `COPY` of
+US's rows died on `published_environments_subdomain_key`, `sub_from_us` was
+disabled, and US→EU replication was down 3.5 hours.
+
+`bun run check:migration-ids` now rejects any `INSERT`/`UPDATE`/`DELETE`/
+`TRUNCATE` against a published table in a migration at or after `DML_GUARD_EPOCH`
+(`20261105120000`). Earlier migrations are applied history and are exempt as a
+block — there are ~30 of them, so a per-entry ledger would be unmaintainable.
+
+Move the data change into an idempotent, primary-region-only post-deploy step
+(or a job under `global-job-lock`) so one writer replicates it out. If a
+backfill must run in a migration, scope it to rows this region owns and make it
+a no-op on the peer.
+
+### 4. How to move a table back onto the mesh
 
 Region-local is a stopgap, not a resting state: while a table is out of
 `shogo_all_pub`, every read that used to see the fleet only sees the region the
