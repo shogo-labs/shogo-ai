@@ -6,7 +6,7 @@ import { prisma } from '../lib/prisma'
 import { getRuntimeManager } from '../lib/runtime'
 import { pinWorkspaceToHomeRegion } from '../lib/chat-region-pin'
 import { verifySessionAccess, type HookContext } from '../generated/chat-queued-message.hooks'
-import { dispatchNext, dispatchQueuedRow } from '../services/chat-queue-dispatcher.service'
+import { dispatchNext, dispatchQueuedRow, hasLiveClaim } from '../services/chat-queue-dispatcher.service'
 import { projectChatRoutes } from './project-chat'
 import { workspaceChatRoutes } from './workspace-chat'
 
@@ -185,6 +185,21 @@ export function chatQueuedMessageActionsRoutes(): Hono {
       orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
       select: { position: true },
     })
+
+    // Another row of this session is already claimed and starting its turn. That
+    // is the queue busy, not idle: promoting here and stopping the running turn
+    // would only put a second turn beside it (SHO-341). The click is answered
+    // instead of silently starting something else; the row keeps its place and
+    // the turn-end drain picks it up.
+    if (await hasLiveClaim(row.sessionId, id)) {
+      return c.json({
+        error: {
+          code: 'busy',
+          message: 'Another queued message in this chat is already starting — try again in a moment',
+        },
+      }, 409)
+    }
+
     await (prisma as any).chatQueuedMessage.update({
       where: { id },
       data: { position: (first?.position ?? row.position) - 1, status: 'pending', error: null },

@@ -11,6 +11,9 @@ const findMessage = mock(async (): Promise<unknown> => null)
 mock.module('../../lib/prisma', () => ({
   prisma: {
     chatSession: { update, updateMany, findMany, findUnique },
+    // `isSessionIdle` reads the queue for a live claim before it reads the turn
+    // marker, and a turn-end hands the session on through it (SHO-341).
+    chatQueuedMessage: { findFirst: async () => null, findMany: async () => [] },
     conversationMessage: { findFirst: findMessage },
   },
 }))
