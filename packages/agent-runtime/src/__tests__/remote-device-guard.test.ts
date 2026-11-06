@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -186,6 +186,29 @@ describe('a remote call is never answered from the local approval cache (SHO-333
     expect(asked).toHaveLength(2)
   })
 
+  test('a saved \"always allow\" rule for this computer does not approve a remote call either', async () => {
+    // The saved rules outlive the engine, so this is the one an owner gave a
+    // previous session. A remote command matching it still asks (SHO-333).
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(
+      join(workspaceDir, '.shogo', 'permissions.json'),
+      JSON.stringify({ shellCommands: { allow: ['rm -rf *'] } }),
+      'utf-8',
+    )
+    const { engine, asked } = fullAutonomyEngine([true])
+    engine.setLocalAccess({ remoteTools: true })
+
+    const result = await guardRemoteDeviceCall({
+      tool: 'exec',
+      args: { command: 'rm -rf build' },
+      policy: engine.getLocalAccess(),
+      requestApproval: requestApprovalWith(engine),
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(asked.map((a) => a.params.command)).toEqual(['rm -rf build'])
+  })
+
   test('a remote "always allow" answer is not written to the saved rules', async () => {
     const stored: string[] = []
     const engine = new PermissionEngine({
@@ -227,6 +250,30 @@ describe('no window stream: the request waits instead of being refused (SHO-333)
     expect(await pending).toBe('approved')
     expect(asked).toEqual(['exec'])
     expect(engine.listQueuedApprovals()).toHaveLength(0)
+  })
+
+  test('a turn starting in another window does not drop a queued request', async () => {
+    const engine = new PermissionEngine({
+      preference: { mode: 'full_autonomy', approvalTimeoutSeconds: 5 },
+      workspaceDir,
+    })
+    const pending = engine.requestRemoteDeviceApproval('exec', 'shell', { command: 'ls' }, 'another runtime asked', 5)
+    expect(engine.listQueuedApprovals()).toHaveLength(1)
+
+    // Every turn resets the engine's per-turn state; the queued remote request
+    // belongs to nobody's turn and must survive it.
+    engine.resetTurn()
+    expect(engine.listQueuedApprovals()).toHaveLength(1)
+
+    const asked: string[] = []
+    engine.setSseCallback((event) => {
+      if (event?.type !== 'data-permission-request') return
+      asked.push(event.data.toolName)
+      setTimeout(() => engine.handleApprovalResponse({ id: event.data.id, decision: 'allow_once' } as any), 0)
+    })
+
+    expect(await pending).toBe('approved')
+    expect(asked).toEqual(['exec'])
   })
 
   test('a request nobody answers answers `remote_approval_timeout`', async () => {
