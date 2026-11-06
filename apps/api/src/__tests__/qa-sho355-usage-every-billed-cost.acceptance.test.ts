@@ -227,6 +227,29 @@ describe('SHO-355 AC3 — no known category is labelled unknown, no non-chat row
       .map((row: any) => `${row.category}:${row.model} → ${row.provider}`)
     expect(broken).toEqual([])
   })
+
+  /**
+   * The scan stores a model-less row as the literal `'unknown'`. That sentinel
+   * is not a model: a reader that hands it to the shared resolver gets
+   * `'unknown'` straight back (the resolver only falls back when the field is
+   * *absent*), which is how the summary table kept saying "unknown" for
+   * hosting/social while the log beside it said "Published hosting".
+   */
+  test('no summary row is labelled unknown outside chat', async () => {
+    const summary = await analytics.getUsageSummary(scope, PERIOD)
+    const broken = summary.summaries
+      .filter((row: any) => row.category !== null && row.category !== 'chat')
+      .filter((row: any) => row.model === 'unknown')
+      .map((row: any) => row.category)
+    expect(broken).toEqual([])
+  })
+
+  test('the model-grouped spend chart has no "unknown" series for a known category', async () => {
+    // This fixture has no model-less *chat* row, so `unknown` can only come from
+    // a known non-chat category — the series label must use the same resolver.
+    const spend = await analytics.getSpendTimeseries(scope, PERIOD, { groupBy: 'model' })
+    expect(spend.models).not.toContain('unknown')
+  })
 })
 
 describe('SHO-355 AC4 — group by category is a first-class dimension', () => {
