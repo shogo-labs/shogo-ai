@@ -236,6 +236,8 @@ const RESOLVER_FILES: Record<string, string> = {
   'lib/substrate/router.ts': 'resolver: picks the substrate',
   'services/published-schema.service.ts':
     'guard: publish-time schema push resolves via getProjectPodUrl (home-region guard); called from the /api/projects/:projectId/publish route',
+  'services/published-build.service.ts':
+    'route-pin: called from configurePublishedService in routes/publish.ts (pinned under /api/projects/:projectId/); resolves the EDITING pod only to read its publish artifact, never boots one',
   'lib/project-attachment-runtime.ts': 'route-pin: called from /api/projects/:projectId/attachments; resolves via resolveWorkspaceRuntimeUrl (home-region guard)',
   'routes/internal-runtime-routes.ts': 'guard: internal runtime routes resolve via resolveWorkspaceRuntimeUrl',
   'routes/local-agent-proxy.ts': 'local-only',

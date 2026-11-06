@@ -35,6 +35,21 @@ import {
 } from './published-environments.service'
 import { computePublishedCost, roundUsd } from '../config/published-pricing'
 import { resolvePublishedRuntimeImage } from '../lib/published-image'
+import { publishedImageDigestRef, publishedImageRepositoryOf } from '@shogo/shared-runtime/published-image-ref'
+
+/**
+ * The ref to run for a recorded deployment.
+ *
+ * A row with a digest is served by that digest, not by its tag: the tag is
+ * mutable, so rolling back to a tag could serve a newer commit that was pushed
+ * onto the same tag. Rows recorded before per-commit builds carry only a tag,
+ * and those keep working.
+ */
+function servingImageRef(row: { imageRef: string | null; imageDigest: string | null }): string | null {
+  if (!row.imageRef) return null
+  if (!row.imageDigest) return row.imageRef
+  return publishedImageDigestRef(publishedImageRepositoryOf(row.imageRef), row.imageDigest)
+}
 
 function isKubernetes(): boolean {
   return !!process.env.KUBERNETES_SERVICE_HOST
@@ -354,11 +369,12 @@ export async function rollbackEnvironment(
     // recorded one. Rolling back to it would patch the ksvc to no image at all.
     return fail('image_missing', 'That deployment has no recorded image to serve', 409)
   }
+  const targetImage = servingImageRef(target)!
 
   if (isKubernetes()) {
     const mgr = await manager()
     try {
-      await mgr.setPublishedImage(projectId, target.imageRef, name)
+      await mgr.setPublishedImage(projectId, targetImage, name)
     } catch (err: any) {
       return fail('rollback_failed', err?.message ?? 'Could not roll back the Knative revision', 502)
     }
@@ -368,7 +384,7 @@ export async function rollbackEnvironment(
     data: {
       environmentId: env.id,
       commitSha: target.commitSha,
-      imageRef: target.imageRef,
+      imageRef: targetImage,
       imageDigest: target.imageDigest,
       schemaHash: target.schemaHash,
       promotedFromId: target.id,
@@ -379,7 +395,7 @@ export async function rollbackEnvironment(
     where: { id: env.id },
     data: { currentDeploymentId: created.id },
   })
-  return { ok: true, value: { deploymentId: created.id, imageRef: target.imageRef } }
+  return { ok: true, value: { deploymentId: created.id, imageRef: targetImage } }
 }
 
 /** Re-run the current deployment's image (no build). */
@@ -393,16 +409,17 @@ export async function redeployEnvironment(
   const current = await prisma.publishedDeployment.findUnique({ where: { id: env.currentDeploymentId } })
   if (!current) return fail('no_deployment', 'This environment has no deployment yet', 409)
   if (!current.imageRef) return fail('image_missing', 'The current deployment has no recorded image', 409)
+  const currentImage = servingImageRef(current)!
 
   if (isKubernetes()) {
     const mgr = await manager()
     try {
-      await mgr.setPublishedImage(projectId, current.imageRef, name)
+      await mgr.setPublishedImage(projectId, currentImage, name)
     } catch (err: any) {
       return fail('redeploy_failed', err?.message ?? 'Could not redeploy', 502)
     }
   }
-  return { ok: true, value: { deploymentId: current.id, imageRef: current.imageRef } }
+  return { ok: true, value: { deploymentId: current.id, imageRef: currentImage } }
 }
 
 /**
@@ -420,6 +437,7 @@ export async function promoteStagingToProduction(
   if (!source.imageRef) {
     return fail('image_missing', 'Staging has no recorded image to promote — redeploy staging first', 409)
   }
+  const promotedImage = servingImageRef(source)!
 
   const production = await getEnvironment(projectId, 'production')
   if (!production) return fail('not_published', 'Publish the app before promoting', 409)
@@ -427,7 +445,7 @@ export async function promoteStagingToProduction(
   if (isKubernetes()) {
     const mgr = await manager()
     try {
-      await mgr.setPublishedImage(projectId, source.imageRef, 'production')
+      await mgr.setPublishedImage(projectId, promotedImage, 'production')
     } catch (err: any) {
       return fail('promote_failed', err?.message ?? 'Could not promote to production', 502)
     }
@@ -437,7 +455,7 @@ export async function promoteStagingToProduction(
     data: {
       environmentId: production.id,
       commitSha: source.commitSha,
-      imageRef: source.imageRef,
+      imageRef: promotedImage,
       imageDigest: source.imageDigest,
       schemaHash: source.schemaHash,
       promotedFromId: source.id,
@@ -448,7 +466,7 @@ export async function promoteStagingToProduction(
     where: { id: production.id },
     data: { currentDeploymentId: created.id },
   })
-  return { ok: true, value: { deploymentId: created.id, imageRef: source.imageRef } }
+  return { ok: true, value: { deploymentId: created.id, imageRef: promotedImage } }
 }
 
 export async function createEnvironment(

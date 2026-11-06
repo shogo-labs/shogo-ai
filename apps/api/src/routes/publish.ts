@@ -984,12 +984,61 @@ async function configurePublishedService(
     }
   }
 
+  // One image per commit (SHO-308 §2). Built here, at publish time, so the
+  // ksvc boots from a pinned digest and a cold start is a container start —
+  // not `bun install` + `prisma generate` + a Vite build. Gated twice: static
+  // apps have nothing to build, and a cluster without the OCIR/build env keeps
+  // today's mutable-tag behaviour instead of refusing every publish.
+  const commitSha = await currentPublishedCommitSha(projectId)
+  let publishedImageRef: string | undefined
+  let publishedImageDigest: string | null = null
+  if (serverBacked && commitSha) {
+    const { publishedBuildSetup, shouldBuildPublishedImage } = await import("../lib/published-build-config")
+    if (shouldBuildPublishedImage(substrate.kind as "knative" | "metal")) {
+      const { ensurePublishedImage } = await import("../services/published-build.service")
+      const image = await ensurePublishedImage({
+        projectId,
+        environmentId: environment.id,
+        subdomain,
+        commitSha,
+      })
+      if (!image.ok) {
+        // A publish must never ship a runtime it could not build: the ksvc
+        // would boot the shared image and serve the wrong commit.
+        //
+        // The code alone is not actionable — a build failure is a BuildKit log.
+        // Park it on the environment row (which is what the Deployment tab
+        // reads) before refusing, so the reason survives the HTTP response.
+        const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
+        const detail = image.logTail
+          ? `${image.code}: ${image.message}\n\n${image.logTail}`
+          : `${image.code}: ${image.message}`
+        await setEnvironmentPublishStatus(environment.id, "failed", detail).catch((err: any) => {
+          console.warn(`[Publish] could not record the build failure: ${err?.message ?? err}`)
+        })
+        throw new PublishConfigureError(image.code, detail, 503, { logTail: image.logTail })
+      }
+      publishedImageRef = image.imageRef
+      publishedImageDigest = image.imageDigest
+      console.log(
+        `[Publish] ${image.reused ? "Reusing" : "Built"} ${image.imageDigest} for ${projectId}@${commitSha.slice(0, 8)}`,
+      )
+    } else {
+      const missing = publishedBuildSetup().missing
+      console.log(
+        `[Publish] No per-commit image for ${projectId} ` +
+          `(substrate=${substrate.kind}${missing.length ? `, missing ${missing.join(", ")}` : ", disabled by PUBLISH_BUILD_IMAGES"})`,
+      )
+    }
+  }
+
   const result = await substrate.publish(projectId, {
     subdomain,
     serverBacked,
     alwaysOn: opts?.alwaysOn,
     environment: environmentName,
     scale,
+    image: publishedImageRef,
   })
   console.log(
     `[Publish] Published ${projectId} via ${result.substrate} substrate ` +
@@ -1003,10 +1052,13 @@ async function configurePublishedService(
   const { resolvePublishedImageRef } = await import("../services/published-ops.service")
   await recordPublishedDeployment({
     environmentId: environment.id,
-    commitSha: (await currentPublishedCommitSha(projectId)) ?? "",
+    commitSha: commitSha ?? "",
     // Prefer what the substrate reported running; the resolver is the same
     // precedence, so this can only differ if a substrate chose something else.
     imageRef: result.imageRef ?? resolvePublishedImageRef(),
+    // The digest is what rollback switches to — it is unaffected by a tag being
+    // moved, so it is recorded next to the ref rather than derived from it.
+    imageDigest: publishedImageDigest,
     revisionName: result.revisionName ?? null,
     status: "ready",
   })
@@ -1585,11 +1637,21 @@ export async function deployToStaging(
 
       await setEnvironmentPublishStatus(staging.id, "configuring")
       const serverBacked = await detectServerBacked(projectId)
-      await configurePublishedService(projectId, subdomain, {
-        serverBacked,
-        environment: "staging",
-        allowDataLoss: opts.allowDataLoss === true,
-      })
+      try {
+        await configurePublishedService(projectId, subdomain, {
+          serverBacked,
+          environment: "staging",
+          allowDataLoss: opts.allowDataLoss === true,
+        })
+      } catch (err: any) {
+        // Without this the row stays on "configuring" forever and the panel
+        // shows a publish that never finished — including a refused per-commit
+        // image build (§2), whose detail is already on the row.
+        const detail =
+          err instanceof PublishConfigureError ? err.message : `configuring: ${err?.message ?? String(err)}`
+        await setEnvironmentPublishStatus(staging.id, "failed", detail).catch(() => undefined)
+        throw err
+      }
 
       // The deployment row is recorded by configurePublishedService, for
       // whichever environment it published — recording again here would write a

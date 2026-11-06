@@ -370,3 +370,13 @@ export {
   type SeedRelation,
   type SeedTableData,
 } from './published-schema'
+
+export {
+  publishedImageRepository,
+  publishedImageRepositoryOf,
+  publishedImageTag,
+  publishedImageTagRef,
+  publishedImageDigestRef,
+  isDigestPinnedImageRef,
+  digestOfImageRef,
+} from './published-image-ref'
