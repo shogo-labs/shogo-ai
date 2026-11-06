@@ -90,7 +90,7 @@ mutation {
       # uploaded through its own EAS_BUILD_GCS_PROJECT_METADATA session, so a
       # tarball key there fails the build. Omit it; send `fingerprintHash`.
       metadata: { fingerprintHash: "<sha>" }
-      buildParams: { resourceClass: IOS_MEDIUM, expoTokenRole: DEVELOPER }   # BuildResourceClass, not DEFAULT|MEDIUM|LARGE
+      buildParams: { resourceClass: IOS_MEDIUM, expoTokenRole: RUNNER }   # BuildResourceClass, not DEFAULT|MEDIUM|LARGE
     ) { id status }
   }
 }
