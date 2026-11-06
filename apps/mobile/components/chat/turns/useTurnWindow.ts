@@ -10,21 +10,23 @@
  *
  * Two invariants make that safe:
  *
- * 1. **Nothing the person is reading moves.** The hook holds one *anchor*
- *    turn — the topmost mounted one — and watches its measured offset inside
- *    the list. Any change above it (older turns mounting, an estimate being
- *    replaced by the real height, an image finishing layout) shifts that
- *    offset by exactly the amount the visible content moved, so the caller can
- *    scroll back by the same delta. This is why an estimate is never allowed
- *    to cause a jump: the estimate only sets the scrollbar's shape until the
- *    turn is really measured.
- * 2. **The tail is always mounted.** The window covers the newest turns, so
- *    stick-to-bottom, the streaming reply and the rejoin row keep working
- *    exactly as before.
+ * 1. **The window follows the tail.** The number of turns mounted *beyond* the
+ *    tail window is the only state (`extra`), so the start index is derived
+ *    from the current turn count on every render. A chat that grows after
+ *    mount — the live/resuming case — keeps exactly `TURN_WINDOW_SIZE` turns
+ *    mounted instead of mounting everything it has received so far.
+ * 2. **Nothing the person is reading moves.** A turn that mounts above the
+ *    visible ones is first represented in the spacer by an estimate; when its
+ *    real height arrives the content above the reader has changed by
+ *    `real - estimate`, which is reported through `onContentShift` so the
+ *    caller can scroll back by the same amount. Estimates therefore never
+ *    cause a jump — they only shape the scrollbar until the turn is measured.
  *
- * The window grows upwards when the person scrolls near the top (mounting more
- * of the history that is already in memory, no server round-trip) and shrinks
- * back to the tail window when they return to the bottom.
+ * Height measurements come from `onLayout`, which is worth a note on web:
+ * react-native-web drives it from a `ResizeObserver` (size changes only), so
+ * it reports a newly mounted turn's height but never a turn that merely moved.
+ * That is why the correction is derived from `real - estimate` rather than
+ * from tracking a reference element's position.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -41,14 +43,12 @@ export const TURN_WINDOW_TOP_EDGE = 600
 export const TURN_WINDOW_BOTTOM_EDGE = 240
 /**
  * Height given to a turn that has never been laid out. Only ever wrong for
- * turns above the *first* mounted window; the anchor correction absorbs the
+ * turns above the *first* mounted window; the shift accounting absorbs the
  * error the moment the real height is measured.
  */
 export const TURN_WINDOW_ESTIMATE = 280
 /** Minimum gap between two expansions, so a fling can't mount the lot. */
 const EXPAND_THROTTLE_MS = 150
-/** Turns that stay mounted below the window even while the person reads back. */
-const TAIL_ALWAYS_MOUNTED = 3
 
 export interface TurnWindowOptions {
   /** Turn ids in transcript order (oldest first). */
@@ -72,14 +72,8 @@ export interface TurnWindow {
   start: number
   /** Height reserved for the collapsed turns above the window. */
   spacerHeight: number
-  /** Layout handler a mounted turn must attach to report its height/offset. */
+  /** Layout handler a mounted turn must attach to report its height. */
   onTurnLayout: (id: string) => (event: LayoutChangeEvent) => void
-  /**
-   * Layout handler for the list root: its `y` is where the list starts inside
-   * the scroll content, which is what turns the spacer height into a scroll
-   * offset the window can react to.
-   */
-  onRootLayout: (event: LayoutChangeEvent) => void
 }
 
 export function useTurnWindow({
@@ -90,60 +84,52 @@ export function useTurnWindow({
   onContentShift,
 }: TurnWindowOptions): TurnWindow {
   const count = turns.length
+  const turnsRef = useRef(turns)
+  turnsRef.current = turns
 
-  const [state, setState] = useState(() => ({
+  const [windowState, setWindowState] = useState(() => ({
     key: resetKey,
-    start: Math.max(0, count - TURN_WINDOW_SIZE),
+    /** Turns mounted *above* the tail window — 0 means "just the tail". */
+    extra: 0,
   }))
 
   // A different chat starts from a fresh tail window. Adjusting state during
   // render is the documented way to react to a prop change; the key guard is
   // what stops it from looping.
-  let windowState = state
-  if (windowState.key !== resetKey) {
-    windowState = { key: resetKey, start: Math.max(0, count - TURN_WINDOW_SIZE) }
-    setState(windowState)
+  let state = windowState
+  if (state.key !== resetKey) {
+    state = { key: resetKey, extra: 0 }
+    setWindowState(state)
   }
 
-  const setWindowStart = useCallback((next: number) => {
-    setState((current) => {
+  const setExtra = useCallback((next: number) => {
+    setWindowState((current) => {
       const clamped = Math.max(0, next)
-      return clamped === current.start ? current : { ...current, start: clamped }
+      return clamped === current.extra ? current : { ...current, extra: clamped }
     })
   }, [])
 
-  const tailStart = Math.max(0, count - TAIL_ALWAYS_MOUNTED)
+  // Derived on every render from the *current* count, so the window can never
+  // fall behind a transcript that grows after mount.
+  const tailStart = Math.max(0, count - TURN_WINDOW_SIZE)
+  const windowStart = Math.max(0, tailStart - state.extra)
   const editingStart =
     editingIndex != null && editingIndex >= 0 ? editingIndex : Number.POSITIVE_INFINITY
-  const start = Math.min(windowState.start, tailStart, editingStart)
+  const start = Math.min(windowStart, editingStart)
 
   const startRef = useRef(start)
   startRef.current = start
+  const extraRef = useRef(state.extra)
+  extraRef.current = state.extra
   const countRef = useRef(count)
   countRef.current = count
+  const spacerHeightRef = useRef(0)
 
   const heightsRef = useRef(new Map<string, number>())
-  const anchorIdRef = useRef<string | null>(null)
-  const anchorOffsetRef = useRef<number | null>(null)
-  const topIdRef = useRef<string | null>(turns[start]?.id ?? null)
-  topIdRef.current = turns[start]?.id ?? null
-  /** Where the list itself starts inside the scroll content. */
-  const listTopRef = useRef(0)
-  const spacerHeightRef = useRef(0)
+  /** Turns mounted above the reader whose height is still an estimate. */
+  const pendingRef = useRef(new Map<string, number>())
   const lastExpandAtRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // Drop an anchor that fell out of the window; the next mounted turn becomes
-  // the new reference and its first measurement is its baseline.
-  useEffect(() => {
-    const anchor = anchorIdRef.current
-    if (!anchor) return
-    const index = turns.findIndex((turn) => turn.id === anchor)
-    if (index < start) {
-      anchorIdRef.current = null
-      anchorOffsetRef.current = null
-    }
-  }, [start, turns])
 
   useEffect(() => {
     return () => {
@@ -153,36 +139,35 @@ export function useTurnWindow({
 
   const onTurnLayout = useCallback(
     (id: string) => (event: LayoutChangeEvent) => {
-      const { y, height } = event.nativeEvent.layout
+      const { height } = event.nativeEvent.layout
       heightsRef.current.set(id, height)
-      // The topmost mounted turn becomes the anchor the first time it is laid
-      // out; from then on it is the position the transcript holds still.
-      if (anchorIdRef.current == null) {
-        if (id !== topIdRef.current) return
-        anchorIdRef.current = id
-        anchorOffsetRef.current = y
-        return
-      }
-      if (anchorIdRef.current !== id) return
-      const previous = anchorOffsetRef.current
-      anchorOffsetRef.current = y
-      if (previous == null) return
-      const dy = y - previous
+      const baseline = pendingRef.current.get(id)
+      if (baseline === undefined) return
+      pendingRef.current.delete(id)
+      const dy = height - baseline
       if (Math.abs(dy) > 0.5) onContentShift?.(dy)
     },
     [onContentShift],
   )
 
-  const onRootLayout = useCallback((event: LayoutChangeEvent) => {
-    listTopRef.current = event.nativeEvent.layout.y
-  }, [])
-
   const expand = useCallback(
     function expand() {
       const current = startRef.current
       if (current <= 0) return
+      const nextStart = Math.max(0, current - TURN_WINDOW_STEP)
+      // Everything between the new start and the current one is about to mount
+      // above the reader: remember what the spacer was charging for it so its
+      // real height can be reconciled the moment it is measured.
+      for (let index = nextStart; index < current; index++) {
+        const id = turnsRef.current[index]?.id
+        if (!id) continue
+        pendingRef.current.set(
+          id,
+          heightsRef.current.get(id) ?? TURN_WINDOW_ESTIMATE,
+        )
+      }
       lastExpandAtRef.current = Date.now()
-      setWindowStart(current - TURN_WINDOW_STEP)
+      setExtra(extraRef.current + (current - nextStart))
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
       // A fling can land straight at the very top of the collapsed region,
       // where no further scroll event will arrive. Keep pulling the window
@@ -191,7 +176,7 @@ export function useTurnWindow({
         retryTimerRef.current = null
         const sample = scrollSignal?.read()
         if (!sample) return
-        const windowTop = listTopRef.current + spacerHeightRef.current
+        const windowTop = spacerHeightRef.current
         const nearWindowTop =
           sample.y + sample.viewportHeight > windowTop - TURN_WINDOW_TOP_EDGE
         if (nearWindowTop && startRef.current > 0) {
@@ -200,7 +185,7 @@ export function useTurnWindow({
         }
       }, EXPAND_THROTTLE_MS)
     },
-    [scrollSignal, setWindowStart],
+    [scrollSignal, setExtra],
   )
 
   useEffect(() => {
@@ -208,30 +193,27 @@ export function useTurnWindow({
     return scrollSignal.subscribe(() => {
       const { y, viewportHeight, contentHeight } = scrollSignal.read()
       const current = startRef.current
-      const total = countRef.current
 
       // Expand when the *top of the mounted window* comes near the bottom of
       // the viewport — not when the scroll offset nears zero. The collapsed
-      // spacer sits between the two, and it is usually far taller than one
-      // screen, so waiting for `y ≈ 0` would let the person scroll into blank
-      // space for thousands of pixels before history came back.
-      const windowTop = listTopRef.current + spacerHeightRef.current
+      // spacer sits between the two and is usually far taller than one screen,
+      // so waiting for `y ≈ 0` would let the person scroll into blank space for
+      // thousands of pixels before history came back.
       const nearWindowTop =
-        y + viewportHeight > windowTop - TURN_WINDOW_TOP_EDGE
+        y + viewportHeight > spacerHeightRef.current - TURN_WINDOW_TOP_EDGE
       if (nearWindowTop && current > 0) {
         if (Date.now() - lastExpandAtRef.current < EXPAND_THROTTLE_MS) return
         expand()
         return
       }
 
-      const tailWindow = Math.max(0, total - TURN_WINDOW_SIZE)
       const nearBottom =
         contentHeight - y - viewportHeight < TURN_WINDOW_BOTTOM_EDGE
-      if (nearBottom && current < tailWindow) {
-        setWindowStart(tailWindow)
+      if (nearBottom && extraRef.current !== 0) {
+        setExtra(0)
       }
     })
-  }, [scrollSignal, expand, setWindowStart])
+  }, [scrollSignal, expand, setExtra])
 
   let spacerHeight = 0
   for (let index = 0; index < start; index++) {
@@ -239,5 +221,5 @@ export function useTurnWindow({
   }
   spacerHeightRef.current = spacerHeight
 
-  return { start, spacerHeight, onTurnLayout, onRootLayout }
+  return { start, spacerHeight, onTurnLayout }
 }

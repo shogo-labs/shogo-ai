@@ -96,14 +96,10 @@ export const TurnList = memo(
       scrollSignal,
       onContentShift,
     })
-    const { start, spacerHeight, onTurnLayout, onRootLayout } = turnWindow
+    const { start, spacerHeight, onTurnLayout } = turnWindow
 
     return (
-      <View
-        testID="turn-list"
-        className={cn("gap-4", className)}
-        onLayout={onRootLayout}
-      >
+      <View testID="turn-list" className={cn("gap-4", className)}>
         {start > 0 ? (
           <View testID="turn-window-spacer" style={{ height: spacerHeight }} />
         ) : null}
@@ -127,9 +123,12 @@ export const TurnList = memo(
                   <View className="h-px flex-1 bg-border/60" />
                 </View>
               ) : null}
+              {/* Only the live turn needs the current phase: it colours the
+                  turn being written. Handing it to history would re-render
+                  every past turn whenever the phase changes. */}
               <TurnGroup
                 turn={turn}
-                phase={phase}
+                phase={index === turns.length - 1 ? phase : undefined}
                 summaryCard={index === turns.length - 1}
                 dimmed={dimmed}
                 dimTail={dimTail}

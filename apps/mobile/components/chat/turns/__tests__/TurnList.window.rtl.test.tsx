@@ -2,8 +2,12 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * SHO-354 AC 3 — only a bounded number of turns is mounted, however long the
- * chat is; scrolling back mounts older turns again, and an expansion never
- * moves what the person is reading (the anchor correction).
+ * chat is, and however it got long.
+ *
+ * Round 2 (QA): the window must follow the tail when the transcript *grows*
+ * after mount, and the reading-position correction must not depend on
+ * `onLayout` firing for a turn that only moved (on react-native-web it is
+ * ResizeObserver-driven and never does). Both are guarded here.
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test"
@@ -80,6 +84,20 @@ function fireLayout(turnId: string, y: number, height: number) {
   handler?.({ nativeEvent: { layout: { x: 0, y, width: 320, height } } })
 }
 
+/** A scroll report that puts the top of the mounted window at the viewport bottom. */
+function scrollToWindowTop(
+  scroll: ReturnType<typeof createTranscriptScrollSignal>,
+  start: number,
+) {
+  act(() => {
+    scroll.report({
+      y: start * TURN_WINDOW_ESTIMATE - 600,
+      viewportHeight: 800,
+      contentHeight: 900_000,
+    })
+  })
+}
+
 afterEach(() => {
   layoutHandlers.clear()
   renderedTurns.length = 0
@@ -104,7 +122,60 @@ describe("TurnList — mounted window (AC 3)", () => {
     )
   })
 
-  test("scrolling to the top mounts the next page of history", () => {
+  test("a transcript that grows after mount stays bounded (0 → 300 turns)", () => {
+    const view = render(createElement(TurnList as any, { messages: [] }))
+    expect(mountedRows(view.container)).toHaveLength(0)
+
+    view.rerender(createElement(TurnList as any, { messages: longChat(300) }))
+
+    const rows = mountedRows(view.container)
+    expect(rows).toHaveLength(TURN_WINDOW_SIZE)
+    expect(rows[0]).toBe("turn-row-turn-u270")
+  })
+
+  test("a transcript that grows after mount stays bounded (5 → 200 turns)", () => {
+    const view = render(
+      createElement(TurnList as any, { messages: longChat(5) }),
+    )
+    expect(mountedRows(view.container)).toHaveLength(5)
+
+    view.rerender(createElement(TurnList as any, { messages: longChat(200) }))
+
+    const rows = mountedRows(view.container)
+    expect(rows).toHaveLength(TURN_WINDOW_SIZE)
+    expect(rows[0]).toBe("turn-row-turn-u170")
+  })
+
+  test("streaming into a long chat does not remount the window", () => {
+    let messages = longChat(300)
+    const view = render(createElement(TurnList as any, { messages }))
+    const before = mountedRows(view.container)
+
+    // 40 more turns arrive the way an attached live turn delivers them.
+    for (let chunk = 0; chunk < 40; chunk++) {
+      messages = [
+        ...messages,
+        {
+          id: `u-live-${chunk}`,
+          role: "user",
+          parts: [{ type: "text", text: `live ${chunk}` }],
+        },
+        {
+          id: `a-live-${chunk}`,
+          role: "assistant",
+          parts: [{ type: "text", text: `reply ${chunk}` }],
+        },
+      ]
+      view.rerender(createElement(TurnList as any, { messages, isStreaming: true }))
+    }
+
+    const after = mountedRows(view.container)
+    expect(after).toHaveLength(TURN_WINDOW_SIZE)
+    expect(after[0]).not.toBe(before[0])
+    expect(after[after.length - 1]).toBe("turn-row-turn-u-live-39")
+  })
+
+  test("scrolling back mounts the next page of history", () => {
     const scroll = createTranscriptScrollSignal()
     const view = render(
       createElement(TurnList as any, {
@@ -116,15 +187,7 @@ describe("TurnList — mounted window (AC 3)", () => {
     expect(mountedRows(view.container)).toHaveLength(TURN_WINDOW_SIZE)
     expect(renderedTurns).toHaveLength(TURN_WINDOW_SIZE)
 
-    act(() => {
-      // Viewport bottom has reached the top of the mounted window: the
-      // 270 collapsed turns occupy 270 * TURN_WINDOW_ESTIMATE px above it.
-      scroll.report({
-        y: 270 * TURN_WINDOW_ESTIMATE - 600,
-        viewportHeight: 800,
-        contentHeight: 120_000,
-      })
-    })
+    scrollToWindowTop(scroll, 270)
 
     const rows = mountedRows(view.container)
     expect(rows).toHaveLength(TURN_WINDOW_SIZE + TURN_WINDOW_STEP)
@@ -139,7 +202,7 @@ describe("TurnList — mounted window (AC 3)", () => {
     view.unmount()
   })
 
-  test("mounting older turns keeps the reading position", () => {
+  test("mounting older turns reports exactly the height the spacer was charging for", () => {
     const scroll = createTranscriptScrollSignal()
     const shifts: number[] = []
     const view = render(
@@ -150,29 +213,27 @@ describe("TurnList — mounted window (AC 3)", () => {
       }),
     )
 
-    // The topmost mounted turn is the anchor; its offset is measured first.
-    fireLayout("turn-u270", 76_000, 120)
-    expect(shifts).toHaveLength(0)
+    scrollToWindowTop(scroll, 270)
+    // The 20 newly mounted turns are still estimated — nothing has been
+    // measured, so nothing is reported yet.
+    expect(shifts).toEqual([])
 
-    act(() => {
-      // Viewport bottom has reached the top of the mounted window: the
-      // 270 collapsed turns occupy 270 * TURN_WINDOW_ESTIMATE px above it.
-      scroll.report({
-        y: 270 * TURN_WINDOW_ESTIMATE - 600,
-        viewportHeight: 800,
-        contentHeight: 120_000,
-      })
-    })
+    // Each one reports its real height; the reader is corrected by exactly the
+    // difference between that and what the spacer was reserving.
+    for (let index = 250; index < 270; index++) {
+      if (index === 260) continue
+      fireLayout(`turn-u${index}`, 0, TURN_WINDOW_ESTIMATE)
+    }
+    expect(shifts).toEqual([])
 
-    // Older turns are now mounted above the anchor with real heights, so it
-    // moved down by exactly that much — the caller scrolls back by the same
-    // amount and the person keeps looking at the same turn.
-    fireLayout("turn-u270", 76_000 + 2_400, 120)
-    expect(shifts).toEqual([2_400])
+    // This one is taller than the spacer reserved for it.
+    fireLayout("turn-u260", 0, TURN_WINDOW_ESTIMATE + 40)
+    expect(shifts).toEqual([40])
 
-    // The anchor's own resize does not move it, so it is not reported.
-    fireLayout("turn-u270", 76_000 + 2_400, 260)
-    expect(shifts).toEqual([2_400])
+    // A turn nobody expanded for (already measured, no pending estimate) must
+    // not report anything when it re-lays out at the same height.
+    fireLayout("turn-u261", 0, TURN_WINDOW_ESTIMATE + 400)
+    expect(shifts).toEqual([40])
 
     view.unmount()
   })
