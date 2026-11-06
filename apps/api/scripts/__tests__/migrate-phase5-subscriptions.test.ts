@@ -22,7 +22,12 @@ import {
   type Phase5Candidate,
   type Phase5Stripe,
 } from '../migrate-phase5-subscriptions'
-import { LEGACY_PLAN_PRICES, STRIPE_PRICES_STAGING, OVERAGE_PRICE_STAGING } from '../../src/config/stripe-prices'
+import {
+  LEGACY_PLAN_PRICES,
+  OVERAGE_PRICE_PRODUCTION,
+  OVERAGE_PRICE_STAGING,
+  STRIPE_PRICES_STAGING,
+} from '../../src/config/stripe-prices'
 
 const originalNodeEnv = process.env.NODE_ENV
 
@@ -50,6 +55,7 @@ const PRICES = {
 }
 
 const OPTS = {
+  env: 'staging' as const,
   prices: PRICES,
   proToBusiness: true,
   minNoticeDays: 7,
@@ -67,7 +73,9 @@ function candidate(overrides: {
   dbBillingInterval?: string | null
   workspaceId?: string | null
   existingScheduleId?: string | null
-  extraItems?: Array<{ id: string; quantity: number; price: { id: string } }>
+  extraItems?: Array<{ id: string; quantity: number; price: { id: string; recurring?: { usage_type?: string } } }>
+  /** Items listed *before* the plan item — the order Stripe returns is a choice. */
+  prependItems?: Array<{ id: string; quantity: number; price: { id: string; recurring?: { usage_type?: string } } }>
   /** Stripe 2025-03-31.basil+ shape: the period end lives on the item only. */
   periodEndOnItemOnly?: boolean
 }): Phase5Candidate {
@@ -86,6 +94,7 @@ function candidate(overrides: {
       ...(overrides.periodEndOnItemOnly ? {} : { current_period_end: periodEnd }),
       items: {
         data: [
+          ...(overrides.prependItems ?? []),
           {
             id: 'si_plan',
             quantity: overrides.quantity ?? 3,
@@ -239,6 +248,10 @@ describe('planPhase5Row', () => {
   it('skips a sub that already has a schedule', () => {
     const row = planPhase5Row(candidate({ existingScheduleId: 'sub_sched_9' }), OPTS)
     expect(row.action).toBe('skip-has-schedule')
+    // A schedule with no `phase5MigratedAt` may be a half-applied run (created,
+    // then the phase update threw); the report must not read like a healthy skip.
+    expect(row.reason).toContain('not marked phase5MigratedAt')
+    expect(row.reason).toContain('sub_sched_9')
   })
 
   it('skips a sub already marked migrated', () => {
@@ -265,6 +278,57 @@ describe('planPhase5Row', () => {
     )
     expect(row.seats).toBe(4)
   })
+
+  it('takes the metered item for overage even when it is listed first and NODE_ENV names the other environment', () => {
+    // QA probe: `--env production` run from a normal shell (NODE_ENV=test, so
+    // `getOveragePriceConfig()` answers with the *staging* overage price). The
+    // metered item sat first and was read as the plan item: seats became its
+    // quantity and the plan price became the overage price.
+    process.env.NODE_ENV = 'test'
+    const opts = { ...OPTS, env: 'production' as const }
+    const row = planPhase5Row(
+      candidate({
+        quantity: 5,
+        priceId: LEGACY_PLAN_PRICES.production.business.monthly,
+        dbBillingInterval: 'monthly',
+        prependItems: [
+          {
+            id: 'si_overage',
+            quantity: 0,
+            price: { id: OVERAGE_PRICE_PRODUCTION.priceId, recurring: { usage_type: 'metered' } },
+          },
+        ],
+      }),
+      opts,
+    )
+
+    expect(row.seats).toBe(5)
+    expect(row.fromPriceId).toBe(LEGACY_PLAN_PRICES.production.business.monthly)
+    expect(row.fromPriceId).not.toBe(OVERAGE_PRICE_PRODUCTION.priceId)
+    expect(row.action).toBe('schedule')
+  })
+
+  it('recognises a metered item by its usage_type when the configured overage price belongs to the other environment', () => {
+    // `--env staging` (so the staging overage id is the configured fallback)
+    // against a sub whose metered item carries the production overage price.
+    const opts = { ...OPTS, env: 'staging' as const }
+    const row = planPhase5Row(
+      candidate({
+        quantity: 2,
+        prependItems: [
+          {
+            id: 'si_overage',
+            quantity: 0,
+            price: { id: OVERAGE_PRICE_PRODUCTION.priceId, recurring: { usage_type: 'metered' } },
+          },
+        ],
+      }),
+      opts,
+    )
+
+    expect(row.seats).toBe(2)
+    expect(row.fromPriceId).toBe(LEGACY_BUSINESS_MONTHLY)
+  })
 })
 
 describe('applyPhase5Row', () => {
@@ -272,6 +336,7 @@ describe('applyPhase5Row', () => {
     const { stripe, calls } = fakeStripe()
     await applyPhase5Row(stripe, candidate({ workspaceId: null }), planPhase5Row(candidate({ workspaceId: null }), OPTS), {
       now: NOW,
+      env: 'staging',
     })
     expect(calls).toHaveLength(0)
   })
@@ -279,7 +344,7 @@ describe('applyPhase5Row', () => {
   it('swaps a trial price with proration_behavior none and keeps the quantity', async () => {
     const { stripe, calls } = fakeStripe()
     const c = candidate({ status: 'trialing', quantity: 2 })
-    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE })
+    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE, env: 'staging' as const })
 
     expect(calls).toHaveLength(1)
     const params = calls[0].params
@@ -294,7 +359,7 @@ describe('applyPhase5Row', () => {
     const { stripe, calls } = fakeStripe()
     const c = candidate({ currentPeriodEnd: '2026-11-08T00:00:00.000Z' })
     const row = planPhase5Row(c, OPTS)
-    await applyPhase5Row(stripe, c, row, { now: NOW, noticeSentAt: NOTICE })
+    await applyPhase5Row(stripe, c, row, { now: NOW, noticeSentAt: NOTICE, env: 'staging' as const })
 
     const create = calls.filter((call) => call.method === 'subscriptionSchedules.create')
     expect(create).toHaveLength(1)
@@ -318,17 +383,18 @@ describe('applyPhase5Row', () => {
     const { stripe, calls } = fakeStripe()
     const c = candidate({ currentPeriodEnd: '2026-11-08T00:00:00.000Z' })
     c.stripeSub.default_payment_method = 'pm_1Pinned'
-    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE })
+    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE, env: 'staging' as const })
 
     const phases = calls.filter((call) => call.method === 'subscriptionSchedules.update')[0].params.phases
     expect(phases[0].default_payment_method).toBe('pm_1Pinned')
     expect(phases[1].default_payment_method).toBe('pm_1Pinned')
   })
 
-  it('keeps every non-plan item, the coupon and the tax rates in both phases', async () => {
-    // `phases[].items` replaces the subscription's items: listing only the plan
-    // item would delete the metered overage item as soon as the schedule is
-    // applied, and omitting `discounts` would drop a customer's coupon.
+  it("rebuilds each phase as the subscription's own item list with only the plan price swapped", async () => {
+    // `phases[].items` replaces the subscription's items, and an omitted
+    // `discounts` is a reset, not "leave unchanged". Equality against the items
+    // the sub already has is the assertion that matters: a presence check would
+    // still let the *next* item type vanish exactly the same way (QA, round 1).
     const { stripe, calls } = fakeStripe({
       phaseDiscounts: [{ id: 'di_1', coupon: { id: 'coupon_50_off' } }],
       phaseTaxRates: [{ id: 'txr_gst' }],
@@ -337,41 +403,82 @@ describe('applyPhase5Row', () => {
     const c = candidate({
       currentPeriodEnd: '2026-11-08T00:00:00.000Z',
       extraItems: [
+        // The metered overage item, identified by the price our config knows.
         { id: 'si_overage', quantity: 0, price: { id: OVERAGE_PRICE_STAGING.priceId } },
+        // A metered item at a price our config does NOT know: only
+        // `recurring.usage_type` identifies it, and it must not get a quantity.
+        { id: 'si_usage_extra', quantity: 0, price: { id: 'price_unknown_metered', recurring: { usage_type: 'metered' } } },
+        // A licensed add-on.
         { id: 'si_addon', quantity: 2, price: { id: 'price_addon_seat' } },
       ],
     })
-    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE })
+    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE, env: 'staging' as const })
 
-    const update = calls.find((call) => call.method === 'subscriptionSchedules.update')!
-    const phases = update.params.phases
+    const phases = calls.filter((call) => call.method === 'subscriptionSchedules.update')[0].params.phases
     expect(phases).toHaveLength(2)
 
+    const before = c.stripeSub.items!.data as any[]
+    const expected = (planPriceId: string) =>
+      before.map((item) =>
+        item.id === 'si_plan'
+          ? { price: planPriceId, quantity: item.quantity }
+          : item.price.recurring?.usage_type === 'metered' || item.price.id === OVERAGE_PRICE_STAGING.priceId
+            ? { price: item.price.id }
+            : { price: item.price.id, quantity: item.quantity },
+      )
+
+    expect(phases[0].items).toEqual(expected(LEGACY_BUSINESS_MONTHLY))
+    expect(phases[1].items).toEqual(expected(NEW_BUSINESS_MONTHLY))
+
     for (const phase of phases) {
-      expect(phase.items).toHaveLength(3)
-      // Metered: carried with no quantity — Stripe rejects one on a usage item.
-      expect(phase.items.find((item: any) => item.price === OVERAGE_PRICE_STAGING.priceId)).toEqual({
-        price: OVERAGE_PRICE_STAGING.priceId,
-      })
-      // Licensed add-on: carried with its own quantity.
-      expect(phase.items.find((item: any) => item.price === 'price_addon_seat')).toEqual({
-        price: 'price_addon_seat',
-        quantity: 2,
-      })
       expect(phase.discounts).toEqual([{ coupon: 'coupon_50_off' }])
       expect(phase.default_tax_rates).toEqual(['txr_gst'])
       expect(phase.collection_method).toBe('send_invoice')
     }
+  })
 
-    // Only the plan item's price differs between the phases.
-    expect(phases[0].items[0]).toEqual({ price: LEGACY_BUSINESS_MONTHLY, quantity: 3 })
-    expect(phases[1].items[0]).toEqual({ price: NEW_BUSINESS_MONTHLY, quantity: 3 })
+  it('never puts a quantity on a metered item, whichever environment the run targets', async () => {
+    // Same QA probe from the write side: `--env production` while NODE_ENV
+    // names staging. The metered item must be carried as overage (no quantity)
+    // and the plan item must still move onto the v2.5.0 price.
+    const { stripe, calls } = fakeStripe()
+    const opts = { ...OPTS, env: 'production' as const }
+    const c = candidate({
+      currentPeriodEnd: '2026-11-08T00:00:00.000Z',
+      priceId: LEGACY_PLAN_PRICES.production.business.monthly,
+      quantity: 4,
+      prependItems: [
+        {
+          id: 'si_overage',
+          quantity: 0,
+          price: { id: OVERAGE_PRICE_PRODUCTION.priceId, recurring: { usage_type: 'metered' } },
+        },
+      ],
+    })
+    const row = planPhase5Row(c, opts)
+    expect(row.seats).toBe(4)
+    await applyPhase5Row(stripe, c, row, { now: NOW, noticeSentAt: NOTICE, env: 'production' })
+
+    const phases = calls.find((call) => call.method === 'subscriptionSchedules.update')!.params.phases
+    for (const phase of phases) {
+      expect(phase.items.find((item: any) => item.price === OVERAGE_PRICE_PRODUCTION.priceId)).toEqual({
+        price: OVERAGE_PRICE_PRODUCTION.priceId,
+      })
+    }
+    expect(phases[0].items.find((item: any) => item.price === LEGACY_PLAN_PRICES.production.business.monthly)).toEqual({
+      price: LEGACY_PLAN_PRICES.production.business.monthly,
+      quantity: 4,
+    })
+    expect(phases[1].items.find((item: any) => item.price === NEW_BUSINESS_MONTHLY)).toEqual({
+      price: NEW_BUSINESS_MONTHLY,
+      quantity: 4,
+    })
   })
 
   it('invents no discount or tax rate when the subscription has neither', async () => {
     const { stripe, calls } = fakeStripe()
     const c = candidate({ currentPeriodEnd: '2026-11-08T00:00:00.000Z' })
-    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE })
+    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, noticeSentAt: NOTICE, env: 'staging' as const })
 
     const phases = calls.find((call) => call.method === 'subscriptionSchedules.update')!.params.phases
     for (const phase of phases) {
@@ -384,7 +491,7 @@ describe('applyPhase5Row', () => {
   it('writes metadata only for a Basic monthly sub', async () => {
     const { stripe, calls } = fakeStripe()
     const c = candidate({ dbPlanId: 'basic', priceId: LEGACY_PLAN_PRICES.staging.basic.monthly, metadata: {} })
-    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW })
+    await applyPhase5Row(stripe, c, planPhase5Row(c, OPTS), { now: NOW, env: 'staging' as const })
 
     expect(calls).toHaveLength(1)
     expect(calls[0].method).toBe('subscriptions.update')
@@ -408,7 +515,7 @@ describe('applyPhase5Row', () => {
     expect(second.action).toBe('skip-already-migrated')
 
     const { stripe, calls } = fakeStripe()
-    await applyPhase5Row(stripe, swapped, second, { now: NOW })
+    await applyPhase5Row(stripe, swapped, second, { now: NOW, env: 'staging' as const })
     expect(calls).toHaveLength(0)
   })
 })

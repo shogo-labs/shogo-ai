@@ -492,9 +492,16 @@ export const OVERAGE_PRICE_PRODUCTION: OveragePriceConfig = {
   unitsPerDollar: 100,
 }
 
-export function getOveragePriceConfig(): OveragePriceConfig {
-  const isProduction = process.env.NODE_ENV === "production"
-  return isProduction ? OVERAGE_PRICE_PRODUCTION : OVERAGE_PRICE_STAGING
+/**
+ * The overage price for a billing environment.
+ *
+ * Callers that already know their target environment must pass it: keying off
+ * `NODE_ENV` alone made a `--env production` migration run from a normal shell
+ * pair production plan prices with the staging metered price.
+ */
+export function getOveragePriceConfig(env?: "staging" | "production"): OveragePriceConfig {
+  const target = env ?? (process.env.NODE_ENV === "production" ? "production" : "staging")
+  return target === "production" ? OVERAGE_PRICE_PRODUCTION : OVERAGE_PRICE_STAGING
 }
 
 export function getOveragePriceId(): string {
