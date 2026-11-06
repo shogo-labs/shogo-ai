@@ -532,8 +532,26 @@ export async function startStoreBuilds(opts: {
 /**
  * A store build finished: submit it with the customer's credentials inline, so
  * nothing lands in Expo's credential vault, and lock the app ids.
+ *
+ * `setStoreSubmitter` swaps the whole submission for a test double. It exists
+ * because mocking the module instead (`mock.module`) leaked into every other
+ * test file in the same run — `mock.module` is process-wide, so a file that
+ * imported the real `submitStoreBuild` got a mock without the module's other
+ * exports. Same shape as `setNativeUsageWallet` / `setEasClient`.
  */
+let storeSubmitter: typeof submitStoreBuildImpl | null = null
+
+export function setStoreSubmitter(fn: typeof submitStoreBuildImpl | null): void {
+  storeSubmitter = fn
+}
+
 export async function submitStoreBuild(opts: {
+  easBuildId: string
+}): Promise<{ submitted: boolean }> {
+  return (storeSubmitter ?? submitStoreBuildImpl)(opts)
+}
+
+async function submitStoreBuildImpl(opts: {
   easBuildId: string
 }): Promise<{ submitted: boolean }> {
   const build = await db.nativeBuild.findUnique({

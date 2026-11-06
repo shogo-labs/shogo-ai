@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { createHmac } from 'node:crypto'
+import { prismaProxy, useFakePrisma } from './prisma-fixture'
 
 const builds = new Map<string, Record<string, any>>()
 const releases = new Map<string, Record<string, any>>()
@@ -65,18 +66,14 @@ const fakePrisma = {
   },
 }
 
-mock.module('../../../lib/prisma', () => ({ prisma: fakePrisma }))
-mock.module('../release.service', () => ({
-  submitStoreBuild: async ({ easBuildId }: { easBuildId: string }) => {
-    submitCalls.push(easBuildId)
-    if (submitThrows) throw new Error(submitThrows)
-  },
-}))
+mock.module('../../../lib/prisma', () => ({ prisma: prismaProxy }))
+useFakePrisma(fakePrisma)
 
 const { handleEasWebhook, detectWebhookEvent, verifyEasSignature } = await import('../webhook')
 const { setNativeAlertSink } = await import('../alerts')
 const { webhookUrlFor } = await import('../apps.service')
 const { buildPriceUsd, setNativeUsageWallet } = await import('../usage.service')
+const { setStoreSubmitter } = await import('../release.service')
 
 const SECRET = 'webhook-secret-'.padEnd(32, 'x')
 
@@ -215,11 +212,19 @@ beforeEach(() => {
     }) as any,
     checkBalance: (async () => ({ ok: true })) as any,
   })
+  // No Expo account and no credentials in a unit test: the submission is the one
+  // step that would leave the process.
+  setStoreSubmitter(async ({ easBuildId }) => {
+    submitCalls.push(easBuildId)
+    if (submitThrows) throw new Error(submitThrows)
+    return { submitted: true }
+  })
 })
 
 afterEach(() => {
   setNativeAlertSink(null)
   setNativeUsageWallet(null)
+  setStoreSubmitter(null)
   if (previousMode === undefined) delete process.env.NATIVE_RELEASE_MODE
   else process.env.NATIVE_RELEASE_MODE = previousMode
 })
@@ -296,6 +301,38 @@ describe('a finished build', () => {
     )
     expect(build.resourceClass).toBe('ANDROID_LARGE')
     expect(buildPriceUsd(build.resourceClass)).toBe(2)
+  })
+
+  it('bills the requested class when EAS reports LEGACY, as the live Samsara build did', async () => {
+    // Live data from build 9d0efcb4-db06-4034-ae37-bdca11524558, a production
+    // Android build started by eas-cli with no resourceClass in eas.json:
+    // `builds.byId` returns resourceClass: "LEGACY", displayName "Linux Medium".
+    // LEGACY has no published rate, so a recognised-but-unpriced report must not
+    // win — the class our store build asked for (and EAS honoured) is what we bill.
+    const build = seedBuild()
+    const res = await deliver({ ...FINISHED_BUILD, actualResourceClass: 'LEGACY' }, 'build')
+    expect(res.status).toBe(200)
+    expect(build.resourceClass).toBe('ANDROID_MEDIUM')
+    expect(buildPriceUsd(build.resourceClass)).toBe(1)
+    expect(meterCalls).toEqual([FINISHED_BUILD.id])
+    expect(alerts.map((a) => a.event)).not.toContain('native_build_unpriced')
+  })
+
+  it('does not let an unpriced report drag a priced build into unpriced', async () => {
+    const build = seedBuild()
+    await deliver({ ...FINISHED_BUILD, actualResourceClass: 'IOS_M_LARGE' }, 'build')
+    expect(build.resourceClass).toBe('ANDROID_MEDIUM')
+    expect(buildPriceUsd(build.resourceClass)).toBe(1)
+  })
+
+  it('stays unpriced when the class we requested has no rate either', async () => {
+    // The guard that matters for Russell's rule 4: falling back must not invent a
+    // price. A release that genuinely requested IOS_M_LARGE bills nothing.
+    const build = seedBuild({ resourceClass: 'IOS_M_LARGE' })
+    const res = await deliver({ ...FINISHED_BUILD, actualResourceClass: 'LEGACY' }, 'build')
+    expect(res.status).toBe(200)
+    expect(build.resourceClass).toBe('IOS_M_LARGE')
+    expect(buildPriceUsd(build.resourceClass)).toBeNull()
   })
 
   it('is detected without the query hint too', async () => {

@@ -296,6 +296,13 @@ Two more consequences worth writing down:
   honours it) and the raw report is logged. Slugs are deliberately **not** mapped
   — the machine behind one depends on the account's build-infrastructure setting,
   so deriving "medium" from it would be the guess this whole meter refuses to make.
+  A recognised but **unpriced** report loses the same way: the live build
+  `9d0efcb4-db06-4034-ae37-bdca11524558` (Android, `production`, started by
+  `eas-cli` with no class in `eas.json`) comes back from `builds.byId` as
+  `resourceClass: "LEGACY"` / `resourceClassDisplayName: "Linux Medium"`, and
+  `LEGACY` has no rate — so the row keeps the priced class the release requested.
+  Falling back never invents a price: if the requested class is unpriced too
+  (`IOS_M_*`, `*_DEFAULT`, `LINUX_*`), the build still lands `unpriced` and alerts.
 - **The "build before its row exists" suppression is per app, not per account.**
   A test-stage build is started by the workflow and only adopted by the poller a
   tick later, so it can arrive with no `NativeBuild`. Suppressing that alert

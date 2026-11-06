@@ -10,6 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { prismaProxy, useFakePrisma } from './prisma-fixture'
 
 interface FakeBuild {
   id: string
@@ -93,7 +94,8 @@ const fakePrisma = {
   },
 }
 
-mock.module('../../../lib/prisma', () => ({ prisma: fakePrisma }))
+mock.module('../../../lib/prisma', () => ({ prisma: prismaProxy }))
+useFakePrisma(fakePrisma)
 const { meterBuild, meterTestRun, billedUsd, setNativeUsageWallet, sweepNativeMeters, easJsonResourceClass, TEST_BUILD_RESOURCE_CLASS } = await import('../usage.service')
 const { setNativeAlertSink } = await import('../alerts')
 

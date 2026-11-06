@@ -32,7 +32,7 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { prisma } from '../../lib/prisma'
-import { meterBuild, normalizeResourceClass } from './usage.service'
+import { buildPriceUsd, meterBuild, normalizeResourceClass } from './usage.service'
 import { submitStoreBuild } from './release.service'
 import { alertOps } from './alerts'
 
@@ -250,8 +250,16 @@ export async function handleEasWebhook(opts: {
   // stays what we requested, which EAS honours, and the raw report goes in the
   // alert detail rather than into a column we bill from.
   const reportedRaw = payload.actualResourceClass ?? payload.resourceClass
-  const reportedClass =
-    normalizeResourceClass(reportedRaw, payload.platform === 'android' ? 'android' : 'ios') ?? null
+  const normalized = normalizeResourceClass(
+    reportedRaw,
+    payload.platform === 'android' ? 'android' : 'ios',
+  )
+  // A recognised class only wins when the price table can name it. `LEGACY` is
+  // what a store build started without an explicit class reports (the live
+  // Samsara build did exactly this), and it has no published rate — but our
+  // store builds always request a priced class, so falling back to the row keeps
+  // them billable instead of billing nothing forever.
+  const reportedClass = normalized && buildPriceUsd(normalized) !== null ? normalized : null
   await db.nativeBuild.update({
     where: { id: build.id },
     data: {
@@ -280,7 +288,7 @@ export async function handleEasWebhook(opts: {
 
   // Charge first, then submit: a build we cannot bill is still a build the
   // customer asked for, but the meter has to see it before anything else claims it.
-  if (!reportedClass && reportedRaw) {
+  if (!reportedClass && reportedRaw && buildPriceUsd(build.resourceClass) === null) {
     console.warn('[native-release] build reported a class we cannot price', {
       easBuildId,
       reported: reportedRaw,
