@@ -3619,11 +3619,12 @@ export class AgentGateway {
     // When there's no uiWriter (heartbeat, channel, webhook turns),
     // clear the callback so "ask" decisions fail closed instead of writing
     // to a stale stream from a previous UI turn.
+    const permissionWriter = uiWriter && !this.unattendedSessions.has(sessionId)
+      ? (event: Record<string, any>) => uiWriter!.write(event)
+      : undefined
     if (this.permissionEngine) {
       this.permissionEngine.resetTurn()
-      this.permissionEngine.setSseCallback(
-        uiWriter && !this.unattendedSessions.has(sessionId) ? (event) => uiWriter.write(event) : undefined
-      )
+      this.permissionEngine.setSseCallback(permissionWriter)
     }
 
     if (this.config.browserExtensionToken) {
@@ -5916,6 +5917,10 @@ export class AgentGateway {
         clearInterval(timer)
       }
       toolHeartbeatTimers.clear()
+      // This turn's stream is over. Leaving its writer wired would make the
+      // next remote request write into a dead stream and hang; cleared, it
+      // queues for the next window stream instead (SHO-333).
+      if (permissionWriter) this.permissionEngine?.clearSseCallback(permissionWriter)
       unsubscribeProcesses?.()
       if (remoteRefreshTimer) clearInterval(remoteRefreshTimer)
       if (sessionId && this.commandRegistries.has(sessionId)) {
@@ -6712,6 +6717,9 @@ export class AgentGateway {
       'remote tools off, and a command or file change waits for their approval on that computer.',
       'An offline device answers `device_offline` with its last-seen time, and one that has not',
       'allowed remote tools answers `remote_device_tools_disabled` — say which, rather than retrying.',
+      'A request nobody approves on that computer answers `remote_approval_timeout` (or',
+      '`remote_approval_unavailable` when no Shogo window opened in time): ask the user to approve it',
+      'there, then try again.',
       '',
       ...lines,
       '',
