@@ -181,6 +181,29 @@ export class ExportTooLargeError extends Error {
 }
 
 /**
+ * A fetch deadline that can also be tripped by hand.
+ *
+ * `AbortSignal.timeout` only fires on its own schedule. When a body read stops
+ * for any other reason — over the size cap, a full disk, a failed write — the
+ * guest is still uploading an archive nobody will read, and closing the socket
+ * is the only way to tell it to stop. Without that the guest's runtime keeps a
+ * multi-gigabyte spool descriptor open for exports that are long abandoned
+ * (SHO-352).
+ */
+function exportDeadline(ms: number): { signal: AbortSignal; abort: (reason?: unknown) => void; dispose: () => void } {
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(new Error(`export timed out after ${ms}ms`)), ms)
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  return {
+    signal: ac.signal,
+    abort: (reason?: unknown) => {
+      if (!ac.signal.aborted) ac.abort(reason)
+    },
+    dispose: () => clearTimeout(timer),
+  }
+}
+
+/**
  * Result of growing a workspace drive (SHO-349).
  *   - `{ fromMiB, toMiB }` — the drive grew (host mirror; the guest's own ext4
  *      size is what `df` reports after the following resize2fs).
@@ -224,6 +247,10 @@ export async function spoolResponse(
     }
   } finally {
     await writer.end()
+    // Done early (over the cap, a failed write) the guest is still sending:
+    // cancelling the reader closes the connection so it stops, instead of
+    // streaming the rest of a multi-gigabyte archive into a socket we abandon.
+    await res.body?.cancel().catch(() => {})
   }
   return { size, sha256: hash.digest('hex') }
 }
@@ -2518,19 +2545,30 @@ export class MetalWarmPool {
    * Returns null when the guest reports nothing to back up (204, empty project).
    */
   protected async fetchExport(handle: FcVmHandle, token?: string, dir?: string): Promise<Uint8Array | null> {
-    const res = await fetch(`${handle.agentUrl}/pool/export`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      ...(dir ? { body: JSON.stringify({ dir }) } : {}),
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
-    })
-    if (res.status === 204) return null
-    if (!res.ok) throw new Error(`/pool/export failed (${res.status}): ${await res.text()}`)
-    const buf = await res.arrayBuffer()
-    return buf.byteLength ? new Uint8Array(buf) : null
+    const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
+    try {
+      const res = await fetch(`${handle.agentUrl}/pool/export`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        ...(dir ? { body: JSON.stringify({ dir }) } : {}),
+        signal: dl.signal,
+      })
+      if (res.status === 204) return null
+      if (!res.ok) throw new Error(`/pool/export failed (${res.status}): ${await res.text()}`)
+      const buf = await res.arrayBuffer()
+      return buf.byteLength ? new Uint8Array(buf) : null
+    } catch (err) {
+      // A read that stopped early — deadline, or a body the guest is still
+      // sending — must be torn down, not merely abandoned: the guest only
+      // releases its spool file when the connection actually goes away.
+      dl.abort(err)
+      throw err
+    } finally {
+      dl.dispose()
+    }
   }
 
   /**
@@ -2945,25 +2983,33 @@ export class MetalWarmPool {
     knownTag?: string,
     dir?: string,
   ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | null> {
-    const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
-      method: 'POST',
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(knownTag ? { 'If-None-Match': knownTag } : {}),
-        ...(dir ? { 'Content-Type': 'application/json' } : {}),
-      },
-      ...(dir ? { body: JSON.stringify({ dir }) } : {}),
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
-    })
-    if (res.status === 304) return 'unchanged'
-    if (res.status === 204) return null
-    // A guest from before this endpoint existed. Distinguished from a real
-    // failure because it is permanent for this VM and must not be retried.
-    if (res.status === 404) return 'unsupported'
-    if (!res.ok) throw new Error(`/pool/export-data failed (${res.status}): ${await res.text()}`)
-    const buf = await res.arrayBuffer()
-    if (!buf.byteLength) return null
-    return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
+    const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
+    try {
+      const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(knownTag ? { 'If-None-Match': knownTag } : {}),
+          ...(dir ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(dir ? { body: JSON.stringify({ dir }) } : {}),
+        signal: dl.signal,
+      })
+      if (res.status === 304) return 'unchanged'
+      if (res.status === 204) return null
+      // A guest from before this endpoint existed. Distinguished from a real
+      // failure because it is permanent for this VM and must not be retried.
+      if (res.status === 404) return 'unsupported'
+      if (!res.ok) throw new Error(`/pool/export-data failed (${res.status}): ${await res.text()}`)
+      const buf = await res.arrayBuffer()
+      if (!buf.byteLength) return null
+      return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
+    } catch (err) {
+      dl.abort(err)
+      throw err
+    } finally {
+      dl.dispose()
+    }
   }
 
   /** Guarded (conditional) upload of writable state. `protected` for tests. */
@@ -3042,10 +3088,26 @@ export class MetalWarmPool {
   }
 
   protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<RepoExport | null> {
+    const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
+    try {
+      return await this.readRepoExport(handle, token, dl)
+    } catch (err) {
+      dl.abort(err)
+      throw err
+    } finally {
+      dl.dispose()
+    }
+  }
+
+  private async readRepoExport(
+    handle: FcVmHandle,
+    token: string | undefined,
+    dl: { signal: AbortSignal },
+  ): Promise<RepoExport | null> {
     const res = await fetch(`${handle.agentUrl}/pool/export-repo`, {
       method: 'POST',
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+      signal: dl.signal,
     })
     if (res.status === 204) return null
     if (res.status === 404) return null
@@ -3348,10 +3410,11 @@ export class MetalWarmPool {
    */
   private async publishRepoBundle(a: AssignedVm, entry: RepoManifestBundle): Promise<void> {
     const path = this.exportSpoolPath(a.handle.id, 'bundle')
+    const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
     try {
       const res = await fetch(`${a.handle.agentUrl}/pool/export-repo-bundle/${entry.sha256}`, {
         headers: a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {},
-        signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+        signal: dl.signal,
       })
       if (!res.ok) throw new Error(`bundle ${entry.sha256} download failed (${res.status})`)
       const spooled = await spoolResponse(res, path, REPO_MAX_BYTES)
@@ -3361,7 +3424,11 @@ export class MetalWarmPool {
       await this.uploadRepoBundleGuarded(a.projectId, entry, Bun.file(path))
       metrics.inc(M.repoBundleBytes, entry.bytes)
       if (entry.kind === 'base') metrics.inc(M.repoBundleFull)
+    } catch (err) {
+      dl.abort(err)
+      throw err
     } finally {
+      dl.dispose()
       rmSync(path, { force: true })
     }
   }
