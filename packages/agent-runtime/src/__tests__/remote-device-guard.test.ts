@@ -52,7 +52,7 @@ function fullAutonomyEngine(answers: boolean[] = []) {
 
 function requestApprovalWith(engine: InstanceType<typeof PermissionEngine>) {
   return (tool: string, args: Record<string, unknown>) =>
-    engine.requestApproval(`remote-${tool}`, tool, remoteDeviceApprovalCategory(tool) as any, args, 'another runtime asked')
+    engine.requestRemoteDeviceApproval(tool, remoteDeviceApprovalCategory(tool) as any, args, 'another runtime asked')
 }
 
 describe('remote device tools opt-in', () => {
@@ -64,7 +64,7 @@ describe('remote device tools opt-in', () => {
       policy: { remoteTools: false },
       requestApproval: async () => {
         asked = true
-        return true
+        return 'approved' as const
       },
     })
     expect(refused).toMatchObject({ ok: false, status: 403, code: 'remote_device_tools_disabled' })
@@ -77,7 +77,7 @@ describe('remote device tools opt-in', () => {
       tool: 'read_file',
       args: { path: 'notes.md' },
       policy: undefined,
-      requestApproval: async () => true,
+      requestApproval: async () => 'approved' as const,
     })
     expect(refused).toMatchObject({ ok: false, code: 'remote_device_tools_disabled' })
   })
@@ -99,7 +99,7 @@ describe('remote device tools opt-in', () => {
       policy: { remoteTools: true },
       requestApproval: async () => {
         asked = true
-        return true
+        return 'approved' as const
       },
     })
     expect(allowed).toEqual({ ok: true })
@@ -144,5 +144,136 @@ describe('remote device tools opt-in', () => {
     expect(remoteDeviceApprovalCategory('delete_file')).toBe('file_delete')
     expect(remoteDeviceApprovalCategory('edit_file')).toBe('file_write')
     expect(remoteDeviceApprovalCategory('exec_wait')).toBe('shell')
+  })
+})
+
+describe('a remote call is never answered from the local approval cache (SHO-333)', () => {
+  test('approving `exec X` on this computer does not approve a remote `exec X`', async () => {
+    const { engine, asked } = fullAutonomyEngine([true, true])
+    engine.setLocalAccess({ remoteTools: true })
+    const command = { command: 'rm -rf build' }
+
+    // This computer's own agent asks once and is allowed; the engine caches it.
+    expect(await engine.requestApproval('local-1', 'exec', 'shell', command, 'own turn')).toBe(true)
+    expect(asked).toHaveLength(1)
+
+    const result = await guardRemoteDeviceCall({
+      tool: 'exec',
+      args: command,
+      policy: engine.getLocalAccess(),
+      requestApproval: requestApprovalWith(engine),
+    })
+
+    expect(result).toEqual({ ok: true })
+    // The same tool and the same params, and the person is asked again.
+    expect(asked).toHaveLength(2)
+  })
+
+  test('approving a remote `exec X` does not approve this computer\'s own `exec X`', async () => {
+    const { engine, asked } = fullAutonomyEngine([true, true])
+    engine.setLocalAccess({ remoteTools: true })
+    const command = { command: 'git push' }
+
+    expect(await guardRemoteDeviceCall({
+      tool: 'exec',
+      args: command,
+      policy: engine.getLocalAccess(),
+      requestApproval: requestApprovalWith(engine),
+    })).toEqual({ ok: true })
+    expect(asked).toHaveLength(1)
+
+    expect(await engine.requestApproval('local-1', 'exec', 'shell', command, 'own turn')).toBe(true)
+    expect(asked).toHaveLength(2)
+  })
+
+  test('a remote "always allow" answer is not written to the saved rules', async () => {
+    const stored: string[] = []
+    const engine = new PermissionEngine({
+      preference: { mode: 'full_autonomy', approvalTimeoutSeconds: 5 },
+      workspaceDir,
+    })
+    engine.setSseCallback((event) => {
+      if (event?.type !== 'data-permission-request') return
+      setTimeout(
+        () => engine.handleApprovalResponse({ id: event.data.id, decision: 'always_allow', pattern: 'rm -rf *' } as any),
+        0,
+      )
+    })
+
+    expect(await engine.requestRemoteDeviceApproval('exec', 'shell', { command: 'rm -rf build' }, 'remote')).toBe('approved')
+    stored.push(...(engine.getOverrides()?.shellCommands?.allow ?? []))
+    expect(stored).not.toContain('rm -rf *')
+  })
+})
+
+describe('no window stream: the request waits instead of being refused (SHO-333)', () => {
+  test('a remote request queues, then reaches the window that opens next', async () => {
+    const engine = new PermissionEngine({
+      preference: { mode: 'full_autonomy', approvalTimeoutSeconds: 5 },
+      workspaceDir,
+    })
+    const asked: string[] = []
+
+    const pending = engine.requestRemoteDeviceApproval('exec', 'shell', { command: 'ls' }, 'another runtime asked')
+    // Nothing is in front of anyone yet, so the caller is still waiting.
+    expect(engine.listQueuedApprovals().map((r) => r.toolName)).toEqual(['exec'])
+
+    engine.setSseCallback((event) => {
+      if (event?.type !== 'data-permission-request') return
+      asked.push(event.data.toolName)
+      setTimeout(() => engine.handleApprovalResponse({ id: event.data.id, decision: 'allow_once' } as any), 0)
+    })
+
+    expect(await pending).toBe('approved')
+    expect(asked).toEqual(['exec'])
+    expect(engine.listQueuedApprovals()).toHaveLength(0)
+  })
+
+  test('a request nobody answers answers `remote_approval_timeout`', async () => {
+    const engine = new PermissionEngine({
+      preference: { mode: 'full_autonomy', approvalTimeoutSeconds: 5 },
+      workspaceDir,
+    })
+    engine.setLocalAccess({ remoteTools: true })
+
+    const result = await guardRemoteDeviceCall({
+      tool: 'exec',
+      args: { command: 'ls' },
+      policy: engine.getLocalAccess(),
+      requestApproval: (tool, args) =>
+        engine.requestRemoteDeviceApproval(tool, remoteDeviceApprovalCategory(tool) as any, args, 'another runtime asked', 0.05),
+    })
+
+    expect(result).toMatchObject({ ok: false, status: 403, code: 'remote_approval_timeout' })
+    expect(result.ok === false && result.message).toContain('timed out')
+  })
+
+  test('a window that opens without approval leaves a clear unavailable answer', async () => {
+    const engine = new PermissionEngine({
+      preference: { mode: 'full_autonomy', approvalTimeoutSeconds: 5 },
+      workspaceDir,
+    })
+    engine.setLocalAccess({ remoteTools: true })
+    const pending = engine.requestRemoteDeviceApproval('write_file', 'file_write', { path: 'a.txt' }, 'remote')
+    engine.setSseCallback(() => {
+      throw new Error('stream closed')
+    })
+
+    expect(await pending).toBe('unavailable')
+    expect(await guardRemoteDeviceCall({
+      tool: 'write_file',
+      args: { path: 'a.txt' },
+      policy: engine.getLocalAccess(),
+      requestApproval: () => pending,
+    })).toMatchObject({ ok: false, status: 403, code: 'remote_approval_unavailable' })
+  })
+
+  test('this computer\'s own agent still fails closed with no window', async () => {
+    const engine = new PermissionEngine({
+      preference: { mode: 'balanced', approvalTimeoutSeconds: 5 },
+      workspaceDir,
+    })
+    expect(await engine.requestApproval('local-1', 'exec', 'shell', { command: 'ls' }, 'own turn')).toBe(false)
+    expect(engine.listQueuedApprovals()).toHaveLength(0)
   })
 })

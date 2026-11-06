@@ -5111,9 +5111,8 @@ app.post('/agent/remote/tool', async (c) => {
       args: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : {},
       policy: engine?.getLocalAccess(),
       requestApproval: async (name, params) => {
-        if (!engine) return false
-        return engine.requestApproval(
-          `remote-${Date.now()}`,
+        if (!engine) return 'unavailable'
+        return engine.requestRemoteDeviceApproval(
           name,
           remoteDeviceApprovalCategory(name),
           params,

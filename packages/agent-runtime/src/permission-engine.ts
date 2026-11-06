@@ -294,11 +294,39 @@ export interface PermissionEngineOptions {
   noDefaultActionRules?: boolean
 }
 
+/**
+ * The answer to one approval request. `timeout` and `unavailable` are kept
+ * apart from `denied` so a caller can tell a person who said no from a person
+ * who was never asked.
+ */
+export type ApprovalOutcome = 'approved' | 'denied' | 'timeout' | 'unavailable'
+
+/**
+ * Who is asking. A request from another of this computer's runtimes (`remote`)
+ * neither reads nor leaves an answer in the approval cache: a yes the person
+ * gave this computer's own agent is not a yes to work it was handed from
+ * somewhere else (SHO-333).
+ */
+export type ApprovalOrigin = 'local' | 'remote'
+
+export interface RequestApprovalOptions {
+  origin?: ApprovalOrigin
+  /** How long to wait for the person. Remote requests fit inside the caller's request budget. */
+  timeoutSeconds?: number
+}
+
+/** How long a remote request waits at this computer before answering `timeout`. */
+export const REMOTE_APPROVAL_TIMEOUT_SECONDS = 60
+
 interface PendingApproval {
-  resolve: (approved: boolean) => void
+  settle: (outcome: ApprovalOutcome) => void
   timer: ReturnType<typeof setTimeout>
-  cacheKey: string
+  /** `null` for a remote request: it neither reads nor writes the cache. */
+  cacheKey: string | null
   category: PermissionCategory
+  origin: ApprovalOrigin
+  /** The card to put in front of the person, kept while the request is queued. */
+  request: PermissionRequest
 }
 
 export class PermissionEngine {
@@ -306,6 +334,12 @@ export class PermissionEngine {
   private workspaceDir: string
   private sendSseEvent?: (event: Record<string, any>) => void
   private pendingApprovals = new Map<string, PendingApproval>()
+  /**
+   * Remote requests raised while no window stream was live. Kept apart from
+   * `pendingApprovals` so a new turn's `resetTurn` cannot answer them, and
+   * delivered by the next stream that goes live (SHO-333).
+   */
+  private queuedApprovals = new Map<string, PendingApproval>()
   private sessionApprovalCache = new Map<string, boolean>()
   private denialCount = 0
   private readonly MAX_DENIALS_PER_TURN = 5
@@ -415,6 +449,36 @@ export class PermissionEngine {
   /** Wire (or re-wire) the SSE push callback at runtime */
   setSseCallback(cb: ((event: Record<string, any>) => void) | undefined): void {
     this.sendSseEvent = cb
+    // A window just opened a stream: hand it the remote requests that have been
+    // waiting for one (SHO-333).
+    if (cb) this.deliverQueuedApprovals()
+  }
+
+  /** Drop the callback only while it is still `cb` — a turn clears its own stream, not a newer one. */
+  clearSseCallback(cb: (event: Record<string, any>) => void): void {
+    if (this.sendSseEvent === cb) this.sendSseEvent = undefined
+  }
+
+  /** Remote requests that are waiting for a window stream. */
+  listQueuedApprovals(): PermissionRequest[] {
+    return [...this.queuedApprovals.values()].map((entry) => entry.request)
+  }
+
+  private deliverQueuedApprovals(): void {
+    if (!this.sendSseEvent) return
+    for (const [id, entry] of [...this.queuedApprovals]) {
+      this.queuedApprovals.delete(id)
+      this.pendingApprovals.set(id, entry)
+      try {
+        this.sendSseEvent({ type: 'data-permission-request', data: entry.request })
+      } catch (err) {
+        // The stream went away again between wiring and writing. Answer now
+        // rather than leave the caller waiting out the timeout.
+        this.pendingApprovals.delete(id)
+        clearTimeout(entry.timer)
+        entry.settle('unavailable')
+      }
+    }
   }
 
   /** Reset per-turn state (call at the start of each agent turn) */
@@ -427,7 +491,7 @@ export class PermissionEngine {
     this.denialCount = 0
     for (const [, pending] of this.pendingApprovals) {
       clearTimeout(pending.timer)
-      pending.resolve(false)
+      pending.settle(pending.origin === 'remote' ? 'unavailable' : 'denied')
     }
     this.pendingApprovals.clear()
   }
@@ -734,31 +798,68 @@ export class PermissionEngine {
     category: PermissionCategory,
     params: Record<string, any>,
     reason: string,
+    opts: RequestApprovalOptions = {},
   ): Promise<boolean> {
-    // Check session cache first (e.g. "Allow Once" from earlier in this turn)
-    const cacheKey = `${toolName}:${this.paramCacheKey(params)}`
-    if (this.sessionApprovalCache.has(cacheKey)) {
-      return this.sessionApprovalCache.get(cacheKey)!
+    return (await this.requestApprovalOutcome(toolCallId, toolName, category, params, reason, opts)) === 'approved'
+  }
+
+  /**
+   * A tool call another of this computer's runtimes asked for (SHO-329/333).
+   * It always asks: the answer is neither read from nor written to the cache
+   * this computer's own agent uses, and with no window stream live the request
+   * waits for one instead of being refused.
+   */
+  async requestRemoteDeviceApproval(
+    toolName: string,
+    category: PermissionCategory,
+    params: Record<string, any>,
+    reason: string,
+    timeoutSeconds: number = REMOTE_APPROVAL_TIMEOUT_SECONDS,
+  ): Promise<ApprovalOutcome> {
+    return this.requestApprovalOutcome(
+      `remote-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      toolName,
+      category,
+      params,
+      reason,
+      { origin: 'remote', timeoutSeconds },
+    )
+  }
+
+  /** The same request, answering with why nobody said yes (`timeout` vs `denied`). */
+  async requestApprovalOutcome(
+    toolCallId: string,
+    toolName: string,
+    category: PermissionCategory,
+    params: Record<string, any>,
+    reason: string,
+    opts: RequestApprovalOptions = {},
+  ): Promise<ApprovalOutcome> {
+    const origin: ApprovalOrigin = opts.origin ?? 'local'
+    const remote = origin === 'remote'
+
+    // Check session cache first (e.g. "Allow Once" from earlier in this turn).
+    // A remote request has no cache key at all: what this computer's own agent
+    // was allowed is not an answer for work it was handed (SHO-333).
+    const cacheKey = remote ? null : `${toolName}:${this.paramCacheKey(params)}`
+    if (cacheKey) {
+      const cached = this.sessionApprovalCache.get(cacheKey)
+      if (cached !== undefined) return cached ? 'approved' : 'denied'
     }
 
-    // If too many denials, auto-deny without prompting
-    if (this.denialCount >= this.MAX_DENIALS_PER_TURN) {
+    // If too many denials, auto-deny without prompting. A remote request is not
+    // this turn's work, so it neither reads nor moves that budget either.
+    if (!remote && this.denialCount >= this.MAX_DENIALS_PER_TURN) {
       log.warn('Too many denials in this turn, auto-denying', { toolName, denials: this.denialCount })
-      return false
-    }
-
-    // If no SSE client connected, fail closed
-    if (!this.sendSseEvent) {
-      log.warn('No SSE callback available — cannot prompt user, denying', { toolName })
-      return false
+      return 'denied'
     }
 
     const DEFAULT_TIMEOUT_SECONDS = 30
     // An ask-first action rule is answered by a person in a chat thread, who may take a while.
     const configuredSeconds = this.pref.approvalTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS
-    const timeoutSeconds = this.actionRuleFor(toolName) === 'ask'
+    const timeoutSeconds = opts.timeoutSeconds ?? (this.actionRuleFor(toolName) === 'ask'
       ? Math.max(configuredSeconds, DEFAULT_CLOUD_SECURITY_PREFERENCE.approvalTimeoutSeconds ?? 0)
-      : configuredSeconds
+      : configuredSeconds)
     const timeoutMs = timeoutSeconds * 1000
     const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
 
@@ -771,15 +872,33 @@ export class PermissionEngine {
       timeout: timeoutSeconds,
     }
 
-    return new Promise<boolean>((resolvePromise) => {
+    return new Promise<ApprovalOutcome>((resolveOutcome) => {
       const timer = setTimeout(() => {
-        log.warn('Permission approval timed out', { requestId, toolName, timeoutMs })
+        log.warn('Permission approval timed out', { requestId, toolName, timeoutMs, origin })
         this.pendingApprovals.delete(requestId)
-        this.denialCount++
-        resolvePromise(false)
+        this.queuedApprovals.delete(requestId)
+        if (!remote) this.denialCount++
+        resolveOutcome(remote ? 'timeout' : 'denied')
       }, timeoutMs)
 
-      this.pendingApprovals.set(requestId, { resolve: resolvePromise, timer, cacheKey, category })
+      const entry: PendingApproval = { settle: resolveOutcome, timer, cacheKey, category, origin, request }
+
+      // No window stream: the person at this computer cannot be asked right
+      // now. A remote request waits for the next stream instead of being
+      // refused; this computer's own turn still fails closed.
+      if (!this.sendSseEvent) {
+        if (remote) {
+          log.info('No window stream — queuing remote approval request', { requestId, toolName, timeoutMs })
+          this.queuedApprovals.set(requestId, entry)
+          return
+        }
+        log.warn('No SSE callback available — cannot prompt user, denying', { toolName })
+        clearTimeout(timer)
+        resolveOutcome('unavailable')
+        return
+      }
+
+      this.pendingApprovals.set(requestId, entry)
 
       try {
         this.sendSseEvent!({
@@ -790,14 +909,14 @@ export class PermissionEngine {
         log.error('Failed to send SSE permission request', { requestId, err })
         clearTimeout(timer)
         this.pendingApprovals.delete(requestId)
-        resolvePromise(false)
+        resolveOutcome('unavailable')
       }
     })
   }
 
   /** Called when the frontend responds to a permission request */
   handleApprovalResponse(response: PermissionResponse): void {
-    const pending = this.pendingApprovals.get(response.id)
+    const pending = this.pendingApprovals.get(response.id) ?? this.queuedApprovals.get(response.id)
     if (!pending) {
       log.warn('Received approval response for unknown request', { requestId: response.id })
       return
@@ -805,14 +924,17 @@ export class PermissionEngine {
 
     clearTimeout(pending.timer)
     this.pendingApprovals.delete(response.id)
+    this.queuedApprovals.delete(response.id)
 
     switch (response.decision) {
       case 'allow_once':
-        this.sessionApprovalCache.set(pending.cacheKey, true)
-        pending.resolve(true)
+        if (pending.cacheKey) this.sessionApprovalCache.set(pending.cacheKey, true)
+        pending.settle('approved')
         break
       case 'always_allow':
-        if (response.pattern) {
+        // "Always" belongs to this computer's own agent. A remote request is
+        // answered for this call only, so it stays a request every time.
+        if (response.pattern && pending.origin === 'local') {
           const isFileCategory = pending.category === 'file_write' || pending.category === 'file_delete' || pending.category === 'file_read'
           if (isFileCategory) {
             const existing = this.pref.overrides?.fileAccess?.allow ?? []
@@ -841,13 +963,13 @@ export class PermissionEngine {
           }
           this.persistRules()
         }
-        this.sessionApprovalCache.set(pending.cacheKey, true)
-        pending.resolve(true)
+        if (pending.cacheKey) this.sessionApprovalCache.set(pending.cacheKey, true)
+        pending.settle('approved')
         break
       case 'deny':
-        this.denialCount++
-        this.sessionApprovalCache.set(pending.cacheKey, false)
-        pending.resolve(false)
+        if (pending.origin === 'local') this.denialCount++
+        if (pending.cacheKey) this.sessionApprovalCache.set(pending.cacheKey, false)
+        pending.settle('denied')
         break
     }
   }
