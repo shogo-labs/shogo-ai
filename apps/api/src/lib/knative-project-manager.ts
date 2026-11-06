@@ -126,6 +126,55 @@ function getCustomApi(): k8s.CustomObjectsApi {
   return k8sCustomApi
 }
 
+// =============================================================================
+// Kubernetes error classification
+// =============================================================================
+//
+// `@kubernetes/client-node` 1.x throws `ApiException`: the status lives on
+// `err.code` (a number), and `err.body` is the raw JSON **string** of the
+// `Status` object — so `err.body.reason` and `err.body.code` are undefined.
+// Older call sites (and our own raw-fetch helpers) put the status on
+// `err.statusCode` / `err.response.statusCode` instead. Classify in one place
+// so no caller has to know which shape it got.
+
+/** Read `{ code, reason }` from an ApiException body (object or JSON string). */
+function readK8sStatusBody(err: any): { code?: number; reason?: string } {
+  const body = err?.body
+  if (!body) return {}
+  if (typeof body === 'object') {
+    return { code: (body as any).code, reason: (body as any).reason }
+  }
+  if (typeof body !== 'string') return {}
+  try {
+    const parsed = JSON.parse(body)
+    if (parsed && typeof parsed === 'object') {
+      return { code: parsed.code, reason: parsed.reason }
+    }
+  } catch {
+    // Not JSON (proxy HTML error page, truncated body) — no status to read.
+  }
+  return {}
+}
+
+/** The HTTP status of a K8s client error, whatever shape it was thrown in. */
+function k8sErrorStatusCode(err: any): number | undefined {
+  return err?.code ?? err?.statusCode ?? err?.response?.statusCode ?? readK8sStatusBody(err).code
+}
+
+/** 409 Conflict / reason AlreadyExists — the object is already there. */
+export function isK8sAlreadyExists(err: any): boolean {
+  return Boolean(
+    k8sErrorStatusCode(err) === 409 ||
+    readK8sStatusBody(err).reason === 'AlreadyExists' ||
+    err?.message?.includes('already exists'),
+  )
+}
+
+/** 404 Not Found / reason NotFound — the object is gone. */
+export function isK8sNotFound(err: any): boolean {
+  return k8sErrorStatusCode(err) === 404 || readK8sStatusBody(err).reason === 'NotFound'
+}
+
 /**
  * Perform a JSON Merge Patch (RFC 7386) on a Knative Service.
  * The @kubernetes/client-node library defaults to JSON Patch (RFC 6902, array
@@ -439,7 +488,7 @@ export class KnativeProjectManager {
         updatedAt: status.observedGeneration ? metadata.generation?.toString() : undefined,
       }
     } catch (error: any) {
-      if (error?.code === 404 || error?.response?.statusCode === 404) {
+      if (isK8sNotFound(error)) {
         return { exists: false, ready: false, url: null, replicas: 0 }
       }
       throw error
@@ -522,8 +571,7 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Created DomainMapping: ${domainName}`)
     } catch (error: any) {
-      const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code
-      if (statusCode === 409 || error?.message?.includes('already exists') || error?.body?.reason === 'AlreadyExists') {
+      if (isK8sAlreadyExists(error)) {
         console.log(`[KnativeProjectManager] DomainMapping ${domainName} already exists — updating target to ${resolvedServiceName}`)
         await this.updatePreviewDomainMapping(projectId, resolvedServiceName)
       } else {
@@ -614,7 +662,7 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Deleted DomainMapping: ${domainName}`)
     } catch (error: any) {
-      if (error?.code !== 404 && error?.response?.statusCode !== 404) {
+      if (!isK8sNotFound(error)) {
         console.error(`[KnativeProjectManager] Failed to delete DomainMapping ${domainName}:`, error)
         throw error
       }
@@ -800,8 +848,7 @@ export class KnativeProjectManager {
       console.log(`[KnativeProjectManager] Created Knative Service: project-${projectId} (ksvc: ${ksvcDuration}ms, total: ${totalDuration}ms)`)
     } catch (error: any) {
       // Handle race condition: if service already exists (409), that's fine
-      const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code
-      if (statusCode === 409 || error?.message?.includes('already exists') || error?.body?.reason === 'AlreadyExists') {
+      if (isK8sAlreadyExists(error)) {
         console.log(`[KnativeProjectManager] Project ${projectId} already exists (race condition handled) (total: ${Date.now() - createStartTime}ms)`)
       } else {
         // Re-throw other errors
@@ -884,7 +931,7 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Deleted Knative Service: ${serviceName}`)
     } catch (error: any) {
-      if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
+      if (!isK8sNotFound(error)) throw error
     }
 
     // Also try deleting the legacy project-{id} service if the resolved name is different
@@ -899,7 +946,7 @@ export class KnativeProjectManager {
         })
         console.log(`[KnativeProjectManager] Deleted legacy Knative Service: project-${projectId}`)
       } catch (error: any) {
-        if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
+        if (!isK8sNotFound(error)) throw error
       }
     }
 
@@ -924,7 +971,7 @@ export class KnativeProjectManager {
       console.log(`[KnativeProjectManager] Deleted legacy PVC: pvc-project-${projectId}`)
     } catch (error: any) {
       // Ignore not found - expected for new projects using emptyDir
-      if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
+      if (!isK8sNotFound(error)) throw error
     }
 
     // Cleanup legacy PostgreSQL PVC if exists from older deployments
@@ -936,7 +983,7 @@ export class KnativeProjectManager {
       console.log(`[KnativeProjectManager] Deleted legacy PVC: pvc-postgres-${projectId}`)
     } catch (error: any) {
       // Ignore not found - expected for new projects using emptyDir + S3 backup
-      if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
+      if (!isK8sNotFound(error)) throw error
     }
   }
 
@@ -1728,7 +1775,7 @@ export class KnativeProjectManager {
         name: serviceName,
       })
     } catch (err: any) {
-      if (err?.response?.statusCode === 404 || err?.body?.code === 404) {
+      if (isK8sNotFound(err)) {
         return
       }
       throw err
@@ -1920,17 +1967,25 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Created published service ${serviceName}`)
     } catch (err: any) {
-      const statusCode = err?.response?.statusCode || err?.statusCode || err?.body?.code
-      if (statusCode === 409 || err?.body?.reason === 'AlreadyExists') {
-        await api.replaceNamespacedCustomObject({
-          group: KNATIVE_GROUP,
-          version: KNATIVE_VERSION,
-          namespace: this.namespace,
-          plural: "services",
-          name: serviceName,
-          body: service,
+      if (isK8sAlreadyExists(err)) {
+        // Republish: update in place. A PUT (`replaceNamespacedCustomObject`)
+        // would be rejected without a `metadata.resourceVersion`, and a full
+        // replace also drops Knative's own `serving.knative.dev/*` annotations.
+        // Merge-patch needs neither and has no conflict window.
+        //
+        // Merge-patch semantics (RFC 7386): lists (`containers`, `env`,
+        // `volumes`, `initContainers`) are replaced whole, which is what a
+        // republish wants; map keys absent from the patch are KEPT. So every
+        // template annotation a republish can change must be written with an
+        // explicit value here — never omitted, or the old value survives.
+        await mergePatchKnativeService(this.namespace, serviceName, {
+          metadata: {
+            labels: service.metadata.labels,
+            annotations: (service.metadata as any).annotations,
+          },
+          spec: service.spec,
         })
-        console.log(`[KnativeProjectManager] Updated published service ${serviceName}`)
+        console.log(`[KnativeProjectManager] Updated published service ${serviceName} (merge-patch)`)
       } else {
         throw err
       }
@@ -2162,17 +2217,20 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Created published-server service ${serviceName}`)
     } catch (err: any) {
-      const statusCode = err?.response?.statusCode || err?.statusCode || err?.body?.code
-      if (statusCode === 409 || err?.body?.reason === 'AlreadyExists') {
-        await api.replaceNamespacedCustomObject({
-          group: KNATIVE_GROUP,
-          version: KNATIVE_VERSION,
-          namespace: this.namespace,
-          plural: "services",
-          name: serviceName,
-          body: service,
+      if (isK8sAlreadyExists(err)) {
+        // Republish: update in place with a merge-patch (see
+        // createPublishedService for why not PUT). Lists — containers, env,
+        // volumes — are replaced whole; map keys absent from the patch are
+        // kept, so every template annotation a republish can change must be
+        // written with an explicit value, never omitted.
+        await mergePatchKnativeService(this.namespace, serviceName, {
+          metadata: {
+            labels: service.metadata.labels,
+            annotations: (service.metadata as any).annotations,
+          },
+          spec: service.spec,
         })
-        console.log(`[KnativeProjectManager] Updated published-server service ${serviceName}`)
+        console.log(`[KnativeProjectManager] Updated published-server service ${serviceName} (merge-patch)`)
       } else {
         throw err
       }
@@ -2250,8 +2308,7 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Created published DomainMapping: ${domainName}`)
     } catch (error: any) {
-      const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code
-      if (statusCode === 409 || error?.message?.includes('already exists') || error?.body?.reason === 'AlreadyExists') {
+      if (isK8sAlreadyExists(error)) {
         console.log(`[KnativeProjectManager] Published DomainMapping ${domainName} already exists`)
       } else {
         console.error(`[KnativeProjectManager] Failed to create published DomainMapping ${domainName}:`, error)
@@ -2323,7 +2380,7 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Deleted published DomainMapping: ${domainName}`)
     } catch (error: any) {
-      if (error?.code !== 404 && error?.response?.statusCode !== 404) {
+      if (!isK8sNotFound(error)) {
         console.error(`[KnativeProjectManager] Failed to delete published DomainMapping ${domainName}:`, error)
         throw error
       }
@@ -2350,7 +2407,7 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Deleted published service ${serviceName}`)
     } catch (err: any) {
-      if (err?.response?.statusCode !== 404 && err?.code !== 404) throw err
+      if (!isK8sNotFound(err)) throw err
     }
 
     // Clean up legacy PVC from older deployments that used postgres sidecar
@@ -2362,7 +2419,7 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Deleted legacy PVC pvc-postgres-${projectId}`)
     } catch (err: any) {
-      if (err?.response?.statusCode !== 404 && err?.code !== 404) throw err
+      if (!isK8sNotFound(err)) throw err
     }
   }
 }
