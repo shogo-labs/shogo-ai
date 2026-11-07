@@ -1,5 +1,41 @@
 [
   {
+    "version": "2.5",
+    "slug": "v2-5",
+    "title": "Shogo 2.5",
+    "date": "2026-11-05",
+    "announce": true,
+    "intro": "In 2.5, your Personal workspace follows you to every device, and workspaces move between your computer and the cloud. Published apps scale to zero and back. Chat keeps up when you reload, switch tabs or type fast, and the IDE sends code to the agent in one keystroke.",
+    "highlights": [
+      {
+        "title": "One workspace, every device",
+        "description": "Your Personal workspace is the same on the web, desktop and phone, and you can move a workspace between your computer and the cloud in one step.",
+        "icon": "server"
+      },
+      {
+        "title": "Publishing that scales",
+        "description": "Published apps scale to zero and wake on the next visit. Set how far an app can scale, add a custom domain, and publish from the desktop app.",
+        "icon": "rocket"
+      },
+      {
+        "title": "Chat that keeps up",
+        "description": "Reload or open a second tab mid-reply and the turn is still there. Edit and resend a message, and each chat keeps its own draft and model.",
+        "icon": "sparkles"
+      },
+      {
+        "title": "Add to Chat in the IDE",
+        "description": "Drag a file, select lines and press Cmd/Ctrl+L, or right-click to send code to the agent.",
+        "icon": "code"
+      },
+      {
+        "title": "Better on your phone",
+        "description": "Smoother motion and navigation, channels that open at the latest message, and Android notifications when the app is closed.",
+        "icon": "activity"
+      }
+    ],
+    "url": "https://docs.shogo.ai/changelog/v2-5"
+  },
+  {
     "version": "2.4",
     "slug": "v2-4",
     "title": "Shogo 2.4",
