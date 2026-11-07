@@ -71,13 +71,26 @@ export function buildJobName(projectId: string, commitSha: string): string {
 /**
  * Where buildctl writes the metadata JSON that carries the pushed digest.
  *
- * Deliberately NOT `/dev/termination-log`: the build container runs as uid 1000
- * and that path is created root-owned, so the write fails with EACCES and the
- * build "succeeds" with no digest. `/tmp` is writable by the worker, and the
- * container also points `terminationMessagePath` here so the kubelet reads it
- * back as the terminated message.
+ * buildctl writes it atomically: a temp file in the same directory, then a
+ * rename onto this path. So it must be a plain path in a writable directory,
+ * never the kubelet's termination-message file: in `/dev` uid 1000 cannot
+ * create the temp file (EACCES), and a rename onto the bind-mounted file is
+ * refused (EPERM). Both fail *after* the push, so the build looks failed with
+ * an image already in the registry. The wrapper copies the JSON into
+ * TERMINATION_MESSAGE_PATH once buildctl exits, which is an in-place write the
+ * container is allowed to make.
  */
 export const BUILD_METADATA_PATH = '/tmp/build-metadata.json'
+
+/**
+ * Fully qualified on purpose: OKE's CRI-O runs short-name mode `enforcing`, so
+ * `curlimages/curl` is refused as ambiguous (ImageInspectError) and the Job
+ * never leaves Init.
+ */
+export const FETCH_SOURCE_IMAGE = 'docker.io/curlimages/curl:8.11.0'
+
+/** The kubelet's termination-message file, read back as the digest. */
+export const TERMINATION_MESSAGE_PATH = '/dev/termination-log'
 
 /**
  * The Job that takes a commit's artifact tarball to an image.
@@ -147,7 +160,7 @@ export function buildPublishedImageJob(input: BuildKitJobSpecInput): BuildKitJob
           initContainers: [
             {
               name: 'fetch-source',
-              image: 'curlimages/curl:8.11.0',
+              image: FETCH_SOURCE_IMAGE,
               command: [
                 'sh',
                 '-c',
@@ -183,11 +196,12 @@ export function buildPublishedImageJob(input: BuildKitJobSpecInput): BuildKitJob
               command: ['/bin/sh', '-c'],
               args: [
                 '/usr/bin/buildctl-daemonless.sh "$@"; rc=$?; ' +
+                  `cat ${BUILD_METADATA_PATH} > ${TERMINATION_MESSAGE_PATH} 2>/dev/null || true; ` +
                   `cat ${BUILD_METADATA_PATH} 2>/dev/null || true; exit $rc`,
                 'buildctl-daemonless.sh',
                 ...buildkitArgs,
               ],
-              terminationMessagePath: BUILD_METADATA_PATH,
+              terminationMessagePath: TERMINATION_MESSAGE_PATH,
               env: [
                 { name: 'BUILDKITD_FLAGS', value: '--oci-worker-no-process-sandbox' },
                 { name: 'HOME', value: '/home/user' },

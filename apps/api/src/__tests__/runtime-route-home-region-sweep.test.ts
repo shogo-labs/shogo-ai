@@ -238,6 +238,8 @@ const RESOLVER_FILES: Record<string, string> = {
     'guard: publish-time schema push resolves via getProjectPodUrl (home-region guard); called from the /api/projects/:projectId/publish route',
   'services/published-build.service.ts':
     'route-pin: called from configurePublishedService in routes/publish.ts (pinned under /api/projects/:projectId/); resolves the EDITING pod only to read its publish artifact, never boots one',
+  'services/published-cutover.service.ts':
+    'cron: operator script only (scripts/migrate-published-to-knative.ts), run against the region that owns the site and driven by explicit --project ids, so no request can land it in another region; resolves the published ksvc/VM by name and never boots an editing runtime',
   'lib/project-attachment-runtime.ts': 'route-pin: called from /api/projects/:projectId/attachments; resolves via resolveWorkspaceRuntimeUrl (home-region guard)',
   'routes/internal-runtime-routes.ts': 'guard: internal runtime routes resolve via resolveWorkspaceRuntimeUrl',
   'routes/local-agent-proxy.ts': 'local-only',

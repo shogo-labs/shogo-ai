@@ -387,6 +387,27 @@ describe('subdomain-router worker — legacy flags once metal is bound', () => {
     expect(calls[0].url).toBe(`${API_PUBLISHED_ORIGIN}/api/published/legacy-site/wake`)
   })
 
+  // A site mid-cutover answers the wake with 503 + Retry-After, because resuming
+  // its microVM would let it write past the export being copied (SHO-308 §7).
+  // The edge must keep the visitor on the polling loading page, never proxy the
+  // page to the box and never show an error.
+  test('a metal wake that answers 503 (mid-cutover maintenance) shows the loading page', async () => {
+    installFetch((url) =>
+      url.endsWith('/wake') ? { status: 503, body: '{"ready":false,"maintenance":true}' } : { status: 200, body: '<html>app</html>' },
+    )
+    const env = makeBothOriginsEnv({ 'legacy-site': 'metal' })
+    const req = new Request('https://legacy-site.shogo.one/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain('Waking things up')
+    expect(html).toContain('/__shogo/wake')
+    // The wake probe ran and the metal box was never proxied.
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe(`${API_PUBLISHED_ORIGIN}/api/published/legacy-site/wake`)
+  })
+
   test('an explicit `knative` flag still routes to Kourier (rollback)', async () => {
     installFetch(() => ({ status: 200, body: '{"ok":true}' }))
     const env = makeBothOriginsEnv({ 'rolled-back': 'knative' })
