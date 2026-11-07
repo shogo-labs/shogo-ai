@@ -34,6 +34,12 @@ export interface TurnGroupProps {
   dimmed?: boolean;
   /** This turn owns the edited message: dim everything after the bubble. */
   dimTail?: boolean;
+  /**
+   * This window is rejoining this turn (SHO-366). The "Rejoining live reply…"
+   * row under it is the loader, so the turn's own bouncing dots would be a
+   * second one.
+   */
+  rejoining?: boolean;
   className?: string;
 }
 
@@ -103,6 +109,7 @@ export const TurnGroup = memo(
     summaryCard = false,
     dimmed = false,
     dimTail = false,
+    rejoining = false,
     className,
   }: TurnGroupProps) {
     const colors = usePhaseColor(phase || "");
@@ -218,7 +225,7 @@ export const TurnGroup = memo(
         )}
 
         {/* Loading indicator when streaming but no assistant message yet */}
-        {turn.isStreaming && !turn.assistantMessage && <LoadingDots />}
+        {turn.isStreaming && !turn.assistantMessage && !rejoining && <LoadingDots />}
         </View>
       </Motion.View>
     );
@@ -230,6 +237,7 @@ export const TurnGroup = memo(
     prev.summaryCard === next.summaryCard &&
     prev.dimmed === next.dimmed &&
     prev.dimTail === next.dimTail &&
+    prev.rejoining === next.rejoining &&
     prev.className === next.className,
 );
 

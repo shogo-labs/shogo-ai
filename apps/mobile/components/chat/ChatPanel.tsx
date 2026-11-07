@@ -3924,17 +3924,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const isStreaming =
     (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
 
-  // --- Rejoining a live turn (SHO-297) -------------------------------------
+  // --- Rejoining a live turn (SHO-297, SHO-366) ---------------------------
   // A chat reopened while its turn is still running paints the half-written
   // reply from when the person left, then waits a network round-trip for the
   // delta and another for the `/turn` probe before it attaches. Nothing on
   // screen says the turn is live, so the chat looks frozen. While rejoining,
-  // the stale tail is hidden and a "Rejoining live reply…" row stands in its
-  // place, until the resume snapshot lands — or we give up and show the tail
-  // again, so it is never a spinner forever.
+  // the reply received so far stays on screen and a "Rejoining live reply…"
+  // row is drawn under it, until the resume snapshot lands — or we give up,
+  // so it is never a spinner forever.
   //
   // `rejoining` is derived in render, not set from an effect: the paint that
-  // brings the stale tail on screen must never show it for a frame first.
+  // brings the saved reply on screen must never show it for a frame without
+  // the row under it.
   /** The turn this window stopped rejoining, so a repaint cannot restart it. */
   const [rejoinGaveUpTurn, setRejoinGaveUpTurn] = useState<string | null>(null)
   /** A live turn a probe found while the painted tail was already finished. */
@@ -4492,9 +4493,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
     isStreaming,
   ])
 
-  // While rejoining, the stale half-written reply is hidden and the row stands
-  // in its place (SHO-297). Display-only: `messages` and the device cache keep
-  // the reply, so nothing the person has read is lost if the attach never lands.
+  // While rejoining the reply received so far stays on screen and the row is
+  // drawn under it (SHO-297, SHO-366). Display-only: `messages` and the device
+  // cache are untouched, and the resume snapshot replaces the unfinished tail
+  // in place, so nothing the person has read is lost or duplicated.
   const rejoinView = useMemo(
     () => resolveRejoinView({ messages: displayMessages, rejoining }),
     [displayMessages, rejoining],

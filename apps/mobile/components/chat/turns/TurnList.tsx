@@ -28,9 +28,9 @@ export interface TurnListProps {
   isStreaming?: boolean
   /**
    * This window believes the turn is live but has not attached to it yet
-   * (SHO-297). The stale half-written reply is already hidden by
-   * `resolveRejoinView`; this draws the "Rejoining live reply…" row where the
-   * reply goes.
+   * (SHO-297, SHO-366). The reply received so far stays on screen and this
+   * draws the "Rejoining live reply…" row under it — the last thing in the
+   * transcript.
    */
   rejoining?: boolean
   phase?: string | null
@@ -132,6 +132,7 @@ export const TurnList = memo(
                 summaryCard={index === turns.length - 1}
                 dimmed={dimmed}
                 dimTail={dimTail}
+                rejoining={rejoining && index === turns.length - 1}
               />
             </View>
           )
