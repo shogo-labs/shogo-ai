@@ -17,7 +17,7 @@ import {
   type Mentionables,
   type TeamChatEvent,
 } from '../lib/team-chat-api'
-import { useTeamChatEvents } from '../lib/team-chat-connection'
+import { useTeamChatEvents, useTeamChatSelfUserId } from '../lib/team-chat-connection'
 import { setActiveChannelNotificationContext } from '../lib/notifications/chat-notifier'
 import { cacheList, readCachedList } from '../lib/team-chat-cache'
 import { API_URL } from '../lib/api-url'
@@ -714,10 +714,13 @@ export function useTypingUsers(
   threadRootId: string | null = null,
 ): Array<{ id: string; name: string }> {
   const [typing, setTyping] = useState<Record<string, { name: string; at: number }>>({})
-  // The server broadcasts typing to the whole workspace, typist included.
+  // The server broadcasts typing to the whole workspace, typist included, so
+  // drop our own. The connection's `ready.userId` is the id the server stamps
+  // on our typing; `useWorkspaceUser` covers events that arrive before `ready`.
+  const selfUserId = useTeamChatSelfUserId(workspaceId)
   const me = useWorkspaceUser(workspaceId)?.id ?? null
   useTeamChatEvents(workspaceId, (event) => {
-    if (event.type === 'typing' && event.userId === me) return
+    if (event.type === 'typing' && (event.userId === selfUserId || event.userId === me)) return
     if (event.type === 'typing' && event.conversationId === conversationId && (event.threadRootId ?? null) === threadRootId) {
       setTyping((t) => ({ ...t, [event.userId]: { name: event.name, at: Date.now() } }))
     } else if (event.type === 'message.created' && event.message.conversationId === conversationId && event.message.authorUserId) {
