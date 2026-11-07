@@ -63,7 +63,8 @@ const POSTGRES_TO_SQLITE_TRANSFORMS: { pattern: RegExp; replacement: string }[] 
   // dbgenerated() with PostgreSQL-specific functions
   { pattern: /@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/g, replacement: '@default(cuid())' },
   
-  // auto() is PostgreSQL-specific for autoincrement
+  // auto() is MongoDB-only; earlier versions of the SQLite → PostgreSQL
+  // transform wrote it, so a schema switched back from one of those recovers.
   { pattern: /@default\(auto\(\)\)/g, replacement: '@default(autoincrement())' },
   
   // Remove @db.* native type annotations (SQLite doesn't support these)
@@ -77,8 +78,11 @@ const POSTGRES_TO_SQLITE_TRANSFORMS: { pattern: RegExp; replacement: string }[] 
  * Most things (like cuid()) work on both providers.
  */
 const SQLITE_TO_POSTGRES_TRANSFORMS: { pattern: RegExp; replacement: string }[] = [
-  // autoincrement() is SQLite-specific, use auto() for PostgreSQL
-  { pattern: /@default\(autoincrement\(\)\)/g, replacement: '@default(auto())' },
+  // `@default(autoincrement())` is valid on both (a serial column on
+  // PostgreSQL) and stays as is. Never rewrite it to `auto()`: that is the
+  // MongoDB connector's function and fails PostgreSQL schema validation.
+  // A schema written by an earlier version of this transform is repaired here.
+  { pattern: /@default\(auto\(\)\)/g, replacement: '@default(autoincrement())' },
 ]
 
 /**

@@ -61,6 +61,12 @@ describe('buildPublishSchema', () => {
     expect(built.hash).toBe(publishedSchemaHash(built.content))
   })
 
+  it('keeps autoincrement ids as autoincrement() (auto() is MongoDB-only)', () => {
+    const built = buildPublishSchema(SQLITE_SCHEMA)
+    expect(built.content).toContain('@id @default(autoincrement())')
+    expect(built.content).not.toContain('auto()')
+  })
+
   it('leaves an already-Postgres schema untouched', () => {
     const pg = SQLITE_SCHEMA.replace('provider = "sqlite"', 'provider = "postgresql"')
     const built = buildPublishSchema(pg)
