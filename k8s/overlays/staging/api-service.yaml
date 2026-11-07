@@ -178,6 +178,19 @@ spec:
               value: "5432"
             - name: PROJECTS_DB_POOLER_HOST
               value: "projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local"
+            # ---- Per-commit published images (SHO-308 §2) -------------------
+            # BuildKit Jobs in `shogo-builds` (k8s/published-builds/builds.yaml)
+            # push to <registry>/<namespace>/shogo/published/<projectId>:<sha>
+            # with the `ocir-push` Secret there. The builder image must be fully
+            # qualified: CRI-O on OKE enforces short names. See
+            # docs/runbooks/published-images.md. PUBLISH_BUILD_IMAGES=off rolls
+            # back without unsetting these.
+            - name: PUBLISH_BUILD_REGISTRY
+              value: "us-ashburn-1.ocir.io"
+            - name: PUBLISH_BUILD_NAMESPACE
+              value: "idin4oltblww"
+            - name: PUBLISH_BUILD_IMAGE
+              value: "docker.io/moby/buildkit:v0.18.2-rootless"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
             - name: PROJECT_NAMESPACE

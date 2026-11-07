@@ -78,8 +78,14 @@ manual.
 4. Network egress from the namespace to OCIR and to the S3 endpoint that the
    presigned artifact URL points at (the API signs with the **internal** client,
    so a Job in-cluster never needs the public endpoint).
-5. The builder image must be rootless BuildKit and its content digest should be
-   pinned in `PUBLISH_BUILD_IMAGE` — the Job runs it as-is.
+5. The builder image must be rootless BuildKit, **fully qualified**
+   (`docker.io/moby/buildkit:v0.18.2-rootless` on staging), and its content
+   digest should be pinned in `PUBLISH_BUILD_IMAGE` — the Job runs it as-is.
+   OKE's CRI-O enforces short names, so `moby/buildkit:…` never leaves
+   `ImageInspectError`.
+6. `ocir-push` can be a copy of the region's `ocir-pull-secret` (its OCIR user
+   can push; OCIR creates `shogo/published/<projectId>` on first push):
+   `kubectl -n shogo-staging-workspaces get secret ocir-pull-secret -o json | jq '{apiVersion,kind,type,data,metadata:{name:"ocir-push",namespace:"shogo-builds"}}' | kubectl apply -f -`
 
 ## Enabling, and rolling back
 

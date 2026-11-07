@@ -268,15 +268,27 @@ describe('buildPublishedImageJob', () => {
     const container = (job.spec as any).template.spec.containers[0]
     const args = container.args as string[]
     const metadataPath = args[args.indexOf('--metadata-file') + 1]
-    // /dev/termination-log is root-owned, so uid 1000 cannot write it and the
-    // build finishes with no digest.
+    // buildctl writes a temp file next to the target and renames it over it:
+    // uid 1000 cannot create files in /dev, and a rename onto the kubelet's
+    // bind-mounted termination file is refused. Both broke real staging builds
+    // after the push had already succeeded.
     expect(metadataPath).not.toBe('/dev/termination-log')
-    expect(metadataPath).toBe(container.terminationMessagePath)
-    // ...and the wrapper echoes it to the log as a second way to read it back.
-    expect(args[0]).toContain(`cat ${metadataPath}`)
+    expect(metadataPath).not.toBe(container.terminationMessagePath)
+    expect(container.terminationMessagePath).toBe('/dev/termination-log')
+    // The wrapper copies it into the termination message in place, and echoes
+    // it to the log as a second way to read it back.
+    expect(args[0]).toContain(`cat ${metadataPath} > /dev/termination-log`)
+    expect(args[0]).toContain(`cat ${metadataPath} 2>/dev/null || true; exit $rc`)
     expect(container.command).toEqual(['/bin/sh', '-c'])
     expect((job.spec as any).template.spec.securityContext?.runAsUser).toBeUndefined()
     expect(container.securityContext.runAsUser).toBe(1000)
+  })
+
+  it('names the source-fetch image fully qualified, because CRI-O refuses short names', () => {
+    const spec = (job.spec as any).template.spec
+    for (const c of spec.initContainers) {
+      expect(c.image.split('/')[0]).toMatch(/\./)
+    }
   })
 
   it('runs the rootless worker the way its entrypoint expects', () => {
