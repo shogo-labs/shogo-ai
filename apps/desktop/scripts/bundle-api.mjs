@@ -87,7 +87,7 @@ const PREINSTALLED_MCP_PACKAGES = [
 const EXTERNAL_PACKAGES = [
   'electron',
   'playwright-core',
-  '@playwright/mcp',
+  'ws',
   '@prisma/client',
   'prisma',
   'prisma-adapter-bun-sqlite',
@@ -151,7 +151,7 @@ function main() {
 
   // --- Step counter ---
   const externals = EXTERNAL_PACKAGES.map((p) => `--external ${p}`).join(' ')
-  const totalSteps = ENTRY_POINTS.length + 10
+  const totalSteps = ENTRY_POINTS.length + 11
   let step = 0
 
   const logStep = (label) => console.log(`[${++step}/${totalSteps}] ${label}`)
@@ -565,6 +565,18 @@ function main() {
     console.log(`  ✓ ${rgName}`)
   } else {
     console.warn('  ⚠ @vscode/ripgrep binary not found; agent shells will only have a system rg, if any')
+  }
+
+  // --- Copy the CDP relay script (spawned by the browser tool in extension mode) ---
+  // gateway-tools resolves it next to the compiled bundle, so it ships in
+  // resources/bundle/ rather than being inlined by `bun build`.
+  logStep('Copying browser relay script...')
+  const relaySource = path.join(REPO_ROOT, 'packages', 'agent-runtime', 'src', 'browser-relay.cjs')
+  if (fs.existsSync(relaySource)) {
+    fs.copyFileSync(relaySource, path.join(bundleDir, 'browser-relay.cjs'))
+    console.log('  ✓ browser-relay.cjs')
+  } else {
+    console.warn(`  ⚠ browser relay script not found at ${relaySource}`)
   }
 
   // --- Copy runtime install scripts (invoked by API at runtime, e.g. sherpa-onnx installer) ---
