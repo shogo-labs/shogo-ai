@@ -687,6 +687,11 @@ class CDPRelayServer {
     }
   }
 
+  _closeConnections(reason) {
+    this._closeCDPConnection(reason);
+    this._closeExtensionConnection(reason);
+  }
+
   _closeExtensionConnection(reason) {
     if (this._extensionConnection)
       this._extensionConnection.close(reason);
@@ -704,8 +709,17 @@ class CDPRelayServer {
       ws.close(1000, 'Another extension connection already established');
       return;
     }
-    this._extensionConnection = new ExtensionConnection(ws);
+    const connection = new ExtensionConnection(ws);
+    this._extensionConnection = connection;
+    // A fresh handler so a reconnecting extension gets a fresh handshake — the
+    // old one's `ready()` promise can only settle once.
+    this._handler = new ExtensionProtocolV2((method, params) => connection.send(method, params));
     this._extensionConnection.onclose = (reason) => {
+      if (this._extensionConnection === connection) {
+        this._extensionConnection = null;
+        if (this._extensionConnectionPromise.isDone())
+          this._extensionConnectionPromise = new ManualPromise();
+      }
       this._handler.onExtensionDisconnect(reason);
       this._closeCDPConnection(`Extension disconnected: ${reason}`);
     };
@@ -731,7 +745,11 @@ class CDPRelayServer {
         // Malformed CDP frame — Playwright will surface its own timeout.
       }
     });
-    ws.on('close', () => this._closeExtensionConnection('Playwright client disconnected'));
+    ws.on('close', () => {
+      if (this._cdpConnection === ws)
+        this._cdpConnection = null;
+      this._closeExtensionConnection('Playwright client disconnected');
+    });
     ws.on('error', () => {});
   }
 
@@ -801,14 +819,13 @@ async function main() {
   const executablePath = executablePathArg || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || resolveExecutablePath(channel);
 
   // An extension that speaks a different protocol never completes the
-  // handshake — it shows its own page. Say which side is out of date instead of
-  // waiting out the timeout.
-  if (!executablePath) {
-    const mismatch = protocolMismatchError(findInstalledExtensionProtocolVersions());
-    if (mismatch) {
-      emit({ type: 'error', message: mismatch, protocolVersion: RELAY_PROTOCOL_VERSION });
-      process.exit(1);
-    }
+  // handshake — it shows its own page instead. Say which side is out of date
+  // instead of waiting out the timeout. `protocolMismatchError` returns null
+  // when no extension was found, so a Chrome we cannot inspect is not an error.
+  const mismatch = protocolMismatchError(findInstalledExtensionProtocolVersions());
+  if (mismatch) {
+    emit({ type: 'error', message: mismatch, protocolVersion: RELAY_PROTOCOL_VERSION });
+    process.exit(1);
   }
 
   const relay = new CDPRelayServer({

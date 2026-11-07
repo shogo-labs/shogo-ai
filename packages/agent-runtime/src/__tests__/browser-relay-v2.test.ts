@@ -24,9 +24,13 @@ interface RelayLine {
 }
 
 /** Spawns the relay, collecting its newline-delimited stdout messages. */
-function startRelay(args: { timeoutMs?: number; env?: Record<string, string> } = {}) {
+function startRelay(args: { timeoutMs?: number; env?: Record<string, string>; home?: string } = {}) {
   const lines: RelayLine[] = []
   const waiters: Array<() => void> = []
+  // A temp HOME by default so the protocol pre-flight never sees the machine's
+  // real Chrome profiles — every test states which extension it wants.
+  const home = args.home ?? mkdtempSync(join(tmpdir(), 'shogo-relay-home-'))
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }))
   const child = Bun.spawn(
     [
       'node',
@@ -42,6 +46,8 @@ function startRelay(args: { timeoutMs?: number; env?: Record<string, string> } =
         // Never launch a browser in tests; the spawn error is captured by the
         // relay and only surfaces in the timeout message.
         PLAYWRIGHT_MCP_EXTENSION_TOKEN: 'test-extension-token',
+        HOME: home,
+        USERPROFILE: home,
         ...args.env,
       },
       stdout: 'pipe',
@@ -64,9 +70,18 @@ function startRelay(args: { timeoutMs?: number; env?: Record<string, string> } =
     }
   })()
 
+  let stderr = ''
+  void (async () => {
+    for await (const chunk of child.stderr) stderr += decoder.decode(chunk)
+  })()
+
+  const exited = child.exited.then((code) => code)
+
   return {
     child,
     lines,
+    stderr: () => stderr,
+    exited,
     async next(predicate: (line: RelayLine) => boolean, timeoutMs = 5000): Promise<RelayLine> {
       const deadline = Date.now() + timeoutMs
       for (;;) {
@@ -90,10 +105,12 @@ function connectFakeExtension(endpoint: string) {
   const ws = new WebSocket(endpoint)
   const received: Array<{ id?: number; method?: string; params?: any }> = []
   const waiters: Array<() => void> = []
+  let closed = false
   ws.addEventListener('message', (event) => {
     received.push(JSON.parse(String(event.data)))
     for (const wake of waiters.splice(0)) wake()
   })
+  ws.addEventListener('close', () => { closed = true })
   const ready = new Promise<void>((resolve, reject) => {
     ws.addEventListener('open', () => resolve())
     ws.addEventListener('error', () => reject(new Error('extension websocket failed')))
@@ -102,6 +119,9 @@ function connectFakeExtension(endpoint: string) {
     ws,
     received,
     ready,
+    get closed() {
+      return closed
+    },
     send(message: any) {
       ws.send(JSON.stringify(message))
     },
@@ -121,6 +141,27 @@ function connectFakeExtension(endpoint: string) {
       ws.close()
     },
   }
+}
+
+/**
+ * A throwaway HOME holding the Playwright MCP Bridge extension at the location
+ * its platform's Chrome would use, so the relay's pre-flight sees it.
+ */
+function writeFakeExtension(protocolVersion: number, extensionVersion = '0.6.0') {
+  const home = mkdtempSync(join(tmpdir(), 'shogo-relay-home-'))
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }))
+  const userDataDir = process.platform === 'darwin'
+    ? join(home, 'Library', 'Application Support', 'Google', 'Chrome')
+    : process.platform === 'win32'
+      ? join(home, 'AppData', 'Local', 'Google', 'Chrome', 'User Data')
+      : join(home, '.config', 'google-chrome')
+  const connectScriptDir = join(userDataDir, 'Default', 'Extensions', relayModule.EXTENSION_ID, extensionVersion, 'lib', 'ui')
+  mkdirSync(connectScriptDir, { recursive: true })
+  writeFileSync(
+    join(connectScriptDir, 'connect.js'),
+    `var SUPPORTED_PROTOCOL_VERSION = ${protocolVersion};\nif (requestedVersion < SUPPORTED_PROTOCOL_VERSION) {}\n`,
+  )
+  return home
 }
 
 let cleanups: Array<() => void> = []
@@ -219,6 +260,68 @@ describe('browser relay protocol v2', () => {
     expect(error.message).toMatch(/did not connect within/)
     expect(error.message).toContain('protocol 2')
     expect(error.protocolVersion).toBe(2)
+
+    // Shutdown must be silent: `stop()` used to call an undefined
+    // `_closeConnections` and dump a TypeError on the failed path.
+    expect(await relay.exited).toBe(1)
+    expect(relay.stderr()).toBe('')
+  }, 20000)
+
+  test('SIGTERM (browser close / cleanupRelay) shuts down without a stack dump', async () => {
+    const relay = startRelay()
+    cleanups.push(() => relay.kill())
+    const ready = await relay.next((line) => line.type === 'ready')
+    const extension = connectFakeExtension(ready.extensionEndpoint!)
+    cleanups.push(() => extension.close())
+    await extension.ready
+    extension.send({ method: 'extension.initialized', params: [] })
+    await relay.next((line) => line.type === 'connected')
+
+    relay.kill()
+    expect(await relay.exited).toBe(0)
+    expect(relay.stderr()).toBe('')
+  }, 20000)
+
+  test('a protocol mismatch fails immediately even when a browser binary is resolved', async () => {
+    // The reported bug: the pre-flight was skipped whenever an executable path
+    // existed, which is the normal case, so the user got a 90 s timeout instead
+    // of "your extension speaks N, Shogo speaks M".
+    const home = writeFakeExtension(3)
+    const started = Date.now()
+    const relay = startRelay({
+      timeoutMs: 30000,
+      home,
+      env: { PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: process.execPath },
+    })
+    cleanups.push(() => relay.kill())
+
+    const error = await relay.next((line) => line.type === 'error', 8000)
+    expect(error.message).toContain('protocol 3')
+    expect(error.message).toContain('protocol 2')
+    expect(Date.now() - started).toBeLessThan(4000)
+    expect(await relay.exited).toBe(1)
+    expect(relay.stderr()).toBe('')
+  }, 20000)
+
+  test('an extension that reconnects after a close is not rejected', async () => {
+    const relay = startRelay()
+    cleanups.push(() => relay.kill())
+    const ready = await relay.next((line) => line.type === 'ready')
+
+    const first = connectFakeExtension(ready.extensionEndpoint!)
+    cleanups.push(() => first.close())
+    await first.ready
+    first.send({ method: 'extension.initialized', params: [] })
+    await relay.next((line) => line.type === 'connected')
+    first.close()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    const second = connectFakeExtension(ready.extensionEndpoint!)
+    cleanups.push(() => second.close())
+    await second.ready
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(second.ws.readyState).toBe(WebSocket.OPEN)
+    expect(second.closed).toBe(false)
   }, 20000)
 })
 
