@@ -32,6 +32,8 @@ export const UserModel = types
     buddyLook: types.optional(types.string, ""),
     homeRegion: types.optional(types.string, ""),
     emailCanonical: types.optional(types.string, ""),
+    firstCapHitAt: types.optional(types.number, 0),
+    firstPreviewSeenAt: types.optional(types.number, 0),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),
