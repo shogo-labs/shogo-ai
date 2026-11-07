@@ -1314,6 +1314,7 @@ export class AgentGateway {
       ...(typeof ctx.canPublishSubdomain === 'boolean'
         ? { canPublishSubdomain: ctx.canPublishSubdomain }
         : {}),
+      ...(ctx.publishHosting ? { publishHosting: ctx.publishHosting } : {}),
       ...(ctx.teamWorkspaceNames ? { teamWorkspaceNames: ctx.teamWorkspaceNames } : {}),
     }
   }

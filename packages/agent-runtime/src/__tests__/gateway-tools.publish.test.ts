@@ -668,8 +668,22 @@ describe('publish tool copy (Pro-plan disclosure + no hard-refresh advice)', () 
     expect(description).toMatch(/render/i)
     expect(description).toMatch(/fly/i)
     expect(description).toMatch(/railway/i)
-    // No always-on promise — the service scales to zero when idle.
-    expect(description).not.toMatch(/always[- ]on|never sleeps|stays up|stays online/i)
+    // No always-on promise of its own: whether a published app can stay awake
+    // is per-workspace, and the only place the agent may read it from is the
+    // Publishing line in its account context (SHO-362).
+    expect(description).not.toMatch(/never sleeps|stays up|stays online/i)
+    expect(description).toMatch(/Publishing\*\* line in the Account block/)
+  })
+
+  test('the catalog line (first sentence) says it hosts the whole app', () => {
+    // The catalog shows only the first sentence of the description, capped at
+    // 110 chars (tool-profile firstSentence) — so the fact has to fit there.
+    const description = publishTool(baseCtx()).description
+    const firstSentence = description.replace(/\s+/g, ' ').trim().split(/\.(?:\s|$)/)[0]
+    expect(firstSentence.length).toBeLessThanOrEqual(110)
+    expect(firstSentence).toMatch(/whole app/i)
+    expect(firstSentence).toMatch(/frontend, API and database/i)
+    expect(firstSentence).toContain('{subdomain}.shogo.one')
   })
 
   test('a successful publish response never tells the user to (hard) refresh or clear their cache', async () => {
