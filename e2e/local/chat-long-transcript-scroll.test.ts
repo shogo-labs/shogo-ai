@@ -51,6 +51,8 @@ const WHEEL_STEP = 1_200
  * moves the row by the whole expansion height, thousands of px.
  */
 const WHEEL_TOLERANCE = Math.round(WHEEL_STEP * 0.04)
+/** The same slack for any wheel step. */
+const wheelTolerance = (step: number) => Math.round(step * 0.04)
 /**
  * Slack for `scrollTop` while pinned to the bottom of the transcript: the
  * container clamps against `maxScroll`, so a height-estimate correction of a
@@ -436,6 +438,28 @@ async function pickedRowHeight(page: Page): Promise<number | null> {
   })
 }
 
+/**
+ * Wait until the window has stopped changing: the mounted row count and the
+ * scroll offset both hold still across a few frames. A correction that is still
+ * in flight would otherwise be measured as part of the click.
+ */
+async function settleWindow(page: Page, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let last = ""
+  let stable = 0
+  while (Date.now() < deadline) {
+    const signature = `${(await mountedRows(page)).length}:${await scrollTop(page)}`
+    if (signature === last) {
+      stable += 1
+      if (stable >= 3) return
+    } else {
+      stable = 0
+      last = signature
+    }
+    await page.waitForTimeout(120)
+  }
+}
+
 async function openLongChat(page: Page, turns = TURN_COUNT): Promise<LongChatState> {
   const state = await installLongChat(page, turns)
   await openTeamHome(page)
@@ -468,6 +492,12 @@ test.describe("a long chat scrolls like a short one", () => {
     // Only a window of turns is mounted, as SHO-354 requires (opening the chat
     // can mount a page or two before it settles at the bottom).
     expect((await mountedRows(page)).length).toBeLessThanOrEqual(TAIL_WINDOW + 40)
+    // The window must actually be engaged, or every assertion below passes on
+    // a transcript that never entered the window code at all.
+    expect(
+      await page.locator('[data-testid="turn-window-spacer"]').count(),
+      "the 120-turn chat did not enter the turn window",
+    ).toBe(1)
 
     // Up through history.
     for (let attempt = 0; attempt < 60; attempt++) {
@@ -476,25 +506,22 @@ test.describe("a long chat scrolls like a short one", () => {
       const anchor = await anchorRow(page)
       const mountedBefore = (await mountedRows(page)).length
       await wheel(page, -WHEEL_STEP, 1, 200)
-      const after = await scrollTop(page)
       const mountedAfter = (await mountedRows(page)).length
-      if (mountedAfter > mountedBefore && anchor) {
-        // A page of history mounted above the reader. `scrollTop` legitimately
-        // *increases* here — the correction keeps the same content on screen —
-        // so the invariant is that the row under the reader moved by the wheel's
-        // distance and no more. A second, unowned correction (the browser's
-        // anchoring, or a gap counted twice) shows up as a much larger move.
-        const top = await rowTop(page, anchor.id)
-        if (top !== null) {
-          expect(
-            Math.abs(top - anchor.top - WHEEL_STEP),
-            `an expansion moved the row under the reader ${top - anchor.top}px for a ${WHEEL_STEP}px wheel step`,
-          ).toBeLessThanOrEqual(WHEEL_TOLERANCE)
-        }
-      } else {
-        expect(after, "wheeling up moved the transcript down").toBeLessThanOrEqual(
-          before + JUMP_TOLERANCE,
-        )
+      // The invariant is the same whether or not a page of history mounted:
+      // the row under the reader moves by the wheel's distance and no more.
+      // `scrollTop` is *not* a usable signal here — a legitimate estimate
+      // correction raises it while the reader's content stays put, which is
+      // exactly what made this assertion flaky in CI (SHO-359 QA round 1).
+      // Near the top the container clamps at 0, so the move is bounded by
+      // `before`.
+      const expected = Math.min(WHEEL_STEP, before)
+      const top = anchor ? await rowTop(page, anchor.id) : null
+      if (top !== null && anchor) {
+        expect(
+          Math.abs(top - anchor.top - expected),
+          `the row under the reader moved ${top - anchor.top}px for a ${expected}px wheel step` +
+            (mountedAfter > mountedBefore ? " (a page of history mounted)" : ""),
+        ).toBeLessThanOrEqual(WHEEL_TOLERANCE)
       }
     }
 
@@ -513,6 +540,9 @@ test.describe("a long chat scrolls like a short one", () => {
       const before = await scrollTop(page)
       await wheel(page, WHEEL_STEP, 1, 200)
       const after = await scrollTop(page)
+      // Downwards the window *shrinks* as the reader reaches the bottom, which
+      // legitimately removes content above them, so a pinned row is not the
+      // invariant here — the offset must simply never move against the wheel.
       expect(after, "wheeling down moved the transcript up").toBeGreaterThanOrEqual(
         before - JUMP_TOLERANCE,
       )
@@ -573,14 +603,14 @@ test.describe("a long chat scrolls like a short one", () => {
           expect(
             worst,
             `the row under the reader moved ${settled - anchor.top}px for a 600px wheel step`,
-          ).toBeLessThanOrEqual(JUMP_TOLERANCE + 6)
+          ).toBeLessThanOrEqual(wheelTolerance(600))
         }
         break
       }
       expect(
         Math.abs(moved - 600),
         `a plain wheel step moved the row ${moved}px`,
-      ).toBeLessThanOrEqual(JUMP_TOLERANCE + 6)
+      ).toBeLessThanOrEqual(wheelTolerance(600))
     }
 
     expect(sawExpansion, "scrolling never mounted a new page of history").toBe(true)
@@ -654,6 +684,11 @@ test.describe("a long chat scrolls like a short one", () => {
     }
     console.log(`[sho-359] above-tail pick: ${pick}`)
     expect(pick, `no expanded-work header above the tail window could be picked (${pick})`).toBe("picked")
+    // The picker scrolls the transcript, which can mount a page of history and
+    // start a correction. Measure only once the window has stopped changing,
+    // or the click lands mid-correction and the header's y is read against a
+    // moving layout (SHO-359 QA round 1).
+    await settleWindow(page)
     const aboveHeader = page.locator('[data-e2e-pick="1"]')
     const aboveBefore = (await aboveHeader.boundingBox())!
     const aboveTop = await scrollTop(page)
