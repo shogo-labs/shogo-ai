@@ -57,13 +57,13 @@ const interrupted = (id: string, text = "crashed-words"): UIMessage =>
   }) as unknown as UIMessage
 
 describe("resolveRejoinView", () => {
-  test("hides the stale half-written reply and shows the row", () => {
+  test("keeps the reply received so far and shows the row (SHO-366)", () => {
     const messages = [user("u1"), unfinished("a1")]
 
     const view = resolveRejoinView({ messages, rejoining: true })
 
     expect(view.showRejoinRow).toBe(true)
-    expect(view.messages).toEqual([user("u1")])
+    expect(view.messages).toBe(messages)
   })
 
   test("leaves the transcript alone when not rejoining", () => {
@@ -118,13 +118,13 @@ describe("resolveRejoinView", () => {
     expect(view.messages).toEqual([])
   })
 
-  test("only the trailing unfinished reply is dropped", () => {
+  test("an unfinished tail in the middle is never touched", () => {
     const messages = [user("u1"), unfinished("a1"), user("u2"), unfinished("a2")]
 
     const view = resolveRejoinView({ messages, rejoining: true })
 
     expect(view.showRejoinRow).toBe(true)
-    expect(view.messages).toEqual([user("u1"), unfinished("a1"), user("u2")])
+    expect(view.messages).toBe(messages)
   })
 
   test("never mutates the array it was given", () => {
