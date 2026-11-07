@@ -11,9 +11,12 @@
  *
  *   provisioning (published-database.service)  →  schema push  →  seed  →  Secret
  *
- * The push and the seed run inside the project's runtime (`/agent/published-schema`)
- * because that is the only place with the app's schema, its `dev.db`, and a
- * Prisma CLI that resolves from the app's own `node_modules`.
+ * The project's runtime (`/agent/published-schema`) exports the Postgres schema
+ * and, on a first deploy, `dev.db` as seed SQL: it is the only place with those
+ * files. The push and the load run here (`published-schema-push.ts`), inside the
+ * cluster, because a runtime may live on a host outside the cluster network
+ * (metal), and the database credential must not enter a sandbox that runs user
+ * code.
  *
  * Two guards live here rather than in the runtime:
  *   - **destructive changes** are classified against the schema the database
@@ -31,6 +34,7 @@ import {
   type PublishedEnvironmentName,
 } from '@shogo/shared-runtime/published-database'
 import { ensureEnvironmentDatabase, type PublishedDatabase } from './published-database.service'
+import { pushPublishedSchema } from './published-schema-push'
 
 const SCHEMA_TIMEOUT_MS = 180_000
 
@@ -214,29 +218,51 @@ export async function prepareEnvironmentDatabase(
   // the table.
   const seed = !env?.dbSchema
 
-  let applied: { ok: boolean; status: number; data: any } | null = null
+  let applied: { hash: string; warnings: string[]; seededRows: number } | null = null
   if (!unchanged) {
+    // The runtime exports the schema (and, on a first deploy, dev.db as SQL);
+    // the push itself runs here, inside the cluster, where projects-pg is
+    // reachable. The database URL never leaves the API.
+    let exported: { ok: boolean; status: number; data: any }
     try {
-      applied = await callRuntimeSchema(projectId, {
-        mode: 'apply',
-        databaseUrl: provisioned.value.directUrl,
+      exported = await callRuntimeSchema(projectId, {
+        mode: 'export',
         seed,
         expectedHash: resolved.hash,
       })
     } catch (err: any) {
       return fail(
-        'schema_push_failed',
-        `Could not apply the schema to the ${environment} database: ${err?.message ?? 'unknown error'}`,
+        'schema_unavailable',
+        `Could not read the app's schema from its runtime: ${err?.message ?? 'unknown error'}`,
         503,
       )
     }
-    if (!applied.ok) {
+    if (!exported.ok) {
       return fail(
-        applied.data?.code ?? 'schema_push_failed',
-        applied.data?.message ?? `Could not apply the schema to the ${environment} database`,
-        applied.status === 409 ? 409 : 500,
+        exported.data?.code ?? 'schema_unavailable',
+        exported.data?.message ?? 'Could not read the app\'s Prisma schema',
+        exported.status === 409 || exported.status === 413 ? exported.status : 400,
         { environment },
       )
+    }
+    const schema = exported.data?.schema as { content: string; hash: string; warnings: string[] } | undefined
+    if (!schema?.content) {
+      return fail('schema_unavailable', 'The runtime returned no schema to apply', 502, { environment })
+    }
+    const seedSql: string | null = seed ? (exported.data?.seed?.sql ?? null) : null
+
+    const pushed = await pushPublishedSchema({
+      schema: schema.content,
+      seedSql,
+      databaseUrl: provisioned.value.directUrl,
+    })
+    if (!pushed.ok) {
+      return fail(pushed.code, pushed.message, 500, { environment })
+    }
+    applied = {
+      hash: schema.hash,
+      warnings: schema.warnings ?? [],
+      seededRows: seedSql ? (exported.data?.seed?.rows ?? 0) : 0,
     }
   }
 
@@ -245,7 +271,7 @@ export async function prepareEnvironmentDatabase(
   const exposed = await ensureEnvironmentDatabase(projectId, environment, { exposeToPod: true })
   if (!exposed.ok) return exposed
 
-  const hash = applied?.data?.hash ?? resolved.hash
+  const hash = applied?.hash ?? resolved.hash
   if (env) {
     try {
       await prisma.publishedEnvironment.update({
@@ -265,10 +291,10 @@ export async function prepareEnvironmentDatabase(
     value: {
       database: exposed.value,
       applied: !unchanged,
-      seeded: seed && (applied?.data?.seeded?.rows ?? 0) > 0,
-      seededRows: applied?.data?.seeded?.rows ?? 0,
+      seeded: seed && (applied?.seededRows ?? 0) > 0,
+      seededRows: applied?.seededRows ?? 0,
       schemaHash: hash,
-      warnings: applied?.data?.warnings ?? resolved.warnings ?? [],
+      warnings: applied?.warnings ?? resolved.warnings ?? [],
     },
   }
 }

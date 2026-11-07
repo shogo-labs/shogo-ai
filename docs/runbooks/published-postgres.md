@@ -95,9 +95,13 @@ A publish with a destructive schema change must return
 
 1. **Provision** (`ensureEnvironmentDatabase`) — creates the role/database if
    absent. Idempotent: a republish reuses both, which is what keeps rows (AC 2).
-2. **Push the schema** (`prepareEnvironmentDatabase` → the project runtime's
-   `/agent/published-schema`) — converts the app's SQLite schema to Postgres,
-   classifies it against the schema the database already has
+2. **Push the schema** (`prepareEnvironmentDatabase`) — the project runtime's
+   `/agent/published-schema` exports the app's schema converted to Postgres (and,
+   on a first deploy, `dev.db` as seed SQL); the API then runs `prisma db push` /
+   `db execute` itself (`published-schema-push.ts`), inside the cluster. The
+   runtime never gets the database URL: it may run on a metal host outside the
+   cluster network, and it runs user code. The API first
+   classifies the schema against the one the database already has
    (`PublishedEnvironment.dbSchema`), and refuses a destructive change unless the
    caller passed `allow_data_loss: true`. The push runs against the **primary**
    (`directUrl`), never the pooler: DDL in transaction mode is unsafe.
