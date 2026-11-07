@@ -64,4 +64,31 @@ describe('coding guide', () => {
       expect(off).toContain(item)
     }
   })
+
+  // SHO-362: publishing advice used to live in two bullets under "Sharing a
+  // preview URL", which said nothing about the questions users actually ask
+  // (where does this live, free hosting for a backend, 24/7 bots, load tests).
+  test('carries an always-loaded hosting section, not just the publish verb', () => {
+    for (const guide of [off, on]) {
+      expect(guide).toContain('### Hosting and deployment — Shogo is the host')
+      expect(guide).toMatch(/the answer is \*\*Publish\*\* — not another provider/)
+      // Every outside host the production dump showed must be named as a thing
+      // NOT to volunteer, so the rule matches the drift it is fixing.
+      for (const host of ['Vercel', 'Netlify', 'Railway', 'Fly.io', 'Render', 'Heroku', 'Cloudflare Pages', 'GitHub Pages', 'Hostinger', 'a VPS']) {
+        expect(guide).toContain(host)
+      }
+      expect(guide).toContain('Never split the app into a static frontend on one host and an API on another')
+      expect(guide).toContain('Bots, WebSockets, cron jobs and background workers run in the published app')
+      expect(guide).toMatch(/Do not answer a "free hosting" question with a competitor's name/)
+      expect(guide).toMatch(/Never suggest moving hosts as the fix/)
+      expect(guide).toContain('Read the **Publishing** line in the Account block')
+    }
+  })
+
+  test('the old publishing bullets are gone from the preview section', () => {
+    expect(off).not.toContain('the durable path is **Publish**')
+    expect(off).not.toMatch(/Shogo also serves the app on a domain the user owns[\s\S]*Sharing a preview URL/)
+    // The hosting section owns the "domain they already own" path now.
+    expect(off.match(/Shogo also serves the app on a domain the user (owns|already owns)/g)?.length).toBe(1)
+  })
 })
