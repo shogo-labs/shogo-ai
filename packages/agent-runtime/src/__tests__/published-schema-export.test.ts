@@ -15,7 +15,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { collectSeedTables, resolvePublishSchema } from '../published-schema-apply'
+import { collectSeedTables, exportPublishedSchema, resolvePublishSchema } from '../published-schema-export'
 
 const dirs: string[] = []
 
@@ -101,5 +101,46 @@ describe('collectSeedTables', () => {
   it('seeds nothing when the workspace has no dev.db yet', async () => {
     const dir = projectDir({ schema: SCHEMA })
     expect(await collectSeedTables(dir, resolvePublishSchema(dir)!.content)).toEqual([])
+  })
+})
+
+describe('exportPublishedSchema', () => {
+  function seededDir(): string {
+    const dir = projectDir({ schema: SCHEMA, devDb: true })
+    const db = new Database(join(dir, 'prisma', 'dev.db'))
+    db.run('CREATE TABLE "User" (id INTEGER PRIMARY KEY, email TEXT)')
+    db.run('CREATE TABLE "Post" (id INTEGER PRIMARY KEY, title TEXT, authorId INTEGER)')
+    db.run(`INSERT INTO "User" (id, email) VALUES (1, 'a@example.com')`)
+    db.run(`INSERT INTO "Post" (id, title, authorId) VALUES (7, 'it''s', 1)`)
+    db.close()
+    return dir
+  }
+
+  it('returns the Postgres schema and dev.db as seed SQL, users before posts', async () => {
+    const result = await exportPublishedSchema(seededDir(), { seed: true })
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
+    expect(result.schema.content).toContain('provider = "postgresql"')
+    expect(result.seed).toMatchObject({ tables: 2, rows: 2 })
+    const sql = result.seed!.sql
+    expect(sql.indexOf('INSERT INTO "User"')).toBeLessThan(sql.indexOf('INSERT INTO "Post"'))
+    expect(sql).toContain("'it''s'")
+  })
+
+  it('exports no seed when none is asked for', async () => {
+    const result = await exportPublishedSchema(seededDir())
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
+    expect(result.seed).toBeNull()
+  })
+
+  it('exports no seed when dev.db has no rows', async () => {
+    const result = await exportPublishedSchema(projectDir({ schema: SCHEMA }), { seed: true })
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
+    expect(result.seed).toBeNull()
+  })
+
+  it('refuses an app with no models as no_schema', async () => {
+    const result = await exportPublishedSchema(projectDir())
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.code).toBe('no_schema')
   })
 })
