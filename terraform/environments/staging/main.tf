@@ -389,6 +389,37 @@ module "dns" {
 }
 
 # =============================================================================
+# Staging Kourier origin for server-backed published apps (SHO-308)
+# =============================================================================
+# Same shape as production-us's `kourier_us`: a PROXIED record in the publish
+# zone that the subdomain-router Worker uses as a `resolveOverride` target, plus
+# a script-less route so the origin pull never re-runs a Worker. The LB is the
+# long-lived `kourier` Service in `kourier-system` on the staging cluster (not
+# terraform-managed here, hence the literal).
+locals {
+  staging_kourier_lb_ip = "141.148.27.1"
+}
+
+data "cloudflare_zone" "publish" {
+  name = "shogo.one"
+}
+
+resource "cloudflare_record" "kourier_staging" {
+  zone_id = data.cloudflare_zone.publish.id
+  name    = "kourier-staging"
+  content = local.staging_kourier_lb_ip
+  type    = "A"
+  proxied = true
+  ttl     = 1
+  comment = "Proxied resolveOverride target for server-backed published /api/* proxying (staging Kourier LB)"
+}
+
+resource "cloudflare_worker_route" "kourier_staging_bypass" {
+  zone_id = data.cloudflare_zone.publish.id
+  pattern = "${cloudflare_record.kourier_staging.hostname}/*"
+}
+
+# =============================================================================
 # Publish Hosting (OCI Object Storage + Cloudflare Worker)
 # =============================================================================
 
@@ -411,9 +442,10 @@ module "publish_hosting" {
   custom_domains_zone   = var.custom_domains_zone
 
   # Server-backed published apps (run server.tsx in production) are always on.
-  # Proxying is live once kourier_origin points at the staging cluster's
-  # Knative ingress; until then server-backed apps fall back to static serving.
-  kourier_origin = var.kourier_origin
+  # The Worker proxies their `/api/*` to the staging cluster's Knative ingress
+  # (SHO-308): without it every server-backed site on staging answers its API
+  # with the SPA's index.html. `var.kourier_origin` still overrides.
+  kourier_origin = coalesce(var.kourier_origin, "http://${cloudflare_record.kourier_staging.hostname}")
 
   # Shared secret the Worker sends to the API on the published `/api/*` proxy.
   edge_proxy_secret = var.edge_proxy_secret
