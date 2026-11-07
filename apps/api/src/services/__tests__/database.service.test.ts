@@ -172,6 +172,21 @@ afterEach(async () => {
 
 // ─── pure helpers ────────────────────────────────────────────────────────────
 
+describe('adminConnectionString', () => {
+  it("maps CNPG's wildcard superuser database to the maintenance database", async () => {
+    expect(svc.adminConnectionString('postgresql://postgres:p%40ss@projects-pg-rw.ns:5432/*')).toBe(
+      'postgresql://postgres:p%40ss@projects-pg-rw.ns:5432/postgres',
+    )
+    expect(svc.adminConnectionString('postgresql://postgres:pw@h:5432')).toBe('postgresql://postgres:pw@h:5432/postgres')
+  })
+
+  it('leaves a named database alone', async () => {
+    expect(svc.adminConnectionString('postgres://admin:pw@admin-host:5432/projects')).toBe(
+      'postgres://admin:pw@admin-host:5432/projects',
+    )
+  })
+})
+
 describe('pure helpers', () => {
   it('dbSecretName builds the canonical name', () => {
     expect(svc.dbSecretName('abc123')).toBe('project-abc123-db-creds')

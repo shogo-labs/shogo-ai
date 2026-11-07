@@ -49,7 +49,10 @@ this order. Skipping one produces a specific, confusing failure, noted below.
    The pooler before the cluster gives the API a hostname with no endpoints,
    which is exactly the failure `PROJECTS_DB_POOLER_HOST` being required (not
    defaulted) exists to prevent.
-5. **API env** — `PROJECTS_DB_ADMIN_URL` reads the CNPG-created
+5. **API env** — the cluster must have `enableSuperuserAccess: true` (CNPG
+   does not write `projects-pg-superuser` otherwise, and the API then silently
+   keeps every publish on SQLite). Its `uri` ends in `/*`; the API maps that
+   to the `postgres` maintenance database. `PROJECTS_DB_ADMIN_URL` reads the CNPG-created
    `projects-pg-superuser` Secret (`key: uri`), plus
    `PROJECTS_DB_HOST`/`PROJECTS_DB_POOLER_HOST` are set literally in the staging
    overlay. Roll the API after the pooler is Ready.

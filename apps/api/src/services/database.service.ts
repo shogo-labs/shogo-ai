@@ -79,13 +79,36 @@ export interface DatabaseStatus {
 
 let adminPool: InstanceType<typeof Pool> | null = null
 
+/**
+ * The admin URL with a database the superuser can actually connect to.
+ *
+ * CNPG's `<cluster>-superuser` Secret (what the overlays mount as
+ * PROJECTS_DB_ADMIN_URL) ends its `uri` in `/*` — "any database" — and pg reads
+ * that as a database literally named `*`, so every provision failed with
+ * `database "*" does not exist`. CREATE DATABASE / CREATE ROLE only need the
+ * maintenance database, so a wildcard or missing name means `postgres`.
+ */
+export function adminConnectionString(url: string): string {
+  try {
+    const parsed = new URL(url)
+    const db = decodeURIComponent(parsed.pathname.replace(/^\//, ''))
+    if (db === '' || db === '*') {
+      parsed.pathname = '/postgres'
+      return parsed.toString()
+    }
+    return url
+  } catch {
+    return url
+  }
+}
+
 function getAdminPool(): InstanceType<typeof Pool> {
   if (!PROJECTS_DB_ADMIN_URL) {
     throw new Error("PROJECTS_DB_ADMIN_URL is not configured. Cannot connect to projects database.")
   }
   if (!adminPool) {
     adminPool = new Pool({
-      connectionString: PROJECTS_DB_ADMIN_URL,
+      connectionString: adminConnectionString(PROJECTS_DB_ADMIN_URL),
       max: 5, // Low pool size - admin operations are infrequent
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 10000,

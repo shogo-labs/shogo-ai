@@ -31,6 +31,12 @@ spec:
 
   enablePDB: false
 
+  # The API provisions one database + role per published environment, which
+  # needs a superuser. CNPG only writes `projects-pg-superuser` (the Secret the
+  # API overlay mounts as PROJECTS_DB_ADMIN_URL) when this is on; it is off by
+  # default, and without it the API silently stays on SQLite.
+  enableSuperuserAccess: true
+
   # Same reasoning as platform-pg: published apps can burst CPU and memory, and
   # the database must not be the pod that gets evicted. PriorityClass lives in
   # k8s/overlays/staging/priority-classes.yaml and must exist first.
