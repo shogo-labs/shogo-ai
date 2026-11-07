@@ -282,6 +282,21 @@ describe('browser relay protocol v2', () => {
     expect(relay.stderr()).toBe('')
   }, 20000)
 
+  test('SIGTERM during the handshake shuts down without a stack dump', async () => {
+    // The handlers used to be installed only after `establishExtensionConnection`
+    // resolved, so a kill between `ready` and `connected` — exactly what
+    // `cleanupRelay` does when a browser call fails — died by signal (exit 143)
+    // instead of shutting down. The signal can land between the `ready` write
+    // and the `process.on` call, so the handlers must exist before `ready`.
+    const relay = startRelay({ timeoutMs: 30000 })
+    cleanups.push(() => relay.kill())
+    await relay.next((line) => line.type === 'ready')
+
+    relay.kill()
+    expect(await relay.exited).toBe(0)
+    expect(relay.stderr()).toBe('')
+  }, 20000)
+
   test('a protocol mismatch fails immediately even when a browser binary is resolved', async () => {
     // The reported bug: the pre-flight was skipped whenever an executable path
     // existed, which is the normal case, so the user got a 90 s timeout instead

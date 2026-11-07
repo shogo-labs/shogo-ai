@@ -835,6 +835,22 @@ async function main() {
     connectionTimeout,
   });
 
+  // Install the shutdown handlers before anything is observable. `cleanupRelay`
+  // kills the relay as soon as it reads a line, so a handler registered after
+  // the first `emit` loses the race: the signal is delivered while the process
+  // is still between the write and the `process.on` call, and the default
+  // disposition kills it (exit 143) instead of shutting down cleanly.
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown)
+      return;
+    shuttingDown = true;
+    relay.stop();
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+
   try {
     await relay.start();
     emit({
@@ -845,8 +861,6 @@ async function main() {
     });
     await relay.establishExtensionConnection('Shogo');
     emit({ type: 'connected', protocolVersion: RELAY_PROTOCOL_VERSION });
-    process.on('SIGTERM', () => { relay.stop(); process.exit(0); });
-    process.on('SIGINT', () => { relay.stop(); process.exit(0); });
   } catch (error) {
     emit({ type: 'error', message: error.message, protocolVersion: RELAY_PROTOCOL_VERSION });
     relay.stop();
